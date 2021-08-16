@@ -28002,7 +28002,7 @@ if (jjtc000) {
       }
       p = p.next;
     }
-    p.gen = jj_gen + xla - jj_la; 
+    p.gen = jj_gen + xla - jj_la;
     p.first = token;
     p.arg = xla;
   }

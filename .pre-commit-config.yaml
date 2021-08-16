@@ -1,0 +1,31 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.0.1
+    hooks:
+      - id: fix-byte-order-marker
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+      - id: detect-aws-credentials
+        args:
+          - --allow-missing-credentials
+      - id: detect-private-key
+      - id: check-case-conflict
+      - id: check-yaml
+        args:
+          - --allow-multiple-documents
+      - id: check-json
+      - id: check-xml
+  - repo: https://github.com/pre-commit/mirrors-prettier
+    rev: v2.3.2
+    hooks:
+      - id: prettier
+        types: [ java ]
+        additional_dependencies:
+          - prettier@2.3.2
+          - prettier-plugin-java@1.3.0
+        args:
+          - --write
+          - --list-different
+          - --ignore-unknown
+          - --plugin=prettier-plugin-java
