@@ -49,7 +49,7 @@
         <dependency>
             <groupId>com.ibm.icu</groupId>
             <artifactId>icu4j</artifactId>
-            <version>68.2</version>
+            <version>69.1</version>
             <scope>compile</scope>
         </dependency>
         <dependency>
