@@ -2,6 +2,7 @@ name: Java CI - deploy
 
 on:
   push:
+    workflow_dispatch:
     branches:
       - master
 
