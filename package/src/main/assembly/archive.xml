@@ -69,7 +69,7 @@
             <fileMode>444</fileMode>
         </file>
         <file>
-            <source>${basedir}/../LICENSE.txt</source>
+            <source>${basedir}/../LICENSE</source>
             <fileMode>444</fileMode>
         </file>
     </files>
