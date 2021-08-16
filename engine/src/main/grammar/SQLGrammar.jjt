@@ -1,0 +1,4556 @@
+options {
+	TRACK_TOKENS = true;
+  	JDK_VERSION = "1.6";
+  	MULTI=true;
+  	VISITOR=true;
+  	STATIC=false;
+  	USER_CHAR_STREAM = true ;
+  	JAVA_UNICODE_ESCAPE=true;
+  	NODE_PREFIX="";
+}
+
+PARSER_BEGIN(SqlParser)
+
+package com.arcadedb.query.sql.parser;
+
+import java.io.InputStream;
+import java.util.List;
+import java.util.ArrayList;
+import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.exception.QueryParsingException;
+import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
+
+/** Database Sql grammar. */
+public class SqlParser {
+
+  private int inputParamCount = 0;
+
+
+    public SqlParser(InputStream stream) {
+      this(new JavaCharStream(stream));
+    }
+
+    public SqlParser(InputStream stream, String charset) throws java.io.UnsupportedEncodingException {
+      this(new JavaCharStream(stream, charset));
+    }
+
+}
+
+PARSER_END(SqlParser)
+
+SKIP :
+{
+  " "
+| "\t"
+| "\n"
+| "\r"
+| "\f"
+}
+
+/* COMMENTS */
+
+MORE :
+{
+  <"/**" ~["/"]> { input_stream.backup(1); } : IN_FORMAL_COMMENT
+|
+  "/*" : IN_MULTI_LINE_COMMENT
+}
+
+<IN_FORMAL_COMMENT>
+SPECIAL_TOKEN :
+{
+  <FORMAL_COMMENT: "*/" > : DEFAULT
+}
+
+<IN_MULTI_LINE_COMMENT>
+SPECIAL_TOKEN :
+{
+  <MULTI_LINE_COMMENT: "*/" > : DEFAULT
+}
+
+<IN_FORMAL_COMMENT,IN_MULTI_LINE_COMMENT>
+MORE :
+{
+  < ~[] >
+}
+
+
+/* reserved words */
+TOKEN:
+{
+	< SELECT: ( "s" | "S" ) ( "e" | "E" ) ( "l" | "L" ) ( "e" | "E" ) ( "c" | "C" ) ( "t" | "T" ) >
+	|
+	< TRAVERSE: ( "t" | "T") ( "r" | "R") ( "a" | "A") ( "v" | "V") ( "e" | "E") ( "r" | "R") ( "s" | "S") ( "e" | "E") >
+	|
+	< MATCH: ( "m" | "M" ) ( "a" | "A" ) ( "t" | "T" ) ( "c" | "C" ) ( "h" | "H" ) >
+	|
+	< INSERT: ( "i" | "I" ) ( "n" | "N" ) ( "s" | "S" ) ( "e" | "E" ) ( "r" | "R" ) ( "t" | "T" ) >
+	|
+	< CREATE: ( "c" | "C" ) ( "r" | "R" ) ( "e" | "E" ) ( "a" | "A" ) ( "t" | "T" ) ( "e" | "E" ) >
+	|
+	< DELETE: ( "d" | "D" ) ( "e" | "E" ) ( "l" | "L" ) ( "e" | "E" ) ( "t" | "T" ) ( "e" | "E" ) >
+	|
+	< DOCUMENT: ( "d" | "D" ) ( "o" | "O" ) ( "c" | "C" ) ( "u" | "U" ) ( "m" | "M" ) ( "e" | "E" ) ( "n" | "N" ) ( "t" | "T" ) >
+	|
+	< VERTEX: ( "v" | "V" ) ( "e" | "E" ) ( "r" | "R" ) ( "t" | "T" ) ( "e" | "E" ) ( "x" | "X" ) >
+	|
+	< EDGE: ( "e" | "E" ) ( "d" | "D" ) ( "g" | "G" ) ( "e" | "E" ) >
+	|
+	< UPDATE: ( "u" | "U" ) ( "p" | "P" ) ( "d" | "D" ) ( "a" | "A" ) ( "t" | "T" ) ( "e" | "E" ) >
+	|
+	< UPSERT: ( "u" | "U" ) ( "p" | "P" ) ( "s" | "S" ) ( "e" | "E" ) ( "r" | "R" ) ( "t" | "T" ) >
+	|
+	< FROM: ( "f" | "F" ) ( "r" | "R" ) ( "o" | "O" ) ( "m" | "M" ) >
+	|
+	< TO: ( "t" | "T" ) ( "o" | "O" ) >
+	|
+	< WHERE: ( "w" | "W" ) ( "h" | "H" ) ( "e" | "E" ) ( "r" | "R" ) ( "e" | "E" ) >
+	|
+	< WHILE: ( "w" | "W" ) ( "h" | "H" ) ( "i" | "I" ) ( "l" | "L" ) ( "e" | "E" ) >
+	|
+	< INTO: ( "i" | "I" ) ( "n" | "N" ) ( "t" | "T" ) ( "o" | "O" ) >
+	|
+	< VALUE: ( "v" | "V" ) ( "a" | "A" ) ( "l" | "L" ) ( "u" | "U" ) ( "e" | "E" ) >
+	|
+	< VALUES: ( "v" | "V" ) ( "a" | "A" ) ( "l" | "L" ) ( "u" | "U" ) ( "e" | "E" ) ( "s" | "S" )>
+	|
+	< SET: ( "s" | "S" ) ( "e" | "E" ) ( "t" | "T" ) >
+	|
+	< ADD: ( "a" | "A" ) ( "d" | "D" ) ( "d" | "D" ) >
+	|
+	< PUT: ( "p" | "P" ) ( "u" | "U" ) ( "t" | "T" ) >
+	|
+	< MERGE: ( "m" | "M" ) ( "e" | "E" ) ( "r" | "R" ) ( "g" | "G" ) ( "e" | "E" ) >
+	|
+	< CONTENT: ( "c" | "C" ) ( "o" | "O" ) ( "n" | "N" ) ( "t" | "T" ) ( "e" | "E" ) ( "n" | "N" ) ( "t" | "T" )  >
+	|
+	< REMOVE: ( "r" | "R" ) ( "e" | "E" ) ( "m" | "M" ) ( "o" | "O" ) ( "v" | "V" ) ( "e" | "E" ) >
+	|
+	< INCREMENT: ( "i" | "I" ) ( "n" | "N" ) ( "c" | "C" ) ( "r" | "R" ) ( "e" | "E" ) ( "m" | "M" ) ( "e" | "E" ) ( "n" | "N" ) ( "t" | "T" ) >
+	|
+	< AND: ( "a" | "A" ) ( "n" | "N" ) ( "d" | "D" ) >
+	|
+	< OR: ( "o" | "O" ) ( "r" | "R" ) >
+	|
+	< NULL: ( "N" | "n" ) ( "U" | "u" ) ( "L" | "l" ) ( "L" | "l" ) >
+	|
+	< DEFINED: ( "D" | "d" ) ( "E" | "e" ) ( "F" | "f" ) ( "I" | "i" ) ( "N" | "n" ) ( "E" | "e" ) ( "D" | "d" ) >
+    |
+    < ORDER: ( "o" | "O" ) ( "r" | "R" ) ( "d" | "D" ) ( "e" | "E" ) ( "r" | "R" ) >
+	|
+	< GROUP: ( "g" | "G" ) ( "r" | "R" ) ( "o" | "O" ) ( "u" | "U" ) ( "p" | "P" ) >
+	|
+	< BY: ( "b" | "B" ) ( "y" | "Y" ) >
+	|
+	< LIMIT: ( "l" | "L" ) ( "i" | "I" ) ( "m" | "M" ) ( "i" | "I" ) ( "t" | "T" ) >
+	|
+	< SKIP2: ( "s" | "S" ) ( "k" | "K" ) ( "i" | "I" ) ( "p" | "P" ) >
+	|
+	< ERROR2: ( "e" | "E" ) ( "r" | "R" ) ( "r" | "R" ) ( "o" | "O" ) ( "r" | "R" ) >
+	|
+	< BATCH: ( "b" | "B" ) ( "a" | "A" ) ( "t" | "T" ) ( "c" | "C" ) ( "h" | "H" ) >
+	|
+	< OFFSET: ( "o" | "O" ) ( "f" | "F" ) ( "f" | "F" ) ( "s" | "S" ) ( "e" | "E" ) ( "t" | "T" ) >
+	|
+	< TIMEOUT: ( "t" | "T" ) ( "i" | "I" ) ( "m" | "M" ) ( "e" | "E" ) ( "o" | "O" ) ( "u" | "U" ) ( "t" | "T" ) >
+	|
+	< ASC: ( "a" | "A" ) ( "s" | "S" ) ( "c" | "C" ) >
+	|
+	< AS: ( "a" | "A" ) ( "s" | "S" ) >
+	|
+	< DESC: ( "d" | "D" ) ( "e" | "E" ) ( "s" | "S" ) ( "c" | "C" ) >
+	|
+	< FETCHPLAN: ( "f" | "F" ) ( "e" | "E" ) ( "t" | "T" ) ( "c" | "C" ) ( "h" | "H" ) ( "p" | "P" ) ( "l" | "L" ) ( "a" | "A" ) ( "n" | "N" ) >
+	|
+	< RETURN: ( "r" | "R" ) ( "e" | "E" ) ( "t" | "T" ) ( "u" | "U" ) ( "r" | "R" ) ( "n" | "N" ) >
+	|
+	< BEFORE: ( "b" | "B" ) ( "e" | "E" ) ( "f" | "F" ) ( "o" | "O" ) ( "r" | "R" ) ( "e" | "E" ) >
+	|
+	< AFTER: ( "a" | "A" ) ( "f" | "F" ) ( "t" | "T" ) ( "e" | "E" ) ( "r" | "R" ) >
+	|
+	< LOCK: ( "l" | "L" ) ( "o" | "O" ) ( "c" | "C" ) ( "k" | "K" ) >
+    |
+    < RECORD: ( "r" | "R" ) ( "e" | "E" ) ( "c" | "C" ) ( "o" | "O" ) ( "r" | "R" ) ( "d" | "D" ) >
+    |
+    < WAIT: ( "w" | "W" ) ( "a" | "A" ) ( "i" | "I" ) ( "t" | "T" ) >
+    |
+    < RETRY: ( "r" | "R" ) ( "e" | "E" ) ( "t" | "T" ) ( "r" | "R" ) ( "y" | "Y" ) >
+    |
+    < LET: ( "l" | "L" ) ( "e" | "E" ) ( "t" | "T" ) >
+    |
+    < CACHE: ( "c" | "C" ) ( "a" | "A" ) ( "c" | "C" ) ( "h" | "H" ) ( "e" | "E" ) >
+    |
+    < CYCLE: ( "c" | "C" ) ( "y" | "Y" ) ( "c" | "C" ) ( "l" | "L" ) ( "e" | "E" ) >
+    |
+    < NOCACHE: ( "n" | "N" ) ( "o" | "O" ) ( "c" | "C" ) ( "a" | "A" ) ( "c" | "C" ) ( "h" | "H" ) ( "e" | "E" ) >
+    |
+    < NOLIMIT: ( "n" | "N" ) ( "o" | "O" ) ( "l" | "L" ) ( "i" | "I" ) ( "m" | "M" ) ( "i" | "I" ) ( "t" | "T" ) >
+    |
+    < NOCYCLE: ( "n" | "N" ) ( "o" | "O" ) ( "c" | "C" ) ( "y" | "Y" ) ( "c" | "C" ) ( "l" | "L" ) ( "e" | "E" ) >
+    |
+    < UNSAFE: ( "u" | "U" ) ( "n" | "N" ) ( "s" | "S" ) ( "a" | "A" ) ( "f" | "F" ) ( "e" | "E" ) >
+    |
+    < PARALLEL: ( "p" | "P" ) ( "a" | "A" ) ( "r" | "R" ) ( "a" | "A" ) ( "l" | "L" ) ( "l" | "L" ) ( "e" | "E" ) ( "l" | "L" ) >
+    |
+    < STRATEGY: ( "s" | "S" ) ( "t" | "T" ) ( "r" | "R" ) ( "a" | "A" ) ( "t" | "T" ) ( "e" | "E" ) ( "g" | "G" ) ( "y" | "Y" )  >
+    |
+    < DEPTH_FIRST: ( "d" | "D" ) ( "e" | "E" ) ( "p" | "P" ) ( "t" | "T" ) ( "h" | "H" ) ( "_" )  ( "f" | "F" ) ( "i" | "I" ) ( "r" | "R" ) ( "s" | "S" ) ( "t" | "T" )  >
+    |
+    < BREADTH_FIRST: ( "b" | "B" ) ( "r" | "R" ) ( "e" | "E" ) ( "a" | "A" ) ( "d" | "D" ) ( "t" | "T" )  ( "h" | "H" ) ( "_" ) ( "f" | "F" ) ( "i" | "I" ) ( "r" | "R" ) ( "s" | "S" ) ( "t" | "T" )  >
+	|
+	< LUCENE: ( "l" | "L" ) ( "u" | "U" ) ( "c" | "C" ) ( "e" | "E" ) ( "n" | "N" ) ( "e" | "E" ) >
+	|
+	< NEAR: ( "n" | "N" ) ( "e" | "E" ) ( "a" | "A" ) ( "r" | "R" ) >
+	|
+	< WITHIN: ( "w" | "W" ) ( "i" | "I" ) ( "t" | "T" ) ( "h" | "H" ) ( "i" | "I" ) ( "n" | "N" ) >
+	|
+	< UNWIND: ( "u" | "U" ) ( "n" | "N" ) ( "w" | "W" ) ( "i" | "I" ) ( "n" | "N" ) ( "d" | "D" ) >
+	|
+	< MAXDEPTH: ( "m" | "M" ) ( "a" | "A" ) ( "x" | "X" ) ( "d" | "D" ) ( "e" | "E" ) ( "p" | "P" ) ( "t" | "T" ) ( "h" | "H" ) >
+	|
+	< MINDEPTH: ( "m" | "M" ) ( "i" | "I" ) ( "n" | "N" ) ( "d" | "D" ) ( "e" | "E" ) ( "p" | "P" ) ( "t" | "T" ) ( "h" | "H" ) >
+	|
+	< TYPE: ( "t" | "T" ) ( "y" | "Y" ) ( "p" | "P" ) ( "e" | "E" ) >
+	|
+	< SUPERTYPE: ( "s" | "S" ) ( "u" | "U" ) ( "p" | "P" ) ( "e" | "E" ) ( "r" | "R" ) ( "t" | "T" ) ( "y" | "Y" ) ( "p" | "P" ) ( "e" | "E" ) >
+	|
+	< TYPES: ( "t" | "T" ) ( "y" | "Y" ) ( "p" | "P" ) ( "e" | "E" ) ( "s" | "S" ) >
+	|
+	< SUPERTYPES: ( "s" | "S" ) ( "u" | "U" ) ( "p" | "P" ) ( "e" | "E" ) ( "r" | "R" ) ( "t" | "T" ) ( "y" | "Y" ) ( "p" | "P" ) ( "e" | "E" ) ( "s" | "S" ) >
+  |
+	< EXCEPTION: ( "e" | "E" ) ( "x" | "X" ) ( "c" | "C" ) ( "e" | "E" ) ( "p" | "P" ) ( "t" | "T" ) ( "i" | "I" ) ( "o" | "O" ) ( "n" | "N" ) >
+	|
+	< PROFILE: ( "p" | "P" ) ( "r" | "R" ) ( "o" | "O" ) ( "f" | "F" ) ( "i" | "I" ) ( "l" | "L" ) ( "e" | "E" ) >
+	|
+	< STORAGE: ( "s" | "S" ) ( "t" | "T" ) ( "o" | "O" ) ( "r" | "R" ) ( "a" | "A" ) ( "g" | "G" ) ( "e" | "E" ) >
+	|
+	< ON: ( "o" | "O" ) ( "n" | "N" ) >
+	|
+	< OFF: ( "o" | "O" ) ( "f" | "F" ) ( "f" | "F" ) >
+	|
+	< TRUNCATE: ( "t" | "T" ) ( "r" | "R" ) ( "u" | "U" ) ( "n" | "N" ) ( "c" | "C" ) ( "a" | "A" ) ( "t" | "T" ) ( "e" | "E" ) >
+	|
+	< POLYMORPHIC: ( "p" | "P" ) ( "o" | "O" ) ( "l" | "L" ) ( "y" | "Y" ) ( "m" | "M" ) ( "o" | "O" ) ( "r" | "R" ) ( "p" | "P" ) ( "h" | "H" ) ( "i" | "I" ) ( "c" | "C" ) >
+	|
+	< FIND: ( "f" | "F" ) ( "i" | "I" ) ( "n" | "N" ) ( "d" | "D" ) >
+	|
+	< REFERENCES: ( "r" | "R" ) ( "e" | "E" ) ( "f" | "F" ) ( "e" | "E" ) ( "r" | "R" ) ( "e" | "E" ) ( "n" | "N" ) ( "c" | "C" ) ( "e" | "E" ) ( "s" | "S" ) >
+	|
+	< EXTENDS: ( "e" | "E" ) ( "x" | "X" ) ( "t" | "T" ) ( "e" | "E" ) ( "n" | "N" ) ( "d" | "D" ) ( "s" | "S" ) >
+	|
+	< BUCKETS: ( "B" | "b" ) ( "U" | "u" ) ( "C" | "c" ) ( "K" | "k" ) ( "E" | "e" ) ( "T" | "t" ) ( "S" | "s" ) >
+	|
+	< ABSTRACT: ( "a" | "A" ) ( "b" | "B" ) ( "s" | "S" ) ( "T" | "t" ) ( "R" | "r" ) ( "a" | "A" ) ( "C" | "c" ) ( "T" | "t" ) >
+	|
+	< ALTER: ( "a" | "A" ) ( "l" | "L" ) ( "t" | "T" ) ( "e" | "E" ) ( "r" | "R" ) >
+	|
+	< NAME: ("n" | "N") ( "a" | "A" ) ( "m" | "M" ) ( "e" | "E" ) >
+	|
+	< ADDBUCKET: ( "a" | "A" ) ( "d" | "D" ) ( "d" | "D" ) ( "B" | "b" ) ( "U" | "u" ) ( "C" | "c" ) ( "K" | "k" ) ( "E" | "e" ) ( "T" | "t" ) >
+	|
+	< REMOVEBUCKET: ( "r" | "R" ) ( "e" | "E" ) ( "m" | "M" ) ( "o" | "O" ) ( "v" | "V" ) ( "e" | "E" ) ( "B" | "b" ) ( "U" | "u" ) ( "C" | "c" ) ( "K" | "k" ) ( "E" | "e" ) ( "T" | "t" ) >
+	|
+	< DROP: ( "d" | "D" ) ( "r" | "R" ) ( "o" | "O" ) ( "p" | "P" ) >
+	|
+	< PROPERTY: ( "p" | "P" ) ( "r" | "R" ) ( "o" | "O" ) ( "p" | "P" ) ( "e" | "E" ) ( "r" | "R" ) ( "t" | "T" ) ( "y" | "Y" ) >
+	|
+	< FORCE: ( "f" | "F" ) ( "o" | "O" ) ( "r" | "R" ) ( "c" | "C" ) ( "e" | "E" ) >
+	|
+	< SCHEMA: ( "s" | "S" ) ( "c" | "C" ) ( "h" | "H" ) ( "e" | "E" ) ( "m" | "M" ) ( "a" | "A" )  >
+	|
+  < INDEX: ( "I" | "i") ( "N" | "n") ( "D" | "d") ( "E" | "e") ( "X" | "x")  >
+  |
+  < NULL_STRATEGY: ( "n" | "N") ( "u" | "U") ( "l" | "L") ( "l" | "L") ( "_" ) ( "s" | "S") ( "t" | "T") ( "r" | "R") ( "a" | "A") ( "t" | "T") ( "e" | "E") ( "g" | "G") ( "y" | "Y")  >
+  |
+  < ENGINE: ( "E" | "e")  ( "N" | "n") ( "G" | "g") ( "I" | "i") ( "N" | "n")( "E" | "e") >
+  |
+  < REBUILD: ( "R" | "r") ( "E" | "e")  ( "B" | "b") ( "U" | "u") ( "I" | "i") ( "L" | "l") ( "D" | "d") >
+  |
+  < ID: ( "I" | "i") ( "D" | "d") >
+  |
+  < DATABASE: ( "D" | "d") ( "A" | "a")  ( "T" | "t") ( "A" | "a") ( "B" | "b") ( "A" | "a") ( "S" | "s") ( "E" | "e") >
+  |
+  < OPTIMIZE: ( "O" | "o") ( "P" | "p")  ( "T" | "t") ( "I" | "i") ( "M" | "m") ( "I" | "i") ( "Z" | "z") ( "E" | "e") >
+  |
+  < LINK: ( "L" | "l") ( "I" | "i")  ( "N" | "n") ( "K" | "k") >
+  |
+  < INVERSE: ( "I" | "i") ( "N" | "n")  ( "V" | "v") ( "E" | "e") ( "R" | "r")  ( "S" | "s") ( "E" | "e") >
+  |
+  < EXPLAIN: ( "E" | "e") ( "X" | "x")  ( "P" | "p") ( "L" | "l") ( "A" | "a")  ( "I" | "i") ( "N" | "n") >
+  |
+  < GRANT: ( "G" | "g") ( "R" | "r")  ( "A" | "a") ( "N" | "n") ( "T" | "t") >
+  |
+  < REVOKE: ( "R" | "r") ( "E" | "e")  ( "V" | "v") ( "O" | "o") ( "K" | "k")  ( "E" | "e") >
+  |
+  < READ: ( "R" | "r") ( "E" | "e")  ( "A" | "a") ( "D" | "d")>
+  |
+  < EXECUTE: ( "E" | "e") ( "X" | "x") ( "E" | "e") ( "C" | "c")  ( "U" | "u")  ( "T" | "t") ( "E" | "e")>
+  |
+  < ALL: ( "A" | "a") ( "L" | "l") ( "L" | "l")>
+  |
+  < NONE: ( "N" | "n") ( "O" | "o")  ( "N" | "n") ( "E" | "e")>
+  |
+  < FUNCTION: ( "F" | "f") ( "U" | "u")  ( "N" | "n") ( "C" | "c") ( "T" | "t")  ( "I" | "i") ( "O" | "o")  ( "N" | "n") >
+  |
+  < PARAMETERS: ( "P" | "p") ( "A" | "a")  ( "R" | "r") ( "A" | "a") ( "M" | "m")  ( "E" | "e") ( "T" | "t")  ( "E" | "e") ( "R" | "r") ( "S" | "s") >
+  |
+  < IDEMPOTENT: ( "I" | "i") ( "D" | "d")  ( "E" | "e") ( "M" | "m") ( "P" | "p")  ( "O" | "o") ( "T" | "t")  ( "E" | "e") ( "N" | "n") ( "T" | "t") >
+  |
+  < LANGUAGE: ( "L" | "l") ( "A" | "a")  ( "N" | "n") ( "G" | "g") ( "U" | "u")  ( "A" | "a") ( "G" | "g")  ( "E" | "e") >
+  |
+  < BEGIN: ( "B" | "b") ( "E" | "e")  ( "G" | "g") ( "I" | "i") ( "N" | "n") >
+  |
+  < COMMIT: ( "C" | "c") ( "O" | "o")  ( "M" | "m") ( "M" | "m") ( "I" | "i")  ( "T" | "t") >
+  |
+  < ROLLBACK: ( "R" | "r") ( "O" | "o")  ( "L" | "l") ( "L" | "l") ( "B" | "b") ( "A" | "a") ( "C" | "c") ( "K" | "k")>
+  |
+  < IF: ( "I" | "i") ( "F" | "f") >
+  |
+  < ELSE: ( "E" | "e") ( "L" | "l") ( "S" | "s") ( "E" | "e") >
+  |
+  < CONTINUE: ( "C" | "c") ( "O" | "o") ( "N" | "n") ( "T" | "t") ( "I" | "i") ( "N" | "n") ( "U" | "u") ( "E" | "e") >
+  |
+  < FAIL: ( "F" | "f") ( "A" | "a") ( "I" | "i") ( "L" | "l") >
+  |
+  < ISOLATION: ( "I" | "i") ( "S" | "s") ( "O" | "o") ( "L" | "l") ( "A" | "a") ( "T" | "t") ( "I" | "i") ( "O" | "o") ( "N" | "n") >
+  |
+  < SLEEP: ( "S" | "s") ( "L" | "l") ( "E" | "e") ( "E" | "e") ( "P" | "p")  >
+  |
+  < CONSOLE: ( "C" | "c") ( "O" | "o") ( "N" | "n") ( "S" | "s") ( "O" | "o")  ( "L" | "l") ( "E" | "e")>
+  |
+  < BLOB: ( "B" | "b") ( "L" | "l") ( "O" | "o") ( "B" | "b") >
+  |
+  < SHARED: ( "S" | "s") ( "H" | "h") ( "A" | "a") ( "R" | "r") ( "E" | "e") ( "D" | "d") >
+  |
+  < DEFAULT_: ( "D" | "d") ( "E" | "e") ( "F" | "f") ( "A" | "a") ( "U" | "u") ( "L" | "l") ( "T" | "t") >
+	|
+	< START: ( "S" | "s") ( "T" | "t") ( "A" | "a") ( "R" | "r") ( "T" | "t") >
+	|
+	< OPTIONAL: ( "O" | "o") ( "P" | "p") ( "T" | "t") ( "I" | "i") ( "O" | "o") ( "N" | "n") ( "A" | "a") ( "L" | "l") >
+	|
+	< COUNT: ( "C" | "c") ( "O" | "o") ( "U" | "u") ( "N" | "n") ( "T" | "t") >
+	|
+	< DISTINCT: ( "D" | "d") ( "I" | "i") ( "S" | "s") ( "T" | "t") ( "I" | "i") ( "N" | "n") ( "C" | "c") ( "T" | "t") >
+	|
+  < HA: ( "H" | "h") ( "A" | "a") >
+  |
+  < STATUS: ( "S" | "s") ( "T" | "t") ( "A" | "a") ( "T" | "t") ( "U" | "u") ( "S" | "s") >
+  |
+  < SERVER: ( "S" | "s") ( "E" | "e") ( "R" | "r") ( "V" | "v") ( "E" | "e") ( "R" | "r") >
+  |
+  < SYNC: ( "S" | "s") ( "Y" | "y") ( "N" | "n") ( "C" | "c") >
+	|
+	< EXISTS: ( "E" | "e" ) ( "X" | "x" ) ( "i" | "I" ) ( "s" | "S" ) ( "t" | "T" ) ( "s" | "S" ) >
+	|
+	< FOREACH: ( "F" | "f" ) ( "O" | "o" ) ( "R" | "r" ) ( "E" | "e" ) ( "A" | "a" ) ( "C" | "c" ) ( "H" | "h" ) >
+	|
+	< MOVE: ( "m" | "M" ) ( "o" | "O" ) ( "v" | "V" ) ( "e" | "E" ) >
+	|
+	< DEPTH_ALIAS: ( "d" | "D" ) ( "e" | "E" ) ( "p" | "P" ) ( "t" | "T" ) ( "h" | "H" ) ( "a" | "A" ) ( "l" | "L" ) ( "i" | "I" ) ( "a" | "A" ) ( "s" | "S" )>
+	|
+	< PATH_ALIAS: ( "p" | "P" ) ( "a" | "A" ) ( "t" | "T" ) ( "h" | "H" ) ( "a" | "A" ) ( "l" | "L" ) ( "i" | "I" ) ( "a" | "A" ) ( "s" | "S" )>
+	|
+	< IDENTIFIED: ( "i" | "I" ) ( "d" | "D" ) ( "e" | "E" ) ( "n" | "N" ) ( "t" | "T" ) ( "i" | "I" ) ( "f" | "F" ) ( "i" | "I" ) ( "e" | "E" ) ( "d" | "D" )>
+	|
+	< RID: ( "r" | "R" ) ( "i" | "I" ) ( "d" | "D" ) >
+	|
+	< SYSTEM: ( "s" | "S" ) ( "y" | "Y" ) ( "s" | "S" ) ( "t" | "T" ) ( "e" | "E" ) ( "m" | "M" ) >
+	|
+	< THIS: "@" ( ( "t" | "T" ) ( "h" | "H" ) ( "i" | "I" ) ( "s" | "S" ) ) >
+	|
+	< RECORD_ATTRIBUTE: <RID_ATTR> | <TYPE_ATTR> | <VERSION_ATTR> | <SIZE_ATTR> | <TYPE_ATTR> | <RAW_ATTR> | <RID_ID_ATTR> | <RID_POS_ATTR> | <FIELDS_ATTR> >
+	|
+	< RID_ATTR: "@" ( ( "r" | "R" ) ( "i" | "I" ) ( "d" | "D" ) ) >
+	|
+	< RID_STRING: "\"@" ( ( "r" | "R" ) ( "i" | "I" ) ( "d" | "D" ) ) "\"">
+	|
+	< #VERSION_ATTR: "@" ( ( "v" | "V" ) ( "e" | "E" ) ( "r" | "R" ) ( "s" | "S" ) ( "i" | "I" ) ( "o" | "O" ) ( "n" | "N" )) >
+	|
+	< #SIZE_ATTR: "@" ( ( "s" | "S" ) ( "i" | "I" ) ( "z" | "Z" ) ( "e" | "E" ) ) >
+	|
+	< #TYPE_ATTR: "@" ( ( "t" | "T" ) ( "y" | "Y" ) ( "p" | "P" ) ( "e" | "E" ) ) >
+    |
+	< #RAW_ATTR: "@" ( ( "r" | "R" ) ( "a" | "A" ) ( "w" | "W" ) ) >
+	|
+	< #RID_ID_ATTR: "@" ( ( "r" | "R" ) ( "i" | "I" ) ( "d" | "D" ) "_" ( "i" | "I" ) ( "d" | "D" )) >
+	|
+	< #RID_POS_ATTR: "@" ( ( "r" | "R" ) ( "i" | "I" ) ( "d" | "D" ) "_" ( "p" | "P" ) ( "o" | "O" )  ( "s" | "S" )) >
+  |
+  < #FIELDS_ATTR: "@" ( ( "f" | "F" ) ( "i" | "I" ) ( "e" | "E" ) ( "l" | "L" ) ( "d" | "D" ) ( "s" | "S" )) >
+
+}
+
+
+/* LITERALS */
+
+TOKEN :
+{
+  < INTEGER_LITERAL:
+        <DECIMAL_LITERAL> (["l","L"])?
+      | <HEX_LITERAL> (["l","L"])?
+      | <OCTAL_LITERAL> (["l","L"])?
+  >
+|
+  < #DECIMAL_LITERAL: ["1"-"9"] (["0"-"9"])* >
+|
+  < #HEX_LITERAL: "0" ["x","X"] (["0"-"9","a"-"f","A"-"F"])+ >
+|
+  < #OCTAL_LITERAL: "0" (["0"-"7"])* >
+|
+  < FLOATING_POINT_LITERAL:
+        <DECIMAL_FLOATING_POINT_LITERAL>
+      | <HEXADECIMAL_FLOATING_POINT_LITERAL>
+  >
+|
+  < #DECIMAL_FLOATING_POINT_LITERAL:
+        (["0"-"9"])+ "." (["0"-"9"])* (<DECIMAL_EXPONENT>)? (["f","F","d","D"])?
+      | "." (["0"-"9"])+ (<DECIMAL_EXPONENT>)? (["f","F","d","D"])?
+      | (["0"-"9"])+ <DECIMAL_EXPONENT> (["f","F","d","D"])?
+      | (["0"-"9"])+ (<DECIMAL_EXPONENT>)? ["f","F","d","D"]
+  >
+|
+  < #DECIMAL_EXPONENT: ["e","E"] (["+","-"])? (["0"-"9"])+ >
+|
+  < #HEXADECIMAL_FLOATING_POINT_LITERAL:
+        "0" ["x", "X"] (["0"-"9","a"-"f","A"-"F"])+ (".")? <HEXADECIMAL_EXPONENT> (["f","F","d","D"])?
+      | "0" ["x", "X"] (["0"-"9","a"-"f","A"-"F"])* "." (["0"-"9","a"-"f","A"-"F"])+ <HEXADECIMAL_EXPONENT> (["f","F","d","D"])?
+  >
+|
+  < #HEXADECIMAL_EXPONENT: ["p","P"] (["+","-"])? (["0"-"9"])+ >
+|
+  < CHARACTER_LITERAL:
+      "'"
+      (   (~["'","\\","\n","\r"])
+        | ("\\"
+            ( ["n","t","b","r","f","\\","'","\"","/"]
+            | ["0"-"7"] ( ["0"-"7"] )?
+            | ["0"-"3"] ["0"-"7"] ["0"-"7"]
+            )
+          )
+      )
+      "'"
+  >
+|
+  < STRING_LITERAL:
+      (
+	      "\""
+	      (   (~["\"","\\","\n","\r"])
+	        | ("\\"
+	            ( ["n","t","b","r","f","\\","'","\"","/"]
+	            | ["0"-"7"] ( ["0"-"7"] )?
+	            | ["0"-"3"] ["0"-"7"] ["0"-"7"]
+	            )
+	          )
+	      )*
+	      "\""
+      )
+      |
+      (
+	      "'"
+	      (   (~["\'","\\","\n","\r"])
+	        | ("\\"
+	            ( ["n","t","b","r","f","\\","'","\"","/"]
+	            | ["0"-"7"] ( ["0"-"7"] )?
+	            | ["0"-"3"] ["0"-"7"] ["0"-"7"]
+	            )
+	          )
+	      )*
+	      "'"
+      )
+  >
+  |
+  < INTEGER_RANGE:
+    (<MINUS>)? <INTEGER_LITERAL> <RANGE> (<MINUS>)?<INTEGER_LITERAL>
+  >
+  |
+  < ELLIPSIS_INTEGER_RANGE:
+    (<MINUS>)? <INTEGER_LITERAL> <ELLIPSIS> (<MINUS>)?<INTEGER_LITERAL>
+  >
+  |
+  < TRUE: ("T" | "t") ("R" | "r") ("U" | "u") ("E" | "e") >
+  |
+  < FALSE: ("F" | "f") ("A" | "a") ("L" | "l") ("S" | "s") ("E" | "e") >
+}
+
+
+
+/* SEPARATORS */
+
+TOKEN :
+{
+  < LPAREN: "(" >
+| < RPAREN: ")" >
+| < LBRACE: "{" >
+| < RBRACE: "}" >
+| < LBRACKET: "[" >
+| < RBRACKET: "]" >
+| < SEMICOLON: ";" >
+| < COMMA: "," >
+| < DOT: "." >
+| < AT: "@" >
+| < DOLLAR: "$" >
+| < BACKTICK: "`" >
+}
+
+/* OPERATORS */
+
+TOKEN :
+{
+
+  < EQ: "=" >
+| < EQEQ: "==" >
+| < LT: "<" >
+| < GT: ">" >
+| < BANG: "!" >
+| < TILDE: "~" >
+| < HOOK: "?" >
+| < COLON: ":" >
+| < LE: "<=" >
+| < GE: ">=" >
+| < NE: "!=" >
+| < NEQ: "<>" >
+| < SC_OR: "||" >
+| < SC_AND: "&&" >
+| < INCR: "++" >
+| < DECR: "--" >
+| < PLUS: "+" >
+| < MINUS: "-" >
+| < STAR: "*" >
+| < SLASH: "/" >
+| < BIT_AND: "&" >
+| < NULL_COALESCING: "??" >
+| < BIT_OR: "|" >
+| < XOR: "^" >
+| < REM: "%" >
+| < LSHIFT: "<<" >
+| < PLUSASSIGN: "+=" >
+| < MINUSASSIGN: "-=" >
+| < STARASSIGN: "*=" >
+| < SLASHASSIGN: "/=" >
+| < ANDASSIGN: "&=" >
+| < ORASSIGN: "|=" >
+| < XORASSIGN: "^=" >
+| < REMASSIGN: "%=" >
+| < LSHIFTASSIGN: "<<=" >
+| < RSIGNEDSHIFTASSIGN: ">>=" >
+| < RUNSIGNEDSHIFTASSIGN: ">>>=" >
+| < RSHIFT: ">>" >
+| < RUNSIGNEDSHIFT: ">>>" >
+| < ELLIPSIS: "..." >
+| < RANGE: ".." >
+| < NOT: ( "N" | "n") ( "O" | "o") ( "T" | "t")  >
+| < IN: ( "I" | "i") ( "N" | "n") >
+| < LIKE: ( "L" | "l") ( "I" | "i") ( "K" | "k") ( "E" | "e") >
+| < IS: "is" | "IS" | "Is" | "iS" >
+| < BETWEEN: ( "B" | "b") ( "E" | "e") ( "T" | "t") ( "W" | "w") ( "E" | "e") ( "E" | "e") ( "N" | "n")>
+| < CONTAINS: ( "C" | "c" ) ( "O" | "o" ) ( "N" | "n" ) ( "T" | "t" ) ( "A" | "a" ) ( "I" | "i" ) ( "N" | "n" ) ( "S" | "s" ) >
+| < CONTAINSALL: ( "C" | "c" ) ( "O" | "o" ) ( "N" | "n" ) ( "T" | "t" ) ( "A" | "a" ) ( "I" | "i" ) ( "N" | "n" ) ( "S" | "s" ) ( "A" | "a" ) ( "L" | "l" ) ( "L" | "l" ) >
+| < CONTAINSANY: ( "C" | "c" ) ( "O" | "o" ) ( "N" | "n" ) ( "T" | "t" ) ( "A" | "a" ) ( "I" | "i" ) ( "N" | "n" ) ( "S" | "s" ) ( "A" | "a" ) ( "N" | "n" ) ( "Y" | "y" ) >
+| < CONTAINSKEY: ( "C" | "c" ) ( "O" | "o" ) ( "N" | "n" ) ( "T" | "t" ) ( "A" | "a" ) ( "I" | "i" ) ( "N" | "n" ) ( "S" | "s" ) ( "K" | "k" ) ( "E" | "e" ) ( "Y" | "y" ) >
+| < CONTAINSVALUE: ( "C" | "c" ) ( "O" | "o" ) ( "N" | "n" ) ( "T" | "t" ) ( "A" | "a" ) ( "I" | "i" ) ( "N" | "n" ) ( "S" | "s" ) ( "V" | "v" ) ( "A" | "a" ) ( "L" | "l" ) ( "U" | "u" ) ( "E" | "e" ) >
+| < CONTAINSTEXT: ( "C" | "c" ) ( "O" | "o" ) ( "N" | "n" ) ( "T" | "t" ) ( "A" | "a" ) ( "I" | "i" ) ( "N" | "n" ) ( "S" | "s" ) ( "T" | "t" ) ( "E" | "e" ) ( "X" | "x" ) ( "T" | "t" ) >
+| < MATCHES: ( "M" | "m") ( "A" | "a") ( "T" | "t") ( "C" | "c") ( "H" | "h") ( "E" | "e") ( "S" | "s") >
+| < KEY: ( "K" | "k") ( "E" | "e") ( "Y" | "y") >
+| < INSTANCEOF: ( "I" | "i" ) ( "N" | "n" ) ( "S" | "s" ) ( "T" | "t" ) ( "A" | "a" ) ( "N" | "n" ) ( "C" | "c" ) ( "E" | "e" ) ( "O" | "o" ) ( "F" | "f" ) >
+| < BUCKET: ( "B" | "b" ) ( "U" | "u" ) ( "C" | "c" ) ( "K" | "k" ) ( "E" | "e" ) ( "T" | "t" )>
+}
+
+
+
+TOKEN :
+{
+  < IDENTIFIER: ( ((<DOLLAR>) | <LETTER>) (<PART_LETTER>)* ) >
+|
+  < QUOTED_IDENTIFIER: ( "`" (~["`"] | "\\`") (~["`"] | "\\`")*  "`") >
+|
+  < INDEX_COLON: <INDEX> ":" >
+|
+  < INDEXVALUES_IDENTIFIER: ( "I" | "i") ( "N" | "n") ( "D" | "d") ( "E" | "e") ( "X" | "x") ( "V" | "v") ( "A" | "a") ( "L" | "l") ( "U" | "u") ( "E" | "e") ( "S" | "s") ":" ( "__@recordmap@___" )? <IDENTIFIER> ( ( <DOT> | <MINUS> ) <IDENTIFIER> )* >
+|
+  < INDEXVALUESASC_IDENTIFIER:( "I" | "i") ( "N" | "n") ( "D" | "d") ( "E" | "e") ( "X" | "x") ( "V" | "v") ( "A" | "a") ( "L" | "l") ( "U" | "u") ( "E" | "e") ( "S" | "s") ( "A" | "a") ( "S" | "s") ( "C" | "c") ":" ( "__@recordmap@___" )? <IDENTIFIER> ( ( <DOT> | <MINUS> ) <IDENTIFIER> )* >
+|
+  < INDEXVALUESDESC_IDENTIFIER: ( "I" | "i") ( "N" | "n") ( "D" | "d") ( "E" | "e") ( "X" | "x") ( "V" | "v") ( "A" | "a") ( "L" | "l") ( "U" | "u") ( "E" | "e") ( "S" | "s") ( "D" | "d") ( "E" | "e") ( "S" | "s") ( "C" | "c") ":" ( "__@recordmap@___" )? <IDENTIFIER> ( ( <DOT> | <MINUS> ) <IDENTIFIER> )* >
+|
+  < BUCKET_IDENTIFIER: <BUCKET> <COLON> <IDENTIFIER>  >
+|
+  < BUCKET_NUMBER_IDENTIFIER: <BUCKET> <COLON> <INTEGER_LITERAL>  >
+|
+  < SCHEMA_IDENTIFIER: "schema:" <IDENTIFIER>  >
+|
+  < #LETTER:
+      [  "A"-"Z",
+         "_",
+         "a"-"z"
+      ]
+  >
+|
+  < #PART_LETTER:
+      [  "0"-"9",
+         "A"-"Z",
+         "_",
+         "a"-"z"
+      ]
+  >
+}
+
+Rid Rid():
+{}
+{
+    (
+	     LOOKAHEAD(4)
+	     (
+	       "#" jjtThis.bucket = PInteger() <COLON> jjtThis.position = PInteger()
+	       { jjtThis.legacy = true; }
+	     )
+    	 |
+    	 LOOKAHEAD(3)
+    	 (
+    	   jjtThis.bucket = PInteger() <COLON> jjtThis.position = PInteger()
+    	   { jjtThis.legacy = true; }
+    	 )
+    	 |
+    	 (
+            <LBRACE>
+            (
+                <RID_ATTR>
+                |
+                <RID_STRING>
+            )
+            <COLON>
+            jjtThis.expression = Expression()
+            <RBRACE>
+            {
+               jjtThis.legacy = false;
+            }
+    	 )
+    )
+    { return jjtThis; }
+}
+
+/** Root productions. */
+Statement parse() :
+{Statement result;}
+{
+  result = Statement() <EOF>
+  { return result; }
+}
+
+List<Statement> parseScript() :
+{
+  List<Statement> result = new ArrayList<Statement>();
+  Statement last;
+}
+{
+    (
+        LOOKAHEAD(StatementSemicolon())
+        last = StatementSemicolon() {result.add(last);}
+        |
+        last = IfStatement() {result.add(last);}
+        |
+        last = ForEachBlock() {result.add(last);}
+        |
+        last = WhileBlock() {result.add(last);}
+        |
+        <SEMICOLON>
+    )*
+
+  <EOF>
+  { return result; }
+}
+
+java.lang.String PString():
+{
+Token token = null;
+}
+{
+    (
+        token = <STRING_LITERAL>
+        |
+        token = <RID_STRING>
+    )
+    { return token.image; }
+}
+
+Identifier Identifier():
+{
+    Token quotedToken = null;
+    Token token = null;
+
+}
+{
+(
+    token = <IDENTIFIER>
+    |
+    token = <IN>
+    |
+    token = <SET>
+    |
+    token = <PUT>
+    |
+    token = <ADD>
+    |
+    token = <REMOVE>
+    |
+    token = <MERGE>
+    |
+    token = <CONTENT>
+    |
+    token = <ORDER>
+    |
+    token = <KEY>
+    |
+    token = <OFFSET>
+    |
+    token = <GROUP>
+    |
+    token = <VALUE>
+    |
+    token = <VALUES>
+    |
+    token = <RECORD>
+    |
+    token = <TO>
+    |
+    token = <LUCENE>
+    |
+    token = <TYPE>
+    |
+    token = <TYPES>
+    |
+    token = <MINDEPTH>
+    |
+    token = <NEAR>
+    |
+    token = <WITHIN>
+    |
+    token = <EXCEPTION>
+    |
+    token = <PROFILE>
+    |
+    token = <STORAGE>
+    |
+    token = <ON>
+    |
+    token = <OFF>
+    |
+    token = <TRUNCATE>
+    |
+    token = <FIND>
+    |
+    token = <REFERENCES>
+    |
+    token = <EXTENDS>
+    |
+    token = <BUCKETS>
+    |
+    token = <ABSTRACT>
+    |
+    token = <ALTER>
+    |
+    token = <NAME>
+    |
+    token = <SUPERTYPE>
+    |
+    token = <SUPERTYPES>
+    |
+    token = <ADDBUCKET>
+    |
+    token = <REMOVEBUCKET>
+    |
+    token = <DROP>
+    |
+    token = <PROPERTY>
+    |
+    token = <FORCE>
+    |
+    token = <SCHEMA>
+    |
+    token = <INDEX>
+    |
+    token = <ENGINE>
+    |
+    token = <REBUILD>
+    |
+    token = <ID>
+    |
+    token = <DATABASE>
+    |
+    token = <OPTIMIZE>
+    |
+    token = <LINK>
+    |
+    token = <INVERSE>
+    |
+    token = <EXPLAIN>
+    |
+    token = <GRANT>
+    |
+    token = <REVOKE>
+    |
+    token = <READ>
+    |
+    token = <EXECUTE>
+    |
+    token = <ALL>
+    |
+    token = <NONE>
+    |
+    token = <FUNCTION>
+    |
+    token = <PARAMETERS>
+    |
+    token = <IDEMPOTENT>
+    |
+    token = <LANGUAGE>
+    |
+    token = <BEGIN>
+    |
+    token = <COMMIT>
+    |
+    token = <ROLLBACK>
+    |
+    token = <IF>
+    |
+    token = <ELSE>
+    |
+    token = <CONTINUE>
+    |
+    token = <FAIL>
+    |
+    token = <ISOLATION>
+    |
+    token = <SLEEP>
+    |
+    token = <CONSOLE>
+    |
+    token = <BLOB>
+    |
+    token = <SHARED>
+    |
+    token = <DEFAULT_>
+    |
+    token = <CACHE>
+    |
+    token = <CYCLE>
+    |
+    token = <NOLIMIT>
+    |
+    token = <NOCYCLE>
+    |
+    token = <START>
+    |
+    token = <OPTIONAL>
+    |
+    token = <COUNT>
+    |
+    token = <HA>
+    |
+    token = <STATUS>
+    |
+    token = <SERVER>
+    |
+    token = <SYNC>
+    |
+    token = <EXISTS>
+    |
+    token = <MOVE>
+    |
+    token = <DEPTH_ALIAS>
+    |
+    token = <PATH_ALIAS>
+    |
+    token = <IDENTIFIED>
+    |
+    token = <RID>
+    |
+    token = <SYSTEM>
+    |
+    quotedToken = <QUOTED_IDENTIFIER>
+) {
+
+    if(token!=null){
+        jjtThis.value = token.image;
+    }else{
+        jjtThis.quoted = true;
+        jjtThis.value = quotedToken.image;
+        jjtThis.value = jjtThis.value.substring(1, jjtThis.value.length() - 1);
+        /*try{
+            jjtThis.value = java.net.URLEncoder.encode(jjtThis.value, null);
+        }catch(Exception e){
+
+        }*/
+    }
+
+    return jjtThis;
+
+
+    }
+}
+
+PInteger PInteger():
+{
+    int sign = 1;
+    Token tokenVal;
+}
+{
+(
+    [ <MINUS> {sign = -1;} ] tokenVal = <INTEGER_LITERAL> {
+        //jjtThis.value = sign * Long.parseLong(tokenVal.image);
+        jjtThis.setValue(sign, tokenVal.image);
+    }
+) { return jjtThis; }
+}
+
+
+
+FloatingPoint FloatingPoint():
+{
+    String stringValue;
+    Token tokenVal;
+}
+{
+    (
+        [ <MINUS> { jjtThis.sign = -1; } ] tokenVal = <FLOATING_POINT_LITERAL> { jjtThis.stringValue = tokenVal.image; }
+    )
+    { return jjtThis; }
+}
+
+PNumber PNumber():
+{ PNumber result; }
+{
+    (
+        LOOKAHEAD( PInteger() )
+        result = PInteger()
+        |
+        LOOKAHEAD( FloatingPoint() )
+        result = FloatingPoint()
+    )
+    { return result; }
+}
+
+Statement Statement():
+{Statement result = null;}
+{
+    result = StatementInternal()
+    [ <SEMICOLON> ]
+    {return result;}
+}
+
+Statement StatementSemicolon():
+{Statement result = null;}
+{
+    result = StatementInternal()
+    <SEMICOLON>
+    {return result;}
+}
+
+Statement StatementInternal():
+{
+    Statement result = null;
+}
+{
+    (
+        LOOKAHEAD(2)
+        (
+            (
+                result = QueryStatement()
+                |
+                LOOKAHEAD(2)
+                result = DeleteStatement()
+                |
+                LOOKAHEAD(2)
+                result = DeleteVertexStatement()
+                |
+                LOOKAHEAD(2)
+                result = DeleteEdgeStatement()
+                |
+                result = InsertStatement()
+                |
+                LOOKAHEAD(4)
+                result = CreateDocumentTypeStatement()
+                |
+                LOOKAHEAD(4)
+                result = CreateVertexTypeStatement()
+                |
+                LOOKAHEAD(4)
+                result = CreateEdgeTypeStatement()
+                |
+                LOOKAHEAD(2)
+                result = CreatePropertyStatement()
+                |
+                LOOKAHEAD(2)
+                result = CreateIndexStatement()
+                |
+                LOOKAHEAD(2)
+                result = CreateBucketStatement()
+                |
+                LOOKAHEAD(CreateVertexStatementNoTarget())
+                result = CreateVertexStatementNoTarget()
+                |
+                LOOKAHEAD(CreateVertexStatement())
+                result = CreateVertexStatement()
+                |
+                LOOKAHEAD(CreateVertexStatementEmpty())
+                result = CreateVertexStatementEmpty()
+                |
+                LOOKAHEAD(CreateVertexStatementEmptyNoTarget())
+                result = CreateVertexStatementEmptyNoTarget()
+                |
+                LOOKAHEAD(CreateEdgeStatement())
+                result = CreateEdgeStatement()
+                |
+                LOOKAHEAD(UpdateEdgeStatement())
+                result = UpdateEdgeStatement()
+                |
+                LOOKAHEAD(UpdateStatement())
+                result = UpdateStatement()
+                |
+                LOOKAHEAD(TruncateTypeStatement())
+                result = TruncateTypeStatement()
+                |
+                LOOKAHEAD(TruncateBucketStatement())
+                result = TruncateBucketStatement()
+                |
+                LOOKAHEAD(TruncateRecordStatement())
+                result = TruncateRecordStatement()
+                |
+                LOOKAHEAD(AlterTypeStatement())
+                result = AlterTypeStatement()
+                |
+                LOOKAHEAD(DropTypeStatement())
+                result = DropTypeStatement()
+                |
+                LOOKAHEAD(AlterPropertyStatement())
+                result = AlterPropertyStatement()
+                |
+                LOOKAHEAD(DropPropertyStatement())
+                result = DropPropertyStatement()
+                |
+                result = RebuildIndexStatement()
+                |
+                LOOKAHEAD(2)
+                result = DropIndexStatement()
+                |
+                LOOKAHEAD(AlterBucketStatement())
+                result = AlterBucketStatement()
+                |
+                LOOKAHEAD(2)
+                result = DropBucketStatement()
+                |
+                LOOKAHEAD(2)
+                result = AlterDatabaseStatement()
+                |
+                result = BeginStatement()
+                |
+                result = CommitStatement()
+                |
+                result = RollbackStatement()
+                |
+                result = ReturnStatement()
+                |
+                result = SleepStatement()
+                |
+                result = IfStatement()
+            )
+        )
+        |
+        result = ExplainStatement()
+        |
+        LOOKAHEAD(ProfileStatement())
+        result = ProfileStatement()
+        |
+        result = LetStatement()
+
+    )
+	{
+	    return result;
+	}
+}
+
+Statement QueryStatement():
+{
+ Statement result;
+}
+{
+    (
+        LOOKAHEAD( SelectStatement() )
+        result = SelectStatement()
+        |
+        result = SelectWithoutTargetStatement()
+        |
+        result = TraverseStatement()
+        |
+        result = MatchStatement()
+    ){ return result; }
+}
+
+SelectWithoutTargetStatement SelectWithoutTargetStatement():
+{}
+{
+    (
+    	<SELECT>
+        jjtThis.projection = Projection()
+    	[ jjtThis.letClause = LetClause() ]
+    	[ jjtThis.unwind = Unwind() ]
+    	(
+			[
+				jjtThis.skip = Skip() [ jjtThis.limit = Limit() ]
+				|
+				jjtThis.limit = Limit() [ jjtThis.skip = Skip() ]
+			]
+		)
+    	[ jjtThis.fetchPlan = FetchPlan() ]
+    	[ jjtThis.timeout = Timeout() ]
+    	/*
+        [ <LOCK>
+            (
+                <RECORD> {jjtThis.lockRecord = "EXCLUSIVE_LOCK";}
+                |
+                <NONE> {jjtThis.lockRecord = "NONE";}
+                |
+                <SHARED> {jjtThis.lockRecord = "SHARED_LOCK";}
+                |
+                <DEFAULT_> {jjtThis.lockRecord = "DEFAULT";}
+            )
+        ]
+        [ <PARALLEL> { jjtThis.parallel = true; } ]
+        [ <NOCACHE> { jjtThis.noCache = true; } ]
+        */
+    )
+    {
+        jjtThis.validate();
+        return jjtThis;
+    }
+}
+
+SelectStatement SelectStatement():
+{}
+{
+    (
+   	    <SELECT>
+        [ jjtThis.projection = Projection() ]
+        <FROM>
+        jjtThis.target = FromClause()
+        [ jjtThis.letClause = LetClause() ]
+        [ <WHERE> jjtThis.whereClause = WhereClause() ]
+        [ jjtThis.groupBy = GroupBy() ]
+        [ jjtThis.orderBy = OrderBy() ]
+        [ jjtThis.unwind = Unwind() ]
+        (
+            [
+                jjtThis.skip = Skip() [ jjtThis.limit = Limit() ]
+                |
+                jjtThis.limit = Limit() [ jjtThis.skip = Skip() ]
+            ]
+        )
+        [ jjtThis.fetchPlan = FetchPlan() ]
+        [ jjtThis.timeout = Timeout() ]
+        /*
+        [ <LOCK>
+            (
+                <RECORD> {jjtThis.lockRecord = "EXCLUSIVE_LOCK";}
+                |
+                <NONE> {jjtThis.lockRecord = "NONE";}
+                |
+                <SHARED> {jjtThis.lockRecord = "SHARED_LOCK";}
+                |
+                <DEFAULT_> {jjtThis.lockRecord = "DEFAULT";}
+            )
+        ]
+        [ <PARALLEL> { jjtThis.parallel = true; } ]
+        [ <NOCACHE> { jjtThis.noCache = true; } ]
+        */
+    )
+    {
+        jjtThis.validate();
+        return jjtThis;
+    }
+}
+
+TraverseStatement TraverseStatement():
+{ TraverseProjectionItem lastProjection;}
+{
+    (
+    	<TRAVERSE>
+    	[
+    	    lastProjection = TraverseProjectionItem() { jjtThis.projections.add(lastProjection); }
+    	    ( <COMMA> lastProjection = TraverseProjectionItem()  { jjtThis.projections.add(lastProjection); } )*
+    	]
+    	<FROM>
+    	jjtThis.target = FromClause()
+    	[ <MAXDEPTH> jjtThis.maxDepth = PInteger() ]
+    	[ <WHILE> jjtThis.whileClause = WhereClause() ]
+        [ jjtThis.limit = Limit() ]
+        [ <STRATEGY>
+            (
+                <DEPTH_FIRST> { jjtThis.strategy = TraverseStatement.Strategy.DEPTH_FIRST; }
+                |
+                <BREADTH_FIRST> { jjtThis.strategy = TraverseStatement.Strategy.BREADTH_FIRST; }
+            )
+        ]
+    )
+    {return jjtThis;}
+}
+
+MatchStatement MatchStatement():
+{
+    MatchExpression lastMatchExpr = null;
+    Expression lastReturn = null;
+    Identifier lastReturnAlias = null;
+    NestedProjection lastNestedProjection = null;
+}
+{
+    (
+        <MATCH>
+        lastMatchExpr = MatchExpression() { jjtThis.matchExpressions.add(lastMatchExpr); }
+        (
+            <COMMA>
+            (
+               lastMatchExpr = MatchExpression() { jjtThis.matchExpressions.add(lastMatchExpr); }
+               |
+               (
+                  <NOT> lastMatchExpr = MatchExpression() { jjtThis.notMatchExpressions.add(lastMatchExpr); }
+               )
+            )
+        )*
+        <RETURN>
+        (
+          LOOKAHEAD(2)
+          (
+              <DISTINCT> { jjtThis.returnDistinct = true; }
+              lastReturn = Expression() {lastReturnAlias = null;}
+              [ lastNestedProjection = NestedProjection() ]
+          )
+          |
+          LOOKAHEAD(Expression())
+          (
+              lastReturn = Expression() {lastReturnAlias = null;}
+              [ lastNestedProjection = NestedProjection() ]
+          )
+        )
+        [ <AS> lastReturnAlias = Identifier() ]
+        {
+            jjtThis.returnAliases.add(lastReturnAlias);
+            jjtThis.returnItems.add(lastReturn);
+            jjtThis.returnNestedProjections.add(lastNestedProjection);
+            lastNestedProjection = null;
+        }
+        (
+            <COMMA>
+            lastReturn = Expression() {lastReturnAlias = null;}
+            [ lastNestedProjection = NestedProjection() ]
+            [ <AS> lastReturnAlias = Identifier() ]
+            {
+                jjtThis.returnAliases.add(lastReturnAlias);
+                jjtThis.returnItems.add(lastReturn);
+                jjtThis.returnNestedProjections.add(lastNestedProjection);
+                lastNestedProjection = null;
+            }
+        )*
+        [ jjtThis.groupBy = GroupBy() ]
+        [ jjtThis.orderBy = OrderBy() ]
+        [ jjtThis.unwind = Unwind() ]
+        [ jjtThis.skip = Skip() ]
+        [ jjtThis.limit = Limit() ]
+    ){ return jjtThis; }
+}
+
+DeleteStatement DeleteStatement():
+{}
+{
+(
+	<DELETE>
+	<FROM>
+	jjtThis.fromClause = FromClause()
+	[ <RETURN> <BEFORE> { jjtThis.returnBefore = true; } ]
+	[ <WHERE> jjtThis.whereClause = WhereClause() ]
+	[ jjtThis.limit = Limit() ]
+	[ <UNSAFE> { jjtThis.unsafe = true; }]
+) {return jjtThis;}
+}
+
+DeleteVertexStatement DeleteVertexStatement():
+{}
+{
+(
+	<DELETE>
+	<VERTEX>
+	[ <FROM> {jjtThis.from = true;} ]
+	jjtThis.fromClause = FromClause()
+	[ <RETURN> <BEFORE> { jjtThis.returnBefore = true; } ]
+	[ <WHERE> jjtThis.whereClause = WhereClause() ]
+    [ jjtThis.limit = Limit() ]
+    [ jjtThis.batch = Batch() ]
+) {return jjtThis;}
+}
+
+DeleteEdgeStatement DeleteEdgeStatement():
+{ DeleteEdgeStatement result; }
+{
+    (
+        LOOKAHEAD(DeleteEdgeByRidStatement())
+        result = DeleteEdgeByRidStatement()
+        |
+        LOOKAHEAD(DeleteEdgeFromToStatement())
+        result = DeleteEdgeFromToStatement()
+        |
+        LOOKAHEAD(DeleteEdgeVToStatement())
+        result = DeleteEdgeVToStatement()
+        |
+        LOOKAHEAD(DeleteEdgeToStatement())
+        result = DeleteEdgeToStatement()
+        |
+        LOOKAHEAD(DeleteEdgeWhereStatement())
+        result = DeleteEdgeWhereStatement()
+    )
+    {return result;}
+}
+
+
+DeleteEdgeStatement DeleteEdgeByRidStatement():
+{
+    Rid lastRid;
+}
+{
+(
+	<DELETE>
+	<EDGE>
+	(
+	    jjtThis.rid = Rid()
+	    |
+	    (
+
+	        <LBRACKET>
+            [
+                lastRid = Rid()
+                {
+                    jjtThis.rids = new ArrayList();
+                    jjtThis.rids.add(lastRid);
+                }
+                (
+                    <COMMA>
+                    lastRid = Rid() { jjtThis.rids.add(lastRid); }
+                )*
+            ] <RBRACKET>
+	    )
+	)
+	[ jjtThis.batch = Batch() ]
+
+
+) {return jjtThis;}
+}
+
+
+
+DeleteEdgeStatement DeleteEdgeFromToStatement():
+{
+    Rid lastRid;
+}
+{
+(
+	<DELETE>
+	<EDGE>
+
+	[ jjtThis.typeName = Identifier() ]
+
+
+        <FROM>
+        jjtThis.leftExpression = Expression()
+        [
+            <TO>
+            jjtThis.rightExpression = Expression()
+        ]
+
+
+
+    [ <WHERE> jjtThis.whereClause = WhereClause() ]
+    [ jjtThis.limit = Limit() ]
+    [ jjtThis.batch = Batch() ]
+
+) {return jjtThis;}
+}
+
+
+DeleteEdgeStatement DeleteEdgeToStatement():
+{
+    Rid lastRid;
+}
+{
+    (
+        <DELETE>
+        <EDGE>
+
+        jjtThis.typeName = Identifier()
+
+        <TO>
+        jjtThis.rightExpression = Expression()
+
+
+        [ <WHERE> jjtThis.whereClause = WhereClause() ]
+        [ jjtThis.limit = Limit() ]
+        [ jjtThis.batch = Batch() ]
+
+	)
+     {return jjtThis;}
+}
+
+DeleteEdgeStatement DeleteEdgeVToStatement():
+{
+    Rid lastRid;
+}
+{
+    (
+        <DELETE>
+        <EDGE>
+
+        <TO>
+        jjtThis.rightExpression = Expression()
+
+
+        [ <WHERE> jjtThis.whereClause = WhereClause() ]
+        [ jjtThis.limit = Limit() ]
+        [ jjtThis.batch = Batch() ]
+
+	)
+     {return jjtThis;}
+}
+
+DeleteEdgeStatement DeleteEdgeWhereStatement():
+{
+    Rid lastRid;
+}
+{
+    (
+        <DELETE>
+        <EDGE>
+
+        [ jjtThis.typeName = Identifier() ]
+
+        [ <WHERE> jjtThis.whereClause = WhereClause() ]
+        [ jjtThis.limit = Limit() ]
+        [ jjtThis.batch = Batch() ]
+	)
+     {return jjtThis;}
+}
+
+UpdateEdgeStatement UpdateEdgeStatement():
+{ UpdateOperations lastOperations;
+ Rid lastRid;}
+{
+  (
+	<UPDATE>
+	<EDGE>
+	jjtThis.target = FromClause()
+	( lastOperations = UpdateOperations() { jjtThis.operations.add(lastOperations); } )+
+	[ <UPSERT> { jjtThis.upsert = true; } ]
+	[
+		<RETURN>
+		( <BEFORE> { jjtThis.returnBefore = true; } | <AFTER> { jjtThis.returnAfter = true; } )
+		[
+			jjtThis.returnProjection = Projection()
+		]
+	]
+	[ <WHERE> jjtThis.whereClause = WhereClause() ]
+	/*
+	[ <LOCK>
+        (
+            <RECORD> {jjtThis.lockRecord = "EXCLUSIVE_LOCK";}
+            |
+            <NONE> {jjtThis.lockRecord = "NONE";}
+            |
+            <SHARED> {jjtThis.lockRecord = "SHARED_LOCK";}
+            |
+            <DEFAULT_> {jjtThis.lockRecord = "DEFAULT";}
+        )
+    ]
+    */
+	[ jjtThis.limit = Limit() ]
+	[ jjtThis.timeout = Timeout() ]
+  )
+  {return jjtThis;}
+}
+
+UpdateStatement UpdateStatement():
+{ UpdateOperations lastOperations;
+ Rid lastRid;}
+{
+    (
+    	<UPDATE>
+    	jjtThis.target = FromClause()
+    	( lastOperations = UpdateOperations() { jjtThis.operations.add(lastOperations); } )+
+    	[ <UPSERT> { jjtThis.upsert = true; } ]
+    	[
+    	    <RETURN>
+    	    ( <BEFORE> { jjtThis.returnBefore = true; } | <AFTER> { jjtThis.returnAfter = true; } | <COUNT> { jjtThis.returnCount = true; })
+    	    [
+    	        jjtThis.returnProjection = Projection()
+    	    ]
+    	]
+    	[ <WHERE> jjtThis.whereClause = WhereClause() ]
+    	/*
+    	[ <LOCK>
+            (
+                <RECORD> {jjtThis.lockRecord = "EXCLUSIVE_LOCK";}
+                |
+                <NONE> {jjtThis.lockRecord = "NONE";}
+                |
+                <SHARED> {jjtThis.lockRecord = "SHARED_LOCK";}
+                |
+                <DEFAULT_> {jjtThis.lockRecord = "DEFAULT";}
+            )
+        ]
+        */
+    	[ jjtThis.limit = Limit() ]
+    	[ jjtThis.timeout = Timeout() ]
+    )
+    {return jjtThis;}
+}
+
+UpdateOperations UpdateOperations():
+{
+    UpdateItem lastItem;
+    UpdatePutItem lastPutItem;
+    UpdateIncrementItem lastIncrementItem;
+    UpdateRemoveItem lastRemoveItem;
+}
+{
+    (
+        (
+            <SET> { jjtThis.type = UpdateOperations.TYPE_SET; }
+            lastItem = UpdateItem() { jjtThis.updateItems.add(lastItem); }
+            (
+                <COMMA> lastItem = UpdateItem() { jjtThis.updateItems.add(lastItem); }
+            )*
+        )
+        |
+        (
+            <PUT> { jjtThis.type = UpdateOperations.TYPE_PUT; }
+            lastPutItem = UpdatePutItem()  { jjtThis.updatePutItems.add(lastPutItem); }
+            (
+                <COMMA> lastPutItem = UpdatePutItem()  { jjtThis.updatePutItems.add(lastPutItem); }
+            )*
+        )
+        |
+        (
+            (
+                <MERGE> { jjtThis.type = UpdateOperations.TYPE_MERGE; }
+                |
+                <CONTENT> { jjtThis.type = UpdateOperations.TYPE_CONTENT; }
+            )
+            jjtThis.json = Json()
+        )
+        |
+        (
+            (
+                <INCREMENT> { jjtThis.type = UpdateOperations.TYPE_INCREMENT; }
+                |
+                <ADD> { jjtThis.type = UpdateOperations.TYPE_ADD; }
+            )
+            lastIncrementItem = UpdateIncrementItem() { jjtThis.updateIncrementItems.add(lastIncrementItem); }
+            (
+                <COMMA> lastIncrementItem = UpdateIncrementItem() { jjtThis.updateIncrementItems.add(lastIncrementItem); }
+            )*
+         )
+         |
+         (
+            <REMOVE> { jjtThis.type = UpdateOperations.TYPE_REMOVE; }
+            lastRemoveItem = UpdateRemoveItem()  { jjtThis.updateRemoveItems.add(lastRemoveItem); }
+            (
+                <COMMA>
+                lastRemoveItem = UpdateRemoveItem()  { jjtThis.updateRemoveItems.add(lastRemoveItem); }
+            )*
+         )
+    )
+    { return jjtThis; }
+}
+
+
+UpdateItem UpdateItem():
+{}
+{
+(
+	jjtThis.left = Identifier()
+	[ jjtThis.leftModifier = Modifier() ]
+	(
+	    <EQ> { jjtThis.operator = UpdateItem.OPERATOR_EQ; }
+	    |
+	    <PLUSASSIGN> { jjtThis.operator = UpdateItem.OPERATOR_PLUSASSIGN; }
+        |
+        <MINUSASSIGN> { jjtThis.operator = UpdateItem.OPERATOR_MINUSASSIGN; }
+        |
+        <STARASSIGN> { jjtThis.operator = UpdateItem.OPERATOR_STARASSIGN; }
+        |
+        <SLASHASSIGN> { jjtThis.operator = UpdateItem.OPERATOR_SLASHASSIGN; }
+	)
+	jjtThis.right = Expression()
+) { return jjtThis; }
+}
+
+UpdateIncrementItem UpdateIncrementItem():
+{}
+{
+    (
+	    jjtThis.left = Identifier()
+	    [ jjtThis.leftModifier = Modifier() ]
+	    <EQ>
+	    jjtThis.right = Expression()
+	)
+	{ return jjtThis; }
+}
+
+UpdateRemoveItem UpdateRemoveItem():
+{}
+{
+    (
+	    jjtThis.left = Expression() [ <EQ> jjtThis.right = Expression() ]
+	)
+    { return jjtThis; }
+}
+
+UpdatePutItem UpdatePutItem():
+{}
+{
+    (
+	    jjtThis.left = Identifier() <EQ> jjtThis.key = Expression() <COMMA> jjtThis.value = Expression()
+    )
+    { return jjtThis; }
+}
+
+
+UpdateAddItem UpdateAddItem():
+{}
+{
+    (
+    	jjtThis.left = Identifier() <EQ>
+    	jjtThis.right = Expression()
+    )
+    { return jjtThis; }
+}
+
+
+InsertStatement InsertStatement():
+{}
+{
+(
+	<INSERT>
+	<INTO>
+	(
+	    LOOKAHEAD(IndexIdentifier())
+    	jjtThis.targetIndex = IndexIdentifier()
+    	|
+	    jjtThis.targetType = Identifier() [<BUCKET> jjtThis.targetBucketName = Identifier()]
+	    |
+	    jjtThis.targetBucket = Bucket()
+
+	)
+    [ LOOKAHEAD(InsertBody()) jjtThis.insertBody = InsertBody() ]
+    [ <RETURN> jjtThis.returnStatement = Projection() ]
+    [
+        [ <FROM> { jjtThis.selectWithFrom = true; } ]
+        (
+             (
+                 LOOKAHEAD( SelectStatement() )
+                 jjtThis.selectStatement = SelectStatement()
+                 |
+                 jjtThis.selectStatement = SelectWithoutTargetStatement()
+             )
+             |
+             LOOKAHEAD(2)
+            (
+                <LPAREN>
+                (
+                    LOOKAHEAD( SelectStatement() )
+                    jjtThis.selectStatement = SelectStatement()
+                    |
+                    jjtThis.selectStatement = SelectWithoutTargetStatement()
+                )
+                { jjtThis.selectInParentheses = true; }
+                <RPAREN>
+            )
+        )
+    ]
+    [ <UNSAFE> { jjtThis.unsafe = true; }]
+) {return jjtThis;}
+}
+
+
+InsertBody InsertBody():
+{
+    Identifier lastIdentifier;
+    Expression lastExpression;
+    List<Expression> lastExpressionList;
+}
+{
+    (
+        (
+            LOOKAHEAD(3)
+            (
+                <LPAREN>
+                lastIdentifier = Identifier()
+                {
+                    jjtThis.identifierList = new ArrayList<Identifier>();
+                    jjtThis.identifierList.add(lastIdentifier);
+                }
+                (
+                    <COMMA>
+                    lastIdentifier = Identifier() { jjtThis.identifierList.add(lastIdentifier); }
+                )*
+                <RPAREN>
+                <VALUES>
+                <LPAREN>
+                {
+                    jjtThis.valueExpressions = new ArrayList<List<Expression>>();
+                    lastExpressionList = new ArrayList<Expression>();
+                    jjtThis.valueExpressions.add(lastExpressionList);
+                }
+                lastExpression = Expression() { lastExpressionList.add(lastExpression); }
+                (
+                    <COMMA>
+                    lastExpression = Expression() { lastExpressionList.add(lastExpression); }
+                )*
+                <RPAREN>
+                (
+                    <COMMA>
+                    <LPAREN>
+                    {
+                        lastExpressionList = new ArrayList<Expression>();
+                        jjtThis.valueExpressions.add(lastExpressionList);
+                    }
+                    lastExpression = Expression() { lastExpressionList.add(lastExpression); }
+                    (
+                        <COMMA>
+                        lastExpression = Expression() { lastExpressionList.add(lastExpression); }
+                    )*
+                    <RPAREN>
+                )*
+            )
+            |
+            LOOKAHEAD(3)
+            (
+                <SET>
+                {
+                    jjtThis.setExpressions = new ArrayList<InsertSetExpression>();
+                    InsertSetExpression lastSetExpr = new InsertSetExpression();
+                    jjtThis.setExpressions.add(lastSetExpr);
+                }
+                lastSetExpr.left = Identifier() <EQ> lastSetExpr.right = Expression()
+
+                (
+                    <COMMA>
+                    {
+                         lastSetExpr = new InsertSetExpression();
+                         jjtThis.setExpressions.add(lastSetExpr);
+                    }
+                    lastSetExpr.left = Identifier() <EQ> lastSetExpr.right = Expression()
+                )*
+            )
+            |
+            ( <CONTENT>
+               (
+                   jjtThis.content = Json()
+                   |
+                   jjtThis.contentInputParam = InputParameter()
+               )
+            )
+         )
+    )
+    { return jjtThis; }
+}
+
+CreateVertexStatementEmptyNoTarget CreateVertexStatementEmptyNoTarget():
+{}
+{
+	<CREATE>
+	<VERTEX>
+	{return jjtThis;}
+}
+
+CreateVertexStatementEmpty CreateVertexStatementEmpty():
+{}
+{
+
+	<CREATE>
+	<VERTEX>
+	jjtThis.targetType = Identifier()
+    [
+        <BUCKET>
+        jjtThis.targetBucketName = Identifier()
+    ]
+    {return jjtThis;}
+}
+
+
+CreateVertexStatement CreateVertexStatement():
+{}
+{
+(
+	<CREATE>
+	<VERTEX>
+	(
+	    LOOKAHEAD( Identifier() )
+	    (
+	        jjtThis.targetType = Identifier()
+	        [
+	            <BUCKET>
+	            jjtThis.targetBucketName = Identifier()
+	        ]
+	    )
+	    |
+	    LOOKAHEAD( Bucket() )
+	    jjtThis.targetBucket = Bucket()
+	)
+	[ <RETURN> jjtThis.returnStatement = Projection() ]
+	[ LOOKAHEAD(InsertBody()) jjtThis.insertBody = InsertBody() ]
+) {return jjtThis;}
+}
+
+CreateVertexStatementNoTarget CreateVertexStatementNoTarget():
+{}
+{
+(
+	<CREATE>
+	<VERTEX>
+	jjtThis.insertBody = InsertBody()
+) {return jjtThis;}
+}
+
+
+CreateEdgeStatement CreateEdgeStatement():
+{
+    Rid lastRid;
+}
+{
+(
+	<CREATE>
+	<EDGE>
+	[ jjtThis.targetType = Identifier() [<BUCKET> jjtThis.targetBucketName = Identifier()]]
+	<FROM>
+	(
+	    jjtThis.leftExpression = Expression()
+	)
+	<TO>
+	(
+	    jjtThis.rightExpression = Expression()
+	)
+    [ jjtThis.body = InsertBody() ]
+    [ jjtThis.retry = Retry() ]
+    [ jjtThis.wait = Wait() ]
+    [ jjtThis.batch = Batch() ]
+) {return jjtThis;}
+}
+
+
+InputParameter InputParameter():
+{ InputParameter result; }
+{
+    (
+	    result = PositionalParameter()
+	    |
+	    result = NamedParameter()
+    )
+    { return result; }
+}
+
+PositionalParameter PositionalParameter():
+{}
+{
+	<HOOK>
+	{
+	    jjtThis.paramNumber = inputParamCount;
+	    inputParamCount++;
+	    return jjtThis;
+	}
+}
+
+NamedParameter NamedParameter():
+{
+Identifier identifierParam;
+Token token;
+}
+{
+    (
+	    <COLON>
+	    (
+	    	identifierParam = Identifier() { jjtThis.paramName = identifierParam.toString(); }
+	    	|
+	    	token = <SKIP2> {jjtThis.paramName = token.image;}
+	    	|
+            token = <LIMIT> {jjtThis.paramName = token.image;}
+            |
+            token = <FROM> {jjtThis.paramName = token.image;}
+	    )
+	)
+	{
+	 jjtThis.paramNumber = inputParamCount;
+     inputParamCount++;
+	 return jjtThis;
+	}
+}
+
+Projection Projection():
+{
+    java.util.List<ProjectionItem> items = new java.util.ArrayList<ProjectionItem>();
+    ProjectionItem lastItem = null;
+}
+{
+    (
+        LOOKAHEAD(ProjectionItem())
+        (
+            lastItem = ProjectionItem() {items.add(lastItem);} ( "," lastItem = ProjectionItem() {items.add(lastItem);} )*
+        )
+        |
+        (
+            <DISTINCT> { jjtThis.distinct = true; }
+            (
+                lastItem = ProjectionItem() {items.add(lastItem);} ( "," lastItem = ProjectionItem() {items.add(lastItem);} )*
+            )
+        )
+    )
+	{
+	    jjtThis.items = items;
+	    return jjtThis;
+	}
+}
+
+ProjectionItem ProjectionItem():
+{}
+{
+(
+    jjtThis.expression = Expression()
+    [ jjtThis.nestedProjection = NestedProjection() ]
+    [ <AS> jjtThis.alias = Alias() ]
+){return jjtThis;}
+}
+
+NestedProjection NestedProjection():
+{
+   NestedProjectionItem lastItem;
+}
+{
+  (
+    <COLON> <LBRACE>
+    lastItem = NestedProjectionItem() {
+       if(lastItem.exclude) {
+         jjtThis.excludeItems.add(lastItem);
+       } else if(lastItem.star) {
+         jjtThis.starItem = lastItem;
+       } else {
+         jjtThis.includeItems.add(lastItem);
+       }
+    }
+    (
+      <COMMA>
+       lastItem = NestedProjectionItem() {
+            if(lastItem.exclude) {
+              jjtThis.excludeItems.add(lastItem);
+            } else if(lastItem.star) {
+              jjtThis.starItem = lastItem;
+            } else {
+              jjtThis.includeItems.add(lastItem);
+            }
+       }
+    )*
+    <RBRACE>
+  ) { return jjtThis;}
+}
+
+NestedProjectionItem NestedProjectionItem():
+{}
+{
+  (
+    (
+      LOOKAHEAD(1)
+      <STAR> { jjtThis.star = true; }
+      |
+      (
+        [<BANG> {jjtThis.exclude = true;} ]
+        jjtThis.expression = Expression()
+        [<STAR> {jjtThis.rightWildcard = true;} ]
+      )
+    )
+    [jjtThis.expansion = NestedProjection() ]
+    [<AS> jjtThis.alias = Identifier()]
+  ) {return jjtThis;}
+}
+
+
+
+ArraySelector ArraySelector():
+{}
+{
+    (
+    	LOOKAHEAD( Rid() )
+    	jjtThis.rid = Rid()
+    	|
+    	LOOKAHEAD( InputParameter() )
+        jjtThis.inputParam = InputParameter()
+        |
+        LOOKAHEAD( Expression() )
+    	jjtThis.expression = Expression()
+    )
+    { return jjtThis; }
+}
+
+ArrayNumberSelector ArrayNumberSelector():
+{ Token tokenVal; }
+{
+    (
+    	LOOKAHEAD( InputParameter() )
+        jjtThis.inputValue = InputParameter()
+        |
+        LOOKAHEAD( PInteger() )
+        tokenVal = <INTEGER_LITERAL> { jjtThis.integer = Integer.parseInt(tokenVal.image); }
+        /*
+        |
+        LOOKAHEAD( MathExpression() )
+    	jjtThis.expressionValue = MathExpression()
+    	*/
+
+    )
+    { return jjtThis; }
+}
+
+ArraySingleValuesSelector ArraySingleValuesSelector():
+{ ArraySelector lastSelector; }
+{
+    (
+        lastSelector = ArraySelector() { jjtThis.items.add(lastSelector); }
+        ( <COMMA> lastSelector = ArraySelector() { jjtThis.items.add(lastSelector); } ) *
+    )
+    { return jjtThis; }
+}
+
+ArrayRangeSelector ArrayRangeSelector():
+{ Token token; }
+{
+    (
+
+        (
+            token = <INTEGER_RANGE>
+            {
+                String img = token.image;
+                String[] splitted = img.split("\\.\\.");
+                jjtThis.from = Integer.parseInt(splitted[0], 10);
+                jjtThis.to = Integer.parseInt(splitted[1], 10);
+                jjtThis.newRange = true;
+            }
+        )
+        |
+        (
+            token = <ELLIPSIS_INTEGER_RANGE>
+            {
+                String img2 = token.image;
+                String[] splitted2 = img2.split("\\.\\.\\.");
+                jjtThis.from = Integer.parseInt(splitted2[0], 10);
+                jjtThis.to = Integer.parseInt(splitted2[1], 10);
+                jjtThis.newRange = true;
+                jjtThis.included = true;
+            }
+        )
+        |
+        (
+            jjtThis.fromSelector = ArrayNumberSelector()
+            (
+              (<RANGE> {jjtThis.newRange = true;})
+              |
+              (<ELLIPSIS> {jjtThis.newRange = true; jjtThis.included = true;})
+            )
+            jjtThis.toSelector = ArrayNumberSelector()
+        )
+    )
+    { return jjtThis; }
+}
+
+
+Identifier Alias():
+{ Identifier identifier; }
+{
+	identifier = Identifier()
+	{return identifier;}
+}
+
+RecordAttribute RecordAttribute():
+{ Token token; }
+{
+    (
+	    token = <RECORD_ATTRIBUTE> { jjtThis.name = token.image; }
+	)
+	{ return jjtThis; }
+}
+
+FunctionCall FunctionCall():
+{
+    Expression lastExpression = null;
+}
+{
+    (
+    	(
+    	    (  jjtThis.name = Identifier() )
+    	    |
+    	    ( <DISTINCT> { jjtThis.name = new Identifier("distinct"); } )
+    	)
+    	<LPAREN>
+    	(
+            [
+            lastExpression = Expression() {jjtThis.params.add(lastExpression);} ( <COMMA> lastExpression = Expression() {jjtThis.params.add(lastExpression);})*
+            ]
+
+    	)
+    	<RPAREN>
+    )
+    { return jjtThis; }
+}
+
+MethodCall MethodCall():
+{ Expression lastExpression; }
+{
+    (
+        <DOT> jjtThis.methodName = Identifier()
+        <LPAREN> [
+            lastExpression = Expression() { jjtThis.params.add(lastExpression); }
+            ( <COMMA> lastExpression = Expression() { jjtThis.params.add(lastExpression); } )*
+        ] <RPAREN>
+    )
+    { return jjtThis; }
+}
+
+LevelZeroIdentifier LevelZeroIdentifier():
+{}
+{
+    (
+        LOOKAHEAD( FunctionCall() )
+        jjtThis.functionCall = FunctionCall()
+        |
+        <THIS> { jjtThis.self = true; }
+        |
+        LOOKAHEAD( PCollection() )
+        jjtThis.collection = PCollection()
+    )
+    { return jjtThis; }
+}
+
+SuffixIdentifier SuffixIdentifier():
+{}
+{
+    (
+        LOOKAHEAD( Identifier() )
+        jjtThis.identifier = Identifier()
+        |
+        LOOKAHEAD( RecordAttribute() )
+        jjtThis.recordAttribute = RecordAttribute()
+        |
+        ( <STAR> { jjtThis.star = true; } )
+    )
+    { return jjtThis; }
+}
+
+
+BaseIdentifier BaseIdentifier():
+{}
+{
+    (
+        LOOKAHEAD( LevelZeroIdentifier() )
+        jjtThis.levelZero = LevelZeroIdentifier()
+        |
+        LOOKAHEAD( SuffixIdentifier() )
+        jjtThis.suffix = SuffixIdentifier()
+    )
+    { return jjtThis; }
+}
+
+Modifier Modifier():
+{}
+{
+    (
+            (
+                (
+                    <LBRACKET> { jjtThis.squareBrackets = true; }
+                    (
+                        LOOKAHEAD( RightBinaryCondition() )
+                        jjtThis.rightBinaryCondition = RightBinaryCondition()
+                        |
+                        LOOKAHEAD( ArrayRangeSelector() )
+                        jjtThis.arrayRange = ArrayRangeSelector()
+                        |
+                        LOOKAHEAD( OrBlock() )
+                        jjtThis.condition = OrBlock()
+                        |
+                        LOOKAHEAD( ArraySingleValuesSelector() )
+                        jjtThis.arraySingleValues = ArraySingleValuesSelector()
+
+                    )
+                    <RBRACKET>
+                )
+           	    |
+           	    LOOKAHEAD( MethodCall() )
+       	        jjtThis.methodCall = MethodCall()
+           	    |
+                <DOT> jjtThis.suffix = SuffixIdentifier()
+            )
+            [
+                LOOKAHEAD( Modifier() )
+                jjtThis.next = Modifier()
+            ]
+        )
+    { return jjtThis; }
+}
+
+
+Expression Expression():
+{Token token; }
+{
+    (
+        LOOKAHEAD( ArrayConcatExpression() )
+        jjtThis.arrayConcatExpression = ArrayConcatExpression() { jjtThis.value = jjtThis.arrayConcatExpression; }
+        |
+        <NULL> {jjtThis.isNull = true; jjtThis.value = null;}
+        |
+        <TRUE> { jjtThis.booleanValue = true; jjtThis.value = true; }
+        |
+        <FALSE> { jjtThis.booleanValue = false; jjtThis.value = false; }
+        |
+        LOOKAHEAD( Rid() )
+        jjtThis.rid = Rid() { jjtThis.value = jjtThis.rid; }
+        |
+        LOOKAHEAD( MathExpression() )
+        jjtThis.mathExpression = MathExpression() { jjtThis.value = jjtThis.mathExpression; }
+        |
+        jjtThis.json = Json() {jjtThis.value = jjtThis.json; }
+
+	)
+	{ return jjtThis; }
+}
+
+ArrayConcatExpression ArrayConcatExpression():
+{
+    ArrayConcatExpressionElement sub;
+    jjtThis.setChildExpressions(new java.util.ArrayList());
+}
+{
+    (
+	    sub = ArrayConcatExpressionElement() { jjtThis.getChildExpressions().add(sub); }
+	    (
+            <SC_OR>
+	        sub = ArrayConcatExpressionElement() { jjtThis.getChildExpressions().add(sub); }
+	    )+
+	)
+	{
+	    return jjtThis;
+	}
+}
+
+ArrayConcatExpressionElement ArrayConcatExpressionElement():
+{Token token; }
+{
+    (
+        <NULL> {jjtThis.isNull = true; jjtThis.value = null;}
+        |
+        <TRUE> { jjtThis.booleanValue = true; jjtThis.value = true; }
+        |
+        <FALSE> { jjtThis.booleanValue = false; jjtThis.value = false; }
+        |
+        LOOKAHEAD( Rid() )
+        jjtThis.rid = Rid() { jjtThis.value = jjtThis.rid; }
+        |
+        LOOKAHEAD( MathExpression() )
+        jjtThis.mathExpression = MathExpression() { jjtThis.value = jjtThis.mathExpression; }
+        |
+        jjtThis.json = Json() {jjtThis.value = jjtThis.json; }
+
+	)
+	{ return jjtThis; }
+}
+
+
+MathExpression MathExpression():
+{
+    MathExpression sub;
+    jjtThis.setChildExpressions(new java.util.ArrayList());
+}
+{
+    (
+	    sub = FirstLevelExpression() { jjtThis.getChildExpressions().add(sub); }
+	    (
+	        LOOKAHEAD( 2 )
+	        (
+                <STAR> { jjtThis.operators.add( MathExpression.Operator.STAR); }
+                |
+                <SLASH> { jjtThis.operators.add( MathExpression.Operator.SLASH); }
+                |
+                <REM> { jjtThis.operators.add( MathExpression.Operator.REM); }
+                |
+	            <PLUS> { jjtThis.operators.add( MathExpression.Operator.PLUS); }
+	            |
+	            <MINUS> { jjtThis.operators.add(MathExpression.Operator.MINUS); }
+	            |
+	            <LSHIFT> { jjtThis.operators.add(MathExpression.Operator.LSHIFT); }
+	            |
+	            <RSHIFT> { jjtThis.operators.add(MathExpression.Operator.RSHIFT); }
+	            |
+	            <RUNSIGNEDSHIFT> { jjtThis.operators.add(MathExpression.Operator.RUNSIGNEDSHIFT); }
+	            |
+	            <BIT_AND> { jjtThis.operators.add(MathExpression.Operator.BIT_AND); }
+	            |
+	            <BIT_OR> { jjtThis.operators.add(MathExpression.Operator.BIT_OR); }
+	            |
+	            <XOR> { jjtThis.operators.add(MathExpression.Operator.XOR); }
+	        )
+	        sub = FirstLevelExpression() { jjtThis.getChildExpressions().add(sub); }
+	    )*
+	)
+	{
+	    if(jjtThis.getChildExpressions().size() != 1){
+	        return jjtThis;
+	    }else{
+	        return jjtThis.getChildExpressions().get(0);
+	    }
+	}
+}
+
+MathExpression FirstLevelExpression():
+{ MathExpression expr;}
+{
+    (
+        LOOKAHEAD( ParenthesisExpression() )
+        expr = ParenthesisExpression()
+        |
+        LOOKAHEAD( BaseExpression() )
+        expr = BaseExpression()
+    )
+    {return expr;}
+}
+
+MathExpression ParenthesisExpression():
+{}
+{
+    (
+	    <LPAREN>
+	    (
+	        LOOKAHEAD(2)
+	        jjtThis.statement = QueryStatement()
+	        |
+	        jjtThis.expression = Expression()
+	        |
+            jjtThis.statement = InsertStatement()
+        )
+	    <RPAREN>
+	)
+	{return jjtThis;}
+}
+
+BaseExpression BaseExpression():
+{}
+{
+    (
+        jjtThis.number = PNumber()
+        |
+        (
+    	    jjtThis.identifier = BaseIdentifier()
+    	    [
+    	        LOOKAHEAD( Modifier() )
+    	        jjtThis.modifier = Modifier()
+    	    ]
+    	)
+    	|
+    	(
+    	    jjtThis.inputParam = InputParameter()
+    	    [
+    	        LOOKAHEAD( Modifier() )
+    	        jjtThis.modifier = Modifier()
+    	    ]
+    	)
+    	|
+        (
+            (
+                jjtThis.string = PString()
+                |
+                token = <CHARACTER_LITERAL> { jjtThis.string = token.image; }
+            )
+            [
+                LOOKAHEAD( Modifier() )
+                jjtThis.modifier = Modifier()
+            ]
+        )
+
+	)
+	{return jjtThis;}
+}
+
+
+
+FromClause FromClause():
+{}
+{
+	jjtThis.item = FromItem()
+	{ return jjtThis; }
+}
+
+LetClause LetClause():
+{
+    LetItem lastItem;
+}
+{
+    (
+        <LET> lastItem = LetItem() { jjtThis.items.add(lastItem); } ( <COMMA> lastItem = LetItem() { jjtThis.items.add(lastItem); } )*
+    )
+    { return jjtThis; }
+}
+
+LetItem LetItem():
+{ }
+{
+    (
+    	jjtThis.varName = Identifier() <EQ>
+    	(
+    	    LOOKAHEAD( Expression() )
+    	    jjtThis.expression = Expression()
+    	    |
+    	    (
+    	        <LPAREN>
+    	        (
+    	            jjtThis.query = QueryStatement()
+    	        )
+    	        <RPAREN>
+    	    )
+    	)
+    )
+    { return jjtThis; }
+}
+
+
+FromItem FromItem():
+{
+    jjtThis.rids = new java.util.ArrayList();
+    jjtThis.inputParams = new java.util.ArrayList();
+    Rid lastRid;
+    InputParameter lastParam;
+}
+{
+    (
+    	lastRid = Rid() { jjtThis.rids.add(lastRid); }
+    	|
+    	LOOKAHEAD(2)
+    	(
+    	    <LBRACKET> lastRid = Rid() { jjtThis.rids.add(lastRid); }
+    	    (
+    	        <COMMA> lastRid = Rid() { jjtThis.rids.add(lastRid); }
+    	    )* <RBRACKET>
+    	)
+    	|
+    	(
+            <LBRACKET>
+            (
+                lastParam = PositionalParameter() { jjtThis.inputParams.add(lastParam); }
+                |
+                lastParam = NamedParameter() { jjtThis.inputParams.add(lastParam); }
+            )
+            (
+                <COMMA>
+                lastParam = PositionalParameter() { jjtThis.inputParams.add(lastParam); }
+                |
+                lastParam = NamedParameter() { jjtThis.inputParams.add(lastParam); }
+            )* <RBRACKET>
+        )
+    	|
+    	jjtThis.bucket = Bucket()
+    	|
+    	jjtThis.bucketList = BucketList()
+    	|
+    	LOOKAHEAD(IndexIdentifier())
+    	jjtThis.index = IndexIdentifier()
+    	|
+        jjtThis.schema = SchemaIdentifier()
+    	|
+    	(
+    	    <LPAREN> jjtThis.statement = QueryStatement() <RPAREN>
+    	    [
+                LOOKAHEAD( Modifier() )
+                jjtThis.modifier = Modifier()
+            ]
+    	)
+    	|
+    	jjtThis.inputParam = InputParameter()
+    	|
+        LOOKAHEAD(2)
+        (
+            jjtThis.functionCall = FunctionCall()
+            [
+                LOOKAHEAD( Modifier() )
+                jjtThis.modifier = Modifier()
+            ]
+        )
+    	|
+    	(
+            jjtThis.identifier = Identifier()
+            [
+                LOOKAHEAD( Modifier() )
+                jjtThis.modifier = Modifier()
+            ]
+        )
+
+    )
+    { return jjtThis; }
+}
+
+Bucket Bucket():
+{ Token cName; }
+{
+    (
+	    cName = <BUCKET_IDENTIFIER> {jjtThis.bucketName = cName.image.split(":")[1];}
+		|
+	    cName = <BUCKET_NUMBER_IDENTIFIER> {jjtThis.bucketNumber = Integer.parseInt(cName.image.split(":")[1]);}
+
+	)
+    { return jjtThis; }
+}
+
+BucketList BucketList():
+{ Identifier lastIdentifier; }
+{
+    (
+	     <BUCKET> <COLON> <LBRACKET>
+	     [
+	        lastIdentifier = Identifier() { jjtThis.buckets.add(lastIdentifier); }
+	        ( <COMMA> lastIdentifier = Identifier() { jjtThis.buckets.add(lastIdentifier); } )*
+	     ]
+	     <RBRACKET>
+	)
+    { return jjtThis; }
+}
+
+SchemaIdentifier SchemaIdentifier():
+{ Token mdName; }
+{
+    (
+	    mdName = <SCHEMA_IDENTIFIER> {jjtThis.name = mdName.image.split(":")[1];}
+	)
+    { return jjtThis; }
+}
+
+IndexName IndexName():
+{
+    StringBuilder builder = new StringBuilder();
+    Token token;
+    Identifier lastIdentifier;
+}
+{
+    (
+      ( "__@recordmap@___" { builder.append("__@recordmap@___"); } )?
+
+      lastIdentifier = Identifier() { builder.append(lastIdentifier.getValue()); }
+      (
+        (
+            <DOT> { builder.append("."); }
+            |
+            <MINUS> { builder.append("-"); }
+        )
+        lastIdentifier = Identifier() { builder.append(lastIdentifier.getValue()); }
+      )*
+    )
+    {
+        jjtThis.value = builder.toString();
+        return jjtThis;
+    }
+}
+
+
+IndexIdentifier IndexIdentifier():
+{
+    Token token;
+}
+{
+    (
+        (
+            <INDEX_COLON>
+            jjtThis.indexName = IndexName() { jjtThis.type = IndexIdentifier.Type.INDEX; }
+        )
+        |
+        (
+            (
+                token = <INDEXVALUES_IDENTIFIER> { jjtThis.type = IndexIdentifier.Type.VALUES; }
+                |
+                token = <INDEXVALUESASC_IDENTIFIER> { jjtThis.type = IndexIdentifier.Type.VALUESASC; }
+                |
+                token = <INDEXVALUESDESC_IDENTIFIER> { jjtThis.type = IndexIdentifier.Type.VALUESDESC; }
+            )
+            {
+                jjtThis.indexNameString = token.image.split(":")[1];
+            }
+        )
+    )
+    { return jjtThis; }
+}
+
+WhereClause WhereClause():
+{}
+{
+	jjtThis.baseExpression = OrBlock()
+	{return jjtThis;}
+}
+
+OrBlock OrBlock():
+{ AndBlock lastAnd = null; }
+{
+    (
+    	lastAnd = AndBlock() { jjtThis.getSubBlocks().add(lastAnd); }
+    	( <OR> lastAnd = AndBlock() { jjtThis.getSubBlocks().add(lastAnd); } )*
+    )
+    { return jjtThis; }
+}
+
+AndBlock AndBlock():
+{NotBlock lastNot = null; }
+{
+(
+    lastNot = NotBlock() { jjtThis.getSubBlocks().add(lastNot); }
+    ( <AND> lastNot = NotBlock() { jjtThis.getSubBlocks().add(lastNot); } )*
+) { return jjtThis; }
+}
+
+NotBlock NotBlock():
+{}
+{
+(
+    (
+        <NOT> {jjtThis.negate = true;}
+        (
+            LOOKAHEAD( ConditionBlock() )
+            jjtThis.sub = ConditionBlock()
+            |
+            LOOKAHEAD( ParenthesisBlock() )
+            jjtThis.sub = ParenthesisBlock()
+        )
+    )
+    |
+    (
+        LOOKAHEAD( ConditionBlock() )
+        jjtThis.sub = ConditionBlock()
+        |
+        LOOKAHEAD( ParenthesisBlock() )
+        jjtThis.sub = ParenthesisBlock()
+    )
+) { return jjtThis; }
+}
+
+BooleanExpression ParenthesisBlock():
+{}
+{
+    (
+    	<LPAREN> jjtThis.subElement = OrBlock() <RPAREN>
+    )
+    { return jjtThis; }
+}
+
+BooleanExpression ConditionBlock():
+{BooleanExpression result = null;}
+{
+(
+	LOOKAHEAD( IsNotNullCondition() )
+	result = IsNotNullCondition()
+	|
+	LOOKAHEAD( IsNullCondition() )
+	result = IsNullCondition()
+	|
+	LOOKAHEAD( IsNotDefinedCondition() )
+	result = IsNotDefinedCondition()
+	|
+	LOOKAHEAD( IsDefinedCondition() )
+	result = IsDefinedCondition()
+	|
+	LOOKAHEAD( InCondition() )
+    result = InCondition()
+    |
+    LOOKAHEAD( NotInCondition() )
+    result = NotInCondition()
+	|
+	LOOKAHEAD( BinaryCondition() )
+	result = BinaryCondition()
+	|
+	LOOKAHEAD( BetweenCondition() )
+	result = BetweenCondition()
+	|
+	LOOKAHEAD( ContainsCondition() )
+	result = ContainsCondition()
+	|
+	LOOKAHEAD( ContainsValueCondition() )
+	result = ContainsValueCondition()
+	|
+	LOOKAHEAD( ContainsAllCondition() )
+    result = ContainsAllCondition()
+    |
+    LOOKAHEAD( ContainsAnyCondition() )
+    result = ContainsAnyCondition()
+    |
+    LOOKAHEAD( ContainsTextCondition() )
+	result = ContainsTextCondition()
+	|
+	LOOKAHEAD( MatchesCondition() )
+	result = MatchesCondition()
+	|
+	LOOKAHEAD( IndexMatchCondition() )
+	result = IndexMatchCondition()
+	|
+    LOOKAHEAD( InstanceofCondition() )
+    result = InstanceofCondition()
+    |
+    <TRUE> { result = BooleanExpression.TRUE;}
+    |
+    <FALSE> { result = BooleanExpression.FALSE;}
+){ return result; }
+}
+
+BinaryCompareOperator CompareOperator():
+{  BinaryCompareOperator result;}
+{
+(
+		result = EqualsCompareOperator()
+      | result = LtOperator()
+      | result = GtOperator()
+      | result = NeOperator()
+      | result = NeqOperator()
+      | result = GeOperator()
+      | result = LeOperator()
+      | result = LikeOperator()
+      | result = ContainsKeyOperator()
+      | result = LuceneOperator()
+      | result = NearOperator()
+      | result = WithinOperator()
+      | result = ScAndOperator()
+
+){return result;}
+}
+
+
+LtOperator LtOperator():
+{}
+{
+(
+	<LT>
+){return jjtThis;}
+}
+
+GtOperator GtOperator():
+{}
+{
+(
+	<GT>
+){return jjtThis;}
+}
+
+NeOperator NeOperator():
+{}
+{
+(
+	<NE>
+){return jjtThis;}
+}
+
+NeqOperator NeqOperator():
+{}
+{
+(
+	<NEQ>
+){return jjtThis;}
+}
+
+GeOperator GeOperator():
+{}
+{
+(
+	<GE>
+){return jjtThis;}
+}
+
+LeOperator LeOperator():
+{}
+{
+(
+	<LE>
+){return jjtThis;}
+}
+
+LikeOperator LikeOperator():
+{}
+{
+(
+	<LIKE>
+){return jjtThis;}
+}
+
+LuceneOperator LuceneOperator():
+{}
+{
+(
+	<LUCENE>
+){
+    return jjtThis;
+}
+}
+
+NearOperator NearOperator():
+{}
+{
+(
+	<NEAR>
+){return jjtThis;}
+}
+
+WithinOperator WithinOperator():
+{}
+{
+(
+	<WITHIN>
+){return jjtThis;}
+}
+
+ScAndOperator ScAndOperator():
+{}
+{
+(
+	<SC_AND>
+){return jjtThis;}
+}
+
+ContainsKeyOperator ContainsKeyOperator():
+{}
+{
+(
+	<CONTAINSKEY>
+){return jjtThis;}
+}
+
+ContainsValueOperator ContainsValueOperator():
+{}
+{
+(
+	<CONTAINSVALUE>
+){return jjtThis;}
+}
+
+EqualsCompareOperator EqualsCompareOperator():
+{}
+{
+(
+	<EQ> { jjtThis.doubleEquals = false; }
+	|
+	<EQEQ> { jjtThis.doubleEquals = true; }
+){return jjtThis;}
+}
+
+
+RightBinaryCondition RightBinaryCondition():
+{}
+{
+  (
+       (
+          jjtThis.operator = CompareOperator()
+          jjtThis.right = Expression()
+       )
+       |
+       (
+         [ <NOT> { jjtThis.not = true; } ]
+         jjtThis.inOperator = InOperator()
+         jjtThis.right = Expression()
+       )
+  )
+  { return jjtThis; }
+}
+
+BooleanExpression BinaryCondition():
+{}
+{
+(
+ 	jjtThis.left = Expression()
+ 	jjtThis.operator = CompareOperator()
+ 	jjtThis.right = Expression()
+){return jjtThis;}
+}
+
+BooleanExpression ContainsValueCondition():
+{}
+{
+(
+    jjtThis.left = Expression()
+    jjtThis.operator = ContainsValueOperator()
+    (
+        LOOKAHEAD( 3 )
+        <LPAREN> jjtThis.condition = OrBlock() <RPAREN>
+        |
+        LOOKAHEAD( Expression() )
+        jjtThis.expression = Expression()
+    )
+) { return jjtThis;}
+}
+
+BooleanExpression InstanceofCondition():
+{
+    Token token;
+}
+{
+    (
+        jjtThis.left = Expression() <INSTANCEOF> (
+		   jjtThis.right = Identifier()
+		   |
+		   jjtThis.rightString = PString()
+		   |
+		   token = <CHARACTER_LITERAL> { jjtThis.rightString = token.image; }
+		)
+    )
+    {return jjtThis;}
+}
+
+BooleanExpression IndexMatchCondition():
+{
+    Token token;
+    jjtThis.leftExpressions = new ArrayList();
+    Expression lastExpression;
+}
+{
+    (
+     	<KEY>
+     	(
+     	    (
+                jjtThis.operator = CompareOperator() <LBRACKET>
+                [
+                    lastExpression = Expression() { jjtThis.leftExpressions.add(lastExpression); }
+                    ( <COMMA>
+                        lastExpression = Expression() { jjtThis.leftExpressions.add(lastExpression); }
+                    )*
+                ]
+                <RBRACKET>
+     	    )
+     	    |
+     	    (
+                <BETWEEN> {jjtThis.between = true;} <LBRACKET>
+                [
+                    lastExpression = Expression() { jjtThis.leftExpressions.add(lastExpression); }
+                    (
+                        <COMMA>
+                        lastExpression = Expression() { jjtThis.leftExpressions.add(lastExpression); }
+                    )*
+                ]
+                <RBRACKET> <AND> <LBRACKET>
+                [
+                    lastExpression = Expression() { jjtThis.rightExpressions.add(lastExpression); }
+                    (
+                        <COMMA>
+                        lastExpression = Expression() { jjtThis.rightExpressions.add(lastExpression); }
+                    )*
+                ] <RBRACKET>
+            )
+     	)
+    )
+    {return jjtThis;}
+}
+
+BooleanExpression BetweenCondition():
+{}
+{
+(
+	jjtThis.first = Expression() <BETWEEN>
+	jjtThis.second = Expression() <AND>
+	jjtThis.third = Expression()
+){return jjtThis;}
+}
+
+BooleanExpression IsNullCondition():
+{}
+{
+    (
+    	jjtThis.expression = Expression() <IS> <NULL>
+    )
+    {return jjtThis;}
+}
+
+BooleanExpression IsNotNullCondition():
+{}
+{
+(
+	jjtThis.expression = Expression() <IS> <NOT> <NULL>
+){return jjtThis;}
+}
+
+BooleanExpression IsDefinedCondition():
+{}
+{
+(
+	jjtThis.expression = Expression() <IS> <DEFINED>
+){return jjtThis;}
+}
+
+BooleanExpression IsNotDefinedCondition():
+{}
+{
+(
+	jjtThis.expression = Expression() <IS> <NOT> <DEFINED>
+){return jjtThis;}
+}
+
+BooleanExpression ContainsCondition():
+{}
+{
+    (
+    	jjtThis.left = Expression() <CONTAINS>
+    	(
+    	    LOOKAHEAD( 3 )
+    	    ( <LPAREN> jjtThis.condition = OrBlock() <RPAREN> )
+    	    |
+    	    LOOKAHEAD( Expression() )
+    	    jjtThis.right = Expression()
+    	)
+    )
+    {return jjtThis;}
+}
+
+InOperator InOperator():
+{}
+{
+    <IN>
+    {return jjtThis;}
+}
+
+BooleanExpression InCondition():
+{
+    Expression lastExpression;
+}
+{
+(
+	jjtThis.left = Expression()
+	jjtThis.operator = InOperator()
+	(
+	    LOOKAHEAD(2)
+	    ( <LPAREN>
+	      (
+	         LOOKAHEAD(SelectStatement())(jjtThis.rightStatement = SelectStatement())
+	         |
+	         jjtThis.rightStatement = SelectWithoutTargetStatement()
+	      )
+	      <RPAREN>
+	    )
+	    |
+	    LOOKAHEAD(2)
+	    ( <LPAREN> jjtThis.rightParam = InputParameter() <RPAREN>)
+	    |
+        jjtThis.rightMathExpression = MathExpression()
+	)
+){return jjtThis;}
+}
+
+BooleanExpression NotInCondition():
+{
+    Expression lastExpression;
+}
+{
+    (
+    	jjtThis.left = Expression() <NOT> InOperator()
+    	(
+            LOOKAHEAD(2)
+            ( <LPAREN>
+              (
+                 LOOKAHEAD(SelectStatement())(jjtThis.rightStatement = SelectStatement())
+                 |
+                 jjtThis.rightStatement = SelectWithoutTargetStatement()
+              )
+              <RPAREN>
+            )
+            |
+            LOOKAHEAD(2)
+            ( <LPAREN> jjtThis.rightParam = InputParameter() <RPAREN>)
+            |
+            jjtThis.rightMathExpression = MathExpression()
+        )
+    )
+    {return jjtThis;}
+}
+
+BooleanExpression ContainsAllCondition():
+{}
+{
+    (
+    	jjtThis.left = Expression()
+    	<CONTAINSALL>
+    	(
+        	LOOKAHEAD( 3 )
+        	( <LPAREN> jjtThis.rightBlock = OrBlock() <RPAREN> )
+        	|
+        	LOOKAHEAD( Expression() )
+        	jjtThis.right = Expression()
+        )
+    )
+    {return jjtThis;}
+}
+
+BooleanExpression ContainsAnyCondition():
+{}
+{
+    (
+    	jjtThis.left = Expression()
+    	<CONTAINSANY>
+    	(
+        	LOOKAHEAD( 3 )
+        	( <LPAREN> jjtThis.rightBlock = OrBlock() <RPAREN> )
+        	|
+        	LOOKAHEAD( Expression() )
+        	jjtThis.right = Expression()
+        )
+    )
+    {return jjtThis;}
+}
+
+BooleanExpression ContainsTextCondition():
+{}
+{
+    (
+    	jjtThis.left = Expression() <CONTAINSTEXT> jjtThis.right = Expression()
+    )
+    {return jjtThis;}
+}
+
+BooleanExpression MatchesCondition():
+{Token token;}
+{
+    (
+    	jjtThis.expression = Expression() <MATCHES>
+    	(
+    	    LOOKAHEAD(Expression())
+    	    ( jjtThis.rightExpression = Expression() )
+    	    |
+    	    ( jjtThis.right = PString() )
+    	    |
+    	    ( token = <CHARACTER_LITERAL> {jjtThis.right = token.image;} )
+    	    |
+            ( jjtThis.rightParam = InputParameter() )
+    	)
+    )
+
+    {return jjtThis;}
+}
+
+OrderBy OrderBy():
+{
+    jjtThis.items = new java.util.ArrayList();
+    OrderByItem lastItem;
+    Identifier lastIdentifier;
+    Modifier lastModifier;
+    Rid lastRid;
+    Token lastToken;
+}
+{
+(
+	<ORDER> <BY>
+    (
+        (
+            (
+                {
+                    lastItem = new OrderByItem();
+                    jjtThis.items.add(lastItem);
+                }
+                (
+                    (
+                        lastIdentifier = Identifier() { lastItem.alias = lastIdentifier.getStringValue(); }
+                        [ lastModifier = Modifier()  { lastItem.modifier = lastModifier; } ]
+                    )
+                    |
+                    lastItem.rid = Rid()
+                    |
+                    lastToken = <RECORD_ATTRIBUTE> { lastItem.recordAttr = lastToken.image; }
+                )
+            )
+            [ <DESC> { lastItem.type = OrderByItem.DESC; }| <ASC>  { lastItem.type = OrderByItem.ASC; }]
+        )
+        |
+        (
+            <LPAREN>
+            (
+                {
+                    lastItem = new OrderByItem();
+                    jjtThis.items.add(lastItem);
+                }
+                (
+                    (
+                        lastIdentifier = Identifier() { lastItem.alias = lastIdentifier.getStringValue(); }
+                        [ lastModifier = Modifier()  { lastItem.modifier = lastModifier; } ]
+                    )
+                    |
+                    lastItem.rid = Rid()
+                    |
+                    lastToken = <RECORD_ATTRIBUTE> { lastItem.recordAttr = lastToken.image; }
+                )
+            )
+            [ <DESC> { lastItem.type = OrderByItem.DESC; }| <ASC>  { lastItem.type = OrderByItem.ASC; }]
+            <RPAREN>
+        )
+	)
+	(
+	    ","
+	    (
+	        (
+                (
+                    {
+                        lastItem = new OrderByItem();
+                        jjtThis.items.add(lastItem);
+                    }
+                    (
+                        (
+                            lastIdentifier = Identifier() { lastItem.alias = lastIdentifier.toString(); }
+                            [ lastModifier = Modifier()  { lastItem.modifier = lastModifier; } ]
+                        )
+                        |
+                        lastItem.rid = Rid()
+                        |
+                        lastToken = <RECORD_ATTRIBUTE> { lastItem.recordAttr = lastToken.image; }
+                    )
+                )
+                [ <DESC> { lastItem.type = OrderByItem.DESC; }| <ASC>  { lastItem.type = OrderByItem.ASC; }]
+            )
+            |
+            (
+                <LPAREN>
+                (
+                    {
+                        lastItem = new OrderByItem();
+                        jjtThis.items.add(lastItem);
+                    }
+                    (
+                        (
+                            lastIdentifier = Identifier() { lastItem.alias = lastIdentifier.toString(); }
+                            [ lastModifier = Modifier()  { lastItem.modifier = lastModifier; } ]
+                        )
+                        |
+                        lastItem.rid = Rid()
+                        |
+                        lastToken = <RECORD_ATTRIBUTE> { lastItem.recordAttr = lastToken.image; }
+                    )
+                )
+                [ <DESC> { lastItem.type = OrderByItem.DESC; }| <ASC>  { lastItem.type = OrderByItem.ASC; }]
+                <RPAREN>
+            )
+        )
+	)*
+) {return jjtThis;}
+}
+
+GroupBy GroupBy():
+{ Expression lastExpression; }
+{
+(
+	<GROUP> <BY> lastExpression = Expression() { jjtThis.items.add(lastExpression); }
+	(
+	    ","
+	    lastExpression = Expression() { jjtThis.items.add(lastExpression); }
+	)*
+) {return jjtThis;}
+}
+
+Unwind Unwind():
+{ Identifier lastIdentifier; }
+{
+(
+	<UNWIND> lastIdentifier = Identifier() { jjtThis.items.add(lastIdentifier); }
+	(
+	    ","
+	    lastIdentifier = Identifier() { jjtThis.items.add(lastIdentifier); }
+	)*
+) {return jjtThis;}
+}
+
+
+Limit Limit():
+{}
+{
+    (
+    	<LIMIT>
+    	(
+            jjtThis.num  = PInteger()
+            |
+            jjtThis.inputParam = InputParameter()
+        )
+    )
+    { return jjtThis; }
+}
+
+Skip Skip():
+{ }
+{
+    (
+        (
+            <SKIP2>
+            (
+                jjtThis.num  = PInteger()
+                |
+                jjtThis.inputParam = InputParameter()
+            )
+        )
+    	|
+    	(
+    	    <OFFSET>
+    	    (
+                jjtThis.num  = PInteger()
+                |
+                jjtThis.inputParam = InputParameter()
+            )
+        )
+    ) {return jjtThis;}
+}
+
+Batch Batch():
+{}
+{
+    (
+    	<BATCH>
+    	(
+            jjtThis.num  = PInteger()
+            |
+            jjtThis.inputParam = InputParameter()
+        )
+    )
+    { return jjtThis; }
+}
+
+Timeout Timeout():
+{ PInteger val; }
+{
+    <TIMEOUT>
+
+    (
+	    val = PInteger() { jjtThis.val = val.getValue(); }
+	    [
+	        ( <RETURN> { jjtThis.failureStrategy = Timeout.RETURN;} )
+	        |
+	        ( <EXCEPTION> { jjtThis.failureStrategy = Timeout.EXCEPTION;} )
+	    ]
+	)
+	{ return jjtThis; }
+}
+
+
+java.lang.Number Wait():
+{ PInteger val; }
+{
+    (
+	    <WAIT> val = PInteger()
+	)
+	{ return val.getValue(); }
+}
+
+
+java.lang.Number Retry():
+{ PInteger val; }
+{
+    (
+	    <RETRY> val = PInteger()
+	)
+	{ return val.getValue(); }
+}
+
+
+
+
+
+
+
+PCollection PCollection():
+{
+    Expression lastExpression;
+}
+{
+    (
+
+        <LBRACKET>
+        [
+            lastExpression = Expression() { jjtThis.expressions.add(lastExpression); }
+            (
+                <COMMA>
+                lastExpression = Expression() { jjtThis.expressions.add(lastExpression); }
+            )*
+        ]
+        <RBRACKET>
+    )
+    { return jjtThis; }
+}
+
+
+
+FetchPlan FetchPlan():
+{ FetchPlanItem lastItem; }
+{
+    (
+        <FETCHPLAN> lastItem = FetchPlanItem() { jjtThis.items.add(lastItem); }
+        ( lastItem = FetchPlanItem() { jjtThis.items.add(lastItem); } )*
+    )
+    { return jjtThis; }
+}
+
+FetchPlanItem FetchPlanItem():
+{ Identifier lastIdentifier;
+  boolean lastStarred = false;
+}
+{
+    (
+        (
+            <STAR> { jjtThis.star = true; }
+            |
+            [
+                <LBRACKET>
+                (
+                    jjtThis.leftDepth = PInteger()
+                    |
+                    <STAR> { jjtThis.leftStar = true; }
+                )
+                <RBRACKET>
+            ]
+            lastIdentifier = Identifier() { lastStarred = false; } [<STAR> { lastStarred = true; }]
+            {
+                String field = lastIdentifier.getValue();
+                if(lastStarred){
+                    field += "*";
+                }
+                jjtThis.fieldChain.add(field);
+            }
+            (
+                <DOT> lastIdentifier = Identifier()  { lastStarred = false; } [<STAR> { lastStarred = true; } ]
+                 {
+                     field = lastIdentifier.getValue();
+                     if(lastStarred){
+                         field += "*";
+                     }
+                     jjtThis.fieldChain.add(field);
+                 }
+            )*
+        )
+        <COLON> jjtThis.rightDepth = PInteger()
+    )
+    { return jjtThis; }
+}
+
+
+
+TraverseProjectionItem TraverseProjectionItem():
+{}
+{
+    (
+        jjtThis.base = BaseIdentifier()
+        [ LOOKAHEAD( Modifier() ) jjtThis.modifier = Modifier() ]
+    )
+    { return jjtThis; }
+}
+
+Json Json():
+{
+    JsonItem lastItem;
+    Token token;
+}
+{
+    (
+        <LBRACE>
+        [
+            { lastItem = new JsonItem(); }
+            (
+                lastItem.leftIdentifier = Identifier()
+                |
+                token = <RECORD_ATTRIBUTE> {lastItem.leftString = token.image; }
+                |
+                ( lastItem.leftString = PString() { lastItem.leftString = lastItem.leftString.substring(1, lastItem.leftString.length() - 1); } )
+                |
+                token = <CHARACTER_LITERAL> { lastItem.leftString = token.image.substring(1, token.image.length() - 1); }
+            )
+            <COLON>
+            lastItem.right = Expression() { jjtThis.items.add(lastItem); }
+            (
+                <COMMA>
+                { lastItem = new JsonItem(); }
+                (
+                    lastItem.leftIdentifier = Identifier()
+                    |
+                    token = <RECORD_ATTRIBUTE> {lastItem.leftString = token.image; }
+                    |
+                    ( lastItem.leftString = PString() { lastItem.leftString = lastItem.leftString.substring(1, lastItem.leftString.length() - 1); } )
+                    |
+                    token = <CHARACTER_LITERAL> { lastItem.leftString = token.image.substring(1, token.image.length() - 1); }
+                )
+                <COLON>
+                lastItem.right = Expression() { jjtThis.items.add(lastItem); }
+            )*
+        ]
+        <RBRACE>
+    )
+    {return jjtThis;}
+}
+
+
+
+MatchExpression MatchExpression():
+{ MatchPathItem nextItem = null; }
+{
+    (
+        jjtThis.origin = MatchFilter()
+        (
+            (
+                LOOKAHEAD(3)
+                nextItem = MatchPathItem()
+                |
+                LOOKAHEAD(3)
+                nextItem = MultiMatchPathItemArrows()
+                |
+                LOOKAHEAD(3)
+                nextItem = MultiMatchPathItem()
+                |
+                LOOKAHEAD(OutPathItem())
+                nextItem = OutPathItem()
+                |
+                nextItem = InPathItem()
+                |
+                LOOKAHEAD(BothPathItem())
+                nextItem = BothPathItem()
+                |
+                nextItem = FieldMatchPathItem()
+            )
+            { jjtThis.items.add(nextItem); }
+        )*
+    ) { return jjtThis; }
+}
+
+
+MatchPathItem MatchPathItem():
+{}
+{
+    (
+        jjtThis.method = MethodCall()
+        [ jjtThis.filter = MatchFilter() ]
+    ){ return jjtThis; }
+}
+
+MatchPathItem FieldMatchPathItem():
+{}
+{
+    (
+        <DOT>
+        jjtThis.field = Identifier()
+        [ jjtThis.filter = MatchFilter() ]
+    ){ return jjtThis; }
+}
+
+MatchPathItem MatchPathItemFirst():
+{}
+{
+    (
+        jjtThis.function = FunctionCall()
+        [ jjtThis.filter = MatchFilter() ]
+    ){ return jjtThis; }
+}
+
+MatchPathItem MultiMatchPathItem():
+{ MatchPathItem nextItem = null; }
+{
+    (
+        <DOT>
+        <LPAREN>
+        (
+            nextItem = MatchPathItemFirst() { jjtThis.items.add(nextItem); }
+        )
+        (
+            LOOKAHEAD(MatchPathItem())
+            nextItem = MatchPathItem() { jjtThis.items.add(nextItem); }
+        )*
+        <RPAREN>
+        [ jjtThis.filter = MatchFilter() ]
+    ){ return jjtThis; }
+}
+
+MatchPathItem MultiMatchPathItemArrows():
+{
+    MatchPathItem prevItem = null;
+    MatchPathItem nextItem = null;
+}
+{
+    (
+        <DOT>
+        <LPAREN>
+        (
+            (
+                LOOKAHEAD( OutPathItemOpt() )
+                nextItem = OutPathItemOpt()  { jjtThis.items.add(nextItem); }
+                |
+                LOOKAHEAD( InPathItemOpt() )
+                nextItem = InPathItemOpt()  { jjtThis.items.add(nextItem); }
+                |
+                LOOKAHEAD( BothPathItemOpt() )
+                nextItem = BothPathItemOpt()  { jjtThis.items.add(nextItem); }
+            ){
+                if(prevItem !=null && prevItem.filter == null){
+                    throw new QueryParsingException("MATCH sub-pattern with no square brackets");
+                }
+                prevItem = nextItem;
+            }
+        )+
+        <RPAREN>
+        [ jjtThis.filter = MatchFilter() ]
+    ){ return jjtThis; }
+}
+
+MatchFilter MatchFilter():
+{ MatchFilterItem lastItem = null; }
+{
+    (
+        <LBRACE>
+            [
+                lastItem = MatchFilterItem() { jjtThis.items.add(lastItem); }
+                (
+                    <COMMA>
+                    lastItem = MatchFilterItem() { jjtThis.items.add(lastItem); }
+                )*
+            ]
+        <RBRACE>
+    ) { return jjtThis; }
+}
+
+MatchFilterItem MatchFilterItem():
+{Token lastToken;}
+{
+    (
+        (
+            <TYPE> <COLON> jjtThis.typeName = Expression()
+        )
+        |
+        (
+            <TYPES> <COLON> jjtThis.typeNames = Expression()
+        )
+        |
+        (
+            <BUCKET> <COLON>
+            (
+               jjtThis.bucketName = Identifier()
+               |
+               jjtThis.bucketId = PInteger()
+            )
+        )
+        |
+        (
+            (
+                lastToken = <BUCKET_IDENTIFIER> {jjtThis.bucketName = new Identifier(lastToken.image.split(":")[1]);}
+                |
+                lastToken = <BUCKET_NUMBER_IDENTIFIER> {jjtThis.bucketId = new PInteger(-1); jjtThis.bucketId.setValue(Integer.parseInt(lastToken.image.split(":")[1]));}
+            )
+        )
+        |
+        (
+            <RID> <COLON> jjtThis.rid = Rid()
+        )
+        |
+        (
+            <AS> <COLON> jjtThis.alias = Identifier()
+        )
+        |
+        (
+            <WHERE> <COLON> <LPAREN>
+            (
+                jjtThis.filter = WhereClause()
+            )
+            <RPAREN>
+        )
+        |
+        (
+            <WHILE> <COLON> <LPAREN>
+            (
+                jjtThis.whileCondition = WhereClause()
+            )
+            <RPAREN>
+        )
+        |
+        (
+            <MAXDEPTH> <COLON> jjtThis.maxDepth = PInteger()
+        )
+        |
+        (
+            <OPTIONAL> <COLON>
+            (
+                <TRUE> { jjtThis.optional = true; }
+                |
+                <FALSE> { jjtThis.optional = false; }
+            )
+        )
+        |
+        (
+              <DEPTH_ALIAS> <COLON> jjtThis.depthAlias = Identifier()
+        )
+        |
+        (
+              <PATH_ALIAS> <COLON> jjtThis.pathAlias = Identifier()
+        )
+    )
+    { return jjtThis; }
+}
+
+MatchPathItem OutPathItem():
+{ Identifier edgeName = null; }
+{
+
+        (
+            (
+                <MINUS>
+                [edgeName = Identifier()]
+                <MINUS>
+            )
+            |
+            <DECR>
+        )
+        <GT>
+        jjtThis.filter = MatchFilter()
+
+    {
+     jjtThis.method = new MethodCall(-1);
+     jjtThis.method.methodName = new Identifier(-1);
+     jjtThis.method.methodName.value = "out";
+     if (edgeName != null) {
+         Expression exp = new Expression(-1);
+         BaseExpression sub = new BaseExpression(edgeName.getStringValue());
+         exp.mathExpression = sub;
+         jjtThis.method.params.add(exp);
+     }
+     return jjtThis;
+    }
+}
+
+MatchPathItem InPathItem():
+{ Identifier edgeName = null; }
+{
+
+        <LT>
+        (
+            (
+                <MINUS>
+                [edgeName = Identifier()]
+                <MINUS>
+            )
+            |
+            <DECR>
+        )
+        jjtThis.filter = MatchFilter()
+
+    {
+     jjtThis.method = new MethodCall(-1);
+     jjtThis.method.methodName = new Identifier(-1);
+     jjtThis.method.methodName.value = "in";
+     if (edgeName != null) {
+         Expression exp = new Expression(-1);
+         BaseExpression sub = new BaseExpression(edgeName.getStringValue());
+         exp.mathExpression = sub;
+         jjtThis.method.params.add(exp);
+     }
+     return jjtThis;
+    }
+}
+
+MatchPathItem BothPathItem():
+{ Identifier edgeName = null; }
+{
+
+        (
+            (
+                <MINUS>
+                [edgeName = Identifier()]
+                <MINUS>
+            )
+            |
+            <DECR>
+        )
+        jjtThis.filter = MatchFilter()
+
+    {
+     jjtThis.method = new MethodCall(-1);
+     jjtThis.method.methodName = new Identifier(-1);
+     jjtThis.method.methodName.value = "both";
+     if (edgeName != null) {
+         Expression exp = new Expression(-1);
+         BaseExpression sub = new BaseExpression(edgeName.getStringValue());
+         exp.mathExpression = sub;
+         jjtThis.method.params.add(exp);
+     }
+     return jjtThis;
+    }
+}
+
+
+MatchPathItem OutPathItemOpt():
+{ Identifier edgeName = null; }
+{
+
+        (
+            (
+                <MINUS>
+                [edgeName = Identifier()]
+                <MINUS>
+            )
+            |
+            <DECR>
+        )
+        <GT>
+        [jjtThis.filter = MatchFilter()]
+
+    {
+     jjtThis.method = new MethodCall(-1);
+     jjtThis.method.methodName = new Identifier(-1);
+     jjtThis.method.methodName.value = "out";
+     if (edgeName != null) {
+         Expression exp = new Expression(-1);
+         BaseExpression sub = new BaseExpression(edgeName.getStringValue());
+         exp.mathExpression = sub;
+         jjtThis.method.params.add(exp);
+     }
+     return jjtThis;
+    }
+}
+
+MatchPathItem InPathItemOpt():
+{ Identifier edgeName = null; }
+{
+
+        <LT>
+        (
+            (
+                <MINUS>
+                [edgeName = Identifier()]
+                <MINUS>
+            )
+            |
+            <DECR>
+        )
+        [jjtThis.filter = MatchFilter()]
+
+    {
+     jjtThis.method = new MethodCall(-1);
+     jjtThis.method.methodName = new Identifier(-1);
+     jjtThis.method.methodName.value = "in";
+     if(edgeName!=null){
+         Expression exp = new Expression(-1);
+         BaseExpression sub = new BaseExpression(edgeName.getStringValue());
+         exp.mathExpression = sub;
+         jjtThis.method.params.add(exp);
+     }
+     return jjtThis;
+    }
+}
+
+MatchPathItem BothPathItemOpt():
+{ Identifier edgeName = null; }
+{
+
+        (
+            (
+                <MINUS>
+                [edgeName = Identifier()]
+                <MINUS>
+            )
+            |
+            <DECR>
+        )
+        [jjtThis.filter = MatchFilter()]
+
+    {
+     jjtThis.method = new MethodCall(-1);
+     jjtThis.method.methodName = new Identifier(-1);
+     jjtThis.method.methodName.value = "both";
+     if (edgeName != null) {
+         Expression exp = new Expression(-1);
+         BaseExpression sub = new BaseExpression(edgeName.getStringValue());
+         exp.mathExpression = sub;
+         jjtThis.method.params.add(exp);
+     }
+     return jjtThis;
+    }
+}
+
+TruncateTypeStatement TruncateTypeStatement():
+{}
+{
+	<TRUNCATE> <TYPE>
+	jjtThis.typeName = Identifier()
+	[ <POLYMORPHIC> {jjtThis.polymorphic = true;} ]
+	[ <UNSAFE> {jjtThis.unsafe = true;} ]
+	{ return jjtThis; }
+}
+
+TruncateBucketStatement TruncateBucketStatement():
+{}
+{
+	<TRUNCATE> <BUCKET>
+	(
+		jjtThis.bucketName = Identifier()
+		|
+		jjtThis.bucketNumber = PInteger()
+	)
+	[ <UNSAFE> {jjtThis.unsafe = true;} ]
+	{ return jjtThis; }
+}
+
+TruncateRecordStatement TruncateRecordStatement():
+{ Rid lastRecord; }
+{
+	<TRUNCATE> <RECORD>
+	(
+		jjtThis.record = Rid()
+		|
+		(
+			<LBRACKET> { jjtThis.records = new ArrayList<Rid>(); }
+			[
+				lastRecord = Rid() { jjtThis.records.add(lastRecord); }
+				(
+					<COMMA>
+					lastRecord = Rid() { jjtThis.records.add(lastRecord); }
+				)*
+			]
+			<RBRACKET>
+		)
+	)
+	{ return jjtThis; }
+}
+
+CreateDocumentTypeStatement CreateDocumentTypeStatement():
+{
+	Identifier lastIdentifier;
+	PInteger lastInteger;
+}
+{
+	<CREATE> <DOCUMENT> <TYPE>
+	(
+		jjtThis.name = Identifier()
+		[ <IF> <NOT> <EXISTS> { jjtThis.ifNotExists = true; }]
+		[
+			<EXTENDS> lastIdentifier = Identifier() { jjtThis.supertypes = new ArrayList<Identifier>(); jjtThis.supertypes.add(lastIdentifier); }
+			 (
+			 	<COMMA>
+			 	lastIdentifier = Identifier() { jjtThis.supertypes.add(lastIdentifier); }
+			 )*
+		]
+		[
+			<BUCKET> lastInteger = PInteger() { jjtThis.buckets = new ArrayList<PInteger>(); jjtThis.buckets.add(lastInteger); }
+		 	(
+				<COMMA>
+				lastInteger = PInteger() { jjtThis.buckets.add(lastInteger); }
+		 	)*
+		]
+		[ <BUCKETS> jjtThis.totalBucketNo = PInteger() ]
+		[ <ABSTRACT> { jjtThis.abstractType = true; } ]
+	)
+	{ return jjtThis; }
+}
+
+CreateVertexTypeStatement CreateVertexTypeStatement():
+{
+	Identifier lastIdentifier;
+	PInteger lastInteger;
+}
+{
+	<CREATE> <VERTEX> <TYPE>
+	(
+		jjtThis.name = Identifier()
+		[ <IF> <NOT> <EXISTS> { jjtThis.ifNotExists = true; }]
+		[
+			<EXTENDS> lastIdentifier = Identifier() { jjtThis.supertypes = new ArrayList<Identifier>(); jjtThis.supertypes.add(lastIdentifier); }
+			 (
+			 	<COMMA>
+			 	lastIdentifier = Identifier() { jjtThis.supertypes.add(lastIdentifier); }
+			 )*
+		]
+		[
+			<BUCKET> lastInteger = PInteger() { jjtThis.buckets = new ArrayList<PInteger>(); jjtThis.buckets.add(lastInteger); }
+		 	(
+				<COMMA>
+				lastInteger = PInteger() { jjtThis.buckets.add(lastInteger); }
+		 	)*
+		]
+		[ <BUCKETS> jjtThis.totalBucketNo = PInteger() ]
+		[ <ABSTRACT> { jjtThis.abstractType = true; } ]
+	)
+	{ return jjtThis; }
+}
+
+CreateEdgeTypeStatement CreateEdgeTypeStatement():
+{
+	Identifier lastIdentifier;
+	PInteger lastInteger;
+}
+{
+	<CREATE> <EDGE> <TYPE>
+	(
+		jjtThis.name = Identifier()
+		[ <IF> <NOT> <EXISTS> { jjtThis.ifNotExists = true; }]
+		[
+			<EXTENDS> lastIdentifier = Identifier() { jjtThis.supertypes = new ArrayList<Identifier>(); jjtThis.supertypes.add(lastIdentifier); }
+			 (
+			 	<COMMA>
+			 	lastIdentifier = Identifier() { jjtThis.supertypes.add(lastIdentifier); }
+			 )*
+		]
+		[
+			<BUCKET> lastInteger = PInteger() { jjtThis.buckets = new ArrayList<PInteger>(); jjtThis.buckets.add(lastInteger); }
+		 	(
+				<COMMA>
+				lastInteger = PInteger() { jjtThis.buckets.add(lastInteger); }
+		 	)*
+		]
+		[ <BUCKETS> jjtThis.totalBucketNo = PInteger() ]
+		[ <ABSTRACT> { jjtThis.abstractType = true; } ]
+	)
+	{ return jjtThis; }
+}
+
+AlterTypeStatement AlterTypeStatement():
+{
+	Identifier lastIdentifier;
+	PInteger lastInteger;
+	Token lastToken;
+}
+{
+	<ALTER> <TYPE>
+	jjtThis.name = Identifier()
+	(
+		(
+			<NAME> { jjtThis.property = "name"; }
+			jjtThis.identifierValue = Identifier()
+		)
+		|
+		(
+			<SUPERTYPE> { jjtThis.property = "supertype"; }
+			[
+				(
+					<PLUS> {jjtThis.add = true;}
+				)
+				|
+				(
+					<MINUS> {jjtThis.remove = true;}
+				)
+			]
+			(
+				jjtThis.identifierValue = Identifier()
+				|
+				<NULL> { jjtThis.identifierValue = null; }
+			)
+		)
+		|
+		(
+			<SUPERTYPES> {
+				jjtThis.property = "supertypes";
+				jjtThis.identifierListValue = new ArrayList<Identifier>();
+			}
+			(
+				(
+					lastIdentifier = Identifier() { jjtThis.identifierListValue.add(lastIdentifier); }
+					(
+						<COMMA>
+						lastIdentifier = Identifier() { jjtThis.identifierListValue.add(lastIdentifier); }
+					)*
+				)
+				|
+				<NULL> { jjtThis.identifierListValue = null; }
+			)
+		)
+		|
+		(
+			<ADDBUCKET> { jjtThis.property = "addbucket"; }
+			(
+				jjtThis.identifierValue = Identifier()
+				|
+				jjtThis.numberValue = PInteger()
+			)
+		)
+		|
+		(
+			<REMOVEBUCKET> { jjtThis.property = "removebucket"; }
+			(
+				jjtThis.identifierValue = Identifier()
+				|
+				jjtThis.numberValue = PInteger()
+			)
+		)
+	)
+	[ <UNSAFE> { jjtThis.unsafe = true; } ]
+	{ return jjtThis; }
+}
+
+
+DropTypeStatement DropTypeStatement():
+{}
+{
+	<DROP> <TYPE>
+	(
+    jjtThis.name = Identifier()
+    |
+    jjtThis.nameParam = InputParameter()
+  )
+	[ <IF> <EXISTS> { jjtThis.ifExists = true; } ]
+	[ <UNSAFE> { jjtThis.unsafe = true; } ]
+	{ return jjtThis; }
+}
+
+void IfNotExists():{}
+{
+    <IF> <NOT> <EXISTS>
+}
+CreatePropertyStatement CreatePropertyStatement():
+{
+	CreatePropertyAttributeStatement lastAttribute;
+}
+{
+	<CREATE> <PROPERTY>
+	(
+		jjtThis.typeName = Identifier()
+		<DOT>
+		jjtThis.propertyName = Identifier()
+
+		    [ LOOKAHEAD(3) IfNotExists() { jjtThis.ifNotExists = true; }]
+
+		jjtThis.propertyType = Identifier()
+		[
+			jjtThis.linkedType = Identifier()
+		]
+		[
+		    <LPAREN>
+		    lastAttribute = CreatePropertyAttributeStatement() { jjtThis.attributes.add(lastAttribute); }
+		    (<COMMA> lastAttribute = CreatePropertyAttributeStatement() { jjtThis.attributes.add(lastAttribute); })*
+		    <RPAREN>
+		]
+		[ <UNSAFE> { jjtThis.unsafe = true; } ]
+	)
+	{ return jjtThis; }
+}
+
+CreatePropertyAttributeStatement CreatePropertyAttributeStatement():
+{
+}
+{
+    (
+        (
+            jjtThis.settingName = Identifier()
+            [LOOKAHEAD( { getToken(1).kind != COMMA && getToken(1).kind != RPAREN} )
+               jjtThis.settingValue = Expression()
+            ]
+        )
+	)
+
+	{ return jjtThis; }
+}
+
+AlterPropertyStatement AlterPropertyStatement():
+{}
+{
+	<ALTER> <PROPERTY>
+	(
+		jjtThis.typeName = Identifier()
+		<DOT>
+		jjtThis.propertyName = Identifier()
+		(
+		    LOOKAHEAD(3)
+		    (
+            jjtThis.settingName = Identifier()
+		        jjtThis.settingValue = Expression()
+		    )
+		)
+	)
+	{ return jjtThis; }
+}
+
+DropPropertyStatement DropPropertyStatement():
+{}
+{
+	<DROP> <PROPERTY>
+	jjtThis.typeName = Identifier()
+	<DOT>
+	jjtThis.propertyName = Identifier()
+	[ <IF> <EXISTS> { jjtThis.ifExists = true; } ]
+	[ <FORCE> { jjtThis.force = true; }]
+	{ return jjtThis; }
+}
+
+CreateIndexStatement CreateIndexStatement():
+{
+    CreateIndexStatement.Property lastProperty;
+    Identifier lastIdentifier;
+    RecordAttribute lastRecordAttr;
+}
+{
+	<CREATE> <INDEX>
+
+	jjtThis.name = IndexName()
+
+    (
+        LOOKAHEAD(4)
+        (
+            [ <IF> <NOT> <EXISTS> {jjtThis.ifNotExists = true;} ]
+            <ON>
+            jjtThis.typeName = Identifier()
+            <LPAREN>
+            (
+                lastIdentifier = Identifier() {
+                    lastProperty = new CreateIndexStatement.Property();
+                    lastProperty.name = lastIdentifier;
+                    jjtThis.propertyList.add(lastProperty);
+                }
+                |
+                lastRecordAttr = RecordAttribute() {
+                    lastProperty = new CreateIndexStatement.Property();
+                    lastProperty.recordAttribute = lastRecordAttr;
+                    jjtThis.propertyList.add(lastProperty);
+                }
+            )
+            [
+                <BY>
+                (
+                    <KEY> { lastProperty.byKey = true; }
+                    |
+                    <VALUE> { lastProperty.byValue = true; }
+                )
+            ]
+            (
+                <COMMA>
+                (
+                    lastIdentifier = Identifier() {
+                        lastProperty = new CreateIndexStatement.Property();
+                        lastProperty.name = lastIdentifier;
+                        jjtThis.propertyList.add(lastProperty);
+                    }
+                    |
+                    lastRecordAttr = RecordAttribute() {
+                        lastProperty = new CreateIndexStatement.Property();
+                        lastProperty.recordAttribute = lastRecordAttr;
+                        jjtThis.propertyList.add(lastProperty);
+                    }
+                )
+                [
+                    <BY>
+                    (
+                        <KEY> { lastProperty.byKey = true; }
+                        |
+                        <VALUE> { lastProperty.byValue = true; }
+                    )
+                ]
+            )*
+            <RPAREN>
+
+
+            jjtThis.type = Identifier()
+        )
+        |
+        (
+           LOOKAHEAD(3)
+           ( <IF> <NOT> <EXISTS> {jjtThis.ifNotExists = true;} jjtThis.type = Identifier() )
+           |
+           jjtThis.type = Identifier()
+        )
+    )
+
+    (
+        LOOKAHEAD(2)
+        (
+            <ENGINE> jjtThis.engine = Identifier()
+            [
+                LOOKAHEAD(2)
+                (
+                   <SCHEMA> jjtThis.schema = Json()
+                )
+                |
+                (
+                    lastIdentifier = Identifier() {jjtThis.keyTypes.add(lastIdentifier);}
+                    (
+                        <COMMA> lastIdentifier = Identifier() {jjtThis.keyTypes.add(lastIdentifier);}
+                    )*
+                    [ <SCHEMA> jjtThis.schema = Json() ]
+                )
+            ]
+        )
+        |
+        (
+            [
+                LOOKAHEAD(2)
+                (
+                   <SCHEMA> jjtThis.schema = Json()
+                )
+                |
+                (
+                    lastIdentifier = Identifier() {jjtThis.keyTypes.add(lastIdentifier);}
+                    (
+                        <COMMA> lastIdentifier = Identifier() {jjtThis.keyTypes.add(lastIdentifier);}
+                    )*
+                    [ <SCHEMA> jjtThis.schema = Json() ]
+                )
+            ]
+        )
+    )
+    (
+      [ <NULL_STRATEGY>
+          (
+              <SKIP2> { jjtThis.nullStrategy = LSMTreeIndexAbstract.NULL_STRATEGY.SKIP; }
+              |
+              <ERROR2> { jjtThis.nullStrategy = LSMTreeIndexAbstract.NULL_STRATEGY.ERROR; }
+          )
+      ]
+    )
+
+	{ return jjtThis; }
+}
+
+RebuildIndexStatement RebuildIndexStatement():
+{}
+{
+    (
+        <REBUILD> <INDEX>
+        (
+            jjtThis.name = IndexName()
+            |
+            <STAR> { jjtThis.all = true; }
+        )
+	)
+	{ return jjtThis; }
+}
+
+DropIndexStatement DropIndexStatement():
+{}
+{
+    (
+        <DROP> <INDEX>
+        (
+            jjtThis.name = IndexName()
+            |
+            <STAR> { jjtThis.all = true; }
+        )
+        [ <IF> <EXISTS> { jjtThis.ifExists = true; }]
+	)
+	{ return jjtThis; }
+}
+
+
+CreateBucketStatement CreateBucketStatement():
+{}
+{
+    (
+        <CREATE>
+        (
+            ( <BUCKET> )
+            |
+            ( <BLOB> <BUCKET> { jjtThis.blob = true; } )
+        )
+        jjtThis.name = Identifier()
+        [ <IF> <NOT> <EXISTS> { jjtThis.ifNotExists = true; } ]
+        [ <ID> jjtThis.id = PInteger() ]
+	)
+	{ return jjtThis; }
+}
+
+AlterBucketStatement AlterBucketStatement():
+{}
+{
+	<ALTER> <BUCKET>
+	(
+		jjtThis.name = Identifier()
+	)
+	[ <STAR> { jjtThis.starred = true; }]
+	jjtThis.attributeName = Identifier()
+	jjtThis.attributeValue = Expression()
+	{ return jjtThis; }
+}
+
+DropBucketStatement DropBucketStatement():
+{}
+{
+	<DROP> <BUCKET>
+	(
+		jjtThis.name = Identifier()
+		|
+		jjtThis.id = PInteger()
+	)
+	[ <IF> <EXISTS> { jjtThis.ifExists = true; } ]
+	{ return jjtThis; }
+}
+
+AlterDatabaseStatement AlterDatabaseStatement():
+{}
+{
+	<ALTER> <DATABASE>
+    (
+        LOOKAHEAD(3)
+        (
+            jjtThis.settingName = Identifier()
+            jjtThis.settingValue = Expression()
+        )
+    )
+	{ return jjtThis; }
+}
+
+CommandLineOption CommandLineOption():
+{}
+{
+    (
+        <MINUS> jjtThis.name = Identifier()
+    )
+    {return jjtThis;}
+}
+
+
+ExplainStatement ExplainStatement():
+{}
+{
+    (
+        <EXPLAIN>
+        jjtThis.statement = StatementInternal()
+    )
+    { return jjtThis; }
+}
+
+ProfileStatement ProfileStatement():
+{}
+{
+    (
+        <PROFILE>
+        jjtThis.statement = StatementInternal()
+    )
+    { return jjtThis; }
+}
+
+
+LetStatement LetStatement():
+{ }
+{
+    (
+        <LET>
+        jjtThis.name = Identifier()
+        <EQ>
+        (
+            LOOKAHEAD(Statement())
+            jjtThis.statement =  StatementInternal()
+            |
+            LOOKAHEAD(Expression())
+            jjtThis.expression = Expression()
+        )
+    )
+    {return jjtThis;}
+}
+
+BeginStatement BeginStatement():
+{ }
+{
+    (
+        <BEGIN>
+        [ <ISOLATION> jjtThis.isolation = Identifier() ]
+    )
+    {return jjtThis;}
+}
+
+CommitStatement CommitStatement():
+{ }
+{
+    (
+        <COMMIT>
+        [
+            <RETRY>
+            jjtThis.retry = PInteger()
+        ]
+    )
+    {return jjtThis;}
+}
+
+RollbackStatement RollbackStatement():
+{ }
+{
+    (
+        <ROLLBACK>
+    )
+    {return jjtThis;}
+}
+
+ReturnStatement ReturnStatement():
+{ }
+{
+    (
+        <RETURN>
+        [
+            jjtThis.expression = Expression()
+        ]
+    )
+    {return jjtThis;}
+}
+
+IfStatement IfStatement():
+{ Statement last; }
+{
+    (
+        <IF><LPAREN>
+        jjtThis.expression = OrBlock()
+        <RPAREN><LBRACE>
+        (
+            LOOKAHEAD(StatementSemicolon())
+            last = StatementSemicolon() { jjtThis.statements.add(last); }
+            |
+            last = IfStatement() { jjtThis.statements.add(last); }
+            |
+            last = WhileBlock() {jjtThis.statements.add(last); }
+            |
+            last = ForEachBlock() {jjtThis.statements.add(last); }
+            |
+            <SEMICOLON>
+        )*
+        <RBRACE>
+    )
+    { return jjtThis; }
+}
+
+SleepStatement SleepStatement():
+{ }
+{
+    (
+        <SLEEP> jjtThis.millis = PInteger()
+    )
+    { return jjtThis; }
+}
+
+ForEachBlock ForEachBlock():
+{
+    Statement last;
+}
+{
+    <FOREACH> <LPAREN>
+    jjtThis.loopVariable = Identifier()
+    <IN>
+    jjtThis.loopValues = Expression()
+    <RPAREN>
+    <LBRACE>
+    (
+        LOOKAHEAD(StatementSemicolon())
+        last = StatementSemicolon() {jjtThis.statements.add(last); }
+        |
+        last = IfStatement() {jjtThis.statements.add(last); }
+        |
+        last = ForEachBlock() {jjtThis.statements.add(last); }
+        |
+        last = WhileBlock() {jjtThis.statements.add(last); }
+        |
+        <SEMICOLON>
+    )*
+    <RBRACE>
+    { return jjtThis; }
+}
+
+
+WhileBlock WhileBlock():
+{
+    Statement last;
+}
+{
+    <WHILE> <LPAREN>
+    jjtThis.condition = OrBlock()
+    <RPAREN>
+    <LBRACE>
+    (
+        LOOKAHEAD(StatementSemicolon())
+        last = StatementSemicolon() {jjtThis.statements.add(last); }
+        |
+        last = IfStatement() {jjtThis.statements.add(last); }
+        |
+        last = ForEachBlock() {jjtThis.statements.add(last); }
+        |
+        last = WhileBlock() {jjtThis.statements.add(last); }
+        |
+        <SEMICOLON>
+    )*
+    <RBRACE>
+    { return jjtThis; }
+}

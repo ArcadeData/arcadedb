@@ -1,0 +1,136 @@
+# If you are running this on MacOSX, assure you have k8s desktop version. Run:
+#
+# > kubectl config use-context docker-for-desktop
+#
+# Overall Design:
+# - a headless service to expose a DNS entry for discovery
+# - a service to expose end-points to the outside world
+# - the stateful set itself
+# - a load-balancer service to balance the requests among the available nodes
+#
+# Using ArcadeDB with k8s
+# - Create cluster    : kubectl apply -f arcadedb-statefulset.yaml
+# - List the pods     : kubectl get pods
+# - Run console       : kubectl exec -it arcadedb-0 -- bin/console.sh
+# - Destroy cluster   : kubectl delete -f arcadedb-replica.yaml
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: arcadedb
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: arcadedb-http
+  labels:
+    app: arcadedb
+spec:
+  clusterIP:
+  ports:
+    - name: http
+      port: 2480
+  selector:
+    app: arcadedb
+  type: LoadBalancer
+---
+apiVersion: v1
+kind: Service
+metadata:
+  # This is a "headless" service for the arcadedb which exists to allow discovery of the set of
+  # member pods (masters). The CNAME of this service points to SRV records - one for each Pod that
+  # is Running and Ready). Read more in the Kubernetes docs:
+  # https://kubernetes.io/docs/tutorials/stateful-application/basic-stateful-set/
+  name: arcadedb
+  labels:
+    app: arcadedb
+spec:
+  clusterIP: None
+  ports:
+    - name: http
+      port: 2480
+      targetPort: 2480
+    - name: rpc
+      port: 2424
+      targetPort: 2424
+  selector:
+    app: arcadedb
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: arcadedb
+  labels:
+    app: arcadedb
+spec:
+  serviceName: arcadedb
+  podManagementPolicy: "OrderedReady"
+  replicas: 3
+  selector:
+    matchLabels:
+      app: arcadedb
+  template:
+    metadata:
+      labels:
+        app: arcadedb
+    spec:
+      affinity:
+        # Set the anti-affinity selector scope to arcadedb servers.
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - arcadedb
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: arcadedb
+          image: arcadedata/arcadedb:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+          command:
+            - "bin/server.sh"
+            - "-Darcadedb.dumpConfigAtStartup=true"
+            - "-Darcadedb.server.name=${HOSTNAME}"
+            - "-Darcadedb.server.databaseDirectory=/mnt/data0/databases"
+            - "-Darcadedb.server.defaultDatabases=Universe[elon:musk]"
+            - "-Darcadedb.ha.enabled=true"
+            - "-Darcadedb.ha.replicationIncomingHost=0.0.0.0"
+            - "-Darcadedb.ha.serverList=arcadedb-0.arcadedb.default.svc.cluster.local:2424"
+            - "-Darcadedb.ha.k8s=true"
+            - "-Darcadedb.ha.k8sSuffix=.arcadedb.default.svc.cluster.local"
+          resources:
+            requests:
+              memory: "512Mi"
+          ports:
+            - containerPort: 2480
+              name: http
+            - containerPort: 2424
+              name: rpc
+          # These volume mounts are persistent. They are like inline claims,
+          # but not exactly because the names need to match exactly one of
+          # the stateful pod volumes.
+          volumeMounts:
+            - name: datadir
+              mountPath: /mnt/data0
+  updateStrategy:
+    type: RollingUpdate
+  # These are converted to volume claims by the controller
+  # and mounted at the paths mentioned above.
+  # do not use these in production until ssd GCEPersistentDisk or other ssd pd
+  volumeClaimTemplates:
+    - metadata:
+        name: datadir
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        resources:
+          requests:
+            storage: 10Gi
