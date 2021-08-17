@@ -42,7 +42,7 @@ public class MongoQueryEngine implements QueryEngine {
     public boolean isAvailable() {
       if (available == null) {
         try {
-          arcadeDatabaseClass = Class.forName("com.arcadedb.mongodbw.MongoDBDatabaseWrapper");
+          arcadeDatabaseClass = Class.forName("com.arcadedb.mongo.MongoDBDatabaseWrapper");
           available = true;
         } catch (ClassNotFoundException e) {
           available = false;
