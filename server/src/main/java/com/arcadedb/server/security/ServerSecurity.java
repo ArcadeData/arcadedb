@@ -19,10 +19,16 @@
  * under the License.
  */
 
-package com.arcadedb.server;
+package com.arcadedb.server.security;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.DefaultConsoleReader;
+import com.arcadedb.server.ServerException;
+import com.arcadedb.server.ServerPlugin;
+import com.arcadedb.utility.AnsiCode;
 import com.arcadedb.utility.LRUCache;
 
 import javax.crypto.SecretKey;
@@ -61,14 +67,15 @@ public class ServerSecurity implements ServerPlugin {
   }
 
   private final        String                            configPath;
-  private final        ConcurrentMap<String, ServerUser> users     = new ConcurrentHashMap<>();
+  private final        ConcurrentMap<String, ServerUser> users                = new ConcurrentHashMap<>();
   private final        String                            algorithm;
   private final        SecretKeyFactory                  secretKeyFactory;
   private final        Map<String, String>               saltCache;
   private final        int                               saltIteration;
-  private static final Random                            RANDOM    = new SecureRandom();
-  public static final  String                            FILE_NAME = "security.json";
-  public static final  int                               SALT_SIZE = 32;
+  private              CredentialsValidator              credentialsValidator = new DefaultCredentialsValidator();
+  private static final Random                            RANDOM               = new SecureRandom();
+  public static final  String                            FILE_NAME            = "security.json";
+  public static final  int                               SALT_SIZE            = 32;
 
   public ServerSecurity(final ContextConfiguration configuration, final String configPath) {
     this.configPath = configPath;
@@ -96,16 +103,14 @@ public class ServerSecurity implements ServerPlugin {
   public void configure(ArcadeDBServer arcadeDBServer, ContextConfiguration configuration) {
   }
 
-  // tag::contains[]
-
   @Override
   public void startService() {
     try {
-      if (!securityRepository.isSecurityConfPresent()) {
-        createDefaultSecurity();
-      }
-
       users.putAll(securityRepository.loadConfiguration());
+
+      if (users.isEmpty())
+        createDefaultSecurity();
+
     } catch (IOException e) {
       throw new ServerException("Error on starting Security service", e);
     }
@@ -122,10 +127,17 @@ public class ServerSecurity implements ServerPlugin {
     if (su == null)
       throw new ServerSecurityException("User/Password not valid");
 
-    if (!checkPassword(userPassword, su.password))
+    if (!passwordMatch(userPassword, su.password))
       throw new ServerSecurityException("User/Password not valid");
 
     return su;
+  }
+
+  /**
+   * Override the default credentials validator providing a custom one.
+   */
+  public void setCredentialsValidator(final CredentialsValidator credentialsValidator) {
+    this.credentialsValidator = credentialsValidator;
   }
 
   public boolean existsUser(final String userName) {
@@ -164,7 +176,7 @@ public class ServerSecurity implements ServerPlugin {
     return this.encode(password, salt, saltIteration);
   }
 
-  protected boolean checkPassword(final String password, final String hashedPassword) {
+  protected boolean passwordMatch(final String password, final String hashedPassword) {
     // hashedPassword consist of: ALGORITHM, ITERATIONS_NUMBER, SALT and
     // HASH; parts are joined with dollar character ("$")
     final String[] parts = hashedPassword.split("\\$");
@@ -202,12 +214,90 @@ public class ServerSecurity implements ServerPlugin {
     return encoded;
   }
 
-  protected void createDefaultSecurity() throws IOException {
-    createUser("root", "root", true, null);
-  }
-
   public void saveConfiguration() throws IOException {
     securityRepository.saveConfiguration(users);
   }
 
+  protected void createDefaultSecurity() throws IOException {
+    String rootPassword = GlobalConfiguration.SERVER_ROOT_PASSWORD.getValueAsString();
+    if (rootPassword == null) {
+      LogManager.instance().flush();
+      System.err.flush();
+      System.out.flush();
+
+      System.out.println();
+      System.out.println();
+      System.out.println(AnsiCode.format("$ANSI{yellow +--------------------------------------------------------------------+}"));
+      System.out.println(AnsiCode.format("$ANSI{yellow |                WARNING: FIRST RUN CONFIGURATION                    |}"));
+      System.out.println(AnsiCode.format("$ANSI{yellow +--------------------------------------------------------------------+}"));
+      System.out.println(AnsiCode.format("$ANSI{yellow | This is the first time the server is running. Please type a        |}"));
+      System.out.println(AnsiCode.format("$ANSI{yellow | password of your choice for the 'root' user or leave it blank      |}"));
+      System.out.println(AnsiCode.format("$ANSI{yellow | to auto-generate it.                                               |}"));
+      System.out.println(AnsiCode.format("$ANSI{yellow |                                                                    |}"));
+      System.out.println(AnsiCode.format("$ANSI{yellow | To avoid this message set the environment variable or JVM          |}"));
+      System.out.println(AnsiCode.format("$ANSI{yellow | setting `arcadedb.server.rootPassword` to the root password to use.|}"));
+      System.out.println(AnsiCode.format("$ANSI{yellow +--------------------------------------------------------------------+}"));
+
+      final DefaultConsoleReader console = new DefaultConsoleReader();
+
+      // ASK FOR PASSWORD + CONFIRM
+      do {
+        System.out.print(AnsiCode.format("\n$ANSI{yellow Root password [BLANK=auto generate it]: }"));
+        rootPassword = console.readPassword();
+
+        if (rootPassword != null) {
+          rootPassword = rootPassword.trim();
+          if (rootPassword.isEmpty())
+            rootPassword = null;
+        }
+
+        if (rootPassword == null) {
+          rootPassword = credentialsValidator.generateRandomPassword();
+          System.out.print(AnsiCode.format("Automatic generated password: $ANSI{green " + rootPassword + "}. Please save it in a safe place.\n"));
+        }
+
+        if (rootPassword != null) {
+          System.out.print(AnsiCode.format("$ANSI{yellow Please confirm the root password: }"));
+
+          String rootConfirmPassword = console.readPassword();
+          if (rootConfirmPassword != null) {
+            rootConfirmPassword = rootConfirmPassword.trim();
+            if (rootConfirmPassword.isEmpty())
+              rootConfirmPassword = null;
+          }
+
+          if (!rootPassword.equals(rootConfirmPassword)) {
+            System.out.println(AnsiCode.format("$ANSI{red ERROR: Passwords don't match, please reinsert both of them, or press ENTER to auto generate it}"));
+            try {
+              Thread.sleep(500);
+            } catch (InterruptedException e) {
+              return;
+            }
+            rootPassword = null;
+          } else
+            // PASSWORDS MATCH
+
+            try {
+              credentialsValidator.validateCredentials("root", rootPassword);
+              // PASSWORD IS STRONG ENOUGH
+              break;
+            } catch (ServerSecurityException ex) {
+              System.out.println(AnsiCode.format(
+                  "$ANSI{red ERROR: Root password does not match the password policies" + (ex.getMessage() != null ? ": " + ex.getMessage() : "") + "}"));
+              try {
+                Thread.sleep(500);
+              } catch (InterruptedException e) {
+                return;
+              }
+              rootPassword = null;
+            }
+        }
+
+      } while (rootPassword == null);
+    }
+
+    credentialsValidator.validateCredentials("root", rootPassword);
+
+    createUser("root", rootPassword, true, null);
+  }
 }

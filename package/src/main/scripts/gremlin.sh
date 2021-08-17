@@ -1,6 +1,5 @@
 #!/usr/bin/env sh
 
-
 #
 # Copyright 2021 Arcade Data Ltd
 #
@@ -39,7 +38,7 @@ done
 PRGDIR=`dirname "$PRG"`
 
 # Only set ARCADEDB_HOME if not already set
-[ -f "$ARCADEDB_HOME"/bin/console.sh ] || ARCADEDB_HOME=`cd "$PRGDIR/.." ; pwd`
+[ -f "$ARCADEDB_HOME"/bin/gremlin.sh ] || ARCADEDB_HOME=`cd "$PRGDIR/.." ; pwd`
 
 cd "$ARCADEDB_HOME/bin"
 
@@ -66,4 +65,4 @@ exec "$JAVA" $JAVA_OPTS \
     $JAVA_OPTS_SCRIPT \
     $ARCADEDB_SETTINGS \
     -cp "$ARCADEDB_HOME/lib/*" \
-    $ARGS com.arcadedb.console.Console $*
+    $ARGS org.apache.tinkerpop.gremlin.console.Console $*

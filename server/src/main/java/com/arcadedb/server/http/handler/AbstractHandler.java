@@ -26,7 +26,7 @@ import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.server.ServerMetrics;
-import com.arcadedb.server.ServerSecurityException;
+import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.http.HttpServer;
 import io.undertow.server.HttpHandler;
 import io.undertow.server.HttpServerExchange;

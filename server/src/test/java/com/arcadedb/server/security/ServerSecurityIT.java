@@ -19,14 +19,17 @@
  * under the License.
  */
 
-package com.arcadedb.server;
+package com.arcadedb.server.security;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -37,10 +40,42 @@ import java.util.Map;
 public class ServerSecurityIT {
 
   @Test
-  void shouldCreateDefaultRootUserAndPersistsSecurityConfiguration() throws IOException {
+  void shouldCreateDefaultRootUserAndPersistsSecurityConfigurationFromSetting() throws IOException {
     //cleanup
     final Path securityConfPath = Paths.get("./target", ServerSecurity.FILE_NAME);
     Files.deleteIfExists(securityConfPath);
+
+    GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue("dD5ed08c");
+    try {
+      final ServerSecurity security = new ServerSecurity(new ContextConfiguration(), "./target");
+      security.startService();
+
+      File securityConf = securityConfPath.toFile();
+
+      Assertions.assertTrue(securityConf.exists());
+
+      ServerSecurityFileRepository repository = new ServerSecurityFileRepository(securityConfPath.toString());
+
+      final Map<String, ServerSecurity.ServerUser> users = repository.loadConfiguration();
+
+      Assertions.assertTrue(users.containsKey("root"));
+    } finally {
+      GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(null);
+    }
+  }
+
+  @Test
+  void shouldCreateDefaultRootUserAndPersistsSecurityConfigurationFromUserInput() throws IOException {
+    //cleanup
+    final Path securityConfPath = Paths.get("./target", ServerSecurity.FILE_NAME);
+    Files.deleteIfExists(securityConfPath);
+
+    if (System.console() != null) {
+      System.console().writer().println("dD5ed08c\r\ndD5ed08c\n");
+    } else {
+      final InputStream is = new ByteArrayInputStream("dD5ed08c\r\ndD5ed08c\n".getBytes());
+      System.setIn(is);
+    }
 
     final ServerSecurity security = new ServerSecurity(new ContextConfiguration(), "./target");
     security.startService();
@@ -84,10 +119,10 @@ public class ServerSecurityIT {
     final ServerSecurity security = new ServerSecurity(new ContextConfiguration(), "./target");
     security.startService();
 
-    Assertions
-        .assertEquals("PBKDF2WithHmacSHA256$65536$ThisIsTheSalt$wIKUzWYH72cKJRnFZ0PTSevERtwZTNdN+W4/Fd7xBvw=", security.encode("ThisIsATest", "ThisIsTheSalt"));
-    Assertions
-        .assertEquals("PBKDF2WithHmacSHA256$65536$ThisIsTheSalt$wIKUzWYH72cKJRnFZ0PTSevERtwZTNdN+W4/Fd7xBvw=", security.encode("ThisIsATest", "ThisIsTheSalt"));
+    Assertions.assertEquals("PBKDF2WithHmacSHA256$65536$ThisIsTheSalt$wIKUzWYH72cKJRnFZ0PTSevERtwZTNdN+W4/Fd7xBvw=",
+        security.encode("ThisIsATest", "ThisIsTheSalt"));
+    Assertions.assertEquals("PBKDF2WithHmacSHA256$65536$ThisIsTheSalt$wIKUzWYH72cKJRnFZ0PTSevERtwZTNdN+W4/Fd7xBvw=",
+        security.encode("ThisIsATest", "ThisIsTheSalt"));
 
     for (int i = 0; i < 1000000; ++i) {
       Assertions.assertFalse(security.generateRandomSalt().contains("$"));
@@ -97,10 +132,10 @@ public class ServerSecurityIT {
   }
 
   private void passwordShouldMatch(final ServerSecurity security, String password, String expectedHash) {
-    Assertions.assertTrue(security.checkPassword(password, expectedHash));
+    Assertions.assertTrue(security.passwordMatch(password, expectedHash));
   }
 
   private void passwordShouldNotMatch(final ServerSecurity security, String password, String expectedHash) {
-    Assertions.assertFalse(security.checkPassword(password, expectedHash));
+    Assertions.assertFalse(security.passwordMatch(password, expectedHash));
   }
 }

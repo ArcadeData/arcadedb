@@ -198,6 +198,9 @@ public enum GlobalConfiguration {
   // SERVER
   SERVER_NAME("arcadedb.server.name", "Server name", String.class, Constants.PRODUCT + "_0"),
 
+  SERVER_ROOT_PASSWORD("arcadedb.server.rootPassword",
+      "Password for root user to use at first startup of the server. Set this to avoid asking the password to the user.", String.class, null),
+
   SERVER_METRICS("arcadedb.serverMetrics", "True to enable metrics", Boolean.class, true),
 
   SERVER_ROOT_PATH("arcadedb.server.rootPath", "Root path in the file system where the server is looking for files. By default is the current directory",

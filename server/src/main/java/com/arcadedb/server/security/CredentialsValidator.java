@@ -19,25 +19,20 @@
  * under the License.
  */
 
-package com.arcadedb.server;
+package com.arcadedb.server.security;
 
-public class ServerSecurityException extends ServerException {
-  public ServerSecurityException() {
-  }
+/**
+ * Interface for validating credentials. The default implementation is
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+public interface CredentialsValidator {
+  /**
+   * Validates user and password. In case of validation issues, this method throws a ServerSecurityException exception.
+   *
+   * @throws ServerSecurityException
+   */
+  void validateCredentials(final String userName, final String userPassword) throws ServerSecurityException;
 
-  public ServerSecurityException(String message) {
-    super(message);
-  }
-
-  public ServerSecurityException(String message, Throwable cause) {
-    super(message, cause);
-  }
-
-  public ServerSecurityException(Throwable cause) {
-    super(cause);
-  }
-
-  public ServerSecurityException(String message, Throwable cause, boolean enableSuppression, boolean writableStackTrace) {
-    super(message, cause, enableSuppression, writableStackTrace);
-  }
+  String generateRandomPassword();
 }

@@ -34,7 +34,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.SQLEngine;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.server.ArcadeDBServer;
-import com.arcadedb.server.ServerSecurityException;
+import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
 

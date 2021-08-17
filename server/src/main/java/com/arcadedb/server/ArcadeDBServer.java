@@ -34,6 +34,8 @@ import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.ha.ReplicatedDatabase;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.log.ServerLogger;
+import com.arcadedb.server.security.ServerSecurity;
+import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.utility.FileUtils;
 
 import java.io.File;
@@ -53,9 +55,9 @@ public class ArcadeDBServer implements ServerLogger {
   private final       String                                  serverName;
   private final       boolean                                 testEnabled;
   private final       Map<String, ServerPlugin>               plugins                              = new HashMap<>();
-  private             HAServer                                haServer;
-  private             ServerSecurity                          security;
-  private             HttpServer                              httpServer;
+  private HAServer       haServer;
+  private ServerSecurity security;
+  private HttpServer     httpServer;
   private             ConcurrentMap<String, DatabaseInternal> databases                            = new ConcurrentHashMap<>();
   private             List<TestCallback>                      testEventListeners                   = new ArrayList<>();
   private volatile    STATUS                                  status                               = STATUS.OFFLINE;
