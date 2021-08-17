@@ -55,9 +55,10 @@ public class ArcadeDBServer implements ServerLogger {
   private final       String                                  serverName;
   private final       boolean                                 testEnabled;
   private final       Map<String, ServerPlugin>               plugins                              = new HashMap<>();
-  private HAServer       haServer;
-  private ServerSecurity security;
-  private HttpServer     httpServer;
+  private             String                                  serverRootPath;
+  private             HAServer                                haServer;
+  private             ServerSecurity                          security;
+  private             HttpServer                              httpServer;
   private             ConcurrentMap<String, DatabaseInternal> databases                            = new ConcurrentHashMap<>();
   private             List<TestCallback>                      testEventListeners                   = new ArrayList<>();
   private volatile    STATUS                                  status                               = STATUS.OFFLINE;
@@ -70,6 +71,10 @@ public class ArcadeDBServer implements ServerLogger {
 
     this.serverName = configuration.getValueAsString(GlobalConfiguration.SERVER_NAME);
     this.testEnabled = configuration.getValueAsBoolean(GlobalConfiguration.TEST);
+
+    serverRootPath = configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PATH);
+    if (serverRootPath == null)
+      serverRootPath = new File("config").exists() ? "" : "../";
   }
 
   public ArcadeDBServer(final ContextConfiguration configuration) {
@@ -77,6 +82,10 @@ public class ArcadeDBServer implements ServerLogger {
     this.configuration = configuration;
     this.serverName = configuration.getValueAsString(GlobalConfiguration.SERVER_NAME);
     this.testEnabled = configuration.getValueAsBoolean(GlobalConfiguration.TEST);
+
+    serverRootPath = configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PATH);
+    if (serverRootPath == null)
+      serverRootPath = new File("config").exists() ? "" : "../";
   }
 
   public static void main(final String[] args) {
@@ -246,8 +255,8 @@ public class ArcadeDBServer implements ServerLogger {
     if (db != null)
       throw new IllegalArgumentException("Database '" + databaseName + "' already exists");
 
-    final DatabaseFactory factory = new DatabaseFactory(configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + "/" + databaseName)
-        .setAutoTransaction(true);
+    final DatabaseFactory factory = new DatabaseFactory(
+        configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + "/" + databaseName).setAutoTransaction(true);
 
     if (factory.exists())
       throw new IllegalArgumentException("Database '" + databaseName + "' already exists");
@@ -337,7 +346,7 @@ public class ArcadeDBServer implements ServerLogger {
   }
 
   public String getRootPath() {
-    return new File(configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PATH)).getAbsolutePath();
+    return serverRootPath;
   }
 
   public HttpServer getHttpServer() {
@@ -353,8 +362,8 @@ public class ArcadeDBServer implements ServerLogger {
     DatabaseInternal db = databases.get(databaseName);
     if (db == null || !db.isOpen()) {
 
-      final DatabaseFactory factory = new DatabaseFactory(configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + "/" + databaseName)
-          .setAutoTransaction(true);
+      final DatabaseFactory factory = new DatabaseFactory(
+          configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + "/" + databaseName).setAutoTransaction(true);
 
       if (createIfNotExists)
         db = (DatabaseInternal) (factory.exists() ? factory.open() : factory.create());

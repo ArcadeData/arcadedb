@@ -204,7 +204,7 @@ public enum GlobalConfiguration {
   SERVER_METRICS("arcadedb.serverMetrics", "True to enable metrics", Boolean.class, true),
 
   SERVER_ROOT_PATH("arcadedb.server.rootPath", "Root path in the file system where the server is looking for files. By default is the current directory",
-      String.class, "."),
+      String.class, null),
 
   SERVER_DATABASE_DIRECTORY("arcadedb.server.databaseDirectory", "Directory containing the database", String.class, "${arcadedb.server.rootPath}/databases"),
 

@@ -29,6 +29,7 @@ import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.TestCallback;
 import com.arcadedb.server.ha.message.TxRequest;
 import com.arcadedb.query.sql.executor.Result;
@@ -60,7 +61,7 @@ public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT 
     final String server1Address = getServer(0).getHttpServer().getListeningAddress();
     final String[] server1AddressParts = server1Address.split(":");
 
-    final RemoteDatabase db = new RemoteDatabase(server1AddressParts[0], Integer.parseInt(server1AddressParts[1]), getDatabaseName(), "root", "root");
+    final RemoteDatabase db = new RemoteDatabase(server1AddressParts[0], Integer.parseInt(server1AddressParts[1]), getDatabaseName(), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
     db.begin();
 

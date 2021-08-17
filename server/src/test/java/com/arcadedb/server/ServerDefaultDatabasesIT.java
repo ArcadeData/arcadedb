@@ -49,7 +49,7 @@ public class ServerDefaultDatabasesIT extends BaseGraphServerTest {
     getServer(0).getSecurity().authenticate("elon", "musk");
     getServer(0).getSecurity().authenticate("Jay", "Miner");
     getServer(0).getSecurity().authenticate("Jack", "Tramiel");
-    getServer(0).getSecurity().authenticate("root", "root");
+    getServer(0).getSecurity().authenticate("root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
     Assertions.assertTrue(getServer(0).existsDatabase("Universe"));
     Assertions.assertTrue(getServer(0).existsDatabase("Amiga"));

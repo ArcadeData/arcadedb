@@ -257,7 +257,7 @@ public class ServerSecurity implements ServerPlugin {
         }
 
         if (rootPassword != null) {
-          System.out.print(AnsiCode.format("$ANSI{yellow Please confirm the root password: }"));
+          System.out.print(AnsiCode.format("$ANSI{yellow Please type the root password for confirmation (copy and paste will not work): }"));
 
           String rootConfirmPassword = console.readPassword();
           if (rootConfirmPassword != null) {
