@@ -1,4 +1,4 @@
-![https://arcadedb.com/assets/images/arcadedb-logo.png]()
+![https://arcadedb.com/assets/images/arcadedb-logo.png?1]()
 
 ArcadeDB is a Multi-Model DBMS (created originally as a fork from OrientDB Open Source project after the acquisition by SAP) with
 a brand new engine made of Alien Technology, able to crunch millions of records per second on common hardware with the usage of
