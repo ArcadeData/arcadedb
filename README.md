@@ -24,8 +24,7 @@ ArcadeDB can be used as:
 - Remotely by using a [MongoDB driver](https://docs.arcadedb.com/MongoDB-API) (only a subset of the operations are implemented)
 - Remotely by using a [Redis driver](https://docs.arcadedb.com/Redis-API) (only a subset of the operations are implemented)
 
-
-ArcadeDB is Free for any usage and licensed under the liberal [Open Source Apache 2 license](LICENSE.txt).
+ArcadeDB is Free for any usage and licensed under the liberal [Open Source Apache 2 license](LICENSE). To contribute to the project check [CONTRIBUTING](CONTRIBUTING.md).
 
 Have fun with data!
 
@@ -33,26 +32,3 @@ The ArcadeDB Team
 
 
 [![Java CI - deploy](https://github.com/ArcadeData/arcadedb/actions/workflows/mvn-deploy.yml/badge.svg)](https://github.com/ArcadeData/arcadedb/actions/workflows/mvn-deploy.yml)
-
-# ArcadeDB
-
-## Pre-commit
-
-This project uses [pre-commit](https://pre-commit.com/). Every developer should install it locally,
-please follow [installation instructions](https://pre-commit.com/#install) for your operative
-system.
-
-### Developer guide
-
-Getting the code using a Git client using SSH:
-
-```bash
-$ git clone git@github.com:ArcadeData/arcadedb.git
-```
-
-Build the project using Maven:
-
-```bash
-$ cd arcadedb
-$ mvn clean verify
-```
