@@ -25,7 +25,6 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
-import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.stresstest.DatabaseIdentifier;
 import com.arcadedb.stresstest.StressTesterSettings;
 import org.json.JSONObject;
@@ -151,7 +150,7 @@ public class OCRUDWorkload extends BaseDocumentWorkload implements CheckWorkload
       if (!schema.existsType(OCRUDWorkload.USERTYPE_NAME)) {
         final DocumentType cls = schema.createDocumentType(OCRUDWorkload.USERTYPE_NAME);
         cls.createProperty("name", String.class);
-        schema.createTypeIndex(EmbeddedSchema.INDEX_TYPE.LSM_TREE, true, OCRUDWorkload.USERTYPE_NAME, new String[] { "name" });
+        schema.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, OCRUDWorkload.USERTYPE_NAME, new String[] { "name" });
       }
     } finally {
       database.close();

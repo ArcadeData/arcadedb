@@ -27,7 +27,7 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.database.async.OkCallback;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EmbeddedSchema;
+import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -114,7 +114,7 @@ public class AsyncTest extends TestHelper {
     type.createProperty("id", Integer.class);
     type.createProperty("name", String.class);
     type.createProperty("surname", String.class);
-    database.getSchema().createTypeIndex(EmbeddedSchema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, 20000);
+    database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, 20000);
 
     database.commit();
 

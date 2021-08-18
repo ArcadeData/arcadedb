@@ -27,7 +27,7 @@ import com.arcadedb.engine.WALFile;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.log.Logger;
-import com.arcadedb.schema.EmbeddedSchema;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -197,7 +197,7 @@ public class InsertGraphIndexTest extends TestHelper {
 
     database.getSchema().createEdgeType(EDGE_TYPE_NAME, PARALLEL);
 
-    database.getSchema().createTypeIndex(EmbeddedSchema.INDEX_TYPE.LSM_TREE, false, VERTEX_TYPE_NAME, new String[] { "id" }, 5000000);
+    database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, VERTEX_TYPE_NAME, new String[] { "id" }, 5000000);
 
     database.commit();
   }

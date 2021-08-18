@@ -24,7 +24,7 @@ package com.arcadedb.integration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EmbeddedSchema;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
 import org.json.JSONObject;
@@ -60,13 +60,13 @@ public class OrientDBImporterIT {
           Assertions.assertNotNull(personType);
           Assertions.assertEquals(Type.INTEGER, personType.getProperty("id").getType());
           Assertions.assertEquals(500, database.countType("Person", true));
-          Assertions.assertEquals(EmbeddedSchema.INDEX_TYPE.LSM_TREE, database.getSchema().getIndexByName("Person[id]").getType());
+          Assertions.assertEquals(Schema.INDEX_TYPE.LSM_TREE, database.getSchema().getIndexByName("Person[id]").getType());
 
           DocumentType friendType = database.getSchema().getType("Friend");
           Assertions.assertNotNull(friendType);
           Assertions.assertEquals(Type.INTEGER, friendType.getProperty("id").getType());
           Assertions.assertEquals(10_000, database.countType("Friend", true));
-          Assertions.assertEquals(EmbeddedSchema.INDEX_TYPE.LSM_TREE, database.getSchema().getIndexByName("Friend[id]").getType());
+          Assertions.assertEquals(Schema.INDEX_TYPE.LSM_TREE, database.getSchema().getIndexByName("Friend[id]").getType());
 
           final File securityFile = new File(SECURITY_PATH);
           Assertions.assertTrue(securityFile.exists());

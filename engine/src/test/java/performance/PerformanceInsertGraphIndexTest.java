@@ -33,7 +33,7 @@ import com.arcadedb.index.IndexCursor;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.log.Logger;
 import com.arcadedb.schema.EdgeType;
-import com.arcadedb.schema.EmbeddedSchema;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Assertions;
@@ -236,13 +236,13 @@ public class PerformanceInsertGraphIndexTest extends TestHelper {
 
     final VertexType vertex = database.getSchema().createVertexType(VERTEX_TYPE_NAME, PARALLEL);
     vertex.createProperty("id", Integer.class);
-    database.getSchema().createTypeIndex(EmbeddedSchema.INDEX_TYPE.LSM_TREE, true, VERTEX_TYPE_NAME, new String[] { "id" });
+    database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, VERTEX_TYPE_NAME, new String[] { "id" });
     vertex.setBucketSelectionStrategy(new PartitionedBucketSelectionStrategy(new String[] { "id" }));
 
     final EdgeType edge = database.getSchema().createEdgeType(EDGE_TYPE_NAME, PARALLEL);
     if (EDGE_IDS) {
       edge.createProperty("id", Integer.class);
-      database.getSchema().createTypeIndex(EmbeddedSchema.INDEX_TYPE.LSM_TREE, true, EDGE_TYPE_NAME, new String[] { "id" });
+      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, EDGE_TYPE_NAME, new String[] { "id" });
       edge.setBucketSelectionStrategy(new PartitionedBucketSelectionStrategy(new String[] { "id" }));
     }
 

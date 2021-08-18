@@ -149,4 +149,8 @@ public interface Schema {
   String getEncoding();
 
   EmbeddedSchema getEmbedded();
+
+  enum INDEX_TYPE {
+    LSM_TREE, FULL_TEXT
+  }
 }

@@ -72,10 +72,6 @@ public class EmbeddedSchema implements Schema {
   private              boolean                    loadInRamCompleted    = false;
   private              boolean                    multipleUpdate        = false;
 
-  public enum INDEX_TYPE {
-    LSM_TREE, FULL_TEXT
-  }
-
   public EmbeddedSchema(final DatabaseInternal database, final String databasePath, final PaginatedFile.MODE mode) {
     this.database = database;
     this.databasePath = databasePath;

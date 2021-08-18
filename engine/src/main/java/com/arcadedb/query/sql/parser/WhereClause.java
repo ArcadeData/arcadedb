@@ -30,7 +30,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EmbeddedSchema;
+import com.arcadedb.schema.Schema;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -116,7 +116,7 @@ public class WhereClause extends SimpleNode {
         Map<String, Object> conditions = getEqualityOperations(condition, ctx);
 
         for (Index index : indexes) {
-          if (index.getType().equals(EmbeddedSchema.INDEX_TYPE.FULL_TEXT.name())) {
+          if (index.getType().equals(Schema.INDEX_TYPE.FULL_TEXT.name())) {
             continue;
           }
           String[] indexedFields = index.getPropertyNames();

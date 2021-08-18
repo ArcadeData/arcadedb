@@ -27,6 +27,7 @@ import com.arcadedb.exception.DatabaseIsReadOnlyException;
 import com.arcadedb.index.*;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.EmbeddedSchema;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.utility.RWLockContext;
@@ -141,7 +142,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
   @Override
   public EmbeddedSchema.INDEX_TYPE getType() {
-    return EmbeddedSchema.INDEX_TYPE.LSM_TREE;
+    return Schema.INDEX_TYPE.LSM_TREE;
   }
 
   @Override

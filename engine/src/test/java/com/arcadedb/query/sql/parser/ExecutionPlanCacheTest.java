@@ -2,10 +2,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.Property;
-import com.arcadedb.schema.EmbeddedSchema;
-import com.arcadedb.schema.Type;
+import com.arcadedb.schema.*;
 import org.junit.jupiter.api.Assertions;
 
 public class ExecutionPlanCacheTest {
@@ -59,7 +56,7 @@ public class ExecutionPlanCacheTest {
       cache = ExecutionPlanCache.instance(db);
       Assertions.assertTrue(cache.contains(stm));
 
-      db.getSchema().createTypeIndex(EmbeddedSchema.INDEX_TYPE.LSM_TREE, false, testName, new String[] { "name" });
+      db.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, testName, new String[] { "name" });
       Assertions.assertFalse(cache.contains(stm));
 
     } finally {

@@ -3,7 +3,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EmbeddedSchema;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.query.sql.parser.IndexIdentifier;
 import com.arcadedb.query.sql.parser.IndexName;
@@ -37,7 +37,7 @@ public class CountFromIndexStepTest {
       clazz.createProperty(PROPERTY_NAME, Type.STRING);
       String className = clazz.getName();
       indexName = className + "[" + PROPERTY_NAME + "]";
-      clazz.createTypeIndex(EmbeddedSchema.INDEX_TYPE.LSM_TREE, false, PROPERTY_NAME);
+      clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, PROPERTY_NAME);
 
       for (int i = 0; i < 20; i++) {
         MutableDocument document = db.newDocument(className);

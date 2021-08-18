@@ -28,7 +28,7 @@ import com.arcadedb.engine.DatabaseChecker;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.EdgeType;
-import com.arcadedb.schema.EmbeddedSchema;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.Test;
 import performance.PerformanceTest;
@@ -177,14 +177,14 @@ public class RandomTestSingleThread extends TestHelper {
       accountType.createProperty("surname", String.class);
       accountType.createProperty("registered", Date.class);
 
-      database.getSchema().createTypeIndex(EmbeddedSchema.INDEX_TYPE.LSM_TREE, true, "Account", new String[] { "id" });
+      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Account", new String[] { "id" });
 
       final VertexType txType = database.getSchema().createVertexType("Transaction", PARALLEL);
       txType.createProperty("uuid", String.class);
       txType.createProperty("date", Date.class);
       txType.createProperty("amount", BigDecimal.class);
 
-      database.getSchema().createTypeIndex(EmbeddedSchema.INDEX_TYPE.LSM_TREE, true, "Transaction", new String[] { "uuid" });
+      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Transaction", new String[] { "uuid" });
 
       final EdgeType edgeType = database.getSchema().createEdgeType("PurchasedBy", PARALLEL);
       edgeType.createProperty("date", Date.class);

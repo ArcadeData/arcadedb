@@ -4,7 +4,6 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.index.Index;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
-import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -140,7 +139,7 @@ public class OTruncateClassStatementExecutionTest extends TestHelper {
       return database.getSchema().getIndexByName("test_class_by_data");
 
     testClass.createProperty("data", Type.LIST);
-    return testClass.createTypeIndex(EmbeddedSchema.INDEX_TYPE.LSM_TREE, true, "data");
+    return testClass.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "data");
   }
 
   private DocumentType getOrcreateDocumentType(Schema schema) {

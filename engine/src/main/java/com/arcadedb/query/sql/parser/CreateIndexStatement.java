@@ -34,6 +34,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.Schema;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -93,12 +94,12 @@ public class CreateIndexStatement extends ODDLStatement {
 
     final String typeAsString = type.getStringValue();
     if (typeAsString.equalsIgnoreCase("FULL_TEXT"))
-      indexType = EmbeddedSchema.INDEX_TYPE.FULL_TEXT;
+      indexType = Schema.INDEX_TYPE.FULL_TEXT;
     else if (typeAsString.equalsIgnoreCase("UNIQUE")) {
-      indexType = EmbeddedSchema.INDEX_TYPE.LSM_TREE;
+      indexType = Schema.INDEX_TYPE.LSM_TREE;
       unique = true;
     } else if (typeAsString.equalsIgnoreCase("NOTUNIQUE")) {
-      indexType = EmbeddedSchema.INDEX_TYPE.LSM_TREE;
+      indexType = Schema.INDEX_TYPE.LSM_TREE;
       unique = false;
     } else
       throw new CommandSQLParsingException("Index type '" + typeAsString + "' is not supported");

@@ -24,7 +24,7 @@ package com.arcadedb.query.sql;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.MutableDocument;
-import com.arcadedb.schema.EmbeddedSchema;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -49,7 +49,7 @@ public class QueryAndIndexesTest extends TestHelper {
           VertexType t = database.getSchema().createVertexType("V");
           t.createProperty("name", String.class);
           t.createProperty("surname", String.class);
-          database.getSchema().createTypeIndex(EmbeddedSchema.INDEX_TYPE.LSM_TREE, true, "V", new String[] { "name", "surname" });
+          database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "V", new String[] { "name", "surname" });
         }
 
         for (int i = 0; i < TOT; ++i) {
