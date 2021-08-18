@@ -65,7 +65,7 @@
     -->
     <files>
         <file>
-            <source>${basedir}/../README.txt</source>
+            <source>${basedir}/../README.md</source>
             <fileMode>444</fileMode>
         </file>
         <file>
