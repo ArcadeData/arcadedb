@@ -30,7 +30,7 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.schema.SchemaImpl;
+import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -85,7 +85,7 @@ public class RebuildIndexStatement extends SimpleExecStatement {
         for (Index idx : indexes) {
           try {
             if (idx instanceof TypeIndex) {
-              final SchemaImpl.INDEX_TYPE indexType = idx.getType();
+              final EmbeddedSchema.INDEX_TYPE indexType = idx.getType();
               final boolean unique = idx.isUnique();
               final String[] propNames = idx.getPropertyNames();
 
@@ -108,7 +108,7 @@ public class RebuildIndexStatement extends SimpleExecStatement {
         if (!idx.isAutomatic())
           throw new CommandExecutionException("Cannot rebuild index '" + name + "' because it's manual and there aren't indications of what to index");
 
-        final SchemaImpl.INDEX_TYPE type = idx.getType();
+        final EmbeddedSchema.INDEX_TYPE type = idx.getType();
         final String typeName = idx.getTypeName();
         final boolean unique = idx.isUnique();
         final String[] propertyNames = idx.getPropertyNames();

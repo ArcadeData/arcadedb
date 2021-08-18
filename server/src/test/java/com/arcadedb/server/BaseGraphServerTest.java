@@ -29,7 +29,7 @@ import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Schema;
-import com.arcadedb.schema.SchemaImpl;
+import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.FileUtils;
 import org.json.JSONObject;
@@ -101,7 +101,7 @@ public abstract class BaseGraphServerTest {
           VertexType v = schema.createVertexType(VERTEX1_TYPE_NAME, 3);
           v.createProperty("id", Long.class);
 
-          schema.createTypeIndex(SchemaImpl.INDEX_TYPE.LSM_TREE, true, VERTEX1_TYPE_NAME, new String[] { "id" });
+          schema.createTypeIndex(EmbeddedSchema.INDEX_TYPE.LSM_TREE, true, VERTEX1_TYPE_NAME, new String[] { "id" });
 
           Assertions.assertFalse(schema.existsType(VERTEX2_TYPE_NAME));
           schema.createVertexType(VERTEX2_TYPE_NAME, 3);

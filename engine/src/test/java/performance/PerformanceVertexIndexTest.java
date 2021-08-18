@@ -31,7 +31,7 @@ import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.SchemaImpl;
+import com.arcadedb.schema.EmbeddedSchema;
 import org.junit.jupiter.api.Assertions;
 
 import java.io.IOException;
@@ -105,9 +105,9 @@ public class PerformanceVertexIndexTest {
         v.createProperty("operationalStatus", String.class);
         v.createProperty("supplierName", String.class);
 
-        database.getSchema().createTypeIndex(SchemaImpl.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "id" }, 2 * 1024 * 1024, null);
-        database.getSchema().createTypeIndex(SchemaImpl.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "number" }, 2 * 1024 * 1024, null);
-        database.getSchema().createTypeIndex(SchemaImpl.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "relativeName" }, 2 * 1024 * 1024, null);
+        database.getSchema().createTypeIndex(EmbeddedSchema.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "id" }, 2 * 1024 * 1024, null);
+        database.getSchema().createTypeIndex(EmbeddedSchema.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "number" }, 2 * 1024 * 1024, null);
+        database.getSchema().createTypeIndex(EmbeddedSchema.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "relativeName" }, 2 * 1024 * 1024, null);
 //        database.getSchema().createClassIndexes(SchemaImpl.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "HolderSpec_Name" }, 2 * 1024 * 1024, null);
 //        database.getSchema().createClassIndexes(SchemaImpl.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "Name" }, 2 * 1024 * 1024, null);
 

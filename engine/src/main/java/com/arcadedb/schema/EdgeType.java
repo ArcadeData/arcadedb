@@ -24,7 +24,7 @@ package com.arcadedb.schema;
 import com.arcadedb.graph.Edge;
 
 public class EdgeType extends DocumentType {
-  public EdgeType(final SchemaImpl schema, final String name) {
+  public EdgeType(final EmbeddedSchema schema, final String name) {
     super(schema, name);
   }
 

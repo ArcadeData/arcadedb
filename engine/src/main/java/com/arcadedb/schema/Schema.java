@@ -25,7 +25,6 @@ import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.index.Index;
-import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 
 import java.util.Collection;
@@ -55,30 +54,30 @@ public interface Schema {
 
   Index getIndexByName(String indexName);
 
-  Index createTypeIndex(SchemaImpl.INDEX_TYPE indexType, boolean unique, String typeName, String... propertyNames);
+  Index createTypeIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String typeName, String... propertyNames);
 
-  Index createTypeIndex(SchemaImpl.INDEX_TYPE indexType, boolean unique, String typeName, String[] propertyNames, int pageSize);
+  Index createTypeIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String typeName, String[] propertyNames, int pageSize);
 
-  Index createTypeIndex(SchemaImpl.INDEX_TYPE indexType, boolean unique, String typeName, String[] propertyNames, int pageSize,
+  Index createTypeIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String typeName, String[] propertyNames, int pageSize,
       Index.BuildIndexCallback callback);
 
-  Index createTypeIndex(SchemaImpl.INDEX_TYPE indexType, boolean unique, String typeName, String[] propertyNames, int pageSize,
+  Index createTypeIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String typeName, String[] propertyNames, int pageSize,
       LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, Index.BuildIndexCallback callback);
 
-  Index getOrCreateTypeIndex(SchemaImpl.INDEX_TYPE indexType, boolean unique, String typeName, String... propertyNames);
+  Index getOrCreateTypeIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String typeName, String... propertyNames);
 
-  Index getOrCreateTypeIndex(SchemaImpl.INDEX_TYPE indexType, boolean unique, String typeName, String[] propertyNames, int pageSize);
+  Index getOrCreateTypeIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String typeName, String[] propertyNames, int pageSize);
 
-  Index getOrCreateTypeIndex(SchemaImpl.INDEX_TYPE indexType, boolean unique, String typeName, String[] propertyNames, int pageSize,
+  Index getOrCreateTypeIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String typeName, String[] propertyNames, int pageSize,
       Index.BuildIndexCallback callback);
 
-  Index getOrCreateTypeIndex(SchemaImpl.INDEX_TYPE indexType, boolean unique, String typeName, String[] propertyNames, int pageSize,
+  Index getOrCreateTypeIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String typeName, String[] propertyNames, int pageSize,
       LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, Index.BuildIndexCallback callback);
 
-  Index createBucketIndex(SchemaImpl.INDEX_TYPE indexType, boolean unique, String typeName, String bucketName, String[] propertyNames, int pageSize,
+  Index createBucketIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String typeName, String bucketName, String[] propertyNames, int pageSize,
       LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, Index.BuildIndexCallback callback);
 
-  Index createManualIndex(SchemaImpl.INDEX_TYPE indexType, boolean unique, String indexName, byte[] keyTypes, int pageSize,
+  Index createManualIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String indexName, byte[] keyTypes, int pageSize,
       LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy);
 
   Dictionary getDictionary();
@@ -149,4 +148,5 @@ public interface Schema {
 
   String getEncoding();
 
+  EmbeddedSchema getEmbedded();
 }

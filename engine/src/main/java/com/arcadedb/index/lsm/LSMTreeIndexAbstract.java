@@ -30,7 +30,6 @@ import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.IndexException;
-import com.arcadedb.schema.SchemaImpl;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.BinarySerializer;
@@ -180,7 +179,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     if (database.isOpen()) {
       database.getPageManager().deleteFile(file.getFileId());
       database.getFileManager().dropFile(file.getFileId());
-      ((SchemaImpl) database.getSchema()).removeFile(file.getFileId());
+      database.getSchema().getEmbedded().removeFile(file.getFileId());
     } else {
       new File(file.getFilePath()).delete();
     }

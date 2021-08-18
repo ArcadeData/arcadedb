@@ -29,7 +29,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
-import com.arcadedb.schema.SchemaImpl;
+import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -88,17 +88,17 @@ public class CreateIndexStatement extends ODDLStatement {
 
     final String[] fields = calculateProperties(ctx);
 
-    final SchemaImpl.INDEX_TYPE indexType;
+    final EmbeddedSchema.INDEX_TYPE indexType;
     boolean unique = false;
 
     final String typeAsString = type.getStringValue();
     if (typeAsString.equalsIgnoreCase("FULL_TEXT"))
-      indexType = SchemaImpl.INDEX_TYPE.FULL_TEXT;
+      indexType = EmbeddedSchema.INDEX_TYPE.FULL_TEXT;
     else if (typeAsString.equalsIgnoreCase("UNIQUE")) {
-      indexType = SchemaImpl.INDEX_TYPE.LSM_TREE;
+      indexType = EmbeddedSchema.INDEX_TYPE.LSM_TREE;
       unique = true;
     } else if (typeAsString.equalsIgnoreCase("NOTUNIQUE")) {
-      indexType = SchemaImpl.INDEX_TYPE.LSM_TREE;
+      indexType = EmbeddedSchema.INDEX_TYPE.LSM_TREE;
       unique = false;
     } else
       throw new CommandSQLParsingException("Index type '" + typeAsString + "' is not supported");

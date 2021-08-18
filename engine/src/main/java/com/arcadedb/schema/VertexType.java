@@ -27,7 +27,7 @@ import com.arcadedb.graph.Vertex;
 
 public class VertexType extends DocumentType {
 
-  public VertexType(final SchemaImpl schema, final String name) {
+  public VertexType(final EmbeddedSchema schema, final String name) {
     super(schema, name);
   }
 

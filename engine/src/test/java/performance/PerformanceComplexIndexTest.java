@@ -28,7 +28,7 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.SchemaImpl;
+import com.arcadedb.schema.EmbeddedSchema;
 
 import java.util.UUID;
 
@@ -59,7 +59,7 @@ public class PerformanceComplexIndexTest {
         v.createProperty("locali", Integer.class);
         v.createProperty("notes1", String.class);
 
-        database.getSchema().createTypeIndex(SchemaImpl.INDEX_TYPE.LSM_TREE, false, TYPE_NAME, new String[] { "id" }, 5000000);
+        database.getSchema().createTypeIndex(EmbeddedSchema.INDEX_TYPE.LSM_TREE, false, TYPE_NAME, new String[] { "id" }, 5000000);
 
         database.commit();
       }

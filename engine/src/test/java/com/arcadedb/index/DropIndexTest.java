@@ -28,7 +28,7 @@ import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.SchemaImpl;
+import com.arcadedb.schema.EmbeddedSchema;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -55,9 +55,9 @@ public class DropIndexTest extends TestHelper {
         type.createProperty("id", Integer.class);
         type.createProperty("name", String.class);
 
-        final Index typeIndex = database.getSchema().createTypeIndex(SchemaImpl.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
+        final Index typeIndex = database.getSchema().createTypeIndex(EmbeddedSchema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
         final Index typeIndex2 = database.getSchema()
-            .createTypeIndex(SchemaImpl.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "name" }, PAGE_SIZE, LSMTreeIndexAbstract.NULL_STRATEGY.SKIP,
+            .createTypeIndex(EmbeddedSchema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "name" }, PAGE_SIZE, LSMTreeIndexAbstract.NULL_STRATEGY.SKIP,
                 null);
 
         for (int i = 0; i < TOT; ++i) {
@@ -99,7 +99,7 @@ public class DropIndexTest extends TestHelper {
           } catch (SchemaException e) {
           }
 
-        final Index typeIndex3 = database.getSchema().createTypeIndex(SchemaImpl.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
+        final Index typeIndex3 = database.getSchema().createTypeIndex(EmbeddedSchema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
 
         Assertions.assertEquals(TOT + 1, database.countType(TYPE_NAME, true));
         Assertions.assertEquals(TOT, database.countType(TYPE_NAME2, false));
@@ -142,9 +142,9 @@ public class DropIndexTest extends TestHelper {
         type.createProperty("id", Integer.class);
         type.createProperty("name", String.class);
 
-        final Index typeIndex = database.getSchema().createTypeIndex(SchemaImpl.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
+        final Index typeIndex = database.getSchema().createTypeIndex(EmbeddedSchema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
         final Index typeIndex2 = database.getSchema()
-            .createTypeIndex(SchemaImpl.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "name" }, PAGE_SIZE, LSMTreeIndexAbstract.NULL_STRATEGY.SKIP,
+            .createTypeIndex(EmbeddedSchema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "name" }, PAGE_SIZE, LSMTreeIndexAbstract.NULL_STRATEGY.SKIP,
                 null);
 
         for (int i = 0; i < TOT; ++i) {
@@ -249,7 +249,7 @@ public class DropIndexTest extends TestHelper {
         database.begin();
 
         database.getSchema().dropIndex(typeIndex.getName());
-        final Index typeIndex3 = database.getSchema().createTypeIndex(SchemaImpl.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
+        final Index typeIndex3 = database.getSchema().createTypeIndex(EmbeddedSchema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
 
         for (int i = 0; i < TOT; ++i) {
           final MutableDocument v2 = database.newDocument(TYPE_NAME2);

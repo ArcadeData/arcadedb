@@ -28,7 +28,7 @@ import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.PaginatedComponentFactory;
 import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.index.*;
-import com.arcadedb.schema.SchemaImpl;
+import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.schema.Type;
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.analysis.TokenStream;
@@ -274,8 +274,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   }
 
   @Override
-  public SchemaImpl.INDEX_TYPE getType() {
-    return SchemaImpl.INDEX_TYPE.FULL_TEXT;
+  public EmbeddedSchema.INDEX_TYPE getType() {
+    return EmbeddedSchema.INDEX_TYPE.FULL_TEXT;
   }
 
   public Analyzer getAnalyzer() {

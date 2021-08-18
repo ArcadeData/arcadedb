@@ -42,8 +42,8 @@ import com.arcadedb.query.QueryEngineManager;
 import com.arcadedb.query.sql.executor.*;
 import com.arcadedb.query.sql.parser.*;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.schema.Schema;
-import com.arcadedb.schema.SchemaImpl;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.utility.FileUtils;
@@ -99,7 +99,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   private final          AtomicLong                                statsCountBucket        = new AtomicLong();
   protected              FileManager                               fileManager;
   protected              PageManager                               pageManager;
-  protected              SchemaImpl                                schema;
+  protected              EmbeddedSchema                            schema;
   protected              TransactionManager                        transactionManager;
   protected volatile     DatabaseAsyncExecutorImpl                 async                   = null;
   protected              Lock                                      asyncLock               = new ReentrantLock();
@@ -165,7 +165,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   }
 
   protected void create() {
-    if (new File(databasePath + "/" + SchemaImpl.SCHEMA_FILE_NAME).exists() || new File(databasePath + "/" + SchemaImpl.SCHEMA_PREV_FILE_NAME).exists())
+    if (new File(databasePath + "/" + EmbeddedSchema.SCHEMA_FILE_NAME).exists() || new File(databasePath + "/" + EmbeddedSchema.SCHEMA_PREV_FILE_NAME).exists())
       throw new DatabaseOperationException("Database '" + databasePath + "' already exists");
 
     openInternal();
@@ -191,7 +191,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
       open = true;
 
       try {
-        schema = new SchemaImpl(wrappedDatabaseInstance, databasePath, mode);
+        schema = new EmbeddedSchema(wrappedDatabaseInstance, databasePath, mode);
 
         if (fileManager.getFiles().isEmpty())
           schema.create(mode);

@@ -46,7 +46,7 @@ public class Property {
    *
    * @return The index instance
    */
-  public Index createIndex(final SchemaImpl.INDEX_TYPE type, final boolean unique) {
+  public Index createIndex(final EmbeddedSchema.INDEX_TYPE type, final boolean unique) {
     return owner.createTypeIndex(type, unique, name);
   }
 
@@ -58,7 +58,7 @@ public class Property {
    *
    * @return The index instance
    */
-  public Index getOrCreateIndex(final SchemaImpl.INDEX_TYPE type, final boolean unique) {
+  public Index getOrCreateIndex(final EmbeddedSchema.INDEX_TYPE type, final boolean unique) {
     return owner.getOrCreateTypeIndex(type, unique, name);
   }
 

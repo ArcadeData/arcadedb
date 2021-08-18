@@ -30,7 +30,6 @@ import com.arcadedb.exception.TransactionException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.schema.SchemaImpl;
 import com.arcadedb.utility.Pair;
 
 import java.io.IOException;
@@ -104,8 +103,8 @@ public class TransactionContext implements Transaction {
     else
       reset();
 
-    if (((SchemaImpl) database.getSchema()).isDirty())
-      ((SchemaImpl) database.getSchema()).saveConfiguration();
+    if (database.getSchema().getEmbedded().isDirty())
+      database.getSchema().getEmbedded().saveConfiguration();
 
     return changes != null ? changes.getFirst() : null;
   }

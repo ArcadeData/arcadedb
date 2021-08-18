@@ -35,16 +35,28 @@ public class FileManager {
   private final String             path;
   private final PaginatedFile.MODE mode;
 
-  private final List<PaginatedFile>                       files            = new ArrayList<>();
-  private final ConcurrentHashMap<String, PaginatedFile>  fileNameMap      = new ConcurrentHashMap<>();
-  private final ConcurrentHashMap<Integer, PaginatedFile> fileIdMap        = new ConcurrentHashMap<>();
-  private final ConcurrentHashMap<Integer, Long>          fileVirtualSize  = new ConcurrentHashMap<>();
-  private final Set<String>                               supportedFileExt = new HashSet<>();
-  private final AtomicLong                                maxFilesOpened   = new AtomicLong();
+  private final        List<PaginatedFile>                       files            = new ArrayList<>();
+  private final        ConcurrentHashMap<String, PaginatedFile>  fileNameMap      = new ConcurrentHashMap<>();
+  private final        ConcurrentHashMap<Integer, PaginatedFile> fileIdMap        = new ConcurrentHashMap<>();
+  private final        ConcurrentHashMap<Integer, Long>          fileVirtualSize  = new ConcurrentHashMap<>();
+  private final        Set<String>                               supportedFileExt = new HashSet<>();
+  private final        AtomicLong                                maxFilesOpened   = new AtomicLong();
+  private              List<FileChange>                          recordedChanges  = null;
+  private final static PaginatedFile                             RESERVED_SLOT    = new PaginatedFile();
 
-  private final static PaginatedFile RESERVED_SLOT = new PaginatedFile();
+  public static class FileChange {
+    public final boolean create;
+    public final int     fileId;
+    public final String  fileName;
 
-  public class PFileManagerStats {
+    public FileChange(final boolean create, final int fileId, final String fileName) {
+      this.create = create;
+      this.fileId = fileId;
+      this.fileName = fileName;
+    }
+  }
+
+  public class FileManagerStats {
     public long maxOpenFiles;
     public long totalOpenFiles;
   }
@@ -76,6 +88,21 @@ public class FileManager {
     }
   }
 
+  /**
+   * Start recording changes in file system. Changes can be returned (before the end of the lock in database) with {@link #getRecordedChanges()}.
+   */
+  public void startRecordingChanges() {
+    recordedChanges = new ArrayList<>();
+  }
+
+  public List<FileChange> getRecordedChanges() {
+    return recordedChanges;
+  }
+
+  public void stopRecordingChanges() {
+    recordedChanges = null;
+  }
+
   public void close() {
     for (PaginatedFile f : fileNameMap.values())
       f.close();
@@ -92,6 +119,9 @@ public class FileManager {
       fileNameMap.remove(file.getComponentName());
       files.set(fileId, null);
       file.drop();
+
+      if (recordedChanges != null)
+        recordedChanges.add(new FileChange(false, fileId, file.getFileName()));
     }
   }
 
@@ -107,8 +137,8 @@ public class FileManager {
 //    LogManager.instance().log(this, Level.INFO, "File %d vSize=%d (thread=%d)", fileId, fileSize, Thread.currentThread().getId());
   }
 
-  public PFileManagerStats getStats() {
-    final PFileManagerStats stats = new PFileManagerStats();
+  public FileManagerStats getStats() {
+    final FileManagerStats stats = new FileManagerStats();
     stats.maxOpenFiles = maxFilesOpened.get();
     stats.totalOpenFiles = fileIdMap.size();
     return stats;
@@ -137,6 +167,10 @@ public class FileManager {
 
     file = new PaginatedFile(filePath, mode);
     registerFile(file);
+
+    if (recordedChanges != null)
+      recordedChanges.add(new FileChange(true, file.getFileId(), file.getFileName()));
+
     return file;
   }
 
@@ -145,6 +179,9 @@ public class FileManager {
     if (file == null) {
       file = new PaginatedFile(filePath, mode);
       registerFile(file);
+
+      if (recordedChanges != null)
+        recordedChanges.add(new FileChange(true, file.getFileId(), file.getFileName()));
     }
 
     return file;

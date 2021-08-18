@@ -30,7 +30,6 @@ import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.schema.SchemaImpl;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.utility.FileUtils;
@@ -62,7 +61,7 @@ public class LSMTreeIndexCompactor {
     if (compactedIndex == null) {
       // CREATE A NEW INDEX
       compactedIndex = index.createNewForCompaction();
-      ((SchemaImpl) index.getDatabase().getSchema()).registerFile(compactedIndex);
+      index.getDatabase().getSchema().getEmbedded().registerFile(compactedIndex);
     }
 
     final byte[] keyTypes = index.getKeyTypes();

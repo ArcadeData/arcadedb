@@ -26,7 +26,7 @@ import com.arcadedb.engine.*;
 import com.arcadedb.exception.DatabaseIsReadOnlyException;
 import com.arcadedb.index.*;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.schema.SchemaImpl;
+import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.utility.RWLockContext;
@@ -140,8 +140,8 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   }
 
   @Override
-  public SchemaImpl.INDEX_TYPE getType() {
-    return SchemaImpl.INDEX_TYPE.LSM_TREE;
+  public EmbeddedSchema.INDEX_TYPE getType() {
+    return EmbeddedSchema.INDEX_TYPE.LSM_TREE;
   }
 
   @Override
@@ -398,7 +398,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
         final LSMTreeIndexMutable newMutableIndex = new LSMTreeIndexMutable(this, database, newName, mutable.isUnique(),
             database.getDatabasePath() + "/" + newName, mutable.getKeyTypes(), pageSize, compactedIndex);
-        ((SchemaImpl) database.getSchema()).registerFile(newMutableIndex);
+        database.getSchema().getEmbedded().registerFile(newMutableIndex);
 
         final MutablePage subIndexMainPage = compactedIndex.setCompactedTotalPages();
         database.getPageManager().updatePage(subIndexMainPage, false, false);
@@ -429,7 +429,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
         mutable = newMutableIndex;
 
-        ((SchemaImpl) database.getSchema()).saveConfiguration();
+        database.getSchema().getEmbedded().saveConfiguration();
 
         return newMutableIndex;
       });

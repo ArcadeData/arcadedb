@@ -28,7 +28,7 @@ import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.SchemaImpl;
+import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -769,7 +769,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
 
         final DocumentType type = database.getSchema().createDocumentType(TYPE_NAME, 3);
         type.createProperty("id", Integer.class);
-        final Index typeIndex = database.getSchema().createTypeIndex(SchemaImpl.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
+        final Index typeIndex = database.getSchema().createTypeIndex(EmbeddedSchema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
 
         for (int i = 0; i < TOT; ++i) {
           final MutableDocument v = database.newDocument(TYPE_NAME);

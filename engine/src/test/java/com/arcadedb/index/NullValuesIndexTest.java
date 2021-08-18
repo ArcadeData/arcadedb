@@ -26,7 +26,7 @@ import com.arcadedb.database.*;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.SchemaImpl;
+import com.arcadedb.schema.EmbeddedSchema;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -46,9 +46,9 @@ public class NullValuesIndexTest extends TestHelper {
           final DocumentType type = database.getSchema().createDocumentType(TYPE_NAME, 3);
           type.createProperty("id", Integer.class);
           type.createProperty("name", String.class);
-          final Index indexes = database.getSchema().createTypeIndex(SchemaImpl.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
+          final Index indexes = database.getSchema().createTypeIndex(EmbeddedSchema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
           final Index indexes2 = database.getSchema()
-              .createTypeIndex(SchemaImpl.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "name" }, PAGE_SIZE, LSMTreeIndexAbstract.NULL_STRATEGY.ERROR,
+              .createTypeIndex(EmbeddedSchema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "name" }, PAGE_SIZE, LSMTreeIndexAbstract.NULL_STRATEGY.ERROR,
                   null);
 
           for (int i = 0; i < TOT; ++i) {
@@ -88,9 +88,9 @@ public class NullValuesIndexTest extends TestHelper {
         final DocumentType type = database.getSchema().createDocumentType(TYPE_NAME, 3);
         type.createProperty("id", Integer.class);
         type.createProperty("name", String.class);
-        final Index indexes = database.getSchema().createTypeIndex(SchemaImpl.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
+        final Index indexes = database.getSchema().createTypeIndex(EmbeddedSchema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
         final Index indexes2 = database.getSchema()
-            .createTypeIndex(SchemaImpl.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "name" }, PAGE_SIZE, LSMTreeIndexAbstract.NULL_STRATEGY.SKIP,
+            .createTypeIndex(EmbeddedSchema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "name" }, PAGE_SIZE, LSMTreeIndexAbstract.NULL_STRATEGY.SKIP,
                 null);
 
         for (int i = 0; i < TOT; ++i) {

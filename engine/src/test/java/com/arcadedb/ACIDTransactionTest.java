@@ -31,7 +31,7 @@ import com.arcadedb.engine.WALFile;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.SchemaImpl;
+import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Assertions;
@@ -316,7 +316,7 @@ public class ACIDTransactionTest extends TestHelper {
       type.createProperty("symbol", Type.STRING);
       type.createProperty("date", Type.DATETIME);
       type.createProperty("history", Type.LIST);
-      type.createTypeIndex(SchemaImpl.INDEX_TYPE.LSM_TREE, true, new String[] { "symbol", "date" });
+      type.createTypeIndex(EmbeddedSchema.INDEX_TYPE.LSM_TREE, true, new String[] { "symbol", "date" });
 
       final DocumentType type2 = database.getSchema().createDocumentType("Aggregate", 1);
       type2.createProperty("volume", Type.LONG);

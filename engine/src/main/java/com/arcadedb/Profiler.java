@@ -141,7 +141,7 @@ public class Profiler {
         readCachePages += pStats.readCachePages;
         writeCachePages += pStats.writeCachePages;
 
-        final FileManager.PFileManagerStats fStats = db.getFileManager().getStats();
+        final FileManager.FileManagerStats fStats = db.getFileManager().getStats();
         totalOpenFiles += fStats.totalOpenFiles;
         maxOpenFiles += fStats.maxOpenFiles;
 

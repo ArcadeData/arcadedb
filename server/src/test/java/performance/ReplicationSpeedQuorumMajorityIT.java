@@ -27,7 +27,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.schema.SchemaImpl;
+import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.Assertions;
 
@@ -93,10 +93,10 @@ public class ReplicationSpeedQuorumMajorityIT extends BasePerformanceTest {
           v.createProperty("operationalStatus", String.class);
           v.createProperty("supplierName", String.class);
 
-          database.getSchema().createTypeIndex(SchemaImpl.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "id" }, 2 * 1024 * 1024);
-          database.getSchema().createTypeIndex(SchemaImpl.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "number" }, 2 * 1024 * 1024);
+          database.getSchema().createTypeIndex(EmbeddedSchema.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "id" }, 2 * 1024 * 1024);
+          database.getSchema().createTypeIndex(EmbeddedSchema.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "number" }, 2 * 1024 * 1024);
           database.getSchema()
-              .createTypeIndex(SchemaImpl.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "relativeName" }, 2 * 1024 * 1024);
+              .createTypeIndex(EmbeddedSchema.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "relativeName" }, 2 * 1024 * 1024);
         }
       }
     });

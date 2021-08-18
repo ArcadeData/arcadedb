@@ -30,7 +30,7 @@ import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.EdgeType;
-import com.arcadedb.schema.SchemaImpl;
+import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -364,7 +364,7 @@ public class RandomTestMultiThreads extends TestHelper {
       accountType.createProperty("surname", String.class);
       accountType.createProperty("registered", Date.class);
 
-      database.getSchema().createTypeIndex(SchemaImpl.INDEX_TYPE.LSM_TREE, true, "Account", new String[] { "id" }, 500000);
+      database.getSchema().createTypeIndex(EmbeddedSchema.INDEX_TYPE.LSM_TREE, true, "Account", new String[] { "id" }, 500000);
 
       final VertexType txType = database.getSchema().createVertexType("Transaction", PARALLEL);
       txType.createProperty("uuid", Long.class);
@@ -373,7 +373,7 @@ public class RandomTestMultiThreads extends TestHelper {
       txType.createProperty("updated", Integer.class);
       txType.createProperty("longFieldUpdated", String.class);
 
-      database.getSchema().createTypeIndex(SchemaImpl.INDEX_TYPE.LSM_TREE, true, "Transaction", new String[] { "uuid" }, 500000);
+      database.getSchema().createTypeIndex(EmbeddedSchema.INDEX_TYPE.LSM_TREE, true, "Transaction", new String[] { "uuid" }, 500000);
 
       final EdgeType edgeType = database.getSchema().createEdgeType("PurchasedBy", PARALLEL);
       edgeType.createProperty("date", Date.class);

@@ -46,7 +46,7 @@ import java.util.*;
 import java.util.concurrent.Callable;
 import java.util.logging.Level;
 
-public class SchemaImpl implements Schema {
+public class EmbeddedSchema implements Schema {
   public static final String DEFAULT_DATE_FORMAT     = "yyyy-MM-dd";
   public static final String DEFAULT_DATETIME_FORMAT = "yyyy-MM-dd HH:mm:ss";
   public static final String DEFAULT_ENCODING        = "UTF-8";
@@ -76,7 +76,7 @@ public class SchemaImpl implements Schema {
     LSM_TREE, FULL_TEXT
   }
 
-  public SchemaImpl(final DatabaseInternal database, final String databasePath, final PaginatedFile.MODE mode) {
+  public EmbeddedSchema(final DatabaseInternal database, final String databasePath, final PaginatedFile.MODE mode) {
     this.database = database;
     this.databasePath = databasePath;
 
@@ -90,6 +90,11 @@ public class SchemaImpl implements Schema {
 
     indexFactory.register(INDEX_TYPE.LSM_TREE.name(), new LSMTreeIndex.IndexFactoryHandler());
     indexFactory.register(INDEX_TYPE.FULL_TEXT.name(), new LSMTreeFullTextIndex.IndexFactoryHandler());
+  }
+
+  @Override
+  public EmbeddedSchema getEmbedded() {
+    return this;
   }
 
   public void create(final PaginatedFile.MODE mode) {
@@ -141,6 +146,43 @@ public class SchemaImpl implements Schema {
     }
 
     for (PaginatedComponent f : files)
+      if (f != null)
+        f.onAfterLoad();
+
+    readConfiguration();
+  }
+
+  public void loadChanges() throws IOException {
+    final Collection<PaginatedFile> filesToOpen = database.getFileManager().getFiles();
+
+    final PaginatedFile.MODE mode = database.getMode();
+
+    final List<PaginatedComponent> newFilesLoaded = new ArrayList<>();
+
+    for (PaginatedFile file : filesToOpen) {
+      if (!Dictionary.DICT_EXT.equals(file.getFileExtension())) {
+        final PaginatedComponent pf = paginatedComponentFactory.createComponent(file, mode);
+
+        if (pf != null) {
+          if (pf.getId() < files.size() && files.get(pf.getId()) != null)
+            // ALREADY LOADED
+            continue;
+
+          final Object mainComponent = pf.getMainComponent();
+
+          if (mainComponent instanceof Bucket)
+            bucketMap.put(pf.getName(), (Bucket) mainComponent);
+          else if (mainComponent instanceof IndexInternal)
+            indexMap.put(pf.getName(), (IndexInternal) mainComponent);
+
+          registerFile(pf);
+
+          newFilesLoaded.add(pf);
+        }
+      }
+    }
+
+    for (PaginatedComponent f : newFilesLoaded)
       if (f != null)
         f.onAfterLoad();
 
@@ -534,9 +576,8 @@ public class SchemaImpl implements Schema {
     if (indexMap.containsKey(indexName))
       throw new DatabaseMetadataException("Cannot create index '" + indexName + "' on type '" + typeName + "' because it already exists");
 
-    final IndexInternal index = indexFactory
-        .createIndex(indexType.name(), database, indexName, unique, databasePath + "/" + indexName, PaginatedFile.MODE.READ_WRITE, keyTypes, pageSize,
-            nullStrategy, callback);
+    final IndexInternal index = indexFactory.createIndex(indexType.name(), database, indexName, unique, databasePath + "/" + indexName,
+        PaginatedFile.MODE.READ_WRITE, keyTypes, pageSize, nullStrategy, callback);
 
     registerFile(index.getPaginatedComponent());
 
@@ -557,9 +598,8 @@ public class SchemaImpl implements Schema {
           throw new SchemaException("Cannot create index '" + indexName + "' because already exists");
 
         try {
-          final IndexInternal index = indexFactory
-              .createIndex(indexType.name(), database, FileUtils.encode(indexName, encoding), unique, databasePath + "/" + indexName,
-                  PaginatedFile.MODE.READ_WRITE, keyTypes, pageSize, nullStrategy, null);
+          final IndexInternal index = indexFactory.createIndex(indexType.name(), database, FileUtils.encode(indexName, encoding), unique,
+              databasePath + "/" + indexName, PaginatedFile.MODE.READ_WRITE, keyTypes, pageSize, nullStrategy, null);
 
           if (index instanceof PaginatedComponent)
             registerFile((PaginatedComponent) index);
@@ -732,7 +772,7 @@ public class SchemaImpl implements Schema {
         // CREATE ENTRY IN DICTIONARY IF NEEDED
         dictionary.getIdByName(typeName, true);
 
-        final DocumentType c = new DocumentType(SchemaImpl.this, typeName);
+        final DocumentType c = new DocumentType(EmbeddedSchema.this, typeName);
         types.put(typeName, c);
 
         for (int i = 0; i < buckets; ++i) {
@@ -799,7 +839,7 @@ public class SchemaImpl implements Schema {
 
         if (types.containsKey(typeName))
           throw new SchemaException("Vertex type '" + typeName + "' already exists");
-        final VertexType c = new VertexType(SchemaImpl.this, typeName);
+        final VertexType c = new VertexType(EmbeddedSchema.this, typeName);
         types.put(typeName, c);
 
         for (int i = 0; i < buckets; ++i) {
@@ -868,7 +908,7 @@ public class SchemaImpl implements Schema {
 
         if (types.containsKey(typeName))
           throw new SchemaException("Edge type '" + typeName + "' already exists");
-        final DocumentType c = new EdgeType(SchemaImpl.this, typeName);
+        final DocumentType c = new EdgeType(EmbeddedSchema.this, typeName);
         types.put(typeName, c);
 
         for (int i = 0; i < buckets; ++i) {
@@ -1104,69 +1144,7 @@ public class SchemaImpl implements Schema {
     }
 
     try {
-      final JSONObject root = new JSONObject();
-      root.put("version", Constants.getRawVersion());
-
-      final JSONObject settings = new JSONObject();
-      root.put("settings", settings);
-
-      settings.put("timeZone", timeZone.getDisplayName());
-      settings.put("dateFormat", dateFormat);
-      settings.put("dateTimeFormat", dateTimeFormat);
-
-      final JSONObject types = new JSONObject();
-      root.put("types", types);
-
-      for (DocumentType t : this.types.values()) {
-        final JSONObject type = new JSONObject();
-        types.put(t.getName(), type);
-
-        final String kind;
-        if (t instanceof VertexType)
-          kind = "v";
-        else if (t instanceof EdgeType)
-          kind = "e";
-        else
-          kind = "d";
-        type.put("type", kind);
-
-        final String[] parents = new String[t.getParentTypes().size()];
-        for (int i = 0; i < parents.length; ++i)
-          parents[i] = t.getParentTypes().get(i).getName();
-        type.put("parents", parents);
-
-        final List<Bucket> originalBuckets = t.getBuckets(false);
-        final String[] buckets = new String[originalBuckets.size()];
-        for (int i = 0; i < buckets.length; ++i)
-          buckets[i] = originalBuckets.get(i).getName();
-
-        type.put("buckets", buckets);
-
-        final JSONObject properties = new JSONObject();
-        type.put("properties", properties);
-
-        for (String propName : t.getPropertyNames()) {
-          final JSONObject prop = new JSONObject();
-          properties.put(propName, prop);
-
-          final Property p = t.getProperty(propName);
-          prop.put("type", p.getType());
-        }
-
-        final JSONObject indexes = new JSONObject();
-        type.put("indexes", indexes);
-
-        for (Index i : t.getAllIndexes(false)) {
-          for (Index entry : ((TypeIndex) i).getIndexesOnBuckets()) {
-            final JSONObject index = new JSONObject();
-            indexes.put(entry.getName(), index);
-
-            index.put("bucket", getBucketById(entry.getAssociatedBucketId()).getName());
-            index.put("properties", entry.getPropertyNames());
-            index.put("nullStrategy", entry.getNullStrategy());
-          }
-        }
-      }
+      final JSONObject root = serializeConfiguration();
 
       final File prevFile = new File(databasePath + "/" + SCHEMA_FILE_NAME);
       if (prevFile.exists()) {
@@ -1186,6 +1164,73 @@ public class SchemaImpl implements Schema {
     } catch (IOException e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on saving schema configuration to file: %s", e, databasePath + "/" + SCHEMA_FILE_NAME);
     }
+  }
+
+  public JSONObject serializeConfiguration() {
+    final JSONObject root = new JSONObject();
+    root.put("version", Constants.getRawVersion());
+
+    final JSONObject settings = new JSONObject();
+    root.put("settings", settings);
+
+    settings.put("timeZone", timeZone.getDisplayName());
+    settings.put("dateFormat", dateFormat);
+    settings.put("dateTimeFormat", dateTimeFormat);
+
+    final JSONObject types = new JSONObject();
+    root.put("types", types);
+
+    for (DocumentType t : this.types.values()) {
+      final JSONObject type = new JSONObject();
+      types.put(t.getName(), type);
+
+      final String kind;
+      if (t instanceof VertexType)
+        kind = "v";
+      else if (t instanceof EdgeType)
+        kind = "e";
+      else
+        kind = "d";
+      type.put("type", kind);
+
+      final String[] parents = new String[t.getParentTypes().size()];
+      for (int i = 0; i < parents.length; ++i)
+        parents[i] = t.getParentTypes().get(i).getName();
+      type.put("parents", parents);
+
+      final List<Bucket> originalBuckets = t.getBuckets(false);
+      final String[] buckets = new String[originalBuckets.size()];
+      for (int i = 0; i < buckets.length; ++i)
+        buckets[i] = originalBuckets.get(i).getName();
+
+      type.put("buckets", buckets);
+
+      final JSONObject properties = new JSONObject();
+      type.put("properties", properties);
+
+      for (String propName : t.getPropertyNames()) {
+        final JSONObject prop = new JSONObject();
+        properties.put(propName, prop);
+
+        final Property p = t.getProperty(propName);
+        prop.put("type", p.getType());
+      }
+
+      final JSONObject indexes = new JSONObject();
+      type.put("indexes", indexes);
+
+      for (Index i : t.getAllIndexes(false)) {
+        for (Index entry : ((TypeIndex) i).getIndexesOnBuckets()) {
+          final JSONObject index = new JSONObject();
+          indexes.put(entry.getName(), index);
+
+          index.put("bucket", getBucketById(entry.getAssociatedBucketId()).getName());
+          index.put("properties", entry.getPropertyNames());
+          index.put("nullStrategy", entry.getNullStrategy());
+        }
+      }
+    }
+    return root;
   }
 
   public void registerFile(final PaginatedComponent file) {

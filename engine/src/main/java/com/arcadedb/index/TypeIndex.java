@@ -28,7 +28,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.SchemaImpl;
+import com.arcadedb.schema.EmbeddedSchema;
 
 import java.io.IOException;
 import java.util.*;
@@ -170,7 +170,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   }
 
   @Override
-  public SchemaImpl.INDEX_TYPE getType() {
+  public EmbeddedSchema.INDEX_TYPE getType() {
     if (indexesOnBuckets.isEmpty())
       return null;
     return indexesOnBuckets.get(0).getType();
@@ -343,7 +343,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
 
   private List<? extends Index> getIndexesByKeys(final Object[] keys) {
     final int bucketIndex = type.getBucketIndexByKeys(keys,
-        DatabaseContext.INSTANCE.getContext((((SchemaImpl) type.getSchema()).getDatabase()).getDatabasePath()).asyncMode);
+        DatabaseContext.INSTANCE.getContext((type.getSchema().getEmbedded().getDatabase()).getDatabasePath()).asyncMode);
 
     if (bucketIndex > -1)
       // USE THE SHARDED INDEX

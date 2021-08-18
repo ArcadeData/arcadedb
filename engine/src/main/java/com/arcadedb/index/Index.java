@@ -25,7 +25,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
-import com.arcadedb.schema.SchemaImpl;
+import com.arcadedb.schema.EmbeddedSchema;
 
 /**
  * Basic Index interface.
@@ -71,7 +71,7 @@ public interface Index {
 
   boolean scheduleCompaction();
 
-  SchemaImpl.INDEX_TYPE getType();
+  EmbeddedSchema.INDEX_TYPE getType();
 
   String getTypeName();
 

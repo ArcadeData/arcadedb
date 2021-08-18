@@ -23,7 +23,7 @@ package com.arcadedb.database;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.engine.PaginatedFile;
-import com.arcadedb.schema.SchemaImpl;
+import com.arcadedb.schema.EmbeddedSchema;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -54,9 +54,9 @@ public class DatabaseFactory implements AutoCloseable {
   }
 
   public boolean exists() {
-    boolean exists = new File(databasePath + "/" + SchemaImpl.SCHEMA_FILE_NAME).exists();
+    boolean exists = new File(databasePath + "/" + EmbeddedSchema.SCHEMA_FILE_NAME).exists();
     if (!exists)
-      exists = new File(databasePath + "/" + SchemaImpl.SCHEMA_PREV_FILE_NAME).exists();
+      exists = new File(databasePath + "/" + EmbeddedSchema.SCHEMA_PREV_FILE_NAME).exists();
     return exists;
   }
 

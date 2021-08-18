@@ -26,7 +26,7 @@ import com.arcadedb.exception.DatabaseIsReadOnlyException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.SchemaImpl;
+import com.arcadedb.schema.EmbeddedSchema;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -310,7 +310,7 @@ public class TransactionTypeTest extends TestHelper {
         if (!database.getSchema().existsType(TYPE_NAME)) {
           final DocumentType type = database.getSchema().createDocumentType(TYPE_NAME, 3);
           type.createProperty("id", Integer.class);
-          database.getSchema().createTypeIndex(SchemaImpl.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" });
+          database.getSchema().createTypeIndex(EmbeddedSchema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" });
         }
 
         for (int i = 0; i < TOT; ++i) {

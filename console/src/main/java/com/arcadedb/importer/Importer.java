@@ -80,8 +80,7 @@ public class Importer {
     }
   }
 
-  protected void loadFromSource(final String url, final AnalyzedEntity.ENTITY_TYPE entityType, final AnalyzedSchema analyzedSchema)
-      throws IOException {
+  protected void loadFromSource(final String url, final AnalyzedEntity.ENTITY_TYPE entityType, final AnalyzedSchema analyzedSchema) throws IOException {
     if (url == null)
       // SKIP IT
       return;
@@ -110,8 +109,8 @@ public class Importer {
 
       if (source == null || source.compressed || source.totalSize < 0) {
         LogManager.instance().log(this, Level.INFO,
-            "Parsed %d (%d/sec) - %d documents (%d/sec) - %d vertices (%d/sec) - %d edges (%d/sec) - %d skipped edges - %d linked edges (%d/sec - %d%%)",
-            null, context.parsed.get(), ((context.parsed.get() - context.lastParsed) / deltaInSecs), context.createdDocuments.get(),
+            "Parsed %d (%d/sec) - %d documents (%d/sec) - %d vertices (%d/sec) - %d edges (%d/sec) - %d skipped edges - %d linked edges (%d/sec - %d%%)", null,
+            context.parsed.get(), ((context.parsed.get() - context.lastParsed) / deltaInSecs), context.createdDocuments.get(),
             (context.createdDocuments.get() - context.lastDocuments) / deltaInSecs, context.createdVertices.get(),
             (context.createdVertices.get() - context.lastVertices) / deltaInSecs, context.createdEdges.get(),
             (context.createdEdges.get() - context.lastEdges) / deltaInSecs, context.skippedEdges.get(), context.linkedEdges.get(),
@@ -121,9 +120,9 @@ public class Importer {
         final int progressPerc = (int) (parser.getPosition() * 100 / source.totalSize);
         LogManager.instance().log(this, Level.INFO,
             "Parsed %d (%d/sec - %d%%) - %d records (%d/sec) - %d vertices (%d/sec) - %d edges (%d/sec) - %d skipped edges - %d linked edges (%d/sec - %d%%)",
-            null, context.parsed.get(), ((context.parsed.get() - context.lastParsed) / deltaInSecs), progressPerc,
-            context.createdDocuments.get(), (context.createdDocuments.get() - context.lastDocuments) / deltaInSecs,
-            context.createdVertices.get(), (context.createdVertices.get() - context.lastVertices) / deltaInSecs, context.createdEdges.get(),
+            null, context.parsed.get(), ((context.parsed.get() - context.lastParsed) / deltaInSecs), progressPerc, context.createdDocuments.get(),
+            (context.createdDocuments.get() - context.lastDocuments) / deltaInSecs, context.createdVertices.get(),
+            (context.createdVertices.get() - context.lastVertices) / deltaInSecs, context.createdEdges.get(),
             (context.createdEdges.get() - context.lastEdges) / deltaInSecs, context.skippedEdges.get(), context.linkedEdges.get(),
             (context.linkedEdges.get() - context.lastLinkedEdges) / deltaInSecs,
             context.createdEdges.get() > 0 ? (int) (context.linkedEdges.get() * 100 / context.createdEdges.get()) : 0);
@@ -226,8 +225,7 @@ public class Importer {
         type.createProperty(settings.typeIdProperty, Type.getTypeByName(settings.typeIdType));
 //        database.getSchema()
 //            .createIndexes(SchemaImpl.INDEX_TYPE.LSM_TREE, settings.typeIdPropertyIsUnique, name, new String[] { settings.typeIdProperty });
-        LogManager.instance()
-            .log(this, Level.INFO, "- Creating indexed property '%s' of type '%s'", null, settings.typeIdProperty, settings.typeIdType);
+        LogManager.instance().log(this, Level.INFO, "- Creating indexed property '%s' of type '%s'", null, settings.typeIdProperty, settings.typeIdType);
       }
       return type;
     }
@@ -244,8 +242,7 @@ public class Importer {
         type.createProperty(settings.typeIdProperty, Type.getTypeByName(settings.typeIdType));
 //        database.getSchema()
 //            .createIndexes(SchemaImpl.INDEX_TYPE.LSM_TREE, settings.typeIdPropertyIsUnique, name, new String[] { settings.typeIdProperty });
-        LogManager.instance()
-            .log(this, Level.INFO, "- Creating indexed property '%s' of type '%s'", null, settings.typeIdProperty, settings.typeIdType);
+        LogManager.instance().log(this, Level.INFO, "- Creating indexed property '%s' of type '%s'", null, settings.typeIdProperty, settings.typeIdType);
       }
       return type;
     }
@@ -299,8 +296,8 @@ public class Importer {
           final Property property = type.getPolymorphicProperty(propName);
           if (property.getType() != propValue.getType()) {
             LogManager.instance()
-                .log(this, Level.WARNING, "- found schema property %s.%s of type %s, while analyzing the source type %s was found", null,
-                    entity, propName, property.getType(), propValue.getType());
+                .log(this, Level.WARNING, "- found schema property %s.%s of type %s, while analyzing the source type %s was found", null, entity, propName,
+                    property.getType(), propValue.getType());
           }
         } else {
           // CREATE IT
@@ -314,7 +311,7 @@ public class Importer {
       }
     }
 
-    ((SchemaImpl) database.getSchema()).saveConfiguration();
+    database.getSchema().getEmbedded().saveConfiguration();
 
     database.commit();
     database.begin();

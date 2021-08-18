@@ -29,7 +29,6 @@ import com.arcadedb.engine.WALFile;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.log.Logger;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.SchemaImpl;
 
 import java.util.logging.Level;
 

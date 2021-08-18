@@ -34,8 +34,8 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import java.util.*;
 
 public class DocumentType {
-  protected final SchemaImpl                        schema;
-  protected final String                            name;
+  protected final EmbeddedSchema schema;
+  protected final String         name;
   protected final List<DocumentType>                parentTypes             = new ArrayList<>();
   protected final List<DocumentType>                subTypes                = new ArrayList<>();
   protected final List<Bucket>                      buckets                 = new ArrayList<>();
@@ -44,7 +44,7 @@ public class DocumentType {
   protected       Map<Integer, List<IndexInternal>> bucketIndexesByBucket   = new HashMap<>();
   protected       Map<List<String>, TypeIndex>      indexesByProperties     = new HashMap<>();
 
-  public DocumentType(final SchemaImpl schema, final String name) {
+  public DocumentType(final EmbeddedSchema schema, final String name) {
     this.schema = schema;
     this.name = name;
   }
@@ -170,38 +170,38 @@ public class DocumentType {
     schema.saveConfiguration();
   }
 
-  public Index createTypeIndex(final SchemaImpl.INDEX_TYPE indexType, final boolean unique, final String... propertyNames) {
+  public Index createTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique, final String... propertyNames) {
     return schema.createTypeIndex(indexType, unique, name, propertyNames);
   }
 
-  public Index createTypeIndex(final SchemaImpl.INDEX_TYPE indexType, final boolean unique, String[] propertyNames, final int pageSize) {
+  public Index createTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique, String[] propertyNames, final int pageSize) {
     return schema.createTypeIndex(indexType, unique, name, propertyNames, pageSize);
   }
 
-  public Index createTypeIndex(final SchemaImpl.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames, final int pageSize,
+  public Index createTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames, final int pageSize,
       final Index.BuildIndexCallback callback) {
     return schema.createTypeIndex(indexType, unique, name, propertyNames, pageSize, callback);
   }
 
-  public Index createTypeIndex(final SchemaImpl.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames, final int pageSize,
+  public Index createTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames, final int pageSize,
       LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, final Index.BuildIndexCallback callback) {
     return schema.createTypeIndex(indexType, unique, name, propertyNames, pageSize, nullStrategy, callback);
   }
 
-  public Index getOrCreateTypeIndex(final SchemaImpl.INDEX_TYPE indexType, final boolean unique, final String... propertyNames) {
+  public Index getOrCreateTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique, final String... propertyNames) {
     return schema.getOrCreateTypeIndex(indexType, unique, name, propertyNames);
   }
 
-  public Index getOrCreateTypeIndex(final SchemaImpl.INDEX_TYPE indexType, final boolean unique, String[] propertyNames, final int pageSize) {
+  public Index getOrCreateTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique, String[] propertyNames, final int pageSize) {
     return schema.getOrCreateTypeIndex(indexType, unique, name, propertyNames, pageSize);
   }
 
-  public Index getOrCreateTypeIndex(final SchemaImpl.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames, final int pageSize,
+  public Index getOrCreateTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames, final int pageSize,
       final Index.BuildIndexCallback callback) {
     return schema.getOrCreateTypeIndex(indexType, unique, name, propertyNames, pageSize, callback);
   }
 
-  public Index getOrCreateTypeIndex(final SchemaImpl.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames, final int pageSize,
+  public Index getOrCreateTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames, final int pageSize,
       LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, final Index.BuildIndexCallback callback) {
     return schema.getOrCreateTypeIndex(indexType, unique, name, propertyNames, pageSize, nullStrategy, callback);
   }

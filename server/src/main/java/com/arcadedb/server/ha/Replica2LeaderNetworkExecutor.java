@@ -34,7 +34,7 @@ import com.arcadedb.network.binary.ChannelBinaryClient;
 import com.arcadedb.network.binary.ConnectionException;
 import com.arcadedb.network.binary.NetworkProtocolException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
-import com.arcadedb.schema.SchemaImpl;
+import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.TestCallback;
 import com.arcadedb.server.ha.message.*;
@@ -420,7 +420,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
       throws IOException {
 
     // WRITE THE SCHEMA
-    final FileWriter schemaFile = new FileWriter(database.getDatabasePath() + "/" + SchemaImpl.SCHEMA_FILE_NAME);
+    final FileWriter schemaFile = new FileWriter(database.getDatabasePath() + "/" + EmbeddedSchema.SCHEMA_FILE_NAME);
     try {
       schemaFile.write(dbStructure.getSchemaJson());
     } finally {
@@ -433,9 +433,9 @@ public class Replica2LeaderNetworkExecutor extends Thread {
     }
 
     // RELOAD THE SCHEMA
-    ((SchemaImpl) database.getSchema()).close();
+    database.getSchema().getEmbedded().close();
     DatabaseContext.INSTANCE.init(database);
-    ((SchemaImpl) database.getSchema()).load(PaginatedFile.MODE.READ_ONLY);
+    database.getSchema().getEmbedded().load(PaginatedFile.MODE.READ_ONLY);
   }
 
   private void installFile(final Binary buffer, final String db, final DatabaseInternal database, final int fileId, final String fileName) throws IOException {

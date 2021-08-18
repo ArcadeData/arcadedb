@@ -671,7 +671,7 @@ public class OrientDBImporter {
       final String[] properties = new String[] { fieldName };
       final boolean nullValuesIgnored = (boolean) indexDefinition.get("nullValuesIgnored");
 
-      database.getSchema().createTypeIndex(SchemaImpl.INDEX_TYPE.LSM_TREE, unique, className, properties, LSMTreeIndexAbstract.DEF_PAGE_SIZE,
+      database.getSchema().createTypeIndex(EmbeddedSchema.INDEX_TYPE.LSM_TREE, unique, className, properties, LSMTreeIndexAbstract.DEF_PAGE_SIZE,
           nullValuesIgnored ? LSMTreeIndexAbstract.NULL_STRATEGY.SKIP : LSMTreeIndexAbstract.NULL_STRATEGY.ERROR, null);
 
       log("- Created index %s on %s%s", unique ? "UNIQUE" : "NOT UNIQUE", className, Arrays.toString(properties));

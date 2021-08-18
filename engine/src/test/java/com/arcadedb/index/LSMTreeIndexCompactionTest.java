@@ -31,7 +31,7 @@ import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.SchemaImpl;
+import com.arcadedb.schema.EmbeddedSchema;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -142,9 +142,9 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
 
           v.createProperty("Name", String.class);
 
-          database.getSchema().createTypeIndex(SchemaImpl.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "id" }, INDEX_PAGE_SIZE);
-          database.getSchema().createTypeIndex(SchemaImpl.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "number" }, INDEX_PAGE_SIZE);
-          database.getSchema().createTypeIndex(SchemaImpl.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "relativeName" }, INDEX_PAGE_SIZE);
+          database.getSchema().createTypeIndex(EmbeddedSchema.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "id" }, INDEX_PAGE_SIZE);
+          database.getSchema().createTypeIndex(EmbeddedSchema.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "number" }, INDEX_PAGE_SIZE);
+          database.getSchema().createTypeIndex(EmbeddedSchema.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "relativeName" }, INDEX_PAGE_SIZE);
         }
       }
     });

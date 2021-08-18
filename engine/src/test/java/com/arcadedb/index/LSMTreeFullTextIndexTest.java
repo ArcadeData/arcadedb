@@ -28,7 +28,7 @@ import com.arcadedb.index.lsm.LSMTreeFullTextIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.SchemaImpl;
+import com.arcadedb.schema.EmbeddedSchema;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -49,7 +49,7 @@ public class LSMTreeFullTextIndexTest extends TestHelper {
 
         final DocumentType type = database.getSchema().createDocumentType(TYPE_NAME, 1);
         type.createProperty("text", String.class);
-        Index typeIndex = database.getSchema().createTypeIndex(SchemaImpl.INDEX_TYPE.FULL_TEXT, false, TYPE_NAME, new String[] { "text" }, PAGE_SIZE);
+        Index typeIndex = database.getSchema().createTypeIndex(EmbeddedSchema.INDEX_TYPE.FULL_TEXT, false, TYPE_NAME, new String[] { "text" }, PAGE_SIZE);
 
         Assertions.assertTrue(database.getSchema().existsType(TYPE_NAME));
 
