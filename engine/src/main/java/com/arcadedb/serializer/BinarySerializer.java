@@ -65,11 +65,11 @@ public class BinarySerializer {
     }
   }
 
-  public Binary serializeDocument(final Database database, final MutableDocument document) {
-    Binary header = document.getBuffer();
+  public Binary serializeDocument(final Database database, final Document document) {
+    Binary header = ((BaseRecord) document).getBuffer();
 
     final boolean serializeProperties;
-    if (header == null || document.isDirty()) {
+    if (header == null || (document instanceof MutableDocument && ((MutableDocument) document).isDirty())) {
       header = ((EmbeddedDatabase) database).getContext().getTemporaryBuffer1();
       header.putByte(document.getRecordType()); // RECORD TYPE
       serializeProperties = true;
@@ -86,11 +86,11 @@ public class BinarySerializer {
     return header;
   }
 
-  public Binary serializeVertex(final Database database, final MutableVertex vertex) {
-    Binary header = vertex.getBuffer();
+  public Binary serializeVertex(final Database database, final VertexInternal vertex) {
+    Binary header = ((BaseRecord) vertex).getBuffer();
 
     final boolean serializeProperties;
-    if (header == null || vertex.isDirty()) {
+    if (header == null || (vertex instanceof MutableVertex && ((MutableVertex) vertex).isDirty())) {
       header = ((EmbeddedDatabase) database).getContext().getTemporaryBuffer1();
       header.putByte(vertex.getRecordType()); // RECORD TYPE
       serializeProperties = true;
@@ -126,11 +126,11 @@ public class BinarySerializer {
     return header;
   }
 
-  public Binary serializeEdge(final Database database, final MutableEdge edge) {
-    Binary header = edge.getBuffer();
+  public Binary serializeEdge(final Database database, final Edge edge) {
+    Binary header = ((BaseRecord) edge).getBuffer();
 
     final boolean serializeProperties;
-    if (header == null || edge.isDirty()) {
+    if (header == null || (edge instanceof MutableEdge && ((MutableEdge) edge).isDirty())) {
       header = ((EmbeddedDatabase) database).getContext().getTemporaryBuffer1();
       header.putByte(edge.getRecordType()); // RECORD TYPE
       serializeProperties = true;
@@ -519,6 +519,55 @@ public class BinarySerializer {
       header.putUnsignedNumber(dictionary.getIdByName(p, true));
 
       Object value = record.get(p);
+
+      final int startContentPosition = content.position();
+
+      byte type = BinaryTypes.getTypeFromValue(value);
+
+      if (value != null && type == BinaryTypes.TYPE_STRING) {
+        final int id = dictionary.getIdByName((String) value, false);
+        if (id > -1) {
+          // WRITE THE COMPRESSED STRING
+          type = BinaryTypes.TYPE_COMPRESSED_STRING;
+          value = id;
+        }
+      }
+
+      content.putByte(type);
+      serializeValue(database, content, type, value);
+
+      // WRITE PROPERTY CONTENT POSITION
+      header.putUnsignedNumber(startContentPosition);
+    }
+
+    content.flip();
+
+    final int headerEndOffset = header.position();
+
+    header.append(content);
+
+    // UPDATE HEADER SIZE
+    header.putInt(headerSizePosition, headerEndOffset);
+
+    header.position(header.size());
+    header.flip();
+    return header;
+  }
+
+  public Binary serializeProperties(final Database database, final Map<String, Object> properties, final Binary header, final Binary content) {
+    final int headerSizePosition = header.position();
+    header.putInt(0); // TEMPORARY PLACEHOLDER FOR HEADER SIZE
+
+    final Set<String> propertyNames = properties.keySet();
+    header.putUnsignedNumber(propertyNames.size());
+
+    final Dictionary dictionary = database.getSchema().getDictionary();
+
+    for (String p : propertyNames) {
+      // WRITE PROPERTY ID FROM THE DICTIONARY
+      header.putUnsignedNumber(dictionary.getIdByName(p, true));
+
+      Object value = properties.get(p);
 
       final int startContentPosition = content.position();
 

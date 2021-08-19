@@ -21,6 +21,7 @@
 package com.arcadedb.server.ha.message;
 
 import com.arcadedb.database.Binary;
+import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.HAServer;
 
 import java.util.HashSet;
@@ -51,7 +52,7 @@ public class ReplicaConnectFullResyncResponse extends HAAbstractCommand {
   }
 
   @Override
-  public void fromStream(final Binary stream) {
+  public void fromStream(ArcadeDBServer server, final Binary stream) {
     lastMessageNumber = stream.getLong();
     databases = new HashSet<>();
     final int fileCount = (int) stream.getUnsignedNumber();

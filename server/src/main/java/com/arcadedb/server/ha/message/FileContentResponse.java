@@ -21,6 +21,7 @@
 package com.arcadedb.server.ha.message;
 
 import com.arcadedb.database.Binary;
+import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.HAServer;
 
 public class FileContentResponse extends HAAbstractCommand {
@@ -62,7 +63,7 @@ public class FileContentResponse extends HAAbstractCommand {
   }
 
   @Override
-  public void fromStream(final Binary stream) {
+  public void fromStream(ArcadeDBServer server, final Binary stream) {
     pages = (int) stream.getUnsignedNumber();
     pagesContent = new Binary(stream.getBytes());
     last = stream.getByte() == 1;

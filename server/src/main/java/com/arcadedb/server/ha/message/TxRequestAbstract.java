@@ -23,6 +23,7 @@ package com.arcadedb.server.ha.message;
 import com.arcadedb.database.Binary;
 import com.arcadedb.engine.CompressionFactory;
 import com.arcadedb.engine.WALFile;
+import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.ReplicationException;
 
 public abstract class TxRequestAbstract extends HAAbstractCommand {
@@ -49,7 +50,7 @@ public abstract class TxRequestAbstract extends HAAbstractCommand {
   }
 
   @Override
-  public void fromStream(final Binary stream) {
+  public void fromStream(ArcadeDBServer server, final Binary stream) {
     databaseName = stream.getString();
     changesUncompressedLength = stream.getInt();
     changesBuffer = CompressionFactory.getDefault().decompress(new Binary(stream.getBytes()), changesUncompressedLength);

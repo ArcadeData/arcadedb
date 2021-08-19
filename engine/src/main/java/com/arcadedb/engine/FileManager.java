@@ -90,9 +90,15 @@ public class FileManager {
 
   /**
    * Start recording changes in file system. Changes can be returned (before the end of the lock in database) with {@link #getRecordedChanges()}.
+   *
+   * @return true if the recorded started and false if it was already started.
    */
-  public void startRecordingChanges() {
+  public boolean startRecordingChanges() {
+    if (recordedChanges != null)
+      return false;
+
     recordedChanges = new ArrayList<>();
+    return true;
   }
 
   public List<FileChange> getRecordedChanges() {

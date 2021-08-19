@@ -21,6 +21,7 @@
 package com.arcadedb.server.ha.message;
 
 import com.arcadedb.database.Binary;
+import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.HAServer;
 
 import java.util.logging.Level;
@@ -53,7 +54,7 @@ public class ReplicaConnectRequest extends HAAbstractCommand {
   }
 
   @Override
-  public void fromStream(Binary stream) {
+  public void fromStream(ArcadeDBServer server, Binary stream) {
     lastReplicationMessageNumber = stream.getLong();
   }
 

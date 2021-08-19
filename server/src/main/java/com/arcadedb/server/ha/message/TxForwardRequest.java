@@ -28,6 +28,7 @@ import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.serializer.BinaryTypes;
+import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.ha.ReplicationException;
 
@@ -35,7 +36,7 @@ import java.util.*;
 import java.util.logging.Level;
 
 /**
- * Forward a transaction to the Leader server to be executed. Apart the TX content (like with TxRequest), unique keys list is
+ * Forward a transaction to the Leader server to be executed. Apart from the TX content (like with TxRequest), unique keys list is
  * needed to assure the index unique constraint.
  */
 public class TxForwardRequest extends TxRequestAbstract {
@@ -59,8 +60,8 @@ public class TxForwardRequest extends TxRequestAbstract {
   }
 
   @Override
-  public void fromStream(final Binary stream) {
-    super.fromStream(stream);
+  public void fromStream(ArcadeDBServer server, final Binary stream) {
+    super.fromStream(server, stream);
     uniqueKeysUncompressedLength = stream.getInt();
     uniqueKeysBuffer = CompressionFactory.getDefault().decompress(new Binary(stream.getBytes()), uniqueKeysUncompressedLength);
   }

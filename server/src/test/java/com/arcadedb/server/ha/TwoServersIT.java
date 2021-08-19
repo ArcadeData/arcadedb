@@ -46,7 +46,7 @@ public class TwoServersIT extends BaseGraphServerTest {
           "http://127.0.0.1:248" + +serverIndex + "/query/graph/sql/select%20from%20V1%20limit%201").openConnection();
 
       connection.setRequestMethod("GET");
-      connection.setRequestProperty("Authorization", "Basic " + Base64.getEncoder().encodeToString("root:root".getBytes()));
+      connection.setRequestProperty("Authorization", "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
       connection.connect();
 
       try {
@@ -73,7 +73,7 @@ public class TwoServersIT extends BaseGraphServerTest {
           "http://127.0.0.1:248" + serverIndex + "/document/graph/" + BaseGraphServerTest.root.getIdentity().toString().substring(1)).openConnection();
 
       connection.setRequestMethod("GET");
-      connection.setRequestProperty("Authorization", "Basic " + Base64.getEncoder().encodeToString("root:root".getBytes()));
+      connection.setRequestProperty("Authorization", "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
       connection.connect();
 
       try {
@@ -103,7 +103,7 @@ public class TwoServersIT extends BaseGraphServerTest {
       final String payload = "{\"@type\":\"Person\",\"name\":\"Jay\",\"surname\":\"Miner\",\"age\":69}";
 
       connection.setRequestMethod("POST");
-      connection.setRequestProperty("Authorization", "Basic " + Base64.getEncoder().encodeToString("root:root".getBytes()));
+      connection.setRequestProperty("Authorization", "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
       connection.setDoOutput(true);
 
       connection.connect();

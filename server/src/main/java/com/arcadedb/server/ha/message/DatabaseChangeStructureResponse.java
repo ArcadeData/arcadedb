@@ -20,14 +20,23 @@
  */
 package com.arcadedb.server.ha.message;
 
-import com.arcadedb.database.Binary;
-import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.HAServer;
 
-public interface HACommand {
-  HACommand execute(HAServer server, String remoteServerName, long messageNumber);
+/**
+ * Response for a transaction. This is needed to check the quorum by the leader.
+ */
+public class DatabaseChangeStructureResponse extends HAAbstractCommand {
+  public DatabaseChangeStructureResponse() {
+  }
 
-  void toStream(Binary stream);
+  @Override
+  public HACommand execute(final HAServer server, final String remoteServerName, final long messageNumber) {
+    server.receivedResponse(remoteServerName, messageNumber);
+    return null;
+  }
 
-  void fromStream(ArcadeDBServer server, Binary stream);
+  @Override
+  public String toString() {
+    return "dbchangestructure-response";
+  }
 }

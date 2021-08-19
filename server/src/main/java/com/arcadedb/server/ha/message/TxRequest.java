@@ -24,6 +24,7 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.WALException;
 import com.arcadedb.engine.WALFile;
+import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.ha.ReplicationException;
 
@@ -51,9 +52,9 @@ public class TxRequest extends TxRequestAbstract {
   }
 
   @Override
-  public void fromStream(Binary stream) {
+  public void fromStream(ArcadeDBServer server, Binary stream) {
     waitForResponse = stream.getByte() == 1;
-    super.fromStream(stream);
+    super.fromStream(server, stream);
   }
 
   @Override

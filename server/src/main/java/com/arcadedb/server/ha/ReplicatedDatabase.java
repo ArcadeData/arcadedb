@@ -42,19 +42,24 @@ import com.arcadedb.query.sql.parser.StatementCache;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.ha.message.CommandForwardRequest;
+import com.arcadedb.server.ha.message.DatabaseChangeStructureRequest;
 import com.arcadedb.server.ha.message.TxForwardRequest;
 import com.arcadedb.server.ha.message.TxRequest;
 import com.arcadedb.utility.Pair;
 
 import java.io.IOException;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
+import java.util.concurrent.atomic.AtomicReference;
 
 public class ReplicatedDatabase implements DatabaseInternal {
   private final ArcadeDBServer   server;
   private final EmbeddedDatabase proxied;
+  private final ReplicatedSchema schema;
   private       HAServer.QUORUM  quorum;
   private final long             timeout;
 
@@ -67,6 +72,8 @@ public class ReplicatedDatabase implements DatabaseInternal {
     this.quorum = HAServer.QUORUM.valueOf(proxied.getConfiguration().getValueAsString(GlobalConfiguration.HA_QUORUM).toUpperCase());
     this.timeout = proxied.getConfiguration().getValueAsLong(GlobalConfiguration.HA_QUORUM_TIMEOUT);
     this.proxied.setWrappedDatabaseInstance(this);
+
+    this.schema = new ReplicatedSchema(this, proxied.getSchema().getEmbedded());
   }
 
   @Override
@@ -152,6 +159,14 @@ public class ReplicatedDatabase implements DatabaseInternal {
 
     // COMMIT 2ND PHASE ONLY IF THE QUORUM HAS BEEN REACHED
     tx.commit2ndPhase(changes);
+  }
+
+  public long getTimeout() {
+    return timeout;
+  }
+
+  public ArcadeDBServer getServer() {
+    return server;
   }
 
   @Override
@@ -409,18 +424,17 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
-  public Edge newEdgeByKeys(final String sourceVertexType, final String[] sourceVertexKeyNames, final Object[] sourceVertexKeyValues, final String destinationVertexType,
-      final String[] destinationVertexKeyNames, final Object[] destinationVertexKeyValues, final boolean createVertexIfNotExist, final String edgeType,
-      final boolean bidirectional, final Object... properties) {
+  public Edge newEdgeByKeys(final String sourceVertexType, final String[] sourceVertexKeyNames, final Object[] sourceVertexKeyValues,
+      final String destinationVertexType, final String[] destinationVertexKeyNames, final Object[] destinationVertexKeyValues,
+      final boolean createVertexIfNotExist, final String edgeType, final boolean bidirectional, final Object... properties) {
 
     return proxied.newEdgeByKeys(sourceVertexType, sourceVertexKeyNames, sourceVertexKeyValues, destinationVertexType, destinationVertexKeyNames,
-        destinationVertexKeyValues,
-        createVertexIfNotExist, edgeType, bidirectional, properties);
+        destinationVertexKeyValues, createVertexIfNotExist, edgeType, bidirectional, properties);
   }
 
   @Override
   public Schema getSchema() {
-    return proxied.getSchema();
+    return schema;
   }
 
   @Override
@@ -471,12 +485,30 @@ public class ReplicatedDatabase implements DatabaseInternal {
 
   @Override
   public ResultSet command(final String language, final String query, final Object... args) {
-    return proxied.command(language, query, args);
+    if (!server.getHA().isLeader()) {
+      // USE A BIGGER TIMEOUT CONSIDERING THE DOUBLE LATENCY
+      final CommandForwardRequest command = new CommandForwardRequest(ReplicatedDatabase.this, language, query, null, args);
+      ResultSet result = (ResultSet) server.getHA().forwardCommandToLeader(command, timeout * 2);
+      return result;
+    }
+
+    return (ResultSet) recordFileChanges(() -> {
+      return proxied.command(language, query, args);
+    });
   }
 
   @Override
   public ResultSet command(final String language, final String query, final Map<String, Object> args) {
-    return proxied.command(language, query, args);
+    if (!server.getHA().isLeader()) {
+      // USE A BIGGER TIMEOUT CONSIDERING THE DOUBLE LATENCY
+      final CommandForwardRequest command = new CommandForwardRequest(ReplicatedDatabase.this, language, query, args, null);
+      ResultSet result = (ResultSet) server.getHA().forwardCommandToLeader(command, timeout * 2);
+      return result;
+    }
+
+    return (ResultSet) recordFileChanges(() -> {
+      return proxied.command(language, query, args);
+    });
   }
 
   @Override
@@ -532,5 +564,49 @@ public class ReplicatedDatabase implements DatabaseInternal {
   @Override
   public String toString() {
     return proxied.toString();
+  }
+
+  protected Object recordFileChanges(final Callable callback) {
+    final HAServer ha = server.getHA();
+
+    final AtomicReference result = new AtomicReference();
+
+    // ACQUIRE A DATABASE WRITE LOCK. THE LOCK IS REENTRANT, SO THE ACQUISITION DOWN THE LINE IS GOING TO PASS BECAUSE ALREADY ACQUIRED HERE
+    final DatabaseChangeStructureRequest command = (DatabaseChangeStructureRequest) proxied.executeInWriteLock(() -> {
+      if (!ha.isLeader())
+        return callback.call();
+
+      if (!proxied.getFileManager().startRecordingChanges())
+        // ALREADY RECORDING
+        return callback.call();
+
+      try {
+        result.set(callback.call());
+
+        final List<FileManager.FileChange> fileChanges = proxied.getFileManager().getRecordedChanges();
+
+        final Map<Integer, String> addFiles = new HashMap<>();
+        final Map<Integer, String> removeFiles = new HashMap<>();
+        for (FileManager.FileChange c : fileChanges) {
+          if (c.create)
+            addFiles.put(c.fileId, c.fileName);
+          else
+            removeFiles.put(c.fileId, c.fileName);
+        }
+
+        final String schemaJson = proxied.getSchema().getEmbedded().serializeConfiguration().toString();
+
+        return new DatabaseChangeStructureRequest(proxied.getName(), schemaJson, addFiles, removeFiles);
+
+      } finally {
+        proxied.getFileManager().stopRecordingChanges();
+      }
+    });
+
+    // SEND THE COMMAND OUTSIDE THE EXCLUSIVE LOCK
+    final int quorum = ha.getConfiguredServers();
+    ha.sendCommandToReplicasWithQuorum(command, 0, timeout);
+
+    return result.get();
   }
 }

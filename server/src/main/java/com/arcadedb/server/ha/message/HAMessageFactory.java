@@ -23,8 +23,8 @@ package com.arcadedb.server.ha.message;
 import com.arcadedb.database.Binary;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.ReplicationMessage;
-import com.arcadedb.server.log.ServerLogger;
 import com.arcadedb.utility.Pair;
 
 import java.util.ArrayList;
@@ -34,24 +34,28 @@ import java.util.Map;
 import java.util.logging.Level;
 
 public class HAMessageFactory {
-  private final ServerLogger serverLogger;
+  private final ArcadeDBServer                        server;
   private final List<Class<? extends HACommand>>      commands   = new ArrayList<>();
   private final Map<Class<? extends HACommand>, Byte> commandMap = new HashMap<>();
 
-  public HAMessageFactory(final ServerLogger serverLogger) {
-    this.serverLogger = serverLogger;
+  public HAMessageFactory(final ArcadeDBServer server) {
+    this.server = server;
 
     registerCommand(ReplicaConnectRequest.class);
     registerCommand(ReplicaConnectFullResyncResponse.class);
     registerCommand(ReplicaConnectHotResyncResponse.class);
     registerCommand(DatabaseStructureRequest.class);
     registerCommand(DatabaseStructureResponse.class);
+    registerCommand(DatabaseChangeStructureRequest.class);
+    registerCommand(DatabaseChangeStructureResponse.class);
     registerCommand(FileContentRequest.class);
     registerCommand(FileContentResponse.class);
     registerCommand(TxRequest.class);
     registerCommand(TxResponse.class);
     registerCommand(TxForwardRequest.class);
     registerCommand(TxForwardResponse.class);
+    registerCommand(CommandForwardRequest.class);
+    registerCommand(CommandForwardResponse.class);
     registerCommand(ReplicaReadyRequest.class);
     registerCommand(UpdateClusterConfiguration.class);
     registerCommand(ErrorResponse.class);
@@ -76,13 +80,13 @@ public class HAMessageFactory {
 
     if (request != null) {
       final long messageNumber = buffer.getLong();
-      request.fromStream(buffer);
+      request.fromStream(server, buffer);
 
       buffer.rewind();
       return new Pair<>(new ReplicationMessage(messageNumber, buffer), request);
     }
 
-    serverLogger.log(this, Level.SEVERE, "Error on reading request, command %d not valid", commandId);
+    server.log(this, Level.SEVERE, "Error on reading request, command %d not valid", commandId);
     return null;
   }
 

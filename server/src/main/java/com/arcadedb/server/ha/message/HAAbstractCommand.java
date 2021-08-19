@@ -21,6 +21,7 @@
 package com.arcadedb.server.ha.message;
 
 import com.arcadedb.database.Binary;
+import com.arcadedb.server.ArcadeDBServer;
 
 public abstract class HAAbstractCommand implements HACommand {
   @Override
@@ -28,6 +29,6 @@ public abstract class HAAbstractCommand implements HACommand {
   }
 
   @Override
-  public void fromStream(final Binary stream) {
+  public void fromStream(ArcadeDBServer server, final Binary stream) {
   }
 }

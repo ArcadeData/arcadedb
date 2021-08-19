@@ -294,7 +294,8 @@ public class ServerSecurity implements ServerPlugin {
         }
 
       } while (rootPassword == null);
-    }
+    } else
+      LogManager.instance().log(this, Level.INFO, "Creating root user with provided password");
 
     credentialsValidator.validateCredentials("root", rootPassword);
 

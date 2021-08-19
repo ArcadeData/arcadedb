@@ -224,6 +224,11 @@ public class ResultInternal implements Result {
   }
 
   @Override
+  public Map<String, Object> toMap() {
+    return content;
+  }
+
+  @Override
   public Document toElement() {
     if (isElement())
       return getElement().get();

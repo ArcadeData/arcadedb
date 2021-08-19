@@ -21,6 +21,7 @@
 package com.arcadedb.server.ha.message;
 
 import com.arcadedb.database.Binary;
+import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.HAServer;
 
 import java.util.HashMap;
@@ -60,7 +61,7 @@ public class DatabaseStructureResponse extends HAAbstractCommand {
   }
 
   @Override
-  public void fromStream(final Binary stream) {
+  public void fromStream(ArcadeDBServer server, final Binary stream) {
     schemaJson = stream.getString();
 
     fileNames = new HashMap<>();

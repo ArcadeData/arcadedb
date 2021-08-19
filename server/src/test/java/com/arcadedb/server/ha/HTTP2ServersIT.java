@@ -46,13 +46,14 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
       try {
 
         initialConnection.setRequestMethod("POST");
-        initialConnection.setRequestProperty("Authorization", "Basic " + Base64.getEncoder().encodeToString("root:root".getBytes()));
+        initialConnection.setRequestProperty("Authorization",
+            "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
         formatPost(initialConnection, "sql", "create vertex type VertexType" + serverIndex, new HashMap<>());
         initialConnection.connect();
 
         final String response = readResponse(initialConnection);
 
-        LogManager.instance().log(this, Level.INFO, "Response: ", null, response);
+        LogManager.instance().log(this, Level.INFO, "Response: %s", null, response);
 
         Assertions.assertEquals(200, initialConnection.getResponseCode());
         Assertions.assertEquals("OK", initialConnection.getResponseMessage());
@@ -71,7 +72,8 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
 
       try {
         connection.setRequestMethod("POST");
-        connection.setRequestProperty("Authorization", "Basic " + Base64.getEncoder().encodeToString("root:root".getBytes()));
+        connection.setRequestProperty("Authorization",
+            "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
         formatPost(connection, "sql", "select from VertexType" + serverIndex, new HashMap<>());
         connection.connect();
 

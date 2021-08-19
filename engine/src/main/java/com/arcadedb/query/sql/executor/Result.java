@@ -215,4 +215,6 @@ public interface Result {
   }
 
   boolean hasProperty(String varName);
+
+  Map<String, Object> toMap();
 }

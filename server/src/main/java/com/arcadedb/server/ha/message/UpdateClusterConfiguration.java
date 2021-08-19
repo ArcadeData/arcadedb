@@ -21,6 +21,7 @@
 package com.arcadedb.server.ha.message;
 
 import com.arcadedb.database.Binary;
+import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.HAServer;
 
 import java.util.logging.Level;
@@ -52,7 +53,7 @@ public class UpdateClusterConfiguration extends HAAbstractCommand {
   }
 
   @Override
-  public void fromStream(final Binary stream) {
+  public void fromStream(ArcadeDBServer server, final Binary stream) {
     servers = stream.getString();
     replicaServersHTTPAddresses = stream.getString();
   }

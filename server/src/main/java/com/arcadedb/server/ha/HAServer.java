@@ -33,6 +33,7 @@ import com.arcadedb.network.binary.ChannelBinaryClient;
 import com.arcadedb.network.binary.ConnectionException;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
+import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.TestCallback;
@@ -41,7 +42,6 @@ import com.arcadedb.server.ha.message.HACommand;
 import com.arcadedb.server.ha.message.HAMessageFactory;
 import com.arcadedb.server.ha.message.UpdateClusterConfiguration;
 import com.arcadedb.server.ha.network.DefaultServerSocketFactory;
-import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.utility.Pair;
 import com.arcadedb.utility.RecordTableFormatter;
 import com.arcadedb.utility.TableFormatter;
@@ -104,6 +104,7 @@ public class HAServer implements ServerPlugin {
   private class ForwardedMessage {
     public final CountDownLatch semaphore;
     public       ErrorResponse  error;
+    public       Object         result;
 
     public ForwardedMessage() {
       this.semaphore = new CountDownLatch(1);
@@ -473,7 +474,7 @@ public class HAServer implements ServerPlugin {
       c.updateStats(msg.sentOn, receivedOn);
   }
 
-  public void receivedResponseFromForward(final long messageNumber, final ErrorResponse error) {
+  public void receivedResponseFromForward(final long messageNumber, final Object result, final ErrorResponse error) {
     final ForwardedMessage msg = forwardMessagesWaitingForResponse.get(messageNumber);
     if (msg == null)
       // QUORUM ALREADY REACHED OR TIMEOUT
@@ -481,6 +482,7 @@ public class HAServer implements ServerPlugin {
 
     server.log(this, Level.FINE, "Forwarded message %d has been executed", messageNumber);
 
+    msg.result = result;
     msg.error = error;
     msg.semaphore.countDown();
   }
@@ -562,7 +564,7 @@ public class HAServer implements ServerPlugin {
       this.configuredServers = 1;
   }
 
-  public void forwardCommandToLeader(final HACommand command, final long timeout) {
+  public Object forwardCommandToLeader(final HACommand command, final long timeout) {
     final Binary buffer = new Binary();
 
     final String leaderName = getLeaderName();
@@ -613,6 +615,8 @@ public class HAServer implements ServerPlugin {
       server.log(this, Level.SEVERE, "Leader server '%s' does not respond, starting election...", leaderName);
       startElection();
     }
+
+    return forwardedMessage.result;
   }
 
   public void sendCommandToReplicasNoLog(final HACommand command) {

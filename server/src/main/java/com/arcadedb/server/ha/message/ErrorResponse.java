@@ -21,6 +21,7 @@
 package com.arcadedb.server.ha.message;
 
 import com.arcadedb.database.Binary;
+import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.HAServer;
 
 /**
@@ -40,7 +41,7 @@ public class ErrorResponse extends HAAbstractCommand {
 
   @Override
   public HACommand execute(final HAServer server, final String remoteServerName, final long messageNumber) {
-    server.receivedResponseFromForward(messageNumber, this);
+    server.receivedResponseFromForward(messageNumber, null, this);
     return null;
   }
 
@@ -51,7 +52,7 @@ public class ErrorResponse extends HAAbstractCommand {
   }
 
   @Override
-  public void fromStream(final Binary stream) {
+  public void fromStream(ArcadeDBServer server, final Binary stream) {
     exceptionClass = stream.getString();
     exceptionMessage = stream.getString();
   }
