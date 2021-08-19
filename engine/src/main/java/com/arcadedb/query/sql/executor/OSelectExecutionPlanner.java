@@ -570,6 +570,25 @@ public class OSelectExecutionPlanner {
     return item.getExpression().toString().equalsIgnoreCase("count(*)");
   }
 
+  private static boolean isCountOnly(QueryPlanningInfo info) {
+    if (info.aggregateProjection == null
+            || info.projection == null
+            || info.aggregateProjection.getItems().size() != 1
+            || info.projection.getItems().stream()
+            .filter(x -> !x.getProjectionAliasAsString().startsWith("_$$$ORDER_BY_ALIAS$$$_"))
+            .count()
+            != 1) {
+      return false;
+    }
+    ProjectionItem item = info.aggregateProjection.getItems().get(0);
+    Expression exp = item.getExpression();
+    if (exp.getMathExpression() != null && exp.getMathExpression() instanceof BaseExpression) {
+      BaseExpression base = (BaseExpression) exp.getMathExpression();
+      return base.isCount() && base.getModifier() == null;
+    }
+    return false;
+  }
+
   private boolean isCount(Projection aggregateProjection, Projection projection) {
     if (aggregateProjection == null || projection == null || aggregateProjection.getItems().size() != 1 || projection.getItems().size() != 1) {
       return false;
@@ -610,6 +629,11 @@ public class OSelectExecutionPlanner {
 
         result.chain(new AggregateProjectionCalculationStep(info.aggregateProjection, info.groupBy, aggregationLimit, ctx,
             info.timeout != null ? info.timeout.getVal().longValue() : -1, profilingEnabled));
+        if (isCountOnly(info) && info.groupBy == null) {
+          result.chain(
+                  new GuaranteeEmptyCountStep(
+                          info.aggregateProjection.getItems().get(0), ctx, profilingEnabled));
+        }
       }
       result.chain(new ProjectionCalculationStep(info.projection, ctx, profilingEnabled));
 

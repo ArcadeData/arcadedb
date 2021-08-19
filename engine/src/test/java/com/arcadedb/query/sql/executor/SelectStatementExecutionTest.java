@@ -197,352 +197,381 @@ public class SelectStatementExecutionTest extends TestHelper {
 
         result.close();
     }
-//
-//    @Test
-//    public void testSelectFullScanLimit1() {
-//        String className = "testSelectFullScanLimit1";
-//        database.getSchema().createDocumentType(className);
-//        for (int i = 0; i < 300; i++) {
-//            MutableDocument doc = database.newDocument(className);
-//            doc.set("name", "name" + i);
-//            doc.set("surname", "surname" + i);
-//            doc.save();
-//        }
-//        ResultSet result = database.query("sql", "select from " + className + " limit 10");
-//        printExecutionPlan(result);
-//
-//        for (int i = 0; i < 10; i++) {
-//            Assertions.assertTrue(result.hasNext());
-//            Result item = result.next();
-//            Assertions.assertNotNull(item);
-//            Assertions.assertTrue(("" + item.getProperty("name")).startsWith("name"));
-//        }
-//        Assertions.assertFalse(result.hasNext());
-//        result.close();
-//    }
-//
-//    @Test
-//    public void testSelectFullScanSkipLimit1() {
-//        String className = "testSelectFullScanSkipLimit1";
-//        database.getSchema().createDocumentType(className);
-//        for (int i = 0; i < 300; i++) {
-//            MutableDocument doc = database.newDocument(className);
-//            doc.set("name", "name" + i);
-//            doc.set("surname", "surname" + i);
-//            doc.save();
-//        }
-//        ResultSet result = database.query("sql", "select from " + className + " skip 100 limit 10");
-//        printExecutionPlan(result);
-//
-//        for (int i = 0; i < 10; i++) {
-//            Assertions.assertTrue(result.hasNext());
-//            Result item = result.next();
-//            Assertions.assertNotNull(item);
-//            Assertions.assertTrue(("" + item.getProperty("name")).startsWith("name"));
-//        }
-//        Assertions.assertFalse(result.hasNext());
-//        result.close();
-//    }
-//
-//    @Test
-//    public void testSelectOrderByDesc() {
-//        String className = "testSelectOrderByDesc";
-//        database.getSchema().createDocumentType(className);
-//        for (int i = 0; i < 30; i++) {
-//            MutableDocument doc = database.newDocument(className);
-//            doc.set("name", "name" + i);
-//            doc.set("surname", "surname" + i);
-//            doc.save();
-//        }
-//        ResultSet result = database.query("sql", "select from " + className + " order by surname desc");
-//        printExecutionPlan(result);
-//
-//        String lastSurname = null;
-//        for (int i = 0; i < 30; i++) {
-//            Assertions.assertTrue(result.hasNext());
-//            Result item = result.next();
-//            Assertions.assertNotNull(item);
-//            String thisSurname = item.getProperty("surname");
-//            if (lastSurname != null) {
-//                Assertions.assertTrue(lastSurname.compareTo(thisSurname) >= 0);
-//            }
-//            lastSurname = thisSurname;
-//        }
-//        Assertions.assertFalse(result.hasNext());
-//        result.close();
-//    }
-//
-//    @Test
-//    public void testSelectOrderByAsc() {
-//        String className = "testSelectOrderByAsc";
-//        database.getSchema().createDocumentType(className);
-//        for (int i = 0; i < 30; i++) {
-//            MutableDocument doc = database.newDocument(className);
-//            doc.set("name", "name" + i);
-//            doc.set("surname", "surname" + i);
-//            doc.save();
-//        }
-//        ResultSet result = database.query("sql", "select from " + className + " order by surname asc");
-//        printExecutionPlan(result);
-//
-//        String lastSurname = null;
-//        for (int i = 0; i < 30; i++) {
-//            Assertions.assertTrue(result.hasNext());
-//            Result item = result.next();
-//            Assertions.assertNotNull(item);
-//            String thisSurname = item.getProperty("surname");
-//            if (lastSurname != null) {
-//                Assertions.assertTrue(lastSurname.compareTo(thisSurname) <= 0);
-//            }
-//            lastSurname = thisSurname;
-//        }
-//        Assertions.assertFalse(result.hasNext());
-//        result.close();
-//    }
-//
-//    @Test
-//    public void testSelectOrderByMassiveAsc() {
-//        String className = "testSelectOrderByMassiveAsc";
-//        database.getSchema().createDocumentType(className);
-//        for (int i = 0; i < 100000; i++) {
-//            MutableDocument doc = database.newDocument(className);
-//            doc.set("name", "name" + i);
-//            doc.set("surname", "surname" + i % 100);
-//            doc.save();
-//        }
-//        long begin = System.nanoTime();
-//        ResultSet result = database.query("sql", "select from " + className + " order by surname asc limit 100");
-//        //    System.out.println("elapsed: " + (System.nanoTime() - begin));
-//        printExecutionPlan(result);
-//
-//        for (int i = 0; i < 100; i++) {
-//            Assertions.assertTrue(result.hasNext());
-//            Result item = result.next();
-//            Assertions.assertNotNull(item);
-//            Assertions.assertEquals("surname0", item.getProperty("surname"));
-//        }
-//        Assertions.assertFalse(result.hasNext());
-//        result.close();
-//    }
-//
-//    @Test
-//    public void testSelectOrderWithProjections() {
-//        String className = "testSelectOrderWithProjections";
-//        database.getSchema().createDocumentType(className);
-//        for (int i = 0; i < 100; i++) {
-//            MutableDocument doc = database.newDocument(className);
-//            doc.set("name", "name" + i % 10);
-//            doc.set("surname", "surname" + i % 10);
-//            doc.save();
-//        }
-//        long begin = System.nanoTime();
-//        ResultSet result = database.query("sql", "select name from " + className + " order by surname asc");
-//        //    System.out.println("elapsed: " + (System.nanoTime() - begin));
-//        printExecutionPlan(result);
-//
-//        String lastName = null;
-//        for (int i = 0; i < 100; i++) {
-//            Assertions.assertTrue(result.hasNext());
-//            Result item = result.next();
-//            Assertions.assertNotNull(item);
-//            String name = item.getProperty("name");
-//            Assertions.assertNotNull(name);
-//            if (i > 0) {
-//                Assertions.assertTrue(name.compareTo(lastName) >= 0);
-//            }
-//            lastName = name;
-//        }
-//        Assertions.assertFalse(result.hasNext());
-//        result.close();
-//    }
-//
-//    @Test
-//    public void testSelectOrderWithProjections2() {
-//        String className = "testSelectOrderWithProjections2";
-//        database.getSchema().createDocumentType(className);
-//        for (int i = 0; i < 100; i++) {
-//            MutableDocument doc = database.newDocument(className);
-//            doc.set("name", "name" + i % 10);
-//            doc.set("surname", "surname" + i % 10);
-//            doc.save();
-//        }
-//        long begin = System.nanoTime();
-//        ResultSet result =
-//                database.query("sql", "select name from " + className + " order by name asc, surname asc");
-//        //    System.out.println("elapsed: " + (System.nanoTime() - begin));
-//        printExecutionPlan(result);
-//
-//        String lastName = null;
-//        for (int i = 0; i < 100; i++) {
-//            Assertions.assertTrue(result.hasNext());
-//            Result item = result.next();
-//            Assertions.assertNotNull(item);
-//            String name = item.getProperty("name");
-//            Assertions.assertNotNull(name);
-//            if (i > 0) {
-//                Assertions.assertTrue(name.compareTo(lastName) >= 0);
-//            }
-//            lastName = name;
-//        }
-//        Assertions.assertFalse(result.hasNext());
-//        result.close();
-//    }
-//
-//    @Test
-//    public void testSelectFullScanWithFilter1() {
-//        String className = "testSelectFullScanWithFilter1";
-//        database.getSchema().createDocumentType(className);
-//        for (int i = 0; i < 300; i++) {
-//            MutableDocument doc = database.newDocument(className);
-//            doc.set("name", "name" + i);
-//            doc.set("surname", "surname" + i);
-//            doc.save();
-//        }
-//        ResultSet result =
-//                database.query("sql", "select from " + className + " where name = 'name1' or name = 'name7' ");
-//        printExecutionPlan(result);
-//
-//        for (int i = 0; i < 2; i++) {
-//            Assertions.assertTrue(result.hasNext());
-//            Result item = result.next();
-//            Assertions.assertNotNull(item);
-//            Object name = item.getProperty("name");
-//            Assertions.assertTrue("name1".equals(name) || "name7".equals(name));
-//        }
-//        Assertions.assertFalse(result.hasNext());
-//        result.close();
-//    }
-//
-//    @Test
-//    public void testSelectFullScanWithFilter2() {
-//        String className = "testSelectFullScanWithFilter2";
-//        database.getSchema().createDocumentType(className);
-//        for (int i = 0; i < 300; i++) {
-//            MutableDocument doc = database.newDocument(className);
-//            doc.set("name", "name" + i);
-//            doc.set("surname", "surname" + i);
-//            doc.save();
-//        }
-//        ResultSet result = database.query("sql", "select from " + className + " where name <> 'name1' ");
-//        printExecutionPlan(result);
-//
-//        for (int i = 0; i < 299; i++) {
-//            Assertions.assertTrue(result.hasNext());
-//            Result item = result.next();
-//            Assertions.assertNotNull(item);
-//            Object name = item.getProperty("name");
-//            Assertions.assertFalse("name1".equals(name));
-//        }
-//        Assertions.assertFalse(result.hasNext());
-//        result.close();
-//    }
-//
-//    @Test
-//    public void testProjections() {
-//        String className = "testProjections";
-//        database.getSchema().createDocumentType(className);
-//        for (int i = 0; i < 300; i++) {
-//            MutableDocument doc = database.newDocument(className);
-//            doc.set("name", "name" + i);
-//            doc.set("surname", "surname" + i);
-//            doc.save();
-//        }
-//        ResultSet result = database.query("sql", "select name from " + className);
-//        printExecutionPlan(result);
-//
-//        for (int i = 0; i < 300; i++) {
-//            Assertions.assertTrue(result.hasNext());
-//            Result item = result.next();
-//            Assertions.assertNotNull(item);
-//            String name = item.getProperty("name");
-//            String surname = item.getProperty("surname");
-//            Assertions.assertNotNull(name);
-//            Assertions.assertTrue(name.startsWith("name"));
-//            Assertions.assertNull(surname);
-//            Assertions.assertFalse(item.getElement().isPresent());
-//        }
-//        Assertions.assertFalse(result.hasNext());
-//        result.close();
-//    }
-//
-//    @Test
-//    public void testCountStar() {
-//        String className = "testCountStar";
-//        database.getSchema().createDocumentType(className);
-//
-//        for (int i = 0; i < 7; i++) {
-//            MutableDocument doc = new MutableDocument(className);
-//            doc.save();
-//        }
-//        try {
-//            ResultSet result = database.query("sql", "select count(*) from " + className);
-//            printExecutionPlan(result);
-//            Assertions.assertNotNull(result);
-//            Assertions.assertTrue(result.hasNext());
-//            Result next = result.next();
-//            Assertions.assertNotNull(next);
-//            Assertions.assertEquals(7L, (Object) next.getProperty("count(*)"));
-//            Assertions.assertFalse(result.hasNext());
-//            result.close();
-//        } catch (Exception e) {
-//            e.printStackTrace();
-//            Assertions.fail();
-//        }
-//    }
-//
-//    @Test
-//    public void testCountStar2() {
-//        String className = "testCountStar2";
-//        database.getSchema().createDocumentType(className);
-//
-//        for (int i = 0; i < 10; i++) {
-//            MutableDocument doc = new MutableDocument(className);
-//            doc.set("name", "name" + (i % 5));
-//            doc.save();
-//        }
-//        try {
-//            ResultSet result = database.query("sql", "select count(*), name from " + className + " group by name");
-//            printExecutionPlan(result);
-//            Assertions.assertNotNull(result);
-//            for (int i = 0; i < 5; i++) {
-//                Assertions.assertTrue(result.hasNext());
-//                Result next = result.next();
-//                Assertions.assertNotNull(next);
-//                Assertions.assertEquals(2L, (Object) next.getProperty("count(*)"));
-//            }
-//            Assertions.assertFalse(result.hasNext());
-//            result.close();
-//        } catch (Exception e) {
-//            e.printStackTrace();
-//            Assertions.fail();
-//        }
-//    }
-//
-//    @Test
-//    public void testCountStarEmptyNoIndex() {
-//        String className = "testCountStarEmptyNoIndex";
-//        database.getSchema().createDocumentType(className);
-//
-//        OElement elem = database.newElement(className);
-//        elem.setProperty("name", "bar");
-//        elem.save();
-//
-//        try {
-//            ResultSet result = database.query("sql", "select count(*) from " + className + " where name = 'foo'");
-//            printExecutionPlan(result);
-//            Assertions.assertNotNull(result);
-//            Assertions.assertTrue(result.hasNext());
-//            Result next = result.next();
-//            Assertions.assertNotNull(next);
-//            Assertions.assertEquals(0L, (Object) next.getProperty("count(*)"));
-//            Assertions.assertFalse(result.hasNext());
-//            result.close();
-//        } catch (Exception e) {
-//            e.printStackTrace();
-//            Assertions.fail();
-//        }
-//    }
-//
+
+    @Test
+    public void testSelectFullScanLimit1() {
+        String className = "testSelectFullScanLimit1";
+        database.getSchema().createDocumentType(className);
+
+        database.begin();
+        for (int i = 0; i < 300; i++) {
+            MutableDocument doc = database.newDocument(className);
+            doc.set("name", "name" + i);
+            doc.set("surname", "surname" + i);
+            doc.save();
+        }
+        database.commit();
+        ResultSet result = database.query("sql", "select from " + className + " limit 10");
+        printExecutionPlan(result);
+
+        for (int i = 0; i < 10; i++) {
+            Assertions.assertTrue(result.hasNext());
+            Result item = result.next();
+            Assertions.assertNotNull(item);
+            Assertions.assertTrue(("" + item.getProperty("name")).startsWith("name"));
+        }
+        Assertions.assertFalse(result.hasNext());
+        result.close();
+    }
+
+    @Test
+    public void testSelectFullScanSkipLimit1() {
+        String className = "testSelectFullScanSkipLimit1";
+        database.getSchema().createDocumentType(className);
+
+        database.begin();
+        for (int i = 0; i < 300; i++) {
+            MutableDocument doc = database.newDocument(className);
+            doc.set("name", "name" + i);
+            doc.set("surname", "surname" + i);
+            doc.save();
+        }
+        database.commit();
+        ResultSet result = database.query("sql", "select from " + className + " skip 100 limit 10");
+        printExecutionPlan(result);
+
+        for (int i = 0; i < 10; i++) {
+            Assertions.assertTrue(result.hasNext());
+            Result item = result.next();
+            Assertions.assertNotNull(item);
+            Assertions.assertTrue(("" + item.getProperty("name")).startsWith("name"));
+        }
+        Assertions.assertFalse(result.hasNext());
+        result.close();
+    }
+
+    @Test
+    public void testSelectOrderByDesc() {
+        String className = "testSelectOrderByDesc";
+        database.getSchema().createDocumentType(className);
+
+        database.begin();
+        for (int i = 0; i < 30; i++) {
+            MutableDocument doc = database.newDocument(className);
+            doc.set("name", "name" + i);
+            doc.set("surname", "surname" + i);
+            doc.save();
+        }
+        database.commit();
+        ResultSet result = database.query("sql", "select from " + className + " order by surname desc");
+        printExecutionPlan(result);
+
+        String lastSurname = null;
+        for (int i = 0; i < 30; i++) {
+            Assertions.assertTrue(result.hasNext());
+            Result item = result.next();
+            Assertions.assertNotNull(item);
+            String thisSurname = item.getProperty("surname");
+            if (lastSurname != null) {
+                Assertions.assertTrue(lastSurname.compareTo(thisSurname) >= 0);
+            }
+            lastSurname = thisSurname;
+        }
+        Assertions.assertFalse(result.hasNext());
+        result.close();
+    }
+
+    @Test
+    public void testSelectOrderByAsc() {
+        String className = "testSelectOrderByAsc";
+        database.getSchema().createDocumentType(className);
+        database.begin();
+        for (int i = 0; i < 30; i++) {
+            MutableDocument doc = database.newDocument(className);
+            doc.set("name", "name" + i);
+            doc.set("surname", "surname" + i);
+            doc.save();
+        }
+        database.commit();
+        ResultSet result = database.query("sql", "select from " + className + " order by surname asc");
+        printExecutionPlan(result);
+
+        String lastSurname = null;
+        for (int i = 0; i < 30; i++) {
+            Assertions.assertTrue(result.hasNext());
+            Result item = result.next();
+            Assertions.assertNotNull(item);
+            String thisSurname = item.getProperty("surname");
+            if (lastSurname != null) {
+                Assertions.assertTrue(lastSurname.compareTo(thisSurname) <= 0);
+            }
+            lastSurname = thisSurname;
+        }
+        Assertions.assertFalse(result.hasNext());
+        result.close();
+    }
+
+    @Test
+    public void testSelectOrderByMassiveAsc() {
+        String className = "testSelectOrderByMassiveAsc";
+        database.getSchema().createDocumentType(className);
+        database.begin();
+        for (int i = 0; i < 100000; i++) {
+            MutableDocument doc = database.newDocument(className);
+            doc.set("name", "name" + i);
+            doc.set("surname", "surname" + i % 100);
+            doc.save();
+        }
+        database.commit();
+        long begin = System.nanoTime();
+        ResultSet result = database.query("sql", "select from " + className + " order by surname asc limit 100");
+        //    System.out.println("elapsed: " + (System.nanoTime() - begin));
+        printExecutionPlan(result);
+
+        for (int i = 0; i < 100; i++) {
+            Assertions.assertTrue(result.hasNext());
+            Result item = result.next();
+            Assertions.assertNotNull(item);
+            Assertions.assertEquals("surname0", item.getProperty("surname"));
+        }
+        Assertions.assertFalse(result.hasNext());
+        result.close();
+    }
+
+    @Test
+    public void testSelectOrderWithProjections() {
+        String className = "testSelectOrderWithProjections";
+        database.getSchema().createDocumentType(className);
+        database.begin();
+        for (int i = 0; i < 100; i++) {
+            MutableDocument doc = database.newDocument(className);
+            doc.set("name", "name" + i % 10);
+            doc.set("surname", "surname" + i % 10);
+            doc.save();
+        }
+        database.commit();
+        long begin = System.nanoTime();
+        ResultSet result = database.query("sql", "select name from " + className + " order by surname asc");
+        //    System.out.println("elapsed: " + (System.nanoTime() - begin));
+        printExecutionPlan(result);
+
+        String lastName = null;
+        for (int i = 0; i < 100; i++) {
+            Assertions.assertTrue(result.hasNext());
+            Result item = result.next();
+            Assertions.assertNotNull(item);
+            String name = item.getProperty("name");
+            Assertions.assertNotNull(name);
+            if (i > 0) {
+                Assertions.assertTrue(name.compareTo(lastName) >= 0);
+            }
+            lastName = name;
+        }
+        Assertions.assertFalse(result.hasNext());
+        result.close();
+    }
+
+    @Test
+    public void testSelectOrderWithProjections2() {
+        String className = "testSelectOrderWithProjections2";
+        database.getSchema().createDocumentType(className);
+        database.begin();
+        for (int i = 0; i < 100; i++) {
+            MutableDocument doc = database.newDocument(className);
+            doc.set("name", "name" + i % 10);
+            doc.set("surname", "surname" + i % 10);
+            doc.save();
+        }
+        database.commit();
+        long begin = System.nanoTime();
+        ResultSet result =
+                database.query("sql", "select name from " + className + " order by name asc, surname asc");
+        //    System.out.println("elapsed: " + (System.nanoTime() - begin));
+        printExecutionPlan(result);
+
+        String lastName = null;
+        for (int i = 0; i < 100; i++) {
+            Assertions.assertTrue(result.hasNext());
+            Result item = result.next();
+            Assertions.assertNotNull(item);
+            String name = item.getProperty("name");
+            Assertions.assertNotNull(name);
+            if (i > 0) {
+                Assertions.assertTrue(name.compareTo(lastName) >= 0);
+            }
+            lastName = name;
+        }
+        Assertions.assertFalse(result.hasNext());
+        result.close();
+    }
+
+    @Test
+    public void testSelectFullScanWithFilter1() {
+        String className = "testSelectFullScanWithFilter1";
+        database.getSchema().createDocumentType(className);
+        database.begin();
+        for (int i = 0; i < 300; i++) {
+            MutableDocument doc = database.newDocument(className);
+            doc.set("name", "name" + i);
+            doc.set("surname", "surname" + i);
+            doc.save();
+        }
+        database.commit();
+        ResultSet result =
+                database.query("sql", "select from " + className + " where name = 'name1' or name = 'name7' ");
+        printExecutionPlan(result);
+
+        for (int i = 0; i < 2; i++) {
+            Assertions.assertTrue(result.hasNext());
+            Result item = result.next();
+            Assertions.assertNotNull(item);
+            Object name = item.getProperty("name");
+            Assertions.assertTrue("name1".equals(name) || "name7".equals(name));
+        }
+        Assertions.assertFalse(result.hasNext());
+        result.close();
+    }
+
+    @Test
+    public void testSelectFullScanWithFilter2() {
+        String className = "testSelectFullScanWithFilter2";
+        database.getSchema().createDocumentType(className);
+        database.begin();
+        for (int i = 0; i < 300; i++) {
+            MutableDocument doc = database.newDocument(className);
+            doc.set("name", "name" + i);
+            doc.set("surname", "surname" + i);
+            doc.save();
+        }
+        database.commit();
+        ResultSet result = database.query("sql", "select from " + className + " where name <> 'name1' ");
+        printExecutionPlan(result);
+
+        for (int i = 0; i < 299; i++) {
+            Assertions.assertTrue(result.hasNext());
+            Result item = result.next();
+            Assertions.assertNotNull(item);
+            Object name = item.getProperty("name");
+            Assertions.assertFalse("name1".equals(name));
+        }
+        Assertions.assertFalse(result.hasNext());
+        result.close();
+    }
+
+    @Test
+    public void testProjections() {
+        String className = "testProjections";
+        database.getSchema().createDocumentType(className);
+        database.begin();
+        for (int i = 0; i < 300; i++) {
+            MutableDocument doc = database.newDocument(className);
+            doc.set("name", "name" + i);
+            doc.set("surname", "surname" + i);
+            doc.save();
+        }
+        database.commit();
+        ResultSet result = database.query("sql", "select name from " + className);
+        printExecutionPlan(result);
+
+        for (int i = 0; i < 300; i++) {
+            Assertions.assertTrue(result.hasNext());
+            Result item = result.next();
+            Assertions.assertNotNull(item);
+            String name = item.getProperty("name");
+            String surname = item.getProperty("surname");
+            Assertions.assertNotNull(name);
+            Assertions.assertTrue(name.startsWith("name"));
+            Assertions.assertNull(surname);
+            Assertions.assertFalse(item.getElement().isPresent());
+        }
+        Assertions.assertFalse(result.hasNext());
+        result.close();
+    }
+
+    @Test
+    public void testCountStar() {
+        String className = "testCountStar";
+        database.getSchema().createDocumentType(className);
+
+        database.begin();
+        for (int i = 0; i < 7; i++) {
+            MutableDocument doc = database.newDocument(className);
+            doc.save();
+        }
+        database.commit();
+        try {
+            ResultSet result = database.query("sql", "select count(*) from " + className);
+            printExecutionPlan(result);
+            Assertions.assertNotNull(result);
+            Assertions.assertTrue(result.hasNext());
+            Result next = result.next();
+            Assertions.assertNotNull(next);
+            Assertions.assertEquals(7L, (Object) next.getProperty("count(*)"));
+            Assertions.assertFalse(result.hasNext());
+            result.close();
+        } catch (Exception e) {
+            e.printStackTrace();
+            Assertions.fail();
+        }
+    }
+
+    @Test
+    public void testCountStar2() {
+        String className = "testCountStar2";
+        database.getSchema().createDocumentType(className);
+
+        database.begin();
+        for (int i = 0; i < 10; i++) {
+            MutableDocument doc = database.newDocument(className);
+            doc.set("name", "name" + (i % 5));
+            doc.save();
+        }
+        database.commit();
+        try {
+            ResultSet result = database.query("sql", "select count(*), name from " + className + " group by name");
+            printExecutionPlan(result);
+            Assertions.assertNotNull(result);
+            for (int i = 0; i < 5; i++) {
+                Assertions.assertTrue(result.hasNext());
+                Result next = result.next();
+                Assertions.assertNotNull(next);
+                Assertions.assertEquals(2L, (Object) next.getProperty("count(*)"));
+            }
+            Assertions.assertFalse(result.hasNext());
+            result.close();
+        } catch (Exception e) {
+            e.printStackTrace();
+            Assertions.fail();
+        }
+    }
+
+    @Test
+    public void testCountStarEmptyNoIndex() {
+        String className = "testCountStarEmptyNoIndex";
+        database.getSchema().createDocumentType(className);
+
+        database.begin();
+        MutableDocument elem = database.newDocument(className);
+        elem.set("name", "bar");
+        elem.save();
+        database.commit();
+
+        try {
+            ResultSet result = database.query("sql", "select count(*) from " + className + " where name = 'foo'");
+            printExecutionPlan(result);
+            Assertions.assertNotNull(result);
+            Assertions.assertTrue(result.hasNext());
+            Result next = result.next();
+            Assertions.assertNotNull(next);
+            Assertions.assertEquals(0L, (Object) next.getProperty("count(*)"));
+            Assertions.assertFalse(result.hasNext());
+            result.close();
+        } catch (Exception e) {
+            e.printStackTrace();
+            Assertions.fail();
+        }
+    }
+
 //    @Test
 //    public void testCountStarEmptyNoIndexWithAlias() {
 //        String className = "testCountStarEmptyNoIndexWithAlias";
