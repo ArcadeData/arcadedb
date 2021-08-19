@@ -3,6 +3,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
@@ -572,369 +573,387 @@ public class SelectStatementExecutionTest extends TestHelper {
         }
     }
 
-//    @Test
-//    public void testCountStarEmptyNoIndexWithAlias() {
-//        String className = "testCountStarEmptyNoIndexWithAlias";
-//        database.getSchema().createDocumentType(className);
-//
-//        OElement elem = database.newElement(className);
-//        elem.setProperty("name", "bar");
-//        elem.save();
-//
-//        try {
-//            ResultSet result =
-//                    database.query("sql", "select count(*) as a from " + className + " where name = 'foo'");
-//            printExecutionPlan(result);
-//            Assertions.assertNotNull(result);
-//            Assertions.assertTrue(result.hasNext());
-//            Result next = result.next();
-//            Assertions.assertNotNull(next);
-//            Assertions.assertEquals(0L, (Object) next.getProperty("a"));
-//            Assertions.assertFalse(result.hasNext());
-//            result.close();
-//        } catch (Exception e) {
-//            e.printStackTrace();
-//            Assertions.fail();
-//        }
-//    }
-//
-//    @Test
-//    public void testAggretateMixedWithNonAggregate() {
-//        String className = "testAggretateMixedWithNonAggregate";
-//        database.getSchema().createDocumentType(className);
-//
-//        try {
-//            database.query(
-//                            "select max(a) + max(b) + pippo + pluto as foo, max(d) + max(e), f from " + className)
-//                    .close();
-//            Assertions.fail();
-//        } catch (OCommandExecutionException x) {
-//
-//        } catch (Exception e) {
-//            Assertions.fail();
-//        }
-//    }
-//
-//    @Test
-//    public void testAggretateMixedWithNonAggregateInCollection() {
-//        String className = "testAggretateMixedWithNonAggregateInCollection";
-//        database.getSchema().createDocumentType(className);
-//
-//        try {
-//            database.query("sql", "select [max(a), max(b), foo] from " + className).close();
-//            Assertions.fail();
-//        } catch (OCommandExecutionException x) {
-//
-//        } catch (Exception e) {
-//            Assertions.fail();
-//        }
-//    }
-//
-//    @Test
-//    public void testAggretateInCollection() {
-//        String className = "testAggretateInCollection";
-//        database.getSchema().createDocumentType(className);
-//
-//        try {
-//            String query = "select [max(a), max(b)] from " + className;
-//            ResultSet result = database.query(query);
-//            printExecutionPlan(query, result);
-//            result.close();
-//        } catch (Exception x) {
-//            Assertions.fail();
-//        }
-//    }
-//
-//    @Test
-//    public void testAggretateMixedWithNonAggregateConstants() {
-//        String className = "testAggretateMixedWithNonAggregateConstants";
-//        database.getSchema().createDocumentType(className);
-//
-//        try {
-//            ResultSet result =
-//                    database.query(
-//                            "select max(a + b) + (max(b + c * 2) + 1 + 2) * 3 as foo, max(d) + max(e), f from "
-//                                    + className);
-//            printExecutionPlan(result);
-//            result.close();
-//        } catch (Exception e) {
-//            e.printStackTrace();
-//            Assertions.fail();
-//        }
-//    }
-//
-//    @Test
-//    public void testAggregateSum() {
-//        String className = "testAggregateSum";
-//        database.getSchema().createDocumentType(className);
-//        for (int i = 0; i < 10; i++) {
-//            MutableDocument doc = database.newDocument(className);
-//            doc.set("name", "name" + i);
-//            doc.set("val", i);
-//            doc.save();
-//        }
-//        ResultSet result = database.query("sql", "select sum(val) from " + className);
-//        printExecutionPlan(result);
-//        Assertions.assertTrue(result.hasNext());
-//        Result item = result.next();
-//        Assertions.assertNotNull(item);
-//        Assertions.assertEquals(45, (Object) item.getProperty("sum(val)"));
-//
-//        result.close();
-//    }
-//
-//    @Test
-//    public void testAggregateSumGroupBy() {
-//        String className = "testAggregateSumGroupBy";
-//        database.getSchema().createDocumentType(className);
-//        for (int i = 0; i < 10; i++) {
-//            MutableDocument doc = database.newDocument(className);
-//            doc.set("type", i % 2 == 0 ? "even" : "odd");
-//            doc.set("val", i);
-//            doc.save();
-//        }
-//        ResultSet result = database.query("sql", "select sum(val), type from " + className + " group by type");
-//        printExecutionPlan(result);
-//        boolean evenFound = false;
-//        boolean oddFound = false;
-//        for (int i = 0; i < 2; i++) {
-//            Assertions.assertTrue(result.hasNext());
-//            Result item = result.next();
-//            Assertions.assertNotNull(item);
-//            if ("even".equals(item.getProperty("type"))) {
-//                Assertions.assertEquals(20, item.<Object>getProperty("sum(val)"));
-//                evenFound = true;
-//            } else if ("odd".equals(item.getProperty("type"))) {
-//                Assertions.assertEquals(25, item.<Object>getProperty("sum(val)"));
-//                oddFound = true;
-//            }
-//        }
-//        Assertions.assertFalse(result.hasNext());
-//        Assertions.assertTrue(evenFound);
-//        Assertions.assertTrue(oddFound);
-//        result.close();
-//    }
-//
-//    @Test
-//    public void testAggregateSumMaxMinGroupBy() {
-//        String className = "testAggregateSumMaxMinGroupBy";
-//        database.getSchema().createDocumentType(className);
-//        for (int i = 0; i < 10; i++) {
-//            MutableDocument doc = database.newDocument(className);
-//            doc.set("type", i % 2 == 0 ? "even" : "odd");
-//            doc.set("val", i);
-//            doc.save();
-//        }
-//        ResultSet result =
-//                database.query("sql", "select sum(val), max(val), min(val), type from " + className + " group by type");
-//        printExecutionPlan(result);
-//        boolean evenFound = false;
-//        boolean oddFound = false;
-//        for (int i = 0; i < 2; i++) {
-//            Assertions.assertTrue(result.hasNext());
-//            Result item = result.next();
-//            Assertions.assertNotNull(item);
-//            if ("even".equals(item.getProperty("type"))) {
-//                Assertions.assertEquals(20, item.<Object>getProperty("sum(val)"));
-//                Assertions.assertEquals(8, item.<Object>getProperty("max(val)"));
-//                Assertions.assertEquals(0, item.<Object>getProperty("min(val)"));
-//                evenFound = true;
-//            } else if ("odd".equals(item.getProperty("type"))) {
-//                Assertions.assertEquals(25, item.<Object>getProperty("sum(val)"));
-//                Assertions.assertEquals(9, item.<Object>getProperty("max(val)"));
-//                Assertions.assertEquals(1, item.<Object>getProperty("min(val)"));
-//                oddFound = true;
-//            }
-//        }
-//        Assertions.assertFalse(result.hasNext());
-//        Assertions.assertTrue(evenFound);
-//        Assertions.assertTrue(oddFound);
-//        result.close();
-//    }
-//
-//    @Test
-//    public void testAggregateSumNoGroupByInProjection() {
-//        String className = "testAggregateSumNoGroupByInProjection";
-//        database.getSchema().createDocumentType(className);
-//        for (int i = 0; i < 10; i++) {
-//            MutableDocument doc = database.newDocument(className);
-//            doc.set("type", i % 2 == 0 ? "even" : "odd");
-//            doc.set("val", i);
-//            doc.save();
-//        }
-//        ResultSet result = database.query("sql", "select sum(val) from " + className + " group by type");
-//        printExecutionPlan(result);
-//        boolean evenFound = false;
-//        boolean oddFound = false;
-//        for (int i = 0; i < 2; i++) {
-//            Assertions.assertTrue(result.hasNext());
-//            Result item = result.next();
-//            Assertions.assertNotNull(item);
-//            Object sum = item.getProperty("sum(val)");
-//            if (sum.equals(20)) {
-//                evenFound = true;
-//            } else if (sum.equals(25)) {
-//                oddFound = true;
-//            }
-//        }
-//        Assertions.assertFalse(result.hasNext());
-//        Assertions.assertTrue(evenFound);
-//        Assertions.assertTrue(oddFound);
-//        result.close();
-//    }
-//
-//    @Test
-//    public void testAggregateSumNoGroupByInProjection2() {
-//        String className = "testAggregateSumNoGroupByInProjection2";
-//        database.getSchema().createDocumentType(className);
-//        for (int i = 0; i < 10; i++) {
-//            MutableDocument doc = database.newDocument(className);
-//            doc.set("type", i % 2 == 0 ? "dd1" : "dd2");
-//            doc.set("val", i);
-//            doc.save();
-//        }
-//        ResultSet result =
-//                database.query("sql", "select sum(val) from " + className + " group by type.substring(0,1)");
-//        printExecutionPlan(result);
-//        for (int i = 0; i < 1; i++) {
-//            Assertions.assertTrue(result.hasNext());
-//            Result item = result.next();
-//            Assertions.assertNotNull(item);
-//            Object sum = item.getProperty("sum(val)");
-//            Assertions.assertEquals(45, sum);
-//        }
-//        Assertions.assertFalse(result.hasNext());
-//        result.close();
-//    }
-//
-//    @Test
-//    public void testFetchFromClusterNumber() {
-//        String className = "testFetchFromClusterNumber";
-//        OSchema schema = database.getSchema();
-//        OClass clazz = schema.createDocumentType(className);
-//        int targetCluster = clazz.getClusterIds()[0];
-//        String targetClusterName = database.getClusterNameById(targetCluster);
-//
-//        for (int i = 0; i < 10; i++) {
-//            MutableDocument doc = database.newDocument(className);
-//            doc.set("val", i);
-//            doc.save(targetClusterName);
-//        }
-//        ResultSet result = database.query("sql", "select from cluster:" + targetClusterName);
-//        printExecutionPlan(result);
-//        int sum = 0;
-//        for (int i = 0; i < 10; i++) {
-//            Assertions.assertTrue(result.hasNext());
-//            Result item = result.next();
-//            Integer val = item.getProperty("val");
-//            Assertions.assertNotNull(val);
-//            sum += val;
-//        }
-//        Assertions.assertEquals(45, sum);
-//        Assertions.assertFalse(result.hasNext());
-//        result.close();
-//    }
-//
-//    @Test
-//    public void testFetchFromClusterNumberOrderByRidDesc() {
-//        String className = "testFetchFromClusterNumberOrderByRidDesc";
-//        OSchema schema = database.getSchema();
-//        OClass clazz = schema.createDocumentType(className);
-//        int targetCluster = clazz.getClusterIds()[0];
-//        String targetClusterName = database.getClusterNameById(targetCluster);
-//
-//        for (int i = 0; i < 10; i++) {
-//            MutableDocument doc = database.newDocument(className);
-//            doc.set("val", i);
-//            doc.save(targetClusterName);
-//        }
-//        ResultSet result =
-//                database.query("sql", "select from cluster:" + targetClusterName + " order by @rid desc");
-//        printExecutionPlan(result);
-//        int sum = 0;
-//        for (int i = 0; i < 10; i++) {
-//            Assertions.assertTrue(result.hasNext());
-//            Result item = result.next();
-//            Integer val = item.getProperty("val");
-//            Assertions.assertEquals(i, 9 - val);
-//        }
-//
-//        Assertions.assertFalse(result.hasNext());
-//        result.close();
-//    }
-//
-//    @Test
-//    public void testFetchFromClusterNumberOrderByRidAsc() {
-//        String className = "testFetchFromClusterNumberOrderByRidAsc";
-//        OSchema schema = database.getSchema();
-//        OClass clazz = schema.createDocumentType(className);
-//        int targetCluster = clazz.getClusterIds()[0];
-//        String targetClusterName = database.getClusterNameById(targetCluster);
-//
-//        for (int i = 0; i < 10; i++) {
-//            MutableDocument doc = database.newDocument(className);
-//            doc.set("val", i);
-//            doc.save(targetClusterName);
-//        }
-//        ResultSet result = database.query("sql", "select from cluster:" + targetClusterName + " order by @rid asc");
-//        printExecutionPlan(result);
-//        int sum = 0;
-//        for (int i = 0; i < 10; i++) {
-//            Assertions.assertTrue(result.hasNext());
-//            Result item = result.next();
-//            Integer val = item.getProperty("val");
-//            Assertions.assertEquals((Object) i, val);
-//        }
-//
-//        Assertions.assertFalse(result.hasNext());
-//        result.close();
-//    }
-//
-//    @Test
-//    public void testFetchFromClustersNumberOrderByRidAsc() {
-//        String className = "testFetchFromClustersNumberOrderByRidAsc";
-//        OSchema schema = database.getSchema();
-//        OClass clazz = schema.createDocumentType(className);
-//        if (clazz.getClusterIds().length < 2) {
-//            clazz.addCluster("testFetchFromClustersNumberOrderByRidAsc_2");
-//        }
-//        int targetCluster = clazz.getClusterIds()[0];
-//        String targetClusterName = database.getClusterNameById(targetCluster);
-//
-//        int targetCluster2 = clazz.getClusterIds()[1];
-//        String targetClusterName2 = database.getClusterNameById(targetCluster2);
-//
-//        for (int i = 0; i < 10; i++) {
-//            MutableDocument doc = database.newDocument(className);
-//            doc.set("val", i);
-//            doc.save(targetClusterName);
-//        }
-//        for (int i = 0; i < 10; i++) {
-//            MutableDocument doc = database.newDocument(className);
-//            doc.set("val", i);
-//            doc.save(targetClusterName2);
-//        }
-//
-//        ResultSet result =
-//                database.query(
-//                        "select from cluster:["
-//                                + targetClusterName
-//                                + ", "
-//                                + targetClusterName2
-//                                + "] order by @rid asc");
-//        printExecutionPlan(result);
-//
-//        for (int i = 0; i < 20; i++) {
-//            Assertions.assertTrue(result.hasNext());
-//            Result item = result.next();
-//            Integer val = item.getProperty("val");
-//            Assertions.assertEquals((Object) (i % 10), val);
-//        }
-//
-//        Assertions.assertFalse(result.hasNext());
-//        result.close();
-//    }
-//
+    @Test
+    public void testCountStarEmptyNoIndexWithAlias() {
+        String className = "testCountStarEmptyNoIndexWithAlias";
+        database.getSchema().createDocumentType(className);
+
+        database.begin();
+        MutableDocument elem = database.newDocument(className);
+        elem.set("name", "bar");
+        elem.save();
+        database.commit();
+
+        try {
+            ResultSet result =
+                    database.query("sql", "select count(*) as a from " + className + " where name = 'foo'");
+            printExecutionPlan(result);
+            Assertions.assertNotNull(result);
+            Assertions.assertTrue(result.hasNext());
+            Result next = result.next();
+            Assertions.assertNotNull(next);
+            Assertions.assertEquals(0L, (Object) next.getProperty("a"));
+            Assertions.assertFalse(result.hasNext());
+            result.close();
+        } catch (Exception e) {
+            e.printStackTrace();
+            Assertions.fail();
+        }
+    }
+
+    @Test
+    public void testAggretateMixedWithNonAggregate() {
+        String className = "testAggretateMixedWithNonAggregate";
+        database.getSchema().createDocumentType(className);
+
+        try {
+            database.query("sql",
+                            "select max(a) + max(b) + pippo + pluto as foo, max(d) + max(e), f from " + className)
+                    .close();
+            Assertions.fail();
+        } catch (CommandExecutionException x) {
+
+        } catch (Exception e) {
+            Assertions.fail();
+        }
+    }
+
+    @Test
+    public void testAggretateMixedWithNonAggregateInCollection() {
+        String className = "testAggretateMixedWithNonAggregateInCollection";
+        database.getSchema().createDocumentType(className);
+
+        try {
+            database.query("sql", "select [max(a), max(b), foo] from " + className).close();
+            Assertions.fail();
+        } catch (CommandExecutionException x) {
+
+        } catch (Exception e) {
+            Assertions.fail();
+        }
+    }
+
+    @Test
+    public void testAggretateInCollection() {
+        String className = "testAggretateInCollection";
+        database.getSchema().createDocumentType(className);
+
+        try {
+            String query = "select [max(a), max(b)] from " + className;
+            ResultSet result = database.query("sql", query);
+            printExecutionPlan(query, result);
+            result.close();
+        } catch (Exception x) {
+            Assertions.fail();
+        }
+    }
+
+    @Test
+    public void testAggretateMixedWithNonAggregateConstants() {
+        String className = "testAggretateMixedWithNonAggregateConstants";
+        database.getSchema().createDocumentType(className);
+
+        try {
+            ResultSet result =
+                    database.query("sql",
+                            "select max(a + b) + (max(b + c * 2) + 1 + 2) * 3 as foo, max(d) + max(e), f from "
+                                    + className);
+            printExecutionPlan(result);
+            result.close();
+        } catch (Exception e) {
+            e.printStackTrace();
+            Assertions.fail();
+        }
+    }
+
+    @Test
+    public void testAggregateSum() {
+        String className = "testAggregateSum";
+        database.getSchema().createDocumentType(className);
+        database.begin();
+        for (int i = 0; i < 10; i++) {
+            MutableDocument doc = database.newDocument(className);
+            doc.set("name", "name" + i);
+            doc.set("val", i);
+            doc.save();
+        }
+        database.commit();
+        ResultSet result = database.query("sql", "select sum(val) from " + className);
+        printExecutionPlan(result);
+        Assertions.assertTrue(result.hasNext());
+        Result item = result.next();
+        Assertions.assertNotNull(item);
+        Assertions.assertEquals(45, (Object) item.getProperty("sum(val)"));
+
+        result.close();
+    }
+
+    @Test
+    public void testAggregateSumGroupBy() {
+        String className = "testAggregateSumGroupBy";
+        database.getSchema().createDocumentType(className);
+        database.begin();
+        for (int i = 0; i < 10; i++) {
+            MutableDocument doc = database.newDocument(className);
+            doc.set("type", i % 2 == 0 ? "even" : "odd");
+            doc.set("val", i);
+            doc.save();
+        }
+        database.commit();
+        ResultSet result = database.query("sql", "select sum(val), type from " + className + " group by type");
+        printExecutionPlan(result);
+        boolean evenFound = false;
+        boolean oddFound = false;
+        for (int i = 0; i < 2; i++) {
+            Assertions.assertTrue(result.hasNext());
+            Result item = result.next();
+            Assertions.assertNotNull(item);
+            if ("even".equals(item.getProperty("type"))) {
+                Assertions.assertEquals(20, item.<Object>getProperty("sum(val)"));
+                evenFound = true;
+            } else if ("odd".equals(item.getProperty("type"))) {
+                Assertions.assertEquals(25, item.<Object>getProperty("sum(val)"));
+                oddFound = true;
+            }
+        }
+        Assertions.assertFalse(result.hasNext());
+        Assertions.assertTrue(evenFound);
+        Assertions.assertTrue(oddFound);
+        result.close();
+    }
+
+    @Test
+    public void testAggregateSumMaxMinGroupBy() {
+        String className = "testAggregateSumMaxMinGroupBy";
+        database.getSchema().createDocumentType(className);
+        database.begin();
+        for (int i = 0; i < 10; i++) {
+            MutableDocument doc = database.newDocument(className);
+            doc.set("type", i % 2 == 0 ? "even" : "odd");
+            doc.set("val", i);
+            doc.save();
+        }
+        database.commit();
+        ResultSet result =
+                database.query("sql", "select sum(val), max(val), min(val), type from " + className + " group by type");
+        printExecutionPlan(result);
+        boolean evenFound = false;
+        boolean oddFound = false;
+        for (int i = 0; i < 2; i++) {
+            Assertions.assertTrue(result.hasNext());
+            Result item = result.next();
+            Assertions.assertNotNull(item);
+            if ("even".equals(item.getProperty("type"))) {
+                Assertions.assertEquals(20, item.<Object>getProperty("sum(val)"));
+                Assertions.assertEquals(8, item.<Object>getProperty("max(val)"));
+                Assertions.assertEquals(0, item.<Object>getProperty("min(val)"));
+                evenFound = true;
+            } else if ("odd".equals(item.getProperty("type"))) {
+                Assertions.assertEquals(25, item.<Object>getProperty("sum(val)"));
+                Assertions.assertEquals(9, item.<Object>getProperty("max(val)"));
+                Assertions.assertEquals(1, item.<Object>getProperty("min(val)"));
+                oddFound = true;
+            }
+        }
+        Assertions.assertFalse(result.hasNext());
+        Assertions.assertTrue(evenFound);
+        Assertions.assertTrue(oddFound);
+        result.close();
+    }
+
+    @Test
+    public void testAggregateSumNoGroupByInProjection() {
+        String className = "testAggregateSumNoGroupByInProjection";
+        database.getSchema().createDocumentType(className);
+        database.begin();
+        for (int i = 0; i < 10; i++) {
+            MutableDocument doc = database.newDocument(className);
+            doc.set("type", i % 2 == 0 ? "even" : "odd");
+            doc.set("val", i);
+            doc.save();
+        }
+        database.commit();
+        ResultSet result = database.query("sql", "select sum(val) from " + className + " group by type");
+        printExecutionPlan(result);
+        boolean evenFound = false;
+        boolean oddFound = false;
+        for (int i = 0; i < 2; i++) {
+            Assertions.assertTrue(result.hasNext());
+            Result item = result.next();
+            Assertions.assertNotNull(item);
+            Object sum = item.getProperty("sum(val)");
+            if (sum.equals(20)) {
+                evenFound = true;
+            } else if (sum.equals(25)) {
+                oddFound = true;
+            }
+        }
+        Assertions.assertFalse(result.hasNext());
+        Assertions.assertTrue(evenFound);
+        Assertions.assertTrue(oddFound);
+        result.close();
+    }
+
+    @Test
+    public void testAggregateSumNoGroupByInProjection2() {
+        String className = "testAggregateSumNoGroupByInProjection2";
+        database.getSchema().createDocumentType(className);
+        database.begin();
+        for (int i = 0; i < 10; i++) {
+            MutableDocument doc = database.newDocument(className);
+            doc.set("type", i % 2 == 0 ? "dd1" : "dd2");
+            doc.set("val", i);
+            doc.save();
+        }
+        database.commit();
+        ResultSet result =
+                database.query("sql", "select sum(val) from " + className + " group by type.substring(0,1)");
+        printExecutionPlan(result);
+        for (int i = 0; i < 1; i++) {
+            Assertions.assertTrue(result.hasNext());
+            Result item = result.next();
+            Assertions.assertNotNull(item);
+            Object sum = item.getProperty("sum(val)");
+            Assertions.assertEquals(45, sum);
+        }
+        Assertions.assertFalse(result.hasNext());
+        result.close();
+    }
+
+    @Test
+    public void testFetchFromBucketNumber() {
+        String className = "testFetchFromBucketNumber";
+        Schema schema = database.getSchema();
+        DocumentType clazz = schema.createDocumentType(className);
+        String targetClusterName = clazz.getBuckets(false).get(0).getName();
+
+        database.begin();
+        for (int i = 0; i < 10; i++) {
+            MutableDocument doc = database.newDocument(className);
+            doc.set("val", i);
+            doc.save(targetClusterName);
+        }
+        database.commit();
+        ResultSet result = database.query("sql", "select from bucket:" + targetClusterName);
+        printExecutionPlan(result);
+        int sum = 0;
+        for (int i = 0; i < 10; i++) {
+            Assertions.assertTrue(result.hasNext());
+            Result item = result.next();
+            Integer val = item.getProperty("val");
+            Assertions.assertNotNull(val);
+            sum += val;
+        }
+        Assertions.assertEquals(45, sum);
+        Assertions.assertFalse(result.hasNext());
+        result.close();
+    }
+
+    @Test
+    public void testFetchFromBucketNumberOrderByRidDesc() {
+        String className = "testFetchFromBucketNumberOrderByRidDesc";
+        Schema schema = database.getSchema();
+        DocumentType clazz = schema.createDocumentType(className);
+
+        String targetBucketName = clazz.getBuckets(false).get(0).getName();
+
+        database.begin();
+        for (int i = 0; i < 10; i++) {
+            MutableDocument doc = database.newDocument(className);
+            doc.set("val", i);
+            doc.save(targetBucketName);
+        }
+        database.commit();
+        ResultSet result =
+                database.query("sql", "select from bucket:" + targetBucketName + " order by @rid desc");
+        printExecutionPlan(result);
+        int sum = 0;
+        for (int i = 0; i < 10; i++) {
+            Assertions.assertTrue(result.hasNext());
+            Result item = result.next();
+            Integer val = item.getProperty("val");
+            Assertions.assertEquals(i, 9 - val);
+        }
+
+        Assertions.assertFalse(result.hasNext());
+        result.close();
+    }
+
+    @Test
+    public void testFetchFromClusterNumberOrderByRidAsc() {
+        String className = "testFetchFromClusterNumberOrderByRidAsc";
+        Schema schema = database.getSchema();
+        DocumentType clazz = schema.createDocumentType(className);
+
+        String targetClusterName = clazz.getBuckets(false).get(0).getName();
+
+        database.begin();
+        for (int i = 0; i < 10; i++) {
+            MutableDocument doc = database.newDocument(className);
+            doc.set("val", i);
+            doc.save(targetClusterName);
+        }
+        database.commit();
+        ResultSet result = database.query("sql", "select from bucket:" + targetClusterName + " order by @rid asc");
+        printExecutionPlan(result);
+        int sum = 0;
+        for (int i = 0; i < 10; i++) {
+            Assertions.assertTrue(result.hasNext());
+            Result item = result.next();
+            Integer val = item.getProperty("val");
+            Assertions.assertEquals((Object) i, val);
+        }
+
+        Assertions.assertFalse(result.hasNext());
+        result.close();
+    }
+
+    @Test
+    public void testFetchFromClustersNumberOrderByRidAsc() {
+        String className = "testFetchFromClustersNumberOrderByRidAsc";
+        Schema schema = database.getSchema();
+        DocumentType clazz = schema.createDocumentType(className);
+        if (clazz.getBuckets(false).size() < 2) {
+            //clazz.addCluster("testFetchFromClustersNumberOrderByRidAsc_2");
+            return; //TODO
+        }
+
+        String targetClusterName = clazz.getBuckets(false).get(0).getName();
+        String targetClusterName2 = clazz.getBuckets(false).get(1).getName();
+
+        database.begin();
+        for (int i = 0; i < 10; i++) {
+            MutableDocument doc = database.newDocument(className);
+            doc.set("val", i);
+            doc.save(targetClusterName);
+        }
+        for (int i = 0; i < 10; i++) {
+            MutableDocument doc = database.newDocument(className);
+            doc.set("val", i);
+            doc.save(targetClusterName2);
+        }
+        database.commit();
+
+        ResultSet result =
+                database.query("sql",
+                        "select from bucket:["
+                                + targetClusterName
+                                + ", "
+                                + targetClusterName2
+                                + "] order by @rid asc");
+        printExecutionPlan(result);
+
+        for (int i = 0; i < 20; i++) {
+            Assertions.assertTrue(result.hasNext());
+            Result item = result.next();
+            Integer val = item.getProperty("val");
+            Assertions.assertEquals((Object) (i % 10), val);
+        }
+
+        Assertions.assertFalse(result.hasNext());
+        result.close();
+    }
+
 //    @Test
 //    public void testQueryAsTarget() {
 //        String className = "testQueryAsTarget";
