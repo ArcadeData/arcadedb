@@ -2261,19 +2261,21 @@ public class OSelectExecutionPlanner {
   }
 
   private boolean isOrderByRidDesc(QueryPlanningInfo info) {
-    if (!hasTargetWithSortedRids(info)) {
-      return false;
-    }
-
-    if (info.orderBy == null) {
-      return false;
-    }
-    if (info.orderBy.getItems().size() == 1) {
-      OrderByItem item = info.orderBy.getItems().get(0);
-      String recordAttr = item.getRecordAttr();
-      return recordAttr != null && recordAttr.equalsIgnoreCase("@rid") && OrderByItem.DESC.equals(item.getType());
-    }
     return false;
+    //TODO buckets do not support reverse iteration, so order by rid desc cannot be optimised!
+//    if (!hasTargetWithSortedRids(info)) {
+//      return false;
+//    }
+//
+//    if (info.orderBy == null) {
+//      return false;
+//    }
+//    if (info.orderBy.getItems().size() == 1) {
+//      OrderByItem item = info.orderBy.getItems().get(0);
+//      String recordAttr = item.getRecordAttr();
+//      return recordAttr != null && recordAttr.equalsIgnoreCase("@rid") && OrderByItem.DESC.equals(item.getType());
+//    }
+//    return false;
   }
 
   private boolean isOrderByRidAsc(QueryPlanningInfo info) {

@@ -1,6 +1,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
@@ -134,64 +135,68 @@ public class SelectStatementExecutionTest extends TestHelper {
         printExecutionPlan(result);
         result.close();
     }
-//
-//    @Test
-//    public void testSelectFullScanOrderByRidAsc() {
-//        String className = "testSelectFullScanOrderByRidAsc";
-//        database.getSchema().createDocumentType(className);
-//        for (int i = 0; i < 100000; i++) {
-//            MutableDocument doc = database.newDocument(className);
-//            doc.set("name", "name" + i);
-//            doc.set("surname", "surname" + i);
-//            doc.save();
-//        }
-//        ResultSet result = database.query("sql", "select from " + className + " ORDER BY @rid ASC");
-//        printExecutionPlan(result);
-//        OIdentifiable lastItem = null;
-//        for (int i = 0; i < 100000; i++) {
-//            Assertions.assertTrue(result.hasNext());
-//            Result item = result.next();
-//            Assertions.assertNotNull(item);
-//            Assertions.assertTrue(("" + item.getProperty("name")).startsWith("name"));
-//            if (lastItem != null) {
-//                Assertions.assertTrue(
-//                        lastItem.getIdentity().compareTo(item.getElement().get().getIdentity()) < 0);
-//            }
-//            lastItem = item.getElement().get();
-//        }
-//        Assertions.assertFalse(result.hasNext());
-//
-//        result.close();
-//    }
-//
-//    @Test
-//    public void testSelectFullScanOrderByRidDesc() {
-//        String className = "testSelectFullScanOrderByRidDesc";
-//        database.getSchema().createDocumentType(className);
-//        for (int i = 0; i < 100000; i++) {
-//            MutableDocument doc = database.newDocument(className);
-//            doc.set("name", "name" + i);
-//            doc.set("surname", "surname" + i);
-//            doc.save();
-//        }
-//        ResultSet result = database.query("sql", "select from " + className + " ORDER BY @rid DESC");
-//        printExecutionPlan(result);
-//        OIdentifiable lastItem = null;
-//        for (int i = 0; i < 100000; i++) {
-//            Assertions.assertTrue(result.hasNext());
-//            Result item = result.next();
-//            Assertions.assertNotNull(item);
-//            Assertions.assertTrue(("" + item.getProperty("name")).startsWith("name"));
-//            if (lastItem != null) {
-//                Assertions.assertTrue(
-//                        lastItem.getIdentity().compareTo(item.getElement().get().getIdentity()) > 0);
-//            }
-//            lastItem = item.getElement().get();
-//        }
-//        Assertions.assertFalse(result.hasNext());
-//
-//        result.close();
-//    }
+
+    @Test
+    public void testSelectFullScanOrderByRidAsc() {
+        String className = "testSelectFullScanOrderByRidAsc";
+        database.getSchema().createDocumentType(className);
+        database.begin();
+        for (int i = 0; i < 100000; i++) {
+            MutableDocument doc = database.newDocument(className);
+            doc.set("name", "name" + i);
+            doc.set("surname", "surname" + i);
+            doc.save();
+        }
+        database.commit();
+        ResultSet result = database.query("sql", "select from " + className + " ORDER BY @rid ASC");
+        printExecutionPlan(result);
+        Document lastItem = null;
+        for (int i = 0; i < 100000; i++) {
+            Assertions.assertTrue(result.hasNext());
+            Result item = result.next();
+            Assertions.assertNotNull(item);
+            Assertions.assertTrue(("" + item.getProperty("name")).startsWith("name"));
+            if (lastItem != null) {
+                Assertions.assertTrue(
+                        lastItem.getIdentity().compareTo(item.getElement().get().getIdentity()) < 0);
+            }
+            lastItem = item.getElement().get();
+        }
+        Assertions.assertFalse(result.hasNext());
+
+        result.close();
+    }
+
+    @Test
+    public void testSelectFullScanOrderByRidDesc() {
+        String className = "testSelectFullScanOrderByRidDesc";
+        database.getSchema().createDocumentType(className);
+        database.begin();
+        for (int i = 0; i < 100000; i++) {
+            MutableDocument doc = database.newDocument(className);
+            doc.set("name", "name" + i);
+            doc.set("surname", "surname" + i);
+            doc.save();
+        }
+        database.commit();
+        ResultSet result = database.query("sql", "select from " + className + " ORDER BY @rid DESC");
+        printExecutionPlan(result);
+        Document lastItem = null;
+        for (int i = 0; i < 100000; i++) {
+            Assertions.assertTrue(result.hasNext());
+            Result item = result.next();
+            Assertions.assertNotNull(item);
+            Assertions.assertTrue(("" + item.getProperty("name")).startsWith("name"));
+            if (lastItem != null) {
+                Assertions.assertTrue(
+                        lastItem.getIdentity().compareTo(item.getElement().get().getIdentity()) > 0);
+            }
+            lastItem = item.getElement().get();
+        }
+        Assertions.assertFalse(result.hasNext());
+
+        result.close();
+    }
 //
 //    @Test
 //    public void testSelectFullScanLimit1() {
