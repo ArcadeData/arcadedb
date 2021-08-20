@@ -140,6 +140,9 @@ public class ReplicationLogFile extends LockContext {
           if (!checkMessageOrder(message))
             return false;
 
+          if (lastChunkChannel == null)
+            return false;
+
           // UPDATE LAST MESSAGE NUMBER
           lastMessageNumber = message.messageNumber;
 

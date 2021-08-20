@@ -316,6 +316,21 @@ public enum GlobalConfiguration {
     this.callbackIfNoSet = callbackIfNoSet;
   }
 
+  /**
+   * Reset all the configurations to the default values.
+   */
+  public static void resetAll() {
+    for (GlobalConfiguration v : values())
+      v.reset();
+  }
+
+  /**
+   * Reset the configuration to the default value.
+   */
+  public void reset() {
+    value = defValue;
+  }
+
   public static void dumpConfiguration(final PrintStream out) {
     out.print("ARCADEDB ");
     out.print(Constants.getRawVersion());

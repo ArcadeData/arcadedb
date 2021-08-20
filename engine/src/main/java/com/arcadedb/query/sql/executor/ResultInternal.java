@@ -91,12 +91,13 @@ public class ResultInternal implements Result {
   }
 
   public void removeProperty(final String name) {
-    content.remove(name);
+    if (content != null)
+      content.remove(name);
   }
 
   public <T> T getProperty(final String name) {
     T result = null;
-    if (content.containsKey(name)) {
+    if (content != null && content.containsKey(name)) {
       result = (T) wrap(content.get(name));
     } else if (element != null) {
       result = (T) wrap(element.get(name));
@@ -110,7 +111,7 @@ public class ResultInternal implements Result {
   @Override
   public Record getElementProperty(final String name) {
     Object result = null;
-    if (content.containsKey(name))
+    if (content != null && content.containsKey(name))
       result = content.get(name);
     else if (element != null)
       result = element.get(name);
@@ -203,7 +204,8 @@ public class ResultInternal implements Result {
     if (element != null)
       result.addAll(element.getPropertyNames());
 
-    result.addAll(content.keySet());
+    if (content != null)
+      result.addAll(content.keySet());
     return result;
   }
 
@@ -211,7 +213,7 @@ public class ResultInternal implements Result {
     if (element != null && element.getPropertyNames().contains(propName))
       return true;
 
-    return content.keySet().contains(propName);
+    return content != null && content.keySet().contains(propName);
   }
 
   @Override
@@ -330,7 +332,10 @@ public class ResultInternal implements Result {
     if (element != null)
       return element.toString();
 
-    return "{ " + content.entrySet().stream().map(x -> x.getKey() + ": " + x.getValue()).reduce("", (a, b) -> a + b + "\n") + " }";
+    if (content != null)
+      return "{ " + content.entrySet().stream().map(x -> x.getKey() + ": " + x.getValue()).reduce("", (a, b) -> a + b + "\n") + " }";
+
+    return "{}";
   }
 
   @Override
@@ -351,7 +356,7 @@ public class ResultInternal implements Result {
       if (resultObj.getElement().isPresent()) {
         return false;
       }
-      return this.content.equals(resultObj.content);
+      return this.content != null && this.content.equals(resultObj.content);
     }
   }
 

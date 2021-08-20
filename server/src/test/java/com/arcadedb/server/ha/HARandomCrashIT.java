@@ -26,10 +26,10 @@ import com.arcadedb.database.Database;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.remote.RemoteDatabase;
-import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.remote.RemoteDatabase;
+import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -45,7 +45,9 @@ public class HARandomCrashIT extends ReplicationServerIT {
   private          Timer timer;
   private volatile long  delay    = 0;
 
-  public HARandomCrashIT() {
+  @Override
+  public void setTestConfiguration() {
+    super.setTestConfiguration();
     GlobalConfiguration.HA_QUORUM.setValue("Majority");
   }
 
@@ -127,7 +129,8 @@ public class HARandomCrashIT extends ReplicationServerIT {
     final String server1Address = getServer(0).getHttpServer().getListeningAddress();
     final String[] server1AddressParts = server1Address.split(":");
 
-    final RemoteDatabase db = new RemoteDatabase(server1AddressParts[0], Integer.parseInt(server1AddressParts[1]), getDatabaseName(), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+    final RemoteDatabase db = new RemoteDatabase(server1AddressParts[0], Integer.parseInt(server1AddressParts[1]), getDatabaseName(), "root",
+        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
     db.begin();
 

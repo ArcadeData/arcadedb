@@ -25,7 +25,9 @@ import com.arcadedb.GlobalConfiguration;
 import org.junit.jupiter.api.AfterEach;
 
 public class ReplicationServerQuorumNoneIT extends ReplicationServerIT {
-  public ReplicationServerQuorumNoneIT() {
+  @Override
+  public void setTestConfiguration() {
+    super.setTestConfiguration();
     GlobalConfiguration.HA_QUORUM.setValue("NONE");
   }
 

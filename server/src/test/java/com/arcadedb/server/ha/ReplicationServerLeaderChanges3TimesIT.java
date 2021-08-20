@@ -27,13 +27,13 @@ import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.TestCallback;
 import com.arcadedb.server.ha.message.TxRequest;
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.Pair;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -50,7 +50,9 @@ public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT 
   private       AtomicInteger                       restarts           = new AtomicInteger();
   private       ConcurrentHashMap<Integer, Boolean> semaphore          = new ConcurrentHashMap<>();
 
-  public ReplicationServerLeaderChanges3TimesIT() {
+  @Override
+  public void setTestConfiguration() {
+    super.setTestConfiguration();
     GlobalConfiguration.HA_QUORUM.setValue("Majority");
   }
 

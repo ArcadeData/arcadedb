@@ -38,6 +38,8 @@ import java.io.File;
 import java.io.PrintWriter;
 import java.util.logging.Level;
 
+import static com.arcadedb.server.BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
+
 public abstract class BasePerformanceTest {
   protected static final String VERTEX1_TYPE_NAME = "V1";
   protected static final String VERTEX2_TYPE_NAME = "V2";
@@ -52,9 +54,11 @@ public abstract class BasePerformanceTest {
     return databases[serverId];
   }
 
-  protected BasePerformanceTest() {
+  public void setTestConfiguration() {
+    GlobalConfiguration.resetAll();
     GlobalConfiguration.TEST.setValue(true);
     GlobalConfiguration.SERVER_ROOT_PATH.setValue("./target");
+    GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(DEFAULT_PASSWORD_FOR_TESTS);
   }
 
   protected void endTest() {

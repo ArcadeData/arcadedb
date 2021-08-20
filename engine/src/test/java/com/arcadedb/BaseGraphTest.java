@@ -44,6 +44,7 @@ public abstract class BaseGraphTest extends TestHelper {
 
   @Override
   public void beginTest() {
+    GlobalConfiguration.resetAll();
     FileUtils.deleteRecursively(new File(DB_PATH));
 
     database.transaction(new Database.TransactionScope() {

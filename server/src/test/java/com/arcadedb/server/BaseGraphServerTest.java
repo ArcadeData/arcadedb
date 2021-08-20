@@ -68,6 +68,10 @@ public abstract class BaseGraphServerTest {
   }
 
   protected BaseGraphServerTest() {
+  }
+
+  public void setTestConfiguration() {
+    GlobalConfiguration.resetAll();
     GlobalConfiguration.TEST.setValue(true);
     GlobalConfiguration.SERVER_ROOT_PATH.setValue("./target");
     GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(DEFAULT_PASSWORD_FOR_TESTS);
@@ -75,6 +79,8 @@ public abstract class BaseGraphServerTest {
 
   @BeforeEach
   public void beginTest() {
+    setTestConfiguration();
+
     checkArcadeIsTotallyDown();
 
     LogManager.instance().log(this, Level.INFO, "Starting test %s...", null, getClass().getName());

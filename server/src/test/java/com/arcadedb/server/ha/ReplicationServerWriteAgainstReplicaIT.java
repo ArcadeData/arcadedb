@@ -25,7 +25,8 @@ import com.arcadedb.GlobalConfiguration;
 import org.junit.jupiter.api.Test;
 
 public class ReplicationServerWriteAgainstReplicaIT extends ReplicationServerIT {
-  public ReplicationServerWriteAgainstReplicaIT() {
+  public void setTestConfiguration() {
+    super.setTestConfiguration();
     GlobalConfiguration.HA_QUORUM.setValue("Majority");
   }
 

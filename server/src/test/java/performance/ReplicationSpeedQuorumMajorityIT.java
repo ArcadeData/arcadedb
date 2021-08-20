@@ -39,7 +39,9 @@ public class ReplicationSpeedQuorumMajorityIT extends BasePerformanceTest {
     new ReplicationSpeedQuorumMajorityIT().run();
   }
 
-  public ReplicationSpeedQuorumMajorityIT() {
+  @Override
+  public void setTestConfiguration() {
+    super.setTestConfiguration();
     GlobalConfiguration.HA_REPLICATION_INCOMING_PORTS.setValue("2424-2500");
     GlobalConfiguration.HA_QUORUM.setValue("majority");
   }

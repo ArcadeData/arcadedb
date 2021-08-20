@@ -25,7 +25,6 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.TestCallback;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 
 import java.util.concurrent.atomic.AtomicLong;
@@ -37,16 +36,11 @@ public class ReplicationServerReplicaHotResyncIT extends ReplicationServerIT {
   private          boolean    hotResync     = false;
   private          boolean    fullResync    = false;
 
-  public ReplicationServerReplicaHotResyncIT() {
+  @Override
+  public void setTestConfiguration() {
+    super.setTestConfiguration();
     GlobalConfiguration.HA_QUORUM.setValue("MAJORITY");
     GlobalConfiguration.HA_REPLICATION_QUEUE_SIZE.setValue(10);
-  }
-
-  @AfterEach
-  @Override
-  public void endTest() {
-    super.endTest();
-    GlobalConfiguration.HA_REPLICATION_QUEUE_SIZE.setValue(512);
   }
 
   @Override

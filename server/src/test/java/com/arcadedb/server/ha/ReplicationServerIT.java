@@ -46,10 +46,6 @@ import java.util.logging.Level;
 public abstract class ReplicationServerIT extends BaseGraphServerTest {
   private static final int DEFAULT_MAX_RETRIES = 30;
 
-  public ReplicationServerIT() {
-    GlobalConfiguration.HA_REPLICATION_INCOMING_PORTS.setValue("2424-2500");
-  }
-
   protected int getServerCount() {
     return 3;
   }
@@ -60,6 +56,12 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
 
   protected int getVerticesPerTx() {
     return 500;
+  }
+
+  @Override
+  public void setTestConfiguration() {
+    super.setTestConfiguration();
+    GlobalConfiguration.HA_REPLICATION_INCOMING_PORTS.setValue("2424-2500");
   }
 
   @Test
