@@ -42,6 +42,11 @@ public class ReplicationServerLeaderDownIT extends ReplicationServerIT {
   private final AtomicInteger messages = new AtomicInteger();
 
   public ReplicationServerLeaderDownIT() {
+  }
+
+  @Override
+  public void setTestConfiguration() {
+    super.setTestConfiguration();
     GlobalConfiguration.HA_QUORUM.setValue("Majority");
   }
 

@@ -41,7 +41,9 @@ import java.util.logging.Level;
 public class ReplicationServerLeaderDownNoTransactionsToForwardIT extends ReplicationServerIT {
   private final AtomicInteger messages = new AtomicInteger();
 
-  public ReplicationServerLeaderDownNoTransactionsToForwardIT() {
+  @Override
+  public void setTestConfiguration() {
+    super.setTestConfiguration();
     GlobalConfiguration.HA_QUORUM.setValue("Majority");
   }
 
