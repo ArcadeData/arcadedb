@@ -24,12 +24,11 @@ package com.arcadedb.importer;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
-import com.arcadedb.database.Record;
-import com.arcadedb.database.async.NewRecordCallback;
 import com.arcadedb.importer.graph.EdgeLinkedCallback;
 import com.arcadedb.importer.graph.GraphImporter;
 import com.arcadedb.index.CompressedAny2RIDIndex;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
 import com.univocity.parsers.common.AbstractParser;
 import com.univocity.parsers.csv.CsvParser;
@@ -48,8 +47,8 @@ public class CSVImporter extends AbstractContentImporter {
   public static final  int      _32MB     = 32 * 1024 * 1024;
 
   @Override
-  public void load(final SourceSchema sourceSchema, final AnalyzedEntity.ENTITY_TYPE entityType, final Parser parser,
-      final DatabaseInternal database, final ImporterContext context, final ImporterSettings settings) throws ImportException {
+  public void load(final SourceSchema sourceSchema, final AnalyzedEntity.ENTITY_TYPE entityType, final Parser parser, final DatabaseInternal database,
+      final ImporterContext context, final ImporterSettings settings) throws ImportException {
 
     context.parsed.set(0);
 
@@ -110,6 +109,10 @@ public class CSVImporter extends AbstractContentImporter {
 
       LogManager.instance().log(this, Level.INFO, "Importing the following document properties: %s", null, properties);
 
+      database.async().onError((exception) -> {
+        LogManager.instance().log(this, Level.SEVERE, "Error on inserting documents", exception);
+      });
+
       String[] row;
       for (long line = 0; (row = csvParser.parseNext()) != null; ++line) {
         context.parsed.incrementAndGet();
@@ -125,12 +128,14 @@ public class CSVImporter extends AbstractContentImporter {
           document.set(prop.getName(), row[prop.getIndex()]);
         }
 
-        database.async().createRecord(document, new NewRecordCallback() {
-          @Override
-          public void call(final Record newDocument) {
-            context.createdDocuments.incrementAndGet();
-          }
-        });
+        document.save();
+
+//        database.async().createRecord(document, new NewRecordCallback() {
+//          @Override
+//          public void call(final Record newDocument) {
+//            context.createdDocuments.incrementAndGet();
+//          }
+//        });
       }
 
       database.commit();
@@ -140,9 +145,8 @@ public class CSVImporter extends AbstractContentImporter {
       throw new ImportException("Error on importing CSV");
     } finally {
       final long elapsedInSecs = (System.currentTimeMillis() - beginTime) / 1000;
-      LogManager.instance()
-          .log(this, Level.INFO, "Importing of documents from CSV source completed in %d seconds (%d/sec)", null, elapsedInSecs,
-              elapsedInSecs > 0 ? context.createdDocuments.get() / elapsedInSecs : context.createdDocuments.get());
+      LogManager.instance().log(this, Level.INFO, "Importing of documents from CSV source completed in %d seconds (%d/sec)", null, elapsedInSecs,
+          elapsedInSecs > 0 ? context.createdDocuments.get() / elapsedInSecs : context.createdDocuments.get());
       LogManager.instance().log(this, Level.INFO, "- Parsed lines...: %d", null, context.parsed.get());
       LogManager.instance().log(this, Level.INFO, "- Total documents: %d", null, context.createdDocuments.get());
 
@@ -153,14 +157,19 @@ public class CSVImporter extends AbstractContentImporter {
   private void loadVertices(final SourceSchema sourceSchema, final Parser parser, final Database database, final ImporterContext context,
       final ImporterSettings settings) throws ImportException {
 
+    if (settings.typeIdProperty == null) {
+      LogManager.instance()
+          .log(this, Level.INFO, "Property id was not defined. Set `-typeIdProperty <name>`. Importing is aborted", null, settings.vertexTypeName,
+              settings.typeIdProperty);
+      throw new IllegalArgumentException("Property id was not defined. Set `-typeIdProperty <name>`. Importing is aborted");
+    }
+
     final AnalyzedEntity entity = sourceSchema.getSchema().getEntity(settings.vertexTypeName);
     final AnalyzedProperty id = entity.getProperty(settings.typeIdProperty);
 
     if (id == null) {
-      LogManager.instance().log(this, Level.INFO, "Property Id '%s.%s' is null. Importing is aborted", null, settings.vertexTypeName,
-          settings.typeIdProperty);
-      throw new IllegalArgumentException(
-          "Property Id '" + settings.vertexTypeName + "." + settings.typeIdProperty + "' is null. Importing is aborted");
+      LogManager.instance().log(this, Level.INFO, "Property Id '%s.%s' is null. Importing is aborted", null, settings.vertexTypeName, settings.typeIdProperty);
+      throw new IllegalArgumentException("Property Id '" + settings.vertexTypeName + "." + settings.typeIdProperty + "' is null. Importing is aborted");
     }
 
     long expectedVertices = settings.expectedVertices;
@@ -171,13 +180,18 @@ public class CSVImporter extends AbstractContentImporter {
     else if (expectedVertices > Integer.MAX_VALUE)
       expectedVertices = Integer.MAX_VALUE;
 
-    context.graphImporter = new GraphImporter((DatabaseInternal) database, (int) expectedVertices, (int) settings.expectedEdges);
+    context.graphImporter = new GraphImporter((DatabaseInternal) database, (int) expectedVertices, (int) settings.expectedEdges,
+        Type.valueOf(settings.typeIdType.toUpperCase()));
 
     final AbstractParser csvParser = createCSVParser(settings, ",");
 
     LogManager.instance().log(this, Level.INFO, "Started importing vertices from CSV source", null);
 
     final long beginTime = System.currentTimeMillis();
+
+    database.async().onError((exception) -> {
+      LogManager.instance().log(this, Level.SEVERE, "Error on inserting vertices", exception);
+    });
 
     long skipEntries = settings.verticesSkipEntries != null ? settings.verticesSkipEntries.longValue() : 0;
     if (settings.verticesSkipEntries == null && settings.verticesSkipEntries == null)
@@ -223,13 +237,11 @@ public class CSVImporter extends AbstractContentImporter {
           continue;
 
         if (idIndex >= row.length) {
-          LogManager.instance()
-              .log(this, Level.INFO, "Property Id is configured on property %d but cannot be found on current record. Skip it", null,
-                  idIndex);
+          LogManager.instance().log(this, Level.INFO, "Property Id is configured on property %d but cannot be found on current record. Skip it", null, idIndex);
           continue;
         }
 
-        final long vertexId = Long.parseLong(row[idIndex]);
+        final String vertexId = row[idIndex];
 
         for (int p = 0; p < properties.size(); ++p) {
           final AnalyzedProperty prop = properties.get(p);
@@ -243,8 +255,8 @@ public class CSVImporter extends AbstractContentImporter {
 
         if (line > 0 && line % 10000000 == 0) {
           LogManager.instance().log(this, Level.INFO, "Map chunkSize=%s chunkAllocated=%s size=%d totalUsedSlots=%d", null,
-              FileUtils.getSizeAsString(verticesIndex.getChunkSize()), FileUtils.getSizeAsString(verticesIndex.getChunkAllocated()),
-              verticesIndex.size(), verticesIndex.getTotalUsedSlots());
+              FileUtils.getSizeAsString(verticesIndex.getChunkSize()), FileUtils.getSizeAsString(verticesIndex.getChunkAllocated()), verticesIndex.size(),
+              verticesIndex.getTotalUsedSlots());
         }
       }
 
@@ -254,27 +266,29 @@ public class CSVImporter extends AbstractContentImporter {
       throw new ImportException("Error on importing CSV");
     } finally {
       final long elapsedInSecs = (System.currentTimeMillis() - beginTime) / 1000;
-      LogManager.instance()
-          .log(this, Level.INFO, "Importing of vertices from CSV source completed in %d seconds (%d/sec)", null, elapsedInSecs,
-              elapsedInSecs > 0 ? context.createdVertices.get() / elapsedInSecs : context.createdVertices.get());
+      LogManager.instance().log(this, Level.INFO, "Importing of vertices from CSV source completed in %d seconds (%d/sec)", null, elapsedInSecs,
+          elapsedInSecs > 0 ? context.createdVertices.get() / elapsedInSecs : context.createdVertices.get());
       LogManager.instance().log(this, Level.INFO, "- Parsed lines...: %d", null, context.parsed.get());
       LogManager.instance().log(this, Level.INFO, "- Total vertices.: %d", null, context.createdVertices.get());
 
       csvParser.stopParsing();
-
-      context.graphImporter.startImportingEdges();
     }
   }
 
-  private void loadEdges(final SourceSchema sourceSchema, final Parser parser, final DatabaseInternal database,
-      final ImporterContext context, final ImporterSettings settings) throws ImportException {
+  private void loadEdges(final SourceSchema sourceSchema, final Parser parser, final DatabaseInternal database, final ImporterContext context,
+      final ImporterSettings settings) throws ImportException {
     AbstractParser csvParser = createCSVParser(settings, ",");
 
     final long beginTime = System.currentTimeMillis();
 
     final AnalyzedEntity entity = sourceSchema.getSchema().getEntity(settings.edgeTypeName);
     final AnalyzedProperty from = entity.getProperty(settings.edgeFromField);
+    if (from == null)
+      throw new IllegalArgumentException("Specify -edgeFromField <from-field-name>");
+
     final AnalyzedProperty to = entity.getProperty(settings.edgeToField);
+    if (to == null)
+      throw new IllegalArgumentException("Specify -edgeToField <from-field-name>");
 
     long expectedEdges = settings.expectedEdges;
     if (expectedEdges <= 0 && entity != null)
@@ -289,8 +303,14 @@ public class CSVImporter extends AbstractContentImporter {
       expectedVertices = expectedEdges / 2;
 
     LogManager.instance()
-        .log(this, Level.INFO, "Started importing edges from CSV source (expectedVertices=%d expectedEdges=%d)", null, expectedVertices,
-            expectedEdges);
+        .log(this, Level.INFO, "Started importing edges from CSV source (expectedVertices=%d expectedEdges=%d)", null, expectedVertices, expectedEdges);
+
+    context.graphImporter = new GraphImporter(database, (int) expectedVertices, (int) expectedEdges, Type.valueOf(settings.typeIdType.toUpperCase()));
+    context.graphImporter.startImportingEdges();
+
+    database.async().onError((exception) -> {
+      LogManager.instance().log(this, Level.SEVERE, "Error on inserting edges", exception);
+    });
 
     long skipEntries = settings.edgesSkipEntries != null ? settings.edgesSkipEntries.longValue() : 0;
     if (settings.edgesSkipEntries == null && settings.edgesSkipEntries == null)
@@ -353,9 +373,8 @@ public class CSVImporter extends AbstractContentImporter {
       } catch (InterruptedException e) {
         Thread.currentThread().interrupt();
       }
-      LogManager.instance()
-          .log(this, Level.INFO, "Importing of edges from CSV source completed in %d seconds (%d/sec)", null, elapsedInSecs,
-              elapsedInSecs > 0 ? context.createdEdges.get() / elapsedInSecs : context.createdEdges.get());
+      LogManager.instance().log(this, Level.INFO, "Importing of edges from CSV source completed in %d seconds (%d/sec)", null, elapsedInSecs,
+          elapsedInSecs > 0 ? context.createdEdges.get() / elapsedInSecs : context.createdEdges.get());
       LogManager.instance().log(this, Level.INFO, "- Parsed lines......: %d", null, context.parsed.get());
       LogManager.instance().log(this, Level.INFO, "- Total edges.......: %d", null, context.createdEdges.get());
       LogManager.instance().log(this, Level.INFO, "- Total linked Edges: %d", null, context.linkedEdges.get());
@@ -365,8 +384,8 @@ public class CSVImporter extends AbstractContentImporter {
     }
   }
 
-  public void createEdgeFromRow(final String[] row, final List<AnalyzedProperty> properties, final AnalyzedProperty from,
-      final AnalyzedProperty to, final ImporterContext context, final ImporterSettings settings) {
+  public void createEdgeFromRow(final String[] row, final List<AnalyzedProperty> properties, final AnalyzedProperty from, final AnalyzedProperty to,
+      final ImporterContext context, final ImporterSettings settings) {
 
     if (from.getIndex() >= row.length || to.getIndex() >= row.length) {
       context.skippedEdges.incrementAndGet();
@@ -479,7 +498,7 @@ public class CSVImporter extends AbstractContentImporter {
 
       String[] row;
       for (long line = 0; (row = csvParser.parseNext()) != null; ++line) {
-        if (skipEntries > 0 && line < skipEntries)
+        if (skipEntries > 0 && line < skipEntries && !fieldNames.isEmpty())
           continue;
 
         if (settings.analysisLimitBytes > 0 && csvParser.getContext().currentChar() > settings.analysisLimitBytes)

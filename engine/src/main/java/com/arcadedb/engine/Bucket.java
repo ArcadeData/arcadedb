@@ -438,8 +438,7 @@ public class Bucket extends PaginatedComponent {
       LogManager.instance()
           .log(this, Level.FINE, "Created record %s (page=%s records=%d threadId=%d)", null, rid, lastPage, recordCountInPage, Thread.currentThread().getId());
 
-      if (getDatabase().isReadYourWrites())
-        ((RecordInternal) record).setBuffer(buffer.copy());
+      ((RecordInternal) record).setBuffer(buffer.copy());
 
       return rid;
 

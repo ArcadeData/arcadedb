@@ -53,7 +53,7 @@ public class Importer {
   }
 
   public void load() {
-    Source source = null;
+    source = null;
 
     try {
       final String cfgValue = settings.options.get("maxValueSampling");
@@ -223,8 +223,7 @@ public class Importer {
       final DocumentType type = database.getSchema().createDocumentType(name, settings.parallel);
       if (settings.typeIdProperty != null) {
         type.createProperty(settings.typeIdProperty, Type.getTypeByName(settings.typeIdType));
-//        database.getSchema()
-//            .createIndexes(SchemaImpl.INDEX_TYPE.LSM_TREE, settings.typeIdPropertyIsUnique, name, new String[] { settings.typeIdProperty });
+        database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, settings.typeIdPropertyIsUnique, name, new String[] { settings.typeIdProperty });
         LogManager.instance().log(this, Level.INFO, "- Creating indexed property '%s' of type '%s'", null, settings.typeIdProperty, settings.typeIdType);
       }
       return type;
@@ -240,8 +239,7 @@ public class Importer {
       final VertexType type = database.getSchema().createVertexType(name, settings.parallel);
       if (settings.typeIdProperty != null) {
         type.createProperty(settings.typeIdProperty, Type.getTypeByName(settings.typeIdType));
-//        database.getSchema()
-//            .createIndexes(SchemaImpl.INDEX_TYPE.LSM_TREE, settings.typeIdPropertyIsUnique, name, new String[] { settings.typeIdProperty });
+        database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, settings.typeIdPropertyIsUnique, name, new String[] { settings.typeIdProperty });
         LogManager.instance().log(this, Level.INFO, "- Creating indexed property '%s' of type '%s'", null, settings.typeIdProperty, settings.typeIdType);
       }
       return type;

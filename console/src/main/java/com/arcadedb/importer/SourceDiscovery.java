@@ -51,8 +51,8 @@ public class SourceDiscovery {
     this.url = url;
   }
 
-  public SourceSchema getSchema(final ImporterSettings settings, final AnalyzedEntity.ENTITY_TYPE entityType,
-      final AnalyzedSchema analyzedSchema) throws IOException {
+  public SourceSchema getSchema(final ImporterSettings settings, final AnalyzedEntity.ENTITY_TYPE entityType, final AnalyzedSchema analyzedSchema)
+      throws IOException {
     LogManager.instance().log(this, Level.INFO, "Analyzing url: %s...", null, url);
 
     final Source source = getSource();
@@ -67,9 +67,8 @@ public class SourceDiscovery {
     if (contentImporter == null)
       LogManager.instance().log(this, Level.INFO, "Unknown format");
     else {
-      LogManager.instance()
-          .log(this, Level.INFO, "Recognized format %s (parsingLimitBytes=%s parsingLimitEntries=%d)", null, contentImporter.getFormat(),
-              FileUtils.getSizeAsString(limitBytes), limitEntries);
+      LogManager.instance().log(this, Level.INFO, "Recognized format %s (parsingLimitBytes=%s parsingLimitEntries=%d)", null, contentImporter.getFormat(),
+          FileUtils.getSizeAsString(limitBytes), limitEntries);
       if (!sourceSchema.getOptions().isEmpty()) {
         for (Map.Entry<String, String> o : sourceSchema.getOptions().entrySet())
           LogManager.instance().log(this, Level.INFO, "- %s = %s", null, o.getKey(), o.getValue());
@@ -101,14 +100,13 @@ public class SourceDiscovery {
 
     connection.connect();
 
-    return getSourceFromContent(new BufferedInputStream(connection.getInputStream()), connection.getContentLengthLong(), resource,
-        new Callable<Void>() {
-          @Override
-          public Void call() throws Exception {
-            connection.disconnect();
-            return null;
-          }
-        });
+    return getSourceFromContent(new BufferedInputStream(connection.getInputStream()), connection.getContentLengthLong(), resource, new Callable<Void>() {
+      @Override
+      public Void call() throws Exception {
+        connection.disconnect();
+        return null;
+      }
+    });
   }
 
   private Source getSourceFromFile(final String path) throws IOException {
@@ -128,8 +126,8 @@ public class SourceDiscovery {
     });
   }
 
-  private ContentImporter analyzeSourceContent(final Parser parser, final AnalyzedEntity.ENTITY_TYPE entityType,
-      final ImporterSettings settings) throws IOException {
+  private ContentImporter analyzeSourceContent(final Parser parser, final AnalyzedEntity.ENTITY_TYPE entityType, final ImporterSettings settings)
+      throws IOException {
 
     String knownFileType = null;
     String knownDelimiter = null;
@@ -160,8 +158,7 @@ public class SourceDiscovery {
       else if (knownFileType.equalsIgnoreCase("xml"))
         return new XMLImporter();
       else
-        LogManager.instance()
-            .log(this, Level.WARNING, "File type '%s' is not supported. Trying to understand file type...", null, knownFileType);
+        LogManager.instance().log(this, Level.WARNING, "File type '%s' is not supported. Trying to understand file type...", null, knownFileType);
     }
 
     parser.nextChar();
@@ -205,25 +202,26 @@ public class SourceDiscovery {
     }
 
     if (!candidateSeparators.isEmpty()) {
-      if (candidateSeparators.size() > 1) {
-        final ArrayList<Map.Entry<Character, AtomicInteger>> list = new ArrayList(candidateSeparators.entrySet());
-        list.sort(new Comparator<Map.Entry<Character, AtomicInteger>>() {
-          @Override
-          public int compare(final Map.Entry<Character, AtomicInteger> o1, final Map.Entry<Character, AtomicInteger> o2) {
-            if (o1.getValue().get() == o2.getValue().get())
-              return 0;
-            return o1.getValue().get() < o2.getValue().get() ? 1 : -1;
-          }
-        });
+      // EXCLUDE SPACE IF OTHER DELIMITERS ARE PRESENT
+      if (candidateSeparators.size() > 1 && candidateSeparators.containsKey(' '))
+        candidateSeparators.remove(' ');
 
-        final Map.Entry<Character, AtomicInteger> bestSeparator = list.get(0);
+      final ArrayList<Map.Entry<Character, AtomicInteger>> list = new ArrayList(candidateSeparators.entrySet());
+      list.sort(new Comparator<Map.Entry<Character, AtomicInteger>>() {
+        @Override
+        public int compare(final Map.Entry<Character, AtomicInteger> o1, final Map.Entry<Character, AtomicInteger> o2) {
+          if (o1.getValue().get() == o2.getValue().get())
+            return 0;
+          return o1.getValue().get() < o2.getValue().get() ? 1 : -1;
+        }
+      });
 
-        LogManager.instance()
-            .log(this, Level.INFO, "Best separator candidate='%s' (all candidates=%s)", null, bestSeparator.getKey(), list);
+      final Map.Entry<Character, AtomicInteger> bestSeparator = list.get(0);
 
-        settings.options.put("delimiter", "" + bestSeparator.getKey());
-        return new CSVImporter();
-      }
+      LogManager.instance().log(this, Level.INFO, "Best separator candidate='%s' (all candidates=%s)", null, bestSeparator.getKey(), list);
+
+      settings.options.put("delimiter", "" + bestSeparator.getKey());
+      return new CSVImporter();
     }
 
     // UNKNOWN
@@ -310,8 +308,8 @@ public class SourceDiscovery {
       throw new IllegalArgumentException("Invalid setting '" + name + "'");
   }
 
-  private Source getSourceFromContent(final BufferedInputStream in, final long totalSize, final String resource,
-      final Callable<Void> closeCallback) throws IOException {
+  private Source getSourceFromContent(final BufferedInputStream in, final long totalSize, final String resource, final Callable<Void> closeCallback)
+      throws IOException {
     in.mark(0);
 
     final ZipInputStream zip = new ZipInputStream(in);

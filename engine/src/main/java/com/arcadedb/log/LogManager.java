@@ -21,6 +21,7 @@
 
 package com.arcadedb.log;
 
+import java.util.logging.Handler;
 import java.util.logging.Level;
 
 /**
@@ -75,9 +76,8 @@ public class LogManager {
   }
 
   public void error(final Object iRequester, String iMessage, Exception e) {
-    logger
-        .log(iRequester, Level.SEVERE, iMessage, e, CONTEXT_INSTANCE.get(), null, null, null, null, null, null, null, null, null, null, null, null, null, null,
-            null, null, null);
+    logger.log(iRequester, Level.SEVERE, iMessage, e, CONTEXT_INSTANCE.get(), null, null, null, null, null, null, null, null, null, null, null, null, null,
+        null, null, null, null);
   }
 
   public void log(final Object iRequester, final Level iLevel, String iMessage) {
@@ -158,49 +158,43 @@ public class LogManager {
   public void log(final Object iRequester, final Level iLevel, String iMessage, final Throwable iException, final Object arg1, final Object arg2,
       final Object arg3, final Object arg4, final Object arg5, final Object arg6, final Object arg7, final Object arg8, final Object arg9, final Object arg10,
       final Object arg11, final Object arg12) {
-    logger
-        .log(iRequester, iLevel, iMessage, iException, CONTEXT_INSTANCE.get(), arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, null,
-            null, null, null, null);
+    logger.log(iRequester, iLevel, iMessage, iException, CONTEXT_INSTANCE.get(), arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12,
+        null, null, null, null, null);
   }
 
   public void log(final Object iRequester, final Level iLevel, String iMessage, final Throwable iException, final Object arg1, final Object arg2,
       final Object arg3, final Object arg4, final Object arg5, final Object arg6, final Object arg7, final Object arg8, final Object arg9, final Object arg10,
       final Object arg11, final Object arg12, final Object arg13) {
-    logger
-        .log(iRequester, iLevel, iMessage, iException, CONTEXT_INSTANCE.get(), arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13,
-            null, null, null, null);
+    logger.log(iRequester, iLevel, iMessage, iException, CONTEXT_INSTANCE.get(), arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12,
+        arg13, null, null, null, null);
   }
 
   public void log(final Object iRequester, final Level iLevel, String iMessage, final Throwable iException, final Object arg1, final Object arg2,
       final Object arg3, final Object arg4, final Object arg5, final Object arg6, final Object arg7, final Object arg8, final Object arg9, final Object arg10,
       final Object arg11, final Object arg12, final Object arg13, final Object arg14) {
-    logger
-        .log(iRequester, iLevel, iMessage, iException, CONTEXT_INSTANCE.get(), arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13,
-            arg14, null, null, null);
+    logger.log(iRequester, iLevel, iMessage, iException, CONTEXT_INSTANCE.get(), arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12,
+        arg13, arg14, null, null, null);
   }
 
   public void log(final Object iRequester, final Level iLevel, String iMessage, final Throwable iException, final Object arg1, final Object arg2,
       final Object arg3, final Object arg4, final Object arg5, final Object arg6, final Object arg7, final Object arg8, final Object arg9, final Object arg10,
       final Object arg11, final Object arg12, final Object arg13, final Object arg14, final Object arg15) {
-    logger
-        .log(iRequester, iLevel, iMessage, iException, CONTEXT_INSTANCE.get(), arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13,
-            arg14, arg15, null, null);
+    logger.log(iRequester, iLevel, iMessage, iException, CONTEXT_INSTANCE.get(), arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12,
+        arg13, arg14, arg15, null, null);
   }
 
   public void log(final Object iRequester, final Level iLevel, String iMessage, final Throwable iException, final Object arg1, final Object arg2,
       final Object arg3, final Object arg4, final Object arg5, final Object arg6, final Object arg7, final Object arg8, final Object arg9, final Object arg10,
       final Object arg11, final Object arg12, final Object arg13, final Object arg14, final Object arg15, final Object arg16) {
-    logger
-        .log(iRequester, iLevel, iMessage, iException, CONTEXT_INSTANCE.get(), arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13,
-            arg14, arg15, arg16, null);
+    logger.log(iRequester, iLevel, iMessage, iException, CONTEXT_INSTANCE.get(), arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12,
+        arg13, arg14, arg15, arg16, null);
   }
 
   public void log(final Object iRequester, final Level iLevel, String iMessage, final Throwable iException, final Object arg1, final Object arg2,
       final Object arg3, final Object arg4, final Object arg5, final Object arg6, final Object arg7, final Object arg8, final Object arg9, final Object arg10,
       final Object arg11, final Object arg12, final Object arg13, final Object arg14, final Object arg15, final Object arg16, final Object arg17) {
-    logger
-        .log(iRequester, iLevel, iMessage, iException, CONTEXT_INSTANCE.get(), arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13,
-            arg14, arg15, arg16, arg17);
+    logger.log(iRequester, iLevel, iMessage, iException, CONTEXT_INSTANCE.get(), arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12,
+        arg13, arg14, arg15, arg16, arg17);
   }
 
   public void log(final Object iRequester, final Level iLevel, String iMessage, final Throwable iException, final Object... args) {
@@ -271,6 +265,18 @@ public class LogManager {
       error = true;
       debug = info = warn = false;
     }
+  }
+
+  /**
+   * Forces a log level by overriding the current configuration.
+   *
+   * @param level The new level
+   */
+  public static void forceGlobalLevel(final Level level) {
+    java.util.logging.Logger.getLogger("").setLevel(level);
+    final Handler[] handlers = java.util.logging.Logger.getLogger("").getHandlers();
+    for (int index = 0; index < handlers.length; index++)
+      handlers[index].setLevel(level);
   }
 
   public void flush() {

@@ -21,10 +21,9 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.database.*;
-import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.query.sql.executor.MultiValue;
+import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.MultiIterator;
 
@@ -749,5 +748,9 @@ public enum Type {
   @Deprecated
   public Class<?>[] getJavaTypes() {
     return null;
+  }
+
+  public Object newInstance(Object value) {
+    return convert(null, value, javaDefaultType);
   }
 }

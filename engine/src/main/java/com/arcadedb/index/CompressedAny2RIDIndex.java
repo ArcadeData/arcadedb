@@ -33,7 +33,7 @@ import java.util.NoSuchElementException;
 
 /**
  * Map like optimized to avoid stressing the GC by using mechanical sympathy technique + compression of key and values.
- * This class is synchronized. Values are RIDs, key can be anything. This Map implementation doesn't support the overwrite of a value.
+ * This class is synchronized. Values are RIDs, key can be anything. This Map implementation doesn't support to overwrite a value.
  * Values cannot be null.
  * <p>
  * A Binary object is used to store the hash table (the first part of it) and then keys and values. The key is serialized in the position
@@ -44,7 +44,8 @@ import java.util.NoSuchElementException;
 public class CompressedAny2RIDIndex<K> {
   private final Database         database;
   private final BinarySerializer serializer;
-  private final byte             keyType;
+  private final byte             keyBinaryType;
+  private final Type             keyType;
   private       Binary           chunk;
   private       int              keys;
   private       int              totalEntries   = 0;
@@ -67,7 +68,7 @@ public class CompressedAny2RIDIndex<K> {
       if (nextKeyPos > 0) {
         // IGNORE THE KEY AND TAKE THE VERTEX RID
         chunk.position(nextKeyPos);
-        serializer.deserializeValue(database, chunk, keyType, null);
+        serializer.deserializeValue(database, chunk, keyBinaryType, null);
 
         // NEXT KEY ON SAME POSITION IN HASHTABLE
         nextKeyPos = chunk.getInt();
@@ -82,7 +83,7 @@ public class CompressedAny2RIDIndex<K> {
           chunk.position(posInChunk);
 
           // IGNORE THE KEY AND TAKE THE VERTEX RID
-          serializer.deserializeValue(database, chunk, keyType, null);
+          serializer.deserializeValue(database, chunk, keyBinaryType, null);
 
           nextKeyPos = chunk.getInt();
           nextVertexRID = (RID) serializer.deserializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, null);
@@ -116,7 +117,12 @@ public class CompressedAny2RIDIndex<K> {
 
     this.serializer = new BinarySerializer();
 
-    this.keyType = keyType.getBinaryType();
+    this.keyType = keyType;
+    this.keyBinaryType = keyType.getBinaryType();
+  }
+
+  public Type getKeyBinaryType() {
+    return keyType;
   }
 
   public EntryIterator vertexIterator() {
@@ -157,7 +163,7 @@ public class CompressedAny2RIDIndex<K> {
     // SLOT OCCUPIED, CHECK FOR THE KEY
     threadBuffer.position(pos);
     while (true) {
-      Object slotKey = serializer.deserializeValue(database, threadBuffer, keyType, null);
+      Object slotKey = serializer.deserializeValue(database, threadBuffer, keyBinaryType, null);
 
       if (slotKey.equals(key)) {
         threadBuffer.position(threadBuffer.position() + Binary.INT_SERIALIZED_SIZE);
@@ -191,7 +197,7 @@ public class CompressedAny2RIDIndex<K> {
         chunk.putInt(hash * Binary.INT_SERIALIZED_SIZE, chunk.position());
 
         // WRITE THE KEY FIRST
-        serializer.serializeValue(database, chunk, keyType, key);
+        serializer.serializeValue(database, chunk, keyBinaryType, key);
 
         // LEAVE AN INT AS EMPTY SLOT FOR THE NEXT KEY
         chunk.putInt(0);
@@ -206,7 +212,7 @@ public class CompressedAny2RIDIndex<K> {
         chunk.position(pos);
         int lastNextPos;
         while (true) {
-          Object slotKey = serializer.deserializeValue(database, chunk, keyType, null);
+          Object slotKey = serializer.deserializeValue(database, chunk, keyBinaryType, null);
 
           if (slotKey.equals(key))
             throw new IllegalArgumentException("Key '" + key + "' is already present in the map");
@@ -225,7 +231,7 @@ public class CompressedAny2RIDIndex<K> {
         final int entryPosition = chunk.position();
 
         // WRITE THE KEY FIRST
-        serializer.serializeValue(database, chunk, keyType, key);
+        serializer.serializeValue(database, chunk, keyBinaryType, key);
 
         // LEAVE AN INT AS EMPTY SLOT FOR THE NEXT KEY
         chunk.putInt(0);

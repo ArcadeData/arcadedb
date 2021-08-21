@@ -1165,6 +1165,7 @@ public class EmbeddedSchema implements Schema {
   public JSONObject serializeConfiguration() {
     final JSONObject root = new JSONObject();
     root.put("version", Constants.getRawVersion());
+    root.put("build", Constants.getBuildNumber());
 
     final JSONObject settings = new JSONObject();
     root.put("settings", settings);

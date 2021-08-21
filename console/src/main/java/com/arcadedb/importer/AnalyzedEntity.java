@@ -24,7 +24,7 @@ package com.arcadedb.importer;
 import com.arcadedb.schema.Type;
 
 import java.util.Collection;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 
@@ -41,7 +41,7 @@ public class AnalyzedEntity {
   public AnalyzedEntity(final String name, final ENTITY_TYPE type, final long maxValueSampling) {
     this.name = name;
     this.type = type;
-    this.properties = new HashMap<>();
+    this.properties = new LinkedHashMap<>();
     this.maxValueSampling = maxValueSampling;
   }
 

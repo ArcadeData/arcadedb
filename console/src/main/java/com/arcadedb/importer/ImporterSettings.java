@@ -63,14 +63,14 @@ public class ImporterSettings {
   String  typeIdProperty         = null;
   boolean typeIdPropertyIsUnique = false;
   String  typeIdType             = "String";
-  public int commitEvery = 5000;
-  int     parallel             = Runtime.getRuntime().availableProcessors() / 2 - 1;
+  int     parallel               = Runtime.getRuntime().availableProcessors() / 2 - 1;
   boolean forceDatabaseCreate;
-  boolean trimText             = true;
-  long    analysisLimitBytes   = 100000;
-  long    analysisLimitEntries = 10000;
+  boolean trimText               = true;
+  long    analysisLimitBytes     = 100000;
+  long    analysisLimitEntries   = 10000;
   long    parsingLimitBytes;
   long    parsingLimitEntries;
+  public int commitEvery = 5000;
 
   final Map<String, String> options = new HashMap<>();
 

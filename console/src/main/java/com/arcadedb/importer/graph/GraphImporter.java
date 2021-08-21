@@ -62,12 +62,12 @@ public class GraphImporter {
     }
   }
 
-  public GraphImporter(final DatabaseInternal database, final int expectedVertices, final int expectedEdges) {
+  public GraphImporter(final DatabaseInternal database, final int expectedVertices, final int expectedEdges, Type idType) {
     this.database = database;
 
     final int parallel = database.async().getParallelLevel();
 
-    this.verticesIndex = new CompressedAny2RIDIndex(database, Type.LONG, expectedVertices);
+    this.verticesIndex = new CompressedAny2RIDIndex(database, idType, expectedVertices);
 
     final int expectedEdgesPerThread = expectedEdges / parallel;
 
@@ -106,10 +106,11 @@ public class GraphImporter {
     return verticesIndex.get(vertexId);
   }
 
-  public void createVertex(final String vertexTypeName, final long vertexId, final Object[] vertexProperties) {
+  public void createVertex(final String vertexTypeName, final String vertexId, final Object[] vertexProperties) {
+    final Object transformedVertexId = verticesIndex.getKeyBinaryType().newInstance(vertexId);
 
     final MutableVertex sourceVertex;
-    RID sourceVertexRID = verticesIndex.get(vertexId);
+    RID sourceVertexRID = verticesIndex.get(transformedVertexId);
     if (sourceVertexRID == null) {
       // CREATE THE VERTEX
       sourceVertex = database.newVertex(vertexTypeName);
@@ -123,7 +124,7 @@ public class GraphImporter {
           db.getGraphEngine().createOutEdgeChunk(db, sourceVertex);
           db.getGraphEngine().createInEdgeChunk(db, sourceVertex);
 
-          verticesIndex.put(vertexId, newDocument.getIdentity());
+          verticesIndex.put(transformedVertexId, newDocument.getIdentity());
         }
       });
     }
