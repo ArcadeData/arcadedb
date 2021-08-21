@@ -32,6 +32,7 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.serializer.BinaryComparator;
 
 import java.util.*;
 import java.util.logging.Level;
@@ -113,7 +114,7 @@ public class TransactionIndexContext {
           List l2 = (List) v2;
 
           for (int j = 0; j < l1.size(); j++) {
-            cmp = ((Comparable) l1.get(j)).compareTo(l2.get(j));
+            cmp = BinaryComparator.compareTo(l1.get(j), l2.get(j));
             if (cmp != 0)
               return cmp;
           }
@@ -121,19 +122,19 @@ public class TransactionIndexContext {
         } else if (v1 instanceof List) {
           List l1 = (List) v1;
           for (int j = 0; j < l1.size(); j++) {
-            cmp = j > 0 ? 1 : ((Comparable) l1.get(j)).compareTo(v2);
+            cmp = j > 0 ? 1 : BinaryComparator.compareTo((Comparable) l1.get(j), v2);
             if (cmp != 0)
               return cmp;
           }
         } else if (v2 instanceof List) {
           List l2 = (List) v2;
           for (int j = 0; j < l2.size(); j++) {
-            cmp = j > 0 ? -1 : ((Comparable) v1).compareTo(l2.get(j));
+            cmp = j > 0 ? -1 : BinaryComparator.compareTo(v1, l2.get(j));
             if (cmp != 0)
               return cmp;
           }
         } else
-          cmp = ((Comparable) v1).compareTo(v2);
+          cmp = BinaryComparator.compareTo(v1, v2);
 
         if (cmp != 0)
           return cmp;

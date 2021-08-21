@@ -25,6 +25,7 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.utility.Pair;
@@ -204,7 +205,7 @@ public class CompressedRID2RIDsIndex {
     while (true) {
       Object slotKey = serializer.deserializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, null);
 
-      if (slotKey.equals(key)) {
+      if (BinaryComparator.equals(slotKey, key)) {
         // FOUND KEY, COLLECT ALL THE VALUE IN THE LINKED LIST
         final List<Pair<RID, RID>> list = new ArrayList<>();
 
@@ -281,7 +282,7 @@ public class CompressedRID2RIDsIndex {
       while (true) {
         final RID slotKey = (RID) serializer.deserializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, null);
 
-        if (slotKey.equals(key)) {
+        if (BinaryComparator.equals(slotKey, key)) {
           // FOUND THE KEY, GET PREVIOUS ITEM
           final int previousEntryOffset = chunk.position() + Binary.INT_SERIALIZED_SIZE; // SKIP NEXT KEY
           final int previousEntryPos = chunk.getInt(previousEntryOffset);

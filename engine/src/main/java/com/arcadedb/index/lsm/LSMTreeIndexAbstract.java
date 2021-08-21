@@ -355,7 +355,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
 
       if (keyTypes[keyIndex] == BinaryTypes.TYPE_STRING) {
         // OPTIMIZATION: SPECIAL CASE, LAZY EVALUATE BYTE PER BYTE THE STRING
-        result = comparator.compareStrings((byte[]) key, currentPageBuffer);
+        result = comparator.compareBytes((byte[]) key, currentPageBuffer);
       } else {
         final Object keyValue = serializer.deserializeValue(database, currentPageBuffer, keyTypes[keyIndex], null);
         result = comparator.compare(key, keyTypes[keyIndex], keyValue, keyTypes[keyIndex]);

@@ -55,7 +55,7 @@ public class PerformanceComparator {
     final int[][] results1 = new int[ARRAY_LENGTH][ARRAY_LENGTH];
     for (int i = 0; i < ARRAY_LENGTH; i++) {
       for (int k = 0; k < ARRAY_LENGTH; k++)
-        results1[i][k] = BinaryComparator.compareStrings(array[i].getBytes(), array[k].getBytes());
+        results1[i][k] = BinaryComparator.compareBytes(array[i].getBytes(), array[k].getBytes());
     }
 
     System.out.println("Comparison matrix finishes in " + (System.currentTimeMillis() - beginTime) + "ms");

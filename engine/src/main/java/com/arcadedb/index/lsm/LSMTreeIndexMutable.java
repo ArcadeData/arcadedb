@@ -273,7 +273,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
         final byte keyType = keyTypes[keyIndex];
         if (keyType == BinaryTypes.TYPE_STRING) {
           // OPTIMIZATION: SPECIAL CASE, LAZY EVALUATE BYTE PER BYTE THE STRING
-          result = comparator.compareStrings((byte[]) keys[keyIndex], currentPageBuffer);
+          result = comparator.compareBytes((byte[]) keys[keyIndex], currentPageBuffer);
         } else {
           final Object key = serializer.deserializeValue(database, currentPageBuffer, keyType, null);
           result = comparator.compare(keys[keyIndex], keyType, key, keyType);
@@ -309,7 +309,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
       for (int keyIndex = 0; keyIndex < keys.length; ++keyIndex) {
         if (keyTypes[keyIndex] == BinaryTypes.TYPE_STRING) {
           // OPTIMIZATION: SPECIAL CASE, LAZY EVALUATE BYTE PER BYTE THE STRING
-          result = comparator.compareStrings((byte[]) keys[keyIndex], currentPageBuffer);
+          result = comparator.compareBytes((byte[]) keys[keyIndex], currentPageBuffer);
         } else {
           final Object key = serializer.deserializeValue(database, currentPageBuffer, keyTypes[keyIndex], null);
           result = comparator.compare(keys[keyIndex], keyTypes[keyIndex], key, keyTypes[keyIndex]);

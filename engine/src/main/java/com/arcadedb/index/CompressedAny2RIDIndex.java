@@ -25,6 +25,7 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.serializer.BinaryTypes;
 
@@ -165,7 +166,7 @@ public class CompressedAny2RIDIndex<K> {
     while (true) {
       Object slotKey = serializer.deserializeValue(database, threadBuffer, keyBinaryType, null);
 
-      if (slotKey.equals(key)) {
+      if (BinaryComparator.equals(slotKey, key)) {
         threadBuffer.position(threadBuffer.position() + Binary.INT_SERIALIZED_SIZE);
         return (RID) serializer.deserializeValue(database, threadBuffer, BinaryTypes.TYPE_COMPRESSED_RID, null);
       }
@@ -214,7 +215,7 @@ public class CompressedAny2RIDIndex<K> {
         while (true) {
           Object slotKey = serializer.deserializeValue(database, chunk, keyBinaryType, null);
 
-          if (slotKey.equals(key))
+          if (BinaryComparator.equals(slotKey, key))
             throw new IllegalArgumentException("Key '" + key + "' is already present in the map");
 
           lastNextPos = chunk.position();

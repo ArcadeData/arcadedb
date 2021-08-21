@@ -25,6 +25,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.serializer.BinaryComparator;
 
 import java.util.Map;
 import java.util.logging.Level;
@@ -121,7 +122,7 @@ public class OrderByItem {
     }
     if (aVal instanceof Comparable && bVal instanceof Comparable) {
       try {
-        result = ((Comparable) aVal).compareTo(bVal);
+        result = BinaryComparator.compareTo(aVal, bVal);
       } catch (Exception e) {
         LogManager.instance().log(this, Level.SEVERE, "Error during comparision", e);
         result = 0;

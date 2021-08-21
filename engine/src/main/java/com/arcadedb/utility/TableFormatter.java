@@ -23,6 +23,7 @@ package com.arcadedb.utility;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
+import com.arcadedb.serializer.BinaryComparator;
 
 import java.text.SimpleDateFormat;
 import java.util.*;
@@ -129,9 +130,9 @@ public class TableFormatter {
           else if (value1 == null)
             result = 0;
           else if (value1 instanceof Comparable)
-            result = ((Comparable) value1).compareTo(value2);
+            result = BinaryComparator.compareTo(value1, value2);
           else
-            result = value1.toString().compareTo(value2.toString());
+            result = BinaryComparator.compareTo(value1.toString(), value2.toString());
 
           return ascending ? result : result * -1;
         }

@@ -25,6 +25,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.BinaryComparator;
 
 public class LtOperator extends SimpleNode implements BinaryCompareOperator {
   public LtOperator(int id) {
@@ -58,7 +59,8 @@ public class LtOperator extends SimpleNode implements BinaryCompareOperator {
 
     if (iRight == null)
       return false;
-    return ((Comparable<Object>) iLeft).compareTo(iRight) < 0;
+
+    return BinaryComparator.compareTo(iLeft, iRight) < 0;
   }
 
   @Override

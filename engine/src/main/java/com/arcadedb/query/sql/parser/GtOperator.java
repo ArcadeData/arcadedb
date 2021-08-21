@@ -26,6 +26,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.BinaryComparator;
 
 public class GtOperator extends SimpleNode implements BinaryCompareOperator {
   public GtOperator(int id) {
@@ -64,7 +65,7 @@ public class GtOperator extends SimpleNode implements BinaryCompareOperator {
     if (!(iLeft instanceof Comparable)) {
       return false;
     }
-    return ((Comparable<Object>) iLeft).compareTo(iRight) > 0;
+    return BinaryComparator.compareTo(iLeft, iRight) > 0;
   }
 
   @Override
