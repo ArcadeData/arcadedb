@@ -25,6 +25,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
 
 import java.util.*;
@@ -66,7 +67,10 @@ public class FetchFromRidsStep extends AbstractExecutionStep {
           if (nextRid == null) {
             continue;
           }
-          Identifiable nextDoc = ctx.getDatabase().lookupByRID(nextRid, true);
+          Identifiable nextDoc = null;
+          try {
+            nextDoc = ctx.getDatabase().lookupByRID(nextRid, true);
+          } catch (RecordNotFoundException e) {}
           if (nextDoc == null) {
             continue;
           }

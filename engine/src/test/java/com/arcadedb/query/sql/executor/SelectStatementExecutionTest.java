@@ -954,121 +954,118 @@ public class SelectStatementExecutionTest extends TestHelper {
         result.close();
     }
 
-//    @Test
-//    public void testQueryAsTarget() {
-//        String className = "testQueryAsTarget";
-//        OSchema schema = database.getSchema();
-//        OClass clazz = schema.createDocumentType(className);
-//
-//        for (int i = 0; i < 10; i++) {
-//            MutableDocument doc = database.newDocument(className);
-//            doc.set("val", i);
-//            doc.save();
-//        }
-//
-//        ResultSet result =
-//                database.query("sql", "select from (select from " + className + " where val > 2)  where val < 8");
-//        printExecutionPlan(result);
-//
-//        for (int i = 0; i < 5; i++) {
-//            Assertions.assertTrue(result.hasNext());
-//            Result item = result.next();
-//            Integer val = item.getProperty("val");
-//            Assertions.assertTrue(val > 2);
-//            Assertions.assertTrue(val < 8);
-//        }
-//        Assertions.assertFalse(result.hasNext());
-//        result.close();
-//    }
-//
-//    @Test
-//    public void testQuerySchema() {
-//        ResultSet result = database.query("sql", "select from metadata:schema");
-//        printExecutionPlan(result);
-//
-//        for (int i = 0; i < 1; i++) {
-//            Assertions.assertTrue(result.hasNext());
-//            Result item = result.next();
-//            Assertions.assertNotNull(item.getProperty("classes"));
-//        }
-//        Assertions.assertFalse(result.hasNext());
-//        result.close();
-//    }
-//
-//    @Test
-//    public void testQueryMetadataIndexManager() {
-//        ResultSet result = database.query("sql", "select from metadata:indexmanager");
-//        printExecutionPlan(result);
-//        for (int i = 0; i < 1; i++) {
-//            Assertions.assertTrue(result.hasNext());
-//            Result item = result.next();
-//            Assertions.assertNotNull(item.getProperty("indexes"));
-//        }
-//        Assertions.assertFalse(result.hasNext());
-//        result.close();
-//    }
-//
-//    @Test
-//    public void testQueryMetadataIndexManager2() {
-//        ResultSet result = database.query("sql", "select expand(indexes) from metadata:indexmanager");
-//        printExecutionPlan(result);
-//        Assertions.assertTrue(result.hasNext());
-//        result.close();
-//    }
-//
-//    @Test
-//    public void testQueryMetadataDatabase() {
-//        ResultSet result = database.query("sql", "select from metadata:database");
-//        printExecutionPlan(result);
-//
-//        Assertions.assertTrue(result.hasNext());
-//        Result item = result.next();
-//        Assertions.assertEquals(
-//                OSelectStatementExecutionTest.class.getSimpleName(), item.getProperty("name"));
-//        Assertions.assertFalse(result.hasNext());
-//        result.close();
-//    }
-//
-//    @Test
-//    public void testQueryMetadataStorage() {
-//        ResultSet result = database.query("sql", "select from metadata:storage");
-//        printExecutionPlan(result);
-//
-//        Assertions.assertTrue(result.hasNext());
-//        Result item = result.next();
-//        Assertions.assertEquals(
-//                OSelectStatementExecutionTest.class.getSimpleName(), item.getProperty("name"));
-//        Assertions.assertFalse(result.hasNext());
-//        result.close();
-//    }
-//
-//    @Test
-//    public void testNonExistingRids() {
-//        ResultSet result = database.query("sql", "select from #0:100000000");
-//        printExecutionPlan(result);
-//        Assertions.assertFalse(result.hasNext());
-//        result.close();
-//    }
-//
-//    @Test
-//    public void testFetchFromSingleRid() {
-//        ResultSet result = database.query("sql", "select from #0:1");
-//        printExecutionPlan(result);
-//        Assertions.assertTrue(result.hasNext());
-//        Assertions.assertNotNull(result.next());
-//        Assertions.assertFalse(result.hasNext());
-//        result.close();
-//    }
-//
-//    @Test
-//    public void testFetchFromSingleRid2() {
-//        ResultSet result = database.query("sql", "select from [#0:1]");
-//        printExecutionPlan(result);
-//        Assertions.assertTrue(result.hasNext());
-//        Assertions.assertNotNull(result.next());
-//        Assertions.assertFalse(result.hasNext());
-//        result.close();
-//    }
+    @Test
+    public void testQueryAsTarget() {
+        String className = "testQueryAsTarget";
+        Schema schema = database.getSchema();
+        DocumentType clazz = schema.createDocumentType(className);
+        database.begin();
+        for (int i = 0; i < 10; i++) {
+            MutableDocument doc = database.newDocument(className);
+            doc.set("val", i);
+            doc.save();
+        }
+        database.commit();
+
+        ResultSet result =
+                database.query("sql", "select from (select from " + className + " where val > 2)  where val < 8");
+        printExecutionPlan(result);
+
+        for (int i = 0; i < 5; i++) {
+            Assertions.assertTrue(result.hasNext());
+            Result item = result.next();
+            Integer val = item.getProperty("val");
+            Assertions.assertTrue(val > 2);
+            Assertions.assertTrue(val < 8);
+        }
+        Assertions.assertFalse(result.hasNext());
+        result.close();
+    }
+
+    @Test
+    public void testQuerySchema() {
+        database.getSchema().createDocumentType("testQuerySchema");
+
+        ResultSet result = database.query("sql", "select from schema:types");
+        printExecutionPlan(result);
+
+        Assertions.assertTrue(result.hasNext());
+        Result item = result.next();
+        Assertions.assertEquals("testQuerySchema", item.getProperty("name"));
+
+        Assertions.assertFalse(result.hasNext());
+        result.close();
+    }
+
+    @Test
+    public void testQueryMetadataIndexManager() {
+        DocumentType type = database.getSchema().createDocumentType("testQuerySchema");
+        database.begin();
+        type.createProperty("name", Type.STRING).createIndex(Schema.INDEX_TYPE.LSM_TREE, false);
+        database.commit();
+        ResultSet result = database.query("sql", "select from schema:indexes");
+        printExecutionPlan(result);
+
+        while (result.hasNext()) {
+            Assertions.assertTrue(result.hasNext());
+            Result item = result.next();
+            Assertions.assertNotNull(item.getProperty("name"));
+        }
+        Assertions.assertFalse(result.hasNext());
+        result.close();
+    }
+
+
+    @Test
+    public void testQueryMetadataDatabase() {
+        ResultSet result = database.query("sql", "select from schema:database");
+        printExecutionPlan(result);
+
+        Assertions.assertTrue(result.hasNext());
+        Result item = result.next();
+        Assertions.assertNotNull(item.getProperty("name"));
+        Assertions.assertFalse(result.hasNext());
+        result.close();
+    }
+
+    @Test
+    public void testNonExistingRids() {
+        int bucketId = database.getSchema().createDocumentType("testNonExistingRids").getBuckets(false).get(0).getId();
+        ResultSet result = database.query("sql", "select from #" + bucketId + ":100000000");
+        printExecutionPlan(result);
+        Assertions.assertFalse(result.hasNext());
+        result.close();
+    }
+
+    @Test
+    public void testFetchFromSingleRid() {
+        database.getSchema().createDocumentType("testFetchFromSingleRid");
+        database.begin();
+        MutableDocument doc = database.newDocument("testFetchFromSingleRid");
+        doc.save();
+        database.commit();
+        ResultSet result = database.query("sql", "select from #1:0");
+        printExecutionPlan(result);
+        Assertions.assertTrue(result.hasNext());
+        Assertions.assertNotNull(result.next());
+        Assertions.assertFalse(result.hasNext());
+        result.close();
+    }
+
+    @Test
+    public void testFetchFromSingleRid2() {
+        database.getSchema().createDocumentType("testFetchFromSingleRid2");
+        database.begin();
+        MutableDocument doc = database.newDocument("testFetchFromSingleRid2");
+        doc.save();
+        database.commit();
+        ResultSet result = database.query("sql", "select from [#1:0]");
+        printExecutionPlan(result);
+        Assertions.assertTrue(result.hasNext());
+        Assertions.assertNotNull(result.next());
+        Assertions.assertFalse(result.hasNext());
+        result.close();
+    }
 //
 //    @Test
 //    public void testFetchFromSingleRidParam() {
