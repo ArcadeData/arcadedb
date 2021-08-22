@@ -46,6 +46,7 @@ public class MongoDBServerTest extends BaseGraphServerTest {
   @BeforeEach
   @Override
   public void beginTest() {
+    System.out.println("MongoDBServerTest.beginTest");
     GlobalConfiguration.SERVER_PLUGINS.setValue("MongoDB:com.arcadedb.mongo.MongoDBProtocolPlugin");
     super.beginTest();
 
@@ -61,6 +62,8 @@ public class MongoDBServerTest extends BaseGraphServerTest {
     collection.insertOne(obj);
     for (int i = 1; i < 10; i++)
       collection.insertOne(new Document("id", 0).append("name", "Jay").append("lastName", "Miner").append("id", i));
+    System.out.println("MongoDBServerTest.beginTest:: end");
+
   }
 
   @AfterEach
