@@ -62,6 +62,7 @@ public abstract class BaseGraphServerTest {
   }
 
   protected BaseGraphServerTest() {
+    System.out.println("in construncoe");
     GlobalConfiguration.resetAll();
     GlobalConfiguration.TEST.setValue(true);
     GlobalConfiguration.SERVER_ROOT_PATH.setValue("./target");
