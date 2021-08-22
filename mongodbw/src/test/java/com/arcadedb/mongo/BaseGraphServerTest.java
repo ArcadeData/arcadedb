@@ -62,14 +62,19 @@ public abstract class BaseGraphServerTest {
   }
 
   protected BaseGraphServerTest() {
-    System.out.println("in construncoe");
+    System.out.println("in constructor");
     GlobalConfiguration.resetAll();
+    System.out.println("in constructor: GlobalConfiguration.resetAll() done");
     GlobalConfiguration.TEST.setValue(true);
+    System.out.println("in constructor: GlobalConfiguration.TEST.setValue(true) done");
     GlobalConfiguration.SERVER_ROOT_PATH.setValue("./target");
+    System.out.println("end constructor");
+
   }
 
   @BeforeEach
   public void beginTest() {
+    System.out.println("beginTest");
     checkArcadeIsTotallyDown();
 
     LogManager.instance().log(this, Level.INFO, "Starting test %s...", null, getClass().getName());

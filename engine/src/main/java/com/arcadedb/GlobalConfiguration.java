@@ -320,8 +320,10 @@ public enum GlobalConfiguration {
    * Reset all the configurations to the default values.
    */
   public static void resetAll() {
-    for (GlobalConfiguration v : values())
+    for (GlobalConfiguration v : values()){
+      System.out.println("reset:: " +v.name());
       v.reset();
+    }
   }
 
   /**
