@@ -175,11 +175,15 @@ public abstract class BaseGraphServerTest {
   }
 
   protected void checkArcadeIsTotallyDown() {
+    LogManager.instance().log(this, Level.INFO, "checkArcadeIsTotallyDown");
+
     final ByteArrayOutputStream os = new ByteArrayOutputStream();
     final PrintWriter output = new PrintWriter(new BufferedOutputStream(os));
     new Exception().printStackTrace(output);
     output.flush();
     final String out = os.toString();
+    LogManager.instance().log(this, Level.INFO, "out:: " + out);
+
     Assertions.assertFalse(out.contains("ArcadeDB"), "Some thread is still up & running: \n" + out);
   }
 
