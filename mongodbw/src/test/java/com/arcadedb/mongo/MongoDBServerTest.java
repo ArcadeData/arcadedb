@@ -43,6 +43,11 @@ public class MongoDBServerTest extends BaseGraphServerTest {
   private              MongoClient                                           client;
   private              Document                                              obj;
 
+
+  public MongoDBServerTest() {
+    super();
+  }
+
   @BeforeEach
   @Override
   public void beginTest() {
@@ -69,6 +74,8 @@ public class MongoDBServerTest extends BaseGraphServerTest {
   @AfterEach
   @Override
   public void endTest() {
+    System.out.println("MongoDBServerTest.endTest");
+
     GlobalConfiguration.SERVER_PLUGINS.setValue("");
     client.close();
     super.endTest();
@@ -76,6 +83,8 @@ public class MongoDBServerTest extends BaseGraphServerTest {
 
   @Test
   public void testSimpleInsertQuery() {
+    System.out.println("MongoDBServerTest.testSimpleInsertQuery");
+
     assertEquals(10, collection.countDocuments());
 
     assertEquals(obj, collection.find().first());
