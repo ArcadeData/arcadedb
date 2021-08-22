@@ -28,10 +28,7 @@ import com.arcadedb.utility.SystemVariableResolver;
 import org.json.JSONObject;
 
 import java.io.PrintStream;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Timer;
-import java.util.TimerTask;
+import java.util.*;
 import java.util.logging.Level;
 
 /**
@@ -320,10 +317,9 @@ public enum GlobalConfiguration {
    * Reset all the configurations to the default values.
    */
   public static void resetAll() {
-    for (GlobalConfiguration v : values()){
-      System.out.println("reset:: " +v.name());
+    for (GlobalConfiguration v : values())
       v.reset();
-    }
+
   }
 
   /**
