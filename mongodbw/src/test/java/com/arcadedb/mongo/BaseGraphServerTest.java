@@ -175,6 +175,7 @@ public abstract class BaseGraphServerTest {
   }
 
   protected void checkArcadeIsTotallyDown() {
+    System.out.println("checkArcadeIsTotallyDown(); = ");
     LogManager.instance().log(this, Level.INFO, "checkArcadeIsTotallyDown");
 
     final ByteArrayOutputStream os = new ByteArrayOutputStream();
