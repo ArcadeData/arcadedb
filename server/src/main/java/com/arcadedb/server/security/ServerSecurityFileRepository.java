@@ -71,6 +71,8 @@ public class ServerSecurityFileRepository {
 
     final File file = new File(securityConfPath);
 
+    System.out.println("file.getAbsolutePath() = " + file.getAbsolutePath());
+    System.out.println("file.exists() = " + file.exists());
     if (file.exists()) {
       final JSONObject json = new JSONObject(FileUtils.readStreamAsString(new FileInputStream(file), "UTF-8"));
       final JSONObject users = json.getJSONObject("users");
