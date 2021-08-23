@@ -244,9 +244,9 @@ public class BinaryComparator {
       case BinaryTypes.TYPE_DECIMAL:
         return value1.equals(value2);
       case BinaryTypes.TYPE_FLOAT:
-        return value1.equals(new BigDecimal((Float) value2));
+        return value1.equals(BigDecimal.valueOf((Float) value2));
       case BinaryTypes.TYPE_DOUBLE:
-        return value1.equals(new BigDecimal((Double) value2));
+        return value1.equals(BigDecimal.valueOf((Double) value2));
       case BinaryTypes.TYPE_STRING:
         return value1.equals(new BigDecimal((String) value2));
       }
@@ -306,13 +306,7 @@ public class BinaryComparator {
         return -1;
     }
 
-    if (b1Size == b2Size)
-      return 0;
-
-    if (b1Size > b2Size)
-      return 1;
-
-    return -1;
+    return Long.compare(b1Size, b2Size);
   }
 
   public boolean equalsStrings(final Binary buffer1, final Binary buffer2) {
@@ -340,7 +334,7 @@ public class BinaryComparator {
    * @param buffer2 Second value to compare
    * @param type2   Type of second value
    *
-   * @return 0 if they matches, >0 if first value is major than second, <0 in case is minor
+   * @return 0 if they match, >0 if first value is major than second, <0 in case is minor
    */
   public int compare(final Database database, final Binary buffer1, final byte type1, final Binary buffer2, final byte type2) {
     final Object value1 = serializer.deserializeValue(database, buffer1, type1, null);
@@ -402,7 +396,7 @@ public class BinaryComparator {
         break;
 
       case BinaryTypes.TYPE_BOOLEAN:
-        v2 = (long) (((Boolean) value2) ? 1 : 0);
+        v2 = ((Boolean) value2) ? 1 : 0;
         break;
 
       case BinaryTypes.TYPE_STRING:
@@ -477,7 +471,7 @@ public class BinaryComparator {
         break;
 
       case BinaryTypes.TYPE_BOOLEAN:
-        v2 = (double) (((Boolean) value2) ? 1 : 0);
+        v2 = ((Boolean) value2) ? 1 : 0;
         break;
 
       case BinaryTypes.TYPE_STRING:
@@ -663,9 +657,9 @@ public class BinaryComparator {
       case BinaryTypes.TYPE_DECIMAL:
         return ((BigDecimal) value1).compareTo((BigDecimal) value2);
       case BinaryTypes.TYPE_FLOAT:
-        return ((BigDecimal) value1).compareTo(new BigDecimal((Float) value2));
+        return ((BigDecimal) value1).compareTo(BigDecimal.valueOf((Float) value2));
       case BinaryTypes.TYPE_DOUBLE:
-        return ((BigDecimal) value1).compareTo(new BigDecimal((Double) value2));
+        return ((BigDecimal) value1).compareTo(BigDecimal.valueOf((Double) value2));
       case BinaryTypes.TYPE_STRING:
         return ((BigDecimal) value1).compareTo(new BigDecimal((String) value2));
       }

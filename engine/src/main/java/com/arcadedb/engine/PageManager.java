@@ -31,7 +31,6 @@ import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.LockContext;
 
 import java.io.IOException;
-import java.util.Comparator;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.TreeSet;
@@ -65,8 +64,8 @@ public class PageManager extends LockContext {
   private final AtomicLong                           pagesEvicted                          = new AtomicLong();
 
   private       long                   lastCheckForRAM        = 0;
-  private       long                   lastLowRAM             = 0;
-  private       long                   highPressureRAMCounter = 0;
+  private final long                   lastLowRAM             = 0;
+  private final long                   highPressureRAMCounter = 0;
   private final PageManagerFlushThread flushThread;
   private final int                    freePageRAM;
 
@@ -74,7 +73,7 @@ public class PageManager extends LockContext {
     void access() throws IOException;
   }
 
-  public class PPageManagerStats {
+  public static class PPageManagerStats {
     public long maxRAM;
     public long readCacheRAM;
     public long writeCacheRAM;
@@ -260,7 +259,7 @@ public class PageManager extends LockContext {
       page.incrementVersion();
       page.flushMetadata();
 
-      // ADD THE PAGE IN THE WRITE CACHE. FROM THIS POINT THE PAGE IS NEVER MODIFIED DIRECTLY, SO IT CAN BE SHARED
+      // ADD THE PAGE IN TO WRITE CACHE. FROM THIS POINT THE PAGE IS NEVER MODIFIED DIRECTLY, SO IT CAN BE SHARED
       if (writeCache.put(page.pageId, page) == null)
         totalWriteCacheRAM.addAndGet(page.getPhysicalSize());
 
@@ -281,7 +280,7 @@ public class PageManager extends LockContext {
   public void overridePage(final MutablePage page) throws IOException {
     readCache.remove(page.pageId);
 
-    // ADD THE PAGE IN THE WRITE CACHE. FROM THIS POINT THE PAGE IS NEVER MODIFIED DIRECTLY, SO IT CAN BE SHARED
+    // ADD THE PAGE IN TO WRITE CACHE. FROM THIS POINT THE PAGE IS NEVER MODIFIED DIRECTLY, SO IT CAN BE SHARED
     if (writeCache.put(page.pageId, page) == null)
       totalWriteCacheRAM.addAndGet(page.getPhysicalSize());
 
@@ -325,7 +324,7 @@ public class PageManager extends LockContext {
 
     final MutablePage page2 = writeCache.remove(pageId);
     if (page2 != null)
-      totalWriteCacheRAM.addAndGet(-1 * page.getPhysicalSize());
+      totalWriteCacheRAM.addAndGet(-1 * page2.getPhysicalSize());
   }
 
   public void flushPagesOfFile(final int fileId) {
@@ -400,9 +399,7 @@ public class PageManager extends LockContext {
     final ImmutablePage page = new ImmutablePage(this, pageId, size);
 
     // ACQUIRE A LOCK ON THE I/O OPERATION TO AVOID PARTIAL READS/WRITES
-    concurrentPageAccess(pageId, false, () -> {
-      file.read(page);
-    });
+    concurrentPageAccess(pageId, false, () -> file.read(page));
 
     page.loadMetadata();
 
@@ -453,19 +450,16 @@ public class PageManager extends LockContext {
     // GET THE <DISPOSE_PAGES_PER_CYCLE> OLDEST PAGES
     // ORDER PAGES BY LAST ACCESS + SIZE
     long oldestPagesRAM = 0;
-    final TreeSet<BasePage> oldestPages = new TreeSet<BasePage>(new Comparator<BasePage>() {
-      @Override
-      public int compare(final BasePage o1, final BasePage o2) {
-        final int lastAccessed = Long.compare(o1.getLastAccessed(), o2.getLastAccessed());
-        if (lastAccessed != 0)
-          return lastAccessed;
+    final TreeSet<BasePage> oldestPages = new TreeSet<>((o1, o2) -> {
+      final int lastAccessed = Long.compare(o1.getLastAccessed(), o2.getLastAccessed());
+      if (lastAccessed != 0)
+        return lastAccessed;
 
-        final int pageSize = Long.compare(o1.getPhysicalSize(), o2.getPhysicalSize());
-        if (pageSize != 0)
-          return pageSize;
+      final int pageSize = Long.compare(o1.getPhysicalSize(), o2.getPhysicalSize());
+      if (pageSize != 0)
+        return pageSize;
 
-        return o1.getPageId().compareTo(o2.getPageId());
-      }
+      return o1.getPageId().compareTo(o2.getPageId());
     });
 
     for (ImmutablePage page : readCache.values()) {

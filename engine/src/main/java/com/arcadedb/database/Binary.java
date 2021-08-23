@@ -103,10 +103,6 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
     buffer.position(0);
   }
 
-  public boolean isAutoResizable() {
-    return autoResizable;
-  }
-
   public void setAutoResizable(final boolean autoResizable) {
     this.autoResizable = autoResizable;
   }

@@ -45,7 +45,7 @@ import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
 
 /**
  * Abstract class for LSM-based indexes. The first page contains 2 bytes to store key and value types. The pages are populated from the head of the page
- * with the pointers to the pair key/value that starts from the tail. A page is full when there is no space anymore between the head
+ * with the pointers to the pair key/value that starts from the tail. A page is full when there is no space between the head
  * (key pointers) and the tail (key/value pairs).
  * <p>
  * When a page is full, another page is created, waiting for a compaction.
@@ -58,7 +58,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   public enum NULL_STRATEGY {ERROR, SKIP}
 
   public static final    int    DEF_PAGE_SIZE     = 2 * 1024 * 1024;
-  public static final    RID    REMOVED_ENTRY_RID = new RID(null, -1, -1l);
+  public static final    RID    REMOVED_ENTRY_RID = new RID(null, -1, -1L);
   protected static final String TEMP_EXT          = "temp_";
 
   protected static final LSMTreeIndexCompacted.LookupResult LOWER  = new LSMTreeIndexCompacted.LookupResult(false, true, 0, null);
@@ -201,7 +201,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
    *
    * @param purpose 0 = exists, 1 = retrieve, 2 = ascending iterator, 3 = descending iterator
    *
-   * @return always an LookupResult object, never null
+   * @return LookupResult object, never null
    */
   protected LookupResult lookupInPage(final int pageNum, final int count, final Binary currentPageBuffer, final Object[] convertedKeys, final int purpose) {
     if (keyTypes.length == 0)
@@ -246,7 +246,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     } else if (result != LOWER)
       return result;
 
-    int mid = low;
+    int mid;
     while (low <= high) {
       mid = (low + high) / 2;
 
@@ -341,7 +341,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     return key;
   }
 
-  protected int compareKey(final Binary currentPageBuffer, final int startIndexArray, final Object keys[], final int mid, final int count) {
+  protected int compareKey(final Binary currentPageBuffer, final int startIndexArray, final Object[] keys, final int mid, final int count) {
     final int contentPos = currentPageBuffer.getInt(startIndexArray + (mid * INT_SERIALIZED_SIZE));
     if (contentPos < startIndexArray + (count * INT_SERIALIZED_SIZE))
       throw new IndexException("Internal error: invalid content position " + contentPos + " is < of " + (startIndexArray + (count * INT_SERIALIZED_SIZE)));
@@ -451,7 +451,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     currentPage.writeByte(INT_SERIALIZED_SIZE + INT_SERIALIZED_SIZE, (byte) (mutable ? 1 : 0));
   }
 
-  public static boolean isKeyNull(final Object keys[]) {
+  public static boolean isKeyNull(final Object[] keys) {
     if (keys == null)
       return true;
 
@@ -462,7 +462,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     return false;
   }
 
-  protected Object[] checkForNulls(final Object keys[]) {
+  protected Object[] checkForNulls(final Object[] keys) {
     if (keys != null)
       for (int i = 0; i < keys.length; ++i)
         if (keys[i] == null)

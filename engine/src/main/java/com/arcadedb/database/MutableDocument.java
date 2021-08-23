@@ -150,9 +150,9 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
    * @param embeddedTypeName Embedded type name
    * @param propertyName     Current document's property name where the embedded document is stored
    *
-   * @return
+   * @return MutableEmbeddedDocument instance
    */
-  public <T extends Object> MutableEmbeddedDocument newEmbeddedDocument(final String embeddedTypeName, final String propertyName) {
+  public MutableEmbeddedDocument newEmbeddedDocument(final String embeddedTypeName, final String propertyName) {
     final Object old = get(propertyName);
 
     final MutableEmbeddedDocument emb = database.newEmbeddedDocument(new EmbeddedModifierProperty(this, propertyName), embeddedTypeName);
@@ -171,9 +171,9 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
    * @param propertyName     Current document's property name where the embedded document is stored
    * @param propertyMapKey   Key to use when storing the embedded document in the map
    *
-   * @return
+   * @return MutableEmbeddedDocument instance
    */
-  public <T extends Object> MutableEmbeddedDocument newEmbeddedDocument(final String embeddedTypeName, final String propertyName, final T propertyMapKey) {
+  public MutableEmbeddedDocument newEmbeddedDocument(final String embeddedTypeName, final String propertyName, final Object propertyMapKey) {
     final Object old = get(propertyName);
 
     if (old == null)
@@ -186,7 +186,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
       throw new IllegalArgumentException("Cannot store an embedded document in a map because another value was found instead of a Map");
 
     final MutableEmbeddedDocument emb = database.newEmbeddedDocument(new EmbeddedModifierProperty(this, propertyName), embeddedTypeName);
-    ((Map<T, EmbeddedDocument>) old).put(propertyMapKey, emb);
+    ((Map<Object, EmbeddedDocument>) old).put(propertyMapKey, emb);
 
     return emb;
   }
@@ -332,7 +332,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
         return newRecord;
       }
     } else if (value instanceof List) {
-      List<Object> list = (List) value;
+      List<Object> list = (List<Object>) value;
       for (int i = 0; i < list.size(); i++) {
         Object v = list.get(i);
         if (v instanceof Document && !((Document) v).getDatabase().getName().equals(database.getName())) {
@@ -348,7 +348,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
         }
       }
     } else if (value instanceof Map) {
-      final Map<Object, Object> map = (Map) value;
+      final Map<Object, Object> map = (Map<Object, Object>) value;
       for (Object key : map.keySet()) {
         Object v = map.get(key);
         if (v instanceof Document && !((Document) v).getDatabase().getName().equals(database.getName())) {

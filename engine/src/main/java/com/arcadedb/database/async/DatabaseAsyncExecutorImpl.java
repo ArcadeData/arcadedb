@@ -26,7 +26,6 @@ import com.arcadedb.database.*;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.exception.DatabaseOperationException;
-import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.log.LogManager;
@@ -51,8 +50,8 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   private       boolean            transactionUseWAL             = true;
   private       WALFile.FLUSH_TYPE transactionSync               = WALFile.FLUSH_TYPE.NO;
   private       long               checkForStalledQueuesMaxDelay = 5_000;
-  private       AtomicLong         transactionCounter            = new AtomicLong();
-  private       AtomicLong         commandRoundRobinIndex        = new AtomicLong();
+  private final AtomicLong         transactionCounter            = new AtomicLong();
+  private final AtomicLong         commandRoundRobinIndex        = new AtomicLong();
 
   // SPECIAL TASKS
   public final static DatabaseAsyncTask FORCE_EXIT = new DatabaseAsyncAbstractTask() {
@@ -233,14 +232,14 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
    */
   private int getBestSlot() {
     int minQueueSize = 0;
-    int minQueueIndex = 0;
+    int minQueueIndex = -1;
     for (int i = 0; i < executorThreads.length; ++i) {
       final int qSize = executorThreads[i].queue.size();
       if (qSize == 0)
         // EMPTY QUEUE, USE THIS
         return i;
 
-      if (qSize < minQueueSize) {
+      if (minQueueIndex == -1 || qSize < minQueueSize) {
         minQueueSize = qSize;
         minQueueIndex = i;
       }
@@ -258,7 +257,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
   @Override
   public void waitCompletion() {
-    waitCompletion(0l);
+    waitCompletion(0L);
   }
 
   public boolean waitCompletion(long timeout) {
@@ -417,22 +416,18 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
           backPressurePercentage);
     else {
       // CREATE THE EDGE IN THE SOURCE VERTEX'S SLOT AND A CASCADE TASK TO ADD THE INCOMING EDGE FROM DESTINATION VERTEX (THIS IS THE MOST EXPENSIVE CASE WHERE 2 TASKS ARE EXECUTED)
-      scheduleTask(sourceSlot, new CreateEdgeAsyncTask(sourceVertex, destinationVertexRID, edgeType, properties, false, light, new NewEdgeCallback() {
-        @Override
-        public void call(final Edge newEdge, final boolean createdSourceVertex, final boolean createdDestinationVertex) {
-          if (bidirectional) {
-            scheduleTask(destinationSlot, new CreateIncomingEdgeAsyncTask(sourceVertex.getIdentity(), destinationVertexRID, newEdge, new NewEdgeCallback() {
-              @Override
-              public void call(final Edge newEdge, final boolean createdSourceVertex, final boolean createdDestinationVertex) {
-                if (callback != null)
-                  callback.call(newEdge, createdSourceVertex, createdDestinationVertex);
-              }
-            }), true, 0);
-          } else if (callback != null)
-            callback.call(newEdge, createdSourceVertex, createdDestinationVertex);
+      scheduleTask(sourceSlot, new CreateEdgeAsyncTask(sourceVertex, destinationVertexRID, edgeType, properties, false, light,
+          (newEdge, createdSourceVertex, createdDestinationVertex) -> {
+            if (bidirectional) {
+              scheduleTask(destinationSlot, new CreateIncomingEdgeAsyncTask(sourceVertex.getIdentity(), destinationVertexRID, newEdge,
+                  (newEdge1, createdSourceVertex1, createdDestinationVertex1) -> {
+                    if (callback != null)
+                      callback.call(newEdge1, createdSourceVertex1, createdDestinationVertex1);
+                  }), true, 0);
+            } else if (callback != null)
+              callback.call(newEdge, createdSourceVertex, createdDestinationVertex);
 
-        }
-      }), true, backPressurePercentage);
+          }), true, backPressurePercentage);
     }
   }
 
@@ -556,7 +551,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     this.commitEvery = commitEvery;
   }
 
-  public class DBAsyncStats {
+  public static class DBAsyncStats {
     public long queueSize;
   }
 
@@ -649,7 +644,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
             if (applyBackPressureOnPercentage > 0) {
               final int queueFullAt = 100 - (queue.remainingCapacity() * 100 / (queue.remainingCapacity() + queue.size()));
-              Thread.sleep(100 + (4 * queueFullAt));
+              Thread.sleep(100 + (4L * queueFullAt));
             }
           }
         }

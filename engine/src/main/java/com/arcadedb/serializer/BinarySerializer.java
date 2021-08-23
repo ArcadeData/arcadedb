@@ -42,7 +42,7 @@ import java.util.logging.Level;
  * TODO: efficient, because it doesn't need to unmarshall all the values first.
  */
 public class BinarySerializer {
-  private BinaryComparator comparator = new BinaryComparator(this);
+  private final BinaryComparator comparator = new BinaryComparator(this);
 
   public BinaryComparator getComparator() {
     return comparator;
@@ -51,6 +51,7 @@ public class BinarySerializer {
   public Binary serialize(final Database database, final Record record) {
     switch (record.getRecordType()) {
     case Document.RECORD_TYPE:
+    case EmbeddedDocument.RECORD_TYPE:
       return serializeDocument(database, (MutableDocument) record);
     case Vertex.RECORD_TYPE:
       return serializeVertex(database, (MutableVertex) record);
@@ -58,8 +59,6 @@ public class BinarySerializer {
       return serializeEdge(database, (MutableEdge) record);
     case EdgeSegment.RECORD_TYPE:
       return serializeEdgeContainer(database, (EdgeSegment) record);
-    case EmbeddedDocument.RECORD_TYPE:
-      return serializeDocument(database, (MutableDocument) record);
     default:
       throw new IllegalArgumentException("Cannot serialize a record of type=" + record.getRecordType());
     }
@@ -158,7 +157,7 @@ public class BinarySerializer {
   public Set<String> getPropertyNames(final Database database, final Binary buffer) {
     final int headerSize = buffer.getInt();
     final int properties = (int) buffer.getUnsignedNumber();
-    final Set<String> result = new LinkedHashSet<String>(properties);
+    final Set<String> result = new LinkedHashSet<>(properties);
 
     for (int i = 0; i < properties; ++i) {
       final int nameId = (int) buffer.getUnsignedNumber();
@@ -178,7 +177,7 @@ public class BinarySerializer {
     if (properties < 0)
       throw new SerializationException("Error on deserialize record. It may be corrupted (properties=" + properties + ")");
 
-    final Map<String, Object> values = new LinkedHashMap<String, Object>(properties);
+    final Map<String, Object> values = new LinkedHashMap<>(properties);
 
     int lastHeaderPosition;
 
@@ -276,8 +275,6 @@ public class BinarySerializer {
       content.putNumber(dg);
       break;
     case BinaryTypes.TYPE_DATE:
-      content.putUnsignedNumber(((Date) value).getTime());
-      break;
     case BinaryTypes.TYPE_DATETIME:
       content.putUnsignedNumber(((Date) value).getTime());
       break;
@@ -439,8 +436,6 @@ public class BinarySerializer {
       value = Double.longBitsToDouble(content.getNumber());
       break;
     case BinaryTypes.TYPE_DATE:
-      value = new Date(content.getUnsignedNumber());
-      break;
     case BinaryTypes.TYPE_DATETIME:
       value = new Date(content.getUnsignedNumber());
       break;
@@ -490,9 +485,8 @@ public class BinarySerializer {
 
       final Binary embeddedBuffer = content.slice(content.position(), embeddedObjectSize);
 
-      final Document document = (Document) ((DatabaseInternal) database).getRecordFactory()
+      value = ((DatabaseInternal) database).getRecordFactory()
           .newImmutableRecord(database, database.getSchema().getType(typeName), null, embeddedBuffer, embeddedModifier);
-      value = document;
 
       content.position(content.position() + embeddedObjectSize);
       break;

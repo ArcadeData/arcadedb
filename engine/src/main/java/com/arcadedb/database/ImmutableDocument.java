@@ -59,7 +59,7 @@ public class ImmutableDocument extends BaseDocument {
   @Override
   public synchronized MutableDocument modify() {
     final Record recordInCache = database.getTransaction().getRecordFromCache(rid);
-    if (recordInCache != null && recordInCache != this && recordInCache instanceof MutableDocument)
+    if (recordInCache instanceof MutableDocument)
       return (MutableDocument) recordInCache;
 
     checkForLazyLoading();

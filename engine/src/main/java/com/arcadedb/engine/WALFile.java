@@ -55,13 +55,13 @@ public class WALFile extends LockContext {
       Binary.INT_SERIALIZED_SIZE + Binary.INT_SERIALIZED_SIZE + Binary.INT_SERIALIZED_SIZE + Binary.INT_SERIALIZED_SIZE + Binary.INT_SERIALIZED_SIZE
           + Binary.INT_SERIALIZED_SIZE;
 
-  public static final long MAGIC_NUMBER = 9371515385058702l;
+  public static final long MAGIC_NUMBER = 9371515385058702L;
 
   private final    String        filePath;
-  private          FileChannel   channel;
+  private final    FileChannel   channel;
   private volatile boolean       active       = true;
   private volatile boolean       open;
-  private          AtomicInteger pagesToFlush = new AtomicInteger();
+  private final    AtomicInteger pagesToFlush = new AtomicInteger();
 
   private long statsPagesWritten = 0;
   private long statsBytesWritten = 0;
@@ -118,7 +118,7 @@ public class WALFile extends LockContext {
   }
 
   /**
-   * If the WAL is still active, execute the callback. This avoids to close a file where a thread is still writing to it.
+   * If the WAL is still active, execute the callback. This avoids closing a file where a thread is still writing to it.
    *
    * @return true if acquired, otherwise false
    */

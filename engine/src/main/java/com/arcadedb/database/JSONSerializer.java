@@ -94,7 +94,7 @@ public class JSONSerializer {
         final MutableVertex v = database.newVertex(embeddedTypeName);
         v.fromJSON((JSONObject) value);
         value = v;
-      } else if (type instanceof DocumentType) {
+      } else if (type != null) {
         final MutableEmbeddedDocument embeddedDocument = ((DatabaseInternal) database).newEmbeddedDocument(null, embeddedTypeName);
         embeddedDocument.fromJSON((JSONObject) value);
         value = embeddedDocument;

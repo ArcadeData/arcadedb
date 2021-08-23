@@ -25,9 +25,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -37,29 +35,19 @@ import java.util.concurrent.atomic.AtomicLong;
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
 public class BasicCommandContext implements CommandContext {
-  public static final String EXECUTION_BEGUN       = "EXECUTION_BEGUN";
-  public static final String TIMEOUT_MS            = "TIMEOUT_MS";
-  public static final String TIMEOUT_STRATEGY      = "TIMEOUT_STARTEGY";
-  public static final String INVALID_COMPARE_COUNT = "INVALID_COMPARE_COUNT";
-
-  protected DatabaseInternal database;
-  protected Object[]         args;
-
+  protected DatabaseInternal    database;
+  protected Object[]            args;
   protected boolean             recordMetrics = false;
   protected CommandContext      parent;
   protected CommandContext      child;
   protected Map<String, Object> variables;
-
   protected Map<Object, Object> inputParameters;
 
   // MANAGES THE TIMEOUT
   private long executionStartedOn;
   private long timeoutMs;
 
-//  private com.orientechnologies.orient.core.command.OCommandContext.TIMEOUT_STRATEGY timeoutStrategy;
-
-  protected AtomicLong  resultsProcessed = new AtomicLong(0);
-  protected Set<Object> uniqueResult     = new HashSet<Object>();
+  protected AtomicLong resultsProcessed = new AtomicLong(0);
 
   public BasicCommandContext() {
   }
@@ -72,7 +60,7 @@ public class BasicCommandContext implements CommandContext {
     if (iName == null)
       return iDefault;
 
-    Object result = null;
+    Object result;
 
     if (iName.startsWith("$"))
       iName = iName.substring(1);
@@ -163,11 +151,11 @@ public class BasicCommandContext implements CommandContext {
     int pos = getHigherIndexOf(iName, 0, ".", "[");
     if (pos > -1) {
       Object nested = getVariable(iName.substring(0, pos));
-      if (nested != null && nested instanceof CommandContext)
+      if (nested instanceof CommandContext)
         ((CommandContext) nested).setVariable(iName.substring(pos + 1), iValue);
     } else {
       if (variables.containsKey(iName)) {
-        variables.put(iName, iValue);//this is a local existing variable, so it's bound to current contex
+        variables.put(iName, iValue);//this is a local existing variable, so it's bound to current context
       } else if (parent != null && parent instanceof BasicCommandContext && ((BasicCommandContext) parent).hasVariable(iName)) {
         parent.setVariable(iName, iValue);// it is an existing variable in parent context, so it's bound to parent context
       } else {
@@ -198,7 +186,7 @@ public class BasicCommandContext implements CommandContext {
       int pos = getHigherIndexOf(iName, 0, ".", "[");
       if (pos > -1) {
         Object nested = getVariable(iName.substring(0, pos));
-        if (nested != null && nested instanceof CommandContext)
+        if (nested instanceof CommandContext)
           ((CommandContext) nested).incrementVariable(iName.substring(pos + 1));
       } else {
         final Object v = variables.get(iName);
@@ -222,16 +210,16 @@ public class BasicCommandContext implements CommandContext {
     if (value == null)
       value = iValue;
     else
-      value = new Long(value.longValue() + iValue);
+      value = value.longValue() + iValue;
     variables.put(iName, value);
-    return value.longValue();
+    return value;
   }
 
   /**
    * Returns a read-only map with all the variables.
    */
   public Map<String, Object> getVariables() {
-    final HashMap<String, Object> map = new HashMap<String, Object>();
+    final HashMap<String, Object> map = new HashMap<>();
     if (child != null)
       map.putAll(child.getVariables());
 
@@ -242,9 +230,7 @@ public class BasicCommandContext implements CommandContext {
   }
 
   /**
-   * Set the inherited context avoiding to copy all the values every time.
-   *
-   * @return
+   * Set the inherited context avoid to copying all the values every time.
    */
   public CommandContext setChild(final CommandContext iContext) {
     if (iContext == null) {
@@ -346,7 +332,7 @@ public class BasicCommandContext implements CommandContext {
 
   private void init() {
     if (variables == null)
-      variables = new HashMap<String, Object>();
+      variables = new HashMap<>();
   }
 
   public Map<Object, Object> getInputParameters() {
@@ -363,28 +349,10 @@ public class BasicCommandContext implements CommandContext {
   }
 
   /**
-   * returns the number of results processed. This is intended to be used with LIMIT in SQL statements
-   *
-   * @return
+   * Returns the number of results processed. This is intended to be used with LIMIT in SQL statements
    */
   public AtomicLong getResultsProcessed() {
     return resultsProcessed;
-  }
-
-  /**
-   * adds an item to the unique result set
-   *
-   * @param o the result item to add
-   *
-   * @return true if the element is successfully added (it was not present yet), false otherwise (it was already present)
-   */
-  public synchronized boolean addToUniqueResult(Object o) {
-    Object toAdd = o;
-    //TODO
-//    if (o instanceof PRecord && ((PRecord) o).getIdentity().isNew()) {
-//      toAdd = new ODocumentEqualityWrapper((PRecord) o);
-//    }
-    return this.uniqueResult.add(toAdd);
   }
 
   public DatabaseInternal getDatabase() {
@@ -433,11 +401,6 @@ public class BasicCommandContext implements CommandContext {
       }
     }
 
-    // for (String toSearch : iToSearch) {
-    // int index = iText.indexOf(toSearch, iBeginOffset);
-    // if (index > -1 && (lowest == -1 || index < lowest))
-    // lowest = index;
-    // }
     return lowest;
   }
 

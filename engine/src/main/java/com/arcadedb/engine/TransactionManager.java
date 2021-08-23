@@ -30,11 +30,9 @@ import com.arcadedb.utility.LockManager;
 
 import java.io.File;
 import java.io.FileNotFoundException;
-import java.io.FilenameFilter;
 import java.io.IOException;
 import java.nio.channels.ClosedByInterruptException;
 import java.util.*;
-import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
@@ -52,10 +50,10 @@ public class TransactionManager {
 
   private final AtomicLong                   transactionIds     = new AtomicLong();
   private final AtomicLong                   logFileCounter     = new AtomicLong();
-  private final LockManager<Integer, Thread> fileIdsLockManager = new LockManager();
+  private final LockManager<Integer, Thread> fileIdsLockManager = new LockManager<>();
 
-  private AtomicLong statsPagesWritten = new AtomicLong();
-  private AtomicLong statsBytesWritten = new AtomicLong();
+  private final AtomicLong statsPagesWritten = new AtomicLong();
+  private final AtomicLong statsBytesWritten = new AtomicLong();
 
   public TransactionManager(final DatabaseInternal database) {
     this.database = database;
@@ -135,12 +133,9 @@ public class TransactionManager {
     while (true) {
       final WALFile file = activeWALFilePool[(int) (Thread.currentThread().getId() % activeWALFilePool.length)];
 
-      if (file != null && file.acquire(new Callable<Object>() {
-        @Override
-        public Object call() throws Exception {
-          file.writeTransactionToFile(database, pages, sync, file, txId, bufferChanges);
-          return null;
-        }
+      if (file != null && file.acquire(() -> {
+        file.writeTransactionToFile(database, pages, sync, file, txId, bufferChanges);
+        return null;
       }))
         break;
 
@@ -168,14 +163,9 @@ public class TransactionManager {
     try {
       // OPEN EXISTENT WAL FILES
       final File dir = new File(database.getDatabasePath());
-      final File[] walFiles = dir.listFiles(new FilenameFilter() {
-        @Override
-        public boolean accept(File dir, String name) {
-          return name.endsWith(".wal");
-        }
-      });
+      final File[] walFiles = dir.listFiles((dir1, name) -> name.endsWith(".wal"));
 
-      if (walFiles.length == 0) {
+      if (walFiles == null || walFiles.length == 0) {
         LogManager.instance().log(this, Level.WARNING, "Recovery not possible because no WAL files were found");
         return;
       }
@@ -397,7 +387,7 @@ public class TransactionManager {
     // ERROR: UNLOCK LOCKED FILES
     unlockFilesInOrder(lockedFiles);
 
-    throw new TransactionException("Timeout on locking resource during commit (fileIds=" + fileIds.toString() + ")");
+    throw new TransactionException("Timeout on locking resource during commit (fileIds=" + fileIds + ")");
   }
 
   public void unlockFilesInOrder(final Collection<Integer> lockedFileIds) {

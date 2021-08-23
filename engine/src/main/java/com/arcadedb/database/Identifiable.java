@@ -86,7 +86,7 @@ public interface Identifiable {
   Vertex asVertex(boolean loadContent);
 
   /**
-   * Returns the edge record. If the record is not a edge, a UnsupportedOperationException exception is thrown.
+   * Returns the edge record. If the record is not an edge, a UnsupportedOperationException exception is thrown.
    * *
    *
    * @return the {@link Edge}
@@ -94,7 +94,7 @@ public interface Identifiable {
   Edge asEdge();
 
   /**
-   * Returns the edge record. If the record is not a edge, a UnsupportedOperationException exception is thrown.
+   * Returns the edge record. If the record is not an edge, a UnsupportedOperationException exception is thrown.
    *
    * @param loadContent specifies if pre-load the record content
    *

@@ -41,7 +41,7 @@ import static com.arcadedb.database.Binary.BYTE_SERIALIZED_SIZE;
 import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
 
 /**
- * The first page (main page) contains the total pages under the fiels "compactedPageNumberOfSeries". This is to avoid concurrent read/write while compaction.
+ * The first page (main page) contains the total pages under the fields "compactedPageNumberOfSeries". This is to avoid concurrent read/write while compaction.
  */
 public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
   public static final String UNIQUE_INDEX_EXT    = "uctidx";
@@ -302,7 +302,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
 
   protected void searchInCompactedIndex(final Object[] originalKeys, final Object[] convertedKeys, final int limit, final Set<IndexCursorEntry> set,
       final Set<RID> removedRIDs) throws IOException {
-    // JUMP ROOT PAGES BEFORE LOADING THE PAGE WITH THE KEY/VALUES
+    // JUMP TO ROOT PAGES BEFORE LOADING THE PAGE WITH THE KEY/VALUES
     final BasePage mainPage = database.getTransaction().getPage(new PageId(file.getFileId(), 0), pageSize);
     final int mainPageCount = getCompactedPageNumberOfSeries(mainPage);
 

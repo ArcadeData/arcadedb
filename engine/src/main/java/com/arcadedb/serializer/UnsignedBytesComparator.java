@@ -23,7 +23,9 @@ package com.arcadedb.serializer;
 
 import sun.misc.Unsafe;
 
+import java.lang.reflect.Field;
 import java.nio.ByteOrder;
+import java.security.PrivilegedExceptionAction;
 import java.util.Comparator;
 
 /**
@@ -65,7 +67,7 @@ public final class UnsignedBytesComparator {
     public int compare(final byte[] left, final byte[] right) {
       final int stride = 8;
       final int minLength = Math.min(left.length, right.length);
-      final int strideLimit = minLength & ~(stride - 1);
+      final int strideLimit = minLength & -stride;
       int i;
 
       /*
@@ -126,7 +128,7 @@ public final class UnsignedBytesComparator {
   public static int UnsignedLongsCompare(final long a, final long b) {
     final long a2 = a ^ Long.MIN_VALUE;
     final long b2 = b ^ Long.MIN_VALUE;
-    return (a2 < b2) ? -1 : ((a2 > b2) ? 1 : 0);
+    return Long.compare(a2, b2);
   }
 
   /**
@@ -142,19 +144,16 @@ public final class UnsignedBytesComparator {
       // that's okay; try reflection instead
     }
     try {
-      return java.security.AccessController.doPrivileged(new java.security.PrivilegedExceptionAction<sun.misc.Unsafe>() {
-        @Override
-        public sun.misc.Unsafe run() throws Exception {
-          final Class<sun.misc.Unsafe> k = sun.misc.Unsafe.class;
-          for (java.lang.reflect.Field f : k.getDeclaredFields()) {
-            f.setAccessible(true);
-            final Object x = f.get(null);
-            if (k.isInstance(x)) {
-              return k.cast(x);
-            }
+      return java.security.AccessController.doPrivileged((PrivilegedExceptionAction<Unsafe>) () -> {
+        final Class<Unsafe> k = Unsafe.class;
+        for (Field f : k.getDeclaredFields()) {
+          f.setAccessible(true);
+          final Object x = f.get(null);
+          if (k.isInstance(x)) {
+            return k.cast(x);
           }
-          throw new NoSuchFieldError("the Unsafe");
         }
+        throw new NoSuchFieldError("the Unsafe");
       });
     } catch (java.security.PrivilegedActionException e) {
       throw new RuntimeException("Could not initialize intrinsics", e.getCause());

@@ -38,7 +38,7 @@ import java.util.logging.Level;
 
 /**
  * Manage the transaction context. When the transaction begins, the modifiedPages map is initialized. This allows to always delegate
- * to the transaction context, even if there is not active transaction by ignoring tx data. This keeps code smaller.
+ * to the transaction context, even if there is no active transaction by ignoring tx data. This keeps code smaller.
  * <p>
  * At commit time, the files are locked in order (to avoid deadlocks) and to allow parallel commit on different files.
  * <p>
@@ -304,7 +304,7 @@ public class TransactionContext implements Transaction {
   public long getFileSize(final int fileId) throws IOException {
     final Integer lastPage = newPageCounters.get(fileId);
     if (lastPage != null)
-      return (lastPage + 1) * database.getFileManager().getFile(fileId).getPageSize();
+      return (long) (lastPage + 1) * database.getFileManager().getFile(fileId).getPageSize();
 
     return database.getFileManager().getVirtualFileSize(fileId);
   }
@@ -327,12 +327,11 @@ public class TransactionContext implements Transaction {
         involvedFiles.add(pid.getFileId());
     for (PageId pid : newPages.keySet())
       involvedFiles.add(pid.getFileId());
-    for (Integer fid : newPageCounters.keySet())
-      involvedFiles.add(fid);
+    involvedFiles.addAll(newPageCounters.keySet());
 
     map.put("status", status.name());
     map.put("involvedFiles", involvedFiles);
-    map.put("modifiedPages", modifiedPages.size());
+    map.put("modifiedPages", modifiedPages != null ? modifiedPages.size() : 0);
     map.put("newPages", newPages != null ? newPages.size() : 0);
     map.put("updatedRecords", updatedRecords != null ? updatedRecords.size() : 0);
     map.put("newPageCounters", newPageCounters);
@@ -490,10 +489,7 @@ public class TransactionContext implements Transaction {
 
       return new Pair(result, pages);
 
-    } catch (DuplicatedKeyException e) {
-      rollback();
-      throw e;
-    } catch (ConcurrentModificationException e) {
+    } catch (DuplicatedKeyException | ConcurrentModificationException e) {
       rollback();
       throw e;
     } catch (Exception e) {
@@ -529,7 +525,8 @@ public class TransactionContext implements Transaction {
       if (newPages != null) {
         for (Map.Entry<Integer, Integer> entry : newPageCounters.entrySet()) {
           database.getSchema().getFileById(entry.getKey()).setPageCount(entry.getValue());
-          database.getFileManager().setVirtualFileSize(entry.getKey(), entry.getValue() * database.getFileManager().getFile(entry.getKey()).getPageSize());
+          database.getFileManager()
+              .setVirtualFileSize(entry.getKey(), (long) entry.getValue() * database.getFileManager().getFile(entry.getKey()).getPageSize());
         }
       }
 

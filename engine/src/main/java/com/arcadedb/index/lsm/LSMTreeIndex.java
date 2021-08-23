@@ -48,11 +48,11 @@ import java.util.logging.Level;
 public class LSMTreeIndex implements RangeIndex, IndexInternal {
   private static final IndexCursor                                             EMPTY_CURSOR       = new EmptyIndexCursor();
   private final        String                                                  name;
+  private final        RWLockContext                                           lock               = new RWLockContext();
   private              int                                                     associatedBucketId = -1;
   private              String                                                  typeName;
   protected            String[]                                                propertyNames;
   protected            LSMTreeIndexMutable                                     mutable;
-  private              RWLockContext                                           lock               = new RWLockContext();
   protected            AtomicReference<LSMTreeIndexAbstract.COMPACTING_STATUS> compactingStatus   = new AtomicReference<>(
       LSMTreeIndexAbstract.COMPACTING_STATUS.NO);
 
@@ -134,10 +134,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     if (associatedBucketId != m2.associatedBucketId)
       return false;
 
-    if (!Arrays.equals(propertyNames, m2.propertyNames))
-      return false;
-
-    return true;
+    return Arrays.equals(propertyNames, m2.propertyNames);
   }
 
   @Override
@@ -458,17 +455,14 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
     final DatabaseInternal db = mutable.getDatabase();
 
-    db.scanBucket(db.getSchema().getBucketById(associatedBucketId).getName(), new RecordCallback() {
-      @Override
-      public boolean onRecord(final Record record) {
-        db.getIndexer().addToIndex(LSMTreeIndex.this, record.getIdentity(), (Document) record);
-        total.incrementAndGet();
+    db.scanBucket(db.getSchema().getBucketById(associatedBucketId).getName(), record -> {
+      db.getIndexer().addToIndex(LSMTreeIndex.this, record.getIdentity(), (Document) record);
+      total.incrementAndGet();
 
-        if (callback != null)
-          callback.onDocumentIndexed((Document) record, total.get());
+      if (callback != null)
+        callback.onDocumentIndexed((Document) record, total.get());
 
-        return true;
-      }
+      return true;
     });
 
     return total.get();
@@ -485,6 +479,6 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
       }
       return convertedKeys;
     }
-    return keys;
+    return null;
   }
 }

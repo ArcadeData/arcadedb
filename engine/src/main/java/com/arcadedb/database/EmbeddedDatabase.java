@@ -68,7 +68,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   public static final int EDGE_LIST_INITIAL_CHUNK_SIZE         = 64;
   public static final int MAX_RECOMMENDED_EDGE_LIST_CHUNK_SIZE = 8192;
 
-  protected static final Set<String>                               SUPPORTED_FILE_EXT      = new HashSet<String>(
+  protected static final Set<String>                               SUPPORTED_FILE_EXT      = new HashSet<>(
       Arrays.asList(Dictionary.DICT_EXT, Bucket.BUCKET_EXT, LSMTreeIndexMutable.NOTUNIQUE_INDEX_EXT, LSMTreeIndexMutable.UNIQUE_INDEX_EXT,
           LSMTreeIndexCompacted.NOTUNIQUE_INDEX_EXT, LSMTreeIndexCompacted.UNIQUE_INDEX_EXT));
   public final           AtomicLong                                indexCompactions        = new AtomicLong();
@@ -108,9 +108,9 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   private                boolean                                   readYourWrites          = true;
   private                File                                      lockFile;
   private                FileLock                                  lockFileIO;
-  private                Map<CALLBACK_EVENT, List<Callable<Void>>> callbacks;
-  private                StatementCache                            statementCache;
-  private                ExecutionPlanCache                        executionPlanCache;
+  private final          Map<CALLBACK_EVENT, List<Callable<Void>>> callbacks;
+  private final          StatementCache                            statementCache;
+  private final          ExecutionPlanCache                        executionPlanCache;
   private                DatabaseInternal                          wrappedDatabaseInstance = this;
   private                int                                       edgeListSize            = EDGE_LIST_INITIAL_CHUNK_SIZE;
 
@@ -258,12 +258,9 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
     close();
 
-    executeInWriteLock(new Callable<Object>() {
-      @Override
-      public Object call() {
-        FileUtils.deleteRecursively(new File(databasePath));
-        return null;
-      }
+    executeInWriteLock(() -> {
+      FileUtils.deleteRecursively(new File(databasePath));
+      return null;
     });
   }
 
@@ -275,50 +272,47 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
       async.close();
     }
 
-    executeInWriteLock(new Callable<Object>() {
-      @Override
-      public Object call() {
-        if (!open)
-          return null;
-
-        open = false;
-
-        if (async != null)
-          async.close();
-
-        final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.removeContext(databasePath);
-        if (dbContext != null && !dbContext.transactions.isEmpty()) {
-          // ROLLBACK ALL THE TX FROM LAST TO FIRST
-          for (int i = dbContext.transactions.size() - 1; i > -1; --i) {
-            final TransactionContext tx = dbContext.transactions.get(i);
-            if (tx.isActive())
-              // ROLLBACK ANY PENDING OPERATION
-              tx.rollback();
-          }
-          dbContext.transactions.clear();
-        }
-
-        try {
-          schema.close();
-          pageManager.close();
-          fileManager.close();
-          transactionManager.close();
-          statementCache.clear();
-
-          if (lockFile != null) {
-            try {
-              lockFileIO.release();
-            } catch (IOException e) {
-              // IGNORE IT
-            }
-            lockFile.delete();
-          }
-
-        } finally {
-          Profiler.INSTANCE.unregisterDatabase(EmbeddedDatabase.this);
-        }
+    executeInWriteLock(() -> {
+      if (!open)
         return null;
+
+      open = false;
+
+      if (async != null)
+        async.close();
+
+      final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.removeContext(databasePath);
+      if (dbContext != null && !dbContext.transactions.isEmpty()) {
+        // ROLLBACK ALL THE TX FROM LAST TO FIRST
+        for (int i = dbContext.transactions.size() - 1; i > -1; --i) {
+          final TransactionContext tx = dbContext.transactions.get(i);
+          if (tx.isActive())
+            // ROLLBACK ANY PENDING OPERATION
+            tx.rollback();
+        }
+        dbContext.transactions.clear();
       }
+
+      try {
+        schema.close();
+        pageManager.close();
+        fileManager.close();
+        transactionManager.close();
+        statementCache.clear();
+
+        if (lockFile != null) {
+          try {
+            lockFileIO.release();
+          } catch (IOException e) {
+            // IGNORE IT
+          }
+          lockFile.delete();
+        }
+
+      } finally {
+        Profiler.INSTANCE.unregisterDatabase(EmbeddedDatabase.this);
+      }
+      return null;
     });
   }
 
@@ -387,24 +381,21 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
   @Override
   public void begin() {
-    executeInReadLock(new Callable<Object>() {
-      @Override
-      public Object call() {
-        checkDatabaseIsOpen();
+    executeInReadLock(() -> {
+      checkDatabaseIsOpen();
 
-        // FORCE THE RESET OF TL
-        final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(EmbeddedDatabase.this.getDatabasePath());
-        TransactionContext tx = current.getLastTransaction();
-        if (tx.isActive()) {
-          // CREATE A NESTED TX
-          tx = new TransactionContext(getWrappedDatabaseInstance());
-          current.pushTransaction(tx);
-        }
-
-        tx.begin();
-
-        return null;
+      // FORCE THE RESET OF TL
+      final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(EmbeddedDatabase.this.getDatabasePath());
+      TransactionContext tx = current.getLastTransaction();
+      if (tx.isActive()) {
+        // CREATE A NESTED TX
+        tx = new TransactionContext(getWrappedDatabaseInstance());
+        current.pushTransaction(tx);
       }
+
+      tx.begin();
+
+      return null;
     });
   }
 
@@ -416,20 +407,17 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   public void commit() {
     statsTxCommits.incrementAndGet();
 
-    executeInReadLock(new Callable<Object>() {
-      @Override
-      public Object call() {
-        checkTransactionIsActive(false);
+    executeInReadLock(() -> {
+      checkTransactionIsActive(false);
 
-        final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(EmbeddedDatabase.this.getDatabasePath());
-        try {
-          current.getLastTransaction().commit();
-        } finally {
-          current.popIfNotLastTransaction();
-        }
-
-        return null;
+      final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(EmbeddedDatabase.this.getDatabasePath());
+      try {
+        current.getLastTransaction().commit();
+      } finally {
+        current.popIfNotLastTransaction();
       }
+
+      return null;
     });
   }
 
@@ -437,20 +425,17 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   public void rollback() {
     statsTxRollbacks.incrementAndGet();
 
-    executeInReadLock(new Callable<Object>() {
-      @Override
-      public Object call() {
-        try {
-          checkTransactionIsActive(false);
+    executeInReadLock(() -> {
+      try {
+        checkTransactionIsActive(false);
 
-          final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(EmbeddedDatabase.this.getDatabasePath());
-          current.popIfNotLastTransaction().rollback();
+        final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(EmbeddedDatabase.this.getDatabasePath());
+        current.popIfNotLastTransaction().rollback();
 
-        } catch (TransactionException e) {
-          // ALREADY ROLLBACKED
-        }
-        return null;
+      } catch (TransactionException e) {
+        // ALREADY ROLLBACKED
       }
+      return null;
     });
   }
 
@@ -458,27 +443,24 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   public void rollbackAllNested() {
     statsTxRollbacks.incrementAndGet();
 
-    executeInReadLock(new Callable<Object>() {
-      @Override
-      public Object call() {
-        final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(EmbeddedDatabase.this.getDatabasePath());
+    executeInReadLock(() -> {
+      final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(EmbeddedDatabase.this.getDatabasePath());
 
-        while (true) {
-          try {
-            if (!isTransactionActive())
-              break;
+      while (true) {
+        try {
+          if (!isTransactionActive())
+            break;
 
-            current.popIfNotLastTransaction().rollback();
+          current.popIfNotLastTransaction().rollback();
 
-          } catch (InvalidDatabaseInstanceException e) {
-            current.popIfNotLastTransaction().rollback();
+        } catch (InvalidDatabaseInstanceException e) {
+          current.popIfNotLastTransaction().rollback();
 
-          } catch (TransactionException e) {
-            // ALREADY ROLLBACKED
-          }
+        } catch (TransactionException e) {
+          // ALREADY ROLLBACKED
         }
-        return null;
       }
+      return null;
     });
   }
 
@@ -486,29 +468,21 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   public long countBucket(final String bucketName) {
     statsCountBucket.incrementAndGet();
 
-    return (Long) executeInReadLock(new Callable<Object>() {
-      @Override
-      public Object call() {
-        return schema.getBucketByName(bucketName).count();
-      }
-    });
+    return (Long) executeInReadLock((Callable<Object>) () -> schema.getBucketByName(bucketName).count());
   }
 
   @Override
   public long countType(final String typeName, final boolean polymorphic) {
     statsCountType.incrementAndGet();
 
-    return (Long) executeInReadLock(new Callable<Object>() {
-      @Override
-      public Object call() {
-        final DocumentType type = schema.getType(typeName);
+    return (Long) executeInReadLock((Callable<Object>) () -> {
+      final DocumentType type = schema.getType(typeName);
 
-        long total = 0;
-        for (Bucket b : type.getBuckets(polymorphic))
-          total += b.count();
+      long total = 0;
+      for (Bucket b : type.getBuckets(polymorphic))
+        total += b.count();
 
-        return total;
-      }
+      return total;
     });
   }
 
@@ -516,41 +490,35 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   public void scanType(final String typeName, final boolean polymorphic, final DocumentCallback callback) {
     statsScanType.incrementAndGet();
 
-    executeInReadLock(new Callable<Object>() {
-      @Override
-      public Object call() {
-        boolean success = false;
-        final boolean implicitTransaction = checkTransactionIsActive(autoTransaction);
-        try {
-          final DocumentType type = schema.getType(typeName);
+    executeInReadLock(() -> {
+      boolean success = false;
+      final boolean implicitTransaction = checkTransactionIsActive(autoTransaction);
+      try {
+        final DocumentType type = schema.getType(typeName);
 
-          final AtomicBoolean continueScan = new AtomicBoolean(true);
+        final AtomicBoolean continueScan = new AtomicBoolean(true);
 
-          for (Bucket b : type.getBuckets(polymorphic)) {
-            b.scan(new RawRecordCallback() {
-              @Override
-              public boolean onRecord(final RID rid, final Binary view) {
-                final Document record = (Document) recordFactory.newImmutableRecord(wrappedDatabaseInstance, type, rid, view, null);
-                continueScan.set(callback.onRecord(record));
-                return continueScan.get();
-              }
-            });
+        for (Bucket b : type.getBuckets(polymorphic)) {
+          b.scan((rid, view) -> {
+            final Document record = (Document) recordFactory.newImmutableRecord(wrappedDatabaseInstance, type, rid, view, null);
+            continueScan.set(callback.onRecord(record));
+            return continueScan.get();
+          });
 
-            if (!continueScan.get())
-              break;
-          }
-
-          success = true;
-
-        } finally {
-          if (implicitTransaction)
-            if (success)
-              wrappedDatabaseInstance.commit();
-            else
-              wrappedDatabaseInstance.rollback();
+          if (!continueScan.get())
+            break;
         }
-        return null;
+
+        success = true;
+
+      } finally {
+        if (implicitTransaction)
+          if (success)
+            wrappedDatabaseInstance.commit();
+          else
+            wrappedDatabaseInstance.rollback();
       }
+      return null;
     });
   }
 
@@ -558,22 +526,16 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   public void scanBucket(final String bucketName, final RecordCallback callback) {
     statsScanBucket.incrementAndGet();
 
-    executeInReadLock(new Callable<Object>() {
-      @Override
-      public Object call() {
+    executeInReadLock(() -> {
 
-        checkDatabaseIsOpen();
+      checkDatabaseIsOpen();
 
-        final String typeName = schema.getTypeNameByBucketId(schema.getBucketByName(bucketName).getId());
-        schema.getBucketByName(bucketName).scan(new RawRecordCallback() {
-          @Override
-          public boolean onRecord(final RID rid, final Binary view) {
-            final Record record = recordFactory.newImmutableRecord(wrappedDatabaseInstance, schema.getType(typeName), rid, view, null);
-            return callback.onRecord(record);
-          }
-        });
-        return null;
-      }
+      final String typeName = schema.getTypeNameByBucketId(schema.getBucketByName(bucketName).getId());
+      schema.getBucketByName(bucketName).scan((rid, view) -> {
+        final Record record = recordFactory.newImmutableRecord(wrappedDatabaseInstance, schema.getType(typeName), rid, view, null);
+        return callback.onRecord(record);
+      });
+      return null;
     });
   }
 
@@ -581,21 +543,18 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   public Iterator<Record> iterateType(final String typeName, final boolean polymorphic) {
     statsIterateType.incrementAndGet();
 
-    return (Iterator<Record>) executeInReadLock(new Callable<Object>() {
-      @Override
-      public Object call() {
+    return (Iterator<Record>) executeInReadLock((Callable<Object>) () -> {
 
-        checkDatabaseIsOpen();
+      checkDatabaseIsOpen();
 
-        final DocumentType type = schema.getType(typeName);
+      final DocumentType type = schema.getType(typeName);
 
-        final MultiIterator iter = new MultiIterator();
+      final MultiIterator iter = new MultiIterator();
 
-        for (Bucket b : type.getBuckets(polymorphic))
-          iter.addIterator(b.iterator());
+      for (Bucket b : type.getBuckets(polymorphic))
+        iter.addIterator(b.iterator());
 
-        return iter;
-      }
+      return iter;
     });
   }
 
@@ -626,30 +585,27 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
     statsReadRecord.incrementAndGet();
 
-    return (Record) executeInReadLock(new Callable<Object>() {
-      @Override
-      public Object call() {
+    return (Record) executeInReadLock((Callable<Object>) () -> {
 
-        checkDatabaseIsOpen();
+      checkDatabaseIsOpen();
 
-        // CHECK IN TX CACHE FIRST
-        final TransactionContext tx = getTransaction();
-        Record record = tx.getRecordFromCache(rid);
-        if (record != null)
-          return record;
+      // CHECK IN TX CACHE FIRST
+      final TransactionContext tx = getTransaction();
+      Record record = tx.getRecordFromCache(rid);
+      if (record != null)
+        return record;
 
-        final DocumentType type = schema.getTypeByBucketId(rid.getBucketId());
+      final DocumentType type = schema.getTypeByBucketId(rid.getBucketId());
 
-        if (loadContent || type == null) {
-          final Binary buffer = schema.getBucketById(rid.getBucketId()).getRecord(rid);
-          record = recordFactory.newImmutableRecord(wrappedDatabaseInstance, type != null ? type : null, rid, buffer.copy(), null);
-          return record;
-        }
-
-        record = recordFactory.newImmutableRecord(wrappedDatabaseInstance, type, rid, type.getType());
-
+      if (loadContent || type == null) {
+        final Binary buffer = schema.getBucketById(rid.getBucketId()).getRecord(rid);
+        record = recordFactory.newImmutableRecord(wrappedDatabaseInstance, type, rid, buffer.copy(), null);
         return record;
       }
+
+      record = recordFactory.newImmutableRecord(wrappedDatabaseInstance, type, rid, type.getType());
+
+      return record;
     });
   }
 
@@ -662,19 +618,16 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   public IndexCursor lookupByKey(final String type, final String[] keyNames, final Object[] keyValues) {
     statsReadRecord.incrementAndGet();
 
-    return (IndexCursor) executeInReadLock(new Callable<Object>() {
-      @Override
-      public Object call() {
+    return (IndexCursor) executeInReadLock((Callable<Object>) () -> {
 
-        checkDatabaseIsOpen();
-        final DocumentType t = schema.getType(type);
+      checkDatabaseIsOpen();
+      final DocumentType t = schema.getType(type);
 
-        final TypeIndex idx = t.getPolymorphicIndexByProperties(keyNames);
-        if (idx == null)
-          throw new IllegalArgumentException("No index has been created on type '" + type + "' properties " + Arrays.toString(keyNames));
+      final TypeIndex idx = t.getPolymorphicIndexByProperties(keyNames);
+      if (idx == null)
+        throw new IllegalArgumentException("No index has been created on type '" + type + "' properties " + Arrays.toString(keyNames));
 
-        return idx.get(keyValues);
-      }
+      return idx.get(keyValues);
     });
   }
 
@@ -682,7 +635,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   public void registerCallback(final CALLBACK_EVENT event, final Callable<Void> callback) {
     List<Callable<Void>> callbacks = this.callbacks.get(event);
     if (callbacks == null) {
-      callbacks = new ArrayList<Callable<Void>>();
+      callbacks = new ArrayList<>();
       this.callbacks.put(event, callbacks);
     }
     callbacks.add(callback);
@@ -720,23 +673,17 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
   @Override
   public void createRecord(final MutableDocument record) {
-    executeInReadLock(new Callable<Object>() {
-      @Override
-      public Object call() {
-        createRecordNoLock(record, null);
-        return null;
-      }
+    executeInReadLock(() -> {
+      createRecordNoLock(record, null);
+      return null;
     });
   }
 
   @Override
   public void createRecord(final Record record, final String bucketName) {
-    executeInReadLock(new Callable<Object>() {
-      @Override
-      public Object call() {
-        createRecordNoLock(record, bucketName);
-        return null;
-      }
+    executeInReadLock(() -> {
+      createRecordNoLock(record, bucketName);
+      return null;
     });
   }
 
@@ -790,22 +737,19 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     if (mode == PaginatedFile.MODE.READ_ONLY)
       throw new DatabaseIsReadOnlyException("Cannot update a record");
 
-    executeInReadLock(new Callable<Object>() {
-      @Override
-      public Object call() {
-        if (isTransactionActive()) {
-          // MARK THE RECORD FOR UPDATE IN TX AND DEFER THE SERIALIZATION AT COMMIT TIME. THIS SPEEDS UP CASES WHEN THE SAME RECORDS ARE UPDATE MULTIPLE TIME INSIDE
-          // THE SAME TX. THE MOST CLASSIC EXAMPLE IS INSERTING EDGES: THE RECORD CHUNK IS UPDATED EVERYTIME A NEW EDGE IS CREATED IN THE SAME CHUNK.
-          // THE PAGE IS EARLY LOADED IN TX CACHE TO USE THE PAGE MVCC IN CASE OF CONCURRENT OPERATIONS ON THE MODIFIED RECORD
-          try {
-            getTransaction().addUpdatedRecord(record);
-          } catch (IOException e) {
-            throw new DatabaseOperationException("Error on update the record " + record.getIdentity() + " in transaction", e);
-          }
-        } else
-          updateRecordNoLock(record);
-        return null;
-      }
+    executeInReadLock(() -> {
+      if (isTransactionActive()) {
+        // MARK THE RECORD FOR UPDATE IN TX AND DEFER THE SERIALIZATION AT COMMIT TIME. THIS SPEEDS UP CASES WHEN THE SAME RECORDS ARE UPDATE MULTIPLE TIME INSIDE
+        // THE SAME TX. THE MOST CLASSIC EXAMPLE IS INSERTING EDGES: THE RECORD CHUNK IS UPDATED EVERYTIME A NEW EDGE IS CREATED IN THE SAME CHUNK.
+        // THE PAGE IS EARLY LOADED IN TX CACHE TO USE THE PAGE MVCC IN CASE OF CONCURRENT OPERATIONS ON THE MODIFIED RECORD
+        try {
+          getTransaction().addUpdatedRecord(record);
+        } catch (IOException e) {
+          throw new DatabaseOperationException("Error on update the record " + record.getIdentity() + " in transaction", e);
+        }
+      } else
+        updateRecordNoLock(record);
+      return null;
     });
   }
 
@@ -838,42 +782,39 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     if (record.getIdentity() == null)
       throw new IllegalArgumentException("Cannot delete a non persistent record");
 
-    executeInReadLock(new Callable<Object>() {
-      @Override
-      public Object call() {
-        if (mode == PaginatedFile.MODE.READ_ONLY)
-          throw new DatabaseIsReadOnlyException("Cannot delete record " + record.getIdentity());
+    executeInReadLock(() -> {
+      if (mode == PaginatedFile.MODE.READ_ONLY)
+        throw new DatabaseIsReadOnlyException("Cannot delete record " + record.getIdentity());
 
-        boolean success = false;
-        final boolean implicitTransaction = checkTransactionIsActive(autoTransaction);
+      boolean success = false;
+      final boolean implicitTransaction = checkTransactionIsActive(autoTransaction);
 
-        try {
-          final Bucket bucket = schema.getBucketById(record.getIdentity().getBucketId());
+      try {
+        final Bucket bucket = schema.getBucketById(record.getIdentity().getBucketId());
 
-          if (record instanceof Document)
-            indexer.deleteDocument((Document) record);
+        if (record instanceof Document)
+          indexer.deleteDocument((Document) record);
 
-          if (record instanceof Edge) {
-            graphEngine.deleteEdge((Edge) record);
-          } else if (record instanceof Vertex) {
-            graphEngine.deleteVertex((VertexInternal) record);
-          } else
-            bucket.deleteRecord(record.getIdentity());
+        if (record instanceof Edge) {
+          graphEngine.deleteEdge((Edge) record);
+        } else if (record instanceof Vertex) {
+          graphEngine.deleteVertex((VertexInternal) record);
+        } else
+          bucket.deleteRecord(record.getIdentity());
 
-          getTransaction().removeRecordFromCache(record);
+        getTransaction().removeRecordFromCache(record);
 
-          success = true;
+        success = true;
 
-        } finally {
-          if (implicitTransaction) {
-            if (success)
-              wrappedDatabaseInstance.commit();
-            else
-              wrappedDatabaseInstance.rollback();
-          }
+      } finally {
+        if (implicitTransaction) {
+          if (success)
+            wrappedDatabaseInstance.commit();
+          else
+            wrappedDatabaseInstance.rollback();
         }
-        return null;
       }
+      return null;
     });
   }
 
@@ -928,14 +869,9 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
         // OK
         return !joinCurrentTx;
 
-      } catch (NeedRetryException e) {
+      } catch (NeedRetryException | DuplicatedKeyException e) {
         // RETRY
         lastException = e;
-        continue;
-      } catch (DuplicatedKeyException e) {
-        // RETRY
-        lastException = e;
-        continue;
       } catch (Exception e) {
         final TransactionContext tx = getTransaction();
         if (tx != null && tx.isActive())
@@ -1202,14 +1138,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     context.setInputParameters(params);
 
     final List<Statement> statements = SQLEngine.parseScript(script, wrappedDatabaseInstance);
-    ResultSet original;
-    try {
-      original = executeInternal(statements, context);
-    } finally {
-
-    }
-    LocalResultSetLifecycleDecorator result = new LocalResultSetLifecycleDecorator(original);
-    return result;
+    return new LocalResultSetLifecycleDecorator(executeInternal(statements, context));
   }
 
   @Override
@@ -1229,15 +1158,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     context.setInputParameters(params);
 
     final List<Statement> statements = SQLEngine.parseScript(script, wrappedDatabaseInstance);
-    ResultSet original;
-    try {
-      original = executeInternal(statements, context);
-    } finally {
-
-    }
-    LocalResultSetLifecycleDecorator result = new LocalResultSetLifecycleDecorator(original);
-
-    return result;
+    return new LocalResultSetLifecycleDecorator(executeInternal(statements, context));
   }
 
   private ResultSet executeInternal(final List<Statement> statements, final CommandContext scriptContext) {
@@ -1272,9 +1193,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
     }
 
-    final LocalResultSet original = new LocalResultSet(plan);
-    return original;
-
+    return new LocalResultSet(plan);
   }
 
   @Override
@@ -1314,7 +1233,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   }
 
   /**
-   * Executes a callback in an shared lock.
+   * Executes a callback in a shared lock.
    */
   @Override
   public <RET extends Object> RET executeInReadLock(final Callable<RET> callable) {
@@ -1454,7 +1373,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
       DatabaseContext.INSTANCE.init(this);
   }
 
-  private void lockDatabase() throws IOException {
+  private void lockDatabase() {
     try {
       lockFileIO = new RandomAccessFile(lockFile, "rw").getChannel().tryLock();
 

@@ -27,10 +27,10 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
-import com.arcadedb.schema.DocumentType;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.schema.DocumentType;
 
 import java.util.*;
 
@@ -99,7 +99,7 @@ public class BinaryCondition extends BooleanExpression {
 
   @Override
   protected List<Object> getExternalCalculationConditions() {
-    List<Object> result = new ArrayList<Object>();
+    List<Object> result = new ArrayList<>();
     if (!operator.supportsBasicCalculation()) {
       result.add(this);
     }
@@ -128,7 +128,7 @@ public class BinaryCondition extends BooleanExpression {
   }
 
   /**
-   * tests if current expression involves an indexed funciton AND that function can also be executed without using the index
+   * tests if current expression involves an indexed function AND that function can also be executed without using the index
    *
    * @param target  the query target
    * @param context the execution context
@@ -259,11 +259,11 @@ public class BinaryCondition extends BooleanExpression {
 
     BinaryCondition that = (BinaryCondition) o;
 
-    if (left != null ? !left.equals(that.left) : that.left != null)
+    if (Objects.equals(left, that.left))
       return false;
-    if (operator != null ? !operator.equals(that.operator) : that.operator != null)
+    if (Objects.equals(operator, that.operator))
       return false;
-    return right != null ? right.equals(that.right) : that.right == null;
+    return Objects.equals(right, that.right);
   }
 
   @Override
@@ -285,7 +285,7 @@ public class BinaryCondition extends BooleanExpression {
       return leftX;
     }
 
-    List<String> result = new ArrayList<String>();
+    List<String> result = new ArrayList<>();
     result.addAll(leftX);
     result.addAll(rightX);
     return result;
@@ -296,11 +296,11 @@ public class BinaryCondition extends BooleanExpression {
     if (operator instanceof LuceneOperator) {
       Expression newLeft = new Expression(-1);
       newLeft.mathExpression = new BaseExpression(-1);
-      BaseIdentifier identifirer = new BaseIdentifier(-1);
-      ((BaseExpression) newLeft.mathExpression).identifier = identifirer;
-      identifirer.levelZero = new LevelZeroIdentifier(-1);
+      BaseIdentifier identifier = new BaseIdentifier(-1);
+      ((BaseExpression) newLeft.mathExpression).identifier = identifier;
+      identifier.levelZero = new LevelZeroIdentifier(-1);
       FunctionCall function = new FunctionCall(-1);
-      identifirer.levelZero.functionCall = function;
+      identifier.levelZero.functionCall = function;
       function.name = new Identifier("search_fields");
       function.params = new ArrayList<>();
       function.params.add(fieldNamesToStrings(left));
@@ -356,10 +356,10 @@ public class BinaryCondition extends BooleanExpression {
   }
 
   private Expression identifierToStringExpr(Identifier identifier) {
-    BaseExpression bexp = new BaseExpression(identifier.getStringValue());
+    BaseExpression bExp = new BaseExpression(identifier.getStringValue());
 
     Expression result = new Expression(-1);
-    result.mathExpression = bexp;
+    result.mathExpression = bExp;
     return result;
   }
 
@@ -375,7 +375,7 @@ public class BinaryCondition extends BooleanExpression {
     left = new Expression(-1);
     left.deserialize(fromResult.getProperty("left"));
     try {
-      operator = (BinaryCompareOperator) Class.forName(String.valueOf(fromResult.getProperty("operator"))).newInstance();
+      operator = (BinaryCompareOperator) Class.forName(String.valueOf(fromResult.getProperty("operator"))).getConstructor().newInstance();
     } catch (Exception e) {
       throw new CommandExecutionException(e);
     }

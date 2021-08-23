@@ -126,7 +126,6 @@ public class BinaryTypes {
       return Binary.BYTE_SERIALIZED_SIZE;
 
     case BinaryTypes.TYPE_DECIMAL:
-      return Binary.FLOAT_SERIALIZED_SIZE;
 
     case BinaryTypes.TYPE_FLOAT:
       return Binary.FLOAT_SERIALIZED_SIZE;

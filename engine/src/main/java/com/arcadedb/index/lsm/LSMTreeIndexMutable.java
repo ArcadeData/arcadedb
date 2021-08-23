@@ -51,9 +51,9 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
   private int                   subIndexFileId = -1;
   private LSMTreeIndexCompacted subIndex       = null;
 
-  private AtomicLong statsAdjacentSteps  = new AtomicLong();
-  private int        minPagesToScheduleACompaction;
-  private int        currentMutablePages = 0;
+  private final AtomicLong statsAdjacentSteps  = new AtomicLong();
+  private final int        minPagesToScheduleACompaction;
+  private       int        currentMutablePages = 0;
 
   /**
    * Called at creation time.
@@ -290,10 +290,6 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
         break;
     }
     return mid;
-  }
-
-  public int getCurrentMutablePages() {
-    return currentMutablePages;
   }
 
   public void setCurrentMutablePages(final int currentMutablePages) {
