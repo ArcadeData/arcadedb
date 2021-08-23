@@ -31,12 +31,12 @@ import com.arcadedb.engine.DatabaseChecker;
 import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
-import com.arcadedb.remote.RemoteDatabase;
-import com.arcadedb.schema.DocumentType;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.remote.RemoteDatabase;
+import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.RecordTableFormatter;
 import com.arcadedb.utility.TableFormatter;
 import org.jline.reader.*;
@@ -281,7 +281,7 @@ public class Console {
     if (localDatabase.isTransactionActive())
       localDatabase.commit();
 
-    new DatabaseChecker().check(localDatabase);
+    new DatabaseChecker().check(localDatabase, 1);
   }
 
   private void executeConnect(final String line) {

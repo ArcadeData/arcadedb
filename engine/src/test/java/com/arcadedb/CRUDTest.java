@@ -74,7 +74,7 @@ public class CRUDTest extends TestHelper {
       });
 
     } finally {
-      new DatabaseChecker().check(database);
+      new DatabaseChecker().check(database, 0);
     }
   }
 
@@ -111,7 +111,7 @@ public class CRUDTest extends TestHelper {
       });
 
     } finally {
-      new DatabaseChecker().check(database);
+      new DatabaseChecker().check(database, 0);
     }
   }
 
@@ -167,7 +167,7 @@ public class CRUDTest extends TestHelper {
       }
 
     } finally {
-      new DatabaseChecker().check(database);
+      new DatabaseChecker().check(database, 0);
     }
   }
 

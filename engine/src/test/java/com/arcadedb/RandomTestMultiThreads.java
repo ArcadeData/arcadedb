@@ -29,11 +29,11 @@ import com.arcadedb.engine.DatabaseChecker;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.Pair;
 import org.junit.jupiter.api.Test;
 
@@ -230,7 +230,7 @@ public class RandomTestMultiThreads extends TestHelper {
       }
 
     } finally {
-      new DatabaseChecker().check(database);
+      new DatabaseChecker().check(database, 0);
 
       System.out.println(
           "Test finished in " + (System.currentTimeMillis() - begin) + "ms, mvccExceptions=" + mvccErrors.get() + " otherExceptions=" + otherErrors.size());

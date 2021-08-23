@@ -242,13 +242,14 @@ public class Bucket extends PaginatedComponent {
     return total;
   }
 
-  protected Map<String, Long> check() {
+  protected Map<String, Long> check(final int verboseLevel) {
     final Map<String, Long> stats = new HashMap<>();
 
     final int totalPages = getTotalPages();
 
-    LogManager.instance().log(this, Level.INFO, "- Checking bucket '%s' (totalPages=%d spaceOnDisk=%s pageSize=%s)...", null, name, totalPages,
-        FileUtils.getSizeAsString(totalPages * pageSize), FileUtils.getSizeAsString(pageSize));
+    if (verboseLevel > 1)
+      LogManager.instance().log(this, Level.INFO, "- Checking bucket '%s' (totalPages=%d spaceOnDisk=%s pageSize=%s)...", null, name, totalPages,
+          FileUtils.getSizeAsString(totalPages * pageSize), FileUtils.getSizeAsString(pageSize));
 
     long totalRecords = 0;
     long totalActiveRecords = 0;
@@ -296,20 +297,21 @@ public class Bucket extends PaginatedComponent {
 
         totalMaxOffset += pageMaxOffset;
 
-        LogManager.instance()
-            .log(this, Level.FINE, "-- Page %d records=%d (actives=%d deleted=%d placeholders=%d surrogates=%d) maxOffset=%d", null, pageId, recordCountInPage,
-                pageActiveRecords, pageDeletedRecords, pagePlaceholderRecords, pageSurrogateRecords, pageMaxOffset);
+        if (verboseLevel > 2)
+          LogManager.instance().log(this, Level.FINE, "-- Page %d records=%d (actives=%d deleted=%d placeholders=%d surrogates=%d) maxOffset=%d", null, pageId,
+              recordCountInPage, pageActiveRecords, pageDeletedRecords, pagePlaceholderRecords, pageSurrogateRecords, pageMaxOffset);
 
       } catch (IOException e) {
-        LogManager.instance().log(this, Level.INFO, "- Unknown error on checking page %d: %s", null, pageId, e.toString());
+        LogManager.instance().log(this, Level.SEVERE, "- Unknown error on checking page %d: %s", null, pageId, e.toString());
       }
     }
 
     final float avgPageUsed = totalPages > 0 ? (float) (totalMaxOffset / totalPages) * 100f / pageSize : 0;
 
-    LogManager.instance()
-        .log(this, Level.INFO, "-- Total records=%d (actives=%d deleted=%d placeholders=%d surrogates=%d) avgPageUsed=%.2f%%", null, totalRecords,
-            totalActiveRecords, totalDeletedRecords, totalPlaceholderRecords, totalSurrogateRecords, avgPageUsed);
+    if (verboseLevel > 1)
+      LogManager.instance()
+          .log(this, Level.INFO, "-- Total records=%d (actives=%d deleted=%d placeholders=%d surrogates=%d) avgPageUsed=%.2f%%", null, totalRecords,
+              totalActiveRecords, totalDeletedRecords, totalPlaceholderRecords, totalSurrogateRecords, avgPageUsed);
 
     stats.put("pageSize", (long) pageSize);
     stats.put("totalRecords", totalRecords);

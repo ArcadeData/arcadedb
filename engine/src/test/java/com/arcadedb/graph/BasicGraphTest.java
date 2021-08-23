@@ -218,7 +218,7 @@ public class BasicGraphTest extends BaseGraphTest {
       Assertions.assertEquals("TestUpdate2", e1CopyReloaded.get("newProperty2"));
 
     } finally {
-      new DatabaseChecker().check(database);
+      new DatabaseChecker().check(database, 0);
     }
   }
 
@@ -285,7 +285,7 @@ public class BasicGraphTest extends BaseGraphTest {
 
     } finally {
       database.commit();
-      new DatabaseChecker().check(database);
+      new DatabaseChecker().check(database, 0);
     }
   }
 
@@ -342,7 +342,7 @@ public class BasicGraphTest extends BaseGraphTest {
 
     } finally {
       database.commit();
-      new DatabaseChecker().check(database);
+      new DatabaseChecker().check(database, 0);
     }
   }
 
@@ -399,7 +399,7 @@ public class BasicGraphTest extends BaseGraphTest {
 
     } finally {
       database.commit();
-      new DatabaseChecker().check(database);
+      new DatabaseChecker().check(database, 0);
     }
   }
 
@@ -444,7 +444,7 @@ public class BasicGraphTest extends BaseGraphTest {
       Assertions.assertEquals(v2reloaded, v2reloaded.getVertices(Vertex.DIRECTION.IN).iterator().next());
 
     } finally {
-      new DatabaseChecker().check(database);
+      new DatabaseChecker().check(database, 0);
     }
   }
 
@@ -477,7 +477,7 @@ public class BasicGraphTest extends BaseGraphTest {
       }
 
     } finally {
-      new DatabaseChecker().check(database);
+      new DatabaseChecker().check(database, 0);
     }
   }
 
@@ -506,7 +506,7 @@ public class BasicGraphTest extends BaseGraphTest {
       Assertions.assertEquals("Ciao", line.getProperty("ciao"));
 
     } finally {
-      new DatabaseChecker().check(database);
+      new DatabaseChecker().check(database, 0);
     }
   }
 
@@ -529,7 +529,7 @@ public class BasicGraphTest extends BaseGraphTest {
       Assertions.assertEquals("reflect on this", line.getProperty("testReflectionMethod"));
 
     } finally {
-      new DatabaseChecker().check(database);
+      new DatabaseChecker().check(database, 0);
     }
   }
 

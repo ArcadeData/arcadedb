@@ -103,7 +103,7 @@ public class RandomTestSingleThread extends TestHelper {
       database.commit();
 
     } finally {
-      new DatabaseChecker().check(database);
+      new DatabaseChecker().check(database, 0);
 
       System.out.println(
           "Test finished in " + (System.currentTimeMillis() - begin) + "ms, mvccExceptions=" + mvccErrors.get() + " otherExceptions=" + otherErrors.get());

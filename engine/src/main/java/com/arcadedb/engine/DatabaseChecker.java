@@ -28,8 +28,9 @@ import java.util.Map;
 import java.util.logging.Level;
 
 public class DatabaseChecker {
-  public void check(final Database database) {
-    LogManager.instance().log(this, Level.INFO, "Starting checking database '%s'...", null, database.getName());
+  public void check(final Database database, final int verboseLevel) {
+    if (verboseLevel > 0)
+      LogManager.instance().log(this, Level.INFO, "Starting checking database '%s'...", null, database.getName());
 
     long autofix = 0;
     long warnings = 0;
@@ -45,7 +46,7 @@ public class DatabaseChecker {
     long totalMaxOffset = 0;
 
     for (Bucket b : database.getSchema().getBuckets()) {
-      final Map<String, Long> stats = b.check();
+      final Map<String, Long> stats = b.check(verboseLevel);
 
       pageSize += stats.get("pageSize");
       totalPages += stats.get("totalPages");
@@ -59,12 +60,15 @@ public class DatabaseChecker {
 
     final float avgPageUsed = totalPages > 0 ? (float) (totalMaxOffset / totalPages) * 100f / pageSize : 0;
 
-    LogManager.instance().log(this, Level.INFO, "Total records=%d (actives=%d deleted=%d placeholders=%d surrogates=%d) avgPageUsed=%.2f%%", null, totalRecords,
-        totalActiveRecords, totalDeletedRecords, totalPlaceholderRecords, totalSurrogateRecords, avgPageUsed);
+    if (verboseLevel > 0) {
+      LogManager.instance()
+          .log(this, Level.INFO, "Total records=%d (actives=%d deleted=%d placeholders=%d surrogates=%d) avgPageUsed=%.2f%%", null, totalRecords,
+              totalActiveRecords, totalDeletedRecords, totalPlaceholderRecords, totalSurrogateRecords, avgPageUsed);
 
-    LogManager.instance().log(this, Level.INFO, "Completed checking of database '%s':", null, database.getName());
-    LogManager.instance().log(this, Level.INFO, "- warning %d", null, warnings);
-    LogManager.instance().log(this, Level.INFO, "- auto-fix %d", null, autofix);
-    LogManager.instance().log(this, Level.INFO, "- errors %d", null, errors);
+      LogManager.instance().log(this, Level.INFO, "Completed checking of database '%s':", null, database.getName());
+      LogManager.instance().log(this, Level.INFO, "- warning %d", null, warnings);
+      LogManager.instance().log(this, Level.INFO, "- auto-fix %d", null, autofix);
+      LogManager.instance().log(this, Level.INFO, "- errors %d", null, errors);
+    }
   }
 }
