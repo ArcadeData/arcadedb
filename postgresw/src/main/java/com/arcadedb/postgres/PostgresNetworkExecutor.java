@@ -68,7 +68,7 @@ public class PostgresNetworkExecutor extends Thread {
   private              long                                           processIdSequence          = 0;
   private static       Map<Long, Pair<Long, PostgresNetworkExecutor>> ACTIVE_SESSIONS            = new ConcurrentHashMap<>();
   private              Map<String, PostgresPortal>                    portals                    = new HashMap<>();
-  private              boolean                                        DEBUG                      = true;
+  private              boolean                                        DEBUG                      = false;
   private              Map<String, Object>                            connectionProperties       = new HashMap<>();
   private              boolean                                        explicitTransactionStarted = false;
   private              boolean                                        errorInTransaction         = false;

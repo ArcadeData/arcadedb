@@ -54,7 +54,7 @@ public class ArcadeDBServer implements ServerLogger {
   private final       boolean                                 fileConfiguration;
   private final       String                                  serverName;
   private final       boolean                                 testEnabled;
-  private final       Map<String, ServerPlugin>               plugins                              = new HashMap<>();
+  private final       Map<String, ServerPlugin>               plugins                              = new LinkedHashMap<>();
   private             String                                  serverRootPath;
   private             HAServer                                haServer;
   private             ServerSecurity                          security;
@@ -128,6 +128,9 @@ public class ArcadeDBServer implements ServerLogger {
     loadDatabases();
 
     httpServer = new HttpServer(this);
+
+    registerPlugins();
+
     httpServer.startService();
 
     if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED)) {
@@ -135,8 +138,21 @@ public class ArcadeDBServer implements ServerLogger {
       haServer.startService();
     }
 
-    final String registeredPlugins = configuration.getValueAsString(GlobalConfiguration.SERVER_PLUGINS);
+    status = STATUS.ONLINE;
 
+    log(this, Level.INFO, "ArcadeDB Server started (CPUs=%d MAXRAM=%s)", Runtime.getRuntime().availableProcessors(),
+        FileUtils.getSizeAsString(Runtime.getRuntime().maxMemory()));
+
+    try {
+      lifecycleEvent(TestCallback.TYPE.SERVER_UP, null);
+    } catch (Exception e) {
+      stop();
+      throw new ServerException("Error on starting the server '" + serverName + "'");
+    }
+  }
+
+  private void registerPlugins() {
+    final String registeredPlugins = configuration.getValueAsString(GlobalConfiguration.SERVER_PLUGINS);
     if (registeredPlugins != null && !registeredPlugins.isEmpty()) {
       final String[] pluginEntries = registeredPlugins.split(",");
       for (String p : pluginEntries) {
@@ -160,18 +176,6 @@ public class ArcadeDBServer implements ServerLogger {
           throw new ServerException("Error on loading plugin from class '" + p + ";", e);
         }
       }
-    }
-
-    status = STATUS.ONLINE;
-
-    log(this, Level.INFO, "ArcadeDB Server started (CPUs=%d MAXRAM=%s)", Runtime.getRuntime().availableProcessors(),
-        FileUtils.getSizeAsString(Runtime.getRuntime().maxMemory()));
-
-    try {
-      lifecycleEvent(TestCallback.TYPE.SERVER_UP, null);
-    } catch (Exception e) {
-      stop();
-      throw new ServerException("Error on starting the server '" + serverName + "'");
     }
   }
 
@@ -225,6 +229,10 @@ public class ArcadeDBServer implements ServerLogger {
 
     LogManager.instance().setContext(null);
     status = STATUS.OFFLINE;
+  }
+
+  public Collection<ServerPlugin> getPlugins() {
+    return Collections.unmodifiableCollection(plugins.values());
   }
 
   public ServerMetrics getServerMetrics() {

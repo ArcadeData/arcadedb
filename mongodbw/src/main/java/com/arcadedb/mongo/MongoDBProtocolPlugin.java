@@ -24,10 +24,12 @@ package com.arcadedb.mongo;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerPlugin;
+import com.arcadedb.server.http.HttpServer;
 import de.bwaldvogel.mongo.MongoDatabase;
 import de.bwaldvogel.mongo.MongoServer;
 import de.bwaldvogel.mongo.backend.AbstractMongoBackend;
 import de.bwaldvogel.mongo.exception.MongoServerException;
+import io.undertow.server.handlers.PathHandler;
 
 public class MongoDBProtocolPlugin implements ServerPlugin {
   private MongoServer          mongoDBServer;
@@ -58,5 +60,9 @@ public class MongoDBProtocolPlugin implements ServerPlugin {
   @Override
   public void stopService() {
     mongoDBServer.shutdown();
+  }
+
+  @Override
+  public void registerAPI(HttpServer httpServer, final PathHandler routes) {
   }
 }

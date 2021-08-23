@@ -22,6 +22,8 @@
 package com.arcadedb.server;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.server.http.HttpServer;
+import io.undertow.server.handlers.PathHandler;
 
 public interface ServerPlugin {
   void configure(ArcadeDBServer arcadeDBServer, ContextConfiguration configuration);
@@ -29,4 +31,6 @@ public interface ServerPlugin {
   void startService();
 
   void stopService();
+
+  void registerAPI(HttpServer httpServer, PathHandler routes);
 }

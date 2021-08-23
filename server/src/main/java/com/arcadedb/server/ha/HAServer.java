@@ -42,9 +42,11 @@ import com.arcadedb.server.ha.message.HACommand;
 import com.arcadedb.server.ha.message.HAMessageFactory;
 import com.arcadedb.server.ha.message.UpdateClusterConfiguration;
 import com.arcadedb.server.ha.network.DefaultServerSocketFactory;
+import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.utility.Pair;
 import com.arcadedb.utility.RecordTableFormatter;
 import com.arcadedb.utility.TableFormatter;
+import io.undertow.server.handlers.PathHandler;
 
 import java.io.IOException;
 import java.net.InetAddress;
@@ -866,6 +868,10 @@ public class HAServer implements ServerPlugin {
 
   public String getServerAddress() {
     return serverAddress;
+  }
+
+  @Override
+  public void registerAPI(HttpServer httpServer, final PathHandler routes) {
   }
 
   @Override

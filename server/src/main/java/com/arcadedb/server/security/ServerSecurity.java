@@ -28,8 +28,10 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.DefaultConsoleReader;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ServerPlugin;
+import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.utility.AnsiCode;
 import com.arcadedb.utility.LRUCache;
+import io.undertow.server.handlers.PathHandler;
 
 import javax.crypto.SecretKey;
 import javax.crypto.SecretKeyFactory;
@@ -170,6 +172,10 @@ public class ServerSecurity implements ServerPlugin {
     final byte[] hashBase64 = Base64.getEncoder().encode(rawHash);
 
     return new String(hashBase64);
+  }
+
+  @Override
+  public void registerAPI(HttpServer httpServer, final PathHandler routes) {
   }
 
   protected String encode(final String password, final String salt) {

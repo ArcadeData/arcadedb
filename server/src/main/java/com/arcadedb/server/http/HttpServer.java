@@ -28,8 +28,10 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.http.handler.*;
+import io.undertow.Handlers;
 import io.undertow.Undertow;
 import io.undertow.server.RoutingHandler;
+import io.undertow.server.handlers.PathHandler;
 
 import java.net.BindException;
 import java.util.logging.Level;
@@ -71,16 +73,23 @@ public class HttpServer implements ServerPlugin {
 
     server.log(this, Level.INFO, "- Starting HTTP Server (host=%s port=%d)...", host, port);
 
-    final RoutingHandler routes = new RoutingHandler();
-    routes.get("/query/{database}/{language}/{command}", new GetQueryHandler(this));
-    routes.post("/query/{database}", new PostQueryHandler(this));
-    routes.post("/command/{database}", new CommandHandler(this));
-    routes.get("/document/{database}/{rid}", new GetDocumentHandler(this));
-    routes.post("/document/{database}", new CreateDocumentHandler(this));
-    routes.post("/server", new ServersHandler(this));
-    routes.post("/create/{database}", new CreateDatabaseHandler(this));
-    routes.post("/exists/{database}", new ExistsDatabaseHandler(this));
-    routes.post("/drop/{database}", new DropDatabaseHandler(this));
+    final PathHandler routes = new PathHandler();
+
+    final RoutingHandler basicRoutes = Handlers.routing();
+    routes.addPrefixPath("/",//
+        basicRoutes.get("/query/{database}/{language}/{command}", new GetQueryHandler(this))//
+            .post("/query/{database}", new PostQueryHandler(this))//
+            .post("/command/{database}", new CommandHandler(this))//
+            .get("/document/{database}/{rid}", new GetDocumentHandler(this))//
+            .post("/document/{database}", new CreateDocumentHandler(this))//
+            .post("/server", new ServersHandler(this))//
+            .post("/create/{database}", new CreateDatabaseHandler(this))//
+            .post("/exists/{database}", new ExistsDatabaseHandler(this))//
+            .post("/drop/{database}", new DropDatabaseHandler(this)));
+
+    // REGISTER PLUGIN API
+    for (ServerPlugin plugin : server.getPlugins())
+      plugin.registerAPI(this, routes);
 
     do {
       try {
@@ -116,5 +125,9 @@ public class HttpServer implements ServerPlugin {
 
   public String getListeningAddress() {
     return listeningAddress;
+  }
+
+  @Override
+  public void registerAPI(HttpServer httpServer, final PathHandler routes) {
   }
 }
