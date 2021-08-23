@@ -22,7 +22,7 @@ node {
 
             stage('build') {
                 try {
-                    sh "./mvnw -fae --quiet -B clean install -DskipTests "
+                    sh "./mvnw -fae --quiet -B clean install "
                 } catch (err) {
                     throw err
                 } finally {
@@ -35,7 +35,9 @@ node {
             }
 
             stage('build downstream') {
-                build job: "trader/${env.BRANCH_NAME}", wait: false
+//                build job: "trader/${env.BRANCH_NAME}", wait: false
+                //master branch hardcoded
+                build job: "trader/master", wait: false
             }
         }
         googlechatnotification url: 'id:chat_jenkins_id', message: "SUCCESS: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]' (${env.BUILD_URL})"
