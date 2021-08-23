@@ -121,7 +121,7 @@ public class ArcadeDBServer implements ServerLogger {
       log(this, Level.INFO, "- JMX Metrics Started...");
     }
 
-    security = new ServerSecurity(configuration, "config");
+    security = new ServerSecurity(configuration, serverRootPath + "/config");
     security.startService();
 
     loadDatabases();
