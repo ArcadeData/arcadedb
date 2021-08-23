@@ -23,7 +23,6 @@ package com.arcadedb.redis;
 
 import com.arcadedb.GlobalConfiguration;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import redis.clients.jedis.Jedis;
 
@@ -32,11 +31,10 @@ public class RedisWTest extends BaseGraphServerTest {
   private static final int DEF_PORT = 6379;
   private static final int TOTAL    = 10_000;
 
-  @BeforeEach
   @Override
-  public void beginTest() {
+  public void setTestConfiguration() {
+    super.setTestConfiguration();
     GlobalConfiguration.SERVER_PLUGINS.setValue("Redis Protocol:com.arcadedb.redis.RedisProtocolPlugin");
-    super.beginTest();
   }
 
   @AfterEach

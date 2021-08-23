@@ -24,7 +24,6 @@ package com.arcadedb.postgres;
 import com.arcadedb.GlobalConfiguration;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.postgresql.util.PSQLException;
 
@@ -32,11 +31,11 @@ import java.sql.*;
 import java.util.Properties;
 
 public class PostgresWTest extends BaseGraphServerTest {
-  @BeforeEach
   @Override
-  public void beginTest() {
+  public void setTestConfiguration() {
+    super.setTestConfiguration();
     GlobalConfiguration.SERVER_PLUGINS.setValue("Postgres Protocol:com.arcadedb.postgres.PostgresProtocolPlugin");
-    super.beginTest();
+
   }
 
   @AfterEach
@@ -148,7 +147,7 @@ public class PostgresWTest extends BaseGraphServerTest {
     String url = "jdbc:postgresql://localhost/" + getDatabaseName();
     Properties props = new Properties();
     props.setProperty("user", "root");
-    props.setProperty("password", "root");
+    props.setProperty("password", DEFAULT_PASSWORD_FOR_TESTS);
     props.setProperty("ssl", "false");
     Connection conn = DriverManager.getConnection(url, props);
     return conn;

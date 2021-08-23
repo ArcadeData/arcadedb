@@ -27,7 +27,6 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseComparator;
 import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.database.RID;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.utility.FileUtils;
@@ -47,25 +46,32 @@ import java.util.logging.Level;
  * This class has been copied under Console project to avoid complex dependencies.
  */
 public abstract class BaseGraphServerTest {
-  protected static RID              root;
-  private          ArcadeDBServer[] servers;
-  private          Database         databases[];
+  public static final String           DEFAULT_PASSWORD_FOR_TESTS = "DefaultPasswordForTests";
+  private             ArcadeDBServer[] servers;
+  private             Database         databases[];
 
   protected Database getDatabase(final int serverId) {
     return databases[serverId];
   }
 
   protected BaseGraphServerTest() {
-    GlobalConfiguration.TEST.setValue(true);
-    GlobalConfiguration.SERVER_ROOT_PATH.setValue("./target/");
   }
 
   protected String getDatabaseName() {
     return "graph";
   }
 
+  public void setTestConfiguration() {
+    GlobalConfiguration.resetAll();
+    GlobalConfiguration.TEST.setValue(true);
+    GlobalConfiguration.SERVER_ROOT_PATH.setValue("./target");
+    GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(DEFAULT_PASSWORD_FOR_TESTS);
+  }
+
   @BeforeEach
   public void beginTest() {
+    setTestConfiguration();
+
     checkArcadeIsTotallyDown();
 
     LogManager.instance().log(this, Level.INFO, "Starting test %s...", null, getClass().getName());
@@ -74,9 +80,16 @@ public abstract class BaseGraphServerTest {
 
     databases = new Database[getServerCount()];
     for (int i = 0; i < getServerCount(); ++i) {
-      GlobalConfiguration.SERVER_DATABASE_DIRECTORY.setValue("./target/" + i + "/databases");
+      GlobalConfiguration.SERVER_DATABASE_DIRECTORY.setValue("./target/databases");
       databases[i] = new DatabaseFactory(getDatabasePath(i)).create();
       databases[i].close();
+    }
+
+    // CLOSE ALL DATABASES BEFORE TO START THE SERVERS
+    LogManager.instance().log(this, Level.INFO, "TEST: Closing databases before starting");
+    for (int i = 0; i < databases.length; ++i) {
+      databases[i].close();
+      databases[i] = null;
     }
 
     startServers();
@@ -127,7 +140,7 @@ public abstract class BaseGraphServerTest {
     for (int i = 0; i < totalServers; ++i) {
       final ContextConfiguration config = new ContextConfiguration();
       config.setValue(GlobalConfiguration.SERVER_NAME, Constants.PRODUCT + "_" + i);
-      config.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, "./target/" + i + "/databases");
+      config.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, "./target/databases" + i);
       config.setValue(GlobalConfiguration.HA_SERVER_LIST, serverURLs);
       config.setValue(GlobalConfiguration.HA_ENABLED, getServerCount() > 1);
 
@@ -176,7 +189,7 @@ public abstract class BaseGraphServerTest {
   }
 
   protected String getDatabasePath(final int serverId) {
-    return GlobalConfiguration.SERVER_ROOT_PATH.getValueAsString() + serverId + "/databases/" + getDatabaseName();
+    return GlobalConfiguration.SERVER_DATABASE_DIRECTORY.getValueAsString() + serverId + "/" + getDatabaseName();
   }
 
   protected String readResponse(final HttpURLConnection connection) throws IOException {

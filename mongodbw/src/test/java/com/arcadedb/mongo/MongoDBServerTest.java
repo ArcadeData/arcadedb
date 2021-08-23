@@ -43,10 +43,15 @@ public class MongoDBServerTest extends BaseGraphServerTest {
   private              MongoClient                                           client;
   private              Document                                              obj;
 
+  @Override
+  public void setTestConfiguration() {
+    super.setTestConfiguration();
+    GlobalConfiguration.SERVER_PLUGINS.setValue("MongoDB:com.arcadedb.mongo.MongoDBProtocolPlugin");
+  }
+
   @BeforeEach
   @Override
   public void beginTest() {
-    GlobalConfiguration.SERVER_PLUGINS.setValue("MongoDB:com.arcadedb.mongo.MongoDBProtocolPlugin");
     super.beginTest();
 
     Database db = getDatabase(0);

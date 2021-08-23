@@ -49,11 +49,12 @@ import java.util.logging.Level;
  * This class has been copied under Console project to avoid complex dependencies.
  */
 public abstract class BaseGraphServerTest {
-  protected static final String VERTEX1_TYPE_NAME = "V1";
-  protected static final String VERTEX2_TYPE_NAME = "V2";
-  protected static final String EDGE1_TYPE_NAME   = "E1";
-  protected static final String EDGE2_TYPE_NAME   = "E2";
-  protected static final String DB_PATH           = "./target/databases";
+  public static final    String DEFAULT_PASSWORD_FOR_TESTS = "DefaultPasswordForTests";
+  protected static final String VERTEX1_TYPE_NAME          = "V1";
+  protected static final String VERTEX2_TYPE_NAME          = "V2";
+  protected static final String EDGE1_TYPE_NAME            = "E1";
+  protected static final String EDGE2_TYPE_NAME            = "E2";
+  protected static final String DB_PATH                    = "./target/databases";
 
   protected static RID              root;
   private          ArcadeDBServer[] servers;
@@ -64,12 +65,19 @@ public abstract class BaseGraphServerTest {
   }
 
   protected BaseGraphServerTest() {
+  }
+
+  public void setTestConfiguration() {
+    GlobalConfiguration.resetAll();
     GlobalConfiguration.TEST.setValue(true);
     GlobalConfiguration.SERVER_ROOT_PATH.setValue("./target");
+    GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(DEFAULT_PASSWORD_FOR_TESTS);
   }
 
   @BeforeEach
   public void beginTest() {
+    setTestConfiguration();
+
     checkArcadeIsTotallyDown();
 
     LogManager.instance().log(this, Level.INFO, "Starting test %s...", null, getClass().getName());
