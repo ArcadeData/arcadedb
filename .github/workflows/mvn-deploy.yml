@@ -34,6 +34,6 @@ jobs:
           java-version: 11
 
       - name: Test (should be deploy)
-        run: mvn --batch-mode  --errors --fail-at-end --show-version  --file pom.xml verify
+        run: mvn -Pdocker --batch-mode  --errors --fail-at-end --show-version  --file pom.xml verify
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

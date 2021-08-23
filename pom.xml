@@ -28,6 +28,7 @@
         <maven-javadoc-plugin.version>3.0.1</maven-javadoc-plugin.version>
         <maven-source-plugin.version>3.2.1</maven-source-plugin.version>
         <assertj-core.version>3.20.2</assertj-core.version>
+        <skipIntegration>true</skipIntegration>
     </properties>
 
     <developers>
@@ -166,6 +167,9 @@
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-failsafe-plugin</artifactId>
                     <version>${maven-failsafe-plugin.version}</version>
+                    <configuration>
+                        <skipITs>${skipIntegration}</skipITs>
+                    </configuration>
                 </plugin>
                 <plugin>
                     <artifactId>maven-assembly-plugin</artifactId>
@@ -226,4 +230,14 @@
             <scope>test</scope>
         </dependency>
     </dependencies>
+
+    <profiles>
+        <profile>
+            <id>integration</id>
+            <properties>
+                <skipIntegration>false</skipIntegration>
+            </properties>
+        </profile>
+
+    </profiles>
 </project>

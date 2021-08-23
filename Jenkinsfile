@@ -22,7 +22,7 @@ node {
 
             stage('build') {
                 try {
-                    sh "./mvnw -fae --quiet -B clean install "
+                    sh "./mvnw -Pdocker -fae --quiet -B clean install "
                 } catch (err) {
                     throw err
                 } finally {
