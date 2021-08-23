@@ -191,9 +191,10 @@ public class HARandomCrashIT extends ReplicationServerIT {
           try {
             final long tot = database.countType(VERTEX1_TYPE_NAME, false);
             LogManager.instance().log(this, Level.INFO, "TEST: -- SERVER %d - %d records", null, i, tot);
-            database.rollback();
           } catch (Exception e) {
             LogManager.instance().log(this, Level.SEVERE, "TEST: -- ERROR ON RETRIEVING COUNT FROM DATABASE '%s'", e, database);
+          } finally {
+            database.rollback();
           }
         }
 

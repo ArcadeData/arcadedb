@@ -67,14 +67,15 @@ public class ArcadeDBServer implements ServerLogger {
   public ArcadeDBServer() {
     this.configuration = new ContextConfiguration();
     this.fileConfiguration = true;
-    loadConfiguration();
-
-    this.serverName = configuration.getValueAsString(GlobalConfiguration.SERVER_NAME);
-    this.testEnabled = configuration.getValueAsBoolean(GlobalConfiguration.TEST);
 
     serverRootPath = configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PATH);
     if (serverRootPath == null)
       serverRootPath = new File("config").exists() ? "" : "../";
+
+    loadConfiguration();
+
+    this.serverName = configuration.getValueAsString(GlobalConfiguration.SERVER_NAME);
+    this.testEnabled = configuration.getValueAsBoolean(GlobalConfiguration.TEST);
   }
 
   public ArcadeDBServer(final ContextConfiguration configuration) {
@@ -472,7 +473,7 @@ public class ArcadeDBServer implements ServerLogger {
   }
 
   private void loadConfiguration() {
-    final File file = new File(CONFIG_SERVER_CONFIGURATION_FILENAME);
+    final File file = new File(getRootPath() + "/" + CONFIG_SERVER_CONFIGURATION_FILENAME);
     if (file.exists()) {
       try {
         final String content = FileUtils.readFileAsString(file, "UTF8");
