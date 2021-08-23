@@ -5,6 +5,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.index.Index;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
@@ -15,6 +16,8 @@ import org.junit.jupiter.api.Test;
 import java.util.Optional;
 import java.util.Random;
 import java.util.UUID;
+
+import static com.arcadedb.query.sql.executor.ExecutionPlanPrintUtils.printExecutionPlan;
 
 public class SelectStatementExecutionTest extends TestHelper {
 
@@ -1156,492 +1159,521 @@ public class SelectStatementExecutionTest extends TestHelper {
         Assertions.assertEquals(FetchFromIndexStep.class, plan.getSteps().get(0).getClass());
         result.close();
     }
-//
-//    @Test
-//    public void testFetchFromIndex() {
-//        boolean oldAllowManual = OGlobalConfiguration.INDEX_ALLOW_MANUAL_INDEXES.getValueAsBoolean();
-//        OGlobalConfiguration.INDEX_ALLOW_MANUAL_INDEXES.setValue(true);
-//        String className = "testFetchFromIndex";
-//        OClass clazz = database.getSchema().createDocumentType(className);
-//        clazz.createProperty("name", OType.STRING);
-//        String indexName = className + ".name";
-//        clazz.createIndex(indexName, OClass.INDEX_TYPE.NOTUNIQUE, "name");
-//
-//        for (int i = 0; i < 10; i++) {
-//            MutableDocument doc = database.newDocument(className);
-//            doc.set("name", "name" + i);
-//            doc.save();
-//        }
-//
-//        ResultSet result = database.query("sql", "select from index:" + indexName + " where key = 'name2'");
-//        printExecutionPlan(result);
-//
-//        Assertions.assertTrue(result.hasNext());
-//        Result next = result.next();
-//        Assertions.assertNotNull(next);
-//
-//        Assertions.assertFalse(result.hasNext());
-//
-//        Optional<OExecutionPlan> p = result.getExecutionPlan();
-//        Assertions.assertTrue(p.isPresent());
-//        OExecutionPlan p2 = p.get();
-//        Assertions.assertTrue(p2 instanceof OSelectExecutionPlan);
-//        OSelectExecutionPlan plan = (OSelectExecutionPlan) p2;
-//        Assertions.assertEquals(FetchFromIndexStep.class, plan.getSteps().get(0).getClass());
-//        result.close();
-//        OGlobalConfiguration.INDEX_ALLOW_MANUAL_INDEXES.setValue(oldAllowManual);
-//    }
-//
-//    @Test
-//    public void testFetchFromClassWithIndexes() {
-//        String className = "testFetchFromClassWithIndexes";
-//        OClass clazz = database.getSchema().createDocumentType(className);
-//        clazz.createProperty("name", OType.STRING);
-//        clazz.createProperty("surname", OType.STRING);
-//        clazz.createIndex(className + ".name", OClass.INDEX_TYPE.NOTUNIQUE, "name");
-//        clazz.createIndex(className + ".surname", OClass.INDEX_TYPE.NOTUNIQUE, "surname");
-//
-//        for (int i = 0; i < 10; i++) {
-//            MutableDocument doc = database.newDocument(className);
-//            doc.set("name", "name" + i);
-//            doc.set("surname", "surname" + i);
-//            doc.save();
-//        }
-//
-//        ResultSet result =
-//                database.query("sql", "select from " + className + " where name = 'name2' or surname = 'surname3'");
-//        printExecutionPlan(result);
-//
-//        Assertions.assertTrue(result.hasNext());
-//        for (int i = 0; i < 2; i++) {
-//            Result next = result.next();
-//            Assertions.assertNotNull(next);
-//            Assertions.assertTrue(
-//                    "name2".equals(next.getProperty("name"))
-//                            || ("surname3".equals(next.getProperty("surname"))));
-//        }
-//
-//        Assertions.assertFalse(result.hasNext());
-//
-//        Optional<OExecutionPlan> p = result.getExecutionPlan();
-//        Assertions.assertTrue(p.isPresent());
-//        OExecutionPlan p2 = p.get();
-//        Assertions.assertTrue(p2 instanceof OSelectExecutionPlan);
-//        OSelectExecutionPlan plan = (OSelectExecutionPlan) p2;
-//        Assertions.assertEquals(ParallelExecStep.class, plan.getSteps().get(0).getClass());
-//        ParallelExecStep parallel = (ParallelExecStep) plan.getSteps().get(0);
-//        Assertions.assertEquals(2, parallel.getSubExecutionPlans().size());
-//        result.close();
-//    }
-//
-//    @Test
-//    public void testFetchFromClassWithIndexes2() {
-//        String className = "testFetchFromClassWithIndexes2";
-//        OClass clazz = database.getSchema().createDocumentType(className);
-//        clazz.createProperty("name", OType.STRING);
-//        clazz.createProperty("surname", OType.STRING);
-//        clazz.createIndex(className + ".name", OClass.INDEX_TYPE.NOTUNIQUE, "name");
-//        clazz.createIndex(className + ".surname", OClass.INDEX_TYPE.NOTUNIQUE, "surname");
-//
-//        for (int i = 0; i < 10; i++) {
-//            MutableDocument doc = database.newDocument(className);
-//            doc.set("name", "name" + i);
-//            doc.set("surname", "surname" + i);
-//            doc.save();
-//        }
-//
-//        ResultSet result =
-//                database.query(
-//                        "select from "
-//                                + className
-//                                + " where foo is not null and (name = 'name2' or surname = 'surname3')");
-//        printExecutionPlan(result);
-//
-//        Assertions.assertFalse(result.hasNext());
-//        result.close();
-//    }
-//
-//    @Test
-//    public void testFetchFromClassWithIndexes3() {
-//        String className = "testFetchFromClassWithIndexes3";
-//        OClass clazz = database.getSchema().createDocumentType(className);
-//        clazz.createProperty("name", OType.STRING);
-//        clazz.createProperty("surname", OType.STRING);
-//        clazz.createIndex(className + ".name", OClass.INDEX_TYPE.NOTUNIQUE, "name");
-//        clazz.createIndex(className + ".surname", OClass.INDEX_TYPE.NOTUNIQUE, "surname");
-//
-//        for (int i = 0; i < 10; i++) {
-//            MutableDocument doc = database.newDocument(className);
-//            doc.set("name", "name" + i);
-//            doc.set("surname", "surname" + i);
-//            doc.set("foo", i);
-//            doc.save();
-//        }
-//
-//        ResultSet result =
-//                database.query(
-//                        "select from "
-//                                + className
-//                                + " where foo < 100 and (name = 'name2' or surname = 'surname3')");
-//        printExecutionPlan(result);
-//
-//        Assertions.assertTrue(result.hasNext());
-//        for (int i = 0; i < 2; i++) {
-//            Result next = result.next();
-//            Assertions.assertNotNull(next);
-//            Assertions.assertTrue(
-//                    "name2".equals(next.getProperty("name"))
-//                            || ("surname3".equals(next.getProperty("surname"))));
-//        }
-//
-//        Assertions.assertFalse(result.hasNext());
-//        result.close();
-//    }
-//
-//    @Test
-//    public void testFetchFromClassWithIndexes4() {
-//        String className = "testFetchFromClassWithIndexes4";
-//        OClass clazz = database.getSchema().createDocumentType(className);
-//        clazz.createProperty("name", OType.STRING);
-//        clazz.createProperty("surname", OType.STRING);
-//        clazz.createIndex(className + ".name", OClass.INDEX_TYPE.NOTUNIQUE, "name");
-//        clazz.createIndex(className + ".surname", OClass.INDEX_TYPE.NOTUNIQUE, "surname");
-//
-//        for (int i = 0; i < 10; i++) {
-//            MutableDocument doc = database.newDocument(className);
-//            doc.set("name", "name" + i);
-//            doc.set("surname", "surname" + i);
-//            doc.set("foo", i);
-//            doc.save();
-//        }
-//
-//        ResultSet result =
-//                database.query(
-//                        "select from "
-//                                + className
-//                                + " where foo < 100 and ((name = 'name2' and foo < 20) or surname = 'surname3') and ( 4<5 and foo < 50)");
-//        printExecutionPlan(result);
-//
-//        Assertions.assertTrue(result.hasNext());
-//        for (int i = 0; i < 2; i++) {
-//            Result next = result.next();
-//            Assertions.assertNotNull(next);
-//            Assertions.assertTrue(
-//                    "name2".equals(next.getProperty("name"))
-//                            || ("surname3".equals(next.getProperty("surname"))));
-//        }
-//
-//        Assertions.assertFalse(result.hasNext());
-//        result.close();
-//    }
-//
-//    @Test
-//    public void testFetchFromClassWithIndexes5() {
-//        String className = "testFetchFromClassWithIndexes5";
-//        OClass clazz = database.getSchema().createDocumentType(className);
-//        clazz.createProperty("name", OType.STRING);
-//        clazz.createProperty("surname", OType.STRING);
-//        clazz.createIndex(className + ".name_surname", OClass.INDEX_TYPE.NOTUNIQUE, "name", "surname");
-//
-//        for (int i = 0; i < 10; i++) {
-//            MutableDocument doc = database.newDocument(className);
-//            doc.set("name", "name" + i);
-//            doc.set("surname", "surname" + i);
-//            doc.set("foo", i);
-//            doc.save();
-//        }
-//
-//        ResultSet result =
-//                database.query("sql", "select from " + className + " where name = 'name3' and surname >= 'surname1'");
-//        printExecutionPlan(result);
-//
-//        Assertions.assertTrue(result.hasNext());
-//        for (int i = 0; i < 1; i++) {
-//            Result next = result.next();
-//            Assertions.assertNotNull(next);
-//            Assertions.assertEquals("name3", next.getProperty("name"));
-//        }
-//
-//        Assertions.assertFalse(result.hasNext());
-//        result.close();
-//    }
-//
-//    @Test
-//    public void testFetchFromClassWithIndexes6() {
-//        String className = "testFetchFromClassWithIndexes6";
-//        OClass clazz = database.getSchema().createDocumentType(className);
-//        clazz.createProperty("name", OType.STRING);
-//        clazz.createProperty("surname", OType.STRING);
-//        clazz.createIndex(className + ".name_surname", OClass.INDEX_TYPE.NOTUNIQUE, "name", "surname");
-//
-//        for (int i = 0; i < 10; i++) {
-//            MutableDocument doc = database.newDocument(className);
-//            doc.set("name", "name" + i);
-//            doc.set("surname", "surname" + i);
-//            doc.set("foo", i);
-//            doc.save();
-//        }
-//
-//        ResultSet result =
-//                database.query("sql", "select from " + className + " where name = 'name3' and surname > 'surname3'");
-//        printExecutionPlan(result);
-//
-//        Assertions.assertFalse(result.hasNext());
-//        result.close();
-//    }
-//
-//    @Test
-//    public void testFetchFromClassWithIndexes7() {
-//        String className = "testFetchFromClassWithIndexes7";
-//        OClass clazz = database.getSchema().createDocumentType(className);
-//        clazz.createProperty("name", OType.STRING);
-//        clazz.createProperty("surname", OType.STRING);
-//        clazz.createIndex(className + ".name_surname", OClass.INDEX_TYPE.NOTUNIQUE, "name", "surname");
-//
-//        for (int i = 0; i < 10; i++) {
-//            MutableDocument doc = database.newDocument(className);
-//            doc.set("name", "name" + i);
-//            doc.set("surname", "surname" + i);
-//            doc.set("foo", i);
-//            doc.save();
-//        }
-//
-//        ResultSet result =
-//                database.query("sql", "select from " + className + " where name = 'name3' and surname >= 'surname3'");
-//        printExecutionPlan(result);
-//        for (int i = 0; i < 1; i++) {
-//            Result next = result.next();
-//            Assertions.assertNotNull(next);
-//            Assertions.assertEquals("name3", next.getProperty("name"));
-//        }
-//        Assertions.assertFalse(result.hasNext());
-//        result.close();
-//    }
-//
-//    @Test
-//    public void testFetchFromClassWithIndexes8() {
-//        String className = "testFetchFromClassWithIndexes8";
-//        OClass clazz = database.getSchema().createDocumentType(className);
-//        clazz.createProperty("name", OType.STRING);
-//        clazz.createProperty("surname", OType.STRING);
-//        clazz.createIndex(className + ".name_surname", OClass.INDEX_TYPE.NOTUNIQUE, "name", "surname");
-//
-//        for (int i = 0; i < 10; i++) {
-//            MutableDocument doc = database.newDocument(className);
-//            doc.set("name", "name" + i);
-//            doc.set("surname", "surname" + i);
-//            doc.set("foo", i);
-//            doc.save();
-//        }
-//
-//        ResultSet result =
-//                database.query("sql", "select from " + className + " where name = 'name3' and surname < 'surname3'");
-//        printExecutionPlan(result);
-//
-//        Assertions.assertFalse(result.hasNext());
-//        result.close();
-//    }
-//
-//    @Test
-//    public void testFetchFromClassWithIndexes9() {
-//        String className = "testFetchFromClassWithIndexes9";
-//        OClass clazz = database.getSchema().createDocumentType(className);
-//        clazz.createProperty("name", OType.STRING);
-//        clazz.createProperty("surname", OType.STRING);
-//        clazz.createIndex(className + ".name_surname", OClass.INDEX_TYPE.NOTUNIQUE, "name", "surname");
-//
-//        for (int i = 0; i < 10; i++) {
-//            MutableDocument doc = database.newDocument(className);
-//            doc.set("name", "name" + i);
-//            doc.set("surname", "surname" + i);
-//            doc.set("foo", i);
-//            doc.save();
-//        }
-//
-//        ResultSet result =
-//                database.query("sql", "select from " + className + " where name = 'name3' and surname <= 'surname3'");
-//        printExecutionPlan(result);
-//        for (int i = 0; i < 1; i++) {
-//            Result next = result.next();
-//            Assertions.assertNotNull(next);
-//            Assertions.assertEquals("name3", next.getProperty("name"));
-//        }
-//        Assertions.assertFalse(result.hasNext());
-//        result.close();
-//    }
-//
-//    @Test
-//    public void testFetchFromClassWithIndexes10() {
-//        String className = "testFetchFromClassWithIndexes10";
-//        OClass clazz = database.getSchema().createDocumentType(className);
-//        clazz.createProperty("name", OType.STRING);
-//        clazz.createProperty("surname", OType.STRING);
-//        clazz.createIndex(className + ".name_surname", OClass.INDEX_TYPE.NOTUNIQUE, "name", "surname");
-//
-//        for (int i = 0; i < 10; i++) {
-//            MutableDocument doc = database.newDocument(className);
-//            doc.set("name", "name" + i);
-//            doc.set("surname", "surname" + i);
-//            doc.set("foo", i);
-//            doc.save();
-//        }
-//
-//        ResultSet result = database.query("sql", "select from " + className + " where name > 'name3' ");
-//        printExecutionPlan(result);
-//        for (int i = 0; i < 6; i++) {
-//            Assertions.assertTrue(result.hasNext());
-//            Result next = result.next();
-//            Assertions.assertNotNull(next);
-//        }
-//        Assertions.assertFalse(result.hasNext());
-//        result.close();
-//    }
-//
-//    @Test
-//    public void testFetchFromClassWithIndexes11() {
-//        String className = "testFetchFromClassWithIndexes11";
-//        OClass clazz = database.getSchema().createDocumentType(className);
-//        clazz.createProperty("name", OType.STRING);
-//        clazz.createProperty("surname", OType.STRING);
-//        clazz.createIndex(className + ".name_surname", OClass.INDEX_TYPE.NOTUNIQUE, "name", "surname");
-//
-//        for (int i = 0; i < 10; i++) {
-//            MutableDocument doc = database.newDocument(className);
-//            doc.set("name", "name" + i);
-//            doc.set("surname", "surname" + i);
-//            doc.set("foo", i);
-//            doc.save();
-//        }
-//
-//        ResultSet result = database.query("sql", "select from " + className + " where name >= 'name3' ");
-//        printExecutionPlan(result);
-//        for (int i = 0; i < 7; i++) {
-//            Result next = result.next();
-//            Assertions.assertNotNull(next);
-//        }
-//        Assertions.assertFalse(result.hasNext());
-//        result.close();
-//    }
-//
-//    @Test
-//    public void testFetchFromClassWithIndexes12() {
-//        String className = "testFetchFromClassWithIndexes12";
-//        OClass clazz = database.getSchema().createDocumentType(className);
-//        clazz.createProperty("name", OType.STRING);
-//        clazz.createProperty("surname", OType.STRING);
-//        clazz.createIndex(className + ".name_surname", OClass.INDEX_TYPE.NOTUNIQUE, "name", "surname");
-//
-//        for (int i = 0; i < 10; i++) {
-//            MutableDocument doc = database.newDocument(className);
-//            doc.set("name", "name" + i);
-//            doc.set("surname", "surname" + i);
-//            doc.set("foo", i);
-//            doc.save();
-//        }
-//
-//        ResultSet result = database.query("sql", "select from " + className + " where name < 'name3' ");
-//        printExecutionPlan(result);
-//        for (int i = 0; i < 3; i++) {
-//            Result next = result.next();
-//            Assertions.assertNotNull(next);
-//        }
-//        Assertions.assertFalse(result.hasNext());
-//        result.close();
-//    }
-//
-//    @Test
-//    public void testFetchFromClassWithIndexes13() {
-//        String className = "testFetchFromClassWithIndexes13";
-//        OClass clazz = database.getSchema().createDocumentType(className);
-//        clazz.createProperty("name", OType.STRING);
-//        clazz.createProperty("surname", OType.STRING);
-//        clazz.createIndex(className + ".name_surname", OClass.INDEX_TYPE.NOTUNIQUE, "name", "surname");
-//
-//        for (int i = 0; i < 10; i++) {
-//            MutableDocument doc = database.newDocument(className);
-//            doc.set("name", "name" + i);
-//            doc.set("surname", "surname" + i);
-//            doc.set("foo", i);
-//            doc.save();
-//        }
-//
-//        ResultSet result = database.query("sql", "select from " + className + " where name <= 'name3' ");
-//        printExecutionPlan(result);
-//        for (int i = 0; i < 4; i++) {
-//            Result next = result.next();
-//            Assertions.assertNotNull(next);
-//        }
-//        Assertions.assertFalse(result.hasNext());
-//        result.close();
-//    }
-//
-//    @Test
-//    public void testFetchFromClassWithIndexes14() {
-//        String className = "testFetchFromClassWithIndexes14";
-//        OClass clazz = database.getSchema().createDocumentType(className);
-//        clazz.createProperty("name", OType.STRING);
-//        clazz.createProperty("surname", OType.STRING);
-//        clazz.createIndex(className + ".name_surname", OClass.INDEX_TYPE.NOTUNIQUE, "name", "surname");
-//
-//        for (int i = 0; i < 10; i++) {
-//            MutableDocument doc = database.newDocument(className);
-//            doc.set("name", "name" + i);
-//            doc.set("surname", "surname" + i);
-//            doc.set("foo", i);
-//            doc.save();
-//        }
-//
-//        ResultSet result =
-//                database.query("sql", "select from " + className + " where name > 'name3' and name < 'name5'");
-//        printExecutionPlan(result);
-//        for (int i = 0; i < 1; i++) {
-//            Result next = result.next();
-//            Assertions.assertNotNull(next);
-//        }
-//        Assertions.assertFalse(result.hasNext());
-//        OSelectExecutionPlan plan = (OSelectExecutionPlan) result.getExecutionPlan().get();
-//        Assertions.assertEquals(
-//                1, plan.getSteps().stream().filter(step -> step instanceof FetchFromIndexStep).count());
-//        result.close();
-//    }
-//
-//    @Test
-//    public void testFetchFromClassWithIndexes15() {
-//        String className = "testFetchFromClassWithIndexes15";
-//        OClass clazz = database.getSchema().createDocumentType(className);
-//        clazz.createProperty("name", OType.STRING);
-//        clazz.createProperty("surname", OType.STRING);
-//        clazz.createIndex(className + ".name_surname", OClass.INDEX_TYPE.NOTUNIQUE, "name", "surname");
-//
-//        for (int i = 0; i < 10; i++) {
-//            MutableDocument doc = database.newDocument(className);
-//            doc.set("name", "name" + i);
-//            doc.set("surname", "surname" + i);
-//            doc.set("foo", i);
-//            doc.save();
-//        }
-//
-//        ResultSet result =
-//                database.query(
-//                        "select from "
-//                                + className
-//                                + " where name > 'name6' and name = 'name3' and surname > 'surname2' and surname < 'surname5' ");
-//        printExecutionPlan(result);
-//        Assertions.assertFalse(result.hasNext());
-//        OSelectExecutionPlan plan = (OSelectExecutionPlan) result.getExecutionPlan().get();
-//        Assertions.assertEquals(
-//                1, plan.getSteps().stream().filter(step -> step instanceof FetchFromIndexStep).count());
-//        result.close();
-//    }
-//
+
+    @Test
+    public void testFetchFromIndex() {
+        String className = "testFetchFromIndex";
+        DocumentType clazz = database.getSchema().createDocumentType(className);
+        database.begin();
+        clazz.createProperty("name", Type.STRING);
+        String indexName;
+        Index idx = clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name");
+        indexName = idx.getName();
+        for (int i = 0; i < 10; i++) {
+            MutableDocument doc = database.newDocument(className);
+            doc.set("name", "name" + i);
+            doc.save();
+        }
+        database.commit();
+
+        ResultSet result = database.query("sql", "select from index:`" + indexName + "` where key = 'name2'");
+        printExecutionPlan(result);
+
+        Assertions.assertTrue(result.hasNext());
+        Result next = result.next();
+        Assertions.assertNotNull(next);
+
+        Assertions.assertFalse(result.hasNext());
+
+        Optional<ExecutionPlan> p = result.getExecutionPlan();
+        Assertions.assertTrue(p.isPresent());
+        ExecutionPlan p2 = p.get();
+        Assertions.assertTrue(p2 instanceof SelectExecutionPlan);
+        SelectExecutionPlan plan = (SelectExecutionPlan) p2;
+        Assertions.assertEquals(FetchFromIndexStep.class, plan.getSteps().get(0).getClass());
+        result.close();
+    }
+
+    @Test
+    public void testFetchFromClassWithIndexes() {
+        String className = "testFetchFromClassWithIndexes";
+        DocumentType clazz = database.getSchema().createDocumentType(className);
+        database.begin();
+        clazz.createProperty("name", Type.STRING);
+        clazz.createProperty("surname", Type.STRING);
+        clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name");
+        clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "surname");
+
+        for (int i = 0; i < 10; i++) {
+            MutableDocument doc = database.newDocument(className);
+            doc.set("name", "name" + i);
+            doc.set("surname", "surname" + i);
+            doc.save();
+        }
+        database.commit();
+
+        ResultSet result =
+                database.query("sql", "select from " + className + " where name = 'name2' or surname = 'surname3'");
+        printExecutionPlan(result);
+
+        Assertions.assertTrue(result.hasNext());
+        for (int i = 0; i < 2; i++) {
+            Result next = result.next();
+            Assertions.assertNotNull(next);
+            Assertions.assertTrue(
+                    "name2".equals(next.getProperty("name"))
+                            || ("surname3".equals(next.getProperty("surname"))));
+        }
+
+        Assertions.assertFalse(result.hasNext());
+
+        Optional<ExecutionPlan> p = result.getExecutionPlan();
+        Assertions.assertTrue(p.isPresent());
+        ExecutionPlan p2 = p.get();
+        Assertions.assertTrue(p2 instanceof SelectExecutionPlan);
+        SelectExecutionPlan plan = (SelectExecutionPlan) p2;
+        Assertions.assertEquals(ParallelExecStep.class, plan.getSteps().get(0).getClass());
+        ParallelExecStep parallel = (ParallelExecStep) plan.getSteps().get(0);
+        Assertions.assertEquals(2, parallel.getSubExecutionPlans().size());
+        result.close();
+    }
+
+    @Test
+    public void testFetchFromClassWithIndexes2() {
+        String className = "testFetchFromClassWithIndexes2";
+        DocumentType clazz = database.getSchema().createDocumentType(className);
+        database.begin();
+        clazz.createProperty("name", Type.STRING);
+        clazz.createProperty("surname", Type.STRING);
+        clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name");
+        clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "surname");
+
+        for (int i = 0; i < 10; i++) {
+            MutableDocument doc = database.newDocument(className);
+            doc.set("name", "name" + i);
+            doc.set("surname", "surname" + i);
+            doc.save();
+        }
+
+        database.commit();
+        ResultSet result =
+                database.query("sql",
+                        "select from "
+                                + className
+                                + " where foo is not null and (name = 'name2' or surname = 'surname3')");
+        printExecutionPlan(result);
+
+        Assertions.assertFalse(result.hasNext());
+        result.close();
+    }
+
+    @Test
+    public void testFetchFromClassWithIndexes3() {
+        String className = "testFetchFromClassWithIndexes3";
+        DocumentType clazz = database.getSchema().createDocumentType(className);
+        database.begin();
+        clazz.createProperty("name", Type.STRING);
+        clazz.createProperty("surname", Type.STRING);
+        clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name");
+        clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "surname");
+
+        for (int i = 0; i < 10; i++) {
+            MutableDocument doc = database.newDocument(className);
+            doc.set("name", "name" + i);
+            doc.set("surname", "surname" + i);
+            doc.set("foo", i);
+            doc.save();
+        }
+        database.commit();
+
+        ResultSet result =
+                database.query("sql",
+                        "select from "
+                                + className
+                                + " where foo < 100 and (name = 'name2' or surname = 'surname3')");
+        printExecutionPlan(result);
+
+        Assertions.assertTrue(result.hasNext());
+        for (int i = 0; i < 2; i++) {
+            Result next = result.next();
+            Assertions.assertNotNull(next);
+            Assertions.assertTrue(
+                    "name2".equals(next.getProperty("name"))
+                            || ("surname3".equals(next.getProperty("surname"))));
+        }
+
+        Assertions.assertFalse(result.hasNext());
+        result.close();
+    }
+
+    @Test
+    public void testFetchFromClassWithIndexes4() {
+        String className = "testFetchFromClassWithIndexes4";
+        DocumentType clazz = database.getSchema().createDocumentType(className);
+        database.begin();
+        clazz.createProperty("name", Type.STRING);
+        clazz.createProperty("surname", Type.STRING);
+        clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name");
+        clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "surname");
+
+        for (int i = 0; i < 10; i++) {
+            MutableDocument doc = database.newDocument(className);
+            doc.set("name", "name" + i);
+            doc.set("surname", "surname" + i);
+            doc.set("foo", i);
+            doc.save();
+        }
+        database.commit();
+
+        ResultSet result =
+                database.query("sql",
+                        "select from "
+                                + className
+                                + " where foo < 100 and ((name = 'name2' and foo < 20) or surname = 'surname3') and ( 4<5 and foo < 50)");
+        printExecutionPlan(result);
+
+        Assertions.assertTrue(result.hasNext());
+        for (int i = 0; i < 2; i++) {
+            Result next = result.next();
+            Assertions.assertNotNull(next);
+            Assertions.assertTrue(
+                    "name2".equals(next.getProperty("name"))
+                            || ("surname3".equals(next.getProperty("surname"))));
+        }
+
+        Assertions.assertFalse(result.hasNext());
+        result.close();
+    }
+
+    @Test
+    public void testFetchFromClassWithIndexes5() {
+        String className = "testFetchFromClassWithIndexes5";
+        DocumentType clazz = database.getSchema().createDocumentType(className);
+        database.begin();
+        clazz.createProperty("name", Type.STRING);
+        clazz.createProperty("surname", Type.STRING);
+        clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name", "surname");
+
+        for (int i = 0; i < 10; i++) {
+            MutableDocument doc = database.newDocument(className);
+            doc.set("name", "name" + i);
+            doc.set("surname", "surname" + i);
+            doc.set("foo", i);
+            doc.save();
+        }
+        database.commit();
+
+        ResultSet result =
+                database.query("sql", "select from " + className + " where name = 'name3' and surname >= 'surname1'");
+        printExecutionPlan(result);
+
+        Assertions.assertTrue(result.hasNext());
+        for (int i = 0; i < 1; i++) {
+            Result next = result.next();
+            Assertions.assertNotNull(next);
+            Assertions.assertEquals("name3", next.getProperty("name"));
+        }
+
+        Assertions.assertFalse(result.hasNext());
+        result.close();
+    }
+
+    @Test
+    public void testFetchFromClassWithIndexes6() {
+        String className = "testFetchFromClassWithIndexes6";
+        DocumentType clazz = database.getSchema().createDocumentType(className);
+        database.begin();
+        clazz.createProperty("name", Type.STRING);
+        clazz.createProperty("surname", Type.STRING);
+        clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name", "surname");
+
+        for (int i = 0; i < 10; i++) {
+            MutableDocument doc = database.newDocument(className);
+            doc.set("name", "name" + i);
+            doc.set("surname", "surname" + i);
+            doc.set("foo", i);
+            doc.save();
+        }
+        database.commit();
+
+        ResultSet result =
+                database.query("sql", "select from " + className + " where name = 'name3' and surname > 'surname3'");
+        printExecutionPlan(result);
+
+        Assertions.assertFalse(result.hasNext());
+        result.close();
+    }
+
+    @Test
+    public void testFetchFromClassWithIndexes7() {
+        String className = "testFetchFromClassWithIndexes7";
+        DocumentType clazz = database.getSchema().createDocumentType(className);
+        database.begin();
+        clazz.createProperty("name", Type.STRING);
+        clazz.createProperty("surname", Type.STRING);
+        clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name", "surname");
+
+        for (int i = 0; i < 10; i++) {
+            MutableDocument doc = database.newDocument(className);
+            doc.set("name", "name" + i);
+            doc.set("surname", "surname" + i);
+            doc.set("foo", i);
+            doc.save();
+        }
+        database.commit();
+
+        ResultSet result =
+                database.query("sql", "select from " + className + " where name = 'name3' and surname >= 'surname3'");
+        printExecutionPlan(result);
+        for (int i = 0; i < 1; i++) {
+            Result next = result.next();
+            Assertions.assertNotNull(next);
+            Assertions.assertEquals("name3", next.getProperty("name"));
+        }
+        Assertions.assertFalse(result.hasNext());
+        result.close();
+    }
+
+    @Test
+    public void testFetchFromClassWithIndexes8() {
+        String className = "testFetchFromClassWithIndexes8";
+        DocumentType clazz = database.getSchema().createDocumentType(className);
+        database.begin();
+        clazz.createProperty("name", Type.STRING);
+        clazz.createProperty("surname", Type.STRING);
+        clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name", "surname");
+
+        for (int i = 0; i < 10; i++) {
+            MutableDocument doc = database.newDocument(className);
+            doc.set("name", "name" + i);
+            doc.set("surname", "surname" + i);
+            doc.set("foo", i);
+            doc.save();
+        }
+        database.commit();
+
+        ResultSet result =
+                database.query("sql", "select from " + className + " where name = 'name3' and surname < 'surname3'");
+        printExecutionPlan(result);
+
+        Assertions.assertFalse(result.hasNext());
+        result.close();
+    }
+
+    @Test
+    public void testFetchFromClassWithIndexes9() {
+        String className = "testFetchFromClassWithIndexes9";
+        DocumentType clazz = database.getSchema().createDocumentType(className);
+        database.begin();
+        clazz.createProperty("name", Type.STRING);
+        clazz.createProperty("surname", Type.STRING);
+        clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name", "surname");
+
+        for (int i = 0; i < 10; i++) {
+            MutableDocument doc = database.newDocument(className);
+            doc.set("name", "name" + i);
+            doc.set("surname", "surname" + i);
+            doc.set("foo", i);
+            doc.save();
+        }
+        database.commit();
+
+        ResultSet result =
+                database.query("sql", "select from " + className + " where name = 'name3' and surname <= 'surname3'");
+        printExecutionPlan(result);
+        for (int i = 0; i < 1; i++) {
+            Result next = result.next();
+            Assertions.assertNotNull(next);
+            Assertions.assertEquals("name3", next.getProperty("name"));
+        }
+        Assertions.assertFalse(result.hasNext());
+        result.close();
+    }
+
+    @Test
+    public void testFetchFromClassWithIndexes10() {
+        String className = "testFetchFromClassWithIndexes10";
+        DocumentType clazz = database.getSchema().createDocumentType(className);
+        database.begin();
+        clazz.createProperty("name", Type.STRING);
+        clazz.createProperty("surname", Type.STRING);
+        clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name", "surname");
+
+        for (int i = 0; i < 10; i++) {
+            MutableDocument doc = database.newDocument(className);
+            doc.set("name", "name" + i);
+            doc.set("surname", "surname" + i);
+            doc.set("foo", i);
+            doc.save();
+        }
+        database.commit();
+
+        ResultSet result = database.query("sql", "select from " + className + " where name > 'name3' ");
+        printExecutionPlan(result);
+        for (int i = 0; i < 6; i++) {
+            Assertions.assertTrue(result.hasNext());
+            Result next = result.next();
+            Assertions.assertNotNull(next);
+        }
+        Assertions.assertFalse(result.hasNext());
+        result.close();
+    }
+
+    @Test
+    public void testFetchFromClassWithIndexes11() {
+        String className = "testFetchFromClassWithIndexes11";
+        DocumentType clazz = database.getSchema().createDocumentType(className);
+        database.begin();
+        clazz.createProperty("name", Type.STRING);
+        clazz.createProperty("surname", Type.STRING);
+        clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name", "surname");
+
+        for (int i = 0; i < 10; i++) {
+            MutableDocument doc = database.newDocument(className);
+            doc.set("name", "name" + i);
+            doc.set("surname", "surname" + i);
+            doc.set("foo", i);
+            doc.save();
+        }
+        database.commit();
+
+        ResultSet result = database.query("sql", "select from " + className + " where name >= 'name3' ");
+        printExecutionPlan(result);
+        for (int i = 0; i < 7; i++) {
+            Result next = result.next();
+            Assertions.assertNotNull(next);
+        }
+        Assertions.assertFalse(result.hasNext());
+        result.close();
+    }
+
+    @Test
+    public void testFetchFromClassWithIndexes12() {
+        String className = "testFetchFromClassWithIndexes12";
+        DocumentType clazz = database.getSchema().createDocumentType(className);
+        database.begin();
+        clazz.createProperty("name", Type.STRING);
+        clazz.createProperty("surname", Type.STRING);
+        clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name", "surname");
+
+        for (int i = 0; i < 10; i++) {
+            MutableDocument doc = database.newDocument(className);
+            doc.set("name", "name" + i);
+            doc.set("surname", "surname" + i);
+            doc.set("foo", i);
+            doc.save();
+        }
+        database.commit();
+
+        ResultSet result = database.query("sql", "select from " + className + " where name < 'name3' ");
+        printExecutionPlan(result);
+        for (int i = 0; i < 3; i++) {
+            Result next = result.next();
+            Assertions.assertNotNull(next);
+        }
+        Assertions.assertFalse(result.hasNext());
+        result.close();
+    }
+
+    @Test
+    public void testFetchFromClassWithIndexes13() {
+        String className = "testFetchFromClassWithIndexes13";
+        DocumentType clazz = database.getSchema().createDocumentType(className);
+        database.begin();
+        clazz.createProperty("name", Type.STRING);
+        clazz.createProperty("surname", Type.STRING);
+        clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name", "surname");
+
+        for (int i = 0; i < 10; i++) {
+            MutableDocument doc = database.newDocument(className);
+            doc.set("name", "name" + i);
+            doc.set("surname", "surname" + i);
+            doc.set("foo", i);
+            doc.save();
+        }
+        database.commit();
+
+        ResultSet result = database.query("sql", "select from " + className + " where name <= 'name3' ");
+        printExecutionPlan(result);
+        for (int i = 0; i < 4; i++) {
+            Result next = result.next();
+            Assertions.assertNotNull(next);
+        }
+        Assertions.assertFalse(result.hasNext());
+        result.close();
+    }
+
+    @Test
+    public void testFetchFromClassWithIndexes14() {
+        String className = "testFetchFromClassWithIndexes14";
+        DocumentType clazz = database.getSchema().createDocumentType(className);
+        database.begin();
+        clazz.createProperty("name", Type.STRING);
+        clazz.createProperty("surname", Type.STRING);
+        clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name", "surname");
+
+        for (int i = 0; i < 10; i++) {
+            MutableDocument doc = database.newDocument(className);
+            doc.set("name", "name" + i);
+            doc.set("surname", "surname" + i);
+            doc.set("foo", i);
+            doc.save();
+        }
+        database.commit();
+
+        ResultSet result =
+                database.query("sql", "select from " + className + " where name > 'name3' and name < 'name5'");
+        printExecutionPlan(result);
+        for (int i = 0; i < 1; i++) {
+            Result next = result.next();
+            Assertions.assertNotNull(next);
+        }
+        Assertions.assertFalse(result.hasNext());
+        SelectExecutionPlan plan = (SelectExecutionPlan) result.getExecutionPlan().get();
+        Assertions.assertEquals(
+                1, plan.getSteps().stream().filter(step -> step instanceof FetchFromIndexStep).count());
+        result.close();
+    }
+
+    @Test
+    public void testFetchFromClassWithIndexes15() {
+        String className = "testFetchFromClassWithIndexes15";
+        DocumentType clazz = database.getSchema().createDocumentType(className);
+        database.begin();
+        clazz.createProperty("name", Type.STRING);
+        clazz.createProperty("surname", Type.STRING);
+        clazz.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name", "surname");
+
+        for (int i = 0; i < 10; i++) {
+            MutableDocument doc = database.newDocument(className);
+            doc.set("name", "name" + i);
+            doc.set("surname", "surname" + i);
+            doc.set("foo", i);
+            doc.save();
+        }
+        database.commit();
+
+        ResultSet result =
+                database.query("sql",
+                        "select from "
+                                + className
+                                + " where name > 'name6' and name = 'name3' and surname > 'surname2' and surname < 'surname5' ");
+        printExecutionPlan(result);
+        Assertions.assertFalse(result.hasNext());
+        SelectExecutionPlan plan = (SelectExecutionPlan) result.getExecutionPlan().get();
+        Assertions.assertEquals(
+                1, plan.getSteps().stream().filter(step -> step instanceof FetchFromIndexStep).count());
+        result.close();
+    }
+
 //    @Test
 //    public void testFetchFromClassWithHashIndexes1() {
 //        String className = "testFetchFromClassWithHashIndexes1";
-//        OClass clazz = database.getSchema().createDocumentType(className);
-//        clazz.createProperty("name", OType.STRING);
-//        clazz.createProperty("surname", OType.STRING);
+//        DocumentType clazz = database.getSchema().createDocumentType(className);
+//        clazz.createProperty("name", Type.STRING);
+//        clazz.createProperty("surname", Type.STRING);
 //        clazz.createIndex(
-//                className + ".name_surname", OClass.INDEX_TYPE.NOTUNIQUE_HASH_INDEX, "name", "surname");
+//                className + ".name_surname", DocumentType.INDEX_TYPE.NOTUNIQUE_HASH_INDEX, "name", "surname");
 //
 //        for (int i = 0; i < 10; i++) {
 //            MutableDocument doc = database.newDocument(className);
@@ -1661,7 +1693,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 //            Assertions.assertNotNull(next);
 //        }
 //        Assertions.assertFalse(result.hasNext());
-//        OSelectExecutionPlan plan = (OSelectExecutionPlan) result.getExecutionPlan().get();
+//        SelectExecutionPlan plan = (SelectExecutionPlan) result.getExecutionPlan().get();
 //        Assertions.assertEquals(
 //                1, plan.getSteps().stream().filter(step -> step instanceof FetchFromIndexStep).count());
 //        result.close();
@@ -1670,11 +1702,11 @@ public class SelectStatementExecutionTest extends TestHelper {
 //    @Test
 //    public void testFetchFromClassWithHashIndexes2() {
 //        String className = "testFetchFromClassWithHashIndexes2";
-//        OClass clazz = database.getSchema().createDocumentType(className);
-//        clazz.createProperty("name", OType.STRING);
-//        clazz.createProperty("surname", OType.STRING);
+//        DocumentType clazz = database.getSchema().createDocumentType(className);
+//        clazz.createProperty("name", Type.STRING);
+//        clazz.createProperty("surname", Type.STRING);
 //        clazz.createIndex(
-//                className + ".name_surname", OClass.INDEX_TYPE.NOTUNIQUE_HASH_INDEX, "name", "surname");
+//                className + ".name_surname", DocumentType.INDEX_TYPE.NOTUNIQUE_HASH_INDEX, "name", "surname");
 //
 //        for (int i = 0; i < 10; i++) {
 //            MutableDocument doc = database.newDocument(className);
@@ -1694,7 +1726,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 //            Assertions.assertNotNull(next);
 //        }
 //        Assertions.assertFalse(result.hasNext());
-//        OSelectExecutionPlan plan = (OSelectExecutionPlan) result.getExecutionPlan().get();
+//        SelectExecutionPlan plan = (SelectExecutionPlan) result.getExecutionPlan().get();
 //        Assertions.assertEquals(
 //                FetchFromClassExecutionStep.class, plan.getSteps().get(0).getClass()); // index not used
 //        result.close();
@@ -1704,8 +1736,8 @@ public class SelectStatementExecutionTest extends TestHelper {
 //    public void testExpand1() {
 //        String childClassName = "testExpand1_child";
 //        String parentClassName = "testExpand1_parent";
-//        OClass childClass = database.getSchema().createDocumentType(childClassName);
-//        OClass parentClass = database.getSchema().createDocumentType(parentClassName);
+//        DocumentType childClass = database.getSchema().createDocumentType(childClassName);
+//        DocumentType parentClass = database.getSchema().createDocumentType(parentClassName);
 //
 //        int count = 10;
 //        for (int i = 0; i < count; i++) {
@@ -1736,8 +1768,8 @@ public class SelectStatementExecutionTest extends TestHelper {
 //    public void testExpand2() {
 //        String childClassName = "testExpand2_child";
 //        String parentClassName = "testExpand2_parent";
-//        OClass childClass = database.getSchema().createDocumentType(childClassName);
-//        OClass parentClass = database.getSchema().createDocumentType(parentClassName);
+//        DocumentType childClass = database.getSchema().createDocumentType(childClassName);
+//        DocumentType parentClass = database.getSchema().createDocumentType(parentClassName);
 //
 //        int count = 10;
 //        int collSize = 11;
@@ -1771,8 +1803,8 @@ public class SelectStatementExecutionTest extends TestHelper {
 //    public void testExpand3() {
 //        String childClassName = "testExpand3_child";
 //        String parentClassName = "testExpand3_parent";
-//        OClass childClass = database.getSchema().createDocumentType(childClassName);
-//        OClass parentClass = database.getSchema().createDocumentType(parentClassName);
+//        DocumentType childClass = database.getSchema().createDocumentType(childClassName);
+//        DocumentType parentClass = database.getSchema().createDocumentType(parentClassName);
 //
 //        int count = 30;
 //        int collSize = 7;
@@ -1811,9 +1843,9 @@ public class SelectStatementExecutionTest extends TestHelper {
 //    @Test
 //    public void testDistinct1() {
 //        String className = "testDistinct1";
-//        OClass clazz = database.getSchema().createDocumentType(className);
-//        clazz.createProperty("name", OType.STRING);
-//        clazz.createProperty("surname", OType.STRING);
+//        DocumentType clazz = database.getSchema().createDocumentType(className);
+//        clazz.createProperty("name", Type.STRING);
+//        clazz.createProperty("surname", Type.STRING);
 //
 //        for (int i = 0; i < 30; i++) {
 //            MutableDocument doc = database.newDocument(className);
@@ -1837,9 +1869,9 @@ public class SelectStatementExecutionTest extends TestHelper {
 //    @Test
 //    public void testDistinct2() {
 //        String className = "testDistinct2";
-//        OClass clazz = database.getSchema().createDocumentType(className);
-//        clazz.createProperty("name", OType.STRING);
-//        clazz.createProperty("surname", OType.STRING);
+//        DocumentType clazz = database.getSchema().createDocumentType(className);
+//        clazz.createProperty("name", Type.STRING);
+//        clazz.createProperty("surname", Type.STRING);
 //
 //        for (int i = 0; i < 30; i++) {
 //            MutableDocument doc = database.newDocument(className);
@@ -2041,7 +2073,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 //        String vertexClassName = "testLetWithTraverseFunction";
 //        String edgeClassName = "testLetWithTraverseFunctioEdge";
 //
-//        OClass vertexClass = database.createVertexClass(vertexClassName);
+//        DocumentType vertexClass = database.createVertexClass(vertexClassName);
 //
 //        OVertex doc1 = database.newVertex(vertexClass);
 //        doc1.setProperty("name", "A");
@@ -2052,7 +2084,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 //        doc2.save();
 //        ORID doc2Id = doc2.getIdentity();
 //
-//        OClass edgeClass = database.createEdgeClass(edgeClassName);
+//        DocumentType edgeClass = database.createEdgeClass(edgeClassName);
 //
 //        database.newEdge(doc1, doc2, edgeClass);
 //        String queryString =
@@ -2139,13 +2171,13 @@ public class SelectStatementExecutionTest extends TestHelper {
 //        String parent = "testFetchFromSubclassIndexes1_parent";
 //        String child1 = "testFetchFromSubclassIndexes1_child1";
 //        String child2 = "testFetchFromSubclassIndexes1_child2";
-//        OClass parentClass = database.getSchema().createDocumentType(parent);
-//        OClass childClass1 = database.getSchema().createDocumentType(child1, parentClass);
-//        OClass childClass2 = database.getSchema().createDocumentType(child2, parentClass);
+//        DocumentType parentClass = database.getSchema().createDocumentType(parent);
+//        DocumentType childClass1 = database.getSchema().createDocumentType(child1, parentClass);
+//        DocumentType childClass2 = database.getSchema().createDocumentType(child2, parentClass);
 //
-//        parentClass.createProperty("name", OType.STRING);
-//        childClass1.createIndex(child1 + ".name", OClass.INDEX_TYPE.NOTUNIQUE, "name");
-//        childClass2.createIndex(child2 + ".name", OClass.INDEX_TYPE.NOTUNIQUE, "name");
+//        parentClass.createProperty("name", Type.STRING);
+//        childClass1.createIndex(child1 + ".name", DocumentType.INDEX_TYPE.NOTUNIQUE, "name");
+//        childClass2.createIndex(child2 + ".name", DocumentType.INDEX_TYPE.NOTUNIQUE, "name");
 //
 //        for (int i = 0; i < 10; i++) {
 //            MutableDocument doc = database.newDocument(child1);
@@ -2177,13 +2209,13 @@ public class SelectStatementExecutionTest extends TestHelper {
 //        String parent = "testFetchFromSubclassIndexes2_parent";
 //        String child1 = "testFetchFromSubclassIndexes2_child1";
 //        String child2 = "testFetchFromSubclassIndexes2_child2";
-//        OClass parentClass = database.getSchema().createDocumentType(parent);
-//        OClass childClass1 = database.getSchema().createDocumentType(child1, parentClass);
-//        OClass childClass2 = database.getSchema().createDocumentType(child2, parentClass);
+//        DocumentType parentClass = database.getSchema().createDocumentType(parent);
+//        DocumentType childClass1 = database.getSchema().createDocumentType(child1, parentClass);
+//        DocumentType childClass2 = database.getSchema().createDocumentType(child2, parentClass);
 //
-//        parentClass.createProperty("name", OType.STRING);
-//        childClass1.createIndex(child1 + ".name", OClass.INDEX_TYPE.NOTUNIQUE, "name");
-//        childClass2.createIndex(child2 + ".name", OClass.INDEX_TYPE.NOTUNIQUE, "name");
+//        parentClass.createProperty("name", Type.STRING);
+//        childClass1.createIndex(child1 + ".name", DocumentType.INDEX_TYPE.NOTUNIQUE, "name");
+//        childClass2.createIndex(child2 + ".name", DocumentType.INDEX_TYPE.NOTUNIQUE, "name");
 //
 //        for (int i = 0; i < 10; i++) {
 //            MutableDocument doc = database.newDocument(child1);
@@ -2218,12 +2250,12 @@ public class SelectStatementExecutionTest extends TestHelper {
 //        String parent = "testFetchFromSubclassIndexes3_parent";
 //        String child1 = "testFetchFromSubclassIndexes3_child1";
 //        String child2 = "testFetchFromSubclassIndexes3_child2";
-//        OClass parentClass = database.getSchema().createDocumentType(parent);
-//        OClass childClass1 = database.getSchema().createDocumentType(child1, parentClass);
-//        OClass childClass2 = database.getSchema().createDocumentType(child2, parentClass);
+//        DocumentType parentClass = database.getSchema().createDocumentType(parent);
+//        DocumentType childClass1 = database.getSchema().createDocumentType(child1, parentClass);
+//        DocumentType childClass2 = database.getSchema().createDocumentType(child2, parentClass);
 //
-//        parentClass.createProperty("name", OType.STRING);
-//        childClass1.createIndex(child1 + ".name", OClass.INDEX_TYPE.NOTUNIQUE, "name");
+//        parentClass.createProperty("name", Type.STRING);
+//        childClass1.createIndex(child1 + ".name", DocumentType.INDEX_TYPE.NOTUNIQUE, "name");
 //
 //        for (int i = 0; i < 10; i++) {
 //            MutableDocument doc = database.newDocument(child1);
@@ -2259,13 +2291,13 @@ public class SelectStatementExecutionTest extends TestHelper {
 //        String parent = "testFetchFromSubclassIndexes4_parent";
 //        String child1 = "testFetchFromSubclassIndexes4_child1";
 //        String child2 = "testFetchFromSubclassIndexes4_child2";
-//        OClass parentClass = database.getSchema().createDocumentType(parent);
-//        OClass childClass1 = database.getSchema().createDocumentType(child1, parentClass);
-//        OClass childClass2 = database.getSchema().createDocumentType(child2, parentClass);
+//        DocumentType parentClass = database.getSchema().createDocumentType(parent);
+//        DocumentType childClass1 = database.getSchema().createDocumentType(child1, parentClass);
+//        DocumentType childClass2 = database.getSchema().createDocumentType(child2, parentClass);
 //
-//        parentClass.createProperty("name", OType.STRING);
-//        childClass1.createIndex(child1 + ".name", OClass.INDEX_TYPE.NOTUNIQUE, "name");
-//        childClass2.createIndex(child2 + ".name", OClass.INDEX_TYPE.NOTUNIQUE, "name");
+//        parentClass.createProperty("name", Type.STRING);
+//        childClass1.createIndex(child1 + ".name", DocumentType.INDEX_TYPE.NOTUNIQUE, "name");
+//        childClass2.createIndex(child2 + ".name", DocumentType.INDEX_TYPE.NOTUNIQUE, "name");
 //
 //        MutableDocument parentdoc = database.newDocument(parent);
 //        parentdoc.set("name", "foo");
@@ -2309,16 +2341,16 @@ public class SelectStatementExecutionTest extends TestHelper {
 //        String child2 = "testFetchFromSubSubclassIndexes_child2";
 //        String child2_1 = "testFetchFromSubSubclassIndexes_child2_1";
 //        String child2_2 = "testFetchFromSubSubclassIndexes_child2_2";
-//        OClass parentClass = database.getSchema().createDocumentType(parent);
-//        OClass childClass1 = database.getSchema().createDocumentType(child1, parentClass);
-//        OClass childClass2 = database.getSchema().createDocumentType(child2, parentClass);
-//        OClass childClass2_1 = database.getSchema().createDocumentType(child2_1, childClass2);
-//        OClass childClass2_2 = database.getSchema().createDocumentType(child2_2, childClass2);
+//        DocumentType parentClass = database.getSchema().createDocumentType(parent);
+//        DocumentType childClass1 = database.getSchema().createDocumentType(child1, parentClass);
+//        DocumentType childClass2 = database.getSchema().createDocumentType(child2, parentClass);
+//        DocumentType childClass2_1 = database.getSchema().createDocumentType(child2_1, childClass2);
+//        DocumentType childClass2_2 = database.getSchema().createDocumentType(child2_2, childClass2);
 //
-//        parentClass.createProperty("name", OType.STRING);
-//        childClass1.createIndex(child1 + ".name", OClass.INDEX_TYPE.NOTUNIQUE, "name");
-//        childClass2_1.createIndex(child2_1 + ".name", OClass.INDEX_TYPE.NOTUNIQUE, "name");
-//        childClass2_2.createIndex(child2_2 + ".name", OClass.INDEX_TYPE.NOTUNIQUE, "name");
+//        parentClass.createProperty("name", Type.STRING);
+//        childClass1.createIndex(child1 + ".name", DocumentType.INDEX_TYPE.NOTUNIQUE, "name");
+//        childClass2_1.createIndex(child2_1 + ".name", DocumentType.INDEX_TYPE.NOTUNIQUE, "name");
+//        childClass2_2.createIndex(child2_2 + ".name", DocumentType.INDEX_TYPE.NOTUNIQUE, "name");
 //
 //        for (int i = 0; i < 10; i++) {
 //            MutableDocument doc = database.newDocument(child1);
@@ -2362,15 +2394,15 @@ public class SelectStatementExecutionTest extends TestHelper {
 //        String child2 = "testFetchFromSubSubclassIndexesWithDiamond_child2";
 //        String child12 = "testFetchFromSubSubclassIndexesWithDiamond_child12";
 //
-//        OClass parentClass = database.getSchema().createDocumentType(parent);
-//        OClass childClass1 = database.getSchema().createDocumentType(child1, parentClass);
-//        OClass childClass2 = database.getSchema().createDocumentType(child2, parentClass);
-//        OClass childClass12 =
+//        DocumentType parentClass = database.getSchema().createDocumentType(parent);
+//        DocumentType childClass1 = database.getSchema().createDocumentType(child1, parentClass);
+//        DocumentType childClass2 = database.getSchema().createDocumentType(child2, parentClass);
+//        DocumentType childClass12 =
 //                database.getSchema().createDocumentType(child12, childClass1, childClass2);
 //
-//        parentClass.createProperty("name", OType.STRING);
-//        childClass1.createIndex(child1 + ".name", OClass.INDEX_TYPE.NOTUNIQUE, "name");
-//        childClass2.createIndex(child2 + ".name", OClass.INDEX_TYPE.NOTUNIQUE, "name");
+//        parentClass.createProperty("name", Type.STRING);
+//        childClass1.createIndex(child1 + ".name", DocumentType.INDEX_TYPE.NOTUNIQUE, "name");
+//        childClass2.createIndex(child2 + ".name", DocumentType.INDEX_TYPE.NOTUNIQUE, "name");
 //
 //        for (int i = 0; i < 10; i++) {
 //            MutableDocument doc = database.newDocument(child1);
@@ -2410,9 +2442,9 @@ public class SelectStatementExecutionTest extends TestHelper {
 //    @Test
 //    public void testIndexPlusSort1() {
 //        String className = "testIndexPlusSort1";
-//        OClass clazz = database.getSchema().createDocumentType(className);
-//        clazz.createProperty("name", OType.STRING);
-//        clazz.createProperty("surname", OType.STRING);
+//        DocumentType clazz = database.getSchema().createDocumentType(className);
+//        clazz.createProperty("name", Type.STRING);
+//        clazz.createProperty("surname", Type.STRING);
 //        database.command(
 //                        new OCommandSQL(
 //                                "create index "
@@ -2446,7 +2478,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 //            lastSurname = surname;
 //        }
 //        Assertions.assertFalse(result.hasNext());
-//        OExecutionPlan plan = result.getExecutionPlan().get();
+//        ExecutionPlan plan = result.getExecutionPlan().get();
 //        Assertions.assertEquals(
 //                1, plan.getSteps().stream().filter(step -> step instanceof FetchFromIndexStep).count());
 //        Assertions.assertEquals(
@@ -2457,9 +2489,9 @@ public class SelectStatementExecutionTest extends TestHelper {
 //    @Test
 //    public void testIndexPlusSort2() {
 //        String className = "testIndexPlusSort2";
-//        OClass clazz = database.getSchema().createDocumentType(className);
-//        clazz.createProperty("name", OType.STRING);
-//        clazz.createProperty("surname", OType.STRING);
+//        DocumentType clazz = database.getSchema().createDocumentType(className);
+//        clazz.createProperty("name", Type.STRING);
+//        clazz.createProperty("surname", Type.STRING);
 //        database.command(
 //                        new OCommandSQL(
 //                                "create index "
@@ -2493,7 +2525,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 //            lastSurname = surname;
 //        }
 //        Assertions.assertFalse(result.hasNext());
-//        OExecutionPlan plan = result.getExecutionPlan().get();
+//        ExecutionPlan plan = result.getExecutionPlan().get();
 //        Assertions.assertEquals(
 //                1, plan.getSteps().stream().filter(step -> step instanceof FetchFromIndexStep).count());
 //        Assertions.assertEquals(
@@ -2504,9 +2536,9 @@ public class SelectStatementExecutionTest extends TestHelper {
 //    @Test
 //    public void testIndexPlusSort3() {
 //        String className = "testIndexPlusSort3";
-//        OClass clazz = database.getSchema().createDocumentType(className);
-//        clazz.createProperty("name", OType.STRING);
-//        clazz.createProperty("surname", OType.STRING);
+//        DocumentType clazz = database.getSchema().createDocumentType(className);
+//        clazz.createProperty("name", Type.STRING);
+//        clazz.createProperty("surname", Type.STRING);
 //        database.command(
 //                        new OCommandSQL(
 //                                "create index "
@@ -2541,7 +2573,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 //            lastSurname = surname;
 //        }
 //        Assertions.assertFalse(result.hasNext());
-//        OExecutionPlan plan = result.getExecutionPlan().get();
+//        ExecutionPlan plan = result.getExecutionPlan().get();
 //        Assertions.assertEquals(
 //                1, plan.getSteps().stream().filter(step -> step instanceof FetchFromIndexStep).count());
 //        Assertions.assertEquals(
@@ -2552,9 +2584,9 @@ public class SelectStatementExecutionTest extends TestHelper {
 //    @Test
 //    public void testIndexPlusSort4() {
 //        String className = "testIndexPlusSort4";
-//        OClass clazz = database.getSchema().createDocumentType(className);
-//        clazz.createProperty("name", OType.STRING);
-//        clazz.createProperty("surname", OType.STRING);
+//        DocumentType clazz = database.getSchema().createDocumentType(className);
+//        clazz.createProperty("name", Type.STRING);
+//        clazz.createProperty("surname", Type.STRING);
 //        database.command(
 //                        new OCommandSQL(
 //                                "create index "
@@ -2589,7 +2621,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 //            lastSurname = surname;
 //        }
 //        Assertions.assertFalse(result.hasNext());
-//        OExecutionPlan plan = result.getExecutionPlan().get();
+//        ExecutionPlan plan = result.getExecutionPlan().get();
 //        Assertions.assertEquals(
 //                1, plan.getSteps().stream().filter(step -> step instanceof FetchFromIndexStep).count());
 //        Assertions.assertEquals(
@@ -2600,10 +2632,10 @@ public class SelectStatementExecutionTest extends TestHelper {
 //    @Test
 //    public void testIndexPlusSort5() {
 //        String className = "testIndexPlusSort5";
-//        OClass clazz = database.getSchema().createDocumentType(className);
-//        clazz.createProperty("name", OType.STRING);
-//        clazz.createProperty("surname", OType.STRING);
-//        clazz.createProperty("address", OType.STRING);
+//        DocumentType clazz = database.getSchema().createDocumentType(className);
+//        clazz.createProperty("name", Type.STRING);
+//        clazz.createProperty("surname", Type.STRING);
+//        clazz.createProperty("address", Type.STRING);
 //        database.command(
 //                        new OCommandSQL(
 //                                "create index "
@@ -2636,7 +2668,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 //            lastSurname = surname;
 //        }
 //        Assertions.assertFalse(result.hasNext());
-//        OExecutionPlan plan = result.getExecutionPlan().get();
+//        ExecutionPlan plan = result.getExecutionPlan().get();
 //        Assertions.assertEquals(
 //                1, plan.getSteps().stream().filter(step -> step instanceof FetchFromIndexStep).count());
 //        Assertions.assertEquals(
@@ -2647,10 +2679,10 @@ public class SelectStatementExecutionTest extends TestHelper {
 //    @Test
 //    public void testIndexPlusSort6() {
 //        String className = "testIndexPlusSort6";
-//        OClass clazz = database.getSchema().createDocumentType(className);
-//        clazz.createProperty("name", OType.STRING);
-//        clazz.createProperty("surname", OType.STRING);
-//        clazz.createProperty("address", OType.STRING);
+//        DocumentType clazz = database.getSchema().createDocumentType(className);
+//        clazz.createProperty("name", Type.STRING);
+//        clazz.createProperty("surname", Type.STRING);
+//        clazz.createProperty("address", Type.STRING);
 //        database.command(
 //                        new OCommandSQL(
 //                                "create index "
@@ -2683,7 +2715,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 //            lastSurname = surname;
 //        }
 //        Assertions.assertFalse(result.hasNext());
-//        OExecutionPlan plan = result.getExecutionPlan().get();
+//        ExecutionPlan plan = result.getExecutionPlan().get();
 //        Assertions.assertEquals(
 //                1, plan.getSteps().stream().filter(step -> step instanceof FetchFromIndexStep).count());
 //        Assertions.assertEquals(
@@ -2694,10 +2726,10 @@ public class SelectStatementExecutionTest extends TestHelper {
 //    @Test
 //    public void testIndexPlusSort7() {
 //        String className = "testIndexPlusSort7";
-//        OClass clazz = database.getSchema().createDocumentType(className);
-//        clazz.createProperty("name", OType.STRING);
-//        clazz.createProperty("surname", OType.STRING);
-//        clazz.createProperty("address", OType.STRING);
+//        DocumentType clazz = database.getSchema().createDocumentType(className);
+//        clazz.createProperty("name", Type.STRING);
+//        clazz.createProperty("surname", Type.STRING);
+//        clazz.createProperty("address", Type.STRING);
 //        database.command(
 //                        new OCommandSQL(
 //                                "create index "
@@ -2739,9 +2771,9 @@ public class SelectStatementExecutionTest extends TestHelper {
 //    @Test
 //    public void testIndexPlusSort8() {
 //        String className = "testIndexPlusSort8";
-//        OClass clazz = database.getSchema().createDocumentType(className);
-//        clazz.createProperty("name", OType.STRING);
-//        clazz.createProperty("surname", OType.STRING);
+//        DocumentType clazz = database.getSchema().createDocumentType(className);
+//        clazz.createProperty("name", Type.STRING);
+//        clazz.createProperty("surname", Type.STRING);
 //        database.command(
 //                        new OCommandSQL(
 //                                "create index "
@@ -2784,9 +2816,9 @@ public class SelectStatementExecutionTest extends TestHelper {
 //    @Test
 //    public void testIndexPlusSort9() {
 //        String className = "testIndexPlusSort9";
-//        OClass clazz = database.getSchema().createDocumentType(className);
-//        clazz.createProperty("name", OType.STRING);
-//        clazz.createProperty("surname", OType.STRING);
+//        DocumentType clazz = database.getSchema().createDocumentType(className);
+//        clazz.createProperty("name", Type.STRING);
+//        clazz.createProperty("surname", Type.STRING);
 //        database.command(
 //                        new OCommandSQL(
 //                                "create index "
@@ -2827,9 +2859,9 @@ public class SelectStatementExecutionTest extends TestHelper {
 //    @Test
 //    public void testIndexPlusSort10() {
 //        String className = "testIndexPlusSort10";
-//        OClass clazz = database.getSchema().createDocumentType(className);
-//        clazz.createProperty("name", OType.STRING);
-//        clazz.createProperty("surname", OType.STRING);
+//        DocumentType clazz = database.getSchema().createDocumentType(className);
+//        clazz.createProperty("name", Type.STRING);
+//        clazz.createProperty("surname", Type.STRING);
 //        database.command(
 //                        new OCommandSQL(
 //                                "create index "
@@ -2870,9 +2902,9 @@ public class SelectStatementExecutionTest extends TestHelper {
 //    @Test
 //    public void testIndexPlusSort11() {
 //        String className = "testIndexPlusSort11";
-//        OClass clazz = database.getSchema().createDocumentType(className);
-//        clazz.createProperty("name", OType.STRING);
-//        clazz.createProperty("surname", OType.STRING);
+//        DocumentType clazz = database.getSchema().createDocumentType(className);
+//        clazz.createProperty("name", Type.STRING);
+//        clazz.createProperty("surname", Type.STRING);
 //        database.command(
 //                        new OCommandSQL(
 //                                "create index "
@@ -2913,9 +2945,9 @@ public class SelectStatementExecutionTest extends TestHelper {
 //    @Test
 //    public void testIndexPlusSort12() {
 //        String className = "testIndexPlusSort12";
-//        OClass clazz = database.getSchema().createDocumentType(className);
-//        clazz.createProperty("name", OType.STRING);
-//        clazz.createProperty("surname", OType.STRING);
+//        DocumentType clazz = database.getSchema().createDocumentType(className);
+//        clazz.createProperty("name", Type.STRING);
+//        clazz.createProperty("surname", Type.STRING);
 //        database.command(
 //                        new OCommandSQL(
 //                                "create index "
@@ -3396,7 +3428,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 //    @Test
 //    public void testRidPagination1() {
 //        String className = "testRidPagination1";
-//        OClass clazz = database.createClassIfNotExist(className);
+//        DocumentType clazz = database.createClassIfNotExist(className);
 //        int[] clusterIds = new int[clazz.getClusterIds().length];
 //        if (clusterIds.length < 3) {
 //            return;
@@ -3412,7 +3444,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 //
 //        ResultSet result =
 //                database.query("sql", "select from " + className + " where @rid >= #" + clusterIds[1] + ":0");
-//        OExecutionPlan execPlan = result.getExecutionPlan().get();
+//        ExecutionPlan execPlan = result.getExecutionPlan().get();
 //        for (OExecutionStep oExecutionStep : execPlan.getSteps()) {
 //            if (oExecutionStep instanceof FetchFromClassExecutionStep) {
 //                Assertions.assertEquals(clusterIds.length, oExecutionStep.getSubSteps().size());
@@ -3431,7 +3463,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 //    @Test
 //    public void testRidPagination2() {
 //        String className = "testRidPagination2";
-//        OClass clazz = database.createClassIfNotExist(className);
+//        DocumentType clazz = database.createClassIfNotExist(className);
 //        int[] clusterIds = new int[clazz.getClusterIds().length];
 //        if (clusterIds.length < 3) {
 //            return;
@@ -3448,7 +3480,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 //        Map<String, Object> params = new HashMap<>();
 //        params.put("rid", new ORecordId(clusterIds[1], 0));
 //        ResultSet result = database.query("sql", "select from " + className + " where @rid >= :rid", params);
-//        OExecutionPlan execPlan = result.getExecutionPlan().get();
+//        ExecutionPlan execPlan = result.getExecutionPlan().get();
 //        for (OExecutionStep oExecutionStep : execPlan.getSteps()) {
 //            if (oExecutionStep instanceof FetchFromClassExecutionStep) {
 //                Assertions.assertEquals(clusterIds.length, oExecutionStep.getSubSteps().size());
@@ -3467,9 +3499,9 @@ public class SelectStatementExecutionTest extends TestHelper {
 //    @Test
 //    public void testContainsWithSubquery() {
 //        String className = "testContainsWithSubquery";
-//        OClass clazz1 = database.createClassIfNotExist(className + 1);
-//        OClass clazz2 = database.createClassIfNotExist(className + 2);
-//        clazz2.createProperty("tags", OType.EMBEDDEDLIST);
+//        DocumentType clazz1 = database.createClassIfNotExist(className + 1);
+//        DocumentType clazz2 = database.createClassIfNotExist(className + 2);
+//        clazz2.createProperty("tags", Type.EMBEDDEDLIST);
 //
 //        database.command("sql", "insert into " + className + 1 + "  set name = 'foo'");
 //
@@ -3498,9 +3530,9 @@ public class SelectStatementExecutionTest extends TestHelper {
 //    @Test
 //    public void testInWithSubquery() {
 //        String className = "testInWithSubquery";
-//        OClass clazz1 = database.createClassIfNotExist(className + 1);
-//        OClass clazz2 = database.createClassIfNotExist(className + 2);
-//        clazz2.createProperty("tags", OType.EMBEDDEDLIST);
+//        DocumentType clazz1 = database.createClassIfNotExist(className + 1);
+//        DocumentType clazz2 = database.createClassIfNotExist(className + 2);
+//        clazz2.createProperty("tags", Type.EMBEDDEDLIST);
 //
 //        database.command("sql", "insert into " + className + 1 + "  set name = 'foo'");
 //
@@ -3529,8 +3561,8 @@ public class SelectStatementExecutionTest extends TestHelper {
 //    @Test
 //    public void testContainsAny() {
 //        String className = "testContainsAny";
-//        OClass clazz = database.createClassIfNotExist(className);
-//        clazz.createProperty("tags", OType.EMBEDDEDLIST, OType.STRING);
+//        DocumentType clazz = database.createClassIfNotExist(className);
+//        clazz.createProperty("tags", Type.EMBEDDEDLIST, Type.STRING);
 //
 //        database.command("sql", "insert into " + className + "  set tags = ['foo', 'bar']");
 //        database.command("sql", "insert into " + className + "  set tags = ['bbb', 'FFF']");
@@ -3571,9 +3603,9 @@ public class SelectStatementExecutionTest extends TestHelper {
 //    @Test
 //    public void testContainsAnyWithIndex() {
 //        String className = "testContainsAnyWithIndex";
-//        OClass clazz = database.createClassIfNotExist(className);
-//        OProperty prop = clazz.createProperty("tags", OType.EMBEDDEDLIST, OType.STRING);
-//        prop.createIndex(OClass.INDEX_TYPE.NOTUNIQUE);
+//        DocumentType clazz = database.createClassIfNotExist(className);
+//        OProperty prop = clazz.createProperty("tags", Type.EMBEDDEDLIST, Type.STRING);
+//        prop.createIndex(DocumentType.INDEX_TYPE.NOTUNIQUE);
 //
 //        database.command("sql", "insert into " + className + "  set tags = ['foo', 'bar']");
 //        database.command("sql", "insert into " + className + "  set tags = ['bbb', 'FFF']");
@@ -3629,8 +3661,8 @@ public class SelectStatementExecutionTest extends TestHelper {
 //    @Test
 //    public void testContainsAll() {
 //        String className = "testContainsAll";
-//        OClass clazz = database.createClassIfNotExist(className);
-//        clazz.createProperty("tags", OType.EMBEDDEDLIST, OType.STRING);
+//        DocumentType clazz = database.createClassIfNotExist(className);
+//        clazz.createProperty("tags", Type.EMBEDDEDLIST, Type.STRING);
 //
 //        database.command("sql", "insert into " + className + "  set tags = ['foo', 'bar']");
 //        database.command("sql", "insert into " + className + "  set tags = ['foo', 'FFF']");
@@ -3655,7 +3687,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 //    @Test
 //    public void testBetween() {
 //        String className = "testBetween";
-//        OClass clazz = database.createClassIfNotExist(className);
+//        DocumentType clazz = database.createClassIfNotExist(className);
 //
 //        database.command("sql", "insert into " + className + "  set name = 'foo1', val = 1");
 //        database.command("sql", "insert into " + className + "  set name = 'foo2', val = 2");
@@ -3674,9 +3706,9 @@ public class SelectStatementExecutionTest extends TestHelper {
 //    @Test
 //    public void testInWithIndex() {
 //        String className = "testInWithIndex";
-//        OClass clazz = database.createClassIfNotExist(className);
-//        OProperty prop = clazz.createProperty("tag", OType.STRING);
-//        prop.createIndex(OClass.INDEX_TYPE.NOTUNIQUE);
+//        DocumentType clazz = database.createClassIfNotExist(className);
+//        OProperty prop = clazz.createProperty("tag", Type.STRING);
+//        prop.createIndex(DocumentType.INDEX_TYPE.NOTUNIQUE);
 //
 //        database.command("sql", "insert into " + className + "  set tag = 'foo'");
 //        database.command("sql", "insert into " + className + "  set tag = 'bar'");
@@ -3729,17 +3761,17 @@ public class SelectStatementExecutionTest extends TestHelper {
 //        String className2 = "testIndexChain2";
 //        String className3 = "testIndexChain3";
 //
-//        OClass clazz3 = database.createClassIfNotExist(className3);
-//        OProperty prop = clazz3.createProperty("name", OType.STRING);
-//        prop.createIndex(OClass.INDEX_TYPE.NOTUNIQUE);
+//        DocumentType clazz3 = database.createClassIfNotExist(className3);
+//        OProperty prop = clazz3.createProperty("name", Type.STRING);
+//        prop.createIndex(DocumentType.INDEX_TYPE.NOTUNIQUE);
 //
-//        OClass clazz2 = database.createClassIfNotExist(className2);
-//        prop = clazz2.createProperty("next", OType.LINK, clazz3);
-//        prop.createIndex(OClass.INDEX_TYPE.NOTUNIQUE);
+//        DocumentType clazz2 = database.createClassIfNotExist(className2);
+//        prop = clazz2.createProperty("next", Type.LINK, clazz3);
+//        prop.createIndex(DocumentType.INDEX_TYPE.NOTUNIQUE);
 //
-//        OClass clazz1 = database.createClassIfNotExist(className1);
-//        prop = clazz1.createProperty("next", OType.LINK, clazz2);
-//        prop.createIndex(OClass.INDEX_TYPE.NOTUNIQUE);
+//        DocumentType clazz1 = database.createClassIfNotExist(className1);
+//        prop = clazz1.createProperty("next", Type.LINK, clazz2);
+//        prop.createIndex(DocumentType.INDEX_TYPE.NOTUNIQUE);
 //
 //        OElement elem3 = database.newElement(className3);
 //        elem3.setProperty("name", "John");
@@ -3813,8 +3845,8 @@ public class SelectStatementExecutionTest extends TestHelper {
 //    public void testMapByKeyIndex() {
 //        String className = "testMapByKeyIndex";
 //
-//        OClass clazz1 = database.createClassIfNotExist(className);
-//        OProperty prop = clazz1.createProperty("themap", OType.EMBEDDEDMAP);
+//        DocumentType clazz1 = database.createClassIfNotExist(className);
+//        OProperty prop = clazz1.createProperty("themap", Type.EMBEDDEDMAP);
 //
 //        database.command(
 //                "CREATE INDEX " + className + ".themap ON " + className + "(themap by key) NOTUNIQUE");
@@ -3844,9 +3876,9 @@ public class SelectStatementExecutionTest extends TestHelper {
 //    public void testMapByKeyIndexMultiple() {
 //        String className = "testMapByKeyIndexMultiple";
 //
-//        OClass clazz1 = database.createClassIfNotExist(className);
-//        clazz1.createProperty("themap", OType.EMBEDDEDMAP);
-//        clazz1.createProperty("thestring", OType.STRING);
+//        DocumentType clazz1 = database.createClassIfNotExist(className);
+//        clazz1.createProperty("themap", Type.EMBEDDEDMAP);
+//        clazz1.createProperty("thestring", Type.STRING);
 //
 //        database.command(
 //                "CREATE INDEX "
@@ -3884,8 +3916,8 @@ public class SelectStatementExecutionTest extends TestHelper {
 //    public void testMapByValueIndex() {
 //        String className = "testMapByValueIndex";
 //
-//        OClass clazz1 = database.createClassIfNotExist(className);
-//        OProperty prop = clazz1.createProperty("themap", OType.EMBEDDEDMAP, OType.STRING);
+//        DocumentType clazz1 = database.createClassIfNotExist(className);
+//        OProperty prop = clazz1.createProperty("themap", Type.EMBEDDEDMAP, Type.STRING);
 //
 //        database.command(
 //                "CREATE INDEX " + className + ".themap ON " + className + "(themap by value) NOTUNIQUE");
@@ -3915,8 +3947,8 @@ public class SelectStatementExecutionTest extends TestHelper {
 //    public void testListOfMapsContains() {
 //        String className = "testListOfMapsContains";
 //
-//        OClass clazz1 = database.createClassIfNotExist(className);
-//        OProperty prop = clazz1.createProperty("thelist", OType.EMBEDDEDLIST, OType.EMBEDDEDMAP);
+//        DocumentType clazz1 = database.createClassIfNotExist(className);
+//        OProperty prop = clazz1.createProperty("thelist", Type.EMBEDDEDLIST, Type.EMBEDDEDMAP);
 //
 //        database.command("sql", "insert INTO " + className + " SET thelist = [{name:\"Jack\"}]").close();
 //        database.command("sql", "insert INTO " + className + " SET thelist = [{name:\"Joe\"}]").close();
@@ -3933,7 +3965,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 //    public void testOrderByWithCollate() {
 //        String className = "testOrderByWithCollate";
 //
-//        OClass clazz1 = database.createClassIfNotExist(className);
+//        DocumentType clazz1 = database.createClassIfNotExist(className);
 //
 //        database.command("sql", "insert INTO " + className + " SET name = 'A', idx = 0").close();
 //        database.command("sql", "insert INTO " + className + " SET name = 'C', idx = 2").close();
@@ -4231,9 +4263,9 @@ public class SelectStatementExecutionTest extends TestHelper {
 //    @Test
 //    public void testSimpleRangeQueryWithIndexGTE() {
 //        final String className = "testSimpleRangeQueryWithIndexGTE";
-//        final OClass clazz = database.getSchema().getOrcreateDocumentType(className);
-//        final OProperty prop = clazz.createProperty("name", OType.STRING);
-//        prop.createIndex(OClass.INDEX_TYPE.NOTUNIQUE);
+//        final DocumentType clazz = database.getSchema().getOrcreateDocumentType(className);
+//        final OProperty prop = clazz.createProperty("name", Type.STRING);
+//        prop.createIndex(DocumentType.INDEX_TYPE.NOTUNIQUE);
 //
 //        for (int i = 0; i < 10; i++) {
 //            final MutableDocument doc = database.newDocument(className);
@@ -4254,9 +4286,9 @@ public class SelectStatementExecutionTest extends TestHelper {
 //    @Test
 //    public void testSimpleRangeQueryWithIndexLTE() {
 //        final String className = "testSimpleRangeQueryWithIndexLTE";
-//        final OClass clazz = database.getSchema().getOrcreateDocumentType(className);
-//        final OProperty prop = clazz.createProperty("name", OType.STRING);
-//        prop.createIndex(OClass.INDEX_TYPE.NOTUNIQUE);
+//        final DocumentType clazz = database.getSchema().getOrcreateDocumentType(className);
+//        final OProperty prop = clazz.createProperty("name", Type.STRING);
+//        prop.createIndex(DocumentType.INDEX_TYPE.NOTUNIQUE);
 //
 //        for (int i = 0; i < 10; i++) {
 //            final MutableDocument doc = database.newDocument(className);
