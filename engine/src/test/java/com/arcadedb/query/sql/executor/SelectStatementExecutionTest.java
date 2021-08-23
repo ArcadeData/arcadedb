@@ -3,6 +3,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
@@ -1066,17 +1067,22 @@ public class SelectStatementExecutionTest extends TestHelper {
         Assertions.assertFalse(result.hasNext());
         result.close();
     }
-//
-//    @Test
-//    public void testFetchFromSingleRidParam() {
-//        ResultSet result = database.query("sql", "select from ?", new ORecordId(0, 1));
-//        printExecutionPlan(result);
-//        Assertions.assertTrue(result.hasNext());
-//        Assertions.assertNotNull(result.next());
-//        Assertions.assertFalse(result.hasNext());
-//        result.close();
-//    }
-//
+
+    @Test
+    public void testFetchFromSingleRidParam() {
+        database.getSchema().createDocumentType("testFetchFromSingleRidParam");
+        database.begin();
+        MutableDocument doc = database.newDocument("testFetchFromSingleRidParam");
+        doc.save();
+        database.commit();
+        ResultSet result = database.query("sql", "select from ?", new RID(database, 1, 0));
+        printExecutionPlan(result);
+        Assertions.assertTrue(result.hasNext());
+        Assertions.assertNotNull(result.next());
+        Assertions.assertFalse(result.hasNext());
+        result.close();
+    }
+
 //    @Test
 //    public void testFetchFromSingleRid3() {
 //        MutableDocument document = new MutableDocument();

@@ -1216,7 +1216,7 @@ public class OSelectExecutionPlanner {
       throw new IllegalArgumentException();
     }
     String bucketName = database.getSchema().getBucketById(rid.getBucket().getValue().intValue()).getName();
-    return filterClusters.contains(bucketName);
+    return filterClusters.contains("*") || filterClusters.contains(bucketName);
   }
 
   private void handleNoTarget(SelectExecutionPlan result, CommandContext ctx, boolean profilingEnabled) {
