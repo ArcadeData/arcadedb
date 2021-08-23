@@ -12,6 +12,7 @@ import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
+import java.util.Optional;
 import java.util.Random;
 import java.util.UUID;
 
@@ -1083,67 +1084,78 @@ public class SelectStatementExecutionTest extends TestHelper {
         result.close();
     }
 
-//    @Test
-//    public void testFetchFromSingleRid3() {
-//        MutableDocument document = new MutableDocument();
-//        document.save(db.getClusterNameById(0));
-//
-//        ResultSet result = database.query("sql", "select from [#0:1, #0:2]");
-//        printExecutionPlan(result);
-//        Assertions.assertTrue(result.hasNext());
-//        Assertions.assertNotNull(result.next());
-//        Assertions.assertTrue(result.hasNext());
-//        Assertions.assertNotNull(result.next());
-//        Assertions.assertFalse(result.hasNext());
-//        result.close();
-//    }
-//
-//    @Test
-//    public void testFetchFromSingleRid4() {
-//        MutableDocument document = new MutableDocument();
-//        document.save(db.getClusterNameById(0));
-//
-//        ResultSet result = database.query("sql", "select from [#0:1, #0:2, #0:100000]");
-//        printExecutionPlan(result);
-//        Assertions.assertTrue(result.hasNext());
-//        Assertions.assertNotNull(result.next());
-//        Assertions.assertTrue(result.hasNext());
-//        Assertions.assertNotNull(result.next());
-//        Assertions.assertFalse(result.hasNext());
-//        result.close();
-//    }
-//
-//    @Test
-//    public void testFetchFromClassWithIndex() {
-//        String className = "testFetchFromClassWithIndex";
-//        OClass clazz = database.getSchema().createDocumentType(className);
-//        clazz.createProperty("name", OType.STRING);
-//        clazz.createIndex(className + ".name", OClass.INDEX_TYPE.NOTUNIQUE, "name");
-//
-//        for (int i = 0; i < 10; i++) {
-//            MutableDocument doc = database.newDocument(className);
-//            doc.set("name", "name" + i);
-//            doc.save();
-//        }
-//
-//        ResultSet result = database.query("sql", "select from " + className + " where name = 'name2'");
-//        printExecutionPlan(result);
-//
-//        Assertions.assertTrue(result.hasNext());
-//        Result next = result.next();
-//        Assertions.assertNotNull(next);
-//        Assertions.assertEquals("name2", next.getProperty("name"));
-//
-//        Assertions.assertFalse(result.hasNext());
-//
-//        Optional<OExecutionPlan> p = result.getExecutionPlan();
-//        Assertions.assertTrue(p.isPresent());
-//        OExecutionPlan p2 = p.get();
-//        Assertions.assertTrue(p2 instanceof OSelectExecutionPlan);
-//        OSelectExecutionPlan plan = (OSelectExecutionPlan) p2;
-//        Assertions.assertEquals(FetchFromIndexStep.class, plan.getSteps().get(0).getClass());
-//        result.close();
-//    }
+    @Test
+    public void testFetchFromSingleRid3() {
+        database.getSchema().createDocumentType("testFetchFromSingleRid3");
+        database.begin();
+        MutableDocument doc = database.newDocument("testFetchFromSingleRid3");
+        doc.save();
+        doc = database.newDocument("testFetchFromSingleRid3");
+        doc.save();
+        database.commit();
+
+        ResultSet result = database.query("sql", "select from [#1:0, #2:0]");
+        printExecutionPlan(result);
+        Assertions.assertTrue(result.hasNext());
+        Assertions.assertNotNull(result.next());
+        Assertions.assertTrue(result.hasNext());
+        Assertions.assertNotNull(result.next());
+        Assertions.assertFalse(result.hasNext());
+        result.close();
+    }
+
+    @Test
+    public void testFetchFromSingleRid4() {
+        database.getSchema().createDocumentType("testFetchFromSingleRid4");
+        database.begin();
+        MutableDocument doc = database.newDocument("testFetchFromSingleRid4");
+        doc.save();
+        doc = database.newDocument("testFetchFromSingleRid4");
+        doc.save();
+        database.commit();
+
+        ResultSet result = database.query("sql", "select from [#1:0, #2:0, #1:100000]");
+        printExecutionPlan(result);
+        Assertions.assertTrue(result.hasNext());
+        Assertions.assertNotNull(result.next());
+        Assertions.assertTrue(result.hasNext());
+        Assertions.assertNotNull(result.next());
+        Assertions.assertFalse(result.hasNext());
+        result.close();
+    }
+
+    @Test
+    public void testFetchFromClassWithIndex() {
+        String className = "testFetchFromClassWithIndex";
+        DocumentType clazz = database.getSchema().createDocumentType(className);
+        database.begin();
+        clazz.createProperty("name", Type.STRING).createIndex(Schema.INDEX_TYPE.LSM_TREE, false);
+
+        for (int i = 0; i < 10; i++) {
+            MutableDocument doc = database.newDocument(className);
+            doc.set("name", "name" + i);
+            doc.save();
+        }
+        database.commit();
+
+        ResultSet result = database.query("sql", "select from " + className + " where name = 'name2'");
+        printExecutionPlan(result);
+
+        Assertions.assertTrue(result.hasNext());
+        Result next = result.next();
+        Assertions.assertNotNull(next);
+        Assertions.assertEquals("name2", next.getProperty("name"));
+
+        Assertions.assertFalse(result.hasNext());
+
+        Optional<ExecutionPlan> p = result.getExecutionPlan();
+        Assertions.assertTrue(p.isPresent());
+        ExecutionPlan p2 = p.get();
+        Assertions.assertTrue(p2 instanceof SelectExecutionPlan);
+        SelectExecutionPlan plan = (SelectExecutionPlan) p2;
+        Assertions.assertEquals(FetchFromIndexStep.class, plan.getSteps().get(0).getClass());
+        result.close();
+    }
 //
 //    @Test
 //    public void testFetchFromIndex() {
