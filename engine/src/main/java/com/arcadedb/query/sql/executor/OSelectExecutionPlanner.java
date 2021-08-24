@@ -142,7 +142,7 @@ public class OSelectExecutionPlanner {
   public static void handleProjectionsBlock(SelectExecutionPlan result, QueryPlanningInfo info, CommandContext ctx, boolean enableProfiling) {
     handleProjectionsBeforeOrderBy(result, info, ctx, enableProfiling);
 
-    if (info.expand || info.unwind != null) {
+    if (info.expand || info.unwind != null || info.groupBy != null) {
 
       handleProjections(result, info, ctx, enableProfiling);
       handleExpand(result, info, ctx, enableProfiling);
@@ -156,7 +156,7 @@ public class OSelectExecutionPlanner {
       }
     } else {
       handleOrderBy(result, info, ctx, enableProfiling);
-      if (info.distinct) {
+      if (info.distinct || info.groupBy != null || info.aggregateProjection != null) {
         handleProjections(result, info, ctx, enableProfiling);
         handleDistinct(result, info, ctx, enableProfiling);
         if (info.skip != null) {
