@@ -101,11 +101,8 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
 
     for (int i = 0; i < 100; i++) {
       String cmd =
-          "CREATE EDGE IndexedEdge FROM (SELECT FROM IndexedVertex WHERE uid = 0) TO (SELECT FROM IndexedVertex WHERE uid > "
-              + (i * nodes / 100)
-              + " and uid <"
-              + ((i + 1) * nodes / 100)
-              + ")";
+          "CREATE EDGE IndexedEdge FROM (SELECT FROM IndexedVertex WHERE uid = 0) TO (SELECT FROM IndexedVertex WHERE uid > " + (i * nodes / 100) + " and uid <"
+              + ((i + 1) * nodes / 100) + ")";
       database.command("sql", cmd);
     }
 
@@ -564,7 +561,7 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
     printExecutionPlan(qResult);
     Assertions.assertTrue(qResult.hasNext());
     while (qResult.hasNext()) {
-      Assertions.assertNotEquals(qResult.next().getProperty("name"), "n1");
+      Assertions.assertNotEquals("n1", qResult.next().getProperty("name"));
     }
     qResult.close();
   }
@@ -576,7 +573,7 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
 
     Assertions.assertTrue(qResult.hasNext());
     while (qResult.hasNext()) {
-      Assertions.assertNotEquals(qResult.next().getProperty("name"), "n1");
+      Assertions.assertNotEquals("n1", qResult.next().getProperty("name"));
     }
     qResult.close();
   }
