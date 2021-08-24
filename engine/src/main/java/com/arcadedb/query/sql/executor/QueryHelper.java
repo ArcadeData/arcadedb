@@ -24,15 +24,36 @@ package com.arcadedb.query.sql.executor;
 import java.util.Locale;
 
 public class QueryHelper {
-  public static boolean like(String s, String s1) {
-    if (s == null || s1 == null) {
+  protected static final String WILDCARD_ANYCHAR = "?";
+  protected static final String WILDCARD_ANY = "%";
+
+  public static boolean like(String currentValue, String iValue) {
+    if (currentValue == null
+            || currentValue.length() == 0
+            || iValue == null
+            || iValue.length() == 0)
+      // EMPTY/NULL PARAMETERS
       return false;
-    }
-    s1 = s1.toLowerCase(Locale.ENGLISH);
-    s1 = s1.replace(".", "\\.");
-    s1 = s1.replace("?", ".");
-    s1 = s1.replace("%", ".*");
-    s = s.toLowerCase(Locale.ENGLISH);
-    return s.matches(s1);
+
+    iValue = iValue.toLowerCase(Locale.ENGLISH);
+    currentValue = currentValue.toLowerCase(Locale.ENGLISH);
+
+    iValue = iValue.replace("\\", "\\\\");
+    iValue = iValue.replace("[", "\\[");
+    iValue = iValue.replace("]", "\\]");
+    iValue = iValue.replace("{", "\\{");
+    iValue = iValue.replace("}", "\\}");
+    iValue = iValue.replace("(", "\\(");
+    iValue = iValue.replace(")", "\\)");
+    iValue = iValue.replace("|", "\\|");
+    iValue = iValue.replace("*", "\\*");
+    iValue = iValue.replace("+", "\\+");
+    iValue = iValue.replace("$", "\\$");
+    iValue = iValue.replace("^", "\\^");
+    iValue = iValue.replace(".", "\\.");
+    iValue = iValue.replace(WILDCARD_ANY, ".*");
+    iValue = iValue.replace(WILDCARD_ANYCHAR, ".");
+
+    return currentValue.matches(iValue);
   }
 }
