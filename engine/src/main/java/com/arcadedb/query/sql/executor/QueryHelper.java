@@ -24,36 +24,82 @@ package com.arcadedb.query.sql.executor;
 import java.util.Locale;
 
 public class QueryHelper {
-  protected static final String WILDCARD_ANYCHAR = "?";
-  protected static final String WILDCARD_ANY = "%";
+  protected static final char WILDCARD_ANYCHAR = '?';
+  protected static final char WILDCARD_ANY     = '%';
 
-  public static boolean like(String currentValue, String iValue) {
-    if (currentValue == null
-            || currentValue.length() == 0
-            || iValue == null
-            || iValue.length() == 0)
+  public static boolean like(String currentValue, String value) {
+    if (currentValue == null || currentValue.length() == 0 || value == null || value.length() == 0)
       // EMPTY/NULL PARAMETERS
       return false;
 
-    iValue = iValue.toLowerCase(Locale.ENGLISH);
+    value = value.toLowerCase(Locale.ENGLISH);
     currentValue = currentValue.toLowerCase(Locale.ENGLISH);
 
-    iValue = iValue.replace("\\", "\\\\");
-    iValue = iValue.replace("[", "\\[");
-    iValue = iValue.replace("]", "\\]");
-    iValue = iValue.replace("{", "\\{");
-    iValue = iValue.replace("}", "\\}");
-    iValue = iValue.replace("(", "\\(");
-    iValue = iValue.replace(")", "\\)");
-    iValue = iValue.replace("|", "\\|");
-    iValue = iValue.replace("*", "\\*");
-    iValue = iValue.replace("+", "\\+");
-    iValue = iValue.replace("$", "\\$");
-    iValue = iValue.replace("^", "\\^");
-    iValue = iValue.replace(".", "\\.");
-    iValue = iValue.replace(WILDCARD_ANY, ".*");
-    iValue = iValue.replace(WILDCARD_ANYCHAR, ".");
+    value = convertForRegExp(value);
 
-    return currentValue.matches(iValue);
+    return currentValue.matches(value);
+  }
+
+  public static String convertForRegExp(String value) {
+    for (int i = 0; i < value.length(); ) {
+      char c = value.charAt(i);
+
+      String replaceWith;
+      switch (c) {
+      case '\\':
+        replaceWith = "\\\\";
+        break;
+      case '[':
+        replaceWith = "\\[";
+        break;
+      case ']':
+        replaceWith = "\\]";
+        break;
+      case '{':
+        replaceWith = "\\{";
+        break;
+      case '}':
+        replaceWith = "\\}";
+        break;
+      case '(':
+        replaceWith = "\\(";
+        break;
+      case ')':
+        replaceWith = "\\)";
+        break;
+      case '|':
+        replaceWith = "\\|";
+        break;
+      case '*':
+        replaceWith = "\\*";
+        break;
+      case '+':
+        replaceWith = "\\+";
+        break;
+      case '$':
+        replaceWith = "\\$";
+        break;
+      case '^':
+        replaceWith = "\\^";
+        break;
+      case '.':
+        replaceWith = "\\.";
+        break;
+      case '?': // WILDCARD_ANYCHAR
+        replaceWith = ".";
+        break;
+      case '%': // WILDCARD_ANY
+        replaceWith = ".*";
+        break;
+
+      default:
+        ++i;
+        continue;
+      }
+
+      value = value.substring(0, i) + replaceWith + value.substring(i + 1);
+      i += replaceWith.length();
+    }
+    return value;
   }
 }

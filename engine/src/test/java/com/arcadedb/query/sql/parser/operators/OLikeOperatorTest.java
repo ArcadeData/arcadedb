@@ -19,6 +19,7 @@
  */
 package com.arcadedb.query.sql.parser.operators;
 
+import com.arcadedb.query.sql.executor.QueryHelper;
 import com.arcadedb.query.sql.parser.LikeOperator;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -36,5 +37,10 @@ public class OLikeOperatorTest {
     Assertions.assertFalse(op.execute(null, "foobar", "%oo"));
     Assertions.assertFalse(op.execute(null, "foobar", "%fff%"));
     Assertions.assertTrue(op.execute(null, "foobar", "foobar"));
+  }
+
+  @Test
+  public void replaceSpecialCharacters() {
+    Assertions.assertEquals("\\\\\\[\\]\\{\\}\\(\\)\\|\\*\\+\\$\\^\\...*", QueryHelper.convertForRegExp("\\[]{}()|*+$^.?%"));
   }
 }
