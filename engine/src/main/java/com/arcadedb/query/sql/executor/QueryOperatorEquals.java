@@ -21,10 +21,13 @@
 
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.database.Document;
+import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.schema.Type;
 
 import java.util.Arrays;
+import java.util.Set;
 
 public class QueryOperatorEquals {
   public static boolean equals(Object iLeft, Object iRight) {
@@ -74,6 +77,26 @@ public class QueryOperatorEquals {
   }
 
   protected static boolean comparesValues(final Object iValue, final Record iRecord, final boolean iConsiderIn) {
-    return iRecord.getIdentity().equals(iValue);
+    // ORID && RECORD
+    final RID other = ((Record) iRecord).getIdentity();
+
+    if (iRecord instanceof Document) {
+      // ODOCUMENT AS RESULT OF SUB-QUERY: GET THE FIRST FIELD IF ANY
+      final Set<String> firstFieldName = ((Document) iRecord).getPropertyNames();
+      if (firstFieldName.size() > 0) {
+        Object fieldValue = ((Document) iRecord).get(firstFieldName.iterator().next());
+        if (fieldValue != null) {
+          if (iConsiderIn && MultiValue.isMultiValue(fieldValue)) {
+            for (Object o : MultiValue.getMultiValueIterable(fieldValue, false)) {
+              if (o != null && o.equals(iValue)) return true;
+            }
+          }
+
+          return fieldValue.equals(iValue);
+        }
+      }
+      return false;
+    }
+    return other.equals(iValue);
   }
 }
