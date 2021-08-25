@@ -78,7 +78,7 @@ public class OrderBy extends SimpleNode {
     for (OrderByItem item : items) {
       int result = item.compare(a, b, ctx);
       if (result != 0) {
-        return result;
+        return result > 0 ? 1 : -1;
       }
     }
     return 0;

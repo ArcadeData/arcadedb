@@ -101,7 +101,17 @@ public class OrderByItem {
     int result = 0;
     if (recordAttr != null) {
       aVal = a.getProperty(recordAttr);
+      if (aVal == null) {
+        if(recordAttr.equalsIgnoreCase("@rid")){
+          aVal = a.getIdentity().orElse(null);
+        } //TODO check other attributes
+      }
       bVal = b.getProperty(recordAttr);
+      if (bVal == null) {
+        if(recordAttr.equalsIgnoreCase("@rid")){
+          bVal = b.getIdentity().orElse(null);
+        } //TODO check other attributes
+      }
     } else if (alias != null) {
       aVal = a.getProperty(alias);
       bVal = b.getProperty(alias);
@@ -116,11 +126,9 @@ public class OrderByItem {
       } else {
         result = -1;
       }
-    }
-    if (bVal == null) {
+    } else if (bVal == null) {
       result = 1;
-    }
-    if (aVal instanceof Comparable && bVal instanceof Comparable) {
+    } else if (aVal instanceof Comparable && bVal instanceof Comparable) {
       try {
         result = BinaryComparator.compareTo(aVal, bVal);
       } catch (Exception e) {
@@ -187,5 +195,10 @@ public class OrderByItem {
       rid.deserialize(fromResult.getProperty("rid"));
     }
     type = DESC.equals(fromResult.getProperty("type")) ? DESC : ASC;
+  }
+
+
+  public void setModifier(Modifier modifier) {
+    this.modifier = modifier;
   }
 }
