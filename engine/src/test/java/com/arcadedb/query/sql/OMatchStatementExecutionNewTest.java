@@ -561,7 +561,8 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
     printExecutionPlan(qResult);
     Assertions.assertTrue(qResult.hasNext());
     while (qResult.hasNext()) {
-      Assertions.assertNotEquals("n1", qResult.next().getProperty("name"));
+      Result item = qResult.next();
+      Assertions.assertNotEquals("n1", item.getProperty("name"));
     }
     qResult.close();
   }

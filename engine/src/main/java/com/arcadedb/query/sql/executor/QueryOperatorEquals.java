@@ -80,7 +80,7 @@ public class QueryOperatorEquals {
     // ORID && RECORD
     final RID other = ((Record) iRecord).getIdentity();
 
-    if (iRecord instanceof Document) {
+    if (iRecord instanceof Document && iRecord.getIdentity() == null) {
       // ODOCUMENT AS RESULT OF SUB-QUERY: GET THE FIRST FIELD IF ANY
       final Set<String> firstFieldName = ((Document) iRecord).getPropertyNames();
       if (firstFieldName.size() > 0) {
