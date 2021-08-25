@@ -25,7 +25,6 @@ import com.arcadedb.Constants;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.database.MutableDocument;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
@@ -41,6 +40,7 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.*;
+import java.math.BigDecimal;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.Comparator;
@@ -64,6 +64,7 @@ public class Neo4jImporter {
   private              String                         databasePath;
   private              String                         inputFile;
   private              boolean                        overwriteDatabase     = false;
+  private              Type                           typeForDecimals       = Type.DECIMAL;
   private              Map<String, Long>              totalVerticesByType   = new HashMap<>();
   private              long                           totalVerticesParsed   = 0L;
   private              Map<String, Long>              totalEdgesByType      = new HashMap<>();
@@ -105,6 +106,8 @@ public class Neo4jImporter {
         overwriteDatabase = true;
       else if (arg.equals("-b"))
         state = "batchSize";
+      else if (arg.equals("-decimalType"))
+        state = "decimalType";
       else {
         if (state.equals("databasePath"))
           databasePath = arg;
@@ -112,6 +115,8 @@ public class Neo4jImporter {
           inputFile = arg;
         else if (state.equals("batchSize"))
           batchSize = Integer.parseInt(arg);
+        else if (state.equals("decimalType"))
+          typeForDecimals = Type.valueOf(arg.toUpperCase());
       }
     }
 
@@ -227,43 +232,7 @@ public class Neo4jImporter {
           });
         }
 
-        // TRY TO INFER PROPERTY TYPES
-        Map<String, Type> typeProperties = schemaProperties.get(labels.getFirst());
-        if (typeProperties == null) {
-          typeProperties = new HashMap<>();
-          schemaProperties.put(labels.getFirst(), typeProperties);
-        }
-
-        final JSONObject properties = json.getJSONObject("properties");
-        for (String propName : properties.keySet()) {
-          ++totalAttributesParsed;
-
-          Type currentType = typeProperties.get(propName);
-          if (currentType == null) {
-            Object propValue = properties.get(propName);
-            if (!propValue.equals(JSONObject.NULL)) {
-
-              if (propValue instanceof String) {
-                // CHECK IF IT'S A DATE
-                try {
-                  dateTimeISO8601Format.parse((String) propValue);
-                  currentType = Type.DATETIME;
-                } catch (ParseException e) {
-                  currentType = Type.STRING;
-                }
-              } else {
-                if (propValue instanceof JSONObject)
-                  propValue = ((JSONObject) propValue).toMap();
-                else if (propValue instanceof JSONArray)
-                  propValue = ((JSONArray) propValue).toList();
-
-                currentType = Type.getTypeByValue(propValue);
-              }
-
-              typeProperties.put(propName, currentType);
-            }
-          }
-        }
+        inferPropertyType(json, labels.getFirst());
 
         break;
 
@@ -271,10 +240,52 @@ public class Neo4jImporter {
         final String edgeLabel = json.has("label") && !json.isNull("label") ? json.getString("label") : null;
         if (edgeLabel != null)
           database.getSchema().getOrCreateEdgeType(edgeLabel);
+
+        inferPropertyType(json, edgeLabel);
         break;
       }
       return null;
     });
+  }
+
+  private void inferPropertyType(final JSONObject json, final String label) {
+    // TRY TO INFER PROPERTY TYPES
+    Map<String, Type> typeProperties = schemaProperties.get(label);
+    if (typeProperties == null) {
+      typeProperties = new HashMap<>();
+      schemaProperties.put(label, typeProperties);
+    }
+
+    final JSONObject properties = json.getJSONObject("properties");
+    for (String propName : properties.keySet()) {
+      ++totalAttributesParsed;
+
+      Type currentType = typeProperties.get(propName);
+      if (currentType == null) {
+        Object propValue = properties.get(propName);
+        if (!propValue.equals(JSONObject.NULL)) {
+
+          if (propValue instanceof String) {
+            // CHECK IF IT'S A DATE
+            try {
+              dateTimeISO8601Format.parse((String) propValue);
+              currentType = Type.DATETIME;
+            } catch (ParseException e) {
+              currentType = Type.STRING;
+            }
+          } else {
+            if (propValue instanceof JSONObject)
+              propValue = ((JSONObject) propValue).toMap();
+            else if (propValue instanceof JSONArray)
+              propValue = ((JSONArray) propValue).toList();
+
+            currentType = Type.getTypeByValue(propValue);
+          }
+
+          typeProperties.put(propName, currentType);
+        }
+      }
+    }
   }
 
   private void parseVertices() throws IOException {
@@ -299,15 +310,18 @@ public class Neo4jImporter {
           return null;
         }
 
+        final String typeName = type.getFirst();
+
         final String id = json.getString("id");
 
-        final MutableVertex vertex = database.newVertex(type.getFirst());
+        final MutableVertex vertex = database.newVertex(typeName);
+
+        vertex.fromMap(setProperties(json.getJSONObject("properties"), schemaProperties.get(typeName)));
         vertex.set("id", id);
-        setProperties(vertex, json.getJSONObject("properties"));
         vertex.save();
         ++savedVertices;
 
-        incrementVerticesByType(type.getFirst());
+        incrementVerticesByType(typeName);
 
         if (processedItems > 0 && processedItems % batchSize == 0) {
           database.commit();
@@ -382,7 +396,7 @@ public class Neo4jImporter {
 
         final MutableEdge edge = fromVertex.newEdge(type, toVertex, true);
 
-        setProperties(edge, json.getJSONObject("properties"));
+        edge.fromMap(setProperties(json.getJSONObject("properties"), schemaProperties.get(type)));
         edge.save();
         ++savedEdges;
 
@@ -405,17 +419,32 @@ public class Neo4jImporter {
         elapsedInSecs);
   }
 
-  private void setProperties(final MutableDocument document, final JSONObject properties) {
+  private Map<String, Object> setProperties(final JSONObject properties, final Map<String, Type> typeSchema) {
+    final Map<String, Object> result = new HashMap<>();
+
     for (String propName : properties.keySet()) {
       Object propValue = properties.get(propName);
 
-      if (propValue instanceof JSONObject)
-        propValue = ((JSONObject) propValue).toMap();
+      if (propValue == JSONObject.NULL)
+        propValue = null;
+      else if (propValue instanceof JSONObject)
+        propValue = setProperties((JSONObject) propValue, null);
       else if (propValue instanceof JSONArray)
         propValue = ((JSONArray) propValue).toList();
+      else if (propValue instanceof String && typeSchema != null && typeSchema.get(propName) == Type.DATETIME) {
+        try {
+          propValue = dateTimeISO8601Format.parse((String) propValue).getTime();
+        } catch (ParseException e) {
+          log("Invalid date '%s', ignoring conversion to timestamp and leaving it as string", propValue);
+        }
+      } else if (propValue instanceof BigDecimal) {
+        propValue = typeForDecimals.newInstance(propValue);
+      }
 
-      document.set(propName, propValue);
+      result.put(propName, propValue);
     }
+
+    return result;
   }
 
   private void readFile(Callable<Void, JSONObject> callback) throws IOException {
@@ -512,5 +541,6 @@ public class Neo4jImporter {
     log("-d <database-path>: create a database from the Neo4j export");
     log("-i <input-file>: path to the Neo4j export file in JSONL format");
     log("-o: overwrite an existent database");
+    log("-decimalType <type>: use <type> for decimals. <type> can be FLOAT, DOUBLE and DECIMAL. By default decimalType is DECIMAL.");
   }
 }
