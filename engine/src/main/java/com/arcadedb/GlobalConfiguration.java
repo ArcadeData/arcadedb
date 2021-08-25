@@ -420,6 +420,9 @@ public enum GlobalConfiguration {
 
     for (GlobalConfiguration config : values()) {
       prop = System.getProperty(config.key);
+      if (prop == null)
+        prop = System.getenv(config.key);
+
       if (prop != null)
         config.setValue(prop);
       else if (config.callbackIfNoSet != null) {
