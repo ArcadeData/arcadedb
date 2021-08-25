@@ -1741,6 +1741,7 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
     String query = "MATCH { type: " + clazz + ", as:a} RETURN a.name as name, a.num as num order by a.num2 desc";
 
     ResultSet result = database.query("sql", query);
+    printExecutionPlan(result);
     for (int i = 2; i >= 0; i--) {
       Assertions.assertTrue(result.hasNext());
       Result item = result.next();
@@ -2124,10 +2125,10 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
   }
 
   private void printExecutionPlan(String query, ResultSet result) {
-    //    if (query != null) {
-    //      System.out.println(query);
-    //    }
-    //    result.getExecutionPlan().ifPresent(x -> System.out.println(x.prettyPrint(0, 3)));
-    //    System.out.println();
+//        if (query != null) {
+//          System.out.println(query);
+//        }
+//        result.getExecutionPlan().ifPresent(x -> System.out.println(x.prettyPrint(0, 3)));
+//        System.out.println();
   }
 }

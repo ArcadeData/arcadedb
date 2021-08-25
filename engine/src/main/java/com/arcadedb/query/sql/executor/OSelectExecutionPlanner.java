@@ -778,6 +778,7 @@ public class OSelectExecutionPlanner {
           Identifier newAlias = new Identifier("_$$$ORDER_BY_ALIAS$$$_" + (nextAliasCount++));
           newProj.setAlias(newAlias);
           item.setAlias(newAlias.getStringValue());
+          item.setModifier(null);
           result.add(newProj);
         }
       }
@@ -1449,9 +1450,10 @@ public class OSelectExecutionPlanner {
     Boolean orderByRidAsc = null;//null: no order. true: asc, false:desc
     if (isOrderByRidAsc(info)) {
       orderByRidAsc = true;
-    } else if (isOrderByRidDesc(info)) {
-      orderByRidAsc = false;
     }
+//    else if (isOrderByRidDesc(info)) {
+//      orderByRidAsc = false;
+//    }
     FetchFromClassExecutionStep fetcher = new FetchFromClassExecutionStep(identifier.getStringValue(), filterClusters, info, ctx, orderByRidAsc,
         profilingEnabled);
     if (orderByRidAsc != null && info.serverToClusters.size() == 1) {
@@ -2228,9 +2230,10 @@ public class OSelectExecutionPlanner {
     Boolean orderByRidAsc = null;//null: no order. true: asc, false:desc
     if (isOrderByRidAsc(info)) {
       orderByRidAsc = true;
-    } else if (isOrderByRidDesc(info)) {
-      orderByRidAsc = false;
     }
+//    else if (isOrderByRidDesc(info)) {
+//      orderByRidAsc = false;
+//    }
     if (orderByRidAsc != null && info.serverToClusters.size() == 1) {
       info.orderApplied = true;
     }
