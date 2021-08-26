@@ -96,6 +96,11 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP
+            - name: arcadedb.server.rootPassword
+              valueFrom:
+                secretKeyRef:
+                  name: server-root-password
+                  key: arcadedb.server.rootPassword
           command:
             - "bin/server.sh"
             - "-Darcadedb.dumpConfigAtStartup=true"
