@@ -21,7 +21,7 @@
 package com.arcadedb.server.ha.message;
 
 import com.arcadedb.database.*;
-import com.arcadedb.engine.CompressionFactory;
+import com.arcadedb.compression.CompressionFactory;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TransactionException;

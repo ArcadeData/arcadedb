@@ -19,15 +19,15 @@
  * under the License.
  */
 
-package com.arcadedb.engine;
+package com.arcadedb.compression;
+
+import com.arcadedb.database.Binary;
 
 /**
- * Compression factory.
+ * Base interface for compression.
  */
-public class CompressionFactory {
-  private static final LZ4Compression defaultImplementation = new LZ4Compression();
+public interface Compression {
+  Binary compress(Binary data);
 
-  public static Compression getDefault() {
-    return defaultImplementation;
-  }
+  Binary decompress(Binary requestBytes, int decompressedLength);
 }

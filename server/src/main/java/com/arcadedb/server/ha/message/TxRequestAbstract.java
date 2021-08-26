@@ -21,7 +21,7 @@
 package com.arcadedb.server.ha.message;
 
 import com.arcadedb.database.Binary;
-import com.arcadedb.engine.CompressionFactory;
+import com.arcadedb.compression.CompressionFactory;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.ReplicationException;
