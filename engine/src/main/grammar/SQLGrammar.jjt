@@ -160,8 +160,6 @@ TOKEN:
 	|
 	< DESC: ( "d" | "D" ) ( "e" | "E" ) ( "s" | "S" ) ( "c" | "C" ) >
 	|
-	< FETCHPLAN: ( "f" | "F" ) ( "e" | "E" ) ( "t" | "T" ) ( "c" | "C" ) ( "h" | "H" ) ( "p" | "P" ) ( "l" | "L" ) ( "a" | "A" ) ( "n" | "N" ) >
-	|
 	< RETURN: ( "r" | "R" ) ( "e" | "E" ) ( "t" | "T" ) ( "u" | "U" ) ( "r" | "R" ) ( "n" | "N" ) >
 	|
 	< BEFORE: ( "b" | "B" ) ( "e" | "E" ) ( "f" | "F" ) ( "o" | "O" ) ( "r" | "R" ) ( "e" | "E" ) >
@@ -1099,7 +1097,6 @@ SelectWithoutTargetStatement SelectWithoutTargetStatement():
 				jjtThis.limit = Limit() [ jjtThis.skip = Skip() ]
 			]
 		)
-    	[ jjtThis.fetchPlan = FetchPlan() ]
     	[ jjtThis.timeout = Timeout() ]
     	/*
         [ <LOCK>
@@ -1143,7 +1140,6 @@ SelectStatement SelectStatement():
                 jjtThis.limit = Limit() [ jjtThis.skip = Skip() ]
             ]
         )
-        [ jjtThis.fetchPlan = FetchPlan() ]
         [ jjtThis.timeout = Timeout() ]
         /*
         [ <LOCK>
@@ -3369,62 +3365,6 @@ PCollection PCollection():
     { return jjtThis; }
 }
 
-
-
-FetchPlan FetchPlan():
-{ FetchPlanItem lastItem; }
-{
-    (
-        <FETCHPLAN> lastItem = FetchPlanItem() { jjtThis.items.add(lastItem); }
-        ( lastItem = FetchPlanItem() { jjtThis.items.add(lastItem); } )*
-    )
-    { return jjtThis; }
-}
-
-FetchPlanItem FetchPlanItem():
-{ Identifier lastIdentifier;
-  boolean lastStarred = false;
-}
-{
-    (
-        (
-            <STAR> { jjtThis.star = true; }
-            |
-            [
-                <LBRACKET>
-                (
-                    jjtThis.leftDepth = PInteger()
-                    |
-                    <STAR> { jjtThis.leftStar = true; }
-                )
-                <RBRACKET>
-            ]
-            lastIdentifier = Identifier() { lastStarred = false; } [<STAR> { lastStarred = true; }]
-            {
-                String field = lastIdentifier.getValue();
-                if(lastStarred){
-                    field += "*";
-                }
-                jjtThis.fieldChain.add(field);
-            }
-            (
-                <DOT> lastIdentifier = Identifier()  { lastStarred = false; } [<STAR> { lastStarred = true; } ]
-                 {
-                     field = lastIdentifier.getValue();
-                     if(lastStarred){
-                         field += "*";
-                     }
-                     jjtThis.fieldChain.add(field);
-                 }
-            )*
-        )
-        <COLON> jjtThis.rightDepth = PInteger()
-    )
-    { return jjtThis; }
-}
-
-
-
 TraverseProjectionItem TraverseProjectionItem():
 {}
 {
@@ -4140,9 +4080,8 @@ AlterPropertyStatement AlterPropertyStatement():
 		<DOT>
 		jjtThis.propertyName = Identifier()
 		(
-		    LOOKAHEAD(3)
 		    (
-            jjtThis.settingName = Identifier()
+                jjtThis.settingName = Identifier()
 		        jjtThis.settingValue = Expression()
 		    )
 		)
@@ -4367,11 +4306,8 @@ AlterDatabaseStatement AlterDatabaseStatement():
 {
 	<ALTER> <DATABASE>
     (
-        LOOKAHEAD(3)
-        (
             jjtThis.settingName = Identifier()
             jjtThis.settingValue = Expression()
-        )
     )
 	{ return jjtThis; }
 }

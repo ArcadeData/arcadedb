@@ -148,8 +148,6 @@ public interface SqlParserVisitor
   Object visit(Wait node, Object data);
   Object visit(Retry node, Object data);
   Object visit(PCollection node, Object data);
-  Object visit(FetchPlan node, Object data);
-  Object visit(FetchPlanItem node, Object data);
   Object visit(TraverseProjectionItem node, Object data);
   Object visit(Json node, Object data);
   Object visit(MatchExpression node, Object data);
