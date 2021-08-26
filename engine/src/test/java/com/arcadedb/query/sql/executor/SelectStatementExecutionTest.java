@@ -3543,11 +3543,12 @@ public class SelectStatementExecutionTest extends TestHelper {
     public void testRidPagination1() {
         String className = "testRidPagination1";
         DocumentType clazz = database.getSchema().getOrCreateDocumentType(className);
+        database.begin();
         int[] clusterIds = new int[clazz.getBuckets(false).size()];
         if (clusterIds.length < 3) {
             return;
         }
-        System.arraycopy(clazz.getBuckets(false).stream().map(x->x.getId()).toArray(), 0, clusterIds, 0, clusterIds.length);
+        System.arraycopy(clazz.getBuckets(false).stream().mapToInt(x->x.getId()).toArray(), 0, clusterIds, 0, clusterIds.length);
         Arrays.sort(clusterIds);
 
         for (int i = 0; i < clusterIds.length; i++) {
@@ -3555,13 +3556,14 @@ public class SelectStatementExecutionTest extends TestHelper {
             elem.set("cid", clusterIds[i]);
             elem.save(database.getSchema().getBucketById(clusterIds[i]).getName());
         }
+        database.commit();
 
         ResultSet result =
                 database.query("sql", "select from " + className + " where @rid >= #" + clusterIds[1] + ":0");
         ExecutionPlan execPlan = result.getExecutionPlan().get();
         for (ExecutionStep ExecutionStep : execPlan.getSteps()) {
             if (ExecutionStep instanceof FetchFromClassExecutionStep) {
-                Assertions.assertEquals(clusterIds.length, ExecutionStep.getSubSteps().size());
+                Assertions.assertEquals(clusterIds.length - 1 , ExecutionStep.getSubSteps().size());
                 // clusters - 1 + fetch from tx...
             }
         }
@@ -3578,11 +3580,12 @@ public class SelectStatementExecutionTest extends TestHelper {
     public void testRidPagination2() {
         String className = "testRidPagination2";
         DocumentType clazz = database.getSchema().getOrCreateDocumentType(className);
+        database.begin();
         int[] clusterIds = new int[clazz.getBuckets(false).size()];
         if (clusterIds.length < 3) {
             return;
         }
-        System.arraycopy(clazz.getBuckets(false).stream().map(x->x.getId()).toArray(), 0, clusterIds, 0, clusterIds.length);
+        System.arraycopy(clazz.getBuckets(false).stream().mapToInt(x->x.getId()).toArray(), 0, clusterIds, 0, clusterIds.length);
         Arrays.sort(clusterIds);
 
         for (int i = 0; i < clusterIds.length; i++) {
@@ -3590,6 +3593,7 @@ public class SelectStatementExecutionTest extends TestHelper {
             elem.set("cid", clusterIds[i]);
             elem.save(database.getSchema().getBucketById(clusterIds[i]).getName());
         }
+        database.commit();
 
         Map<String, Object> params = new HashMap<>();
         params.put("rid", new RID(database, clusterIds[1], 0));
@@ -3597,7 +3601,7 @@ public class SelectStatementExecutionTest extends TestHelper {
         ExecutionPlan execPlan = result.getExecutionPlan().get();
         for (ExecutionStep ExecutionStep : execPlan.getSteps()) {
             if (ExecutionStep instanceof FetchFromClassExecutionStep) {
-                Assertions.assertEquals(clusterIds.length, ExecutionStep.getSubSteps().size());
+                Assertions.assertEquals(clusterIds.length - 1, ExecutionStep.getSubSteps().size());
                 // clusters - 1 + fetch from tx...
             }
         }
