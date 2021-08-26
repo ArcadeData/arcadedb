@@ -217,8 +217,7 @@ public class TransactionManager {
         transactionIds.set(lastTxId + 1);
 
         // REMOVE ALL WAL FILES
-        for (int i = 0; i < activeWALFilePool.length; ++i) {
-          final WALFile file = activeWALFilePool[i];
+        for (final WALFile file : activeWALFilePool) {
           try {
             file.drop();
             LogManager.instance().log(this, Level.FINE, "Dropped WAL file '%s'", null, file);
@@ -238,8 +237,7 @@ public class TransactionManager {
     final Map<String, Object> map = new HashMap<>();
     map.put("logFiles", logFileCounter.get());
 
-    for (int i = 0; i < activeWALFilePool.length; ++i) {
-      final WALFile file = activeWALFilePool[i];
+    for (final WALFile file : activeWALFilePool) {
       if (file != null) {
         final Map<String, Object> stats = file.getStats();
         statsPagesWritten.addAndGet((Long) stats.get("pagesWritten"));

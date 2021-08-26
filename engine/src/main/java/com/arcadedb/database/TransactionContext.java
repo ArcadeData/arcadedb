@@ -38,7 +38,7 @@ import java.util.logging.Level;
 
 /**
  * Manage the transaction context. When the transaction begins, the modifiedPages map is initialized. This allows to always delegate
- * to the transaction context, even if there is no active transaction by ignoring tx data. This keeps code smaller.
+ * to the transaction context, even if there is no active transaction by ignoring tx data.
  * <p>
  * At commit time, the files are locked in order (to avoid deadlocks) and to allow parallel commit on different files.
  * <p>
@@ -141,14 +141,9 @@ public class TransactionContext implements Transaction {
     final long pageNum = pos / bucket.getMaxRecordsInPage();
 
     // IMMUTABLE RECORD, AVOID IT'S POINTING TO THE OLD OFFSET IN A MODIFIED PAGE
-    for (Iterator<Record> it = immutableRecordsCache.values().iterator(); it.hasNext(); ) {
-      final Record r = it.next();
-
-      if (r.getIdentity().getBucketId() == bucketId && r.getIdentity().getPosition() / bucket.getMaxRecordsInPage() == pageNum) {
-        // SAME PAGE, REMOVE IT
-        it.remove();
-      }
-    }
+    // SAME PAGE, REMOVE IT
+    immutableRecordsCache.values()
+        .removeIf(r -> r.getIdentity().getBucketId() == bucketId && r.getIdentity().getPosition() / bucket.getMaxRecordsInPage() == pageNum);
   }
 
   public void removeRecordFromCache(final Record record) {
@@ -487,7 +482,7 @@ public class TransactionContext implements Transaction {
         result = database.getTransactionManager().createTransactionBuffer(txId, pages);
       }
 
-      return new Pair(result, pages);
+      return new Pair<>(result, pages);
 
     } catch (DuplicatedKeyException | ConcurrentModificationException e) {
       rollback();
@@ -587,28 +582,16 @@ public class TransactionContext implements Transaction {
 
   public void removePagesOfFile(final int fileId) {
     if (newPages != null)
-      for (Iterator<MutablePage> it = newPages.values().iterator(); it.hasNext(); ) {
-        if (fileId == it.next().getPageId().getFileId())
-          it.remove();
-      }
+      newPages.values().removeIf(mutablePage -> fileId == mutablePage.getPageId().getFileId());
 
     newPageCounters.remove(fileId);
 
     if (modifiedPages != null)
-      for (Iterator<MutablePage> it = modifiedPages.values().iterator(); it.hasNext(); ) {
-        if (fileId == it.next().getPageId().getFileId())
-          it.remove();
-      }
+      modifiedPages.values().removeIf(mutablePage -> fileId == mutablePage.getPageId().getFileId());
 
     // IMMUTABLE RECORD, AVOID IT'S POINTING TO THE OLD OFFSET IN A MODIFIED PAGE
-    for (Iterator<Record> it = immutableRecordsCache.values().iterator(); it.hasNext(); ) {
-      final Record r = it.next();
-
-      if (r.getIdentity().getBucketId() == fileId) {
-        // SAME PAGE, REMOVE IT
-        it.remove();
-      }
-    }
+    // SAME PAGE, REMOVE IT
+    immutableRecordsCache.values().removeIf(r -> r.getIdentity().getBucketId() == fileId);
 
     if (lockedFiles != null)
       lockedFiles.remove(fileId);

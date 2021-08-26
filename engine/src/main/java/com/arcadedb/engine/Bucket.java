@@ -115,7 +115,7 @@ public class Bucket extends PaginatedComponent {
         return false;
 
       final int recordPositionInPage = (int) page.readUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE);
-      final long recordSize[] = page.readNumberAndSize(recordPositionInPage);
+      final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
 
       return recordSize[0] > 0 || recordSize[0] == -1;
 
@@ -139,7 +139,7 @@ public class Bucket extends PaginatedComponent {
         if (recordCountInPage > 0) {
           for (int recordIdInPage = 0; recordIdInPage < recordCountInPage; ++recordIdInPage) {
             final int recordPositionInPage = (int) page.readUnsignedInt(PAGE_RECORD_TABLE_OFFSET + recordIdInPage * INT_SERIALIZED_SIZE);
-            final long recordSize[] = page.readNumberAndSize(recordPositionInPage);
+            final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
 
             if (recordSize[0] > 0) {
               // NOT DELETED
@@ -154,7 +154,7 @@ public class Bucket extends PaginatedComponent {
 
             } else if (recordSize[0] == -1) {
               // PLACEHOLDER
-              final RID rid = new RID(database, id, pageId * maxRecordsInPage + recordIdInPage);
+              final RID rid = new RID(database, id, ((long) pageId) * maxRecordsInPage + recordIdInPage);
 
               final Binary view = getRecordInternal(new RID(database, id, page.readLong((int) (recordPositionInPage + recordSize[1]))), true);
 
@@ -169,10 +169,10 @@ public class Bucket extends PaginatedComponent {
     }
   }
 
-  public MutablePage fetchPageInTransaction(final RID rid) throws IOException {
+  public void fetchPageInTransaction(final RID rid) throws IOException {
     if (rid.getPosition() < 0L) {
       LogManager.instance().log(this, Level.WARNING, "Cannot load a page from a record with invalid RID (" + rid + ")");
-      return null;
+      return;
       //throw new IllegalArgumentException("Cannot load a page from a record with invalid RID (" + rid + ")");
     }
 
@@ -186,7 +186,7 @@ public class Bucket extends PaginatedComponent {
       }
     }
 
-    return database.getTransaction().getPageToModify(new PageId(file.getFileId(), pageId), pageSize, false);
+    database.getTransaction().getPageToModify(new PageId(file.getFileId(), pageId), pageSize, false);
   }
 
   public Iterator<Record> iterator() {

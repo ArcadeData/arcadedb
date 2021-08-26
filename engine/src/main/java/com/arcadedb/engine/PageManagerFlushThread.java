@@ -79,7 +79,7 @@ public class PageManagerFlushThread extends Thread {
   }
 
   private void flushStream() throws InterruptedException, IOException {
-    final MutablePage page = queue.poll(300l, TimeUnit.MILLISECONDS);
+    final MutablePage page = queue.poll(300L, TimeUnit.MILLISECONDS);
 
     if (page != null) {
       if (LogManager.instance().isDebugEnabled())

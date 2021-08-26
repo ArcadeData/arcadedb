@@ -25,11 +25,11 @@ import com.arcadedb.database.Binary;
 
 import java.nio.ByteBuffer;
 import java.util.Arrays;
-import java.util.concurrent.Callable;
+import java.util.Objects;
 
 /**
  * Low level base page implementation of (default) 65536 bytes (2 exp 16 = 65Kb). The first 4 bytes (the header) are reserved to
- * store he page version (MVCC), then 4 bytes more for the actual page content size. Content size is stored in PBinary object. The
+ * store the page version (MVCC), then 4 bytes more for the actual page content size. Content size is stored in PBinary object. The
  * maximum content for a page is pageSize - 16.
  */
 public abstract class BasePage {
@@ -55,9 +55,8 @@ public abstract class BasePage {
 
   public MutablePage modify() {
     final byte[] array = this.content.getByteBuffer().array();
-    final MutablePage copy = new MutablePage(manager, pageId, size, Arrays.copyOf(array, array.length), version, content.size());
     // COPY THE CONTENT, SO CHANGES DOES NOT AFFECT IMMUTABLE COPY
-    return copy;
+    return new MutablePage(manager, pageId, size, Arrays.copyOf(array, array.length), version, content.size());
   }
 
   public void loadMetadata() {
@@ -83,16 +82,12 @@ public abstract class BasePage {
    */
   public ImmutablePage createImmutableView() {
     try {
-      return (ImmutablePage) content.executeInLock(new Callable<Object>() {
-        @Override
-        public ImmutablePage call() {
-          return new ImmutablePage(manager, pageId, getPhysicalSize(), content.getByteBuffer().array(), version, content.size());
-        }
-      });
+      return (ImmutablePage) content.executeInLock(
+          () -> new ImmutablePage(manager, pageId, getPhysicalSize(), content.getByteBuffer().array(), version, content.size()));
     } catch (RuntimeException e) {
       throw e;
     } catch (Exception e) {
-      throw new RuntimeException("Cannot create an immutable copy of page " + toString(), e);
+      throw new RuntimeException("Cannot create an immutable copy of page " + this, e);
     }
   }
 
@@ -129,7 +124,7 @@ public abstract class BasePage {
   }
 
   public long readUnsignedInt(final int index) {
-    return (long) this.content.getInt(PAGE_HEADER_SIZE + index) & 0xffffffffl;
+    return (long) this.content.getInt(PAGE_HEADER_SIZE + index) & 0xffffffffL;
   }
 
   public short readShort(final int index) {
@@ -225,7 +220,7 @@ public abstract class BasePage {
 
     final BasePage other = (BasePage) o;
 
-    if (pageId != null ? !pageId.equals(other.pageId) : other.pageId != null)
+    if (!Objects.equals(pageId, other.pageId))
       return false;
 
     return version == other.version;

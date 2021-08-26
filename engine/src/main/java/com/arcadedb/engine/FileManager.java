@@ -26,23 +26,23 @@ import com.arcadedb.log.LogManager;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 public class FileManager {
-  private final String             path;
-  private final PaginatedFile.MODE mode;
-
-  private final        List<PaginatedFile>                       files            = new ArrayList<>();
-  private final        ConcurrentHashMap<String, PaginatedFile>  fileNameMap      = new ConcurrentHashMap<>();
-  private final        ConcurrentHashMap<Integer, PaginatedFile> fileIdMap        = new ConcurrentHashMap<>();
-  private final        ConcurrentHashMap<Integer, Long>          fileVirtualSize  = new ConcurrentHashMap<>();
-  private final        Set<String>                               supportedFileExt = new HashSet<>();
-  private final        AtomicLong                                maxFilesOpened   = new AtomicLong();
-  private              List<FileChange>                          recordedChanges  = null;
-  private final static PaginatedFile                             RESERVED_SLOT    = new PaginatedFile();
+  private final        PaginatedFile.MODE                        mode;
+  private final        List<PaginatedFile>                       files           = new ArrayList<>();
+  private final        ConcurrentHashMap<String, PaginatedFile>  fileNameMap     = new ConcurrentHashMap<>();
+  private final        ConcurrentHashMap<Integer, PaginatedFile> fileIdMap       = new ConcurrentHashMap<>();
+  private final        ConcurrentHashMap<Integer, Long>          fileVirtualSize = new ConcurrentHashMap<>();
+  private final        AtomicLong                                maxFilesOpened  = new AtomicLong();
+  private              List<FileChange>                          recordedChanges = null;
+  private final static PaginatedFile                             RESERVED_SLOT   = new PaginatedFile();
 
   public static class FileChange {
     public final boolean create;
@@ -56,17 +56,13 @@ public class FileManager {
     }
   }
 
-  public class FileManagerStats {
+  public static class FileManagerStats {
     public long maxOpenFiles;
     public long totalOpenFiles;
   }
 
   public FileManager(final String path, final PaginatedFile.MODE mode, final Set<String> supportedFileExt) {
-    this.path = path;
     this.mode = mode;
-
-    if (supportedFileExt != null && !supportedFileExt.isEmpty())
-      this.supportedFileExt.addAll(supportedFileExt);
 
     File dbDirectory = new File(path);
     if (!dbDirectory.exists()) {

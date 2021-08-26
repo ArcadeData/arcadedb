@@ -39,14 +39,14 @@ package com.arcadedb.engine;
 public final class MurmurHash {
 
   /**
-   * Generates 32 bit hash from byte array of the given length and
+   * Generates 32-bit hash from byte array of the given length and
    * seed.
    *
    * @param data   byte array to hash
    * @param length length of the array to hash
    * @param seed   initial seed value
    *
-   * @return 32 bit hash of the given array
+   * @return 32-bit hash of the given array
    */
   public static int hash32(final byte[] data, int length, int seed) {
     // 'm' and 'r' are mixing constants generated offline.
@@ -59,7 +59,7 @@ public final class MurmurHash {
 
     for (int i = 0; i < length4; i++) {
       final int i4 = i * 4;
-      int k = (data[i4 + 0] & 0xff) + ((data[i4 + 1] & 0xff) << 8) + ((data[i4 + 2] & 0xff) << 16) + ((data[i4 + 3] & 0xff) << 24);
+      int k = (data[i4] & 0xff) + ((data[i4 + 1] & 0xff) << 8) + ((data[i4 + 2] & 0xff) << 16) + ((data[i4 + 3] & 0xff) << 24);
       k *= m;
       k ^= k >>> r;
       k *= m;
@@ -86,23 +86,23 @@ public final class MurmurHash {
   }
 
   /**
-   * Generates 32 bit hash from byte array with default seed value.
+   * Generates 32-bit hash from byte array with default seed value.
    *
    * @param data   byte array to hash
    * @param length length of the array to hash
    *
-   * @return 32 bit hash of the given array
+   * @return 32-bit hash of the given array
    */
   public static int hash32(final byte[] data, int length) {
     return hash32(data, length, 0x9747b28c);
   }
 
   /**
-   * Generates 32 bit hash from a string.
+   * Generates 32-bit hash from a string.
    *
    * @param text string to hash
    *
-   * @return 32 bit hash of the given string
+   * @return 32-bit hash of the given string
    */
   public static int hash32(final String text) {
     final byte[] bytes = text.getBytes();
@@ -110,41 +110,40 @@ public final class MurmurHash {
   }
 
   /**
-   * Generates 32 bit hash from a substring.
+   * Generates 32-bit hash from a substring.
    *
    * @param text   string to hash
    * @param from   starting index
    * @param length length of the substring to hash
    *
-   * @return 32 bit hash of the given string
+   * @return 32-bit hash of the given string
    */
   public static int hash32(final String text, int from, int length) {
     return hash32(text.substring(from, from + length));
   }
 
   /**
-   * Generates 64 bit hash from byte array of the given length and seed.
+   * Generates 64-bit hash from byte array of the given length and seed.
    *
    * @param data   byte array to hash
    * @param length length of the array to hash
    * @param seed   initial seed value
    *
-   * @return 64 bit hash of the given array
+   * @return 64-bit hash of the given array
    */
   public static long hash64(final byte[] data, int length, int seed) {
     final long m = 0xc6a4a7935bd1e995L;
     final int r = 47;
 
-    long h = (seed & 0xffffffffl) ^ (length * m);
+    long h = (seed & 0xffffffffL) ^ (length * m);
 
     int length8 = length / 8;
 
     for (int i = 0; i < length8; i++) {
       final int i8 = i * 8;
-      long k =
-          ((long) data[i8 + 0] & 0xff) + (((long) data[i8 + 1] & 0xff) << 8) + (((long) data[i8 + 2] & 0xff) << 16) + (((long) data[i8 + 3] & 0xff) << 24) + (
-              ((long) data[i8 + 4] & 0xff) << 32) + (((long) data[i8 + 5] & 0xff) << 40) + (((long) data[i8 + 6] & 0xff) << 48) + (((long) data[i8 + 7] & 0xff)
-              << 56);
+      long k = ((long) data[i8] & 0xff) + (((long) data[i8 + 1] & 0xff) << 8) + (((long) data[i8 + 2] & 0xff) << 16) + (((long) data[i8 + 3] & 0xff) << 24) + (
+          ((long) data[i8 + 4] & 0xff) << 32) + (((long) data[i8 + 5] & 0xff) << 40) + (((long) data[i8 + 6] & 0xff) << 48) + (((long) data[i8 + 7] & 0xff)
+          << 56);
 
       k *= m;
       k ^= k >>> r;
@@ -180,23 +179,23 @@ public final class MurmurHash {
   }
 
   /**
-   * Generates 64 bit hash from byte array with default seed value.
+   * Generates 64-bit hash from byte array with default seed value.
    *
    * @param data   byte array to hash
    * @param length length of the array to hash
    *
-   * @return 64 bit hash of the given string
+   * @return 64-bit hash of the given string
    */
   public static long hash64(final byte[] data, int length) {
     return hash64(data, length, 0xe17a1465);
   }
 
   /**
-   * Generates 64 bit hash from a string.
+   * Generates 64-bit hash from a string.
    *
    * @param text string to hash
    *
-   * @return 64 bit hash of the given string
+   * @return 64-bit hash of the given string
    */
   public static long hash64(final String text) {
     final byte[] bytes = text.getBytes();
@@ -204,13 +203,13 @@ public final class MurmurHash {
   }
 
   /**
-   * Generates 64 bit hash from a substring.
+   * Generates 64-bit hash from a substring.
    *
    * @param text   string to hash
    * @param from   starting index
    * @param length length of the substring to hash
    *
-   * @return 64 bit hash of the given array
+   * @return 64-bit hash of the given array
    */
   public static long hash64(final String text, int from, int length) {
     return hash64(text.substring(from, from + length));

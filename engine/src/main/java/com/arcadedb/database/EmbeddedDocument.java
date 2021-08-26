@@ -21,8 +21,6 @@
 
 package com.arcadedb.database;
 
-import com.arcadedb.database.Document;
-
 public interface EmbeddedDocument extends Document {
   byte RECORD_TYPE = 4;
 }

@@ -74,7 +74,7 @@ public class BucketIterator implements Iterator<Record> {
 
         if (recordCountInCurrentPage > 0 && currentRecordInPage < recordCountInCurrentPage) {
           int recordPositionInPage = (int) currentPage.readUnsignedInt(Bucket.PAGE_RECORD_TABLE_OFFSET + currentRecordInPage * INT_SERIALIZED_SIZE);
-          final long recordSize[] = currentPage.readNumberAndSize(recordPositionInPage);
+          final long[] recordSize = currentPage.readNumberAndSize(recordPositionInPage);
           if (recordSize[0] > 0) {
             // NOT DELETED
             final RID rid = new RID(database, bucket.id, ((long) nextPageNumber) * bucket.getMaxRecordsInPage() + currentRecordInPage);
@@ -84,8 +84,7 @@ public class BucketIterator implements Iterator<Record> {
             if (!bucket.existsRecord(rid))
               continue;
 
-            final Record record = rid.getRecord(false);
-            next = record;
+            next = rid.getRecord(false);
             return null;
 
           } else if (recordSize[0] == -1) {
@@ -100,10 +99,8 @@ public class BucketIterator implements Iterator<Record> {
             if (view == null)
               continue;
 
-            final Record record = database.getRecordFactory()
+            next = database.getRecordFactory()
                 .newImmutableRecord(database, database.getSchema().getType(database.getSchema().getTypeNameByBucketId(rid.getBucketId())), rid, view, null);
-
-            next = record;
             return null;
           }
 

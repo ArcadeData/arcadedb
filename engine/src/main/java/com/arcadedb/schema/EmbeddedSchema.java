@@ -1147,9 +1147,11 @@ public class EmbeddedSchema implements Schema {
       if (prevFile.exists()) {
         final File copy = new File(databasePath + "/" + SCHEMA_PREV_FILE_NAME);
         if (copy.exists())
-          copy.delete();
+          if (!copy.delete())
+            LogManager.instance().log(this, Level.WARNING, "Error on deleting previous schema file '%s'", null, copy);
 
-        prevFile.renameTo(copy);
+        if (!prevFile.renameTo(copy))
+          LogManager.instance().log(this, Level.WARNING, "Error on renaming previous schema file '%s'", null, copy);
       }
 
       final FileWriter file = new FileWriter(databasePath + "/" + SCHEMA_FILE_NAME);

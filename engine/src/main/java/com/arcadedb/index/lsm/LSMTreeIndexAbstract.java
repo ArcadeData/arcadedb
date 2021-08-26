@@ -30,6 +30,7 @@ import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.IndexException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.BinarySerializer;
@@ -39,6 +40,7 @@ import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.*;
+import java.util.logging.Level;
 
 import static com.arcadedb.database.Binary.BYTE_SERIALIZED_SIZE;
 import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
@@ -181,7 +183,8 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
       database.getFileManager().dropFile(file.getFileId());
       database.getSchema().getEmbedded().removeFile(file.getFileId());
     } else {
-      new File(file.getFilePath()).delete();
+      if (!new File(file.getFilePath()).delete())
+        LogManager.instance().log(this, Level.WARNING, "Error on deleting index file '%s'", null, file.getFilePath());
     }
   }
 

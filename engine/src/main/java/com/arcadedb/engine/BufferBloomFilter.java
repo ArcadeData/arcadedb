@@ -59,7 +59,6 @@ public class BufferBloomFilter {
     final int bitInByte2change = bit2change % 8;
 
     final byte v = buffer.getByte(byte2change);
-    final boolean found = ((v >> bitInByte2change) & 1) == 1;
-    return found;
+    return ((v >> bitInByte2change) & 1) == 1;
   }
 }

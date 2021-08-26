@@ -106,7 +106,8 @@ public class WALFile extends LockContext {
 
   public synchronized void drop() throws IOException {
     close();
-    new File(getFilePath()).delete();
+    if (!new File(getFilePath()).delete())
+      LogManager.instance().log(this, Level.WARNING, "Error on deleting file '%s'", null, getFilePath());
   }
 
   public WALTransaction getFirstTransaction() throws WALException {

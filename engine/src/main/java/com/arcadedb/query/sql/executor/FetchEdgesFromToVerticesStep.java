@@ -187,6 +187,7 @@ public class FetchEdgesFromToVerticesStep extends AbstractExecutionStep {
           }
           if (from instanceof Vertex) {
 
+            // TODO: SUPPORT GET EDGE WITH 'TO' AS PARAMETER
             currentFromEdgesIter = ((Vertex) from).getEdges(Vertex.DIRECTION.OUT).iterator();
           } else {
             throw new CommandExecutionException("Invalid vertex: " + from);
