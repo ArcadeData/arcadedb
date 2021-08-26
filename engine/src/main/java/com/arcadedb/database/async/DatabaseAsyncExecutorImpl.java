@@ -555,7 +555,10 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     public long queueSize;
   }
 
-  private void createThreads(final int parallelLevel) {
+  private void createThreads(int parallelLevel) {
+    if (parallelLevel < 1)
+      parallelLevel = 1;
+
     shutdownThreads();
 
     executorThreads = new AsyncThread[parallelLevel];
