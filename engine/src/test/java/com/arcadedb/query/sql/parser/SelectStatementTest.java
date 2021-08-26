@@ -180,22 +180,6 @@ public class SelectStatementTest {
   }
 
   @Test
-  public void testFetchPlan1() {
-    SimpleNode result = checkRightSyntax("" + "select 'Ay' as a , 'bEE' as b from Foo fetchplan *:1");
-
-    assertTrue(result instanceof SelectStatement);
-    SelectStatement select = (SelectStatement) result;
-  }
-
-  @Test
-  public void testFetchPlan2() {
-    SimpleNode result = checkRightSyntax("" + "select 'Ay' as a , 'bEE' as b fetchplan *:1");
-
-    assertTrue(result instanceof SelectWithoutTargetStatement);
-    SelectWithoutTargetStatement select = (SelectWithoutTargetStatement) result;
-  }
-
-  @Test
   public void testContainsWithCondition() {
     SimpleNode result = checkRightSyntax("select from Profile where customReferences.values() CONTAINS 'a'");
 
@@ -465,7 +449,6 @@ public class SelectStatementTest {
     checkRightSyntax("select `ASC` from foo where `ASC` = 'bar'");
     checkRightSyntax("select `AS` from foo where `AS` = 'bar'");
     checkRightSyntax("select `DESC` from foo where `DESC` = 'bar'");
-    checkRightSyntax("select `FETCHPLAN` from foo where `FETCHPLAN` = 'bar'");
     checkRightSyntax("select `RETURN` from foo where `RETURN` = 'bar'");
     checkRightSyntax("select `BEFORE` from foo where `BEFORE` = 'bar'");
     checkRightSyntax("select `AFTER` from foo where `AFTER` = 'bar'");
@@ -510,7 +493,6 @@ public class SelectStatementTest {
     checkRightSyntax("select `asc` from foo where `asc` = 'bar'");
     checkRightSyntax("select `as` from foo where `as` = 'bar'");
     checkRightSyntax("select `desc` from foo where `desc` = 'bar'");
-    checkRightSyntax("select `fetchplan` from foo where `fetchplan` = 'bar'");
     checkRightSyntax("select `return` from foo where `return` = 'bar'");
     checkRightSyntax("select `before` from foo where `before` = 'bar'");
     checkRightSyntax("select `after` from foo where `after` = 'bar'");
@@ -588,13 +570,6 @@ public class SelectStatementTest {
   public void testReservedWordsAsNamedParams() {
     // issue #5493
     checkRightSyntax("select from V limit :limit");
-  }
-
-  @Test
-  public void testFetchPlanBracketStar() {
-    // issue #5689
-    checkRightSyntax("SELECT FROM Def fetchplan *:2 [*]in_*:-2");
-    checkRightSyntax("SELECT FROM Def fetchplan *:2 [1]in_*:-2");
   }
 
   @Test

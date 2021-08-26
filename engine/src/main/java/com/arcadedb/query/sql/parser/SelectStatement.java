@@ -54,8 +54,6 @@ public class SelectStatement extends Statement {
 
   protected Object lockRecord = null;
 
-  protected FetchPlan fetchPlan;
-
   protected LetClause letClause;
 
   protected Timeout timeout;
@@ -136,14 +134,6 @@ public class SelectStatement extends Statement {
     this.lockRecord = lockRecord;
   }
 
-  public FetchPlan getFetchPlan() {
-    return fetchPlan;
-  }
-
-  public void setFetchPlan(FetchPlan fetchPlan) {
-    this.fetchPlan = fetchPlan;
-  }
-
   public LetClause getLetClause() {
     return letClause;
   }
@@ -214,11 +204,6 @@ public class SelectStatement extends Statement {
 //        break;
 //      }
 //    }
-
-    if (fetchPlan != null) {
-      builder.append(" ");
-      fetchPlan.toString(params, builder);
-    }
 
     if (timeout != null) {
       timeout.toString(params, builder);
@@ -317,7 +302,6 @@ public class SelectStatement extends Statement {
     result.skip = skip == null ? null : skip.copy();
     result.limit = limit == null ? null : limit.copy();
     result.lockRecord = lockRecord;
-    result.fetchPlan = fetchPlan == null ? null : fetchPlan.copy();
     result.letClause = letClause == null ? null : letClause.copy();
     result.timeout = timeout == null ? null : timeout.copy();
     result.parallel = parallel;
@@ -353,8 +337,6 @@ public class SelectStatement extends Statement {
       return false;
     if (lockRecord != that.lockRecord)
       return false;
-    if (fetchPlan != null ? !fetchPlan.equals(that.fetchPlan) : that.fetchPlan != null)
-      return false;
     if (letClause != null ? !letClause.equals(that.letClause) : that.letClause != null)
       return false;
     if (timeout != null ? !timeout.equals(that.timeout) : that.timeout != null)
@@ -375,7 +357,6 @@ public class SelectStatement extends Statement {
     result = 31 * result + (skip != null ? skip.hashCode() : 0);
     result = 31 * result + (limit != null ? limit.hashCode() : 0);
     result = 31 * result + (lockRecord != null ? lockRecord.hashCode() : 0);
-    result = 31 * result + (fetchPlan != null ? fetchPlan.hashCode() : 0);
     result = 31 * result + (letClause != null ? letClause.hashCode() : 0);
     result = 31 * result + (timeout != null ? timeout.hashCode() : 0);
     result = 31 * result + (parallel != null ? parallel.hashCode() : 0);
@@ -460,9 +441,6 @@ public class SelectStatement extends Statement {
     if (lockRecord != null) {
       result.setProperty("lockRecord", lockRecord.toString());
     }
-    if (fetchPlan != null) {
-      result.setProperty("fetchPlan", fetchPlan.serialize());
-    }
     if (letClause != null) {
       result.setProperty("letClause", letClause.serialize());
     }
@@ -509,10 +487,6 @@ public class SelectStatement extends Statement {
     }
     if (fromResult.getProperty("lockRecord") != null) {
       lockRecord = fromResult.getProperty("lockRecord");//TODO
-    }
-    if (fromResult.getProperty("fetchPlan") != null) {
-      fetchPlan = new FetchPlan(-1);
-      fetchPlan.deserialize(fromResult.getProperty("fetchPlan"));
     }
     if (fromResult.getProperty("letClause") != null) {
       letClause = new LetClause(-1);

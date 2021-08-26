@@ -378,12 +378,6 @@ public class SqlParserDefaultVisitor implements SqlParserVisitor{
   public Object visit(PCollection node, Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(FetchPlan node, Object data){
-    return defaultVisit(node, data);
-  }
-  public Object visit(FetchPlanItem node, Object data){
-    return defaultVisit(node, data);
-  }
   public Object visit(TraverseProjectionItem node, Object data){
     return defaultVisit(node, data);
   }
