@@ -101,7 +101,7 @@ public class SuffixIdentifier extends SimpleNode {
       if (ctx != null && varName.equalsIgnoreCase("$parent")) {
         return ctx.getParent();
       }
-      if (ctx != null && varName.startsWith("$") && ctx.getVariable(varName) != null) {
+      if (ctx != null && (varName.startsWith("$") || varName.startsWith("_$$$")) && ctx.getVariable(varName) != null) {
         Object result = ctx.getVariable(varName);
         return result;
       }

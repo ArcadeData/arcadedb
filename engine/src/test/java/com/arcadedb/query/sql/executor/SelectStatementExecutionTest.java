@@ -924,7 +924,7 @@ public class SelectStatementExecutionTest extends TestHelper {
         DocumentType clazz = schema.createDocumentType(className);
         if (clazz.getBuckets(false).size() < 2) {
             //clazz.addCluster("testFetchFromClustersNumberOrderByRidAsc_2");
-            return; //TODO
+            return;
         }
 
         String targetClusterName = clazz.getBuckets(false).get(0).getName();
@@ -1989,7 +1989,7 @@ public class SelectStatementExecutionTest extends TestHelper {
         result.close();
     }
 
-//    @Test TODO
+    @Test
     public void testLet5() {
         String className = "testLet5";
         database.getSchema().createDocumentType(className);
