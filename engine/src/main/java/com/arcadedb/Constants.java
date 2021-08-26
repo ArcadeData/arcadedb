@@ -31,7 +31,7 @@ import java.util.logging.Level;
 public class Constants {
   public static final String PRODUCT   = "ArcadeDB";
   public static final String URL       = "https://arcadedb.com";
-  public static final String COPYRIGHT = "Copyrights (c) 2021 Arcade Data";
+  public static final String COPYRIGHT = "Copyrights (c) 2021 Arcade Data Ltd";
 
   private static final Properties properties = new Properties();
 
@@ -115,6 +115,27 @@ public class Constants {
   }
 
   /**
+   * Returns the complete text of the current Arcadedb version.
+   */
+  public static String getVersion() {
+    String buffer = getRawVersion();
+
+    final String build = getBuildNumber();
+    final String timestamp = getTimestamp();
+    final String branch = getBranch();
+
+    if (build != null || timestamp != null || branch != null) {
+      // ADD SPECIFIC INFORMATION IF PRESENT
+      String buffer2 = build != null ? build : "";
+      buffer2 += "/" + (timestamp != null ? timestamp : "");
+      buffer2 += "/" + (branch != null ? branch : "");
+
+      buffer += " (build " + buffer2 + ")";
+    }
+    return buffer;
+  }
+
+  /**
    * @return Returns only current version without build number and etc.
    */
   public static String getRawVersion() {
@@ -122,10 +143,27 @@ public class Constants {
   }
 
   /**
-   * Returns the complete text of the current Arcadedb version.
+   * Returns the Git branch of the build.
    */
-  public static String getVersion() {
-    return getRawVersion() + " (build " + getBuildNumber() + " timestamp " + getTimestamp() + ", branch " + properties.getProperty("branch") + ")";
+  public static String getBranch() {
+    final String b = properties.getProperty("branch");
+    return "${scmBranch}".equals(b) ? null : b;
+  }
+
+  /**
+   * @return the build number if any.
+   */
+  public static String getBuildNumber() {
+    String b = properties.getProperty("buildNumber");
+    return "${buildNumber}".equals(b) ? null : b;
+  }
+
+  /**
+   * @return the build number if any.
+   */
+  public static String getTimestamp() {
+    final String t = properties.getProperty("timestamp");
+    return "${timestamp}".equals(t) ? null : t;
   }
 
   /**
@@ -133,19 +171,5 @@ public class Constants {
    */
   public static boolean isSnapshot() {
     return properties.getProperty("version").endsWith("SNAPSHOT");
-  }
-
-  /**
-   * @return the build number if any.
-   */
-  public static String getBuildNumber() {
-    return properties.getProperty("buildNumber");
-  }
-
-  /**
-   * @return the build number if any.
-   */
-  public static String getTimestamp() {
-    return properties.getProperty("timestamp");
   }
 }

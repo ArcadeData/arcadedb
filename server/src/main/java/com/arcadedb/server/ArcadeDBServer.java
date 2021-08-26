@@ -113,7 +113,7 @@ public class ArcadeDBServer implements ServerLogger {
       throw new ServerException("Error on starting the server '" + serverName + "'");
     }
 
-    log(this, Level.INFO, "Starting ArcadeDB Server...");
+    log(this, Level.INFO, "Starting ArcadeDB Server with plugins %s ...", getPluginNames());
 
     // START METRICS & CONNECTED JMX REPORTER
     if (configuration.getValueAsBoolean(GlobalConfiguration.SERVER_METRICS)) {
@@ -149,6 +149,20 @@ public class ArcadeDBServer implements ServerLogger {
       stop();
       throw new ServerException("Error on starting the server '" + serverName + "'");
     }
+  }
+
+  private Set<String> getPluginNames() {
+    final Set<String> result = new LinkedHashSet<>();
+    final String registeredPlugins = configuration.getValueAsString(GlobalConfiguration.SERVER_PLUGINS);
+    if (registeredPlugins != null && !registeredPlugins.isEmpty()) {
+      final String[] pluginEntries = registeredPlugins.split(",");
+      for (String p : pluginEntries) {
+        final String[] pluginPair = p.split(":");
+        final String pluginName = pluginPair[0];
+        result.add(pluginName);
+      }
+    }
+    return result;
   }
 
   private void registerPlugins() {

@@ -37,6 +37,7 @@
     <packaging>jar</packaging>
 
     <properties>
+        <maven-resources-plugin.version>3.1.0</maven-resources-plugin.version>
         <ph-javacc-maven-plugin.version>4.1.4</ph-javacc-maven-plugin.version>
         <disruptor.version>1.2.19</disruptor.version>
         <json.version>20201115</json.version>
@@ -45,7 +46,26 @@
     </properties>
 
     <build>
+        <resources>
+            <resource>
+                <directory>${basedir}/src/main/resources</directory>
+                <filtering>true</filtering>
+            </resource>
+        </resources>
         <plugins>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>buildnumber-maven-plugin</artifactId>
+                <version>1.4</version>
+                <executions>
+                    <execution>
+                        <phase>validate</phase>
+                        <goals>
+                            <goal>create</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
             <plugin>
                 <groupId>com.helger.maven</groupId>
                 <artifactId>ph-javacc-maven-plugin</artifactId>
@@ -68,6 +88,10 @@
                     </execution>
 
                 </executions>
+            </plugin>
+            <plugin>
+                <artifactId>maven-resources-plugin</artifactId>
+                <version>${maven-resources-plugin.version}</version>
             </plugin>
         </plugins>
     </build>
