@@ -51,26 +51,27 @@ public class EmbeddedSchema implements Schema {
   public static final String DEFAULT_DATETIME_FORMAT = "yyyy-MM-dd HH:mm:ss";
   public static final String DEFAULT_ENCODING        = "UTF-8";
 
-  public static final  String                     SCHEMA_FILE_NAME      = "schema.json";
-  public static final  String                     SCHEMA_PREV_FILE_NAME = "schema.prev.json";
-  private static final int                        EDGE_DEF_PAGE_SIZE    = Bucket.DEF_PAGE_SIZE / 3;
+  public static final  String                     SCHEMA_FILE_NAME          = "schema.json";
+  public static final  String                     SCHEMA_PREV_FILE_NAME     = "schema.prev.json";
+  private static final int                        EDGE_DEF_PAGE_SIZE        = Bucket.DEF_PAGE_SIZE / 3;
+  private static final int                        DEFAULT_CLUSTERS_PER_TYPE = 8;
   private final        DatabaseInternal           database;
-  private final        List<PaginatedComponent>   files                 = new ArrayList<>();
-  private final        Map<String, DocumentType>  types                 = new HashMap<>();
-  private final        Map<String, Bucket>        bucketMap             = new HashMap<>();
-  protected final      Map<String, IndexInternal> indexMap              = new HashMap<>();
+  private final        List<PaginatedComponent>   files                     = new ArrayList<>();
+  private final        Map<String, DocumentType>  types                     = new HashMap<>();
+  private final        Map<String, Bucket>        bucketMap                 = new HashMap<>();
+  protected final      Map<String, IndexInternal> indexMap                  = new HashMap<>();
   private final        String                     databasePath;
   private              Dictionary                 dictionary;
-  private              String                     dateFormat            = DEFAULT_DATE_FORMAT;
-  private              String                     dateTimeFormat        = DEFAULT_DATETIME_FORMAT;
-  private              String                     encoding              = DEFAULT_ENCODING;
-  private              TimeZone                   timeZone              = TimeZone.getDefault();
+  private              String                     dateFormat                = DEFAULT_DATE_FORMAT;
+  private              String                     dateTimeFormat            = DEFAULT_DATETIME_FORMAT;
+  private              String                     encoding                  = DEFAULT_ENCODING;
+  private              TimeZone                   timeZone                  = TimeZone.getDefault();
   private final        PaginatedComponentFactory  paginatedComponentFactory;
-  private final        IndexFactory               indexFactory          = new IndexFactory();
-  private              boolean                    readingFromFile       = false;
-  private              boolean                    dirtyConfiguration    = false;
-  private              boolean                    loadInRamCompleted    = false;
-  private              boolean                    multipleUpdate        = false;
+  private final        IndexFactory               indexFactory              = new IndexFactory();
+  private              boolean                    readingFromFile           = false;
+  private              boolean                    dirtyConfiguration        = false;
+  private              boolean                    loadInRamCompleted        = false;
+  private              boolean                    multipleUpdate            = false;
 
   public EmbeddedSchema(final DatabaseInternal database, final String databasePath, final PaginatedFile.MODE mode) {
     this.database = database;
@@ -742,7 +743,7 @@ public class EmbeddedSchema implements Schema {
   }
 
   public DocumentType createDocumentType(final String typeName) {
-    return createDocumentType(typeName, Runtime.getRuntime().availableProcessors());
+    return createDocumentType(typeName, DEFAULT_CLUSTERS_PER_TYPE);
   }
 
   public DocumentType createDocumentType(final String typeName, final int buckets) {
@@ -790,7 +791,7 @@ public class EmbeddedSchema implements Schema {
 
   @Override
   public DocumentType getOrCreateDocumentType(final String typeName) {
-    return getOrCreateDocumentType(typeName, Runtime.getRuntime().availableProcessors());
+    return getOrCreateDocumentType(typeName, DEFAULT_CLUSTERS_PER_TYPE);
   }
 
   @Override
@@ -811,7 +812,7 @@ public class EmbeddedSchema implements Schema {
 
   @Override
   public VertexType createVertexType(final String typeName) {
-    return createVertexType(typeName, Runtime.getRuntime().availableProcessors());
+    return createVertexType(typeName, DEFAULT_CLUSTERS_PER_TYPE);
   }
 
   @Override
@@ -859,7 +860,7 @@ public class EmbeddedSchema implements Schema {
 
   @Override
   public VertexType getOrCreateVertexType(final String typeName) {
-    return getOrCreateVertexType(typeName, Runtime.getRuntime().availableProcessors());
+    return getOrCreateVertexType(typeName, DEFAULT_CLUSTERS_PER_TYPE);
   }
 
   @Override
@@ -880,7 +881,7 @@ public class EmbeddedSchema implements Schema {
 
   @Override
   public EdgeType createEdgeType(final String typeName) {
-    return createEdgeType(typeName, Runtime.getRuntime().availableProcessors());
+    return createEdgeType(typeName, DEFAULT_CLUSTERS_PER_TYPE);
   }
 
   @Override
@@ -926,7 +927,7 @@ public class EmbeddedSchema implements Schema {
 
   @Override
   public EdgeType getOrCreateEdgeType(final String typeName) {
-    return getOrCreateEdgeType(typeName, Runtime.getRuntime().availableProcessors());
+    return getOrCreateEdgeType(typeName, DEFAULT_CLUSTERS_PER_TYPE);
   }
 
   @Override
