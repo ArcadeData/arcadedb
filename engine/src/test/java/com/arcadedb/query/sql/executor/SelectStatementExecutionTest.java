@@ -2337,7 +2337,7 @@ public class SelectStatementExecutionTest extends TestHelper {
         result.close();
     }
 
-//    @Test TODO
+    @Test
     public void testFetchFromSubclassIndexes4() {
         String parent = "testFetchFromSubclassIndexes4_parent";
         String child1 = "testFetchFromSubclassIndexes4_child1";
@@ -3614,7 +3614,7 @@ public class SelectStatementExecutionTest extends TestHelper {
         Assertions.assertEquals(clusterIds.length - 1, count);
     }
 
-//    @Test  TODO
+    @Test
     public void testContainsWithSubquery() {
         String className = "testContainsWithSubquery";
         database.begin();
@@ -3647,7 +3647,7 @@ public class SelectStatementExecutionTest extends TestHelper {
         }
     }
 
-//    @Test  TODO
+    @Test
     public void testInWithSubquery() {
         String className = "testInWithSubquery";
         database.begin();

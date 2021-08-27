@@ -1674,9 +1674,9 @@ public class OSelectExecutionPlanner {
       throw new CommandExecutionException("Cannot find type '" + targetClass + "'");
     }
 
-    //    if (typez.count(false) != 0 || typez.getSubclasses().size() == 0 || isDiamondHierarchy(typez)) {
-//      return false;
-//    }
+    if (!isEmptyNoSubclasses(typez) || typez.getSubTypes().size() == 0 || isDiamondHierarchy(typez)) {
+      return false;
+    }
 
     final Collection<DocumentType> subTypes = typez.getSubTypes();
 
@@ -1695,6 +1695,16 @@ public class OSelectExecutionPlanner {
       return true;
     }
     return false;
+  }
+
+  private boolean isEmptyNoSubclasses(DocumentType typez) {
+    List<com.arcadedb.engine.Bucket> buckets = typez.getBuckets(false);
+    for (com.arcadedb.engine.Bucket bucket : buckets) {
+      if(bucket.iterator().hasNext()){
+        return false;
+      }
+    }
+    return true;
   }
 
   /**
