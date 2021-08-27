@@ -263,7 +263,7 @@ public class DocumentType {
       return prop;
 
     for (DocumentType parent : parentTypes) {
-      prop = parent.properties.get(propertyName);
+      prop = parent.getPolymorphicPropertyIfExists(propertyName);
       if (prop != null)
         return prop;
     }

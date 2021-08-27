@@ -2391,7 +2391,7 @@ public class SelectStatementExecutionTest extends TestHelper {
         result.close();
     }
 
-//    @Test TODO
+    @Test
     public void testFetchFromSubSubclassIndexes() {
         String parent = "testFetchFromSubSubclassIndexes_parent";
         String child1 = "testFetchFromSubSubclassIndexes_child1";
@@ -2400,6 +2400,7 @@ public class SelectStatementExecutionTest extends TestHelper {
         String child2_2 = "testFetchFromSubSubclassIndexes_child2_2";
         database.begin();
         DocumentType parentClass = database.getSchema().createDocumentType(parent);
+        parentClass.createProperty("name", Type.STRING);
 //        DocumentType childClass1 = database.getSchema().createDocumentType(child1, parentClass);
 //        DocumentType childClass2 = database.getSchema().createDocumentType(child2, parentClass);
 //        DocumentType childClass2_1 = database.getSchema().createDocumentType(child2_1, childClass2);
@@ -2413,7 +2414,7 @@ public class SelectStatementExecutionTest extends TestHelper {
         DocumentType childClass2_2 = database.getSchema().createDocumentType(child2_2);
         childClass2_2.addParentType(child2);
 
-        parentClass.createProperty("name", Type.STRING);
+
         childClass1.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name");
         childClass2_1.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name");
         childClass2_2.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name");
