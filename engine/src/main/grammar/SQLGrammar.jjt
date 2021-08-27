@@ -180,15 +180,11 @@ TOKEN:
     |
     < CYCLE: ( "c" | "C" ) ( "y" | "Y" ) ( "c" | "C" ) ( "l" | "L" ) ( "e" | "E" ) >
     |
-    < NOCACHE: ( "n" | "N" ) ( "o" | "O" ) ( "c" | "C" ) ( "a" | "A" ) ( "c" | "C" ) ( "h" | "H" ) ( "e" | "E" ) >
-    |
     < NOLIMIT: ( "n" | "N" ) ( "o" | "O" ) ( "l" | "L" ) ( "i" | "I" ) ( "m" | "M" ) ( "i" | "I" ) ( "t" | "T" ) >
     |
     < NOCYCLE: ( "n" | "N" ) ( "o" | "O" ) ( "c" | "C" ) ( "y" | "Y" ) ( "c" | "C" ) ( "l" | "L" ) ( "e" | "E" ) >
     |
     < UNSAFE: ( "u" | "U" ) ( "n" | "N" ) ( "s" | "S" ) ( "a" | "A" ) ( "f" | "F" ) ( "e" | "E" ) >
-    |
-    < PARALLEL: ( "p" | "P" ) ( "a" | "A" ) ( "r" | "R" ) ( "a" | "A" ) ( "l" | "L" ) ( "l" | "L" ) ( "e" | "E" ) ( "l" | "L" ) >
     |
     < STRATEGY: ( "s" | "S" ) ( "t" | "T" ) ( "r" | "R" ) ( "a" | "A" ) ( "t" | "T" ) ( "e" | "E" ) ( "g" | "G" ) ( "y" | "Y" )  >
     |
@@ -1110,8 +1106,6 @@ SelectWithoutTargetStatement SelectWithoutTargetStatement():
                 <DEFAULT_> {jjtThis.lockRecord = "DEFAULT";}
             )
         ]
-        [ <PARALLEL> { jjtThis.parallel = true; } ]
-        [ <NOCACHE> { jjtThis.noCache = true; } ]
         */
     )
     {
@@ -1153,8 +1147,6 @@ SelectStatement SelectStatement():
                 <DEFAULT_> {jjtThis.lockRecord = "DEFAULT";}
             )
         ]
-        [ <PARALLEL> { jjtThis.parallel = true; } ]
-        [ <NOCACHE> { jjtThis.noCache = true; } ]
         */
     )
     {

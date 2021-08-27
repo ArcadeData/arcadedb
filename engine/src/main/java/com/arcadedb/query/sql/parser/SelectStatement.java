@@ -58,10 +58,6 @@ public class SelectStatement extends Statement {
 
   protected Timeout timeout;
 
-  protected Boolean parallel;
-
-  protected Boolean noCache;
-
   public SelectStatement(int id) {
     super(id);
   }
@@ -209,13 +205,6 @@ public class SelectStatement extends Statement {
       timeout.toString(params, builder);
     }
 
-    if (Boolean.TRUE.equals(parallel)) {
-      builder.append(" PARALLEL");
-    }
-
-    if (Boolean.TRUE.equals(noCache)) {
-      builder.append(" NOCACHE");
-    }
   }
 
   public void validate() throws CommandSQLParsingException {
@@ -304,8 +293,6 @@ public class SelectStatement extends Statement {
     result.lockRecord = lockRecord;
     result.letClause = letClause == null ? null : letClause.copy();
     result.timeout = timeout == null ? null : timeout.copy();
-    result.parallel = parallel;
-    result.noCache = noCache;
 
     return result;
   }
@@ -341,9 +328,7 @@ public class SelectStatement extends Statement {
       return false;
     if (timeout != null ? !timeout.equals(that.timeout) : that.timeout != null)
       return false;
-    if (parallel != null ? !parallel.equals(that.parallel) : that.parallel != null)
-      return false;
-    return noCache != null ? noCache.equals(that.noCache) : that.noCache == null;
+    return true;
   }
 
   @Override
@@ -359,8 +344,6 @@ public class SelectStatement extends Statement {
     result = 31 * result + (lockRecord != null ? lockRecord.hashCode() : 0);
     result = 31 * result + (letClause != null ? letClause.hashCode() : 0);
     result = 31 * result + (timeout != null ? timeout.hashCode() : 0);
-    result = 31 * result + (parallel != null ? parallel.hashCode() : 0);
-    result = 31 * result + (noCache != null ? noCache.hashCode() : 0);
     return result;
   }
 
@@ -404,14 +387,6 @@ public class SelectStatement extends Statement {
     this.timeout = timeout;
   }
 
-  public void setParallel(Boolean parallel) {
-    this.parallel = parallel;
-  }
-
-  public void setNoCache(Boolean noCache) {
-    this.noCache = noCache;
-  }
-
   public Result serialize() {
     ResultInternal result = (ResultInternal) super.serialize();
     if (target != null) {
@@ -447,8 +422,6 @@ public class SelectStatement extends Statement {
     if (timeout != null) {
       result.setProperty("timeout", timeout.serialize());
     }
-    result.setProperty("parallel", parallel);
-    result.setProperty("noCache", noCache);
     return result;
   }
 
@@ -496,9 +469,6 @@ public class SelectStatement extends Statement {
       timeout = new Timeout(-1);
       timeout.deserialize(fromResult.getProperty("timeout"));
     }
-
-    parallel = fromResult.getProperty("parallel");
-    noCache = fromResult.getProperty("noCache");
   }
 }
 /* JavaCC - OriginalChecksum=b26959b9726a8cf35d6283eca931da6b (do not edit this line) */
