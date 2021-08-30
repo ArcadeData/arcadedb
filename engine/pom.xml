@@ -37,7 +37,7 @@
     <packaging>jar</packaging>
 
     <properties>
-        <maven-resources-plugin.version>3.1.0</maven-resources-plugin.version>
+        <maven-resources-plugin.version>3.2.0</maven-resources-plugin.version>
         <ph-javacc-maven-plugin.version>4.1.4</ph-javacc-maven-plugin.version>
         <disruptor.version>1.2.19</disruptor.version>
         <json.version>20201115</json.version>
