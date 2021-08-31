@@ -2456,7 +2456,7 @@ public class SelectStatementExecutionTest extends TestHelper {
         result.close();
     }
 
-//    @Test  TODO
+    @Test
     public void testFetchFromSubSubclassIndexesWithDiamond() {
         String parent = "testFetchFromSubSubclassIndexesWithDiamond_parent";
         String child1 = "testFetchFromSubSubclassIndexesWithDiamond_child1";

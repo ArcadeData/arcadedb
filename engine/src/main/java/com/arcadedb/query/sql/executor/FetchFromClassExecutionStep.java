@@ -79,7 +79,7 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
       throw new CommandExecutionException("Type " + className + " not found");
     }
 
-    final int[] typeBuckets = type.getBuckets(true).stream().mapToInt(x -> x.getId()).toArray();
+    final int[] typeBuckets = type.getBuckets(true).stream().mapToInt(x -> x.getId()).distinct().sorted().toArray();
     List<Integer> filteredTypeBuckets = new ArrayList<>();
     for (int bucketId : typeBuckets) {
       String bucketName = ctx.getDatabase().getSchema().getBucketById(bucketId).getName();
