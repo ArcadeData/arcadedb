@@ -12,8 +12,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import static com.arcadedb.query.sql.executor.ExecutionPlanPrintUtils.printExecutionPlan;
-
 /**
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdb.com)
  */
@@ -172,6 +170,10 @@ public class OUpdateStatementExecutionTest extends TestHelper {
     Assertions.assertTrue(found);
     Assertions.assertFalse(result.hasNext());
     result.close();
+  }
+
+  private void printExecutionPlan(ResultSet result) {
+    //ExecutionPlanPrintUtils.printExecutionPlan(result);
   }
 
   @Test

@@ -4,8 +4,6 @@ import com.arcadedb.TestHelper;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import static com.arcadedb.query.sql.executor.ExecutionPlanPrintUtils.printExecutionPlan;
-
 /**
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdb.com)
  */
@@ -15,7 +13,7 @@ public class OBeginStatementExecutionTest {
     TestHelper.executeInNewDatabase("OCommitStatementExecutionTest", (db) -> {
       Assertions.assertTrue(db.getTransaction() == null || !db.getTransaction().isActive());
       ResultSet result = db.command("sql", "begin");
-      printExecutionPlan(null, result);
+      //printExecutionPlan(null, result);
       Assertions.assertNotNull(result);
       Assertions.assertTrue(result.hasNext());
       Result item = result.next();

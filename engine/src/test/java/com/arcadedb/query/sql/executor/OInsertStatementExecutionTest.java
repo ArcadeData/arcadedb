@@ -29,8 +29,6 @@ import org.junit.jupiter.api.Test;
 
 import java.util.*;
 
-import static com.arcadedb.query.sql.executor.ExecutionPlanPrintUtils.printExecutionPlan;
-
 /**
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdb.com)
  */
@@ -443,5 +441,9 @@ public class OInsertStatementExecutionTest extends TestHelper {
 
     Assertions.assertFalse(result.hasNext());
     result.close();
+  }
+
+  private void printExecutionPlan(ResultSet result) {
+    //ExecutionPlanPrintUtils.printExecutionPlan(result);
   }
 }

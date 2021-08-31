@@ -7,21 +7,17 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
-import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.MutableVertex;
-import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.Index;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
-import java.lang.reflect.Array;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Array;
 import java.util.*;
-
-import static com.arcadedb.query.sql.executor.ExecutionPlanPrintUtils.printExecutionPlan;
 
 public class SelectStatementExecutionTest extends TestHelper {
 
@@ -4362,7 +4358,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     }
 
     public static void printExecutionPlan(ResultSet result) {
-        printExecutionPlan(null, result);
+        //printExecutionPlan(null, result);
     }
 
     public static void printExecutionPlan(String query, ResultSet result) {
