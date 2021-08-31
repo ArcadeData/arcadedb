@@ -63,7 +63,7 @@ public class ImporterSettings {
   String  typeIdProperty         = null;
   boolean typeIdPropertyIsUnique = false;
   String  typeIdType             = "String";
-  int     parallel               = Runtime.getRuntime().availableProcessors() / 2 - 1;
+  int     parallel               = 1;
   boolean forceDatabaseCreate;
   boolean trimText               = true;
   long    analysisLimitBytes     = 100000;
@@ -73,6 +73,12 @@ public class ImporterSettings {
   public int commitEvery = 5000;
 
   final Map<String, String> options = new HashMap<>();
+
+  public ImporterSettings() {
+    parallel = Runtime.getRuntime().availableProcessors() / 2 - 1;
+    if (parallel < 1)
+      parallel = 1;
+  }
 
   protected void parseParameters(final String[] args) {
     if (args != null)

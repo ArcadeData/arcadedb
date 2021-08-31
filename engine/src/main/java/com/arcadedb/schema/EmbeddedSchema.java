@@ -754,6 +754,9 @@ public class EmbeddedSchema implements Schema {
     if (typeName == null || typeName.isEmpty())
       throw new IllegalArgumentException("Missing type");
 
+    if (buckets < 1)
+      throw new IllegalArgumentException("Invalid number of buckets (" + buckets + "). At least 1 bucket is necessary to create a type");
+
     if (buckets > 32)
       throw new IllegalArgumentException("Cannot create " + buckets + " buckets: maximum is 32");
 
@@ -821,9 +824,12 @@ public class EmbeddedSchema implements Schema {
   }
 
   @Override
-  public VertexType createVertexType(String typeName, final int buckets, final int pageSize) {
+  public VertexType createVertexType(String typeName, int buckets, final int pageSize) {
     if (typeName == null || typeName.isEmpty())
       throw new IllegalArgumentException("Missing type");
+
+    if (buckets < 1)
+      throw new IllegalArgumentException("Invalid number of buckets (" + buckets + "). At least 1 bucket is necessary to create a type");
 
     if (buckets > 32)
       throw new IllegalArgumentException("Cannot create " + buckets + " buckets: maximum is 32");
@@ -893,6 +899,9 @@ public class EmbeddedSchema implements Schema {
   public EdgeType createEdgeType(final String typeName, final int buckets, final int pageSize) {
     if (typeName == null || typeName.isEmpty())
       throw new IllegalArgumentException("Missing type");
+
+    if (buckets < 1)
+      throw new IllegalArgumentException("Invalid number of buckets (" + buckets + "). At least 1 bucket is necessary to create a type");
 
     if (buckets > 32)
       throw new IllegalArgumentException("Cannot create " + buckets + " buckets: maximum is 32");
