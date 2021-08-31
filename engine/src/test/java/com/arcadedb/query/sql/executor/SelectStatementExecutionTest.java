@@ -2110,7 +2110,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 
         doc1.newEdge(edgeClassName, doc2, true).save();
         database.commit();
-        
+
         String queryString =
                 "SELECT $x, name FROM " + vertexClassName + " let $x = out(\"" + edgeClassName + "\")";
         ResultSet resultSet = database.query("sql", queryString);
@@ -2532,7 +2532,7 @@ public class SelectStatementExecutionTest extends TestHelper {
                                         + ".name_surname on "
                                         + className
                                         + " (name, surname) NOTUNIQUE");
-    
+
 
         for (int i = 0; i < 10; i++) {
             MutableDocument doc = database.newDocument(className);
@@ -2575,7 +2575,7 @@ public class SelectStatementExecutionTest extends TestHelper {
         clazz.createProperty("name", Type.STRING);
         clazz.createProperty("surname", Type.STRING);
         database.command("sql",
-                        
+
                                 "create index "
                                         + className
                                         + ".name_surname on "
@@ -2628,7 +2628,7 @@ public class SelectStatementExecutionTest extends TestHelper {
                                         + ".name_surname on "
                                         + className
                                         + " (name, surname) NOTUNIQUE");
-        
+
 
         for (int i = 0; i < 10; i++) {
             MutableDocument doc = database.newDocument(className);
@@ -2677,7 +2677,7 @@ public class SelectStatementExecutionTest extends TestHelper {
                                         + ".name_surname on "
                                         + className
                                         + " (name, surname) NOTUNIQUE");
-                
+
 
         for (int i = 0; i < 10; i++) {
             MutableDocument doc = database.newDocument(className);
@@ -2774,7 +2774,7 @@ public class SelectStatementExecutionTest extends TestHelper {
                                         + ".name_surname on "
                                         + className
                                         + " (name, surname, address) NOTUNIQUE");
- 
+
         for (int i = 0; i < 10; i++) {
             MutableDocument doc = database.newDocument(className);
             doc.set("name", "name" + i % 3);
