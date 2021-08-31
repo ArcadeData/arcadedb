@@ -851,24 +851,24 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
       retries = 1;
 
     for (int retry = 0; retry < retries; ++retry) {
-      boolean txJoined = false;
+      boolean createdNewTx = true;
 
       try {
         if (joinCurrentTx && wrappedDatabaseInstance.isTransactionActive())
-          txJoined = true;
+          createdNewTx = false;
         else
           wrappedDatabaseInstance.begin();
 
         txBlock.execute(wrappedDatabaseInstance);
 
-        if (!txJoined)
+        if (createdNewTx)
           wrappedDatabaseInstance.commit();
 
         if (ok != null)
           ok.call();
 
         // OK
-        return !joinCurrentTx;
+        return createdNewTx;
 
       } catch (NeedRetryException | DuplicatedKeyException e) {
         // RETRY
