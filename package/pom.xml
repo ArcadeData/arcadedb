@@ -25,12 +25,12 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <groupId>com.arcadedata</groupId>
+    <groupId>com.arcadedb</groupId>
     <artifactId>arcadedb-package</artifactId>
     <packaging>jar</packaging>
 
     <parent>
-        <groupId>com.arcadedata</groupId>
+        <groupId>com.arcadedb</groupId>
         <artifactId>arcadedb-parent</artifactId>
         <version>21.9.1-SNAPSHOT</version>
         <relativePath>../</relativePath>
@@ -66,32 +66,32 @@
     </build>
     <dependencies>
         <dependency>
-            <groupId>com.arcadedata</groupId>
+            <groupId>com.arcadedb</groupId>
             <artifactId>arcadedb-engine</artifactId>
             <version>${project.parent.version}</version>
         </dependency>
         <dependency>
-            <groupId>com.arcadedata</groupId>
+            <groupId>com.arcadedb</groupId>
             <artifactId>arcadedb-gremlin</artifactId>
             <version>${project.parent.version}</version>
         </dependency>
         <dependency>
-            <groupId>com.arcadedata</groupId>
+            <groupId>com.arcadedb</groupId>
             <artifactId>arcadedb-console</artifactId>
             <version>${project.parent.version}</version>
         </dependency>
         <dependency>
-            <groupId>com.arcadedata</groupId>
+            <groupId>com.arcadedb</groupId>
             <artifactId>arcadedb-server</artifactId>
             <version>${project.parent.version}</version>
         </dependency>
         <dependency>
-            <groupId>com.arcadedata</groupId>
+            <groupId>com.arcadedb</groupId>
             <artifactId>arcadedb-redisw</artifactId>
             <version>${project.parent.version}</version>
         </dependency>
         <dependency>
-            <groupId>com.arcadedata</groupId>
+            <groupId>com.arcadedb</groupId>
             <artifactId>arcadedb-mongodbw</artifactId>
             <version>${project.parent.version}</version>
         </dependency>
