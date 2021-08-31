@@ -1,3 +1,6 @@
+[![security status](https://www.meterian.io/badge/gh/ArcadeData/arcadedb/security?branch=main)](https://www.meterian.io/report/gh/ArcadeData/arcadedb)
+[![stability status](https://www.meterian.io/badge/gh/ArcadeData/arcadedb/stability?branch=main)](https://www.meterian.io/report/gh/ArcadeData/arcadedb)
+
 ![ArcadeDB Logo](https://arcadedb.com/assets/images/arcadedb-logo.png)
 
 ArcadeDB is a Multi-Model DBMS (created originally as a fork from [OrientDB Open Source project](https://github.com/orientechnologies/orientdb) after the acquisition by SAP) with
@@ -6,14 +9,14 @@ minimal resources. ArcadeDB is written in LLJ: Low Level Java. It's still Java8+
 mechanical sympathy techniques and a reduced pressure of the Garbage Collector.
 
 ArcadeDB supports the following models:
-- [Graph Database](https://docs.arcadedb.com#Graph-Model) (compatible with Gremlin and OrientDB SQL)
-- [Document Database](https://docs.arcadedb.com#Document-Model) (compatible with the MongoDB driver and MongoDB queries)
+- [Graph Database](https://docs.arcadedb.com#Graph-Model) (compatible with Neo4j Cypher, Apache Tinkerpop Gremlin and OrientDB SQL)
+- [Document Database](https://docs.arcadedb.com#Document-Model) (compatible with the MongoDB driver + MongoDB queries and OrientDB SQL)
 - [Key/Value](https://docs.arcadedb.com#KeyValue-Model) (compatible with the Redis driver)
 - [Time Series](https://docs.arcadedb.com#TimeSeries-Model)
 
 ArcadeDB understands multiple languages:
 - [SQL](https://docs.arcadedb.com#SQL) (from OrientDB SQL)
-- [Cypher](https://docs.arcadedb.com#Cypher)
+- Neo4j [Cypher (Open Cypher)](https://docs.arcadedb.com#Cypher)
 - [Apache Gremlin (Apache Tinkerpop v3.4.x)](https://docs.arcadedb.com#Gremlin-API)
 - [MongoDB Query Language](https://docs.arcadedb.com#MongoDB-API)
 
