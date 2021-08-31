@@ -1,3 +1,4 @@
+![example branch parameter](https://github.com/ArcadeData/arcadedb/actions/workflows/mvn-deploy.yml/badge.svg?branch=main)
 [![security status](https://www.meterian.io/badge/gh/ArcadeData/arcadedb/security?branch=main)](https://www.meterian.io/report/gh/ArcadeData/arcadedb)
 [![stability status](https://www.meterian.io/badge/gh/ArcadeData/arcadedb/stability?branch=main)](https://www.meterian.io/report/gh/ArcadeData/arcadedb)
 
