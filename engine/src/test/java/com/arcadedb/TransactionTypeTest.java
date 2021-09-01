@@ -21,6 +21,7 @@
 
 package com.arcadedb;
 
+import com.arcadedb.database.Record;
 import com.arcadedb.database.*;
 import com.arcadedb.exception.DatabaseIsReadOnlyException;
 import com.arcadedb.index.Index;

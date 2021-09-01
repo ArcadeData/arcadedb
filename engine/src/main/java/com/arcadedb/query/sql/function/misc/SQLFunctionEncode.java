@@ -20,7 +20,10 @@
  */
 package com.arcadedb.query.sql.function.misc;
 
-import com.arcadedb.database.*;
+import com.arcadedb.database.Binary;
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.function.SQLFunctionAbstract;

@@ -21,6 +21,7 @@
 
 package com.arcadedb.engine;
 
+import com.arcadedb.database.Record;
 import com.arcadedb.database.*;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.RecordNotFoundException;

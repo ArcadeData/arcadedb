@@ -22,6 +22,7 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.Constants;
+import com.arcadedb.database.Record;
 import com.arcadedb.database.*;
 import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.*;
