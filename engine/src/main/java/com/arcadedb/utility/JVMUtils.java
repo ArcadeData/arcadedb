@@ -22,7 +22,6 @@
 package com.arcadedb.utility;
 
 import com.sun.management.HotSpotDiagnosticMXBean;
-import sun.jvm.hotspot.tools.HeapDumper;
 
 import javax.management.MBeanServer;
 import java.io.File;
@@ -100,7 +99,7 @@ public class JVMUtils {
 
   public static String dumpHeap(final boolean live) {
     if (hotspotMBean == null) {
-      synchronized (HeapDumper.class) {
+      synchronized (JVMUtils.class) {
         if (hotspotMBean == null) {
           try {
             final MBeanServer server = ManagementFactory.getPlatformMBeanServer();

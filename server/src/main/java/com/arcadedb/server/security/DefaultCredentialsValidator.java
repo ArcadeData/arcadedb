@@ -35,6 +35,7 @@ public class DefaultCredentialsValidator implements CredentialsValidator {
   protected int passwordMinLength = 8;
   protected int passwordMaxLength = 256;
 
+  @Override
   public void validateCredentials(final String userName, final String userPassword) throws ServerSecurityException {
     if (userName == null || userName.isEmpty())
       throw new ServerSecurityException("Empty user name");
