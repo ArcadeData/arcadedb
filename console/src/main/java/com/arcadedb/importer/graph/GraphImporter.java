@@ -21,6 +21,7 @@
 
 package com.arcadedb.importer.graph;
 
+import com.arcadedb.database.Record;
 import com.arcadedb.database.*;
 import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.database.async.NewRecordCallback;
