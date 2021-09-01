@@ -14,7 +14,7 @@ node {
         stage('checkout') {
             checkout scm
         }
-        docker.image('adoptopenjdk:11-jdk-hotspot').inside(' -u root -v /home/player/volumes/jenkins_home/.m2:/root/.m2"') {
+        docker.image('adoptopenjdk:11-jdk-hotspot').inside(' -u root -v /home/player/volumes/jenkins_home/.m2:/root/.m2 -v /usr/bin/git:/usr/bin/git ') {
 
             stage('check java') {
                 sh "./mvnw -version"
