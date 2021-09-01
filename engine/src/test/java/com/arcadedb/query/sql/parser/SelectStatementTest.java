@@ -44,7 +44,7 @@ public class SelectStatementTest {
       return result;
     } catch (Exception e) {
       if (isCorrect) {
-        System.out.println(query);
+        //System.out.println(query);
         e.printStackTrace();
         fail();
       }
@@ -643,7 +643,7 @@ public class SelectStatementTest {
   public void testRidString() {
     checkRightSyntax("select \"@rid\" as v from V");
     SimpleNode stm2 = checkRightSyntax("select {\"@rid\": \"#12:0\"} as v from V");
-    System.out.println(stm2);
+    //System.out.println(stm2);
   }
 
   @Test

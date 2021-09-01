@@ -42,7 +42,7 @@ import java.util.*;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
-public class RandomTestMultiThreads extends TestHelper {
+public class RandomTestMultiThreadsTest extends TestHelper {
   private static final int CYCLES           = 10000;
   private static final int STARTING_ACCOUNT = 10000;
   private static final int PARALLEL         = Runtime.getRuntime().availableProcessors();
@@ -216,9 +216,9 @@ public class RandomTestMultiThreads extends TestHelper {
         threads[i].start();
       }
 
-      LogManager.instance().flush();
-      System.out.flush();
-      System.out.println("----------------");
+      //LogManager.instance().flush();
+      //System.out.flush();
+      //System.out.println("----------------");
 
       for (int i = 0; i < WORKERS; ++i) {
         try {
@@ -232,11 +232,11 @@ public class RandomTestMultiThreads extends TestHelper {
     } finally {
       new DatabaseChecker().check(database, 0);
 
-      System.out.println(
-          "Test finished in " + (System.currentTimeMillis() - begin) + "ms, mvccExceptions=" + mvccErrors.get() + " otherExceptions=" + otherErrors.size());
+      //System.out.println(
+     //     "Test finished in " + (System.currentTimeMillis() - begin) + "ms, mvccExceptions=" + mvccErrors.get() + " otherExceptions=" + otherErrors.size());
 
       for (Pair<Integer, Exception> entry : otherErrors) {
-        System.out.println(" = threadId=" + entry.getFirst() + " exception=" + entry.getSecond());
+        //System.out.println(" = threadId=" + entry.getFirst() + " exception=" + entry.getSecond());
       }
     }
   }

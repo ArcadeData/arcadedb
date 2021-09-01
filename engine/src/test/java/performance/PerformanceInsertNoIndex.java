@@ -31,14 +31,14 @@ import com.arcadedb.schema.DocumentType;
 
 import java.util.logging.Level;
 
-public class PerformanceInsertNoIndexTest extends TestHelper {
+public class PerformanceInsertNoIndex extends TestHelper {
   private static final int    TOT       = 10_000_000;
   private static final String TYPE_NAME = "Person";
   private static final int    PARALLEL  = 3;
 
   public static void main(String[] args) {
     PerformanceTest.clean();
-    new PerformanceInsertNoIndexTest().run();
+    new PerformanceInsertNoIndex().run();
   }
 
   @Override

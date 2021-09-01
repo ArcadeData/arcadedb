@@ -84,7 +84,7 @@ public class InsertGraphIndexTest extends TestHelper {
   }
 
   private void createEdges() {
-    System.out.println("Creating " + EDGES_PER_VERTEX + " edges per vertex on all " + VERTICES + " vertices");
+    //System.out.println("Creating " + EDGES_PER_VERTEX + " edges per vertex on all " + VERTICES + " vertices");
 
     database.begin();
     final long begin = System.currentTimeMillis();
@@ -109,21 +109,21 @@ public class InsertGraphIndexTest extends TestHelper {
           database.begin();
         }
       }
-      System.out.println("Created " + EDGES_PER_VERTEX + " edges per vertex in " + sourceIndex + " vertices in " + (System.currentTimeMillis() - begin) + "ms");
+      //System.out.println("Created " + EDGES_PER_VERTEX + " edges per vertex in " + sourceIndex + " vertices in " + (System.currentTimeMillis() - begin) + "ms");
 
     } finally {
       database.commit();
       final long elapsed = System.currentTimeMillis() - begin;
-      System.out.println("Creation of edges finished in " + elapsed + "ms");
+      //System.out.println("Creation of edges finished in " + elapsed + "ms");
     }
   }
 
   private Vertex[] loadVertices() {
-    System.out.println("Start inserting " + EDGES_PER_VERTEX + " edges per vertex...");
+    //System.out.println("Start inserting " + EDGES_PER_VERTEX + " edges per vertex...");
 
     final Vertex[] cachedVertices = new Vertex[VERTICES];
 
-    System.out.println("Loading " + VERTICES + " in RAM...");
+    //System.out.println("Loading " + VERTICES + " in RAM...");
     database.transaction((tx) -> {
       final long begin = System.currentTimeMillis();
       try {
@@ -131,16 +131,16 @@ public class InsertGraphIndexTest extends TestHelper {
         for (; counter < VERTICES; ++counter) {
           final IndexCursor cursor = database.lookupByKey(VERTEX_TYPE_NAME, new String[] { "id" }, new Object[] { counter });
           if (!cursor.hasNext()) {
-            System.out.println("Vertex with id " + counter + " was not found");
+            //System.out.println("Vertex with id " + counter + " was not found");
             continue;
           }
 
           cachedVertices[counter] = (Vertex) cursor.next().getRecord();
         }
-        System.out.println("Loaded " + counter + " vertices in " + (System.currentTimeMillis() - begin) + "ms");
+        //System.out.println("Loaded " + counter + " vertices in " + (System.currentTimeMillis() - begin) + "ms");
       } finally {
         final long elapsed = System.currentTimeMillis() - begin;
-        System.out.println("Loaded all vertices in RAM in " + elapsed + "ms -> " + (VERTICES / (elapsed / 1000F)) + " ops/sec");
+        //System.out.println("Loaded all vertices in RAM in " + elapsed + "ms -> " + (VERTICES / (elapsed / 1000F)) + " ops/sec");
       }
     });
 
@@ -150,7 +150,7 @@ public class InsertGraphIndexTest extends TestHelper {
   }
 
   private void createVertices() {
-    System.out.println("Start inserting " + VERTICES + " vertices...");
+    //System.out.println("Start inserting " + VERTICES + " vertices...");
 
     long startOfTest = System.currentTimeMillis();
 
@@ -177,7 +177,7 @@ public class InsertGraphIndexTest extends TestHelper {
         database.async().createRecord(vertex, null);
       }
 
-      System.out.println("Inserted " + vertexIndex + " vertices in " + (System.currentTimeMillis() - startOfTest) + "ms");
+      //System.out.println("Inserted " + vertexIndex + " vertices in " + (System.currentTimeMillis() - startOfTest) + "ms");
 
       database.async().waitCompletion();
 
@@ -185,7 +185,7 @@ public class InsertGraphIndexTest extends TestHelper {
 
     } finally {
       final long elapsed = System.currentTimeMillis() - startOfTest;
-      System.out.println("Insertion finished in " + elapsed + "ms -> " + (VERTICES / (elapsed / 1000F)) + " ops/sec");
+      //System.out.println("Insertion finished in " + elapsed + "ms -> " + (VERTICES / (elapsed / 1000F)) + " ops/sec");
     }
   }
 
@@ -203,7 +203,7 @@ public class InsertGraphIndexTest extends TestHelper {
   }
 
   private void checkGraph(Vertex[] cachedVertices) {
-    System.out.println("Checking graph with " + VERTICES + " vertices");
+    //System.out.println("Checking graph with " + VERTICES + " vertices");
 
     final int expectedEdges = Math.min(VERTICES, EDGES_PER_VERTEX);
 
@@ -222,12 +222,12 @@ public class InsertGraphIndexTest extends TestHelper {
         if (++edges > EDGES_PER_VERTEX)
           break;
       }
-      System.out.println("Checked " + expectedEdges + " edges per vertex in " + i + " vertices in " + (System.currentTimeMillis() - begin) + "ms");
+      //System.out.println("Checked " + expectedEdges + " edges per vertex in " + i + " vertices in " + (System.currentTimeMillis() - begin) + "ms");
 
     } finally {
       database.commit();
       final long elapsed = System.currentTimeMillis() - begin;
-      System.out.println("Check of graph finished in " + elapsed + "ms");
+      //System.out.println("Check of graph finished in " + elapsed + "ms");
     }
   }
 }

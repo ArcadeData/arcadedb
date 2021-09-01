@@ -405,7 +405,7 @@ public class QueryTest extends TestHelper {
         rs.close();
 
         rs = db.query("SQL", "MATCH {type:" + vertexClass + ", as:a} -" + edgeClass + "->{}  RETURN $patterns");
-        System.out.println(rs.getExecutionPlan().get().prettyPrint(0, 2));
+        rs.getExecutionPlan().get().prettyPrint(0, 2);
         Assertions.assertTrue(rs.hasNext());
         Result item = rs.next();
         Assertions.assertFalse(rs.hasNext());
@@ -437,7 +437,7 @@ public class QueryTest extends TestHelper {
         rs.close();
 
         rs = db.query("SQL", "MATCH {type:" + vertexClass + ", as:a} --> {}  RETURN $patterns");
-        System.out.println(rs.getExecutionPlan().get().prettyPrint(0, 2));
+        rs.getExecutionPlan().get().prettyPrint(0, 2);
         Assertions.assertTrue(rs.hasNext());
         Result item = rs.next();
         Assertions.assertFalse(rs.hasNext());

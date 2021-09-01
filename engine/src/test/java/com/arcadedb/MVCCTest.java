@@ -115,15 +115,15 @@ public class MVCCTest extends TestHelper {
         Assertions.assertTrue(mvccErrors.get() > 0);
         Assertions.assertEquals(0, otherErrors.get());
 
-        System.out.println("Insertion finished in " + (System.currentTimeMillis() - begin) + "ms, managed mvcc exceptions " + mvccErrors.get());
+        //System.out.println("Insertion finished in " + (System.currentTimeMillis() - begin) + "ms, managed mvcc exceptions " + mvccErrors.get());
 
         database.drop();
         database = factory.create();
       }
 
-      LogManager.instance().flush();
-      System.out.flush();
-      System.out.println("----------------");
+      //LogManager.instance().flush();
+      //System.out.flush();
+      //System.out.println("----------------");
     }
   }
 

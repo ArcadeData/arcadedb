@@ -105,19 +105,19 @@ public class RandomTestSingleThread extends TestHelper {
     } finally {
       new DatabaseChecker().check(database, 0);
 
-      System.out.println(
-          "Test finished in " + (System.currentTimeMillis() - begin) + "ms, mvccExceptions=" + mvccErrors.get() + " otherExceptions=" + otherErrors.get());
+      //System.out.println(
+      //    "Test finished in " + (System.currentTimeMillis() - begin) + "ms, mvccExceptions=" + mvccErrors.get() + " otherExceptions=" + otherErrors.get());
     }
 
-    LogManager.instance().flush();
-    System.out.flush();
-    System.out.println("----------------");
+    //LogManager.instance().flush();
+    //System.out.flush();
+    //System.out.println("----------------");
   }
 
   private void createTransactions(Database database) {
     final int txOps = rnd.nextInt(100);
 
-    LogManager.instance().log(this, Level.INFO, "Creating %d transactions...", null, txOps);
+    //LogManager.instance().log(this, Level.INFO, "Creating %d transactions...", null, txOps);
 
     for (long txId = 0; txId < txOps; ++txId) {
       final MutableDocument tx = database.newVertex("Transaction");

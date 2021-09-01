@@ -3053,7 +3053,7 @@ public class SelectStatementExecutionTest extends TestHelper {
             Assertions.assertNotNull(item);
             Assertions.assertNotNull(item.getProperty("name"));
             String name = item.getProperty("name");
-            System.out.println(name);
+            //System.out.println(name);
             if (i > 0) {
                 Assertions.assertTrue(name.compareTo(last) >= 0);
             }
@@ -4215,7 +4215,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 
         for (int i = 0; i < 5; i++) {
             Assertions.assertTrue(result.hasNext());
-            System.out.println(result.next());
+            //System.out.println(result.next());
         }
         Assertions.assertFalse(result.hasNext());
         result.close();
@@ -4240,7 +4240,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 
         for (int i = 0; i < 6; i++) {
             Assertions.assertTrue(result.hasNext());
-            System.out.println(result.next());
+            //System.out.println(result.next());
         }
         Assertions.assertFalse(result.hasNext());
         result.close();

@@ -38,7 +38,6 @@ import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.Sort;
 import org.apache.lucene.store.FSDirectory;
 import org.junit.jupiter.api.Assertions;
-import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.nio.file.Path;
@@ -71,7 +70,7 @@ public class PlainLuceneFullTextIndexTest {
               + "\n"
               + "Jay endured kidney problems for most of his life, according to his wife, and relied on dialysis. His sister donated one of her own. Miner died due to complications from kidney failure at the age of 62, just two months after Commodore declared bankruptcy.";
 
-      System.out.println("path = " + path.toAbsolutePath());
+      //System.out.println("path = " + path.toAbsolutePath());
       final FSDirectory directory = FSDirectory.open(path);
 
       Analyzer analyzer = new StandardAnalyzer();
@@ -114,7 +113,7 @@ public class PlainLuceneFullTextIndexTest {
       // Iterate through the results:
       for (int i = 0; i < hits.length; i++) {
         Document hitDoc = searcher.doc(hits[i].doc);
-        System.out.print(hitDoc.get("id") + " - ");
+        //System.out.print(hitDoc.get("id") + " - ");
       }
 
       reader.close();

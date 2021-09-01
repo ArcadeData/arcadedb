@@ -39,7 +39,7 @@ public class UpdateStatementTest {
       return result;
     } catch (Exception e) {
       if (isCorrect) {
-        System.out.println(query);
+        //System.out.println(query);
         e.printStackTrace();
         fail();
       }
