@@ -43,7 +43,7 @@ public class ContextConfiguration implements Serializable {
   /**
    * Initializes the context with custom parameters.
    *
-   * @param iConfig Map of parameters of type Map<String, Object>.
+   * @param iConfig Map of parameters of type {@literal Map<String, Object>}.
    */
   public ContextConfiguration(final Map<String, Object> iConfig) {
     this.config.putAll(iConfig);

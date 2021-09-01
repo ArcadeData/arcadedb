@@ -25,10 +25,10 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.function.SQLFunctionAbstract;
 
 /**
- * Returns the passed <code>field/value</code> (or optional parameter <code>return_value_if_not_null</code>) if
- * <code>field/value</code> is <b>not</b> null; otherwise it returns <code>return_value_if_null</code>.
+ * Returns the passed {@literal field/value} (or optional parameter {@literal return_value_if_not_null}) if
+ * {@literal field/value} is <b>not</b> null; otherwise it returns {@literal return_value_if_null}.
  *
- * <p>
+ * <br>
  * Syntax: <blockquote>
  *
  * <pre>
@@ -37,21 +37,21 @@ import com.arcadedb.query.sql.function.SQLFunctionAbstract;
  *
  * </blockquote>
  *
- * <p>
+ * <br>
  * Examples: <blockquote>
  *
  * <pre>
  * SELECT <b>ifnull('a', 'b')</b> FROM ...
- *  -> 'a'
+ *  -&gt; 'a'
  *
  * SELECT <b>ifnull('a', 'b', 'c')</b> FROM ...
- *  -> 'c'
+ *  -&gt; 'c'
  *
  * SELECT <b>ifnull(null, 'b')</b> FROM ...
- *  -> 'b'
+ *  -&gt; 'b'
  *
  * SELECT <b>ifnull(null, 'b', 'c')</b> FROM ...
- *  -> 'b'
+ *  -&gt; 'b'
  * </pre>
  *
  * </blockquote>

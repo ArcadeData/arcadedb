@@ -437,7 +437,7 @@ public enum GlobalConfiguration {
   }
 
   /**
-   * @return <code>true</code> if configuration was changed from default value and <code>false</code> otherwise.
+   * @return {@literal true} if configuration was changed from default value and {@literal false} otherwise.
    */
   public boolean isChanged() {
     return value != nullValue;

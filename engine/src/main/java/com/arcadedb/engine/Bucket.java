@@ -38,7 +38,7 @@ import static com.arcadedb.database.Binary.LONG_SERIALIZED_SIZE;
 
 /**
  * PAGE CONTENT = [version(long:8),recordCountInPage(short:2),recordOffsetsInPage(2048*uint=8192)]
- * <p>
+ * <br>
  * Record size is the length of the record or -1 if a placeholder is stored and -2 for the placeholder itself.
  */
 public class Bucket extends PaginatedComponent {

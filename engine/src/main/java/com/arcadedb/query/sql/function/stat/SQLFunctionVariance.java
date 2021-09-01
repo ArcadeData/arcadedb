@@ -30,8 +30,8 @@ import com.arcadedb.query.sql.function.SQLFunctionAbstract;
  * <p>
  * This class uses the Weldford's algorithm (presented in Donald Knuth's Art of Computer Programming) to avoid multiple distribution
  * values' passes. When executed in distributed mode it uses the Chan at al. pairwise variance algorithm to merge the results.
- * <p>
- * <p>
+ * <br>
+ * <br>
  * <b>References</b>
  * </p>
  *

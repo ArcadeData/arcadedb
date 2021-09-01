@@ -26,9 +26,9 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.function.SQLFunctionAbstract;
 
 /**
- * Returns the first <code>field/value</code> not null parameter. if no <code>field/value</code> is <b>not</b> null, returns null.
- * <p>
- * <p>
+ * Returns the first {@literal field/value} not null parameter. if no {@literal field/value} is <b>not</b> null, returns null.
+ * <br>
+ * <br>
  * Syntax: <blockquote>
  *
  * <pre>
@@ -36,22 +36,22 @@ import com.arcadedb.query.sql.function.SQLFunctionAbstract;
  * </pre>
  *
  * </blockquote>
- * <p>
- * <p>
+ * <br>
+ * <br>
  * Examples: <blockquote>
  *
  * <pre>
  * SELECT <b>coalesce('a', 'b')</b> FROM ...
- *  -> 'a'
+ *  -&gt; 'a'
  *
  * SELECT <b>coalesce(null, 'b')</b> FROM ...
- *  -> 'b'
+ *  -&gt; 'b'
  *
  * SELECT <b>coalesce(null, null, 'c')</b> FROM ...
- *  -> 'c'
+ *  -&gt; 'c'
  *
  * SELECT <b>coalesce(null, null)</b> FROM ...
- *  -> null
+ *  -&gt; null
  *
  * </pre>
  *

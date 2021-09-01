@@ -30,7 +30,7 @@ import java.io.Serializable;
 /**
  * It represents the logical address of a record in the database. The record id is composed by the bucket id (the bucket containing the record) and the offset
  * as the absolute position of the record in the bucket.
- * <p>
+ * <br>
  * Immutable class.
  */
 public class RID implements Identifiable, Comparable<Identifiable>, Serializable {

@@ -34,18 +34,18 @@ import java.util.List;
  * </ul>
  *
  * An example:
- * <code>
+ * {@literal
  *   select max(a + b) + (max(b + c * 2) + 1 + 2) * 3 as foo, max(d) + max(e), f from " + className
- * </code>
+ * }
  * will become
- * <code>
+ * {@literal
  *
  *   a + b AS _$$$OALIAS$$_1, b + c * 2 AS _$$$OALIAS$$_3, d AS _$$$OALIAS$$_5, e AS _$$$OALIAS$$_7, f
  *
  *   max(_$$$OALIAS$$_1) AS _$$$OALIAS$$_0, max(_$$$OALIAS$$_3) AS _$$$OALIAS$$_2, max(_$$$OALIAS$$_5) AS _$$$OALIAS$$_4, max(_$$$OALIAS$$_7) AS _$$$OALIAS$$_6, f
  *
  *   _$$$OALIAS$$_0 + (_$$$OALIAS$$_2 + 1 + 2) * 3 AS `foo`, _$$$OALIAS$$_4 + _$$$OALIAS$$_6 AS `max(d) + max(e)`, f
- * </code>
+ * }
  *
  *
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)

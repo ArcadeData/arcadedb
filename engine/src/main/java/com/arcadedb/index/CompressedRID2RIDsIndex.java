@@ -39,15 +39,15 @@ import java.util.logging.Level;
  * Map like optimized to avoid stressing the GC by using mechanical sympathy technique + compression of key and values.
  * This class is not synchronized. The key is a RID and values are pairs of RIDs. This Map implementation doesn't support the overwrite of a
  * value. Values cannot be null.
- * <p>
+ * <br>
  * This index is used for invert incoming edge creation.
- * <p>
+ * <br>
  * A Binary object is used to store the hash table (the first part of it) and then keys and values. The RID key is serialized compressed in
  * the position pointed by the hash table, then a fixed-size integer containing the next entry (with the same hash) and after that the
  * compressed RIDs pair (edge+vertex). Another slot is kept to point to the previous entry. The hash table always points to the last element
  * with a linked list in the only direction of the previous.
  *
- * @TODO support up to 4GB by using unsigned int
+ * TODO support up to 4GB by using unsigned int
  */
 public class CompressedRID2RIDsIndex {
   protected final Database         database;

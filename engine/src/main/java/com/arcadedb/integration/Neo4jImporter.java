@@ -55,7 +55,7 @@ import java.util.zip.GZIPInputStream;
 /**
  * Importer of a Neo4j dataabase exported in JSONL format. To export a Neo4j database follow the instructions in https://neo4j.com/labs/apoc/4.3/export/json/.
  * The resulting file contains one json per line.
- * <p>
+ * <br>
  * Neo4j is a registered mark of Neo4j, Inc.
  *
  * @author Luca Garulli

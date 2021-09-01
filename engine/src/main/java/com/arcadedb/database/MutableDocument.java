@@ -194,7 +194,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   /**
    * Sets the property values in the document from a map. If any properties has been defined in the schema, the value is converted according to the property type.
    *
-   * @param properties Map<String,Object> containing pairs of name (String) and value (Object)
+   * @param properties {@literal Map<String,Object>} containing pairs of name (String) and value (Object)
    */
   public MutableDocument set(final Map<String, Object> properties) {
     checkForLazyLoadingProperties();

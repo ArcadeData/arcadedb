@@ -115,7 +115,7 @@ public class Constants {
   }
 
   /**
-   * Returns the complete text of the current Arcadedb version.
+   * @return the complete text of the current Arcadedb version.
    */
   public static String getVersion() {
     String buffer = getRawVersion();
@@ -143,7 +143,7 @@ public class Constants {
   }
 
   /**
-   * Returns the Git branch of the build.
+   * @return the Git branch of the build.
    */
   public static String getBranch() {
     final String b = properties.getProperty("branch");
@@ -167,7 +167,7 @@ public class Constants {
   }
 
   /**
-   * Returns true if current Arcadedb version is a snapshot.
+   * @return true if current Arcadedb version is a snapshot.
    */
   public static boolean isSnapshot() {
     return properties.getProperty("version").endsWith("SNAPSHOT");

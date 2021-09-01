@@ -44,7 +44,7 @@ import com.arcadedb.database.Identifiable;
 /**
  * Interface that defines a SQL Function. Functions can be state-less if registered as instance, or state-full when registered as
  * class. State-less function are reused across queries, so don't keep any run-time information inside of it. State-full function,
- * instead, stores Implement it and register it with: <code>OSQLParser.getInstance().registerFunction()</code> to being used by the
+ * instead, stores Implement it and register it with: {@literal OSQLParser.getInstance().registerFunction()} to being used by the
  * SQL engine.
  * <p>
  * ??? could it be possible to have a small piece of code here showing where to register a function using services ???

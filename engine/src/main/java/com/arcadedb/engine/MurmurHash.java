@@ -23,14 +23,14 @@ package com.arcadedb.engine;
 
 /**
  * Murmur hash 2.0.
- * <p>
+ * <br>
  * The murmur hash is a relative fast hash function from
  * http://murmurhash.googlepages.com/ for platforms with efficient
  * multiplication.
- * <p>
+ * <br>
  * This is a re-implementation of the original C code plus some
  * additional features.
- * <p>
+ * <br>
  * Public domain.
  *
  * @author Viliam Holub

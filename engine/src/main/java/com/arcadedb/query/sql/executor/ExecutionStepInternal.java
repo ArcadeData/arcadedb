@@ -33,9 +33,9 @@ import java.util.List;
  * <i>last</i> step of the execution plan</p> <p>At each `next()` invocation, the step typically fetches a record from the previous
  * (upstream) step, does its elaboration (eg. for a filtering step, it can discard the record and fetch another one if it doesn't
  * match the conditions) and returns the elaborated step</p>
- * <p>
- * <p>The invocation of <code>syncPull(ctx, nResults)</code> has to return a result set of at most nResults records. If the upstream
- * (the previous steps) return more records, they have to be returned by next call of <code>syncPull()</code>. The returned result
+ * <br>
+ * <p>The invocation of {@literal syncPull(ctx, nResults)} has to return a result set of at most nResults records. If the upstream
+ * (the previous steps) return more records, they have to be returned by next call of {@literal syncPull()}. The returned result
  * set can have less than nResults records ONLY if current step cannot produce any more records (eg. the upstream does not have any
  * more records)</p>
  *

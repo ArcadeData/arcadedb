@@ -39,7 +39,7 @@ import java.util.logging.Level;
 
 /**
  * HEADER = [itemCount(int:4),pageSize(int:4)] CONTENT-PAGES = [propertyName(string)]
- * <p>
+ * <br>
  */
 public class Dictionary extends PaginatedComponent {
   public static final  String               DICT_EXT               = "dict";

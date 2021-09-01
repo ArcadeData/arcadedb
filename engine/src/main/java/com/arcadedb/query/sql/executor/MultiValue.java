@@ -237,7 +237,7 @@ public class MultiValue {
   }
 
   /**
-   * Returns an <code>Iterable<Object></code> object to browse the multi-value instance (array, collection or map).
+   * Returns an {@literal Iterable<Object>} object to browse the multi-value instance (array, collection or map).
    *
    * @param iObject Multi-value object (array, collection or map)
    */
@@ -264,7 +264,7 @@ public class MultiValue {
   }
 
   /**
-   * Returns an <code>Iterable<Object></code> object to browse the multi-value instance (array, collection or map).
+   * Returns an {@literal Iterable<Object>} object to browse the multi-value instance (array, collection or map).
    *
    * @param iObject             Multi-value object (array, collection or map)
    * @param iForceConvertRecord allow to force settings to convert RIDs to records while browsing.
@@ -292,7 +292,7 @@ public class MultiValue {
   }
 
   /**
-   * Returns an <code>Iterator<Object></code> object to browse the multi-value instance (array, collection or map)
+   * Returns an {@literal Iterator<Object>} object to browse the multi-value instance (array, collection or map)
    *
    * @param iObject             Multi-value object (array, collection or map)
    * @param iForceConvertRecord allow to force settings to convert RIDs to records while browsing.
@@ -316,7 +316,7 @@ public class MultiValue {
   }
 
   /**
-   * Returns an <code>Iterator<Object></code> object to browse the multi-value instance (array, collection or map)
+   * Returns an {@literal Iterator<Object>} object to browse the multi-value instance (array, collection or map)
    *
    * @param iObject Multi-value object (array, collection or map)
    */

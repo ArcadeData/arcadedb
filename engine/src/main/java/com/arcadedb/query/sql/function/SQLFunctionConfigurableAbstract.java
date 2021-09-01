@@ -22,8 +22,8 @@ package com.arcadedb.query.sql.function;
 
 /**
  * Abstract class to extend to build Custom SQL Functions that saves the configured parameters. Extend it and register it with:
- * <code>OSQLParser.getInstance().registerStatelessFunction()</code> or
- * <code>OSQLParser.getInstance().registerStatefullFunction()</code> to being used by the SQL engine.
+ * {@literal OSQLParser.getInstance().registerStatelessFunction()} or
+ * {@literal OSQLParser.getInstance().registerStatefullFunction()} to being used by the SQL engine.
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  *

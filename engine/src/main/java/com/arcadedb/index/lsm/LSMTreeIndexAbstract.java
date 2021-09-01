@@ -49,11 +49,11 @@ import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
  * Abstract class for LSM-based indexes. The first page contains 2 bytes to store key and value types. The pages are populated from the head of the page
  * with the pointers to the pair key/value that starts from the tail. A page is full when there is no space between the head
  * (key pointers) and the tail (key/value pairs).
- * <p>
+ * <br>
  * When a page is full, another page is created, waiting for a compaction.
- * <p>
+ * <br>
  * HEADER ROOT PAGE (1st) = [offsetFreeKeyValueContent(int:4),numberOfEntries(int:4),mutable(boolean:1),compactedPageNumberOfSeries(int:4),subIndexFileId(int:4),numberOfKeys(byte:1),keyType(byte:1)*]
- * <p>
+ * <br>
  * HEADER Nst PAGE        = [offsetFreeKeyValueContent(int:4),numberOfEntries(int:4),mutable(boolean:1),compactedPageNumberOfSeries(int:4)]
  */
 public abstract class LSMTreeIndexAbstract extends PaginatedComponent {

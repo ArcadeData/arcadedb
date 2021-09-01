@@ -334,7 +334,7 @@ public class BinaryComparator {
    * @param buffer2 Second value to compare
    * @param type2   Type of second value
    *
-   * @return 0 if they match, >0 if first value is major than second, <0 in case is minor
+   * @return 0 if they match, &gt;0 if first value is major than second, &lt;0 in case is minor
    */
   public int compare(final Database database, final Binary buffer1, final byte type1, final Binary buffer2, final byte type2) {
     final Object value1 = serializer.deserializeValue(database, buffer1, type1, null);

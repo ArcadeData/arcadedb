@@ -31,11 +31,11 @@ package com.arcadedb.query.sql.parser;
  * <p>
  * the chain is following:
  * <p>
- * (identifier: foo) -> (modifier: bar) -> (modifier: baz) -> (modifier: name)
+ * (identifier: foo) -&gt; (modifier: bar) -&gt; (modifier: baz) -&gt; (modifier: name)
  * <p>
  * The top level UpdateItem calculates the value foo and will pass it to the modifier.
- * The modifier calculats the value of &ltdocsToUpdate&gt; = foo.bar.baz (that is a collection) an returns
- * to the top level UpdateItem an UpdateContext containig { docsToUpdate = &ltdocsToUpdate&gt;, fieldToSet = 'name'}
+ * The modifier calculates the value of &lt;docsToUpdate&gt; = foo.bar.baz (that is a collection) and returns
+ * to the top level UpdateItem an UpdateContext containing { docsToUpdate = &lt;docsToUpdate&gt;, fieldToSet = 'name'}
  *
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */

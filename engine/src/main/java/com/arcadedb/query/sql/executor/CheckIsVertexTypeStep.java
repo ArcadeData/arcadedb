@@ -29,9 +29,7 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 
 /**
- * <p>
  * This step is used just as a gate check for classes (eg. for CREATE VERTEX to make sure that the passed class is a vertex class).
- * </p>
  *
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */

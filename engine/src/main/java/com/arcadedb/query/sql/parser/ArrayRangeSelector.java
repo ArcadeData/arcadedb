@@ -96,7 +96,7 @@ public class ArrayRangeSelector extends SimpleNode {
     if (toSelector != null) {
       lTo = toSelector.getValue(iCurrentRecord, result, ctx);
     }
-    if(included){
+    if (included) {
       lTo++;
     }
     if (lFrom > lTo) {
@@ -136,7 +136,7 @@ public class ArrayRangeSelector extends SimpleNode {
     if (toSelector != null) {
       lTo = toSelector.getValue(iCurrentRecord, result, ctx);
     }
-    if(included){
+    if (included) {
       lTo++;
     }
     if (lFrom > lTo) {
@@ -227,13 +227,6 @@ public class ArrayRangeSelector extends SimpleNode {
     return toSelector != null && toSelector.refersToParent();
   }
 
-  /**
-   * @param target
-   * @param value
-   * @param ctx
-   *
-   * @return
-   */
   public void setValue(Object target, Object value, CommandContext ctx) {
     if (target == null) {
       return;
@@ -387,8 +380,7 @@ public class ArrayRangeSelector extends SimpleNode {
         count++;
       }
     } else {
-      throw new CommandExecutionException(
-          "Trying to remove elements from " + currentValue + " (" + currentValue.getClass().getSimpleName() + ")");
+      throw new CommandExecutionException("Trying to remove elements from " + currentValue + " (" + currentValue.getClass().getSimpleName() + ")");
     }
   }
 

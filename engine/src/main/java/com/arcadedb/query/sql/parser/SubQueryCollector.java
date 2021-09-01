@@ -30,17 +30,17 @@ import java.util.Map;
  * An example:
  * <br>
  * <br>
- * <code>
+ * {@literal
  * select from foo where name in (select name from bar)
- * </code>
+ * }
  * <br><br>
  * will become
  * <br><br>
- * <code>
+ * {@literal
  * select from foo<br>
  * let _$$$SUBQUERY$$_0 = (select name from bar)<br>
  * where name in _$$$SUBQUERY$$_0
- * </code>
+ * }
  * <br>
  *
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)

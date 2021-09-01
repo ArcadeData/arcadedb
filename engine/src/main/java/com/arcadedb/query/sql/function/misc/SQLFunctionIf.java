@@ -29,23 +29,20 @@ import java.util.logging.Level;
 
 /**
  * Returns different values based on the condition. If it's true the first value is returned, otherwise the second one.
- * <p>
- * <p>
+ * <br>
  * Syntax: <blockquote>
  *
- * <pre>
- * if(&lt;field|value|expression&gt;, &lt;return_value_if_true&gt; [,&lt;return_value_if_false&gt;])
- * </pre>
+ * {@literal if(&lt;field|value|expression&gt;, &lt;return_value_if_true&gt; [,&lt;return_value_if_false&gt;])}
  *
  * </blockquote>
- * <p>
- * <p>
+ * <br>
+ * <br>
  * Examples: <blockquote>
  *
  * <pre>
  * SELECT <b>if(rich, 'rich', 'poor')</b> FROM ...
  * <br>
- * SELECT <b>if( eval( 'salary > 1000000' ), 'rich', 'poor')</b> FROM ...
+ * SELECT <b>if( eval( 'salary &gt; 1000000' ), 'rich', 'poor')</b> FROM ...
  * </pre>
  *
  * </blockquote>

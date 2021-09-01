@@ -39,11 +39,11 @@ import java.util.logging.Level;
 /**
  * Manage the transaction context. When the transaction begins, the modifiedPages map is initialized. This allows to always delegate
  * to the transaction context, even if there is no active transaction by ignoring tx data.
- * <p>
+ * <br>
  * At commit time, the files are locked in order (to avoid deadlocks) and to allow parallel commit on different files.
- * <p>
+ * <br>
  * Format of WAL:
- * <p>
+ * <br>
  * txId:long|pages:int|&lt;segmentSize:int|fileId:int|pageNumber:long|pageModifiedFrom:int|pageModifiedTo:int|&lt;prevContent&gt;&lt;newContent&gt;segmentSize:int&gt;MagicNumber:long
  */
 public class TransactionContext implements Transaction {

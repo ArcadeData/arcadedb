@@ -38,7 +38,7 @@ package com.arcadedb.query.sql.executor;/*
 import com.arcadedb.database.Identifiable;
 
 /**
- * Methods can be used on various objects with different number of arguments. SQL syntax : <object_name>.<method_name>([parameters])
+ * Methods can be used on various objects with different number of arguments. SQL syntax: {@literal <object_name>.<method_name>([parameters])}
  *
  * @author Johann Sorel (Geomatys)
  */

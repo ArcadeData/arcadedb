@@ -36,11 +36,11 @@ import java.util.NoSuchElementException;
  * Map like optimized to avoid stressing the GC by using mechanical sympathy technique + compression of key and values.
  * This class is synchronized. Values are RIDs, key can be anything. This Map implementation doesn't support to overwrite a value.
  * Values cannot be null.
- * <p>
+ * <br>
  * A Binary object is used to store the hash table (the first part of it) and then keys and values. The key is serialized in the position
  * pointed by the hash table, then a fixed-size integer containing the next entry (with the same hash) and after that the compressed RID.
  *
- * @TODO support up to 4GB by using unsigned int
+ * TODO support up to 4GB by using unsigned int
  */
 public class CompressedAny2RIDIndex<K> {
   private final Database         database;

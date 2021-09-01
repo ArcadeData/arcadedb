@@ -27199,7 +27199,7 @@ if (jjtc000) {
 
   /**
    * Generate ParseException.
-   * @return new Exception object. Never <code>null</code>
+   * @return new Exception object. Never {@literal null}
    */
   public ParseException generateParseException() {
     jj_expentries.clear();
@@ -27256,7 +27256,7 @@ if (jjtc000) {
   }
 
   /**
-   * @return Always <code>false</code>.
+   * @return Always {@literal false}.
    */
   public final boolean trace_enabled() {
     return false;

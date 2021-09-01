@@ -44,17 +44,17 @@ import java.util.concurrent.atomic.AtomicInteger;
  * Full Text index implementation based on LSM-Tree index.
  * In order to support a full-text index, we leverage on the Lucene ecosystem in terms of Analyzer, Tokenizers, and stemmers, but leaving the current efficient
  * LSM-Tree implementation with the management for ACID(ity), bg compaction, wal, replication, ha, etc.
- * <p>
+ * <br>
  * The idea to index a text is:
- * <p>
+ * <br>
  * parse the text with the configured analyzer. The analyzer uses a tokenizer that splits the text into words, then the stemmer extracts the stem of each word.
  * In the end, the stop words are removed. The output of this phase is an array of strings to be indexed.
  * Put all the strings from the resulting array in the underlying LSM index with the RID as value (as with default LSM-Tree index implementation)
  * For the search, the process is similar, with the computation of the score:
- * <p>
+ * <br>
  * parse the text with the configured analyzer, extract the array of strings (see above)
- * search for all the strings in the array, by storing the multiple results in a `Map<String,List<RID>>` (as `Map<keyword,results>)
- * browse all the results in the maps, by adding all of them to a final `TreeMap<RID, AtomicInteger>` that represents the score, where the key is the record id
+ * search for all the strings in the array, by storing the multiple results in a {@literal Map<String,List<RID>>} (as {@literal Map<keyword,results>})
+ * browse all the results in the maps, by adding all of them to a final {@literal TreeMap<RID, AtomicInteger>} that represents the score, where the key is the record id
  * and the value is a counter that stores the score. At the beginning the score is 1. Every time a RID is already present in the score TreeMap, then the value
  * is incremented. In this way, the records that match a higher number of keywords will have a higher score. The score can start from 1 to Integer.MAX_INT.
  * the query result will be the TreeMap ordered by score, so if the query has a limit, only the first X items will be returned ordered by score desc
