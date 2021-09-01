@@ -37,7 +37,7 @@
     <packaging>jar</packaging>
 
     <properties>
-        <gremlin.version>3.4.10</gremlin.version>
+        <gremlin.version>3.4.12</gremlin.version>
     </properties>
 
     <dependencies>
