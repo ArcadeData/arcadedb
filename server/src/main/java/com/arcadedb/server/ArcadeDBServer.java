@@ -148,6 +148,8 @@ public class ArcadeDBServer implements ServerLogger {
     log(this, Level.INFO, "ArcadeDB Server started (CPUs=%d MAXRAM=%s)", Runtime.getRuntime().availableProcessors(),
         FileUtils.getSizeAsString(Runtime.getRuntime().maxMemory()));
 
+    log(this, Level.INFO, "Studio web tool available at http://localhost:%d ", httpServer.getPort());
+
     try {
       lifecycleEvent(TestCallback.TYPE.SERVER_UP, null);
     } catch (Exception e) {

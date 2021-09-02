@@ -43,6 +43,8 @@ public class HttpServer implements ServerPlugin {
   private       JsonSerializer jsonSerializer = new JsonSerializer();
   private final ArcadeDBServer server;
   private       String         listeningAddress;
+  private       String         host;
+  private       int            port;
 
   public HttpServer(final ArcadeDBServer server) {
     this.server = server;
@@ -68,8 +70,8 @@ public class HttpServer implements ServerPlugin {
 
     final boolean httpAutoIncrementPort = configuration.getValueAsBoolean(GlobalConfiguration.SERVER_HTTP_AUTOINCREMENT_PORT);
 
-    final String host = configuration.getValueAsString(GlobalConfiguration.SERVER_HTTP_INCOMING_HOST);
-    int port = configuration.getValueAsInteger(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT);
+    host = configuration.getValueAsString(GlobalConfiguration.SERVER_HTTP_INCOMING_HOST);
+    port = configuration.getValueAsInteger(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT);
 
     server.log(this, Level.INFO, "- Starting HTTP Server (host=%s port=%d)...", host, port);
 
@@ -132,6 +134,14 @@ public class HttpServer implements ServerPlugin {
 
   public String getListeningAddress() {
     return listeningAddress;
+  }
+
+  public String getHost() {
+    return host;
+  }
+
+  public int getPort() {
+    return port;
   }
 
   @Override
