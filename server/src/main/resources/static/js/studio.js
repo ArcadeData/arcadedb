@@ -17,7 +17,7 @@ function createDatabase(){
     confirmButtonText: 'Send',
   }).then((result) => {
     if (result.value) {
-      let database = $("#inputCreateDatabaseName").val().trim();
+      let database = escapeHtml( $("#inputCreateDatabaseName").val().trim() );
       if( database == "" ){
         globalNotify( "Error", "Database name empty", "danger");
         return;
@@ -35,14 +35,14 @@ function createDatabase(){
         updateDatabases();
       })
       .fail(function( jqXHR, textStatus, errorThrown ){
-        globalNotify( "Error", jqXHR.responseText, "danger");
+        globalNotify( "Error", escapeHtml( jqXHR.responseText ), "danger");
       });
     }
   });
 }
 
 function dropDatabase(){
-  let database = $("#inputDatabase").val().trim();
+  let database = escapeHtml( $("#inputDatabase").val().trim() );
   if( database == "" ){
     globalNotify( "Error", "Database not selected", "danger");
     return;
@@ -61,15 +61,15 @@ function dropDatabase(){
       updateDatabases();
     })
     .fail(function( jqXHR, textStatus, errorThrown ){
-      globalNotify( "Error", jqXHR.responseText, "danger");
+      globalNotify( "Error", escapeHtml( jqXHR.responseText ), "danger");
     });
   });
 }
 
 function executeCommand(){
-  let database = $("#inputDatabase").val();
-  let language = $("#inputLanguage").val();
-  let command = $("#inputCommand").val();
+  let database = escapeHtml( $("#inputDatabase").val() );
+  let language = escapeHtml( $("#inputLanguage").val() );
+  let command = escapeHtml( $("#inputCommand").val() );
 
   $("#executeSpinner").show();
 
@@ -105,7 +105,7 @@ function executeCommand(){
     let result = "<thead><tr>";
     for( colName in columns ){
       result += "<th scope='col'>";
-      result += colName;
+      result += escapeHtml( colName );
       result += "</th>";
     }
     result += "</tr></thead>";
@@ -117,7 +117,7 @@ function executeCommand(){
 
       for( colName in columns ){
         result += "<td>";
-        result += row[colName];
+        result += escapeHtml( row[colName] );
         result += "</td>";
       }
 
@@ -140,7 +140,7 @@ function executeCommand(){
 
   })
   .fail(function( jqXHR, textStatus, errorThrown ){
-    globalNotify( "Error", jqXHR.responseText, "danger");
+    globalNotify( "Error", escapeHtml( jqXHR.responseText ), "danger");
   })
   .always(function(data) {
     $("#executeSpinner").hide();
@@ -212,11 +212,11 @@ function make_base_auth(user, password) {
 }
 
 function login(){
-  var userName = $("#inputUserName").val().trim();
+  var userName = escapeHtml( $("#inputUserName").val().trim() );
   if( userName.length == 0 )
     return;
 
-  var userPassword = $("#inputUserPassword").val().trim();
+  var userPassword = escapeHtml( $("#inputUserPassword").val().trim() );
   if( userPassword.length == 0 )
     return;
 
@@ -249,7 +249,7 @@ function updateDatabases(){
     $("#loginPopup").modal("hide");
   })
   .fail(function( jqXHR, textStatus, errorThrown ){
-    globalNotify( "Error", jqXHR.responseText, "danger");
+    globalNotify( "Error", escapeHtml( jqXHR.responseText ), "danger");
   })
   .always(function(data) {
     $("#loginSpinner").hide();
@@ -271,4 +271,13 @@ function globalEraseCookie(key) {
   var keyValue = globalGetCookie(key);
   globalSetCookie(key, keyValue, '-1');
   return keyValue;
+}
+
+function escapeHtml(unsafe) {
+  return unsafe
+       .replace(/&/g, "&amp;")
+       .replace(/</g, "&lt;")
+       .replace(/>/g, "&gt;")
+       .replace(/"/g, "&quot;")
+       .replace(/'/g, "&#039;");
 }
