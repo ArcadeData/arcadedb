@@ -1,0 +1,134 @@
+<div class="modal fade" id="loginPopup" tabindex="-1" role="dialog" aria-labelledby="loginPopupLabel" aria-hidden="true">
+  <div class="modal-dialog" role="document">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="loginPopupLabel">Login to the server</h5>
+        <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+          <span aria-hidden="true">&times;</span>
+        </button>
+      </div>
+      <div class="container-fluid">
+        <div class="row" id="loginForm">
+          <div class="col-sm-9 col-md-7 col-lg-12">
+            <div class="main-card mb-3 card">
+              <div class="card-body">
+                <div class="form-signin">
+                  <div class="form-label-group">
+                    <input type="email" id="inputUserName" class="form-control" placeholder="User Name" required
+                           autofocus>
+                    <label for="inputUserName">User Name</label>
+                  </div>
+
+                  <div class="form-label-group">
+                    <input type="password" id="inputUserPassword" class="form-control" placeholder="Password"
+                           required>
+                    <label for="inputUserPassword">Password</label>
+                  </div>
+
+                  <button onclick="login(false)" class="btn btn-lg btn-primary btn-block" type="submit"> Sign in
+                    <img id="loginSpinner" class="ui-loading" src="/images/color-spin-small.svg">
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+var globalCredentials;
+
+$(function(){
+  $('#loginForm').keypress(function(e){
+    if(e.which == 13) {
+      login();
+    }
+  })
+})
+
+function globalNotify(title, message, type){
+  $.notify({
+    title: "<strong>"+title+"</strong>",
+    message: message,
+    z_index: 100000,
+    placement: {
+      from: "bottom",
+      align: "right"
+    },
+  },{
+    type: type
+  });
+}
+
+function make_base_auth(user, password) {
+  var tok = user + ':' + password;
+  var hash = btoa(tok);
+  return "Basic " + hash;
+}
+
+function login(){
+  var userName = $("#inputUserName").val().trim();
+  if( userName.length == 0 )
+    return;
+
+  var userPassword = $("#inputUserPassword").val().trim();
+  if( userPassword.length == 0 )
+    return;
+
+  $( "#loginSpinner" ).show();
+
+  globalCredentials = make_base_auth(userName, userPassword);
+
+  jQuery.ajax({
+    type: "GET",
+    url: "/api/v1/databases",
+    beforeSend: function (xhr){
+      xhr.setRequestHeader('Authorization', globalCredentials);
+    }
+  })
+  .done(function(data){
+    if( data.requireVerification != null ){
+      // ASK FOR VERIFICATION CODE
+      window.location.assign("/trust-device.html?userId=" + data.userId);
+      return;
+    }
+
+    globalUserId = data.userId;
+    globalUserEmail = data.userEmail;
+
+    globalSetCookie("sessionId" + data.port, data.sessionId, 1);
+    if( $("#loginPopup").length && ($("#loginPopup").data('bs.modal') || {})._isShown ){
+      $("#loginPopup").modal("hide");
+      return;
+    }
+
+  })
+  .fail(function( jqXHR, textStatus, errorThrown ){
+    globalNotify( "Error", jqXHR.responseText, "danger");
+  })
+  .always(function(data) {
+    $( "#loginSpinner" ).hide();
+  });
+}
+
+function globalSetCookie(key, value, expiry) {
+  var expires = new Date();
+  expires.setTime(expires.getTime() + (expiry * 24 * 60 * 60 * 1000));
+  document.cookie = key + '=' + value + ';expires=' + expires.toUTCString()+';path=/';
+}
+
+function globalGetCookie(key) {
+  var keyValue = document.cookie.match('(^|;) ?' + key + '=([^;]*)(;|$)');
+  return keyValue ? keyValue[2] : null;
+}
+
+function globalEraseCookie(key) {
+  var keyValue = globalGetCookie(key);
+  globalSetCookie(key, keyValue, '-1');
+  return keyValue;
+}
+
+</script>
