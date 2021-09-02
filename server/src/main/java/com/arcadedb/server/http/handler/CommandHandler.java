@@ -55,7 +55,6 @@ public class CommandHandler extends DatabaseAbstractHandler {
     final Map<String, Object> requestMap = json.toMap();
 
     final String language = (String) requestMap.get("language");
-
     final String command = (String) requestMap.get("command");
 
     if (command == null || command.isEmpty()) {
@@ -75,7 +74,7 @@ public class CommandHandler extends DatabaseAbstractHandler {
 
       final JsonSerializer serializer = httpServer.getJsonSerializer();
 
-      final String result = qResult.stream().map(r -> serializer.serializeResult(r).toString()).collect(Collectors.joining());
+      final String result = qResult.stream().map(r -> serializer.serializeResult(r).toString()).collect(Collectors.joining(","));
 
       if (database.isTransactionActive())
         database.commit();

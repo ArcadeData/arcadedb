@@ -1,8 +1,55 @@
 <div class="tab-pane active" id="tab-database" role="tabpanel">
   <div class="row">
-    <div class="col-12 text-center">
-      <button class="btn btn-primary" onclick="showLoginPopup()">Login</button>
-      to access the server.
+    <div class="col-12">
+      <div class="row" id="loginPanel">
+        <div class="col-12 text-center">
+          <button class="btn btn-primary" onclick="showLoginPopup()">Login</button>
+          to access the server.
+        </div>
+      </div>
+      <div class="row" id="databasePanel" style="display: none;">
+        <div class="col-1">
+          <label for="inputDatabase">Database</label>
+        </div>
+        <div class="col-2">
+          <select id="inputDatabase"></select>
+        </div>
+        <div class="col-1">
+          <label for="inputLanguage">Language</label>
+        </div>
+        <div class="col-2">
+          <select id="inputLanguage">
+            <option value="sql">SQL</option>
+            <option value="gremlin">Apache Gremlin</option>
+            <option value="cypher">Neo4j Cypher (Open Cypher)</option>
+            <option value="mongodb">MongoDB</option>
+          </select>
+        </div>
+        <div class="col-6">
+          &nbsp;
+        </div>
+
+        <div class="col-1">
+          <label for="inputCommand">Command
+            <br>
+            <button class="btn btn-primary" onclick="executeCommand()">Execute
+              <img id="executeSpinner" class="ui-loading" src="/images/color-spin-small.svg" style="display: none;">
+            </button>
+          </label>
+        </div>
+        <div class="col-11">
+          <textarea id="inputCommand" style="width: 100%; height: 100px;"></textarea>
+        </div>
+
+        <hr>
+
+        <div class="col-1">
+          <label>Result</label>
+        </div>
+        <div class="col-11">
+          <table id="result"></table>
+        </div>
+      </div>
     </div>
   </div>
 </div>
@@ -10,5 +57,66 @@
 <script>
 function showLoginPopup(){
   $("#loginPopup").modal("show");
+}
+
+function executeCommand(){
+  let database = $("#inputDatabase").val();
+  let language = $("#inputLanguage").val();
+  let command = $("#inputCommand").val();
+
+  $("#executeSpinner").show();
+
+  jQuery.ajax({
+    type: "POST",
+    url: "/api/v1/command/" + database,
+    data: JSON.stringify(
+      {
+        language: language,
+        command: command
+      }
+    ),
+    beforeSend: function (xhr){
+      xhr.setRequestHeader('Authorization', globalCredentials);
+    }
+  })
+  .done(function(data){
+    let columns = {};
+    for( i in data.result ){
+      let row = data.result[i];
+
+      for( p in row ){
+        if( !columns[p] )
+          columns[p] = true;
+      }
+    }
+
+    let result = "<tr>";
+    for( colName in columns ){
+      result += "<th scope='col'>";
+      result += colName;
+      result += "</th>";
+    }
+    result += "</tr>";
+
+    for( i in data.result ){
+      let row = data.result[i];
+      result += "<tr>";
+
+      for( colName in columns ){
+        result += "<td>";
+        result += row[colName];
+        result += "</td>";
+      }
+
+      result += "</tr>";
+    }
+    $("#result").html(result);
+  })
+  .fail(function( jqXHR, textStatus, errorThrown ){
+    globalNotify( "Error", jqXHR.responseText, "danger");
+  })
+  .always(function(data) {
+    $("#executeSpinner").hide();
+  });
 }
 </script>
