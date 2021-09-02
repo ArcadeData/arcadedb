@@ -49,8 +49,8 @@ public class DefaultLogger implements Logger {
   }
 
   public void installCustomFormatter() {
-    final boolean installCustomFormatter = Boolean
-        .parseBoolean(SystemVariableResolver.resolveSystemVariables("${" + ENV_INSTALL_CUSTOM_FORMATTER + "}", "true"));
+    final boolean installCustomFormatter = Boolean.parseBoolean(
+        SystemVariableResolver.INSTANCE.resolveSystemVariables("${" + ENV_INSTALL_CUSTOM_FORMATTER + "}", "true"));
 
     if (!installCustomFormatter)
       return;

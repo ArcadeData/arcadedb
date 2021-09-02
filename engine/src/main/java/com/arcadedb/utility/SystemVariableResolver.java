@@ -39,17 +39,17 @@ public class SystemVariableResolver implements VariableParserListener {
   public static final String VAR_BEGIN = "${";
   public static final String VAR_END   = "}";
 
-  private static SystemVariableResolver instance = new SystemVariableResolver();
+  public static SystemVariableResolver INSTANCE = new SystemVariableResolver();
 
-  public static String resolveSystemVariables(final String iPath) {
+  public String resolveSystemVariables(final String iPath) {
     return resolveSystemVariables(iPath, null);
   }
 
-  public static String resolveSystemVariables(final String iPath, final String iDefault) {
+  public String resolveSystemVariables(final String iPath, final String iDefault) {
     if (iPath == null)
       return iDefault;
 
-    return (String) VariableParser.resolveVariables(iPath, VAR_BEGIN, VAR_END, instance, iDefault);
+    return (String) VariableParser.resolveVariables(iPath, VAR_BEGIN, VAR_END, this, iDefault);
   }
 
   public static String resolveVariable(final String variable) {

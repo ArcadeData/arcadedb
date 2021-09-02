@@ -521,8 +521,8 @@ public enum GlobalConfiguration {
 
   public String getValueAsString() {
     return value != nullValue && value != null ?
-        SystemVariableResolver.resolveSystemVariables(value.toString(), "") :
-        defValue != null ? SystemVariableResolver.resolveSystemVariables(defValue.toString(), "") : null;
+        SystemVariableResolver.INSTANCE.resolveSystemVariables(value.toString(), "") :
+        defValue != null ? SystemVariableResolver.INSTANCE.resolveSystemVariables(defValue.toString(), "") : null;
   }
 
   public int getValueAsInteger() {

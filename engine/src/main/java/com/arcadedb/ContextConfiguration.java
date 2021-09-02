@@ -32,10 +32,19 @@ import java.util.concurrent.ConcurrentHashMap;
  * taken.
  **/
 public class ContextConfiguration implements Serializable {
-  private final Map<String, Object> config = new ConcurrentHashMap<String, Object>();
+  private final Map<String, Object>    config         = new ConcurrentHashMap<String, Object>();
+  private       SystemVariableResolver customResolver = new SystemVariableResolver() {
+    @Override
+    public String resolve(final String variable) {
+      Object result = config.get(variable);
+      if (result == null)
+        result = super.resolve(variable);
+      return result.toString();
+    }
+  };
 
   /**
-   * Empty constructor to create just a proxy for the OGlobalConfiguration. No values are setted.
+   * Empty constructor to create just a proxy for the OGlobalConfiguration. No values are set.
    */
   public ContextConfiguration() {
   }
@@ -133,6 +142,10 @@ public class ContextConfiguration implements Serializable {
     }
   }
 
+  public boolean hasValue(final String iName) {
+    return config != null && config.containsKey(iName);
+  }
+
   @SuppressWarnings("unchecked")
   public <T> T getValue(final String iName, final T iDefaultValue) {
     if (config != null && config.containsKey(iName))
@@ -161,7 +174,7 @@ public class ContextConfiguration implements Serializable {
     if (v == null)
       return null;
 
-    return SystemVariableResolver.resolveSystemVariables(v.toString(), "");
+    return getVariable(v.toString(), "");
   }
 
   public int getValueAsInteger(final GlobalConfiguration iConfig) {
@@ -199,5 +212,12 @@ public class ContextConfiguration implements Serializable {
 
   public void reset() {
     config.clear();
+  }
+
+  private String getVariable(final String name, final String defValue) {
+    String result = customResolver.resolveSystemVariables(name);
+    if (result == null)
+      result = defValue;
+    return result;
   }
 }
