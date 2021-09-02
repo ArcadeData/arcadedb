@@ -32,6 +32,7 @@ jobs:
         with:
           distribution: "adopt"
           java-version: 11
+          cache: 'maven'
 
       - name: Test
         run: mvn verify -PnoServerTest --batch-mode --quiet --errors --fail-at-end --show-version  --file pom.xml
