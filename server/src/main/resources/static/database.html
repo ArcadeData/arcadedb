@@ -1,55 +1,53 @@
-<div class="tab-pane active" id="tab-database" role="tabpanel">
-  <div class="row">
-    <div class="col-12">
-      <div class="row" id="loginPanel">
-        <div class="col-12 text-center">
-          <button class="btn btn-primary" onclick="showLoginPopup()">Login</button>
-          to access the server.
-        </div>
-      </div>
-      <div class="row" id="databasePanel" style="display: none;">
-        <div class="col-1">
-          <label for="inputDatabase">Database</label>
-        </div>
-        <div class="col-2">
-          <select id="inputDatabase"></select>
-        </div>
-        <div class="col-1">
-          <label for="inputLanguage">Language</label>
-        </div>
-        <div class="col-2">
-          <select id="inputLanguage">
-            <option value="sql">SQL</option>
-            <option value="gremlin">Apache Gremlin</option>
-            <option value="cypher">Neo4j Cypher (Open Cypher)</option>
-            <option value="mongodb">MongoDB</option>
-          </select>
-        </div>
-        <div class="col-6">
-          &nbsp;
-        </div>
+<div class="tab-pane fade show active" id="tab-database" role="tabpanel">
+  <div class="row" id="loginPanel">
+    <div class="col-12 text-center">
+      <button class="btn btn-primary" onclick="showLoginPopup()">Login</button>
+      to access the server.
+    </div>
+  </div>
+  <div class="row" id="databasePanel" style="display: none;">
+    <div class="col-1">
+      <label for="inputDatabase">Database</label>
+    </div>
+    <div class="col-2">
+      <select id="inputDatabase"></select>
+    </div>
+    <div class="col-1">
+      <label for="inputLanguage">Language</label>
+    </div>
+    <div class="col-2">
+      <select id="inputLanguage">
+        <option value="sql">SQL</option>
+        <option value="gremlin">Apache Gremlin</option>
+        <option value="cypher">Neo4j Cypher (Open Cypher)</option>
+        <option value="mongodb">MongoDB</option>
+      </select>
+    </div>
+    <div class="col-6">
+      &nbsp;
+    </div>
 
-        <div class="col-1">
-          <label for="inputCommand">Command
-            <br>
-            <button class="btn btn-primary" onclick="executeCommand()">Execute
-              <img id="executeSpinner" class="ui-loading" src="/images/color-spin-small.svg" style="display: none;">
-            </button>
-          </label>
-        </div>
-        <div class="col-11">
-          <textarea id="inputCommand" style="width: 100%; height: 100px;"></textarea>
-        </div>
+    <div class="col-1">
+      <label for="inputCommand">Command
+        <br><br>
+        <button class="btn btn-primary" onclick="executeCommand()">Execute
+          <img id="executeSpinner" class="ui-loading" src="/images/color-spin-small.svg" style="display: none;">
+        </button>
+      </label>
+    </div>
+    <div class="col-11">
+      <textarea id="inputCommand" style="width: 100%; height: 100px;"></textarea>
+    </div>
 
-        <hr>
+    <hr>
 
-        <div class="col-1">
-          <label>Result</label>
-        </div>
-        <div class="col-11">
-          <table id="result"></table>
-        </div>
-      </div>
+    <div class="col-1">
+      <label>Result (<span id="result-num"></span>)</label>
+      <br>
+      <label>Time <span id="result-elapsed"></span>ms</label>
+    </div>
+    <div class="col-11">
+      <table id="result" class="table table-striped table-sm" style="width: 100%"></table>
     </div>
   </div>
 </div>
@@ -66,6 +64,8 @@ function executeCommand(){
 
   $("#executeSpinner").show();
 
+  let beginTime = new Date();
+
   jQuery.ajax({
     type: "POST",
     url: "/api/v1/command/" + database,
@@ -80,6 +80,9 @@ function executeCommand(){
     }
   })
   .done(function(data){
+    if ( $.fn.dataTable.isDataTable( '#result' ) )
+      $('#result').DataTable().destroy();
+
     let columns = {};
     for( i in data.result ){
       let row = data.result[i];
@@ -90,14 +93,15 @@ function executeCommand(){
       }
     }
 
-    let result = "<tr>";
+    let result = "<thead><tr>";
     for( colName in columns ){
       result += "<th scope='col'>";
       result += colName;
       result += "</th>";
     }
-    result += "</tr>";
+    result += "</tr></thead>";
 
+    result += "<tbody>";
     for( i in data.result ){
       let row = data.result[i];
       result += "<tr>";
@@ -110,7 +114,21 @@ function executeCommand(){
 
       result += "</tr>";
     }
+    result += "</tbody>";
+
     $("#result").html(result);
+
+    $( "#result-num" ).html( data.result.length );
+
+    let elapsed = new Date() - beginTime;
+    $("#result-elapsed").html( elapsed );
+
+    $("#result").DataTable({
+      paging:   true,
+      pageLength: 25,
+      bLengthChange: true,
+    });
+
   })
   .fail(function( jqXHR, textStatus, errorThrown ){
     globalNotify( "Error", jqXHR.responseText, "danger");
