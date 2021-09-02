@@ -30,6 +30,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.EmbeddedDatabase;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.QueryEngineManager;
 import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.ha.ReplicatedDatabase;
 import com.arcadedb.server.http.HttpServer;
@@ -141,6 +142,8 @@ public class ArcadeDBServer implements ServerLogger {
     }
 
     status = STATUS.ONLINE;
+
+    log(this, Level.INFO, "Available query languages: %s", new QueryEngineManager().getAvailableLanguages());
 
     log(this, Level.INFO, "ArcadeDB Server started (CPUs=%d MAXRAM=%s)", Runtime.getRuntime().availableProcessors(),
         FileUtils.getSizeAsString(Runtime.getRuntime().maxMemory()));

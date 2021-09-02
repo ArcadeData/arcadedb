@@ -27,7 +27,9 @@ import com.arcadedb.query.gremlin.GremlinQueryEngine;
 import com.arcadedb.query.mongo.MongoQueryEngine;
 import com.arcadedb.query.sql.SQLQueryEngine;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 public class QueryEngineManager {
@@ -50,5 +52,14 @@ public class QueryEngineManager {
     if (impl == null)
       throw new IllegalArgumentException("Query engine '" + language + "' was not found");
     return impl.create(database);
+  }
+
+  public List<String> getAvailableLanguages() {
+    final List<String> available = new ArrayList<>();
+    for (QueryEngine.QueryEngineFactory impl : implementations.values()) {
+      if (impl.isAvailable())
+        available.add(impl.getLanguage());
+    }
+    return available;
   }
 }
