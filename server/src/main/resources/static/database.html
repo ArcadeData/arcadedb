@@ -9,8 +9,13 @@
     <div class="col-1">
       <label for="inputDatabase">Database</label>
     </div>
-    <div class="col-2">
+    <div class="col-3">
       <select id="inputDatabase"></select>
+      <button class="btn btn-pill" onclick="createDatabase()">+ Create</button>
+      <button class="btn btn-pill" onclick="dropDatabase()">- Drop</button>
+    </div>
+    <div class="col-5">
+      &nbsp;
     </div>
     <div class="col-1">
       <label for="inputLanguage">Language</label>
@@ -22,9 +27,6 @@
         <option value="cypher">Neo4j Cypher (Open Cypher)</option>
         <option value="mongodb">MongoDB</option>
       </select>
-    </div>
-    <div class="col-6">
-      &nbsp;
     </div>
 
     <div class="col-1">
@@ -51,90 +53,3 @@
     </div>
   </div>
 </div>
-
-<script>
-function showLoginPopup(){
-  $("#loginPopup").modal("show");
-}
-
-function executeCommand(){
-  let database = $("#inputDatabase").val();
-  let language = $("#inputLanguage").val();
-  let command = $("#inputCommand").val();
-
-  $("#executeSpinner").show();
-
-  let beginTime = new Date();
-
-  jQuery.ajax({
-    type: "POST",
-    url: "/api/v1/command/" + database,
-    data: JSON.stringify(
-      {
-        language: language,
-        command: command
-      }
-    ),
-    beforeSend: function (xhr){
-      xhr.setRequestHeader('Authorization', globalCredentials);
-    }
-  })
-  .done(function(data){
-    if ( $.fn.dataTable.isDataTable( '#result' ) )
-      $('#result').DataTable().destroy();
-
-    let columns = {};
-    for( i in data.result ){
-      let row = data.result[i];
-
-      for( p in row ){
-        if( !columns[p] )
-          columns[p] = true;
-      }
-    }
-
-    let result = "<thead><tr>";
-    for( colName in columns ){
-      result += "<th scope='col'>";
-      result += colName;
-      result += "</th>";
-    }
-    result += "</tr></thead>";
-
-    result += "<tbody>";
-    for( i in data.result ){
-      let row = data.result[i];
-      result += "<tr>";
-
-      for( colName in columns ){
-        result += "<td>";
-        result += row[colName];
-        result += "</td>";
-      }
-
-      result += "</tr>";
-    }
-    result += "</tbody>";
-
-    $("#result").html(result);
-
-    $( "#result-num" ).html( data.result.length );
-
-    let elapsed = new Date() - beginTime;
-    $("#result-elapsed").html( elapsed );
-
-    $("#result").DataTable({
-      paging:   true,
-      pageLength: 25,
-      bLengthChange: true,
-    });
-
-  })
-  .fail(function( jqXHR, textStatus, errorThrown ){
-    globalNotify( "Error", jqXHR.responseText, "danger");
-  })
-  .always(function(data) {
-    $("#executeSpinner").hide();
-  });
-}
-</script>
