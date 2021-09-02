@@ -19,11 +19,12 @@
  * under the License.
  */
 
-package com.arcadedb.importer;
+package com.arcadedb.importer.format;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.importer.*;
 import com.arcadedb.importer.graph.EdgeLinkedCallback;
 import com.arcadedb.importer.graph.GraphImporter;
 import com.arcadedb.index.CompressedAny2RIDIndex;
@@ -42,7 +43,7 @@ import java.io.InputStreamReader;
 import java.util.*;
 import java.util.logging.Level;
 
-public class CSVImporter extends AbstractContentImporter {
+public class CSVFormatImporter extends AbstractFormatImporter {
   private static final Object[] NO_PARAMS = new Object[] {};
   public static final  int      _32MB     = 32 * 1024 * 1024;
 

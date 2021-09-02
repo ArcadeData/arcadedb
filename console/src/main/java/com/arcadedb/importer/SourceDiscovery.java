@@ -21,6 +21,7 @@
 
 package com.arcadedb.importer;
 
+import com.arcadedb.importer.format.*;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.FileUtils;
 
@@ -59,15 +60,15 @@ public class SourceDiscovery {
 
     final Parser parser = new Parser(source, 0);
 
-    final ContentImporter contentImporter = analyzeSourceContent(parser, entityType, settings);
+    final FormatImporter formatImporter = analyzeSourceContent(parser, entityType, settings);
     parser.reset();
 
-    final SourceSchema sourceSchema = contentImporter.analyze(entityType, parser, settings, analyzedSchema);
+    final SourceSchema sourceSchema = formatImporter.analyze(entityType, parser, settings, analyzedSchema);
 
-    if (contentImporter == null)
+    if (formatImporter == null)
       LogManager.instance().log(this, Level.INFO, "Unknown format");
     else {
-      LogManager.instance().log(this, Level.INFO, "Recognized format %s (parsingLimitBytes=%s parsingLimitEntries=%d)", null, contentImporter.getFormat(),
+      LogManager.instance().log(this, Level.INFO, "Recognized format %s (parsingLimitBytes=%s parsingLimitEntries=%d)", null, formatImporter.getFormat(),
           FileUtils.getSizeAsString(limitBytes), limitEntries);
       if (!sourceSchema.getOptions().isEmpty()) {
         for (Map.Entry<String, String> o : sourceSchema.getOptions().entrySet())
@@ -100,13 +101,36 @@ public class SourceDiscovery {
 
     connection.connect();
 
-    return getSourceFromContent(new BufferedInputStream(connection.getInputStream()), connection.getContentLengthLong(), resource, new Callable<Void>() {
-      @Override
-      public Void call() throws Exception {
-        connection.disconnect();
-        return null;
-      }
-    });
+    return getSourceFromContent(new BufferedInputStream(connection.getInputStream()), connection.getContentLengthLong(), resource,
+        new com.arcadedb.utility.Callable<Void, Source>() {
+          @Override
+          public Void call(Source source) {
+            try {
+              connection.disconnect();
+
+              final HttpURLConnection connection = (HttpURLConnection) new URL(urlPath).openConnection();
+              connection.setRequestMethod("GET");
+              connection.setDoOutput(true);
+              connection.connect();
+
+              if (source.inputStream instanceof GZIPInputStream)
+                source.inputStream = new GZIPInputStream(connection.getInputStream(), 2048);
+              else if (source.inputStream instanceof ZipInputStream)
+                source.inputStream = new ZipInputStream(connection.getInputStream());
+              else
+                source.inputStream = new BufferedInputStream(connection.getInputStream());
+            } catch (Exception e) {
+              throw new ImportException("Error on reset remote resource", e);
+            }
+            return null;
+          }
+        }, new Callable<Void>() {
+          @Override
+          public Void call() throws Exception {
+            connection.disconnect();
+            return null;
+          }
+        });
   }
 
   private Source getSourceFromFile(final String path) throws IOException {
@@ -117,7 +141,23 @@ public class SourceDiscovery {
     final File file = new File(filePath);
     final BufferedInputStream fis = new BufferedInputStream(new FileInputStream(file));
 
-    return getSourceFromContent(fis, file.length(), resource, new Callable<Void>() {
+    return getSourceFromContent(fis, file.length(), resource, new com.arcadedb.utility.Callable<Void, Source>() {
+      @Override
+      public Void call(Source source) {
+        try {
+          source.inputStream.close();
+          if (source.inputStream instanceof GZIPInputStream)
+            source.inputStream = new GZIPInputStream(new FileInputStream(file), 2048);
+          else if (source.inputStream instanceof ZipInputStream)
+            source.inputStream = new ZipInputStream(new FileInputStream(file));
+          else
+            source.inputStream = new BufferedInputStream(new FileInputStream(file));
+        } catch (IOException e) {
+          throw new ImportException("Error on reset local resource", e);
+        }
+        return null;
+      }
+    }, new Callable<Void>() {
       @Override
       public Void call() throws Exception {
         fis.close();
@@ -126,7 +166,7 @@ public class SourceDiscovery {
     });
   }
 
-  private ContentImporter analyzeSourceContent(final Parser parser, final AnalyzedEntity.ENTITY_TYPE entityType, final ImporterSettings settings)
+  private FormatImporter analyzeSourceContent(final Parser parser, final AnalyzedEntity.ENTITY_TYPE entityType, final ImporterSettings settings)
       throws IOException {
 
     String knownFileType = null;
@@ -152,18 +192,18 @@ public class SourceDiscovery {
     if (knownFileType != null) {
       if (knownFileType.equalsIgnoreCase("csv")) {
         settings.options.put("delimiter", knownDelimiter);
-        return new CSVImporter();
+        return new CSVFormatImporter();
       } else if (knownFileType.equalsIgnoreCase("json"))
-        return new JSONImporter();
+        return new JSONFormatImporter();
       else if (knownFileType.equalsIgnoreCase("xml"))
-        return new XMLImporter();
+        return new XMLFormatImporter();
       else
         LogManager.instance().log(this, Level.WARNING, "File type '%s' is not supported. Trying to understand file type...", null, knownFileType);
     }
 
     parser.nextChar();
 
-    ContentImporter format = analyzeChar(parser, settings);
+    FormatImporter format = analyzeChar(parser, settings);
     if (format != null)
       return format;
 
@@ -221,7 +261,7 @@ public class SourceDiscovery {
       LogManager.instance().log(this, Level.INFO, "Best separator candidate='%s' (all candidates=%s)", null, bestSeparator.getKey(), list);
 
       settings.options.put("delimiter", "" + bestSeparator.getKey());
-      return new CSVImporter();
+      return new CSVFormatImporter();
     }
 
     // UNKNOWN
@@ -233,8 +273,8 @@ public class SourceDiscovery {
       ;
   }
 
-  private ContentImporter analyzeChar(final Parser parser, final ImporterSettings settings) throws IOException {
-    final char currentChar = parser.getCurrentChar();
+  private FormatImporter analyzeChar(final Parser parser, final ImporterSettings settings) throws IOException {
+    char currentChar = parser.getCurrentChar();
     if (currentChar == '<') {
       // READ THE FIRST LINE
       int beginTag = 1;
@@ -272,13 +312,28 @@ public class SourceDiscovery {
           // RDF
           settings.typeIdProperty = "id";
           settings.options.put("delimiter", "" + delimiters.get(0));
-          return new RDFImporter();
+          return new RDFFormatImporter();
         }
       }
 
-      return new XMLImporter();
-    } else if (currentChar == '{')
-      return new JSONImporter();
+      return new XMLFormatImporter();
+    } else if (currentChar == '{') {
+
+      final StringBuilder buffer = new StringBuilder();
+
+      for (int i = 0; i < 1024 && parser.isAvailable(); ++i) {
+        currentChar = parser.nextChar();
+        if (currentChar == '}')
+          break;
+
+        buffer.append(currentChar);
+      }
+
+      if (buffer.toString().startsWith("\"info\":{\"name\":\""))
+        return new OrientDBFormatImporter();
+
+      return new JSONFormatImporter();
+    }
 
     return null;
   }
@@ -308,8 +363,8 @@ public class SourceDiscovery {
       throw new IllegalArgumentException("Invalid setting '" + name + "'");
   }
 
-  private Source getSourceFromContent(final BufferedInputStream in, final long totalSize, final String resource, final Callable<Void> closeCallback)
-      throws IOException {
+  private Source getSourceFromContent(final BufferedInputStream in, final long totalSize, final String resource,
+      final com.arcadedb.utility.Callable<Void, Source> resetCallback, final Callable<Void> closeCallback) throws IOException {
     in.mark(0);
 
     final ZipInputStream zip = new ZipInputStream(in);
@@ -321,7 +376,7 @@ public class SourceDiscovery {
         // SEARCH FOR THE RIGHT ENTRY
         while (entry != null) {
           if (resource.equals(entry.getName()))
-            return new Source(url, zip, totalSize, true, closeCallback);
+            return new Source(url, zip, totalSize, true, resetCallback, closeCallback);
 
           zip.closeEntry();
           entry = zip.getNextEntry();
@@ -330,15 +385,15 @@ public class SourceDiscovery {
         throw new IllegalArgumentException("Resource '" + resource + "' not found");
       }
 
-      return new Source(url, zip, totalSize, true, closeCallback);
+      return new Source(url, zip, totalSize, true, resetCallback, closeCallback);
     }
 
     in.reset();
-    in.mark(0);
+    in.mark(in.available());
 
     try {
       final GZIPInputStream gzip = new GZIPInputStream(in, 8192);
-      return new Source(url, gzip, totalSize, true, closeCallback);
+      return new Source(url, gzip, totalSize, true, resetCallback, closeCallback);
     } catch (IOException e) {
       // NOT GZIP
     }
@@ -346,6 +401,6 @@ public class SourceDiscovery {
     in.reset();
 
     // ANALYZE THE INPUT AS TEXT
-    return new Source(url, in, totalSize, false, closeCallback);
+    return new Source(url, in, totalSize, false, resetCallback, closeCallback);
   }
 }

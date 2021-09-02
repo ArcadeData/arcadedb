@@ -27,52 +27,51 @@ import java.util.HashMap;
 import java.util.Map;
 
 public class ImporterSettings {
-  String  database = "./databases/imported";
-  boolean wal      = false;
+  public String  database = "./databases/imported";
+  public String  url      = null;
+  public boolean wal      = false;
 
-  String documents;
-  String documentsFileType;
-  String documentsDelimiter;
-  String documentsHeader;
-  Long   documentsSkipEntries      = null;
-  String documentTypeName          = "Document";
-  String documentPropertiesInclude = "*";
+  public String documents;
+  public String documentsFileType;
+  public String documentsDelimiter;
+  public String documentsHeader;
+  public Long   documentsSkipEntries      = null;
+  public String documentTypeName          = "Document";
+  public String documentPropertiesInclude = "*";
+  public String vertices;
+  public String verticesFileType;
+  public String verticesDelimiter;
+  public String verticesHeader;
+  public Long   verticesSkipEntries       = null;
+  public String vertexTypeName            = "Node";
+  public String vertexPropertiesInclude   = "*";
+  public long   expectedVertices          = 0l;
 
-  String vertices;
-  String verticesFileType;
-  String verticesDelimiter;
-  String verticesHeader;
-  Long   verticesSkipEntries     = null;
-  String vertexTypeName          = "Node";
-  String vertexPropertiesInclude = "*";
-  long   expectedVertices        = 0l;
+  public String  edges;
+  public String  edgesFileType;
+  public String  edgesDelimiter;
+  public String  edgesHeader;
+  public Long    edgesSkipEntries       = null;
+  public String  edgeTypeName           = "Relationship";
+  public String  edgePropertiesInclude  = "*";
+  public long    expectedEdges          = 0l;
+  public long    maxRAMIncomingEdges    = 256 * 1024 * 1024; // 256MB
+  public String  edgeFromField          = null;
+  public String  edgeToField            = null;
+  public boolean edgeBidirectional      = true;
+  public String  typeIdProperty         = null;
+  public boolean typeIdPropertyIsUnique = false;
+  public String  typeIdType             = "String";
+  public int     parallel               = 1;
+  public boolean forceDatabaseCreate;
+  public boolean trimText               = true;
+  public long    analysisLimitBytes     = 100000;
+  public long    analysisLimitEntries   = 10000;
+  public long    parsingLimitBytes;
+  public long    parsingLimitEntries;
+  public int     commitEvery            = 5000;
 
-  String edges;
-  String edgesFileType;
-  String edgesDelimiter;
-  String edgesHeader;
-  Long   edgesSkipEntries      = null;
-  String edgeTypeName          = "Relationship";
-  String edgePropertiesInclude = "*";
-  public long expectedEdges       = 0l;
-  public long maxRAMIncomingEdges = 256 * 1024 * 1024; // 256MB
-  String  edgeFromField     = null;
-  String  edgeToField       = null;
-  boolean edgeBidirectional = true;
-
-  String  typeIdProperty         = null;
-  boolean typeIdPropertyIsUnique = false;
-  String  typeIdType             = "String";
-  int     parallel               = 1;
-  boolean forceDatabaseCreate;
-  boolean trimText               = true;
-  long    analysisLimitBytes     = 100000;
-  long    analysisLimitEntries   = 10000;
-  long    parsingLimitBytes;
-  long    parsingLimitEntries;
-  public int commitEvery = 5000;
-
-  final Map<String, String> options = new HashMap<>();
+  public final Map<String, String> options = new HashMap<>();
 
   public ImporterSettings() {
     parallel = Runtime.getRuntime().availableProcessors() / 2 - 1;
@@ -89,6 +88,8 @@ public class ImporterSettings {
   public void parseParameter(final String name, final String value) {
     if ("database".equals(name))
       database = value;
+    else if ("url".equals(name))
+      url = value;
     else if ("forceDatabaseCreate".equals(name))
       forceDatabaseCreate = Boolean.parseBoolean(value);
     else if ("wal".equals(name))

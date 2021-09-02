@@ -19,15 +19,16 @@
  * under the License.
  */
 
-package com.arcadedb.importer;
+package com.arcadedb.importer.format;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.importer.*;
 import com.univocity.parsers.common.AbstractParser;
 
 import java.io.IOException;
 import java.io.InputStreamReader;
 
-public class RDFImporter extends CSVImporter {
+public class RDFFormatImporter extends CSVFormatImporter {
   private static final char[] STRING_CONTENT_SKIP = new char[] { '\'', '\'', '"', '"', '<', '>' };
 
   @Override
