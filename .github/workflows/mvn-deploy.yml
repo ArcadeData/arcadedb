@@ -37,7 +37,7 @@ jobs:
           server-username: MAVEN_USERNAME
           server-password: MAVEN_PASSWORD
 
-      - name: Test (should be deploy)
+      - name: Publish to central
         run: mvn -Pdocker --batch-mode  --errors --fail-at-end --show-version  --file pom.xml deploy
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
