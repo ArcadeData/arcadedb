@@ -199,7 +199,9 @@ public enum GlobalConfiguration {
   SERVER_NAME("arcadedb.server.name", "Server name", String.class, Constants.PRODUCT + "_0"),
 
   SERVER_ROOT_PASSWORD("arcadedb.server.rootPassword",
-      "Password for root user to use at first startup of the server. Set this to avoid asking the password to the user.", String.class, null),
+      "Password for root user to use at first startup of the server. Set this to avoid asking the password to the user", String.class, null),
+
+  SERVER_MODE("arcadedb.server.mode", "Server mode between development, test and production", String.class, "development"),
 
   SERVER_METRICS("arcadedb.serverMetrics", "True to enable metrics", Boolean.class, true),
 

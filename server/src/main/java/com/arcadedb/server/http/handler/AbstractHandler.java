@@ -26,8 +26,9 @@ import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.server.ServerMetrics;
-import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.security.ServerSecurity;
+import com.arcadedb.server.security.ServerSecurityException;
 import io.undertow.server.HttpHandler;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HeaderValues;
@@ -38,7 +39,8 @@ import java.util.Base64;
 import java.util.logging.Level;
 
 public abstract class AbstractHandler implements HttpHandler {
-  private static final String AUTHORIZATION_BASIC = "Basic";
+  private              boolean requireAuthentication = true;
+  private static final String  AUTHORIZATION_BASIC   = "Basic";
 
   protected final HttpServer httpServer;
 
@@ -46,7 +48,7 @@ public abstract class AbstractHandler implements HttpHandler {
     this.httpServer = httpServer;
   }
 
-  protected abstract void execute(HttpServerExchange exchange) throws Exception;
+  protected abstract void execute(HttpServerExchange exchange, ServerSecurity.ServerUser user) throws Exception;
 
   protected String parseRequestPayload(final HttpServerExchange e) throws IOException {
     final StringBuilder result = new StringBuilder();
@@ -73,37 +75,39 @@ public abstract class AbstractHandler implements HttpHandler {
       exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
 
       final HeaderValues authorization = exchange.getRequestHeaders().get("Authorization");
-      if (authorization == null || authorization.isEmpty()) {
+      if (requireAuthentication && (authorization == null || authorization.isEmpty())) {
         exchange.setStatusCode(403);
         exchange.getResponseSender().send("{ \"error\" : \"No authentication was provided\"}");
         return;
       }
 
-      final String auth = authorization.getFirst();
+      ServerSecurity.ServerUser user = null;
+      if (authorization != null) {
+        final String auth = authorization.getFirst();
+        if (!auth.startsWith(AUTHORIZATION_BASIC)) {
+          exchange.setStatusCode(403);
+          exchange.getResponseSender().send("{ \"error\" : \"Authentication not supported\"}");
+          return;
+        }
 
-      if (!auth.startsWith(AUTHORIZATION_BASIC)) {
-        exchange.setStatusCode(403);
-        exchange.getResponseSender().send("{ \"error\" : \"Authentication not supported\"}");
-        return;
+        final String authPairCypher = auth.substring(AUTHORIZATION_BASIC.length() + 1);
+
+        final String authPairClear = new String(Base64.getDecoder().decode(authPairCypher));
+
+        final String[] authPair = authPairClear.split(":");
+
+        if (authPair.length != 2) {
+          exchange.setStatusCode(403);
+          exchange.getResponseSender().send("{ \"error\" : \"Basic authentication error\"}");
+          return;
+        }
+
+        user = authenticate(authPair[0], authPair[1]);
       }
-
-      final String authPairCypher = auth.substring(AUTHORIZATION_BASIC.length() + 1);
-
-      final String authPairClear = new String(Base64.getDecoder().decode(authPairCypher));
-
-      final String[] authPair = authPairClear.split(":");
-
-      if (authPair.length != 2) {
-        exchange.setStatusCode(403);
-        exchange.getResponseSender().send("{ \"error\" : \"Basic authentication error\"}");
-        return;
-      }
-
-      authenticate(authPair[0], authPair[1]);
 
       final ServerMetrics.MetricTimer timer = httpServer.getServer().getServerMetrics().timer("http.request");
       try {
-        execute(exchange);
+        execute(exchange, user);
 
       } finally {
         timer.stop();
@@ -141,7 +145,15 @@ public abstract class AbstractHandler implements HttpHandler {
     }
   }
 
-  protected void authenticate(final String userName, final String userPassword) {
-    httpServer.getServer().getSecurity().authenticate(userName, userPassword);
+  public boolean isRequireAuthentication() {
+    return requireAuthentication;
+  }
+
+  public void setRequireAuthentication(final boolean requireAuthentication) {
+    this.requireAuthentication = requireAuthentication;
+  }
+
+  protected ServerSecurity.ServerUser authenticate(final String userName, final String userPassword) {
+    return httpServer.getServer().getSecurity().authenticate(userName, userPassword);
   }
 }

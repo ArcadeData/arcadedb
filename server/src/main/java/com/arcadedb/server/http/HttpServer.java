@@ -76,16 +76,23 @@ public class HttpServer implements ServerPlugin {
     final PathHandler routes = new PathHandler();
 
     final RoutingHandler basicRoutes = Handlers.routing();
-    routes.addPrefixPath("/",//
-        basicRoutes.get("/query/{database}/{language}/{command}", new GetQueryHandler(this))//
-            .post("/query/{database}", new PostQueryHandler(this))//
+    routes.addPrefixPath("/api/v1",//
+        basicRoutes//
             .post("/command/{database}", new CommandHandler(this))//
+            .post("/create/{database}", new CreateDatabaseHandler(this))//
+            .get("/databases", new GetDatabasesHandler(this))//
             .get("/document/{database}/{rid}", new GetDocumentHandler(this))//
             .post("/document/{database}", new CreateDocumentHandler(this))//
-            .post("/server", new ServersHandler(this))//
-            .post("/create/{database}", new CreateDatabaseHandler(this))//
+            .post("/drop/{database}", new DropDatabaseHandler(this))//
             .post("/exists/{database}", new ExistsDatabaseHandler(this))//
-            .post("/drop/{database}", new DropDatabaseHandler(this)));
+            .get("/query/{database}/{language}/{command}", new GetQueryHandler(this))//
+            .post("/query/{database}", new PostQueryHandler(this))//
+            .post("/server", new ServersHandler(this))//
+    );
+
+    if (!"production".equals(GlobalConfiguration.SERVER_MODE.getValueAsString())) {
+      routes.addPrefixPath("/", Handlers.routing().setFallbackHandler(new DynamicContentHandler(this)));
+    }
 
     // REGISTER PLUGIN API
     for (ServerPlugin plugin : server.getPlugins())

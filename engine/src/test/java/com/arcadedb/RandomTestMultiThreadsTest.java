@@ -57,7 +57,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
 
   @Test
   public void testRandom() {
-    LogManager.instance().log(this, Level.INFO, "Executing " + CYCLES + " transactions with %d workers", null, WORKERS);
+    LogManager.instance().log(this, Level.FINE, "Executing " + CYCLES + " transactions with %d workers", null, WORKERS);
 
     createSchema();
     populateDatabase();
@@ -180,7 +180,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
                   final long newCounter = database.countType("Account", true);
 
                   if (getRandom(50) == 0)
-                    LogManager.instance().log(this, Level.INFO, "Found %d Account records (thread=%d)...", null, newCounter, threadId);
+                    LogManager.instance().log(this, Level.FINE, "Found %d Account records (thread=%d)...", null, newCounter, threadId);
 
                   totalTransactionInCurrentTx -= deleteRecords(database, threadId);
                 } else if (op >= 97 && op <= 99) {
@@ -316,7 +316,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
         } catch (RecordNotFoundException e) {
           // OK
         }
-        LogManager.instance().log(this, Level.INFO, "Deleted record %s (threadId=%d)", null, next.getIdentity(), threadId);
+        //LogManager.instance().log(this, Level.FINE, "Deleted record %s (threadId=%d)", null, next.getIdentity(), threadId);
       }
     }
 
@@ -325,7 +325,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
 
   private int getRandom(int bound) {
     if (bound < 1) {
-      LogManager.instance().log(this, Level.INFO, "Non positive bound: " + bound);
+      //LogManager.instance().log(this, Level.FINE, "Non positive bound: " + bound);
       bound = 1;
     }
     return rnd.nextInt(bound);
@@ -350,7 +350,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
       database.commit();
 
     } finally {
-      LogManager.instance().log(this, Level.INFO, "Database populate finished in " + (System.currentTimeMillis() - begin) + "ms");
+      LogManager.instance().log(this, Level.FINE, "Database populate finished in " + (System.currentTimeMillis() - begin) + "ms");
     }
   }
 

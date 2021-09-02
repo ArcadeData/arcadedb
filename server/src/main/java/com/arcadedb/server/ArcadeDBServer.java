@@ -124,7 +124,7 @@ public class ArcadeDBServer implements ServerLogger {
       log(this, Level.INFO, "- JMX Metrics Started...");
     }
 
-    security = new ServerSecurity(configuration, serverRootPath + "/config");
+    security = new ServerSecurity(this, configuration, serverRootPath + "/config");
     security.startService();
 
     loadDatabases();
@@ -297,7 +297,7 @@ public class ArcadeDBServer implements ServerLogger {
   }
 
   public Set<String> getDatabaseNames() {
-    return databases.keySet();
+    return Collections.unmodifiableSet(databases.keySet());
   }
 
   public void log(final Object requester, final Level level, final String message) {

@@ -39,7 +39,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
   public void checkAuthenticationError() throws Exception {
     testEachServer((serverIndex) -> {
       HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/query/graph/sql/select%20from%20V1%20limit%201").openConnection();
+          "http://127.0.0.1:248" + serverIndex + "/api/v1/query/graph/sql/select%20from%20V1%20limit%201").openConnection();
 
       connection.setRequestMethod("GET");
       connection.setRequestProperty("Authorization", "Basic " + Base64.getEncoder().encodeToString("root:wrong".getBytes()));
@@ -63,7 +63,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
   public void checkNoAuthentication() throws Exception {
     testEachServer((serverIndex) -> {
       HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/query/graph/sql/select%20from%20V1%20limit%201").openConnection();
+          "http://127.0.0.1:248" + serverIndex + "/api/v1/query/graph/sql/select%20from%20V1%20limit%201").openConnection();
 
       connection.setRequestMethod("GET");
 
@@ -86,7 +86,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
   public void checkQueryInGet() throws Exception {
     testEachServer((serverIndex) -> {
       HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/query/graph/sql/select%20from%20V1%20limit%201").openConnection();
+          "http://127.0.0.1:248" + serverIndex + "/api/v1/query/graph/sql/select%20from%20V1%20limit%201").openConnection();
 
       connection.setRequestMethod("GET");
       connection.setRequestProperty("Authorization",
@@ -113,7 +113,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
   @Test
   public void checkQueryInPost() throws Exception {
     testEachServer((serverIndex) -> {
-      HttpURLConnection connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/query/graph").openConnection();
+      HttpURLConnection connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/query/graph").openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
@@ -141,7 +141,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
   @Test
   public void checkCommand() throws Exception {
     testEachServer((serverIndex) -> {
-      HttpURLConnection connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/command/graph").openConnection();
+      HttpURLConnection connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
@@ -170,7 +170,8 @@ public class HTTPGraphIT extends BaseGraphServerTest {
   public void checkRecordLoading() throws Exception {
     testEachServer((serverIndex) -> {
       HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/document/graph/" + BaseGraphServerTest.root.getIdentity().toString().substring(1)).openConnection();
+          "http://127.0.0.1:248" + serverIndex + "/api/v1/document/graph/" + BaseGraphServerTest.root.getIdentity().toString()
+              .substring(1)).openConnection();
 
       connection.setRequestMethod("GET");
       connection.setRequestProperty("Authorization",
@@ -197,7 +198,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
   @Test
   public void checkRecordCreate() throws Exception {
     testEachServer((serverIndex) -> {
-      HttpURLConnection connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/document/graph").openConnection();
+      HttpURLConnection connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/document/graph").openConnection();
 
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",

@@ -23,6 +23,7 @@ package com.arcadedb.server.http.handler;
 
 import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.security.ServerSecurity;
 import io.undertow.server.HttpServerExchange;
 
 import java.util.logging.Level;
@@ -33,7 +34,7 @@ public class ServersHandler extends AbstractHandler {
   }
 
   @Override
-  public void execute(final HttpServerExchange exchange) {
+  public void execute(final HttpServerExchange exchange, ServerSecurity.ServerUser user) {
     exchange.setStatusCode(200);
 
     final HAServer ha = httpServer.getServer().getHA();

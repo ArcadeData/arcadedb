@@ -47,7 +47,7 @@ public class ServerSecurityIT {
 
     GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue("dD5ed08c");
     try {
-      final ServerSecurity security = new ServerSecurity(new ContextConfiguration(), "./target");
+      final ServerSecurity security = new ServerSecurity(null, new ContextConfiguration(), "./target");
       security.startService();
 
       File securityConf = securityConfPath.toFile();
@@ -77,7 +77,7 @@ public class ServerSecurityIT {
       System.setIn(is);
     }
 
-    final ServerSecurity security = new ServerSecurity(new ContextConfiguration(), "./target");
+    final ServerSecurity security = new ServerSecurity(null, new ContextConfiguration(), "./target");
     security.startService();
 
     File securityConf = securityConfPath.toFile();
@@ -107,7 +107,7 @@ public class ServerSecurityIT {
     repository.saveConfiguration(users);
 
     //when
-    final ServerSecurity security = new ServerSecurity(new ContextConfiguration(), "./target");
+    final ServerSecurity security = new ServerSecurity(null, new ContextConfiguration(), "./target");
     security.startService();
 
     Assertions.assertTrue(security.existsUser("providedUser"));
@@ -116,7 +116,7 @@ public class ServerSecurityIT {
 
   @Test
   public void checkQuery() {
-    final ServerSecurity security = new ServerSecurity(new ContextConfiguration(), "./target");
+    final ServerSecurity security = new ServerSecurity(null, new ContextConfiguration(), "./target");
     security.startService();
 
     Assertions.assertEquals("PBKDF2WithHmacSHA256$65536$ThisIsTheSalt$wIKUzWYH72cKJRnFZ0PTSevERtwZTNdN+W4/Fd7xBvw=",

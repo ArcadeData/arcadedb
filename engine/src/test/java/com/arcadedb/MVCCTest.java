@@ -57,7 +57,7 @@ public class MVCCTest extends TestHelper {
 
       populateDatabase();
 
-      LogManager.instance().log(this, Level.INFO, "Executing " + TOT_TX + " transactions between " + TOT_ACCOUNT + " accounts");
+      LogManager.instance().log(this, Level.FINE, "Executing " + TOT_TX + " transactions between " + TOT_ACCOUNT + " accounts");
 
       database.async().setParallelLevel(PARALLEL);
 
@@ -147,7 +147,7 @@ public class MVCCTest extends TestHelper {
       });
 
     } finally {
-      LogManager.instance().log(this, Level.INFO, "Database populate finished in " + (System.currentTimeMillis() - begin) + "ms");
+      LogManager.instance().log(this, Level.FINE, "Database populate finished in " + (System.currentTimeMillis() - begin) + "ms");
     }
   }
 

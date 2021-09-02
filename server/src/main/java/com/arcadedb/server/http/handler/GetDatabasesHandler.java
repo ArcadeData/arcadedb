@@ -21,47 +21,22 @@
 
 package com.arcadedb.server.http.handler;
 
-import com.arcadedb.database.Database;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurity;
 import io.undertow.server.HttpServerExchange;
+import org.json.JSONArray;
+import org.json.JSONObject;
 
-import java.util.Deque;
-
-public abstract class DatabaseAbstractHandler extends AbstractHandler {
-  public DatabaseAbstractHandler(final HttpServer httpServer) {
+public class GetDatabasesHandler extends AbstractHandler {
+  public GetDatabasesHandler(final HttpServer httpServer) {
     super(httpServer);
   }
 
-  protected abstract void execute(HttpServerExchange exchange, Database database) throws Exception;
-
   @Override
-  public void execute(final HttpServerExchange exchange, ServerSecurity.ServerUser user) throws Exception {
-    final Database db;
-    if (openDatabase()) {
-      final Deque<String> databaseName = exchange.getQueryParameters().get("database");
-      if (databaseName.isEmpty()) {
-        exchange.setStatusCode(400);
-        exchange.getResponseSender().send("{ \"error\" : \"Database parameter is null\"}");
-        return;
-      }
+  protected void execute(final HttpServerExchange exchange, final ServerSecurity.ServerUser user) throws Exception {
+    final JSONObject result = new JSONObject().put("result", new JSONArray(httpServer.getServer().getSecurity().userDatabases(user)));
 
-      db = httpServer.getServer().getDatabase(databaseName.getFirst());
-      db.rollbackAllNested();
-    } else
-      db = null;
-
-    try {
-
-      execute(exchange, db);
-
-    } finally {
-      if (db != null)
-        db.rollbackAllNested();
-    }
-  }
-
-  protected boolean openDatabase() {
-    return true;
+    exchange.setStatusCode(200);
+    exchange.getResponseSender().send(result.toString());
   }
 }

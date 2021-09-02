@@ -51,7 +51,18 @@ import static com.arcadedb.GlobalConfiguration.*;
 
 public class ServerSecurity implements ServerPlugin {
 
-  private final ServerSecurityFileRepository securityRepository;
+  private final        ArcadeDBServer                    server;
+  private final        ServerSecurityFileRepository      securityRepository;
+  private final        String                            configPath;
+  private final        ConcurrentMap<String, ServerUser> users                = new ConcurrentHashMap<>();
+  private final        String                            algorithm;
+  private final        SecretKeyFactory                  secretKeyFactory;
+  private final        Map<String, String>               saltCache;
+  private final        int                               saltIteration;
+  private              CredentialsValidator              credentialsValidator = new DefaultCredentialsValidator();
+  private static final Random                            RANDOM               = new SecureRandom();
+  public static final  String                            FILE_NAME            = "security.json";
+  public static final  int                               SALT_SIZE            = 32;
 
   public static class ServerUser {
     public final String      name;
@@ -68,18 +79,8 @@ public class ServerSecurity implements ServerPlugin {
     }
   }
 
-  private final        String                            configPath;
-  private final        ConcurrentMap<String, ServerUser> users                = new ConcurrentHashMap<>();
-  private final        String                            algorithm;
-  private final        SecretKeyFactory                  secretKeyFactory;
-  private final        Map<String, String>               saltCache;
-  private final        int                               saltIteration;
-  private              CredentialsValidator              credentialsValidator = new DefaultCredentialsValidator();
-  private static final Random                            RANDOM               = new SecureRandom();
-  public static final  String                            FILE_NAME            = "security.json";
-  public static final  int                               SALT_SIZE            = 32;
-
-  public ServerSecurity(final ContextConfiguration configuration, final String configPath) {
+  public ServerSecurity(final ArcadeDBServer server, final ContextConfiguration configuration, final String configPath) {
+    this.server = server;
     this.configPath = configPath;
     this.algorithm = configuration.getValueAsString(SERVER_SECURITY_ALGORITHM);
 
@@ -133,6 +134,15 @@ public class ServerSecurity implements ServerPlugin {
       throw new ServerSecurityException("User/Password not valid");
 
     return su;
+  }
+
+  public Set<String> userDatabases(final ServerUser user) {
+    final Set<String> dbs = new HashSet<>(server.getDatabaseNames());
+    if (user.databaseBlackList)
+      dbs.removeAll(user.databases);
+    else
+      dbs.retainAll(user.databases);
+    return dbs;
   }
 
   /**
