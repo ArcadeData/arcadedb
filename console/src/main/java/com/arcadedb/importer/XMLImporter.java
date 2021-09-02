@@ -28,6 +28,7 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.FileUtils;
 
+import javax.xml.XMLConstants;
 import javax.xml.stream.XMLInputFactory;
 import javax.xml.stream.XMLStreamException;
 import javax.xml.stream.XMLStreamReader;
@@ -52,6 +53,8 @@ public class XMLImporter implements ContentImporter {
       }
 
       final XMLInputFactory xmlFactory = XMLInputFactory.newInstance();
+      xmlFactory.setProperty(XMLConstants.ACCESS_EXTERNAL_DTD, "");
+      xmlFactory.setProperty(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "");
       final XMLStreamReader xmlReader = xmlFactory.createXMLStreamReader(parser.getInputStream());
 
       int nestLevel = 0;
@@ -169,6 +172,9 @@ public class XMLImporter implements ContentImporter {
       parser.reset();
 
       final XMLInputFactory xmlFactory = XMLInputFactory.newInstance();
+      xmlFactory.setProperty(XMLConstants.ACCESS_EXTERNAL_DTD, "");
+      xmlFactory.setProperty(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "");
+
       final XMLStreamReader xmlReader = xmlFactory.createXMLStreamReader(parser.getInputStream());
 
       int nestLevel = 0;
