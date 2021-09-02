@@ -32,8 +32,15 @@ jobs:
         with:
           distribution: "temurin"
           java-version: 11
+          server-id: ossrh
+          server-username: MAVEN_USERNAME
+          server-password: MAVEN_PASSWORD
 
       - name: Test (should be deploy)
-        run: mvn -Pdocker --batch-mode  --errors --fail-at-end --show-version  --file pom.xml verify
+        run: mvn -Pdocker --batch-mode  --errors --fail-at-end --show-version  --file pom.xml deploy
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MAVEN_USERNAME: ${{ secrets.OSSRH_USERNAME }}
+          MAVEN_PASSWORD: ${{ secrets.OSSRH_TOKEN }}
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
