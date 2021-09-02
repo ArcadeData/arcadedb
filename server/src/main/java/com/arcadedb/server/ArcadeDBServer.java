@@ -184,7 +184,7 @@ public class ArcadeDBServer implements ServerLogger {
           final String pluginClass = pluginPair.length > 1 ? pluginPair[1] : pluginPair[0];
 
           final Class<ServerPlugin> c = (Class<ServerPlugin>) Class.forName(pluginClass);
-          final ServerPlugin pluginInstance = c.newInstance();
+          final ServerPlugin pluginInstance = c.getConstructor().newInstance();
           pluginInstance.configure(this, configuration);
 
           pluginInstance.startService();

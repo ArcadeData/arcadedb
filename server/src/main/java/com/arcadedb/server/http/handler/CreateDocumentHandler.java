@@ -42,7 +42,7 @@ public class CreateDocumentHandler extends DatabaseAbstractHandler {
 
     final String type = json.getString("@type");
     if (type == null) {
-      exchange.setStatusCode(404);
+      exchange.setStatusCode(400);
       exchange.getResponseSender().send("{ \"error\" : \"@type attribute not found in the record payload\"}");
       return;
     }
