@@ -35,14 +35,20 @@ import java.util.logging.Level;
 
 public abstract class AbstractImporter {
   protected Parser           parser;
-  protected ImporterSettings settings = new ImporterSettings();
-  protected ImporterContext  context  = new ImporterContext();
+  protected ImporterSettings settings                       = new ImporterSettings();
+  protected ImporterContext  context                        = new ImporterContext();
   protected DatabaseInternal database;
   protected Source           source;
   protected Timer            timer;
+  protected boolean          databaseCreatedDuringImporting = true;
 
   public AbstractImporter(final String[] args) {
     settings.parseParameters(args);
+  }
+
+  public AbstractImporter(final DatabaseInternal database) {
+    this.database = database;
+    this.databaseCreatedDuringImporting = false;
   }
 
   protected void printProgress() {
@@ -108,6 +114,9 @@ public abstract class AbstractImporter {
   }
 
   protected void closeDatabase() {
+    if (!databaseCreatedDuringImporting)
+      return;
+
     if (database != null) {
       if (database.isTransactionActive())
         database.commit();
@@ -117,7 +126,7 @@ public abstract class AbstractImporter {
 
   protected void openDatabase() {
     if (database != null && database.isOpen())
-      throw new IllegalStateException("Database already open");
+      return;
 
     final DatabaseFactory factory = new DatabaseFactory(settings.database);
 

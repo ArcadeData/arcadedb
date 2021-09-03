@@ -22,6 +22,7 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.Constants;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.*;
 import com.arcadedb.engine.Dictionary;
@@ -275,7 +276,7 @@ public class EmbeddedSchema implements Schema {
 
   @Override
   public Bucket createBucket(final String bucketName) {
-    return createBucket(bucketName, Bucket.DEF_PAGE_SIZE);
+    return createBucket(bucketName, database.getConfiguration().getValueAsInteger(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE));
   }
 
   public Bucket createBucket(final String bucketName, final int pageSize) {
@@ -748,7 +749,7 @@ public class EmbeddedSchema implements Schema {
   }
 
   public DocumentType createDocumentType(final String typeName, final int buckets) {
-    return createDocumentType(typeName, buckets, Bucket.DEF_PAGE_SIZE);
+    return createDocumentType(typeName, buckets, database.getConfiguration().getValueAsInteger(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE));
   }
 
   public DocumentType createDocumentType(final String typeName, final int buckets, final int pageSize) {
@@ -800,7 +801,7 @@ public class EmbeddedSchema implements Schema {
 
   @Override
   public DocumentType getOrCreateDocumentType(final String typeName, final int buckets) {
-    return getOrCreateDocumentType(typeName, buckets, Bucket.DEF_PAGE_SIZE);
+    return getOrCreateDocumentType(typeName, buckets, database.getConfiguration().getValueAsInteger(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE));
   }
 
   @Override
@@ -821,7 +822,7 @@ public class EmbeddedSchema implements Schema {
 
   @Override
   public VertexType createVertexType(final String typeName, final int buckets) {
-    return createVertexType(typeName, buckets, Bucket.DEF_PAGE_SIZE);
+    return createVertexType(typeName, buckets, database.getConfiguration().getValueAsInteger(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE));
   }
 
   @Override
@@ -872,7 +873,7 @@ public class EmbeddedSchema implements Schema {
 
   @Override
   public VertexType getOrCreateVertexType(final String typeName, final int buckets) {
-    return getOrCreateVertexType(typeName, buckets, Bucket.DEF_PAGE_SIZE);
+    return getOrCreateVertexType(typeName, buckets, database.getConfiguration().getValueAsInteger(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE));
   }
 
   @Override
@@ -942,7 +943,7 @@ public class EmbeddedSchema implements Schema {
 
   @Override
   public EdgeType getOrCreateEdgeType(final String typeName, final int buckets) {
-    return getOrCreateEdgeType(typeName, buckets, Bucket.DEF_PAGE_SIZE);
+    return getOrCreateEdgeType(typeName, buckets, database.getConfiguration().getValueAsInteger(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE));
   }
 
   @Override

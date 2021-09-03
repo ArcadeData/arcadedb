@@ -21,6 +21,7 @@
 
 package com.arcadedb;
 
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.Callable;
 import com.arcadedb.utility.FileUtils;
@@ -143,6 +144,9 @@ public enum GlobalConfiguration {
       Integer.class, 0),
 
   FREE_PAGE_RAM("arcadedb.freePageRAM", "Percentage (0-100) of memory to free when Page RAM is full", Integer.class, 50),
+
+  BUCKET_DEFAULT_PAGE_SIZE("arcadedb.bucketDefaultPageSize", "Default page size in bytes for buckets. Default is " + Bucket.DEF_PAGE_SIZE, Integer.class,
+      Bucket.DEF_PAGE_SIZE),
 
   ASYNC_WORKER_THREADS("arcadedb.asyncWorkerThreads", "Number of asynchronous worker threads. 0 (default) = available cores minus 1", Integer.class,
       Runtime.getRuntime().availableProcessors() > 1 ? Runtime.getRuntime().availableProcessors() - 1 : 1),

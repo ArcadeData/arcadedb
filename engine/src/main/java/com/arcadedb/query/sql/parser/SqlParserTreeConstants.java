@@ -174,6 +174,8 @@ public interface SqlParserTreeConstants
   public int JJTSLEEPSTATEMENT = 168;
   public int JJTFOREACHBLOCK = 169;
   public int JJTWHILEBLOCK = 170;
+  public int JJTIMPORTDATABASESTATEMENT = 171;
+  public int JJTURL = 172;
 
 
   public String[] jjtNodeName = {
@@ -348,6 +350,8 @@ public interface SqlParserTreeConstants
     "SleepStatement",
     "ForEachBlock",
     "WhileBlock",
+    "ImportDatabaseStatement",
+    "Url",
   };
 }
-/* ParserGeneratorCC - OriginalChecksum=dbe51e9e6e1ab1f71099002df6bef004 (do not edit this line) */
+/* ParserGeneratorCC - OriginalChecksum=21efd0da3730e7b06b73f1ae3a10be75 (do not edit this line) */
