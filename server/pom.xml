@@ -90,12 +90,6 @@
             <version>${slf4j-simple.version}</version>
             <scope>compile</scope>
         </dependency>
-        <dependency>
-            <groupId>com.arcadedb</groupId>
-            <artifactId>arcadedb-importer</artifactId>
-            <version>21.9.1-SNAPSHOT</version>
-            <scope>compile</scope>
-        </dependency>
     </dependencies>
 
 </project>
