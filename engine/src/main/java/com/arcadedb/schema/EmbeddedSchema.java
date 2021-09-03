@@ -567,8 +567,7 @@ public class EmbeddedSchema implements Schema {
       final boolean unique, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, final Index.BuildIndexCallback callback,
       final String[] propertyNames) throws IOException {
     if (bucket == null)
-      throw new DatabaseMetadataException(
-          "Cannot create index on type '" + typeName + "' because the specified bucket '" + bucket.getName() + "' is not part of the type");
+      throw new IllegalArgumentException("bucket is null");
 
     final String indexName = FileUtils.encode(bucket.getName(), encoding) + "_" + System.nanoTime();
 
