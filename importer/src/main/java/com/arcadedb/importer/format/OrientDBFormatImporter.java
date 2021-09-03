@@ -21,7 +21,6 @@
 
 package com.arcadedb.importer.format;
 
-import com.arcadedb.importer.OrientDBImporter;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.importer.*;
 
@@ -42,7 +41,8 @@ public class OrientDBFormatImporter extends AbstractFormatImporter {
           sourceSchema.getSource().reset();
           return (GZIPInputStream) sourceSchema.getSource().inputStream;
         }
-      }.run();
+      }.setContext(context).run();
+
     } catch (IOException e) {
       throw new ImportException("Error on importing OrientDB database", e);
     }
