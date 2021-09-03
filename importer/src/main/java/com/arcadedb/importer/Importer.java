@@ -21,11 +21,20 @@
 
 package com.arcadedb.importer;
 
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.log.LogManager;
+
 import java.io.IOException;
+import java.util.logging.Level;
 
 public class Importer extends AbstractImporter {
   public Importer(final String[] args) {
     super(args);
+  }
+
+  public Importer(final DatabaseInternal database, final String url) {
+    super(database);
+    settings.url = url;
   }
 
   public static void main(final String[] args) {
@@ -51,7 +60,7 @@ public class Importer extends AbstractImporter {
       loadFromSource(settings.edges, AnalyzedEntity.ENTITY_TYPE.EDGE, analyzedSchema);
 
     } catch (Exception e) {
-      //LogManager.instance().log(this, Level.SEVERE, "Error on parsing source %s", e, source);
+      LogManager.instance().log(this, Level.SEVERE, "Error on parsing source %s", e, source);
     } finally {
       if (database != null) {
         database.async().waitCompletion();

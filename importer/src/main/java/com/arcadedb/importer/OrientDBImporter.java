@@ -62,8 +62,8 @@ public class OrientDBImporter {
   private       long                       totalAttributesParsed  = 0L;
   private       long                       errors                 = 0L;
   private       long                       warnings               = 0L;
-  private       Set<String>                excludeClasses         = new HashSet<>(Arrays.asList(
-      new String[] { "OUser", "ORole", "OSchedule", "OSequence", "OTriggered", "OSecurityPolicy", "ORestricted", "OIdentity", "OFunction", "V", "E" }));
+  private       Set<String>                excludeClasses         = new HashSet<>(
+      Arrays.asList(new String[] { "OUser", "ORole", "OSchedule", "OSequence", "OTriggered", "OSecurityPolicy", "ORestricted", "OIdentity", "OFunction" }));
   private       DatabaseFactory            factory;
   private       Database                   database;
   private       Set<String>                edgeClasses            = new HashSet<>();
@@ -147,10 +147,12 @@ public class OrientDBImporter {
       throw new IllegalArgumentException("File '" + inputFile + "' not found");
     }
 
+    final String from = inputFile != null ? "'" + inputFile + "'" : "stream";
+
     if (databasePath == null)
-      log("Checking OrientDB database from file '%s'...", inputFile);
+      log("Checking OrientDB database from %s...", from);
     else {
-      log("Importing OrientDB database from file '%s' to '%s'", inputFile, databasePath);
+      log("Importing OrientDB database from %s to '%s'", from, databasePath);
 
       if (database == null) {
         factory = new DatabaseFactory(databasePath);
@@ -501,7 +503,7 @@ public class OrientDBImporter {
     final RID out = new RID(database, (String) attributes.get("out"));
     final RID newOut = vertexRidMap.get(out);
     if (newOut == null) {
-      System.out.printf("- Skip edge %s because source vertex (out)) was not imported\n", attributes);
+      System.out.printf("- Skip edge %s because source vertex (out) was not imported\n", attributes);
       return;
     }
 
@@ -742,7 +744,14 @@ public class OrientDBImporter {
   private void createType(final String className) {
     final OrientDBClass classInfo = classes.get(className);
 
-    int type = 0;
+    int type;
+    if (className.equals("V")) {
+      type = 1;
+    } else if (className.equals("E")) {
+      type = 2;
+    } else
+      type = 0;
+
     if (!classInfo.superClasses.isEmpty()) {
       for (String c : classInfo.superClasses)
         createType(c);

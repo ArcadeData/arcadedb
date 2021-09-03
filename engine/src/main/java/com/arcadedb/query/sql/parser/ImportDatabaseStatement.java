@@ -2,18 +2,21 @@
 /* ParserGeneratorCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_CLASS_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
+import java.lang.reflect.InvocationTargetException;
 import java.util.Map;
 import java.util.Objects;
 
-public
-class ImportDatabaseStatement extends SimpleExecStatement {
+public class ImportDatabaseStatement extends SimpleExecStatement {
 
   protected Url url;
+
   public ImportDatabaseStatement(int id) {
     super(id);
   }
@@ -29,21 +32,28 @@ class ImportDatabaseStatement extends SimpleExecStatement {
     result.setProperty("operation", "import database");
     result.setProperty("fromUrl", targetUrl);
 
-    //TODO do the import
-    result.setProperty("result", "NOT IMPLEMENTED");
+    try {
+      final Class<?> clazz = Class.forName("com.arcadedb.importer.Importer");
+      final Object importer = clazz.getConstructor(DatabaseInternal.class, String.class).newInstance(ctx.getDatabase(), url.getUrlString());
 
-//    result.setProperty("result", "OK");
+      clazz.getMethod("load").invoke(importer);
+
+    } catch (ClassNotFoundException | NoSuchMethodException | IllegalAccessException | InvocationTargetException | InstantiationException e) {
+      throw new CommandExecutionException("Error on importing database, importer libs not found in classpath", e);
+    }
+
+    result.setProperty("result", "OK");
 
     InternalResultSet rs = new InternalResultSet();
     rs.add(result);
     return rs;
   }
 
-
-  /** Accept the visitor. **/
+  /**
+   * Accept the visitor.
+   **/
   public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return
-    visitor.visit(this, data);
+    return visitor.visit(this, data);
   }
 
   @Override
@@ -54,8 +64,10 @@ class ImportDatabaseStatement extends SimpleExecStatement {
 
   @Override
   public boolean equals(Object o) {
-    if (this == o) return true;
-    if (o == null || getClass() != o.getClass()) return false;
+    if (this == o)
+      return true;
+    if (o == null || getClass() != o.getClass())
+      return false;
     ImportDatabaseStatement that = (ImportDatabaseStatement) o;
     return Objects.equals(url, that.url);
   }

@@ -1,4 +1,4 @@
-    package com.arcadedb.query.sql.parser;
+package com.arcadedb.query.sql.parser;
 
 import org.junit.jupiter.api.Test;
 
@@ -15,6 +15,5 @@ public class ImportDatabaseStatementTest extends ParserTestAbstract {
     checkWrongSyntax("import database file:///foo/bar/ foo bar");
     checkWrongSyntax("import database http://www.foo.bar asdf ");
     checkWrongSyntax("IMPORT DATABASE https://www.foo.bar asd ");
-
   }
 }
