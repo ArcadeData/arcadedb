@@ -127,7 +127,7 @@ public class SelectExecutionPlan implements InternalExecutionPlan {
     for (Result serializedStep : serializedSteps) {
       try {
         String className = serializedStep.getProperty(JAVA_TYPE);
-        ExecutionStepInternal step = (ExecutionStepInternal) Class.forName(className).newInstance();
+        ExecutionStepInternal step = (ExecutionStepInternal) Class.forName(className).getConstructor().newInstance();
         step.deserialize(serializedStep);
         chain(step);
       } catch (Exception e) {

@@ -31,7 +31,6 @@ import com.arcadedb.utility.FileUtils;
 
 import java.io.File;
 import java.util.Timer;
-import java.util.TimerTask;
 import java.util.logging.Level;
 
 public abstract class AbstractImporter {
@@ -88,13 +87,13 @@ public abstract class AbstractImporter {
   protected void startImporting() {
     context.startedOn = context.lastLapOn = System.currentTimeMillis();
 
-    timer = new Timer();
-    timer.schedule(new TimerTask() {
-      @Override
-      public void run() {
-        printProgress();
-      }
-    }, 5000, 5000);
+//    timer = new Timer();
+//    timer.schedule(new TimerTask() {
+//      @Override
+//      public void run() {
+//        printProgress();
+//      }
+//    }, 5000, 5000);
   }
 
   protected void stopImporting() {

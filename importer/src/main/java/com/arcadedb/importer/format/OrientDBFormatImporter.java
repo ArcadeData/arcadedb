@@ -21,9 +21,9 @@
 
 package com.arcadedb.importer.format;
 
+import com.arcadedb.importer.OrientDBImporter;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.importer.*;
-import com.arcadedb.integration.OrientDBImporter;
 
 import java.io.IOException;
 import java.util.zip.GZIPInputStream;

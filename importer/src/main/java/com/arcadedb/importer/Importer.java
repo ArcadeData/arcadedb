@@ -21,10 +21,7 @@
 
 package com.arcadedb.importer;
 
-import com.arcadedb.log.LogManager;
-
 import java.io.IOException;
-import java.util.logging.Level;
 
 public class Importer extends AbstractImporter {
   public Importer(final String[] args) {
@@ -54,7 +51,7 @@ public class Importer extends AbstractImporter {
       loadFromSource(settings.edges, AnalyzedEntity.ENTITY_TYPE.EDGE, analyzedSchema);
 
     } catch (Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error on parsing source %s", e, source);
+      //LogManager.instance().log(this, Level.SEVERE, "Error on parsing source %s", e, source);
     } finally {
       if (database != null) {
         database.async().waitCompletion();
@@ -73,7 +70,7 @@ public class Importer extends AbstractImporter {
     final SourceDiscovery sourceDiscovery = new SourceDiscovery(url);
     final SourceSchema sourceSchema = sourceDiscovery.getSchema(settings, entityType, analyzedSchema);
     if (sourceSchema == null) {
-      LogManager.instance().log(this, Level.WARNING, "XML importing aborted because unable to determine the schema");
+      //LogManager.instance().log(this, Level.WARNING, "XML importing aborted because unable to determine the schema");
       return;
     }
 

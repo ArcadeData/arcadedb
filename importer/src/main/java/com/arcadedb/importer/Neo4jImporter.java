@@ -19,7 +19,7 @@
  * under the License.
  */
 
-package com.arcadedb.integration;
+package com.arcadedb.importer;
 
 import com.arcadedb.Constants;
 import com.arcadedb.database.Database;
@@ -169,7 +169,7 @@ public class Neo4jImporter {
       parseVertices();
 
       // PARSE THE FILE AGAIN TO CREATE EDGES
-      log("- Creation of edges started: creating edges between vertices");
+      log("Creation of edges started: creating edges between vertices");
       beginTimeEdgesCreation = System.currentTimeMillis();
       parseEdges();
 

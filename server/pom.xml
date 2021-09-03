@@ -29,7 +29,7 @@
         <groupId>com.arcadedb</groupId>
         <artifactId>arcadedb-parent</artifactId>
         <version>21.9.1-SNAPSHOT</version>
-        <relativePath>../</relativePath>
+        <relativePath>../pom.xml</relativePath>
     </parent>
 
     <artifactId>arcadedb-server</artifactId>
@@ -64,6 +64,12 @@
             <scope>compile</scope>
         </dependency>
         <dependency>
+            <groupId>com.arcadedb</groupId>
+            <artifactId>arcadedb-importer</artifactId>
+            <version>${project.parent.version}</version>
+            <scope>compile</scope>
+        </dependency>
+        <dependency>
             <groupId>io.undertow</groupId>
             <artifactId>undertow-core</artifactId>
             <version>${undertow-core.version}</version>
@@ -82,6 +88,12 @@
             <groupId>org.slf4j</groupId>
             <artifactId>slf4j-simple</artifactId>
             <version>${slf4j-simple.version}</version>
+            <scope>compile</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.arcadedb</groupId>
+            <artifactId>arcadedb-importer</artifactId>
+            <version>21.9.1-SNAPSHOT</version>
             <scope>compile</scope>
         </dependency>
     </dependencies>

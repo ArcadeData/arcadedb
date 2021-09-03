@@ -19,7 +19,7 @@
  * under the License.
  */
 
-package com.arcadedb.integration;
+package com.arcadedb.importer;
 
 import com.arcadedb.Constants;
 import com.arcadedb.database.*;
@@ -39,6 +39,8 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.util.*;
 import java.util.zip.GZIPInputStream;
+
+import static com.google.gson.stream.JsonToken.*;
 
 /**
  * Importer from OrientDB. OrientDB is a registered mark of SAP.
@@ -180,7 +182,7 @@ public class OrientDBImporter {
       phase = PHASE.CREATE_EDGES;
 
       // PARSE THE FILE AGAIN TO CREATE RECORDS AND EDGES
-      log("- Creation of edges started: creating edges between vertices");
+      log("Creation of edges started: creating edges between vertices");
       beginTimeEdgeCreation = System.currentTimeMillis();
       parseInputFile();
 
@@ -293,7 +295,7 @@ public class OrientDBImporter {
 
     database.begin();
 
-    while (reader.peek() == JsonToken.BEGIN_OBJECT) {
+    while (reader.peek() == BEGIN_OBJECT) {
       final Map<String, Object> attributes = parseRecord(reader, false);
 
       final String className = (String) attributes.get("@class");
@@ -327,7 +329,7 @@ public class OrientDBImporter {
         database.begin();
       }
 
-      if (reader.peek() == JsonToken.NULL)
+      if (reader.peek() == NULL)
         // FIX A BUG ON ORIENTDB EXPORTER WHEN GENERATE AN EMPTY RECORD
         reader.skipValue();
     }
@@ -529,7 +531,7 @@ public class OrientDBImporter {
     final Map<String, Object> attributes = ignore ? null : new LinkedHashMap<>();
 
     reader.beginObject();
-    while (reader.peek() != JsonToken.END_OBJECT) {
+    while (reader.peek() != END_OBJECT) {
       final String attributeName = reader.nextName();
       final Object attributeValue;
 
@@ -572,7 +574,7 @@ public class OrientDBImporter {
   private List<Object> parseArray(JsonReader reader, final boolean ignore) throws IOException {
     final List<Object> list = ignore ? null : new ArrayList<>();
     reader.beginArray();
-    while (reader.peek() != JsonToken.END_ARRAY) {
+    while (reader.peek() != END_ARRAY) {
       final Object entryValue;
 
       final JsonToken entryType = reader.peek();
@@ -611,20 +613,20 @@ public class OrientDBImporter {
   private void parseSchema() throws IOException {
     reader.beginObject();
 
-    while (reader.peek() != JsonToken.END_OBJECT) {
+    while (reader.peek() != END_OBJECT) {
       final String name = reader.nextName();
 
       switch (name) {
       case "classes":
         reader.beginArray();
 
-        while (reader.peek() != JsonToken.END_ARRAY) {
+        while (reader.peek() != END_ARRAY) {
           reader.beginObject();
 
           String className = null;
           OrientDBClass cls = new OrientDBClass();
 
-          while (reader.peek() != JsonToken.END_OBJECT) {
+          while (reader.peek() != END_OBJECT) {
             switch (reader.nextName()) {
             case "name":
               className = reader.nextString();
@@ -632,14 +634,14 @@ public class OrientDBImporter {
 
             case "cluster-ids":
               reader.beginArray();
-              while (reader.peek() != JsonToken.END_ARRAY)
+              while (reader.peek() != END_ARRAY)
                 cls.clusterIds.add(reader.nextInt());
               reader.endArray();
               break;
 
             case "super-classes":
               reader.beginArray();
-              while (reader.peek() != JsonToken.END_ARRAY)
+              while (reader.peek() != END_ARRAY)
                 cls.superClasses.add(reader.nextString());
               reader.endArray();
               break;
@@ -649,10 +651,10 @@ public class OrientDBImporter {
               String propertyType = null;
 
               reader.beginArray();
-              while (reader.peek() != JsonToken.END_ARRAY) {
+              while (reader.peek() != END_ARRAY) {
                 reader.beginObject();
 
-                while (reader.peek() != JsonToken.END_OBJECT) {
+                while (reader.peek() != END_OBJECT) {
                   switch (reader.nextName()) {
                   case "name":
                     propertyName = reader.nextString();
@@ -840,9 +842,9 @@ public class OrientDBImporter {
 
           clusterName = null;
           clusterId = -1;
-          skipUntilEndOfObject(reader, JsonToken.END_OBJECT);
+          skipUntilEndOfObject(reader, END_OBJECT);
 
-          if (reader.peek() != JsonToken.BEGIN_OBJECT)
+          if (reader.peek() != BEGIN_OBJECT)
             break;
           reader.beginObject();
         }
@@ -864,7 +866,7 @@ public class OrientDBImporter {
       reader.skipValue();
     }
 
-    skipUntilEndOfObject(reader, JsonToken.END_OBJECT);
+    skipUntilEndOfObject(reader, END_OBJECT);
     reader.endObject();
   }
 
@@ -882,7 +884,7 @@ public class OrientDBImporter {
     while (reader.hasNext()) {
       final JsonToken t = reader.peek();
 
-      if (t == JsonToken.NAME) {
+      if (t == NAME) {
         if (reader.nextName().equals(propertyName))
           return;
       } else

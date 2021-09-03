@@ -46,9 +46,9 @@ public class CreateEdgeFromImportTask extends DatabaseAsyncAbstractTask {
   private final String                                   edgeTypeName;
   private final long                                     sourceVertexKey;
   private final long                                     destinationVertexKey;
-  private final Object[]                                 params;
-  private final ImporterContext                          context;
-  private final ImporterSettings                         settings;
+  private final Object[]         params;
+  private final ImporterContext  context;
+  private final ImporterSettings settings;
 
   public CreateEdgeFromImportTask(final GraphImporter.GraphImporterThreadContext threadContext, final String edgeTypeName, final long sourceVertexKey,
       final long destinationVertexKey, final Object[] edgeProperties, final ImporterContext context, final ImporterSettings settings) {

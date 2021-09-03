@@ -33,10 +33,10 @@
     </parent>
 
     <properties>
-        <jline-terminal.version>3.20.0</jline-terminal.version>
+        <univocity-parsers.version>2.9.1</univocity-parsers.version>
     </properties>
 
-    <artifactId>arcadedb-console</artifactId>
+    <artifactId>arcadedb-importer</artifactId>
     <packaging>jar</packaging>
 
     <dependencies>
@@ -47,32 +47,11 @@
             <scope>compile</scope>
         </dependency>
         <dependency>
-            <groupId>com.arcadedb</groupId>
-            <artifactId>arcadedb-network</artifactId>
-            <version>${project.parent.version}</version>
-            <scope>compile</scope>
-        </dependency>
-        <dependency>
-            <groupId>com.arcadedb</groupId>
-            <artifactId>arcadedb-server</artifactId>
-            <version>${project.parent.version}</version>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>com.arcadedb</groupId>
-            <artifactId>arcadedb-importer</artifactId>
-            <version>${project.parent.version}</version>
-            <scope>compile</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.jline</groupId>
-            <artifactId>jline-terminal</artifactId>
-            <version>${jline-terminal.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>org.jline</groupId>
-            <artifactId>jline-reader</artifactId>
-            <version>${jline-terminal.version}</version>
+            <groupId>com.univocity</groupId>
+            <artifactId>univocity-parsers</artifactId>
+            <version>${univocity-parsers.version}</version>
+            <type>jar</type>
         </dependency>
     </dependencies>
+
 </project>

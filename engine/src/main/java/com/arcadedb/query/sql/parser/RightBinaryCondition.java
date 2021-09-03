@@ -193,7 +193,7 @@ public class RightBinaryCondition extends SimpleNode {
 
   public void deserialize(Result fromResult) {
     try {
-      operator = (BinaryCompareOperator) Class.forName(String.valueOf(fromResult.getProperty("operator"))).newInstance();
+      operator = (BinaryCompareOperator) Class.forName(String.valueOf(fromResult.getProperty("operator"))).getConstructor().newInstance();
     } catch (Exception e) {
       throw new CommandExecutionException(e);
     }
