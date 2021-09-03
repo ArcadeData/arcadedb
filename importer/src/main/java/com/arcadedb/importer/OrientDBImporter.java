@@ -23,6 +23,7 @@ package com.arcadedb.importer;
 
 import com.arcadedb.Constants;
 import com.arcadedb.database.*;
+import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
@@ -50,36 +51,37 @@ public class OrientDBImporter {
   private       String                     inputFile;
   private       String                     securityFileName;
   private       String                     databaseName;
-  private       boolean                    overwriteDatabase      = false;
-  private       Map<String, Integer>       clustersNameToId       = new LinkedHashMap<>();
-  private       Map<Integer, String>       clustersIdToName       = new LinkedHashMap<>();
-  private       Map<String, OrientDBClass> classes                = new LinkedHashMap<>();
-  private       Map<String, Long>          totalRecordByType      = new HashMap<>();
-  private       long                       totalRecordParsed      = 0L;
-  private       long                       totalAttributesParsed  = 0L;
-  private       long                       errors                 = 0L;
-  private       long                       warnings               = 0L;
-  private       Set<String>                excludeClasses         = new HashSet<>(
+  private       boolean                    overwriteDatabase               = false;
+  private       Map<String, Integer>       clustersNameToId                = new LinkedHashMap<>();
+  private       Map<Integer, String>       clustersIdToName                = new LinkedHashMap<>();
+  private       Map<String, OrientDBClass> classes                         = new LinkedHashMap<>();
+  private       Map<String, Long>          totalRecordByType               = new HashMap<>();
+  private       long                       totalRecordParsed               = 0L;
+  private       long                       totalAttributesParsed           = 0L;
+  private       long                       errors                          = 0L;
+  private       long                       warnings                        = 0L;
+  private       Set<String>                excludeClasses                  = new HashSet<>(
       Arrays.asList(new String[] { "OUser", "ORole", "OSchedule", "OSequence", "OTriggered", "OSecurityPolicy", "ORestricted", "OIdentity", "OFunction" }));
   private       DatabaseFactory            factory;
   private       Database                   database;
-  private       Set<String>                edgeClasses            = new HashSet<>();
-  private       List<Map<String, Object>>  parsedUsers            = new ArrayList<>();
-  private       Map<RID, RID>              vertexRidMap           = new HashMap<>();
-  private       int                        batchSize              = 10_000;
-  private       PHASE                      phase                  = PHASE.OFF; // phase1 = create DB and cache edges in RAM, phase2 = create vertices and edges
-  private       long                       processedItems         = 0L;
-  private       long                       skippedEdges           = 0L;
-  private       long                       savedDocuments         = 0L;
-  private       long                       savedVertices          = 0L;
-  private       long                       savedEdges             = 0L;
-  private       Map<String, Long>          totalEdgesByVertexType = new HashMap<>();
+  private       Set<String>                edgeClasses                     = new HashSet<>();
+  private       List<Map<String, Object>>  parsedUsers                     = new ArrayList<>();
+  private       Map<RID, RID>              vertexRidMap                    = new HashMap<>();
+  private       int                        batchSize                       = 10_000;
+  private       PHASE                      phase                           = PHASE.OFF; // phase1 = create DB and cache edges in RAM, phase2 = create vertices and edges
+  private       long                       processedItems                  = 0L;
+  private       long                       skippedEdges                    = 0L;
+  private       long                       skippedRecordBecauseNullKey     = 0L;
+  private       long                       skippedEdgeBecauseMissingVertex = 0l;
+  private       Map<String, Long>          totalEdgesByVertexType          = new HashMap<>();
   private       long                       beginTime;
   private       long                       beginTimeRecordsCreation;
   private       long                       beginTimeEdgeCreation;
   private       GZIPInputStream            inputStream;
   private       JsonReader                 reader;
-  private       boolean                    error                  = false;
+  private       boolean                    error                           = false;
+  private       ImporterContext            context                         = new ImporterContext();
+  private       int                        verboseLevel                    = 2;
 
   private enum PHASE {OFF, CREATE_SCHEMA, CREATE_RECORDS, CREATE_EDGES}
 
@@ -106,6 +108,8 @@ public class OrientDBImporter {
         overwriteDatabase = true;
       else if (arg.equals("-b"))
         state = "batchSize";
+      else if (arg.equals("-v"))
+        state = "verboseLevel";
       else {
         if (state.equals("databasePath"))
           databasePath = arg;
@@ -115,6 +119,8 @@ public class OrientDBImporter {
           securityFileName = arg;
         else if (state.equals("batchSize"))
           batchSize = Integer.parseInt(arg);
+        else if (state.equals("verboseLevel"))
+          verboseLevel = Integer.parseInt(arg);
       }
     }
 
@@ -147,9 +153,9 @@ public class OrientDBImporter {
     final String from = inputFile != null ? "'" + inputFile + "'" : "stream";
 
     if (databasePath == null)
-      log("Checking OrientDB database from %s...", from);
+      log(1, "Checking OrientDB database from %s...", from);
     else {
-      log("Importing OrientDB database from %s to '%s'", from, databasePath);
+      log(1, "Importing OrientDB database from %s to '%s'", from, databasePath);
 
       if (database == null) {
         factory = new DatabaseFactory(databasePath);
@@ -175,22 +181,36 @@ public class OrientDBImporter {
       phase = PHASE.CREATE_SCHEMA;
 
       // PARSE THE FILE THE 1ST TIME TO CREATE THE SCHEMA AND CACHE EDGES IN RAM
-      log("Creation of the schema: types, properties and indexes");
+      log(1, "Creation of the schema: types, properties and indexes");
       parseInputFile();
 
       phase = PHASE.CREATE_EDGES;
 
       // PARSE THE FILE AGAIN TO CREATE RECORDS AND EDGES
-      log("Creation of edges started: creating edges between vertices");
+      log(1, "Creation of edges started: creating edges between vertices");
       beginTimeEdgeCreation = System.currentTimeMillis();
       parseInputFile();
 
+      if (database.getSchema().existsType("V")) {
+        if (database.countType("V", false) == 0) {
+          log(2, "Dropping empty 'V' base vertex type (in OrientDB all the vertices have their own class");
+          database.getSchema().dropType("V");
+        }
+      }
+
+      if (database.getSchema().existsType("E")) {
+        if (database.countType("E", false) == 0) {
+          log(2, "Dropping empty 'E' base edge type (in OrientDB all the edges have their own class");
+          database.getSchema().dropType("E");
+        }
+      }
+
       final long elapsed = (System.currentTimeMillis() - beginTime) / 1000;
 
-      log("***************************************************************************************************");
-      log("Import of OrientDB database completed in %,d secs with %,d errors and %,d warnings.", elapsed, errors, warnings);
-      log("\nSUMMARY\n");
-      log("- Records..............: %,d", totalRecordParsed);
+      log(1, "***************************************************************************************************");
+      log(1, "Import of OrientDB database completed in %,d secs with %,d errors and %,d warnings.", elapsed, errors, warnings);
+      log(1, "\nSUMMARY\n");
+      log(1, "- Records..................................: %,d", totalRecordParsed);
       for (Map.Entry<String, OrientDBClass> entry : classes.entrySet()) {
         final String className = entry.getKey();
         final Long recordsByClass = totalRecordByType.get(className);
@@ -200,22 +220,23 @@ public class OrientDBImporter {
         if (excludeClasses.contains(className))
           additional = " (excluded)";
 
-        log("-- %-20s: %,d %s", className, entries, additional);
+        log(1, "-- %-40s: %,d %s", className, entries, additional);
       }
-      log("- Total attributes.....: %,d", totalAttributesParsed);
-      log("***************************************************************************************************");
-      log("");
-      log("NOTES:");
+      log(1, "- Total attributes.....: %,d", totalAttributesParsed);
+      log(1, "***************************************************************************************************");
+      log(1, "");
+      log(1, "NOTES:");
 
       if (securityFileName == null)
-        log("- users stored in OUser class will not be imported because ArcadeDB has users only at server level. If you want to import such users into ArcadeDB server configuration, please run the importer with the option -s <securityFile>");
+        log(1,
+            "- users stored in OUser class will not be imported because ArcadeDB has users only at server level. If you want to import such users into ArcadeDB server configuration, please run the importer with the option -s <securityFile>");
       else {
         writeSecurityFile();
-        log("- you can find your security.json file to install in ArcadeDB server in '" + securityFileName + "'");
+        log(1, "- you can find your security.json file to install in ArcadeDB server in '" + securityFileName + "'");
       }
 
       if (database != null)
-        log("- you can find your new ArcadeDB database in '" + database.getDatabasePath() + "'");
+        log(1, "- you can find your new ArcadeDB database in '" + database.getDatabasePath() + "'");
 
     } finally {
       if (database != null)
@@ -225,6 +246,22 @@ public class OrientDBImporter {
 
   public boolean isError() {
     return error;
+  }
+
+  public ImporterContext getContext() {
+    return context;
+  }
+
+  public void setContext(final ImporterContext context) {
+    this.context = context;
+  }
+
+  public int getVerboseLevel() {
+    return verboseLevel;
+  }
+
+  public void setVerboseLevel(final int verboseLevel) {
+    this.verboseLevel = verboseLevel;
   }
 
   private void parseInputFile() throws IOException {
@@ -295,6 +332,7 @@ public class OrientDBImporter {
 
     processedItems = 0L;
     skippedEdges = 0L;
+    context.parsed.set(0);
 
     database.begin();
 
@@ -311,8 +349,8 @@ public class OrientDBImporter {
 
         if (processedItems > 0 && processedItems % 1_000_000 == 0) {
           final long elapsed = System.currentTimeMillis() - beginTimeRecordsCreation;
-          log("- Status update: created %,d vertices and %,d documents, skipped %,d edges (%,d records/sec)", savedVertices, savedDocuments, skippedEdges,
-              ((savedDocuments + savedVertices) / elapsed * 1000));
+          log(2, "- Status update: created %,d vertices and %,d documents, skipped %,d edges (%,d records/sec)", context.createdVertices.get(),
+              context.createdDocuments.get(), skippedEdges, ((context.createdDocuments.get() + context.createdVertices.get()) / elapsed * 1000));
         }
 
       } else {
@@ -320,7 +358,8 @@ public class OrientDBImporter {
           createEdges(attributes);
           if (processedItems > 0 && processedItems % 1_000_000 == 0) {
             final long elapsed = System.currentTimeMillis() - beginTimeEdgeCreation;
-            log("- Status update: created %,d edges %s (%,d edges/sec)", savedEdges, totalEdgesByVertexType, (savedEdges / elapsed * 1000));
+            log(2, "- Status update: created %,d edges %s (%,d edges/sec)", context.createdEdges.get(), totalEdgesByVertexType,
+                (context.createdEdges.get() / elapsed * 1000));
           }
         }
       }
@@ -343,12 +382,13 @@ public class OrientDBImporter {
 
     switch (phase) {
     case CREATE_RECORDS:
-      log("- Creation of records completed: created %,d vertices and %,d documents, skipped %,d edges (%,d records/sec elapsed=%,d secs)", savedVertices,
-          savedDocuments, skippedEdges, elapsedInSecs > 0 ? ((savedDocuments + savedVertices) / elapsedInSecs) : 0, elapsedInSecs);
+      log(1, "- Creation of records completed: created %,d vertices and %,d documents, skipped %,d edges (%,d records/sec elapsed=%,d secs)",
+          context.createdVertices.get(), context.createdDocuments.get(), skippedEdges,
+          elapsedInSecs > 0 ? ((context.createdDocuments.get() + context.createdVertices.get()) / elapsedInSecs) : 0, elapsedInSecs);
       break;
     case CREATE_EDGES:
-      log("- Creation of edges completed: created %,d edges %s (%,d edges/sec elapsed=%,d secs)", savedEdges, totalEdgesByVertexType,
-          elapsedInSecs > 0 ? (savedEdges / elapsedInSecs) : 0, elapsedInSecs);
+      log(1, "- Creation of edges completed: created %,d edges %s (%,d edges/sec elapsed=%,d secs)", context.createdEdges.get(), totalEdgesByVertexType,
+          elapsedInSecs > 0 ? (context.createdEdges.get() / elapsedInSecs) : 0, elapsedInSecs);
       break;
     default:
       error = true;
@@ -397,9 +437,13 @@ public class OrientDBImporter {
 
           incrementRecordByClass(className);
           ++totalRecordParsed;
+          context.parsed.incrementAndGet();
 
           if (!excludeClasses.contains(className)) {
             final DocumentType type = database.getSchema().getType(className);
+
+            if (!checkForNullIndexes(attributes, type))
+              return null;
 
             if (type instanceof VertexType)
               record = database.newVertex(className);
@@ -429,28 +473,12 @@ public class OrientDBImporter {
                 record.set(attrName, attrValue);
             }
 
-            boolean skip = false;
-            final List<Index> indexes = type.getAllIndexes(true);
-            for (Index index : indexes) {
-              if (index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.ERROR) {
-                final Object value = record.get(index.getPropertyNames()[0]);
-                if (value == null) {
-                  System.out.printf("- Skipped record %s because field '%s' is null and the index is not accepting NULLs\n", record,
-                      index.getPropertyNames()[0]);
-                  skip = true;
-                }
-              }
-            }
-
-            if (skip)
-              return null;
-
             record.save();
 
             if (type instanceof VertexType)
-              ++savedVertices;
+              context.createdVertices.incrementAndGet();
             else
-              ++savedDocuments;
+              context.createdDocuments.incrementAndGet();
 
             if (type instanceof VertexType) {
               // REMEMBER THE VERTEX TO ATTACH EDGES ON 2ND PHASE
@@ -465,15 +493,6 @@ public class OrientDBImporter {
     }
 
     return record;
-  }
-
-  private void incrementRecordByClass(final String className) {
-    Long recordsByClass = totalRecordByType.get(className);
-    if (recordsByClass == null) {
-      recordsByClass = 0L;
-      totalRecordByType.put(className, recordsByClass);
-    }
-    totalRecordByType.put(className, recordsByClass + 1);
   }
 
   private void createEdges(final Map<String, Object> attributes) {
@@ -493,6 +512,9 @@ public class OrientDBImporter {
     if (!(type instanceof EdgeType))
       return;
 
+    if (!checkForNullIndexes(attributes, type))
+      return;
+
     Map<String, Object> properties = Collections.EMPTY_MAP;
     for (Map.Entry<String, Object> attr : attributes.entrySet())
       if (!attr.getKey().startsWith("@") && !attr.getKey().equals("out") && !attr.getKey().equals("in")) {
@@ -504,21 +526,34 @@ public class OrientDBImporter {
     final RID out = new RID(database, (String) attributes.get("out"));
     final RID newOut = vertexRidMap.get(out);
     if (newOut == null) {
-      System.out.printf("- Skip edge %s because source vertex (out) was not imported\n", attributes);
+      ++skippedEdgeBecauseMissingVertex;
+
+      if (verboseLevel < 3 && skippedEdgeBecauseMissingVertex == 100)
+        log(2, "- Skipped 100 edges because one vertex is not in the database. Not reporting further case to reduce the output");
+      else if (verboseLevel > 2 || skippedEdgeBecauseMissingVertex < 100)
+        log(2, "- Skip edge %s because source vertex (out) was not imported", attributes);
+
       return;
     }
 
     final RID in = new RID(database, (String) attributes.get("in"));
     final RID newIn = vertexRidMap.get(in);
     if (newIn == null) {
-      System.out.printf("- Skip edge %s because destination vertex (in) was not imported\n", attributes);
+      ++skippedEdgeBecauseMissingVertex;
+
+      if (verboseLevel < 3 && skippedEdgeBecauseMissingVertex == 100)
+        log(2, "- Skipped 100 edges because one vertex is not in the database. Not reporting further case to reduce the output");
+      else if (verboseLevel > 2 || skippedEdgeBecauseMissingVertex < 100)
+        log(2, "- Skip edge %s because destination vertex (in) was not imported", attributes);
+
       return;
     }
 
     final Vertex sourceVertex = (Vertex) database.lookupByRID(newOut, false);
 
-    sourceVertex.newEdge(className, newIn, true, properties);
-    ++savedEdges;
+    MutableEdge edge = sourceVertex.newEdge(className, newIn, true, properties);
+
+    context.createdEdges.incrementAndGet();
 
     Long edgesByVertexType = totalEdgesByVertexType.get(className);
     if (edgesByVertexType == null) {
@@ -560,7 +595,7 @@ public class OrientDBImporter {
         attributeValue = parseArray(reader, ignore);
         break;
       default:
-        log("Skipping property '%s' of type '%s'", attributeName, propertyType);
+        log(2, "Skipping property '%s' of type '%s'", attributeName, propertyType);
         continue;
       }
 
@@ -602,7 +637,7 @@ public class OrientDBImporter {
         entryValue = parseArray(reader, ignore);
         break;
       default:
-        log("Skipping entry of type '%s'", entryType);
+        log(2, "Skipping entry of type '%s'", entryType);
         continue;
       }
 
@@ -721,7 +756,7 @@ public class OrientDBImporter {
       final DocumentType type = database.getSchema().getType(className);
       if (!type.existsProperty(fieldName)) {
         if (keyType == null) {
-          log("- Skipped %s index creation on %s%s because the property is not defined and the key type is unknown", unique ? "UNIQUE" : "NOT UNIQUE",
+          log(2, "- Skipped %s index creation on %s%s because the property is not defined and the key type is unknown", unique ? "UNIQUE" : "NOT UNIQUE",
               className, Arrays.toString(properties));
           continue;
         }
@@ -732,11 +767,11 @@ public class OrientDBImporter {
       database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, unique, className, properties, LSMTreeIndexAbstract.DEF_PAGE_SIZE,
           nullValuesIgnored ? LSMTreeIndexAbstract.NULL_STRATEGY.SKIP : LSMTreeIndexAbstract.NULL_STRATEGY.ERROR, null);
 
-      log("- Created index %s on %s%s", unique ? "UNIQUE" : "NOT UNIQUE", className, Arrays.toString(properties));
+      log(2, "- Created index %s on %s%s", unique ? "UNIQUE" : "NOT UNIQUE", className, Arrays.toString(properties));
     }
 
     if (phase == PHASE.CREATE_SCHEMA) {
-      log("Creation of records started: creating vertices and documents records (edges on the next phase)");
+      log(1, "Creation of records started: creating vertices and documents records (edges on the next phase)");
       phase = PHASE.CREATE_RECORDS;
       beginTimeRecordsCreation = System.currentTimeMillis();
     }
@@ -800,7 +835,7 @@ public class OrientDBImporter {
       t.createProperty(entry.getKey(), Type.valueOf(orientdbType));
     }
 
-    log("- Created type '%s' with the following properties %s", className, classInfo.properties);
+    log(2, "- Created type '%s' with the following properties %s", className, classInfo.properties);
   }
 
   private int getClassType(List<String> list) {
@@ -902,7 +937,10 @@ public class OrientDBImporter {
     }
   }
 
-  private void log(final String text, final Object... args) {
+  private void log(final int level, final String text, final Object... args) {
+    if (level > verboseLevel)
+      return;
+
     if (args.length == 0)
       System.out.println(text);
     else
@@ -917,19 +955,51 @@ public class OrientDBImporter {
   }
 
   private void syntaxError(final String s) {
-    log("Syntax error: " + s);
+    error("Syntax error: " + s);
     error = true;
     printHelp();
   }
 
   private void printHeader() {
-    log(Constants.PRODUCT + " " + Constants.getVersion() + " - OrientDB Importer");
+    log(1, Constants.PRODUCT + " " + Constants.getVersion() + " - OrientDB Importer");
   }
 
   private void printHelp() {
-    log("Use:");
-    log("-d <database-path>: create a database from the OrientDB export");
-    log("-i <input-file>: path to the OrientDB export file. The default name is export.json.gz");
-    log("-s <security-file>: path to the security file generated from OrientDB users to use in ArcadeDB server");
+    error("Use:");
+    error("-d <database-path>: create a database from the OrientDB export");
+    error("-i <input-file>: path to the OrientDB export file. The default name is export.json.gz");
+    error("-s <security-file>: path to the security file generated from OrientDB users to use in ArcadeDB server");
+    error("-v <verbose-level>: 0 = error only, 1 = main steps, 2 = detailed steps, 3 = everything");
+  }
+
+  private boolean checkForNullIndexes(final Map<String, Object> properties, final DocumentType type) {
+    boolean valid = true;
+    final List<Index> indexes = type.getAllIndexes(true);
+    for (Index index : indexes) {
+      if (index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.ERROR) {
+        final Object value = properties.get(index.getPropertyNames()[0]);
+        if (value == null) {
+          ++skippedRecordBecauseNullKey;
+
+          if (verboseLevel < 3 && skippedRecordBecauseNullKey == 100)
+            log(2, "- Skipped 100 records where indexed field is null and the index is not accepting NULLs. Not reporting further case to reduce the output");
+          else if (verboseLevel > 2 || skippedRecordBecauseNullKey < 100)
+            log(2, "- Skipped record %s because indexed field '%s' is null and the index is not accepting NULLs", properties, index.getPropertyNames()[0]);
+
+          valid = false;
+        }
+      }
+    }
+
+    return valid;
+  }
+
+  private void incrementRecordByClass(final String className) {
+    Long recordsByClass = totalRecordByType.get(className);
+    if (recordsByClass == null) {
+      recordsByClass = 0L;
+      totalRecordByType.put(className, recordsByClass);
+    }
+    totalRecordByType.put(className, recordsByClass + 1);
   }
 }
