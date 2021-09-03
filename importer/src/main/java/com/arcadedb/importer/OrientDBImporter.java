@@ -19,14 +19,12 @@
  * under the License.
  */
 
-package com.arcadedb.integration;
+package com.arcadedb.importer;
 
 import com.arcadedb.Constants;
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.database.MutableDocument;
-import com.arcadedb.database.RID;
+import com.arcadedb.database.*;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.index.Index;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.schema.*;
 import com.arcadedb.utility.FileUtils;
@@ -42,46 +40,49 @@ import java.io.InputStreamReader;
 import java.util.*;
 import java.util.zip.GZIPInputStream;
 
+import static com.google.gson.stream.JsonToken.*;
+
 /**
  * Importer from OrientDB. OrientDB is a registered mark of SAP.
  *
  * @author Luca Garulli
  */
 public class OrientDBImporter {
-  private String                     databasePath;
-  private String                     inputFile;
-  private String                     securityFileName;
-  private String                     databaseName;
-  private boolean                    overwriteDatabase      = false;
-  private Map<String, Integer>       clustersNameToId       = new LinkedHashMap<>();
-  private Map<Integer, String>       clustersIdToName       = new LinkedHashMap<>();
-  private Map<String, OrientDBClass> classes                = new LinkedHashMap<>();
-  private Map<String, Long>          totalRecordByType      = new HashMap<>();
-  private long                       totalRecordParsed      = 0L;
-  private long                       totalAttributesParsed  = 0L;
-  private long                       errors                 = 0L;
-  private long                       warnings               = 0L;
-  private Set<String>                excludeClasses         = new HashSet<>(Arrays
-      .asList(new String[] { "OUser", "ORole", "OSchedule", "OSequence", "OTriggered", "OSecurityPolicy", "ORestricted", "OIdentity", "OFunction", "V", "E" }));
-  private DatabaseFactory            factory;
-  private Database                   database;
-  private Set<String>                edgeClasses            = new HashSet<>();
-  private List<Map<String, Object>>  parsedUsers            = new ArrayList<>();
-  private Map<RID, RID>              vertexRidMap           = new HashMap<>();
-  private int                        batchSize              = 10_000;
-  private PHASE                      phase                  = PHASE.OFF; // phase1 = create DB and cache edges in RAM, phase2 = create vertices and edges
-  private long                       processedItems         = 0L;
-  private long                       skippedEdges           = 0L;
-  private long                       savedDocuments         = 0L;
-  private long                       savedVertices          = 0L;
-  private long                       savedEdges             = 0L;
-  private Map<String, Long>          totalEdgesByVertexType = new HashMap<>();
-  private long                       beginTime;
-  private long                       beginTimeRecordsCreation;
-  private long                       beginTimeEdgeCreation;
-  private GZIPInputStream            inputStream;
-  private JsonReader                 reader;
-  private boolean                    error                  = false;
+  private final File                       file;
+  private       String                     databasePath;
+  private       String                     inputFile;
+  private       String                     securityFileName;
+  private       String                     databaseName;
+  private       boolean                    overwriteDatabase      = false;
+  private       Map<String, Integer>       clustersNameToId       = new LinkedHashMap<>();
+  private       Map<Integer, String>       clustersIdToName       = new LinkedHashMap<>();
+  private       Map<String, OrientDBClass> classes                = new LinkedHashMap<>();
+  private       Map<String, Long>          totalRecordByType      = new HashMap<>();
+  private       long                       totalRecordParsed      = 0L;
+  private       long                       totalAttributesParsed  = 0L;
+  private       long                       errors                 = 0L;
+  private       long                       warnings               = 0L;
+  private       Set<String>                excludeClasses         = new HashSet<>(Arrays.asList(
+      new String[] { "OUser", "ORole", "OSchedule", "OSequence", "OTriggered", "OSecurityPolicy", "ORestricted", "OIdentity", "OFunction", "V", "E" }));
+  private       DatabaseFactory            factory;
+  private       Database                   database;
+  private       Set<String>                edgeClasses            = new HashSet<>();
+  private       List<Map<String, Object>>  parsedUsers            = new ArrayList<>();
+  private       Map<RID, RID>              vertexRidMap           = new HashMap<>();
+  private       int                        batchSize              = 10_000;
+  private       PHASE                      phase                  = PHASE.OFF; // phase1 = create DB and cache edges in RAM, phase2 = create vertices and edges
+  private       long                       processedItems         = 0L;
+  private       long                       skippedEdges           = 0L;
+  private       long                       savedDocuments         = 0L;
+  private       long                       savedVertices          = 0L;
+  private       long                       savedEdges             = 0L;
+  private       Map<String, Long>          totalEdgesByVertexType = new HashMap<>();
+  private       long                       beginTime;
+  private       long                       beginTimeRecordsCreation;
+  private       long                       beginTimeEdgeCreation;
+  private       GZIPInputStream            inputStream;
+  private       JsonReader                 reader;
+  private       boolean                    error                  = false;
 
   private enum PHASE {OFF, CREATE_SCHEMA, CREATE_RECORDS, CREATE_EDGES}
 
@@ -122,15 +123,26 @@ public class OrientDBImporter {
 
     if (inputFile == null)
       syntaxError("Missing input file. Use -f <file-path>");
+
+    file = new File(inputFile);
+  }
+
+  public OrientDBImporter(final DatabaseInternal database) throws IOException {
+    this.database = database;
+    this.databasePath = database.getDatabasePath();
+    this.file = null;
   }
 
   public static void main(final String[] args) throws IOException {
     new OrientDBImporter(args).run();
   }
 
+  public GZIPInputStream openInputStream() throws IOException {
+    return new GZIPInputStream(new FileInputStream(file));
+  }
+
   public void run() throws IOException {
-    File file = new File(inputFile);
-    if (!file.exists()) {
+    if (file != null && !file.exists()) {
       error = true;
       throw new IllegalArgumentException("File '" + inputFile + "' not found");
     }
@@ -140,20 +152,22 @@ public class OrientDBImporter {
     else {
       log("Importing OrientDB database from file '%s' to '%s'", inputFile, databasePath);
 
-      factory = new DatabaseFactory(databasePath);
-      if (factory.exists()) {
-        if (!overwriteDatabase) {
-          error("Database already exists on path '%s'", databasePath);
-          return;
-        } else {
-          database = factory.open();
-          error("Found existent database at '%s', dropping it and recreate a new one", databasePath);
-          database.drop();
+      if (database == null) {
+        factory = new DatabaseFactory(databasePath);
+        if (factory.exists()) {
+          if (!overwriteDatabase) {
+            error("Database already exists on path '%s'", databasePath);
+            return;
+          } else {
+            database = factory.open();
+            error("Found existent database at '%s', dropping it and recreate a new one", databasePath);
+            database.drop();
+          }
         }
-      }
 
-      // CREATE THE DATABASE
-      database = factory.create();
+        // CREATE THE DATABASE
+        database = factory.create();
+      }
     }
 
     try {
@@ -163,14 +177,14 @@ public class OrientDBImporter {
 
       // PARSE THE FILE THE 1ST TIME TO CREATE THE SCHEMA AND CACHE EDGES IN RAM
       log("Creation of the schema: types, properties and indexes");
-      parseInputFile(file);
+      parseInputFile();
 
       phase = PHASE.CREATE_EDGES;
 
       // PARSE THE FILE AGAIN TO CREATE RECORDS AND EDGES
-      log("- Creation of edges started: creating edges between vertices");
+      log("Creation of edges started: creating edges between vertices");
       beginTimeEdgeCreation = System.currentTimeMillis();
-      parseInputFile(file);
+      parseInputFile();
 
       final long elapsed = (System.currentTimeMillis() - beginTime) / 1000;
 
@@ -214,8 +228,8 @@ public class OrientDBImporter {
     return error;
   }
 
-  private void parseInputFile(final File file) throws IOException {
-    inputStream = new GZIPInputStream(new FileInputStream(file));
+  private void parseInputFile() throws IOException {
+    inputStream = openInputStream();
 
     reader = new JsonReader(new InputStreamReader(inputStream));
     reader.setLenient(true);
@@ -281,7 +295,7 @@ public class OrientDBImporter {
 
     database.begin();
 
-    while (reader.peek() == JsonToken.BEGIN_OBJECT) {
+    while (reader.peek() == BEGIN_OBJECT) {
       final Map<String, Object> attributes = parseRecord(reader, false);
 
       final String className = (String) attributes.get("@class");
@@ -315,7 +329,7 @@ public class OrientDBImporter {
         database.begin();
       }
 
-      if (reader.peek() == JsonToken.NULL)
+      if (reader.peek() == NULL)
         // FIX A BUG ON ORIENTDB EXPORTER WHEN GENERATE AN EMPTY RECORD
         reader.skipValue();
     }
@@ -343,7 +357,12 @@ public class OrientDBImporter {
   private MutableDocument createRecord(final Map<String, Object> attributes) throws IOException {
     MutableDocument record = null;
 
-    final RID recordRid = new RID(null, (String) attributes.get("@rid"));
+    final String rid = (String) attributes.get("@rid");
+    if (rid == null)
+      // EMBEDDED RECORD?
+      return null;
+
+    final RID recordRid = new RID(null, rid);
     final String recordType = (String) attributes.get("@type");
     if (recordType != null) {
       switch (recordType) {
@@ -407,6 +426,22 @@ public class OrientDBImporter {
                 record.set(attrName, attrValue);
             }
 
+            boolean skip = false;
+            final List<Index> indexes = type.getAllIndexes(true);
+            for (Index index : indexes) {
+              if (index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.ERROR) {
+                final Object value = record.get(index.getPropertyNames()[0]);
+                if (value == null) {
+                  System.out.printf("- Skipped record %s because field '%s' is null and the index is not accepting NULLs\n", record,
+                      index.getPropertyNames()[0]);
+                  skip = true;
+                }
+              }
+            }
+
+            if (skip)
+              return null;
+
             record.save();
 
             if (type instanceof VertexType)
@@ -455,19 +490,27 @@ public class OrientDBImporter {
     if (!(type instanceof EdgeType))
       return;
 
-    Map<String, Object> properties = null;
+    Map<String, Object> properties = Collections.EMPTY_MAP;
     for (Map.Entry<String, Object> attr : attributes.entrySet())
       if (!attr.getKey().startsWith("@") && !attr.getKey().equals("out") && !attr.getKey().equals("in")) {
-        if (properties == null)
+        if (properties == Collections.EMPTY_MAP)
           properties = new HashMap<>();
         properties.put(attr.getKey(), attr.getValue());
       }
 
     final RID out = new RID(database, (String) attributes.get("out"));
     final RID newOut = vertexRidMap.get(out);
+    if (newOut == null) {
+      System.out.printf("- Skip edge %s because source vertex (out)) was not imported\n", attributes);
+      return;
+    }
 
     final RID in = new RID(database, (String) attributes.get("in"));
     final RID newIn = vertexRidMap.get(in);
+    if (newIn == null) {
+      System.out.printf("- Skip edge %s because destination vertex (in) was not imported\n", attributes);
+      return;
+    }
 
     final Vertex sourceVertex = (Vertex) database.lookupByRID(newOut, false);
 
@@ -488,7 +531,7 @@ public class OrientDBImporter {
     final Map<String, Object> attributes = ignore ? null : new LinkedHashMap<>();
 
     reader.beginObject();
-    while (reader.peek() != JsonToken.END_OBJECT) {
+    while (reader.peek() != END_OBJECT) {
       final String attributeName = reader.nextName();
       final Object attributeValue;
 
@@ -531,7 +574,7 @@ public class OrientDBImporter {
   private List<Object> parseArray(JsonReader reader, final boolean ignore) throws IOException {
     final List<Object> list = ignore ? null : new ArrayList<>();
     reader.beginArray();
-    while (reader.peek() != JsonToken.END_ARRAY) {
+    while (reader.peek() != END_ARRAY) {
       final Object entryValue;
 
       final JsonToken entryType = reader.peek();
@@ -570,20 +613,20 @@ public class OrientDBImporter {
   private void parseSchema() throws IOException {
     reader.beginObject();
 
-    while (reader.peek() != JsonToken.END_OBJECT) {
+    while (reader.peek() != END_OBJECT) {
       final String name = reader.nextName();
 
       switch (name) {
       case "classes":
         reader.beginArray();
 
-        while (reader.peek() != JsonToken.END_ARRAY) {
+        while (reader.peek() != END_ARRAY) {
           reader.beginObject();
 
           String className = null;
           OrientDBClass cls = new OrientDBClass();
 
-          while (reader.peek() != JsonToken.END_OBJECT) {
+          while (reader.peek() != END_OBJECT) {
             switch (reader.nextName()) {
             case "name":
               className = reader.nextString();
@@ -591,14 +634,14 @@ public class OrientDBImporter {
 
             case "cluster-ids":
               reader.beginArray();
-              while (reader.peek() != JsonToken.END_ARRAY)
+              while (reader.peek() != END_ARRAY)
                 cls.clusterIds.add(reader.nextInt());
               reader.endArray();
               break;
 
             case "super-classes":
               reader.beginArray();
-              while (reader.peek() != JsonToken.END_ARRAY)
+              while (reader.peek() != END_ARRAY)
                 cls.superClasses.add(reader.nextString());
               reader.endArray();
               break;
@@ -608,10 +651,10 @@ public class OrientDBImporter {
               String propertyType = null;
 
               reader.beginArray();
-              while (reader.peek() != JsonToken.END_ARRAY) {
+              while (reader.peek() != END_ARRAY) {
                 reader.beginObject();
 
-                while (reader.peek() != JsonToken.END_OBJECT) {
+                while (reader.peek() != END_OBJECT) {
                   switch (reader.nextName()) {
                   case "name":
                     propertyName = reader.nextString();
@@ -660,6 +703,7 @@ public class OrientDBImporter {
 
       final Map<String, Object> indexDefinition = (Map<String, Object>) parsedIndex.get("indexDefinition");
       final String className = (String) indexDefinition.get("className");
+      final String keyType = (String) indexDefinition.get("keyType");
 
       if (!classes.containsKey(className))
         continue;
@@ -670,6 +714,17 @@ public class OrientDBImporter {
       final String fieldName = (String) indexDefinition.get("field");
       final String[] properties = new String[] { fieldName };
       final boolean nullValuesIgnored = (boolean) indexDefinition.get("nullValuesIgnored");
+
+      final DocumentType type = database.getSchema().getType(className);
+      if (!type.existsProperty(fieldName)) {
+        if (keyType == null) {
+          log("- Skipped %s index creation on %s%s because the property is not defined and the key type is unknown", unique ? "UNIQUE" : "NOT UNIQUE",
+              className, Arrays.toString(properties));
+          continue;
+        }
+
+        type.createProperty(fieldName, Type.valueOf(keyType));
+      }
 
       database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, unique, className, properties, LSMTreeIndexAbstract.DEF_PAGE_SIZE,
           nullValuesIgnored ? LSMTreeIndexAbstract.NULL_STRATEGY.SKIP : LSMTreeIndexAbstract.NULL_STRATEGY.ERROR, null);
@@ -721,7 +776,18 @@ public class OrientDBImporter {
 
     // CREATE PROPERTIES
     for (Map.Entry<String, String> entry : classInfo.properties.entrySet()) {
-      t.createProperty(entry.getKey(), Type.valueOf(entry.getValue()));
+      String orientdbType = entry.getValue();
+
+      switch (orientdbType) {
+      case "EMBEDDEDLIST":
+        orientdbType = "LIST";
+        break;
+      case "EMBEDDEDMAP":
+        orientdbType = "MAP";
+        break;
+      }
+
+      t.createProperty(entry.getKey(), Type.valueOf(orientdbType));
     }
 
     log("- Created type '%s' with the following properties %s", className, classInfo.properties);
@@ -773,11 +839,12 @@ public class OrientDBImporter {
         if (clusterName != null && clusterId > -1) {
           clustersNameToId.put(clusterName, clusterId);
           clustersIdToName.put(clusterId, clusterName);
+
           clusterName = null;
           clusterId = -1;
-          skipUntilEndOfObject(reader, JsonToken.END_OBJECT);
+          skipUntilEndOfObject(reader, END_OBJECT);
 
-          if (reader.peek() != JsonToken.BEGIN_OBJECT)
+          if (reader.peek() != BEGIN_OBJECT)
             break;
           reader.beginObject();
         }
@@ -799,7 +866,7 @@ public class OrientDBImporter {
       reader.skipValue();
     }
 
-    skipUntilEndOfObject(reader, JsonToken.END_OBJECT);
+    skipUntilEndOfObject(reader, END_OBJECT);
     reader.endObject();
   }
 
@@ -817,7 +884,7 @@ public class OrientDBImporter {
     while (reader.hasNext()) {
       final JsonToken t = reader.peek();
 
-      if (t == JsonToken.NAME) {
+      if (t == NAME) {
         if (reader.nextName().equals(propertyName))
           return;
       } else

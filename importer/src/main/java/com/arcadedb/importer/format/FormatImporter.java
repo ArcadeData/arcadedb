@@ -19,13 +19,14 @@
  * under the License.
  */
 
-package com.arcadedb.importer;
+package com.arcadedb.importer.format;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.importer.*;
 
 import java.io.IOException;
 
-public interface ContentImporter {
+public interface FormatImporter {
   void load(SourceSchema sourceSchema, AnalyzedEntity.ENTITY_TYPE entityType, Parser parser, DatabaseInternal database,
       ImporterContext context, ImporterSettings settings) throws IOException;
 

@@ -19,7 +19,7 @@
  * under the License.
  */
 
-package com.arcadedb.integration;
+package com.arcadedb.importer;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;

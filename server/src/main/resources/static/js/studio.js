@@ -2,6 +2,52 @@ function showLoginPopup(){
   $("#loginPopup").modal("show");
 }
 
+function importDatabase(){
+  let html = "<label for='inputImportDatabaseName'>Enter the database name:&nbsp;&nbsp;</label><input id='inputImportDatabaseName'>";
+  html += "<label for='inputImportDatabaseURL'>Enter the URL of the database:&nbsp;&nbsp;</label><input id='inputImportDatabaseURL'>";
+
+  Swal.fire({
+    title: 'Import a database database',
+    html: html,
+    inputAttributes: {
+      autocapitalize: 'off'
+    },
+    confirmButtonColor: '#3ac47d',
+    cancelButtonColor: 'red',
+    showCancelButton: true,
+    confirmButtonText: 'Send',
+  }).then((result) => {
+    if (result.value) {
+      let database = escapeHtml( $("#inputImportDatabaseName").val().trim() );
+      if( database == "" ){
+        globalNotify( "Error", "Database name empty", "danger");
+        return;
+      }
+
+      let url = escapeHtml( $("#inputImportDatabaseURL").val().trim() );
+      if( url == "" ){
+        globalNotify( "Error", "Database URL empty", "danger");
+        return;
+      }
+
+      jQuery.ajax({
+        type: "POST",
+        url: "/api/v1/import",
+        data: JSON.stringify( { name: database, url: url } ),
+        beforeSend: function (xhr){
+          xhr.setRequestHeader('Authorization', globalCredentials);
+        }
+      })
+      .done(function(data){
+        updateDatabases();
+      })
+      .fail(function( jqXHR, textStatus, errorThrown ){
+        globalNotify( "Error", escapeHtml( jqXHR.responseText ), "danger");
+      });
+    }
+  });
+}
+
 function createDatabase(){
   let html = "<label for='inputCreateDatabaseName'>Enter the database name:&nbsp;&nbsp;</label><input id='inputCreateDatabaseName'>";
 
@@ -92,38 +138,41 @@ function executeCommand(){
     if ( $.fn.dataTable.isDataTable( '#result' ) )
       $('#result').DataTable().destroy();
 
-    let columns = {};
-    for( i in data.result ){
-      let row = data.result[i];
+    let result = "";
+    if( data.result.length > 0 ) {
+      let columns = {};
+      for( i in data.result ){
+        let row = data.result[i];
 
-      for( p in row ){
-        if( !columns[p] )
-          columns[p] = true;
+        for( p in row ){
+          if( !columns[p] )
+            columns[p] = true;
+        }
       }
-    }
 
-    let result = "<thead><tr>";
-    for( colName in columns ){
-      result += "<th scope='col'>";
-      result += escapeHtml( colName );
-      result += "</th>";
-    }
-    result += "</tr></thead>";
-
-    result += "<tbody>";
-    for( i in data.result ){
-      let row = data.result[i];
-      result += "<tr>";
-
+      result += "<thead><tr>";
       for( colName in columns ){
-        result += "<td>";
-        result += escapeHtml( row[colName] );
-        result += "</td>";
+        result += "<th scope='col'>";
+        result += escapeHtml( colName );
+        result += "</th>";
       }
+      result += "</tr></thead>";
 
-      result += "</tr>";
+      result += "<tbody>";
+      for( i in data.result ){
+        let row = data.result[i];
+        result += "<tr>";
+
+        for( colName in columns ){
+          result += "<td>";
+          result += escapeHtml( row[colName] );
+          result += "</td>";
+        }
+
+        result += "</tr>";
+      }
+      result += "</tbody>";
     }
-    result += "</tbody>";
 
     $("#result").html(result);
 
@@ -132,12 +181,13 @@ function executeCommand(){
     let elapsed = new Date() - beginTime;
     $("#result-elapsed").html( elapsed );
 
-    $("#result").DataTable({
-      paging:   true,
-      pageLength: 25,
-      bLengthChange: true,
-    });
-
+    if( data.result.length > 0 ) {
+      $("#result").DataTable({
+        paging:   true,
+        pageLength: 25,
+        bLengthChange: true,
+      });
+    }
   })
   .fail(function( jqXHR, textStatus, errorThrown ){
     globalNotify( "Error", escapeHtml( jqXHR.responseText ), "danger");
@@ -274,6 +324,14 @@ function globalEraseCookie(key) {
 }
 
 function escapeHtml(unsafe) {
+  if( unsafe == null )
+    return null;
+
+  if( typeof unsafe === 'object' )
+    unsafe = JSON.stringify(unsafe);
+  else
+    unsafe = unsafe.toString();
+
   return unsafe
        .replace(/&/g, "&amp;")
        .replace(/</g, "&lt;")

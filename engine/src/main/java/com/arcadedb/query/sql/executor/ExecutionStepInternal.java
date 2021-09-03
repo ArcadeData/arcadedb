@@ -23,6 +23,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.TimeoutException;
 
+import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -43,118 +44,118 @@ import java.util.List;
  */
 public interface ExecutionStepInternal extends ExecutionStep {
 
-    static String getIndent(int depth, int indent) {
-        StringBuilder result = new StringBuilder();
-        for (int i = 0; i < depth; i++) {
-            for (int j = 0; j < indent; j++) {
-                result.append(" ");
-            }
-        }
-        return result.toString();
+  static String getIndent(int depth, int indent) {
+    StringBuilder result = new StringBuilder();
+    for (int i = 0; i < depth; i++) {
+      for (int j = 0; j < indent; j++) {
+        result.append(" ");
+      }
+    }
+    return result.toString();
+  }
+
+  static ResultInternal basicSerialize(ExecutionStepInternal step) {
+    ResultInternal result = new ResultInternal();
+    result.setProperty(InternalExecutionPlan.JAVA_TYPE, step.getClass().getName());
+    if (step.getSubSteps() != null && step.getSubSteps().size() > 0) {
+      List<Result> serializedSubsteps = new ArrayList<>();
+      for (ExecutionStep substep : step.getSubSteps()) {
+        serializedSubsteps.add(((ExecutionStepInternal) substep).serialize());
+      }
+      result.setProperty("subSteps", serializedSubsteps);
     }
 
-    static ResultInternal basicSerialize(ExecutionStepInternal step) {
-        ResultInternal result = new ResultInternal();
-        result.setProperty(InternalExecutionPlan.JAVA_TYPE, step.getClass().getName());
-        if (step.getSubSteps() != null && step.getSubSteps().size() > 0) {
-            List<Result> serializedSubsteps = new ArrayList<>();
-            for (ExecutionStep substep : step.getSubSteps()) {
-                serializedSubsteps.add(((ExecutionStepInternal) substep).serialize());
-            }
-            result.setProperty("subSteps", serializedSubsteps);
-        }
+    if (step.getSubExecutionPlans() != null && step.getSubExecutionPlans().size() > 0) {
+      List<Result> serializedSubPlans = new ArrayList<>();
+      for (ExecutionPlan substep : step.getSubExecutionPlans()) {
+        serializedSubPlans.add(((InternalExecutionPlan) substep).serialize());
+      }
+      result.setProperty("subExecutionPlans", serializedSubPlans);
+    }
+    return result;
+  }
 
-        if (step.getSubExecutionPlans() != null && step.getSubExecutionPlans().size() > 0) {
-            List<Result> serializedSubPlans = new ArrayList<>();
-            for (ExecutionPlan substep : step.getSubExecutionPlans()) {
-                serializedSubPlans.add(((InternalExecutionPlan) substep).serialize());
-            }
-            result.setProperty("subExecutionPlans", serializedSubPlans);
-        }
-        return result;
+  static void basicDeserialize(Result serialized, ExecutionStepInternal step)
+      throws ClassNotFoundException, IllegalAccessException, InstantiationException, NoSuchMethodException, InvocationTargetException {
+    List<Result> serializedSubsteps = serialized.getProperty("subSteps");
+    if (serializedSubsteps != null) {
+      for (Result serializedSub : serializedSubsteps) {
+        String className = serializedSub.getProperty(InternalExecutionPlan.JAVA_TYPE);
+        ExecutionStepInternal subStep = (ExecutionStepInternal) Class.forName(className).getConstructor().newInstance();
+        subStep.deserialize(serializedSub);
+        step.getSubSteps().add(subStep);
+      }
     }
 
-    static void basicDeserialize(Result serialized, ExecutionStepInternal step)
-            throws ClassNotFoundException, IllegalAccessException, InstantiationException {
-        List<Result> serializedSubsteps = serialized.getProperty("subSteps");
-        if (serializedSubsteps != null) {
-            for (Result serializedSub : serializedSubsteps) {
-                String className = serializedSub.getProperty(InternalExecutionPlan.JAVA_TYPE);
-                ExecutionStepInternal subStep = (ExecutionStepInternal) Class.forName(className).newInstance();
-                subStep.deserialize(serializedSub);
-                step.getSubSteps().add(subStep);
-            }
-        }
-
-        List<Result> serializedPlans = serialized.getProperty("subExecutionPlans");
-        if (serializedSubsteps != null) {
-            for (Result serializedSub : serializedPlans) {
-                String className = serializedSub.getProperty(InternalExecutionPlan.JAVA_TYPE);
-                InternalExecutionPlan subStep = (InternalExecutionPlan) Class.forName(className).newInstance();
-                subStep.deserialize(serializedSub);
-                step.getSubExecutionPlans().add(subStep);
-            }
-        }
+    List<Result> serializedPlans = serialized.getProperty("subExecutionPlans");
+    if (serializedSubsteps != null) {
+      for (Result serializedSub : serializedPlans) {
+        String className = serializedSub.getProperty(InternalExecutionPlan.JAVA_TYPE);
+        InternalExecutionPlan subStep = (InternalExecutionPlan) Class.forName(className).getConstructor().newInstance();
+        subStep.deserialize(serializedSub);
+        step.getSubExecutionPlans().add(subStep);
+      }
     }
+  }
 
-    ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException;
+  ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException;
 
-    void sendTimeout();
+  void sendTimeout();
 
-    boolean isTimedOut();
+  boolean isTimedOut();
 
-    void setPrevious(ExecutionStepInternal step);
+  void setPrevious(ExecutionStepInternal step);
 
-    void setNext(ExecutionStepInternal step);
+  void setNext(ExecutionStepInternal step);
 
-    void close();
+  void close();
 
-    default String prettyPrint(int depth, int indent) {
-        String spaces = getIndent(depth, indent);
-        return spaces + getClass().getSimpleName();
-    }
+  default String prettyPrint(int depth, int indent) {
+    String spaces = getIndent(depth, indent);
+    return spaces + getClass().getSimpleName();
+  }
 
-    default String getName() {
-        return getClass().getSimpleName();
-    }
+  default String getName() {
+    return getClass().getSimpleName();
+  }
 
-    default String getType() {
-        return getClass().getSimpleName();
-    }
+  default String getType() {
+    return getClass().getSimpleName();
+  }
 
-    default String getDescription() {
-        return prettyPrint(0, 3);
-    }
+  default String getDescription() {
+    return prettyPrint(0, 3);
+  }
 
-    default String getTargetNode() {
-        return "<local>";
-    }
+  default String getTargetNode() {
+    return "<local>";
+  }
 
-    default List<ExecutionStep> getSubSteps() {
-        return Collections.emptyList();
-    }
+  default List<ExecutionStep> getSubSteps() {
+    return Collections.emptyList();
+  }
 
-    default List<ExecutionPlan> getSubExecutionPlans() {
-        return Collections.emptyList();
-    }
+  default List<ExecutionPlan> getSubExecutionPlans() {
+    return Collections.emptyList();
+  }
 
-    default void reset() {
-        //do nothing
-    }
+  default void reset() {
+    //do nothing
+  }
 
-    default Result serialize() {
-        throw new UnsupportedOperationException();
-    }
+  default Result serialize() {
+    throw new UnsupportedOperationException();
+  }
 
-    default void deserialize(Result fromResult) {
-        throw new UnsupportedOperationException();
-    }
+  default void deserialize(Result fromResult) {
+    throw new UnsupportedOperationException();
+  }
 
-    default ExecutionStep copy(CommandContext ctx) {
-        throw new UnsupportedOperationException();
-    }
+  default ExecutionStep copy(CommandContext ctx) {
+    throw new UnsupportedOperationException();
+  }
 
-    default boolean canBeCached() {
-        return false;
-    }
+  default boolean canBeCached() {
+    return false;
+  }
 }

@@ -23,23 +23,36 @@ package com.arcadedb.importer;
 
 import com.arcadedb.log.LogManager;
 
+import java.io.IOException;
 import java.io.InputStream;
 import java.util.concurrent.Callable;
 import java.util.logging.Level;
 
 public class Source {
-  public final  String         url;
-  public final  InputStream    inputStream;
-  public final  long           totalSize;
-  public final  boolean        compressed;
-  private final Callable<Void> closeCallback;
+  public final  String                                      url;
+  public        InputStream                                 inputStream;
+  public final  long                                        totalSize;
+  public final  boolean                                     compressed;
+  private final com.arcadedb.utility.Callable<Void, Source> resetCallback;
+  private final Callable<Void>                              closeCallback;
 
-  public Source(final String url, final InputStream inputStream, final long totalSize, final boolean compressed, final Callable<Void> closeCallback) {
+  public Source(final String url, final InputStream inputStream, final long totalSize, final boolean compressed,
+      final com.arcadedb.utility.Callable<Void, Source> resetCallback, final Callable<Void> closeCallback) {
     this.url = url;
     this.inputStream = inputStream;
     this.totalSize = totalSize;
     this.compressed = compressed;
+    this.resetCallback = resetCallback;
     this.closeCallback = closeCallback;
+  }
+
+  public void reset() throws IOException {
+    if (resetCallback != null)
+      try {
+        resetCallback.call(this);
+      } catch (Exception e) {
+        LogManager.instance().log(this, Level.SEVERE, "Error on resetting source %s", e, this);
+      }
   }
 
   public void close() {

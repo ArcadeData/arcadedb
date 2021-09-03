@@ -22,9 +22,10 @@
 package com.arcadedb.importer;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.importer.format.FormatImporter;
 import com.arcadedb.index.IndexCursor;
 
-public abstract class AbstractContentImporter implements ContentImporter {
+public abstract class AbstractFormatImporter implements FormatImporter {
   private static final char[] STRING_CONTENT_SKIP = new char[] { '\'', '\'', '"', '"' };
 
   protected IndexCursor lookupRecord(final Database database, final String typeName, final String typeIdProperty, final Object id) {

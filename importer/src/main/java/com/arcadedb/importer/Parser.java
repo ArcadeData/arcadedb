@@ -26,7 +26,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 public class Parser {
   private final Source            source;
-  private final InputStream       is;
+  private       InputStream       is;
   private final InputStreamReader reader;
   private final long              limit;
   private       AtomicLong        position = new AtomicLong();
@@ -36,6 +36,64 @@ public class Parser {
 
   public Parser(final Source source, final long limit) throws IOException {
     this.source = source;
+    this.limit = limit;
+    resetInput();
+
+    this.compressed = source.compressed;
+    this.total = source.totalSize;
+
+    this.reader = new InputStreamReader(this.is);
+    this.is.mark(0);
+  }
+
+  public char getCurrentChar() {
+    return currentChar;
+  }
+
+  public char nextChar() throws IOException {
+    position.incrementAndGet();
+    currentChar = (char) reader.read();
+    return currentChar;
+  }
+
+  public void mark() {
+    is.mark(0);
+  }
+
+  public void reset() throws IOException {
+    currentChar = 0;
+    position.set(0);
+    source.reset();
+    resetInput();
+  }
+
+  public boolean isAvailable() throws IOException {
+    if (limit > 0)
+      return position.get() < limit && is.available() > 0;
+    return is.available() > 0;
+  }
+
+  public InputStream getInputStream() {
+    return is;
+  }
+
+  public long getPosition() {
+    return position.get();
+  }
+
+  public long getTotal() {
+    return limit > 0 ? Math.min(limit, total) : total;
+  }
+
+  public boolean isCompressed() {
+    return compressed;
+  }
+
+  public Source getSource() {
+    return source;
+  }
+
+  private void resetInput() {
     this.is = new BufferedInputStream(source.inputStream) {
       @Override
       public int read() throws IOException {
@@ -77,58 +135,5 @@ public class Parser {
         position.set(0);
       }
     };
-
-    this.compressed = source.compressed;
-    this.total = source.totalSize;
-
-    this.reader = new InputStreamReader(this.is);
-    this.limit = limit;
-    this.is.mark(0);
-  }
-
-  public char getCurrentChar() {
-    return currentChar;
-  }
-
-  public char nextChar() throws IOException {
-    position.incrementAndGet();
-    currentChar = (char) reader.read();
-    return currentChar;
-  }
-
-  public void mark() {
-    is.mark(0);
-  }
-
-  public void reset() throws IOException {
-    currentChar = 0;
-    position.set(0);
-    is.reset();
-  }
-
-  public boolean isAvailable() throws IOException {
-    if (limit > 0)
-      return position.get() < limit && is.available() > 0;
-    return is.available() > 0;
-  }
-
-  public InputStream getInputStream() {
-    return is;
-  }
-
-  public long getPosition() {
-    return position.get();
-  }
-
-  public long getTotal() {
-    return limit > 0 ? Math.min(limit, total) : total;
-  }
-
-  public boolean isCompressed() {
-    return compressed;
-  }
-
-  public Source getSource() {
-    return source;
   }
 }

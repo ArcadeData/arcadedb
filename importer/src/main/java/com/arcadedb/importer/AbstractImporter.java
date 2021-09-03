@@ -27,78 +27,22 @@ import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.*;
+import com.arcadedb.utility.FileUtils;
 
-import java.io.IOException;
+import java.io.File;
 import java.util.Timer;
-import java.util.TimerTask;
 import java.util.logging.Level;
 
-public class Importer {
+public abstract class AbstractImporter {
+  protected Parser           parser;
+  protected ImporterSettings settings = new ImporterSettings();
+  protected ImporterContext  context  = new ImporterContext();
   protected DatabaseInternal database;
   protected Source           source;
   protected Timer            timer;
 
-  // SETTINGS
-  protected Parser           parser;
-  protected ImporterSettings settings = new ImporterSettings();
-  protected ImporterContext  context  = new ImporterContext();
-
-  public Importer(final String[] args) {
+  public AbstractImporter(final String[] args) {
     settings.parseParameters(args);
-  }
-
-  public static void main(final String[] args) {
-    new Importer(args).load();
-    System.exit(0);
-  }
-
-  public void load() {
-    source = null;
-
-    try {
-      final String cfgValue = settings.options.get("maxValueSampling");
-
-      final AnalyzedSchema analyzedSchema = new AnalyzedSchema(cfgValue != null ? Integer.parseInt(cfgValue) : 100);
-
-      openDatabase();
-
-      startImporting();
-
-      loadFromSource(settings.documents, AnalyzedEntity.ENTITY_TYPE.DOCUMENT, analyzedSchema);
-      loadFromSource(settings.vertices, AnalyzedEntity.ENTITY_TYPE.VERTEX, analyzedSchema);
-      loadFromSource(settings.edges, AnalyzedEntity.ENTITY_TYPE.EDGE, analyzedSchema);
-
-    } catch (Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error on parsing source %s", e, source);
-    } finally {
-      if (database != null) {
-        database.async().waitCompletion();
-        stopImporting();
-        closeDatabase();
-      }
-      closeInputFile();
-    }
-  }
-
-  protected void loadFromSource(final String url, final AnalyzedEntity.ENTITY_TYPE entityType, final AnalyzedSchema analyzedSchema) throws IOException {
-    if (url == null)
-      // SKIP IT
-      return;
-
-    final SourceDiscovery sourceDiscovery = new SourceDiscovery(url);
-    final SourceSchema sourceSchema = sourceDiscovery.getSchema(settings, entityType, analyzedSchema);
-    if (sourceSchema == null) {
-      LogManager.instance().log(this, Level.WARNING, "XML importing aborted because unable to determine the schema");
-      return;
-    }
-
-    updateDatabaseSchema(sourceSchema.getSchema());
-
-    source = sourceDiscovery.getSource();
-    parser = new Parser(source, 0);
-    parser.reset();
-
-    sourceSchema.getContentImporter().load(sourceSchema, entityType, parser, database, context, settings);
   }
 
   protected void printProgress() {
@@ -143,13 +87,13 @@ public class Importer {
   protected void startImporting() {
     context.startedOn = context.lastLapOn = System.currentTimeMillis();
 
-    timer = new Timer();
-    timer.schedule(new TimerTask() {
-      @Override
-      public void run() {
-        printProgress();
-      }
-    }, 5000, 5000);
+//    timer = new Timer();
+//    timer.schedule(new TimerTask() {
+//      @Override
+//      public void run() {
+//        printProgress();
+//      }
+//    }, 5000, 5000);
   }
 
   protected void stopImporting() {
@@ -179,7 +123,7 @@ public class Importer {
 
     if (settings.forceDatabaseCreate) {
       if (factory.exists())
-        factory.open().drop();
+        FileUtils.deleteRecursively(new File(settings.database));
     }
 
     if (factory.exists()) {

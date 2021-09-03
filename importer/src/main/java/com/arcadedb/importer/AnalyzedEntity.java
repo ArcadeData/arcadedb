@@ -29,7 +29,7 @@ import java.util.Map;
 import java.util.Objects;
 
 public class AnalyzedEntity {
-  public enum ENTITY_TYPE {DOCUMENT, VERTEX, EDGE}
+  public enum ENTITY_TYPE {DATABASE, DOCUMENT, VERTEX, EDGE}
 
   private final String                        name;
   private final ENTITY_TYPE                   type;

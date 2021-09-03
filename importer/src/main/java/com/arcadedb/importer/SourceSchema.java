@@ -21,17 +21,19 @@
 
 package com.arcadedb.importer;
 
+import com.arcadedb.importer.format.FormatImporter;
+
 import java.util.HashMap;
 import java.util.Map;
 
 public class SourceSchema {
-  private final ContentImporter     contentImporter;
+  private final FormatImporter      formatImporter;
   private final Source              source;
   private final AnalyzedSchema      schema;
   private final Map<String, String> options = new HashMap<>();
 
-  public SourceSchema(final ContentImporter contentImporter, final Source source, final AnalyzedSchema schema) {
-    this.contentImporter = contentImporter;
+  public SourceSchema(final FormatImporter formatImporter, final Source source, final AnalyzedSchema schema) {
+    this.formatImporter = formatImporter;
     this.source = source;
     this.schema = schema;
   }
@@ -53,7 +55,7 @@ public class SourceSchema {
     return options;
   }
 
-  public ContentImporter getContentImporter() {
-    return contentImporter;
+  public FormatImporter getContentImporter() {
+    return formatImporter;
   }
 }

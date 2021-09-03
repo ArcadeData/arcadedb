@@ -19,13 +19,14 @@
  * under the License.
  */
 
-package com.arcadedb.importer;
+package com.arcadedb.importer.format;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.importer.*;
 
 import java.io.IOException;
 
-public class JSONImporter implements ContentImporter {
+public class JSONFormatImporter implements FormatImporter {
   @Override
   public void load(SourceSchema sourceSchema, AnalyzedEntity.ENTITY_TYPE entityType, final Parser parser, final DatabaseInternal database,
       final ImporterContext context, final ImporterSettings settings) throws IOException {
