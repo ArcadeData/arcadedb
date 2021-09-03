@@ -33,10 +33,7 @@ import com.google.gson.stream.JsonToken;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.IOException;
-import java.io.InputStreamReader;
+import java.io.*;
 import java.util.*;
 import java.util.zip.GZIPInputStream;
 
@@ -256,7 +253,11 @@ public class OrientDBImporter {
         break;
 
       default:
-        reader.skipValue();
+        try {
+          reader.skipValue();
+        } catch (EOFException e) {
+          return;
+        }
       }
     }
     reader.endObject();
