@@ -24,6 +24,7 @@ package com.arcadedb.importer;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.utility.FileUtils;
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
@@ -37,5 +38,10 @@ public class SQLRemoteImporterIT {
 
     //database.command("sql", "import database https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/MovieRatings.gz");
     database.command("sql", "import database https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/GratefulDeadConcerts.gz");
+
+    Assertions.assertEquals(809, database.countType("V", false));
+    Assertions.assertEquals(7047, database.countType("followed_by", false));
+    Assertions.assertEquals(501, database.countType("sung_by", false));
+    Assertions.assertEquals(501, database.countType("written_by", false));
   }
 }

@@ -175,73 +175,67 @@ public class OrientDBImporter {
       }
     }
 
-    try {
-      beginTime = System.currentTimeMillis();
+    beginTime = System.currentTimeMillis();
 
-      phase = PHASE.CREATE_SCHEMA;
+    phase = PHASE.CREATE_SCHEMA;
 
-      // PARSE THE FILE THE 1ST TIME TO CREATE THE SCHEMA AND CACHE EDGES IN RAM
-      logger.log(1, "Creation of the schema: types, properties and indexes");
-      parseInputFile();
+    // PARSE THE FILE THE 1ST TIME TO CREATE THE SCHEMA AND CACHE EDGES IN RAM
+    logger.log(1, "Creation of the schema: types, properties and indexes");
+    parseInputFile();
 
-      phase = PHASE.CREATE_EDGES;
+    phase = PHASE.CREATE_EDGES;
 
-      // PARSE THE FILE AGAIN TO CREATE RECORDS AND EDGES
-      logger.log(1, "Creation of edges started: creating edges between vertices");
-      beginTimeEdgeCreation = System.currentTimeMillis();
-      parseInputFile();
+    // PARSE THE FILE AGAIN TO CREATE RECORDS AND EDGES
+    logger.log(1, "Creation of edges started: creating edges between vertices");
+    beginTimeEdgeCreation = System.currentTimeMillis();
+    parseInputFile();
 
-      if (database.getSchema().existsType("V")) {
-        if (database.countType("V", false) == 0) {
-          logger.log(2, "Dropping empty 'V' base vertex type (in OrientDB all the vertices have their own class");
-          database.getSchema().dropType("V");
-        }
+    if (database.getSchema().existsType("V")) {
+      if (database.countType("V", false) == 0) {
+        logger.log(2, "Dropping empty 'V' base vertex type (in OrientDB all the vertices have their own class");
+        database.getSchema().dropType("V");
       }
-
-      if (database.getSchema().existsType("E")) {
-        if (database.countType("E", false) == 0) {
-          logger.log(2, "Dropping empty 'E' base edge type (in OrientDB all the edges have their own class");
-          database.getSchema().dropType("E");
-        }
-      }
-
-      final long elapsed = (System.currentTimeMillis() - beginTime) / 1000;
-
-      logger.log(1, "***************************************************************************************************");
-      logger.log(1, "Import of OrientDB database completed in %,d secs with %,d errors and %,d warnings.", elapsed, errors, warnings);
-      logger.log(1, "\nSUMMARY\n");
-      logger.log(1, "- Records..................................: %,d", totalRecordParsed);
-      for (Map.Entry<String, OrientDBClass> entry : classes.entrySet()) {
-        final String className = entry.getKey();
-        final Long recordsByClass = totalRecordByType.get(className);
-        final long entries = recordsByClass != null ? recordsByClass : 0L;
-        String additional = "";
-
-        if (excludeClasses.contains(className))
-          additional = " (excluded)";
-
-        logger.log(1, "-- %-40s: %,d %s", className, entries, additional);
-      }
-      logger.log(1, "- Total attributes.........................: %,d", totalAttributesParsed);
-      logger.log(1, "***************************************************************************************************");
-      logger.log(1, "");
-      logger.log(1, "NOTES:");
-
-      if (securityFileName == null)
-        logger.log(1,
-            "- users stored in OUser class will not be imported because ArcadeDB has users only at server level. If you want to import such users into ArcadeDB server configuration, please run the importer with the option -s <securityFile>");
-      else {
-        writeSecurityFile();
-        logger.log(1, "- you can find your security.json file to install in ArcadeDB server in '" + securityFileName + "'");
-      }
-
-      if (database != null)
-        logger.log(1, "- you can find your new ArcadeDB database in '" + database.getDatabasePath() + "'");
-
-    } finally {
-      if (database != null)
-        database.close();
     }
+
+    if (database.getSchema().existsType("E")) {
+      if (database.countType("E", false) == 0) {
+        logger.log(2, "Dropping empty 'E' base edge type (in OrientDB all the edges have their own class");
+        database.getSchema().dropType("E");
+      }
+    }
+
+    final long elapsed = (System.currentTimeMillis() - beginTime) / 1000;
+
+    logger.log(1, "***************************************************************************************************");
+    logger.log(1, "Import of OrientDB database completed in %,d secs with %,d errors and %,d warnings.", elapsed, errors, warnings);
+    logger.log(1, "\nSUMMARY\n");
+    logger.log(1, "- Records..................................: %,d", totalRecordParsed);
+    for (Map.Entry<String, OrientDBClass> entry : classes.entrySet()) {
+      final String className = entry.getKey();
+      final Long recordsByClass = totalRecordByType.get(className);
+      final long entries = recordsByClass != null ? recordsByClass : 0L;
+      String additional = "";
+
+      if (excludeClasses.contains(className))
+        additional = " (excluded)";
+
+      logger.log(1, "-- %-40s: %,d %s", className, entries, additional);
+    }
+    logger.log(1, "- Total attributes.........................: %,d", totalAttributesParsed);
+    logger.log(1, "***************************************************************************************************");
+    logger.log(1, "");
+    logger.log(1, "NOTES:");
+
+    if (securityFileName == null)
+      logger.log(1,
+          "- users stored in OUser class will not be imported because ArcadeDB has users only at server level. If you want to import such users into ArcadeDB server configuration, please run the importer with the option -s <securityFile>");
+    else {
+      writeSecurityFile();
+      logger.log(1, "- you can find your security.json file to install in ArcadeDB server in '" + securityFileName + "'");
+    }
+
+    if (database != null)
+      logger.log(1, "- you can find your new ArcadeDB database in '" + database.getDatabasePath() + "'");
   }
 
   public boolean isError() {
