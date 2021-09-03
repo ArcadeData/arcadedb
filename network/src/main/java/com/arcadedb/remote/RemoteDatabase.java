@@ -51,6 +51,7 @@ public class RemoteDatabase extends RWLockContext {
   public static final int                         DEFAULT_PORT              = 2480;
   private final       String                      originalServer;
   private final       int                         originalPort;
+  private             int                         apiVersion                = 1;
   private final       ContextConfiguration        configuration;
   private final       String                      name;
   private final       String                      userName;
@@ -215,7 +216,7 @@ public class RemoteDatabase extends RWLockContext {
     Pair<String, Integer> connectToServer = leaderIsPreferable ? leaderServer : new Pair<>(currentServer, currentPort);
 
     for (int retry = 0; retry < maxRetry && connectToServer != null; ++retry) {
-      String url = protocol + "://" + connectToServer.getFirst() + ":" + connectToServer.getSecond() + "/" + operation;
+      String url = protocol + "://" + connectToServer.getFirst() + ":" + connectToServer.getSecond() + "/api/v" + apiVersion + "/" + operation;
 
       if (extendedURL != null)
         url += "/" + extendedURL;
@@ -450,6 +451,14 @@ public class RemoteDatabase extends RWLockContext {
     }
 
     return leaderServer != null;
+  }
+
+  public int getApiVersion() {
+    return apiVersion;
+  }
+
+  public void setApiVersion(final int apiVersion) {
+    this.apiVersion = apiVersion;
   }
 
   public enum CONNECTION_STRATEGY {
