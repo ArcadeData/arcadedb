@@ -34,6 +34,9 @@ public class JsonSerializer {
   public JSONObject serializeRecord(final Document record) {
     final JSONObject object = new JSONObject();
 
+    object.put("@rid", record.getIdentity().toString());
+    object.put("@type", record.getTypeName());
+
     for (String p : record.getPropertyNames()) {
       Object value = record.get(p);
 
@@ -56,6 +59,12 @@ public class JsonSerializer {
 
   public JSONObject serializeResult(final Result record) {
     final JSONObject object = new JSONObject();
+
+    if (record.isElement()) {
+      final Document document = record.toElement();
+      object.put("@rid", document.getIdentity().toString());
+      object.put("@type", document.getTypeName());
+    }
 
     for (String p : record.getPropertyNames()) {
       Object value = record.getProperty(p);
