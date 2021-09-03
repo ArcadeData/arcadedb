@@ -215,7 +215,7 @@ public class RemoteDatabase extends RWLockContext {
     Pair<String, Integer> connectToServer = leaderIsPreferable ? leaderServer : new Pair<>(currentServer, currentPort);
 
     for (int retry = 0; retry < maxRetry && connectToServer != null; ++retry) {
-      String url = protocol + "://" + connectToServer.getFirst() + ":" + connectToServer.getSecond() + "/" + operation;
+      String url = protocol + "://" + connectToServer.getFirst() + ":" + connectToServer.getSecond() + "/api/v1/" + operation;
 
       if (extendedURL != null)
         url += "/" + extendedURL;
