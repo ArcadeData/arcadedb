@@ -262,6 +262,8 @@ TOKEN:
   |
   < ID: ( "I" | "i") ( "D" | "d") >
   |
+  < IMPORT: ( "I" | "i") ( "M" | "m")  ( "P" | "p") ( "O" | "o") ( "R" | "r") ( "T" | "t") >
+  |
   < DATABASE: ( "D" | "d") ( "A" | "a")  ( "T" | "t") ( "A" | "a") ( "B" | "b") ( "A" | "a") ( "S" | "s") ( "E" | "e") >
   |
   < OPTIMIZE: ( "O" | "o") ( "P" | "p")  ( "T" | "t") ( "I" | "i") ( "M" | "m") ( "I" | "i") ( "Z" | "z") ( "E" | "e") >
@@ -569,6 +571,33 @@ TOKEN :
 |
   < BUCKET_NUMBER_IDENTIFIER: <BUCKET> <COLON> <INTEGER_LITERAL>  >
 |
+  < HTTP_URL: "http://" (   (~["\"","\\","\n","\r"," ",";"])
+                        	        | ("\\"
+                        	            ( ["n","t","b","r","f","\\","'","\"","/"]
+                        	            | ["0"-"7"] ( ["0"-"7"] )?
+                        	            | ["0"-"3"] ["0"-"7"] ["0"-"7"]
+                        	            )
+                        	          )
+                        	      )* >
+|
+  < HTTPS_URL: "https://" (   (~["\"","\\","\n","\r"," ",";"])
+                        	        | ("\\"
+                        	            ( ["n","t","b","r","f","\\","'","\"","/"]
+                        	            | ["0"-"7"] ( ["0"-"7"] )?
+                        	            | ["0"-"3"] ["0"-"7"] ["0"-"7"]
+                        	            )
+                        	          )
+                        	      )* >
+|
+  < FILE_URL: "file://" (   (~["\"","\\","\n","\r"," ",";"])
+                        	        | ("\\"
+                        	            ( ["n","t","b","r","f","\\","'","\"","/"]
+                        	            | ["0"-"7"] ( ["0"-"7"] )?
+                        	            | ["0"-"3"] ["0"-"7"] ["0"-"7"]
+                        	            )
+                        	          )
+                        	      )* >
+|
   < SCHEMA_IDENTIFIER: "schema:" <IDENTIFIER>  >
 |
   < #LETTER:
@@ -766,6 +795,8 @@ Identifier Identifier():
     token = <REBUILD>
     |
     token = <ID>
+    |
+    token = <IMPORT>
     |
     token = <DATABASE>
     |
@@ -1045,6 +1076,8 @@ Statement StatementInternal():
                 result = SleepStatement()
                 |
                 result = IfStatement()
+                |
+                result = ImportDatabaseStatement()
             )
         )
         |
@@ -4481,4 +4514,32 @@ WhileBlock WhileBlock():
     )*
     <RBRACE>
     { return jjtThis; }
+
 }
+
+  ImportDatabaseStatement ImportDatabaseStatement():
+  { }
+  {
+      (
+          <IMPORT> <DATABASE>
+          jjtThis.url = Url()
+      )
+      {return jjtThis; }
+  }
+
+   Url Url():
+   {
+     Token token;
+   }
+   {
+      (
+        token = <HTTP_URL> { jjtThis.urlString = token.image;}
+        |
+        token = <HTTPS_URL> { jjtThis.urlString = token.image;}
+        |
+        token = <FILE_URL> { jjtThis.urlString = token.image;}
+      )
+      { return jjtThis; }
+   }
+
+
