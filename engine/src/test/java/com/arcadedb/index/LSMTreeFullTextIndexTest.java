@@ -71,7 +71,7 @@ public class LSMTreeFullTextIndexTest extends TestHelper {
                 + "\n"
                 + "Jay endured kidney problems for most of his life, according to his wife, and relied on dialysis. His sister donated one of her own. Miner died due to complications from kidney failure at the age of 62, just two months after Commodore declared bankruptcy.";
 
-        LogManager.instance().log(this, Level.INFO, "Indexing %d documents...", null, TOT);
+        LogManager.instance().log(this, Level.FINE, "Indexing %d documents...", null, TOT);
 
         for (int i = 0; i < TOT; ++i) {
           final MutableDocument v = database.newDocument(TYPE_NAME);
@@ -80,17 +80,17 @@ public class LSMTreeFullTextIndexTest extends TestHelper {
           v.save();
         }
 
-        LogManager.instance().log(this, Level.INFO, "Done, committing...");
+        LogManager.instance().log(this, Level.FINE, "Done, committing...");
 
         database.commit();
 
-        LogManager.instance().log(this, Level.INFO, "Committed");
+        LogManager.instance().log(this, Level.FINE, "Committed");
 
         final List<String> keywords = ((LSMTreeFullTextIndex) ((TypeIndex) typeIndex).getIndexesOnBuckets()[0])
             .analyzeText(((LSMTreeFullTextIndex) ((TypeIndex) typeIndex).getIndexesOnBuckets()[0]).getAnalyzer(), new Object[] { text });
         Assertions.assertFalse(keywords.isEmpty());
 
-        LogManager.instance().log(this, Level.INFO, "Checking keywords...");
+        LogManager.instance().log(this, Level.FINE, "Checking keywords...");
 
         for (String k : keywords) {
           int totalPerKeyword = 0;
@@ -114,7 +114,7 @@ public class LSMTreeFullTextIndexTest extends TestHelper {
           Assertions.assertEquals(TOT, totalPerKeyword);
         }
 
-        LogManager.instance().log(this, Level.INFO, "Check completed");
+        LogManager.instance().log(this, Level.FINE, "Check completed");
 
         database.begin();
       }

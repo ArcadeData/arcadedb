@@ -85,7 +85,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
                 final int op = getRandom(100);
                 if (i % 5000 == 0)
                   LogManager.instance()
-                      .log(this, Level.INFO, "Operations %d/%d totalTransactionInCurrentTx=%d totalTransactions=%d (thread=%d)", null, i, CYCLES,
+                      .log(this, Level.FINE, "Operations %d/%d totalTransactionInCurrentTx=%d totalTransactions=%d (thread=%d)", null, i, CYCLES,
                           totalTransactionInCurrentTx, totalTransactionRecords.get(), threadId);
 
                 LogManager.instance().log(this, Level.FINE, "Operation %d %d/%d (thread=%d)", null, op, i, CYCLES, threadId);
@@ -169,7 +169,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
 
                   if (getRandom(50) == 0)
                     LogManager.instance()
-                        .log(this, Level.INFO, "Found %d Transaction records, ram counter=%d (thread=%d)...", null, newCounter, totalTransactionRecords.get(),
+                        .log(this, Level.FINE, "Found %d Transaction records, ram counter=%d (thread=%d)...", null, newCounter, totalTransactionRecords.get(),
                             threadId);
 
                   totalTransactionInCurrentTx -= deleteRecords(database, threadId);
@@ -233,7 +233,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
       new DatabaseChecker().check(database, 0);
 
       //System.out.println(
-     //     "Test finished in " + (System.currentTimeMillis() - begin) + "ms, mvccExceptions=" + mvccErrors.get() + " otherExceptions=" + otherErrors.size());
+      //     "Test finished in " + (System.currentTimeMillis() - begin) + "ms, mvccExceptions=" + mvccErrors.get() + " otherExceptions=" + otherErrors.size());
 
       for (Pair<Integer, Exception> entry : otherErrors) {
         //System.out.println(" = threadId=" + entry.getFirst() + " exception=" + entry.getSecond());

@@ -21,14 +21,14 @@
 
 package com.arcadedb.index;
 
-import com.arcadedb.TestHelper;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.TestHelper;
 import com.arcadedb.database.*;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.schema.DocumentType;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -635,7 +635,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
     final AtomicLong duplicatedExceptions = new AtomicLong();
     final AtomicLong crossThreadsInserted = new AtomicLong();
 
-    LogManager.instance().log(this, Level.INFO, "%s Started with %d threads", null, getClass(), threads.length);
+    LogManager.instance().log(this, Level.FINE, "%s Started with %d threads", null, getClass(), threads.length);
 
     for (int i = 0; i < threads.length; ++i) {
       threads[i] = new Thread(new Runnable() {
@@ -670,7 +670,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
 
                   if (threadInserted % 1000 == 0)
                     LogManager.instance()
-                        .log(this, Level.INFO, "%s Thread %d inserted %d records with key %d (total=%d)", null, getClass(), Thread.currentThread().getId(), i,
+                        .log(this, Level.FINE, "%s Thread %d inserted %d records with key %d (total=%d)", null, getClass(), Thread.currentThread().getId(), i,
                             threadInserted, crossThreadsInserted.get());
 
                   keyPresent = true;
@@ -697,7 +697,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
             }
 
             LogManager.instance()
-                .log(this, Level.INFO, "%s Thread %d completed (inserted=%d)", null, getClass(), Thread.currentThread().getId(), threadInserted);
+                .log(this, Level.FINE, "%s Thread %d completed (inserted=%d)", null, getClass(), Thread.currentThread().getId(), threadInserted);
 
           } catch (Exception e) {
             LogManager.instance().log(this, Level.SEVERE, "%s Thread %d Error", e, getClass(), Thread.currentThread().getId());
@@ -719,17 +719,17 @@ public class TypeLSMTreeIndexTest extends TestHelper {
     }
 
     LogManager.instance()
-        .log(this, Level.INFO, "%s Completed (inserted=%d needRetryExceptions=%d duplicatedExceptions=%d)", null, getClass(), crossThreadsInserted.get(),
+        .log(this, Level.FINE, "%s Completed (inserted=%d needRetryExceptions=%d duplicatedExceptions=%d)", null, getClass(), crossThreadsInserted.get(),
             needRetryExceptions.get(), duplicatedExceptions.get());
 
     if (total != crossThreadsInserted.get()) {
-      LogManager.instance().log(this, Level.INFO, "DUMP OF INSERTED RECORDS (ORDERED BY ID)");
-      final ResultSet resultset = database
-          .query("sql", "select id, count(*) as total from ( select from " + TYPE_NAME + " group by id ) where total > 1 order by id");
+      LogManager.instance().log(this, Level.FINE, "DUMP OF INSERTED RECORDS (ORDERED BY ID)");
+      final ResultSet resultset = database.query("sql",
+          "select id, count(*) as total from ( select from " + TYPE_NAME + " group by id ) where total > 1 order by id");
       while (resultset.hasNext())
-        LogManager.instance().log(this, Level.INFO, "- %s", null, resultset.next());
+        LogManager.instance().log(this, Level.FINE, "- %s", null, resultset.next());
 
-      LogManager.instance().log(this, Level.INFO, "COUNT OF INSERTED RECORDS (ORDERED BY ID)");
+      LogManager.instance().log(this, Level.FINE, "COUNT OF INSERTED RECORDS (ORDERED BY ID)");
       final Map<Integer, Integer> result = new HashMap<>();
       database.scanType(TYPE_NAME, true, new DocumentCallback() {
         @Override
@@ -744,13 +744,13 @@ public class TypeLSMTreeIndexTest extends TestHelper {
         }
       });
 
-      LogManager.instance().log(this, Level.INFO, "FOUND %d ENTRIES", null, result.size());
+      LogManager.instance().log(this, Level.FINE, "FOUND %d ENTRIES", null, result.size());
 
       Iterator<Map.Entry<Integer, Integer>> it = result.entrySet().iterator();
       while (it.hasNext()) {
         Map.Entry<Integer, Integer> next = it.next();
         if (next.getValue() > 1)
-          LogManager.instance().log(this, Level.INFO, "- %d = %d", null, next.getKey(), next.getValue());
+          LogManager.instance().log(this, Level.FINE, "- %d = %d", null, next.getKey(), next.getValue());
       }
     }
 
