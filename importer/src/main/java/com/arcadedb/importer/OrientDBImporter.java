@@ -812,9 +812,13 @@ public class OrientDBImporter {
 
       switch (orientdbType) {
       case "EMBEDDEDLIST":
+      case "EMBEDDEDSET":
+      case "LINKLIST":
+      case "LINKSET":
         orientdbType = "LIST";
         break;
       case "EMBEDDEDMAP":
+      case "LINKMAP":
         orientdbType = "MAP";
         break;
       }
