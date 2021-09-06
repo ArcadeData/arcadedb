@@ -83,7 +83,7 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
     List<Integer> filteredTypeBuckets = new ArrayList<>();
     for (int bucketId : typeBuckets) {
       String bucketName = ctx.getDatabase().getSchema().getBucketById(bucketId).getName();
-      if (clusters == null || clusters.contains(bucketName)) {
+      if (clusters == null || clusters.contains(bucketName) || clusters.contains("*")) {
         filteredTypeBuckets.add(bucketId);
       }
     }

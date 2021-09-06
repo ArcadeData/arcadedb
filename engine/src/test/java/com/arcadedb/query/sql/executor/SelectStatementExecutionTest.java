@@ -2897,7 +2897,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     result.close();
   }
 
-  //    @Test  TODO check the execution plan (no fetch from bucket? why?)
+  @Test
   public void testSelectFromStringParam() {
     String className = "testSelectFromStringParam";
     database.getSchema().createDocumentType(className);
