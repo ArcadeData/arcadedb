@@ -161,4 +161,8 @@ public abstract class AbstractHandler implements HttpHandler {
   protected JSONObject createResult(final ServerSecurity.ServerUser user) {
     return new JSONObject().put("user", user.name).put("version", Constants.getVersion());
   }
+
+  protected String decode(final String command) {
+    return command.replace("&amp;", " ").replace("&lt;", "<").replace("&gt;", "<").replace("&quot;", "\"").replace("&#039;", "'");
+  }
 }

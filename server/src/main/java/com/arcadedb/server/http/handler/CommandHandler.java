@@ -22,6 +22,10 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.RID;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.server.ServerMetrics;
@@ -33,6 +37,7 @@ import org.json.JSONObject;
 
 import java.io.IOException;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
@@ -60,9 +65,9 @@ public class CommandHandler extends DatabaseAbstractHandler {
     final Map<String, Object> requestMap = json.toMap();
 
     final String language = (String) requestMap.get("language");
-    final String command = (String) requestMap.get("command");
+    final String command = decode((String) requestMap.get("command"));
     final int limit = (int) requestMap.getOrDefault("limit", DEFAULT_LIMIT);
-    final String graphMode = (String) requestMap.getOrDefault("graphMode", "COUNT").toString().toUpperCase();
+    final String graphMode = requestMap.getOrDefault("graphMode", JsonSerializer.GRAPH_MODE.FULL.toString()).toString().toUpperCase();
 
     if (command == null || command.isEmpty()) {
       exchange.setStatusCode(400);
@@ -81,13 +86,58 @@ public class CommandHandler extends DatabaseAbstractHandler {
 
       final JsonSerializer serializer = httpServer.getJsonSerializer().setGraphMode(JsonSerializer.GRAPH_MODE.valueOf(graphMode));
 
-      final JSONArray result = new JSONArray(qResult.stream().limit(limit + 1).map(r -> serializer.serializeResult(r)).collect(Collectors.toList()));
+      final JSONObject response = createResult(user);
+
+      switch (graphMode) {
+      case "FULL":
+        final Map<RID, Vertex> includedVertices = new HashMap<>();
+        final JSONArray vertices = new JSONArray();
+        final JSONArray edges = new JSONArray();
+
+        while (qResult.hasNext()) {
+          Result row = qResult.next();
+
+          if (row.isVertex()) {
+            Vertex v = row.getVertex().get();
+            includedVertices.put(v.getIdentity(), v);
+            vertices.put(serializer.serializeRecord(v));
+          } else if (row.isEdge()) {
+            Edge e = row.getEdge().get();
+            edges.put(serializer.serializeRecord(e));
+          }
+        }
+
+        // FILTER OUT NOT CONNECTED EDGES
+        for (Map.Entry<RID, Vertex> entry : includedVertices.entrySet()) {
+          final Vertex v = entry.getValue();
+          vertices.put(serializer.serializeRecord(v));
+
+          final Iterable<Edge> vEdgesOut = v.getEdges(Vertex.DIRECTION.OUT);
+          for (Edge e : vEdgesOut) {
+            if (includedVertices.containsKey(e.getIn()))
+              edges.put(serializer.serializeRecord(e));
+          }
+
+          final Iterable<Edge> vEdgesIn = v.getEdges(Vertex.DIRECTION.IN);
+          for (Edge e : vEdgesIn) {
+            if (includedVertices.containsKey(e.getOut()))
+              edges.put(serializer.serializeRecord(e));
+          }
+        }
+
+        response.put("result", new JSONObject().put("vertices", vertices).put("edges", edges));
+
+        break;
+      default:
+        final JSONArray result = new JSONArray(qResult.stream().limit(limit + 1).map(r -> serializer.serializeResult(r)).collect(Collectors.toList()));
+        response.put("result", result);
+      }
 
       if (database.isTransactionActive())
         database.commit();
 
       exchange.setStatusCode(200);
-      exchange.getResponseSender().send(createResult(user).put("result", result).toString());
+      exchange.getResponseSender().send(response.toString());
 
     } finally {
       database.rollbackAllNested();

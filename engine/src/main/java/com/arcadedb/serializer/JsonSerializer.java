@@ -34,7 +34,7 @@ import java.util.List;
 
 public class JsonSerializer {
 
-  public enum GRAPH_MODE {EXCLUDE, COUNT, FULL}
+  public enum GRAPH_MODE {EXCLUDE, MINIMAL, FULL}
 
   private GRAPH_MODE graphMode = GRAPH_MODE.EXCLUDE;
 
@@ -61,34 +61,7 @@ public class JsonSerializer {
       object.put(p, value);
     }
 
-    if (graphMode != GRAPH_MODE.EXCLUDE) {
-      if (document instanceof Vertex) {
-        final Vertex vertex = ((Vertex) document);
-
-        if (graphMode == GRAPH_MODE.COUNT) {
-          object.put("@out", vertex.countEdges(Vertex.DIRECTION.OUT, null));
-          object.put("@in", vertex.countEdges(Vertex.DIRECTION.IN, null));
-
-        } else {
-          final JSONArray outEdges = new JSONArray();
-          for (Edge e : vertex.getEdges(Vertex.DIRECTION.OUT))
-            outEdges.put(e.getIdentity().toString());
-          object.put("@out", outEdges);
-
-          final JSONArray inEdges = new JSONArray();
-          for (Edge e : vertex.getEdges(Vertex.DIRECTION.IN))
-            inEdges.put(e.getIdentity().toString());
-          object.put("@in", inEdges);
-        }
-
-      } else if (document instanceof Edge) {
-        if (graphMode == GRAPH_MODE.FULL) {
-          final Edge edge = ((Edge) document);
-          object.put("@in", edge.getIn());
-          object.put("@out", edge.getOut());
-        }
-      }
-    }
+    setMetadata(document, object);
 
     return object;
   }
@@ -101,34 +74,7 @@ public class JsonSerializer {
       object.put("@rid", document.getIdentity().toString());
       object.put("@type", document.getTypeName());
 
-      if (graphMode != GRAPH_MODE.EXCLUDE) {
-        if (document instanceof Vertex) {
-          final Vertex vertex = ((Vertex) document);
-
-          if (graphMode == GRAPH_MODE.COUNT) {
-            object.put("@out", vertex.countEdges(Vertex.DIRECTION.OUT, null));
-            object.put("@in", vertex.countEdges(Vertex.DIRECTION.IN, null));
-
-          } else {
-            final JSONArray outEdges = new JSONArray();
-            for (Edge e : vertex.getEdges(Vertex.DIRECTION.OUT))
-              outEdges.put(e.getIdentity().toString());
-            object.put("@out", outEdges);
-
-            final JSONArray inEdges = new JSONArray();
-            for (Edge e : vertex.getEdges(Vertex.DIRECTION.IN))
-              inEdges.put(e.getIdentity().toString());
-            object.put("@in", inEdges);
-          }
-
-        } else if (document instanceof Edge) {
-          if (graphMode == GRAPH_MODE.FULL) {
-            final Edge edge = ((Edge) document);
-            object.put("@in", edge.getIn());
-            object.put("@out", edge.getOut());
-          }
-        }
-      }
+      setMetadata(document, object);
     }
 
     for (String p : record.getPropertyNames()) {
@@ -162,5 +108,40 @@ public class JsonSerializer {
   public JsonSerializer setGraphMode(final GRAPH_MODE graphMode) {
     this.graphMode = graphMode;
     return this;
+  }
+
+  private void setMetadata(final Document document, final JSONObject object) {
+    if (graphMode != GRAPH_MODE.EXCLUDE) {
+      if (document instanceof Vertex) {
+        final Vertex vertex = ((Vertex) document);
+
+        if (graphMode == GRAPH_MODE.MINIMAL) {
+          object.put("@out", vertex.countEdges(Vertex.DIRECTION.OUT, null));
+          object.put("@in", vertex.countEdges(Vertex.DIRECTION.IN, null));
+          object.put("@cat", "v");
+
+        } else {
+          final JSONArray outEdges = new JSONArray();
+          for (Edge e : vertex.getEdges(Vertex.DIRECTION.OUT))
+            outEdges.put(e.getIdentity().toString());
+          object.put("@out", outEdges);
+
+          final JSONArray inEdges = new JSONArray();
+          for (Edge e : vertex.getEdges(Vertex.DIRECTION.IN))
+            inEdges.put(e.getIdentity().toString());
+          object.put("@in", inEdges);
+        }
+
+      } else if (document instanceof Edge) {
+        if (graphMode == GRAPH_MODE.FULL) {
+          final Edge edge = ((Edge) document);
+          object.put("@in", edge.getIn());
+          object.put("@out", edge.getOut());
+        } else
+          object.put("@cat", "e");
+
+      } else
+        object.put("@cat", "d");
+    }
   }
 }

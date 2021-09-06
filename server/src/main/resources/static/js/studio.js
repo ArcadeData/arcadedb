@@ -151,6 +151,14 @@ function dropDatabase(){
 }
 
 function executeCommand(){
+  let activeTab = $("#tabs-command .active").attr("id");
+  if( activeTab == "tab-table-sel" )
+    executeCommandTable();
+  else
+    executeCommandGraph();
+}
+
+function executeCommandTable(){
   let database = escapeHtml( $("#inputDatabase").val() );
   let language = escapeHtml( $("#inputLanguage").val() );
   let command = escapeHtml( $("#inputCommand").val() );
@@ -166,7 +174,7 @@ function executeCommand(){
       {
         language: language,
         command: command,
-        graphMode: "count"
+        graphMode: "minimal"
       }
     ),
     beforeSend: function (xhr){
@@ -175,7 +183,7 @@ function executeCommand(){
   })
   .done(function(data){
     if ( $.fn.dataTable.isDataTable( '#result' ) )
-      $('#result').DataTable().destroy();
+      try{ $('#result').DataTable().destroy(); $('#result').empty(); } catch(e){};
 
     var tableColumns = [];
     var tableRecords = [];
@@ -246,21 +254,60 @@ function executeCommand(){
         ],
       });
     }
-    //dom: "Bfrtilp",
+  })
+  .fail(function( jqXHR, textStatus, errorThrown ){
+    globalNotify( "Error", escapeHtml( jqXHR.responseText ), "danger");
+  })
+  .always(function(data) {
+    $("#executeSpinner").hide();
+  });
+}
+
+function executeCommandGraph(){
+  let database = escapeHtml( $("#inputDatabase").val() );
+  let language = escapeHtml( $("#inputLanguage").val() );
+  let command = escapeHtml( $("#inputCommand").val() );
+
+  $("#executeSpinner").show();
+
+  let beginTime = new Date();
+
+  jQuery.ajax({
+    type: "POST",
+    url: "/api/v1/command/" + database,
+    data: JSON.stringify(
+      {
+        language: language,
+        command: command,
+        graphMode: "full"
+      }
+    ),
+    beforeSend: function (xhr){
+      xhr.setRequestHeader('Authorization', globalCredentials);
+    }
+  })
+  .done(function(data){
+    let elements = [];
+
+    for( i in data.result.vertices ){
+      let vertex = data.result.vertices[i];
+
+      let rid = vertex["@rid"];
+      if( rid == null )
+        continue;
+
+      elements.push( { data: { id: rid } } );
+    }
+
+    for( i in data.result.edges ){
+      let edge = data.result.edges[i];
+      let rid = edge["@rid"];
+      elements.push( { data: { id: rid, source: edge["@out"], target: edge["@in"] } } );
+    }
 
     var cy = cytoscape({
       container: $('#graph'),
-      elements: [ // list of graph elements to start with
-        { // node a
-          data: { id: 'a' }
-        },
-        { // node b
-          data: { id: 'b' }
-        },
-        { // edge ab
-          data: { id: 'ab', source: 'a', target: 'b' }
-        }
-      ],
+      elements: elements,
 
       style: [ // the stylesheet for the graph
         {
@@ -297,7 +344,6 @@ function executeCommand(){
     $("#executeSpinner").hide();
   });
 }
-
 
 function globalAlert(title, text, icon, callback ){
   if( !icon )

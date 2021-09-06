@@ -51,15 +51,15 @@
       </label>
     </div>
     <div class="col-11">
-      <textarea id="inputCommand" style="width: 100%; height: 100px;">select from Movies</textarea>
+      <textarea id="inputCommand" style="width: 100%; height: 100px;"></textarea>
     </div>
 
     <div class="col-12">
       <div class="row">
         <div class="col-6">
-          <ul class="nav nav-tabs">
-            <li class="nav-item"><a data-toggle="tab" href="#tab-table" class="active nav-link" id="tab-database-sel">&nbsp;Table</a></li>
-            <li class="nav-item"><a data-toggle="tab" href="#tab-graph" class="nav-link" id="tab-api-sel">&nbsp;Graph</a></li>
+          <ul class="nav nav-tabs" id="tabs-command">
+            <li class="nav-item"><a data-toggle="tab" href="#tab-table" class="active nav-link" id="tab-table-sel">&nbsp;Table</a></li>
+            <li class="nav-item"><a data-toggle="tab" href="#tab-graph" class="nav-link" id="tab-graph-sel">&nbsp;Graph</a></li>
           </ul>
         </div>
         <div class="col-6">
@@ -85,3 +85,9 @@
     </div>
   </div>
 </div>
+
+<script>
+$('a[data-toggle="tab"]').on('shown.bs.tab', function (e) {
+  executeCommand();
+});
+</script>
