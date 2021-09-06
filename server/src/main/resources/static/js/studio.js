@@ -33,7 +33,7 @@ function importDatabase(){
       jQuery.ajax({
         type: "POST",
         url: "/api/v1/import",
-        data: JSON.stringify( { name: database, url: url } ),
+        data: JSON.stringify( { name: database, url: url, limit: 20000 } ),
         beforeSend: function (xhr){
           xhr.setRequestHeader('Authorization', globalCredentials);
         }
@@ -184,7 +184,7 @@ function executeCommand(){
     if( data.result.length > 0 ) {
       $("#result").DataTable({
         paging:   true,
-        pageLength: 25,
+        pageLength: 20,
         bLengthChange: true,
       });
     }

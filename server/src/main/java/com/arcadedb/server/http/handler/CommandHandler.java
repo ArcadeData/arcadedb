@@ -22,10 +22,10 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.server.ServerMetrics;
 import com.arcadedb.server.http.HttpServer;
-import com.arcadedb.query.sql.executor.ResultSet;
 import io.undertow.server.HttpServerExchange;
 import org.json.JSONObject;
 
@@ -36,6 +36,9 @@ import java.util.Optional;
 import java.util.stream.Collectors;
 
 public class CommandHandler extends DatabaseAbstractHandler {
+
+  private static final int DEFAULT_LIMIT = 20_000;
+
   public CommandHandler(final HttpServer httpServer) {
     super(httpServer);
   }
@@ -56,6 +59,7 @@ public class CommandHandler extends DatabaseAbstractHandler {
 
     final String language = (String) requestMap.get("language");
     final String command = (String) requestMap.get("command");
+    final int limit = (int) requestMap.getOrDefault("limit", DEFAULT_LIMIT);
 
     if (command == null || command.isEmpty()) {
       exchange.setStatusCode(400);
@@ -74,7 +78,7 @@ public class CommandHandler extends DatabaseAbstractHandler {
 
       final JsonSerializer serializer = httpServer.getJsonSerializer();
 
-      final String result = qResult.stream().map(r -> serializer.serializeResult(r).toString()).collect(Collectors.joining(","));
+      final String result = qResult.stream().limit(limit + 1).map(r -> serializer.serializeResult(r).toString()).collect(Collectors.joining(","));
 
       if (database.isTransactionActive())
         database.commit();
