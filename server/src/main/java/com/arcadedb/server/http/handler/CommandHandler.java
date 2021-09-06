@@ -62,7 +62,7 @@ public class CommandHandler extends DatabaseAbstractHandler {
     final String language = (String) requestMap.get("language");
     final String command = (String) requestMap.get("command");
     final int limit = (int) requestMap.getOrDefault("limit", DEFAULT_LIMIT);
-    final String graphMode = (String) requestMap.getOrDefault("graphMode", "COUNT");
+    final String graphMode = (String) requestMap.getOrDefault("graphMode", "COUNT").toString().toUpperCase();
 
     if (command == null || command.isEmpty()) {
       exchange.setStatusCode(400);
