@@ -165,7 +165,8 @@ function executeCommand(){
     data: JSON.stringify(
       {
         language: language,
-        command: command
+        command: command,
+        graphMode: "count"
       }
     ),
     beforeSend: function (xhr){

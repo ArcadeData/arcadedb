@@ -36,7 +36,7 @@ public class JsonSerializer {
 
   public enum GRAPH_MODE {EXCLUDE, COUNT, FULL}
 
-  private GRAPH_MODE graphMode = GRAPH_MODE.COUNT;
+  private GRAPH_MODE graphMode = GRAPH_MODE.EXCLUDE;
 
   public JSONObject serializeRecord(final Document document) {
     final JSONObject object = new JSONObject();
