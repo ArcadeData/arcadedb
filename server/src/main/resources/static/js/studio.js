@@ -2,6 +2,44 @@ function showLoginPopup(){
   $("#loginPopup").modal("show");
 }
 
+function updateDatabases(){
+  jQuery.ajax({
+    type: "GET",
+    url: "/api/v1/databases",
+    beforeSend: function (xhr){
+      xhr.setRequestHeader('Authorization', globalCredentials);
+    }
+  })
+  .done(function(data){
+    $("#loginPanel").hide();
+    $("#databasePanel").show();
+
+    let databases = "";
+    for( i in data.result ){
+      let dbName = data.result[i];
+      databases += "<option value='"+dbName+"'>"+dbName+"</option>";
+    }
+    $("#inputDatabase").html(databases);
+
+    $("#user").html(data.user);
+
+    let version = data.version;
+    let pos = data.version.indexOf("(build");
+    if( pos > -1 ) {
+      version = version.substring( 0, pos ) + "<br><span style='font-size: 70%'>" + version.substring( pos ) + "</span>";
+    }
+    $("#version").html(version);
+
+    $("#loginPopup").modal("hide");
+  })
+  .fail(function( jqXHR, textStatus, errorThrown ){
+    globalNotify( "Error", escapeHtml( jqXHR.responseText ), "danger");
+  })
+  .always(function(data) {
+    $("#loginSpinner").hide();
+  });
+}
+
 function importDatabase(){
   let html = "<label for='inputImportDatabaseName'>Enter the database name:&nbsp;&nbsp;</label><input id='inputImportDatabaseName'>";
   html += "<label for='inputImportDatabaseURL'>Enter the URL of the database:&nbsp;&nbsp;</label><input id='inputImportDatabaseURL'>";
@@ -138,7 +176,9 @@ function executeCommand(){
     if ( $.fn.dataTable.isDataTable( '#result' ) )
       $('#result').DataTable().destroy();
 
-    let result = "";
+    var tableColumns = [];
+    var tableRecords = [];
+
     if( data.result.length > 0 ) {
       let columns = {};
       for( i in data.result ){
@@ -150,31 +190,35 @@ function executeCommand(){
         }
       }
 
-      result += "<thead><tr>";
-      for( colName in columns ){
-        result += "<th scope='col'>";
-        result += escapeHtml( colName );
-        result += "</th>";
-      }
-      result += "</tr></thead>";
+      orderedColumns = [];
+      if( columns["@rid"])
+        orderedColumns.push("@rid");
+      if( columns["@type"])
+        orderedColumns.push("@type");
 
-      result += "<tbody>";
+      for( colName in columns ){
+        if( !colName.startsWith("@"))
+          orderedColumns.push(colName);
+      }
+
+      if( columns["@in"])
+        orderedColumns.push("@in");
+      if( columns["@out"])
+        orderedColumns.push("@out");
+
+      for( i in orderedColumns )
+        tableColumns.push( { sTitle: escapeHtml( orderedColumns[i] ), "defaultContent": "" } );
+
       for( i in data.result ){
         let row = data.result[i];
-        result += "<tr>";
 
-        for( colName in columns ){
-          result += "<td>";
-          result += escapeHtml( row[colName] );
-          result += "</td>";
-        }
 
-        result += "</tr>";
+        let record = [];
+        for( i in orderedColumns )
+          record.push( escapeHtml( row[orderedColumns[i]] ) );
+        tableRecords.push( record );
       }
-      result += "</tbody>";
     }
-
-    $("#result").html(result);
 
     $( "#result-num" ).html( data.result.length );
 
@@ -183,11 +227,67 @@ function executeCommand(){
 
     if( data.result.length > 0 ) {
       $("#result").DataTable({
+        orderCellsTop: true,
+        fixedHeader: true,
         paging:   true,
         pageLength: 20,
         bLengthChange: true,
+        initComplete: function() {
+          $('div.dataTables_filter input').attr('autocomplete', 'off')
+        },
+        aoColumns: tableColumns,
+        aaData: tableRecords,
+        deferRender: true,
+        dom: '<Blf>rt<ip>',
+        lengthMenu: [
+          [ 10, 20, 50, 100, -1 ],
+          [ '10', '20', '50', '100', 'all' ]
+        ],
       });
     }
+    //dom: "Bfrtilp",
+
+    var cy = cytoscape({
+      container: $('#graph'),
+      elements: [ // list of graph elements to start with
+        { // node a
+          data: { id: 'a' }
+        },
+        { // node b
+          data: { id: 'b' }
+        },
+        { // edge ab
+          data: { id: 'ab', source: 'a', target: 'b' }
+        }
+      ],
+
+      style: [ // the stylesheet for the graph
+        {
+          selector: 'node',
+          style: {
+            'background-color': '#666',
+            'label': 'data(id)'
+          }
+        },
+
+        {
+          selector: 'edge',
+          style: {
+            'width': 3,
+            'line-color': '#ccc',
+            'target-arrow-color': '#ccc',
+            'target-arrow-shape': 'triangle',
+            'curve-style': 'bezier'
+          }
+        }
+      ],
+
+      layout: {
+        name: 'grid',
+        rows: 1
+      }
+    });
+
   })
   .fail(function( jqXHR, textStatus, errorThrown ){
     globalNotify( "Error", escapeHtml( jqXHR.responseText ), "danger");
@@ -275,44 +375,6 @@ function login(){
   globalCredentials = make_base_auth(userName, userPassword);
 
   updateDatabases();
-}
-
-function updateDatabases(){
-  jQuery.ajax({
-    type: "GET",
-    url: "/api/v1/databases",
-    beforeSend: function (xhr){
-      xhr.setRequestHeader('Authorization', globalCredentials);
-    }
-  })
-  .done(function(data){
-    $("#loginPanel").hide();
-    $("#databasePanel").show();
-
-    let databases = "";
-    for( i in data.result ){
-      let dbName = data.result[i];
-      databases += "<option value='"+dbName+"'>"+dbName+"</option>";
-    }
-    $("#inputDatabase").html(databases);
-
-    $("#user").html(data.user);
-
-    let version = data.version;
-    let pos = data.version.indexOf("(build");
-    if( pos > -1 ) {
-      version = version.substring( 0, pos ) + "<br><span style='font-size: 70%'>" + version.substring( pos ) + "</span>";
-    }
-    $("#version").html(version);
-
-    $("#loginPopup").modal("hide");
-  })
-  .fail(function( jqXHR, textStatus, errorThrown ){
-    globalNotify( "Error", escapeHtml( jqXHR.responseText ), "danger");
-  })
-  .always(function(data) {
-    $("#loginSpinner").hide();
-  });
 }
 
 function globalSetCookie(key, value, expiry) {

@@ -22,7 +22,10 @@
 package com.arcadedb.serializer;
 
 import com.arcadedb.database.Document;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
@@ -31,14 +34,18 @@ import java.util.List;
 
 public class JsonSerializer {
 
-  public JSONObject serializeRecord(final Document record) {
+  public enum GRAPH_MODE {EXCLUDE, COUNT, FULL}
+
+  private GRAPH_MODE graphMode = GRAPH_MODE.COUNT;
+
+  public JSONObject serializeRecord(final Document document) {
     final JSONObject object = new JSONObject();
 
-    object.put("@rid", record.getIdentity().toString());
-    object.put("@type", record.getTypeName());
+    object.put("@rid", document.getIdentity().toString());
+    object.put("@type", document.getTypeName());
 
-    for (String p : record.getPropertyNames()) {
-      Object value = record.get(p);
+    for (String p : document.getPropertyNames()) {
+      Object value = document.get(p);
 
       if (value instanceof Document)
         value = serializeRecord((Document) value);
@@ -54,6 +61,35 @@ public class JsonSerializer {
       object.put(p, value);
     }
 
+    if (graphMode != GRAPH_MODE.EXCLUDE) {
+      if (document instanceof Vertex) {
+        final Vertex vertex = ((Vertex) document);
+
+        if (graphMode == GRAPH_MODE.COUNT) {
+          object.put("@out", vertex.countEdges(Vertex.DIRECTION.OUT, null));
+          object.put("@in", vertex.countEdges(Vertex.DIRECTION.IN, null));
+
+        } else {
+          final JSONArray outEdges = new JSONArray();
+          for (Edge e : vertex.getEdges(Vertex.DIRECTION.OUT))
+            outEdges.put(e.getIdentity().toString());
+          object.put("@out", outEdges);
+
+          final JSONArray inEdges = new JSONArray();
+          for (Edge e : vertex.getEdges(Vertex.DIRECTION.IN))
+            inEdges.put(e.getIdentity().toString());
+          object.put("@in", inEdges);
+        }
+
+      } else if (document instanceof Edge) {
+        if (graphMode == GRAPH_MODE.FULL) {
+          final Edge edge = ((Edge) document);
+          object.put("@in", edge.getIn());
+          object.put("@out", edge.getOut());
+        }
+      }
+    }
+
     return object;
   }
 
@@ -64,6 +100,35 @@ public class JsonSerializer {
       final Document document = record.toElement();
       object.put("@rid", document.getIdentity().toString());
       object.put("@type", document.getTypeName());
+
+      if (graphMode != GRAPH_MODE.EXCLUDE) {
+        if (document instanceof Vertex) {
+          final Vertex vertex = ((Vertex) document);
+
+          if (graphMode == GRAPH_MODE.COUNT) {
+            object.put("@out", vertex.countEdges(Vertex.DIRECTION.OUT, null));
+            object.put("@in", vertex.countEdges(Vertex.DIRECTION.IN, null));
+
+          } else {
+            final JSONArray outEdges = new JSONArray();
+            for (Edge e : vertex.getEdges(Vertex.DIRECTION.OUT))
+              outEdges.put(e.getIdentity().toString());
+            object.put("@out", outEdges);
+
+            final JSONArray inEdges = new JSONArray();
+            for (Edge e : vertex.getEdges(Vertex.DIRECTION.IN))
+              inEdges.put(e.getIdentity().toString());
+            object.put("@in", inEdges);
+          }
+
+        } else if (document instanceof Edge) {
+          if (graphMode == GRAPH_MODE.FULL) {
+            final Edge edge = ((Edge) document);
+            object.put("@in", edge.getIn());
+            object.put("@out", edge.getOut());
+          }
+        }
+      }
     }
 
     for (String p : record.getPropertyNames()) {
@@ -88,5 +153,14 @@ public class JsonSerializer {
     }
 
     return object;
+  }
+
+  public GRAPH_MODE getGraphMode() {
+    return graphMode;
+  }
+
+  public JsonSerializer setGraphMode(final GRAPH_MODE graphMode) {
+    this.graphMode = graphMode;
+    return this;
   }
 }

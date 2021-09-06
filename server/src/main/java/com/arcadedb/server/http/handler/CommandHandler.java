@@ -62,6 +62,7 @@ public class CommandHandler extends DatabaseAbstractHandler {
     final String language = (String) requestMap.get("language");
     final String command = (String) requestMap.get("command");
     final int limit = (int) requestMap.getOrDefault("limit", DEFAULT_LIMIT);
+    final String graphMode = (String) requestMap.getOrDefault("graphMode", "COUNT");
 
     if (command == null || command.isEmpty()) {
       exchange.setStatusCode(400);
@@ -78,7 +79,7 @@ public class CommandHandler extends DatabaseAbstractHandler {
 
       final ResultSet qResult = command(database, language, command, paramMap);
 
-      final JsonSerializer serializer = httpServer.getJsonSerializer();
+      final JsonSerializer serializer = httpServer.getJsonSerializer().setGraphMode(JsonSerializer.GRAPH_MODE.valueOf(graphMode));
 
       final JSONArray result = new JSONArray(qResult.stream().limit(limit + 1).map(r -> serializer.serializeResult(r)).collect(Collectors.toList()));
 
