@@ -33,7 +33,7 @@ public abstract class DatabaseAbstractHandler extends AbstractHandler {
     super(httpServer);
   }
 
-  protected abstract void execute(HttpServerExchange exchange, Database database) throws Exception;
+  protected abstract void execute(HttpServerExchange exchange, ServerSecurity.ServerUser user, Database database) throws Exception;
 
   @Override
   public void execute(final HttpServerExchange exchange, ServerSecurity.ServerUser user) throws Exception {
@@ -53,7 +53,7 @@ public abstract class DatabaseAbstractHandler extends AbstractHandler {
 
     try {
 
-      execute(exchange, db);
+      execute(exchange, user, db);
 
     } finally {
       if (db != null)

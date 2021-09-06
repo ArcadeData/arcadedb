@@ -296,6 +296,15 @@ function updateDatabases(){
     }
     $("#inputDatabase").html(databases);
 
+    $("#user").html(data.user);
+
+    let version = data.version;
+    let pos = data.version.indexOf("(build");
+    if( pos > -1 ) {
+      version = version.substring( 0, pos ) + "<br><span style='font-size: 70%'>" + version.substring( pos ) + "</span>";
+    }
+    $("#version").html(version);
+
     $("#loginPopup").modal("hide");
   })
   .fail(function( jqXHR, textStatus, errorThrown ){

@@ -25,6 +25,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.server.ServerMetrics;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.server.security.ServerSecurity;
 import io.undertow.server.HttpServerExchange;
 
 import java.io.UnsupportedEncodingException;
@@ -37,7 +38,7 @@ public class GetQueryHandler extends DatabaseAbstractHandler {
   }
 
   @Override
-  public void execute(final HttpServerExchange exchange, final Database database) throws UnsupportedEncodingException {
+  public void execute(final HttpServerExchange exchange, ServerSecurity.ServerUser user, final Database database) throws UnsupportedEncodingException {
     final Deque<String> text = exchange.getQueryParameters().get("command");
     if (text == null || text.isEmpty()) {
       exchange.setStatusCode(400);

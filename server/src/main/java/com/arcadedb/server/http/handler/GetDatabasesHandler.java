@@ -34,7 +34,7 @@ public class GetDatabasesHandler extends AbstractHandler {
 
   @Override
   protected void execute(final HttpServerExchange exchange, final ServerSecurity.ServerUser user) throws Exception {
-    final JSONObject result = new JSONObject().put("result", new JSONArray(httpServer.getServer().getSecurity().userDatabases(user)));
+    final JSONObject result = createResult(user).put("result", new JSONArray(httpServer.getServer().getSecurity().userDatabases(user)));
 
     exchange.setStatusCode(200);
     exchange.getResponseSender().send(result.toString());

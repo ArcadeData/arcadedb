@@ -26,7 +26,9 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.server.ServerMetrics;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.security.ServerSecurity;
 import io.undertow.server.HttpServerExchange;
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.IOException;
@@ -44,7 +46,7 @@ public class CommandHandler extends DatabaseAbstractHandler {
   }
 
   @Override
-  public void execute(final HttpServerExchange exchange, final Database database) throws IOException {
+  public void execute(final HttpServerExchange exchange, final ServerSecurity.ServerUser user, final Database database) throws IOException {
 
     final String payload = parseRequestPayload(exchange);
     if (payload == null || payload.isEmpty()) {
@@ -78,19 +80,18 @@ public class CommandHandler extends DatabaseAbstractHandler {
 
       final JsonSerializer serializer = httpServer.getJsonSerializer();
 
-      final String result = qResult.stream().limit(limit + 1).map(r -> serializer.serializeResult(r).toString()).collect(Collectors.joining(","));
+      final JSONArray result = new JSONArray(qResult.stream().limit(limit + 1).map(r -> serializer.serializeResult(r)).collect(Collectors.toList()));
 
       if (database.isTransactionActive())
         database.commit();
 
       exchange.setStatusCode(200);
-      exchange.getResponseSender().send("{ \"result\" : [" + result + "] }");
+      exchange.getResponseSender().send(createResult(user).put("result", result).toString());
 
     } finally {
       database.rollbackAllNested();
       timer.stop();
     }
-
   }
 
   private ResultSet command(Database database, String language, String command, Map<String, Object> paramMap) {

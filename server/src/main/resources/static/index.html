@@ -17,11 +17,26 @@
   <script src="components/DataTables/datatables.min.js"></script>
 
   <script src="js/studio.js"></script>
+  <style>
+  </style>
 </head>
 <body>
 
-<h2 style="text-align: center"><img src="images/arcadedb-logo-mini.png"> Server</h2>
-<br><br>
+<div class="card-header-tab card-header">
+
+  <div class="row">
+    <div class="col-6">
+      &nbsp;<img src="images/arcadedb-logo-mini.png" style="width: 150px">
+    </div>
+    <div class="col-2">
+      <label for="user">User:&nbsp;</label><span id="user"></span>
+    </div>
+    <div class="col-4">
+      <label for="user">Server Version:&nbsp;</label><span id="version"></span>
+    </div>
+  </div>
+
+</div>
 
 <div class="card-hover-shadow-2x mb-3 card">
   <div class="card-header-tab card-header">
@@ -46,7 +61,7 @@
 
 ${include:popup-login.html}
 
-<p style="text-align: center">Copyright 2021 <a href="https://arcadedata.com" rel="nofollow">Arcade Data Ltd</a></p>
+<p style="text-align: center">Copyright 2021 <a href="https://arcadedb.com" rel="nofollow">Arcade Data Ltd</a></p>
 
 </body>
 </html>
