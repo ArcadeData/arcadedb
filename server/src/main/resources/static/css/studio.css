@@ -1,0 +1,31 @@
+body {
+  font-family: Poppins;
+  background-color: white;
+}
+
+a, a:visited {
+  color: #545454;
+}
+
+.btn-primary {
+  background-color: #50D9E0;
+  border-color: #47CCD1;
+}
+
+.btn-primary:hover, .page-item.active .page-link {
+  background-color: #47CCD1;
+  border-color: #47CCD1;
+}
+
+.mini-text {
+  font-size: 0.6em;
+}
+
+#inputCommand {
+  color: black;
+  border-size: 2px;
+  font-size: 1.2em;
+  padding: 8px;
+  width: 100%;
+  height: 80px;
+}

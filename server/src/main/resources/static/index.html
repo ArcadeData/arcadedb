@@ -11,6 +11,7 @@
   <link rel="stylesheet" href="components/DataTables/datatables.min.css">
   <link rel="stylesheet" href="components/fontawesome/css/fontawesome.min.css">
   <link rel="stylesheet" href="components/fontawesome/css/solid.min.css">
+  <link rel="stylesheet" href="css/studio.css">
 
   <script src="js/popper.min.js"></script>
   <script src="js/jquery-1.12.4.min.js"></script>
@@ -28,43 +29,49 @@
   <script src="js/cytoscape-cxtmenu.js"></script>
   <script src="js/cytoscape-graphml.js"></script>
 
-  <script src="js/studio.js"></script>
-  <style>
-  </style>
+  <script src="js/studio-utils.js"></script>
+  <script src="js/studio-database.js"></script>
+  <script src="js/studio-graph.js"></script>
 </head>
 <body>
 
-<div class="card-header-tab card-header">
-
-  <div class="row">
-    <div class="col-6">
-      &nbsp;<img src="images/arcadedb-logo-mini.png" style="width: 150px">
-    </div>
-    <div class="col-2">
-      <label for="user">User:&nbsp;</label><span id="user"></span>
-    </div>
-    <div class="col-4">
-      <label for="user">Server Version:&nbsp;</label><span id="version"></span>
-    </div>
-  </div>
-
-</div>
-
 <div class="card-hover-shadow-2x mb-3 card">
   <div class="card-header-tab card-header">
+    <div class="row">
 
-    <ul class="nav nav-tabs" id="tabs">
-      <li class="nav-item"><a data-toggle="tab" href="#tab-database" class="active nav-link" id="tab-database-sel"><i class="fa fa-database"></i>&nbsp;Database</a>
-      </li>
-      <li class="nav-item"><a data-toggle="tab" href="#tab-api" class="nav-link" id="tab-api-sel"><i class="fa fa-plug"></i>&nbsp;HTTP API</a></li>
-      <li class="nav-item"><a data-toggle="tab" href="#tab-resources" class="nav-link" id="tab-resources-sel"><i class="fa fa-info-circle"></i>&nbsp;Resources</a></li>
-    </ul>
+      <div class="col-1">
+        <ul class="nav nav-tabs flex-column" id="tabs">
+          <li class="nav-item"><a data-toggle="tab" href="#tab-database" class="active nav-link" id="tab-database-sel">
+            <h3>
+              <center><i class="fa fa-database"></i></center>
+            </h3>
+          </a></li>
+          <li class="nav-item"><a data-toggle="tab" href="#tab-query" class="nav-link" id="tab-query-sel">
+            <h3>
+              <center><i class="fa fa-terminal"></i></center>
+            </h3>
+          </a></li>
+          <li class="nav-item"><a data-toggle="tab" href="#tab-api" class="nav-link" id="tab-api-sel">
+            <h3>
+              <center><i class="fa fa-plug"></i></center>
+            </h3>
+          </a></li>
+          <li class="nav-item"><a data-toggle="tab" href="#tab-resources" class="nav-link" id="tab-resources-sel">
+            <h3>
+              <center><i class="fa fa-info-circle"></i></center>
+            </h3>
+          </a>
+          </li>
+        </ul>
+      </div>
 
-    <div class="card-body">
-      <div class="tab-content">
-        ${include:database.html}
-        ${include:api.html}
-        ${include:resources.html}
+      <div class="col-11">
+        <div class="tab-content">
+          ${include:query.html}
+          ${include:database.html}
+          ${include:api.html}
+          ${include:resources.html}
+        </div>
       </div>
     </div>
   </div>
