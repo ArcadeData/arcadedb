@@ -61,7 +61,7 @@ public class OrientDBImporter {
   private       long                       errors                          = 0L;
   private       long                       warnings                        = 0L;
   private       Set<String>                excludeClasses                  = new HashSet<>(
-      Arrays.asList(new String[] { "OUser", "ORole", "OSchedule", "OSequence", "OTriggered", "OSecurityPolicy", "ORestricted", "OIdentity", "OFunction" }));
+      Arrays.asList(new String[] { "OUser", "ORole", "OSchedule", "OSequence", "OTriggered", "OSecurityPolicy", "ORestricted", "OIdentity", "OFunction", "_studio" }));
   private       DatabaseFactory            factory;
   private       Database                   database;
   private       Set<String>                edgeClasses                     = new HashSet<>();

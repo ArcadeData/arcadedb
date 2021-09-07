@@ -22,11 +22,16 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.VertexType;
+import com.arcadedb.serializer.JsonGraphSerializer;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.server.ServerMetrics;
 import com.arcadedb.server.http.HttpServer;
@@ -36,10 +41,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.IOException;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Optional;
+import java.util.*;
 import java.util.stream.Collectors;
 
 public class CommandHandler extends DatabaseAbstractHandler {
@@ -67,7 +69,7 @@ public class CommandHandler extends DatabaseAbstractHandler {
     final String language = (String) requestMap.get("language");
     final String command = decode((String) requestMap.get("command"));
     final int limit = (int) requestMap.getOrDefault("limit", DEFAULT_LIMIT);
-    final String graphMode = requestMap.getOrDefault("graphMode", JsonSerializer.GRAPH_MODE.FULL.toString()).toString().toUpperCase();
+    final String serializer = (String) requestMap.getOrDefault("serializer", "graph");
 
     if (command == null || command.isEmpty()) {
       exchange.setStatusCode(400);
@@ -84,13 +86,12 @@ public class CommandHandler extends DatabaseAbstractHandler {
 
       final ResultSet qResult = command(database, language, command, paramMap);
 
-      final JsonSerializer serializer = httpServer.getJsonSerializer().setGraphMode(JsonSerializer.GRAPH_MODE.valueOf(graphMode));
-
       final JSONObject response = createResult(user);
 
-      switch (graphMode) {
-      case "FULL":
-        final Map<RID, Vertex> includedVertices = new HashMap<>();
+      switch (serializer) {
+      case "graph": {
+        final JsonGraphSerializer serializerImpl = new JsonGraphSerializer().setExpandVertexEdges(false);
+        final Set<Identifiable> includedVertices = new HashSet<>();
         final JSONArray vertices = new JSONArray();
         final JSONArray edges = new JSONArray();
 
@@ -98,39 +99,80 @@ public class CommandHandler extends DatabaseAbstractHandler {
           Result row = qResult.next();
 
           if (row.isVertex()) {
-            Vertex v = row.getVertex().get();
-            includedVertices.put(v.getIdentity(), v);
-            vertices.put(serializer.serializeRecord(v));
+            final Vertex v = row.getVertex().get();
+            includedVertices.add(v.getIdentity());
+            vertices.put(serializerImpl.serializeRecord(v));
           } else if (row.isEdge()) {
-            Edge e = row.getEdge().get();
-            edges.put(serializer.serializeRecord(e));
+            final Edge e = row.getEdge().get();
+            edges.put(serializerImpl.serializeRecord(e));
+            includedVertices.add(e.getIn());
+            vertices.put(serializerImpl.serializeRecord(e.getInVertex()));
+            includedVertices.add(e.getOut());
+            vertices.put(serializerImpl.serializeRecord(e.getOutVertex()));
+          } else {
+            for (String prop : row.getPropertyNames()) {
+              final Object value = row.getProperty(prop);
+              if (value instanceof Identifiable) {
+                final RID rid = ((Identifiable) value).getIdentity();
+
+                final DocumentType type = database.getSchema().getTypeByBucketId(rid.getBucketId());
+                if (type instanceof VertexType) {
+                  includedVertices.add((Identifiable) value);
+                  vertices.put(serializerImpl.serializeRecord(((Identifiable) value).asVertex(true)));
+                }
+              } else if (value instanceof Collection) {
+                for (Iterator<?> it = ((Collection<?>) value).iterator(); it.hasNext(); ) {
+                  final Object item = it.next();
+
+                  if (item instanceof Identifiable) {
+                    final RID rid = ((Identifiable) item).getIdentity();
+
+                    final DocumentType type = database.getSchema().getTypeByBucketId(rid.getBucketId());
+                    if (type instanceof VertexType) {
+                      includedVertices.add((Identifiable) item);
+                      vertices.put(serializerImpl.serializeRecord(((Identifiable) item).asVertex(true)));
+                    } else if (type instanceof EdgeType) {
+                      final Edge edge = ((Identifiable) item).asEdge(true);
+
+                      edges.put(serializerImpl.serializeRecord(edge));
+
+                      includedVertices.add(edge.getIn());
+                      vertices.put(serializerImpl.serializeRecord(edge.getInVertex()));
+                      includedVertices.add(edge.getOut());
+                      vertices.put(serializerImpl.serializeRecord(edge.getOutVertex()));
+                    }
+                  }
+                }
+              }
+            }
           }
         }
 
         // FILTER OUT NOT CONNECTED EDGES
-        for (Map.Entry<RID, Vertex> entry : includedVertices.entrySet()) {
-          final Vertex v = entry.getValue();
-          vertices.put(serializer.serializeRecord(v));
+        for (Identifiable entry : includedVertices) {
+          final Vertex vertex = entry.asVertex(true);
 
-          final Iterable<Edge> vEdgesOut = v.getEdges(Vertex.DIRECTION.OUT);
+          final Iterable<Edge> vEdgesOut = vertex.getEdges(Vertex.DIRECTION.OUT);
           for (Edge e : vEdgesOut) {
-            if (includedVertices.containsKey(e.getIn()))
-              edges.put(serializer.serializeRecord(e));
+            if (includedVertices.contains(e.getIn()))
+              edges.put(serializerImpl.serializeRecord(e));
           }
 
-          final Iterable<Edge> vEdgesIn = v.getEdges(Vertex.DIRECTION.IN);
+          final Iterable<Edge> vEdgesIn = vertex.getEdges(Vertex.DIRECTION.IN);
           for (Edge e : vEdgesIn) {
-            if (includedVertices.containsKey(e.getOut()))
-              edges.put(serializer.serializeRecord(e));
+            if (includedVertices.contains(e.getOut()))
+              edges.put(serializerImpl.serializeRecord(e));
           }
         }
 
         response.put("result", new JSONObject().put("vertices", vertices).put("edges", edges));
-
         break;
-      default:
-        final JSONArray result = new JSONArray(qResult.stream().limit(limit + 1).map(r -> serializer.serializeResult(r)).collect(Collectors.toList()));
+      }
+      default: {
+        final JsonSerializer serializerImpl = new JsonSerializer().setIncludeVertexEdges(true).setUseCollectionSize(true);
+        final JSONArray result = new JSONArray(qResult.stream().limit(limit + 1).map(r -> serializerImpl.serializeResult(r)).collect(Collectors.toList()));
         response.put("result", result);
+      }
       }
 
       if (database.isTransactionActive())

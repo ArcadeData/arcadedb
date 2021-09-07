@@ -45,13 +45,14 @@
     <div class="col-1">
       <label for="inputCommand">Command
         <br><br>
-        <button class="btn btn-primary" onclick="executeCommand()">Execute
+        <button class="btn btn-primary" onclick="executeCommand(true)">Execute
           <img id="executeSpinner" class="ui-loading" src="/images/color-spin-small.svg" style="display: none;">
         </button>
       </label>
     </div>
     <div class="col-11">
-      <textarea id="inputCommand" style="width: 100%; height: 100px;"></textarea>
+      <textarea id="inputCommand"
+                style="width: 100%; height: 100px;">MATCH {type: Users, as: user}.out("rated"){as: rated} RETURN user, rated LIMIT 30</textarea>
     </div>
 
     <div class="col-12">
@@ -60,6 +61,7 @@
           <ul class="nav nav-tabs" id="tabs-command">
             <li class="nav-item"><a data-toggle="tab" href="#tab-table" class="active nav-link" id="tab-table-sel">&nbsp;Table</a></li>
             <li class="nav-item"><a data-toggle="tab" href="#tab-graph" class="nav-link" id="tab-graph-sel">&nbsp;Graph</a></li>
+            <li class="nav-item"><a data-toggle="tab" href="#tab-json" class="nav-link" id="tab-json-sel">&nbsp;Json</a></li>
           </ul>
         </div>
         <div class="col-6">
@@ -78,7 +80,52 @@
         </div>
 
         <div class="tab-pane fade" id="tab-graph" role="tabpanel">
-          <div id="graph" style="height: 300px; width: 100%;"></div>
+          <nav class="navbar navbar-expand-lg navbar-light">
+            <button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#navbarSupportedContent" aria-controls="navbarSupportedContent"
+                    aria-expanded="false" aria-label="Toggle navigation">
+              <span class="navbar-toggler-icon"></span>
+            </button>
+
+            <div class="collapse navbar-collapse" id="navbarSupportedContent">
+              <ul class="navbar-nav mr-auto">
+                <li class="nav-item">
+                  <span id="customToolbar"></span>
+                </li>
+              </ul>
+              <ul class="navbar-nav">
+                <li class="nav-item">
+                  <a class="nav-link" href="#" onclick="renderGraph()"><i class="fa fa-sync"></i> Refresh</a>
+                </li>
+                <li class="nav-item">
+                  <a class="nav-link" href="#" onclick="exportGraph()"><i class="fa fa-download"></i> Export .graphml</a>
+                </li>
+                <li class="nav-item dropdown">
+                  <a class="nav-link dropdown-toggle" href="#" id="navbarDropdown" role="button" data-toggle="dropdown" aria-haspopup="true"
+                     aria-expanded="false">
+                    <i class="fa fa-sliders-h"></i> Settings
+                  </a>
+                  <div class="dropdown-menu" aria-labelledby="navbarDropdown">
+
+                    <a class="dropdown-item w-150" href="#">
+                      <label for="edgeLength">Edge Length</label>
+                      <input type="range" class="custom-range" min="50" max="300" step="50" id="edgeLength" value="100">
+                    </a>
+
+                  </div>
+                </li>
+              </ul>
+              <form class="form-inline my-2 my-lg-0">
+                <input class="form-control mr-sm-2" type="search" placeholder="Search" aria-label="Search">
+                <button class="btn btn-outline-success my-2 my-sm-0" type="submit">Search</button>
+              </form>
+            </div>
+          </nav>
+
+          <div id="graph" style="height: 800px; width: 100%;"></div>
+        </div>
+
+        <div class="tab-pane fade" id="tab-json" role="tabpanel">
+          <textarea id="resultJson" style="width: 100%; height: 600px;" disabled></textarea>
         </div>
       </div>
 
@@ -88,6 +135,11 @@
 
 <script>
 $('a[data-toggle="tab"]').on('shown.bs.tab', function (e) {
-  executeCommand();
+  executeCommand(false);
+});
+
+$("#edgeLength").change( function(){
+  globalGraphEdgeLength = $("#edgeLength").val();
+  renderGraph();
 });
 </script>

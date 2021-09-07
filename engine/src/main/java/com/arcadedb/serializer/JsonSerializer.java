@@ -33,10 +33,9 @@ import java.util.Collection;
 import java.util.List;
 
 public class JsonSerializer {
-
-  public enum GRAPH_MODE {EXCLUDE, MINIMAL, FULL}
-
-  private GRAPH_MODE graphMode = GRAPH_MODE.EXCLUDE;
+  private boolean useCollectionSize  = true;
+  private boolean includeVertexEdges = true;
+  private boolean useVertexEdgeSize  = true;
 
   public JSONObject serializeRecord(final Document document) {
     final JSONObject object = new JSONObject();
@@ -50,13 +49,17 @@ public class JsonSerializer {
       if (value instanceof Document)
         value = serializeRecord((Document) value);
       else if (value instanceof Collection) {
-        final List<Object> list = new ArrayList<>();
-        for (Object o : (Collection) value) {
-          if (o instanceof Document)
-            o = serializeRecord((Document) o);
-          list.add(o);
+        if (useCollectionSize) {
+          value = ((Collection) value).size();
+        } else {
+          final List<Object> list = new ArrayList<>();
+          for (Object o : (Collection) value) {
+            if (o instanceof Document)
+              o = serializeRecord((Document) o);
+            list.add(o);
+          }
+          value = list;
         }
-        value = list;
       }
       object.put(p, value);
     }
@@ -85,15 +88,17 @@ public class JsonSerializer {
       else if (value instanceof Result)
         value = serializeResult((Result) value);
       else if (value instanceof Collection) {
-        final List<Object> list = new ArrayList<>();
-        for (Object o : (Collection) value) {
-          if (o instanceof Document)
-            o = serializeRecord((Document) o);
-          else if (o instanceof Result)
-            o = serializeResult((Result) o);
-          list.add(o);
+        if (useCollectionSize) {
+          value = ((Collection) value).size();
+        } else {
+          final List<Object> list = new ArrayList<>();
+          for (Object o : (Collection) value) {
+            if (o instanceof Document)
+              o = serializeRecord((Document) o);
+            list.add(o);
+          }
+          value = list;
         }
-        value = list;
       }
       object.put(p, value);
     }
@@ -101,24 +106,33 @@ public class JsonSerializer {
     return object;
   }
 
-  public GRAPH_MODE getGraphMode() {
-    return graphMode;
+  public boolean isUseCollectionSize() {
+    return useCollectionSize;
   }
 
-  public JsonSerializer setGraphMode(final GRAPH_MODE graphMode) {
-    this.graphMode = graphMode;
+  public JsonSerializer setUseCollectionSize(final boolean useCollectionSize) {
+    this.useCollectionSize = useCollectionSize;
+    return this;
+  }
+
+  public boolean isIncludeVertexEdges() {
+    return includeVertexEdges;
+  }
+
+  public JsonSerializer setIncludeVertexEdges(final boolean includeVertexEdges) {
+    this.includeVertexEdges = includeVertexEdges;
     return this;
   }
 
   private void setMetadata(final Document document, final JSONObject object) {
-    if (graphMode != GRAPH_MODE.EXCLUDE) {
-      if (document instanceof Vertex) {
+    if (document instanceof Vertex) {
+      if (includeVertexEdges) {
         final Vertex vertex = ((Vertex) document);
 
-        if (graphMode == GRAPH_MODE.MINIMAL) {
+        object.put("@cat", "v");
+        if (useVertexEdgeSize) {
           object.put("@out", vertex.countEdges(Vertex.DIRECTION.OUT, null));
           object.put("@in", vertex.countEdges(Vertex.DIRECTION.IN, null));
-          object.put("@cat", "v");
 
         } else {
           final JSONArray outEdges = new JSONArray();
@@ -131,17 +145,14 @@ public class JsonSerializer {
             inEdges.put(e.getIdentity().toString());
           object.put("@in", inEdges);
         }
+      }
+    } else if (document instanceof Edge) {
+      final Edge edge = ((Edge) document);
+      object.put("@cat", "e");
+      object.put("@in", edge.getIn());
+      object.put("@out", edge.getOut());
+    } else
+      object.put("@cat", "d");
 
-      } else if (document instanceof Edge) {
-        if (graphMode == GRAPH_MODE.FULL) {
-          final Edge edge = ((Edge) document);
-          object.put("@in", edge.getIn());
-          object.put("@out", edge.getOut());
-        } else
-          object.put("@cat", "e");
-
-      } else
-        object.put("@cat", "d");
-    }
   }
 }

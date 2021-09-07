@@ -1,3 +1,14 @@
+var globalColors = ['aqua', 'orange', 'gray', 'green', 'lime', 'teal', 'maroon', 'navy', 'olive', 'purple', 'red', 'silver', 'blue', 'yellow', 'fuchsia', 'white'];
+var globalColorsByType = {};
+var globalLastColorIndex = 0;
+var globalTableResult = null;
+var globalGraphResult = null;
+var globalGraphMaxResult = 1000;
+var globalGraphEdgeLength = 100;
+var globalGraphLabelPerType = {};
+var globalGraphPropertiesPerType = {};
+var globalCy = null;
+
 function showLoginPopup(){
   $("#loginPopup").modal("show");
 }
@@ -150,11 +161,16 @@ function dropDatabase(){
   });
 }
 
-function executeCommand(){
+function executeCommand(reset){
+  if( reset ){
+    globalTableResult = null;
+    globalGraphResult = null;
+  }
+
   let activeTab = $("#tabs-command .active").attr("id");
-  if( activeTab == "tab-table-sel" )
+  if( activeTab == "tab-table-sel" && globalTableResult == null )
     executeCommandTable();
-  else
+  else if( activeTab == "tab-graph-sel" && globalGraphResult == null )
     executeCommandGraph();
 }
 
@@ -174,7 +190,7 @@ function executeCommandTable(){
       {
         language: language,
         command: command,
-        graphMode: "minimal"
+        serializer: "default"
       }
     ),
     beforeSend: function (xhr){
@@ -182,6 +198,10 @@ function executeCommandTable(){
     }
   })
   .done(function(data){
+    globalTableResult = data.result;
+
+    $("#resultJson").val( JSON.stringify(data, null, 2) );
+
     if ( $.fn.dataTable.isDataTable( '#result' ) )
       try{ $('#result').DataTable().destroy(); $('#result').empty(); } catch(e){};
 
@@ -279,7 +299,7 @@ function executeCommandGraph(){
       {
         language: language,
         command: command,
-        graphMode: "full"
+        serializer: "graph"
       }
     ),
     beforeSend: function (xhr){
@@ -287,54 +307,337 @@ function executeCommandGraph(){
     }
   })
   .done(function(data){
-    let elements = [];
+    $("#resultJson").val( JSON.stringify(data, null, 2) );
+    globalGraphResult = data.result;
+    renderGraph();
+  })
+  .fail(function( jqXHR, textStatus, errorThrown ){
+    globalNotify( "Error", escapeHtml( jqXHR.responseText ), "danger");
+  })
+  .always(function(data) {
+    $("#executeSpinner").hide();
+  });
+}
+
+function renderGraph(){
+  let elements = [];
+
+  globalLastColorIndex = 0;
+  globalColorsByType = {};
+  for( i in globalGraphResult.vertices ){
+    let vertex = globalGraphResult.vertices[i];
+    let type = vertex["t"];
+
+    let color = globalColorsByType[type];
+    if( color == null ){
+      if( globalLastColorIndex >= globalColors.length )
+        globalLastColorIndex = 0;
+      color = globalColors[ globalLastColorIndex++ ];
+      globalColorsByType[type] = color;
+    }
+
+    let properties = globalGraphPropertiesPerType[type];
+    if( properties == null ) {
+      properties = {};
+      globalGraphPropertiesPerType[type] = properties;
+    }
+
+    for( p in vertex.p ){
+      properties[ p ] = true;;
+    }
+  }
+
+  for( i in globalGraphResult.edges ){
+    let edge = globalGraphResult.edges[i];
+    let type = edge.t;
+
+    let properties = globalGraphPropertiesPerType[type];
+    if( properties == null ) {
+      properties = {};
+      globalGraphPropertiesPerType[type] = properties;
+    }
+
+    for( p in edge.p ){
+      properties[ p ] = true;;
+    }
+  }
+
+  let reachedMax = false;
+  for( i in globalGraphResult.vertices ){
+    let vertex = globalGraphResult.vertices[i];
+
+    let rid = vertex["r"];
+    if( rid == null )
+      continue;
+
+    let label = "@type";
+    if( globalGraphLabelPerType[vertex["t"]] != null )
+      label = globalGraphLabelPerType[vertex["t"]];
+    if( label == "@type" )
+      label = vertex["t"];
+    else
+      label = vertex["p"][label];
+
+    elements.push( { data: { id: rid, label: label, type: vertex["t"], color: globalColorsByType[ vertex["t"] ], properties: vertex["p"] } } );
+    if( elements.length > globalGraphMaxResult ){
+      reachedMax = true;
+      break;
+    }
+  }
+
+  if( !reachedMax ) {
+    for( i in globalGraphResult.edges ){
+      let edge = globalGraphResult.edges[i];
+      let rid = edge["r"];
+
+      let label = "@type";
+      if( globalGraphLabelPerType[edge["edge"]] != null )
+        label = globalGraphLabelPerType[vertex["t"]];
+      if( label == "@type" )
+        label = edge["t"];
+      else
+        label = edge["p"][label];
+
+      elements.push( { data: { id: rid, label: label, type: edge["t"], source: edge["o"], target: edge["i"], properties: edge["p"] } } );
+
+      if( elements.length > globalGraphMaxResult ){
+        reachedMax = true;
+        break;
+      }
+    }
+  }
+
+  globalLayout = {
+     name: 'cola',
+     refresh: 2,
+     maxSimulationTime: 10000,
+     ungrabifyWhileSimulating: true,
+     edgeLength: parseInt( $("#globalGraphEdgeLength").val() ),
+     nodeSpacing: function( node ){ return 30; }
+   };
+
+  globalCy = cytoscape({
+    container: $('#graph'),
+    elements: elements,
+
+    style: [ // the stylesheet for the graph
+      {
+        selector: 'node',
+        selectionType: 'single',
+        style: {
+          'background-color': 'data(color)',
+          'label': 'data(label)',
+          'width': '100px',
+          'height': '100px',
+          'border-color': 'gray',
+          'border-width': 1,
+          'text-valign': "center",
+          'text-halign': "center"
+        }
+      },
+
+      {
+        selector: 'edge',
+        style: {
+          'width': 1,
+          'label': 'data(label)',
+          'line-color': '#ccc',
+          'target-arrow-color': '#ccc',
+          'target-arrow-shape': 'triangle',
+          'curve-style': 'bezier',
+          'edge-text-rotation': 'autorotate',
+          'target-arrow-shape': 'triangle',
+          'text-outline-color': "#F7F7F7",
+          'text-outline-width': 8,
+        }
+      }
+    ],
+
+    layout: globalLayout,
+  });
+
+  globalCy.cxtmenu({
+    selector: 'node',
+    menuRadius: function(ele){ return 50; },
+    adaptativeNodeSpotlightRadius: true,
+    openMenuEvents: 'taphold',
+    commands: [
+      {
+        content: '<span class="fa fa-eye-slash fa-2x"></span>',
+        select: function(ele){
+          globalCy.remove( ele );
+        }
+      }, {
+        content: '<span class="fa fa-project-diagram fa-2x"></span>',
+        select: function(ele){
+          loadNodeNeighbors( ele.data('id') );
+        },
+      }, {
+        content: 'Text',
+        select: function(ele){
+          console.log( ele.position() );
+        }
+      }
+    ]
+  });
+
+  globalCy.cxtmenu({
+    selector: 'edge',
+    adaptativeNodeSpotlightRadius: false,
+    commands: [
+      {
+        content: '<span class="fa fa-eye-slash fa-2x"></span>',
+        select: function(ele){
+          globalCy.remove( ele );
+        }
+      },
+    ]
+  });
+
+//  globalCy.cxtmenu({
+//    selector: 'core',
+//    commands: [
+//      {
+//        content: 'bg1',
+//        select: function(){
+//          console.log( 'bg1' );
+//        }
+//      },
+//      {
+//        content: 'bg2',
+//        select: function(){
+//          console.log( 'bg2' );
+//        }
+//      }
+//    ]
+//  });
+
+  globalCy.on('select', 'node', function(event){
+    let selected = globalCy.$('node:selected');
+    if( selected.length != 1 ) {
+      $("#customToolbar").empty();
+    } else {
+      let type = selected[0].data()["type"];
+      let customToolbar = "Selected Type: " + type + " label: ";
+
+      properties = globalGraphPropertiesPerType[type];
+
+      let sel = globalGraphLabelPerType[type];
+      if( sel == null )
+        sel = "@type";
+
+      customToolbar += "<select id='customToolbarLabel'>";
+      customToolbar += "<option value='@type'"+(sel == "@type" ? " selected": "" )+">@type</option>" ;
+      for( p in properties ){
+        customToolbar += "<option value='"+p+"'"+(sel == p ? " selected": "" )+">" + p + "</option>" ;
+      }
+      customToolbar += "</select>";
+
+      $("#customToolbar").html(customToolbar);
+
+      $("#customToolbarLabel").change( function(){
+        globalGraphLabelPerType[type] = $("#customToolbarLabel").val();
+        renderGraph();
+      });
+    }
+  });
+
+  if( reachedMax ){
+    globalNotify( "Warning", "Returned more than " + globalGraphMaxResult + " items, partial results will be returned. Consider setting a limit in the query.", "warning");
+  }
+}
+
+function exportGraph(){
+  globalCy.graphml({
+    node: {
+      css: false,
+      data: true,
+      position: false,
+      discludeds: []
+    },
+    edge: {
+      css: false,
+      data: true,
+      discludeds: []
+    },
+    layoutBy: "cola"
+  });
+
+  let graphml = globalCy.graphml();
+
+  const blob = new Blob([graphml], {type: 'text/xml'});
+  if(window.navigator.msSaveOrOpenBlob) {
+    window.navigator.msSaveBlob(blob, filename);
+  } else {
+    const elem = window.document.createElement('a');
+    elem.href = window.URL.createObjectURL(blob);
+    elem.download = "arcade.graphml";
+    document.body.appendChild(elem);
+    elem.click();
+    document.body.removeChild(elem);
+  }
+}
+
+function loadNodeNeighbors( rid ){
+  let database = escapeHtml( $("#inputDatabase").val() );
+
+  $("#executeSpinner").show();
+
+  let beginTime = new Date();
+
+  jQuery.ajax({
+    type: "POST",
+    url: "/api/v1/command/" + database,
+    data: JSON.stringify(
+      {
+        language: "sql",
+        command: "select bothE() from " + rid,
+        serializer: "graph"
+      }
+    ),
+    beforeSend: function (xhr){
+      xhr.setRequestHeader('Authorization', globalCredentials);
+    }
+  })
+  .done(function(data){
+    globalCy.startBatch();
 
     for( i in data.result.vertices ){
       let vertex = data.result.vertices[i];
 
-      let rid = vertex["@rid"];
-      if( rid == null )
-        continue;
+      globalGraphResult.vertices.push( vertex );
+      let type = vertex["t"];
 
-      elements.push( { data: { id: rid } } );
+      let color = globalColorsByType[type];
+      if( color == null ){
+        if( globalLastColorIndex >= globalColors.length )
+          globalLastColorIndex = 0;
+        color = globalColors[ globalLastColorIndex++ ];
+        globalColorsByType[type] = color;
+      }
+
+      globalCy.add([
+        {
+          group: 'nodes',
+          data: { id: vertex['r'], label: vertex["t"], properties: vertex['p'] }
+        }
+      ]);
     }
 
     for( i in data.result.edges ){
       let edge = data.result.edges[i];
-      let rid = edge["@rid"];
-      elements.push( { data: { id: rid, source: edge["@out"], target: edge["@in"] } } );
-    }
-
-    var cy = cytoscape({
-      container: $('#graph'),
-      elements: elements,
-
-      style: [ // the stylesheet for the graph
+      globalGraphResult.edges.push( edge );
+      globalCy.add([
         {
-          selector: 'node',
-          style: {
-            'background-color': '#666',
-            'label': 'data(id)'
-          }
-        },
-
-        {
-          selector: 'edge',
-          style: {
-            'width': 3,
-            'line-color': '#ccc',
-            'target-arrow-color': '#ccc',
-            'target-arrow-shape': 'triangle',
-            'curve-style': 'bezier'
-          }
+          group: 'edges',
+          data: { id: edge['r'], source: edge["o"], target: edge["i"], label: edge["t"], properties: edge['p'] }
         }
-      ],
+      ]);
+    }
+    globalCy.endBatch();
 
-      layout: {
-        name: 'grid',
-        rows: 1
-      }
-    });
+    let layout = globalCy.makeLayout(globalLayout);
+    layout.run();
 
   })
   .fail(function( jqXHR, textStatus, errorThrown ){
