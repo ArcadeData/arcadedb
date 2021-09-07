@@ -1705,6 +1705,29 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
   }
 
   @Test
+  public void testExpand() {
+    String clazz = "testExpand";
+    database.command("sql", "CREATE vertex type " + clazz + " ");
+
+    database.command("sql", "CREATE VERTEX " + clazz + " SET name = 'bbb', surname = 'ccc'");
+
+    if(database.isTransactionActive()){
+      database.commit();
+      database.begin();
+    }
+
+    String query = "MATCH { type: " + clazz + ", as:a} RETURN expand(a) ";
+
+    ResultSet result = database.query("sql", query);
+    Assertions.assertTrue(result.hasNext());
+    Result a = result.next();
+    Assertions.assertEquals("bbb", a.getProperty("name"));
+    Assertions.assertEquals("ccc", a.getProperty("surname"));
+    Assertions.assertFalse(result.hasNext());
+    result.close();
+  }
+
+  @Test
   public void testAggregate() {
     String clazz = "testAggregate";
     database.command("sql", "CREATE vertex type " + clazz);
