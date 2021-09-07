@@ -278,7 +278,6 @@ public class PostgresNetworkExecutor extends Thread {
       final PostgresPortal portal = getPortal(portalName, true);
       if (portal == null) {
         writeNoData();
-        writeCommandComplete(portal.query, portal.cachedResultset == null ? 0 : portal.cachedResultset.size());
         return;
       }
 
