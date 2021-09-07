@@ -91,4 +91,15 @@ public class Importer extends AbstractImporter {
 
     sourceSchema.getContentImporter().load(sourceSchema, entityType, parser, database, context, settings);
   }
+
+  protected void closeDatabase() {
+    if (!databaseCreatedDuringImporting)
+      return;
+
+    if (database != null) {
+      if (database.isTransactionActive())
+        database.commit();
+      database.close();
+    }
+  }
 }

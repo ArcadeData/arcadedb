@@ -27,9 +27,10 @@ import java.util.HashMap;
 import java.util.Map;
 
 public class ImporterSettings {
-  public String  database = "./databases/imported";
-  public String  url      = null;
-  public boolean wal      = false;
+  public String  database      = "./databases/imported";
+  public String  url           = null;
+  public boolean wal           = false;
+  public int     verboseLevel  = 2;
 
   public String documents;
   public String documentsFileType;

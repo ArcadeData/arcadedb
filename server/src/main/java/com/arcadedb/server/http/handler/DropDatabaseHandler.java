@@ -23,6 +23,7 @@ package com.arcadedb.server.http.handler;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.security.ServerSecurity;
 import io.undertow.server.HttpServerExchange;
 
 public class DropDatabaseHandler extends DatabaseAbstractHandler {
@@ -31,7 +32,7 @@ public class DropDatabaseHandler extends DatabaseAbstractHandler {
   }
 
   @Override
-  public void execute(final HttpServerExchange exchange, final Database database) {
+  public void execute(final HttpServerExchange exchange, ServerSecurity.ServerUser user, final Database database) {
     database.drop();
 
     httpServer.getServer().getServerMetrics().meter("http.drop-database").mark();

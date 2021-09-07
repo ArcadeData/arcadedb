@@ -25,7 +25,7 @@
         <maven-surefire-plugin.version>3.0.0-M5</maven-surefire-plugin.version>
         <maven-failsafe-plugin.version>3.0.0-M5</maven-failsafe-plugin.version>
         <maven-assembly-plugin.version>3.3.0</maven-assembly-plugin.version>
-        <maven-javadoc-plugin.version>3.0.1</maven-javadoc-plugin.version>
+        <maven-javadoc-plugin.version>3.3.0</maven-javadoc-plugin.version>
         <maven-source-plugin.version>3.2.1</maven-source-plugin.version>
         <assertj-core.version>3.20.2</assertj-core.version>
         <skipIntegration>true</skipIntegration>
@@ -54,11 +54,11 @@
     <distributionManagement>
         <snapshotRepository>
             <id>ossrh</id>
-            <url>https://oss.sonatype.org/content/repositories/snapshots</url>
+            <url>https://s01.oss.sonatype.org/content/repositories/snapshots/</url>
         </snapshotRepository>
         <repository>
             <id>ossrh</id>
-            <url>https://oss.sonatype.org/service/local/staging/deploy/maven2/</url>
+            <url>https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/</url>
         </repository>
     </distributionManagement>
 
@@ -121,20 +121,6 @@
                         <id>attach-sources</id>
                         <goals>
                             <goal>jar-no-fork</goal>
-                        </goals>
-                    </execution>
-                </executions>
-            </plugin>
-
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-javadoc-plugin</artifactId>
-                <version>${maven-javadoc-plugin.version}</version>
-                <executions>
-                    <execution>
-                        <id>attach-javadocs</id>
-                        <goals>
-                            <goal>jar</goal>
                         </goals>
                     </execution>
                 </executions>
@@ -236,6 +222,29 @@
     </dependencies>
 
     <profiles>
+        <profile>
+            <id>release</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-javadoc-plugin</artifactId>
+                        <version>${maven-javadoc-plugin.version}</version>
+                        <configuration>
+                            <doclint>none</doclint>  <!-- Turnoff all checks -->
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <id>attach-javadocs</id>
+                                <goals>
+                                    <goal>jar</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
         <profile>
             <id>integration</id>
             <properties>

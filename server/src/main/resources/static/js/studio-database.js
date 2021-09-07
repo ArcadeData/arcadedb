@@ -1,5 +1,48 @@
+var globalTableResult = null;
+var globalGraphResult = null;
+var globalGraphMaxResult = 1000;
+
 function showLoginPopup(){
   $("#loginPopup").modal("show");
+}
+
+function updateDatabases(){
+  jQuery.ajax({
+    type: "GET",
+    url: "/api/v1/databases",
+    beforeSend: function (xhr){
+      xhr.setRequestHeader('Authorization', globalCredentials);
+    }
+  })
+  .done(function(data){
+    $("#loginPanel").hide();
+    $("#databasePanel").show();
+    $("#queryPanel").show();
+
+    let databases = "";
+    for( i in data.result ){
+      let dbName = data.result[i];
+      databases += "<option value='"+dbName+"'>"+dbName+"</option>";
+    }
+    $("#inputDatabase").html(databases);
+
+    $("#user").html(data.user);
+
+    let version = data.version;
+    let pos = data.version.indexOf("(build");
+    if( pos > -1 ) {
+      version = version.substring( 0, pos ) + " <span style='font-size: 70%'>" + version.substring( pos ) + "</span>";
+    }
+    $("#version").html(version);
+
+    $("#loginPopup").modal("hide");
+  })
+  .fail(function( jqXHR, textStatus, errorThrown ){
+    globalNotify( "Error", escapeHtml( jqXHR.responseText ), "danger");
+  })
+  .always(function(data) {
+    $("#loginSpinner").hide();
+  });
 }
 
 function importDatabase(){
@@ -33,7 +76,7 @@ function importDatabase(){
       jQuery.ajax({
         type: "POST",
         url: "/api/v1/import",
-        data: JSON.stringify( { name: database, url: url } ),
+        data: JSON.stringify( { name: database, url: url, limit: 20000 } ),
         beforeSend: function (xhr){
           xhr.setRequestHeader('Authorization', globalCredentials);
         }
@@ -112,7 +155,20 @@ function dropDatabase(){
   });
 }
 
-function executeCommand(){
+function executeCommand(reset){
+  if( reset ){
+    globalTableResult = null;
+    globalGraphResult = null;
+  }
+
+  let activeTab = $("#tabs-command .active").attr("id");
+  if( activeTab == "tab-table-sel" && globalTableResult == null )
+    executeCommandTable();
+  else if( activeTab == "tab-graph-sel" && globalGraphResult == null )
+    executeCommandGraph();
+}
+
+function executeCommandTable(){
   let database = escapeHtml( $("#inputDatabase").val() );
   let language = escapeHtml( $("#inputLanguage").val() );
   let command = escapeHtml( $("#inputCommand").val() );
@@ -127,7 +183,8 @@ function executeCommand(){
     data: JSON.stringify(
       {
         language: language,
-        command: command
+        command: command,
+        serializer: "default"
       }
     ),
     beforeSend: function (xhr){
@@ -135,10 +192,16 @@ function executeCommand(){
     }
   })
   .done(function(data){
-    if ( $.fn.dataTable.isDataTable( '#result' ) )
-      $('#result').DataTable().destroy();
+    globalTableResult = data.result;
 
-    let result = "";
+    $("#resultJson").val( JSON.stringify(data, null, 2) );
+
+    if ( $.fn.dataTable.isDataTable( '#result' ) )
+      try{ $('#result').DataTable().destroy(); $('#result').empty(); } catch(e){};
+
+    var tableColumns = [];
+    var tableRecords = [];
+
     if( data.result.length > 0 ) {
       let columns = {};
       for( i in data.result ){
@@ -150,31 +213,35 @@ function executeCommand(){
         }
       }
 
-      result += "<thead><tr>";
-      for( colName in columns ){
-        result += "<th scope='col'>";
-        result += escapeHtml( colName );
-        result += "</th>";
-      }
-      result += "</tr></thead>";
+      orderedColumns = [];
+      if( columns["@rid"])
+        orderedColumns.push("@rid");
+      if( columns["@type"])
+        orderedColumns.push("@type");
 
-      result += "<tbody>";
+      for( colName in columns ){
+        if( !colName.startsWith("@"))
+          orderedColumns.push(colName);
+      }
+
+      if( columns["@in"])
+        orderedColumns.push("@in");
+      if( columns["@out"])
+        orderedColumns.push("@out");
+
+      for( i in orderedColumns )
+        tableColumns.push( { sTitle: escapeHtml( orderedColumns[i] ), "defaultContent": "" } );
+
       for( i in data.result ){
         let row = data.result[i];
-        result += "<tr>";
 
-        for( colName in columns ){
-          result += "<td>";
-          result += escapeHtml( row[colName] );
-          result += "</td>";
-        }
 
-        result += "</tr>";
+        let record = [];
+        for( i in orderedColumns )
+          record.push( escapeHtml( row[orderedColumns[i]] ) );
+        tableRecords.push( record );
       }
-      result += "</tbody>";
     }
-
-    $("#result").html(result);
 
     $( "#result-num" ).html( data.result.length );
 
@@ -183,9 +250,22 @@ function executeCommand(){
 
     if( data.result.length > 0 ) {
       $("#result").DataTable({
+        orderCellsTop: true,
+        fixedHeader: true,
         paging:   true,
-        pageLength: 25,
+        pageLength: 20,
         bLengthChange: true,
+        initComplete: function() {
+          $('div.dataTables_filter input').attr('autocomplete', 'off')
+        },
+        aoColumns: tableColumns,
+        aaData: tableRecords,
+        deferRender: true,
+        dom: '<Blf>rt<ip>',
+        lengthMenu: [
+          [ 10, 20, 50, 100, -1 ],
+          [ '10', '20', '50', '100', 'all' ]
+        ],
       });
     }
   })
@@ -197,145 +277,38 @@ function executeCommand(){
   });
 }
 
+function executeCommandGraph(){
+  let database = escapeHtml( $("#inputDatabase").val() );
+  let language = escapeHtml( $("#inputLanguage").val() );
+  let command = escapeHtml( $("#inputCommand").val() );
 
-function globalAlert(title, text, icon, callback ){
-  if( !icon )
-    icon = "error";
+  $("#executeSpinner").show();
 
-  let swal = Swal.fire({
-    title: title,
-    html: text,
-    icon: icon,
-  }).then((result) => {
-    if( callback )
-      callback();
-  });
-}
+  let beginTime = new Date();
 
-function globalConfirm(title, text, icon, yes, no ){
-  let swal = Swal.fire({
-    title: title,
-    html: text,
-    icon: icon,
-    showCancelButton: true,
-    confirmButtonColor: '#3ac47d',
-    cancelButtonColor: 'red',
-  }).then((result) => {
-    if (result.value ) {
-      if( yes )
-        yes();
-    } else {
-      if( no )
-        no();
-    }
-  });
-}
-
-var globalCredentials;
-
-$(function(){
-  $('#loginForm').keypress(function(e){
-    if(e.which == 13) {
-      login();
-    }
-  })
-})
-
-function globalNotify(title, message, type){
-  $.notify({
-    title: "<strong>"+title+"</strong>",
-    message: message,
-    z_index: 100000,
-    placement: {
-      from: "bottom",
-      align: "right"
-    },
-  },{
-    type: type
-  });
-}
-
-function make_base_auth(user, password) {
-  var tok = user + ':' + password;
-  var hash = btoa(tok);
-  return "Basic " + hash;
-}
-
-function login(){
-  var userName = escapeHtml( $("#inputUserName").val().trim() );
-  if( userName.length == 0 )
-    return;
-
-  var userPassword = escapeHtml( $("#inputUserPassword").val().trim() );
-  if( userPassword.length == 0 )
-    return;
-
-  $( "#loginSpinner" ).show();
-
-  globalCredentials = make_base_auth(userName, userPassword);
-
-  updateDatabases();
-}
-
-function updateDatabases(){
   jQuery.ajax({
-    type: "GET",
-    url: "/api/v1/databases",
+    type: "POST",
+    url: "/api/v1/command/" + database,
+    data: JSON.stringify(
+      {
+        language: language,
+        command: command,
+        serializer: "graph"
+      }
+    ),
     beforeSend: function (xhr){
       xhr.setRequestHeader('Authorization', globalCredentials);
     }
   })
   .done(function(data){
-    $("#loginPanel").hide();
-    $("#databasePanel").show();
-
-    let databases = "";
-    for( i in data.result ){
-      let dbName = data.result[i];
-      databases += "<option value='"+dbName+"'>"+dbName+"</option>";
-    }
-    $("#inputDatabase").html(databases);
-
-    $("#loginPopup").modal("hide");
+    $("#resultJson").val( JSON.stringify(data, null, 2) );
+    globalGraphResult = data.result;
+    renderGraph();
   })
   .fail(function( jqXHR, textStatus, errorThrown ){
     globalNotify( "Error", escapeHtml( jqXHR.responseText ), "danger");
   })
   .always(function(data) {
-    $("#loginSpinner").hide();
+    $("#executeSpinner").hide();
   });
-}
-
-function globalSetCookie(key, value, expiry) {
-  var expires = new Date();
-  expires.setTime(expires.getTime() + (expiry * 24 * 60 * 60 * 1000));
-  document.cookie = key + '=' + value + ';expires=' + expires.toUTCString()+';path=/';
-}
-
-function globalGetCookie(key) {
-  var keyValue = document.cookie.match('(^|;) ?' + key + '=([^;]*)(;|$)');
-  return keyValue ? keyValue[2] : null;
-}
-
-function globalEraseCookie(key) {
-  var keyValue = globalGetCookie(key);
-  globalSetCookie(key, keyValue, '-1');
-  return keyValue;
-}
-
-function escapeHtml(unsafe) {
-  if( unsafe == null )
-    return null;
-
-  if( typeof unsafe === 'object' )
-    unsafe = JSON.stringify(unsafe);
-  else
-    unsafe = unsafe.toString();
-
-  return unsafe
-       .replace(/&/g, "&amp;")
-       .replace(/</g, "&lt;")
-       .replace(/>/g, "&gt;")
-       .replace(/"/g, "&quot;")
-       .replace(/'/g, "&#039;");
 }

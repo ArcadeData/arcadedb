@@ -60,12 +60,12 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
       GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE.setValue(0);
 
       // INSERT DATA AND CHECK WITH LOOKUPS (EVERY 100)
-      LogManager.instance().log(this, Level.INFO, "TEST: INSERT DATA AND CHECK WITH LOKUPS (EVERY 100)");
+      LogManager.instance().log(this, Level.FINE, "TEST: INSERT DATA AND CHECK WITH LOKUPS (EVERY 100)");
       insertData();
       checkLookups(100, 1);
 
       // THIS TIME LOOK UP FOR KEYS WHILE COMPACTION
-      LogManager.instance().log(this, Level.INFO, "TEST: THIS TIME LOOK UP FOR KEYS WHILE COMPACTION");
+      LogManager.instance().log(this, Level.FINE, "TEST: THIS TIME LOOK UP FOR KEYS WHILE COMPACTION");
       final CountDownLatch semaphore1 = new CountDownLatch(1);
       new Timer().schedule(new TimerTask() {
         @Override
@@ -83,14 +83,14 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
       semaphore1.await();
 
       // INSERT DATA ON TOP OF THE MIXED MUTABLE-COMPACTED INDEX AND CHECK WITH LOOKUPS
-      LogManager.instance().log(this, Level.INFO, "TEST: INSERT DATA ON TOP OF THE MIXED MUTABLE-COMPACTED INDEX AND CHECK WITH LOOKUPS");
+      LogManager.instance().log(this, Level.FINE, "TEST: INSERT DATA ON TOP OF THE MIXED MUTABLE-COMPACTED INDEX AND CHECK WITH LOOKUPS");
       insertData();
       checkLookups(1, 2);
       compaction();
       checkLookups(1, 2);
 
       // INSERT DATA WHILE COMPACTING AND CHECK AGAIN
-      LogManager.instance().log(this, Level.INFO, "TEST: INSERT DATA WHILE COMPACTING AND CHECK AGAIN");
+      LogManager.instance().log(this, Level.FINE, "TEST: INSERT DATA WHILE COMPACTING AND CHECK AGAIN");
       final CountDownLatch semaphore2 = new CountDownLatch(1);
       new Timer().schedule(new TimerTask() {
         @Override
@@ -192,7 +192,7 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
 
             if (counter % 1000 == 0) {
               if (System.currentTimeMillis() - lastLap > 1000) {
-                LogManager.instance().log(this, Level.INFO, "TEST: - Progress %d/%d (%d records/sec)", null, counter, totalToInsert, counter - lastLapCounter);
+                LogManager.instance().log(this, Level.FINE, "TEST: - Progress %d/%d (%d records/sec)", null, counter, totalToInsert, counter - lastLapCounter);
                 lastLap = System.currentTimeMillis();
                 lastLapCounter = counter;
               }
@@ -201,10 +201,10 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
         }
       });
 
-      LogManager.instance().log(this, Level.INFO, "TEST: Inserted " + totalToInsert + " elements in " + (System.currentTimeMillis() - begin) + "ms");
+      LogManager.instance().log(this, Level.FINE, "TEST: Inserted " + totalToInsert + " elements in " + (System.currentTimeMillis() - begin) + "ms");
 
     } finally {
-      LogManager.instance().log(this, Level.INFO, "TEST: Insertion finished in " + (System.currentTimeMillis() - begin) + "ms");
+      LogManager.instance().log(this, Level.FINE, "TEST: Insertion finished in " + (System.currentTimeMillis() - begin) + "ms");
     }
 
     database.async().waitCompletion();
@@ -218,7 +218,7 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
       }
     });
 
-    LogManager.instance().log(this, Level.INFO, "TEST: Lookup all the keys...");
+    LogManager.instance().log(this, Level.FINE, "TEST: Lookup all the keys...");
 
     long begin = System.currentTimeMillis();
 
@@ -229,7 +229,7 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
         final IndexCursor records = database.lookupByKey(TYPE_NAME, new String[] { "id" }, new Object[] { id });
         Assertions.assertNotNull(records);
         if (records.size() != expectedItems)
-          LogManager.instance().log(this, Level.INFO, "Cannot find key '%s'", null, id);
+          LogManager.instance().log(this, Level.FINE, "Cannot find key '%s'", null, id);
 
         Assertions.assertEquals(expectedItems, records.size(), "Wrong result for lookup of key " + id);
 
@@ -245,13 +245,13 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
           long delta = System.currentTimeMillis() - begin;
           if (delta < 1)
             delta = 1;
-          LogManager.instance().log(this, Level.INFO, "Checked " + checked + " lookups in " + delta + "ms = " + (10000 / delta) + " lookups/msec");
+          LogManager.instance().log(this, Level.FINE, "Checked " + checked + " lookups in " + delta + "ms = " + (10000 / delta) + " lookups/msec");
           begin = System.currentTimeMillis();
         }
       } catch (Exception e) {
         Assertions.fail("Error on lookup key " + id, e);
       }
     }
-    LogManager.instance().log(this, Level.INFO, "TEST: Lookup finished in " + (System.currentTimeMillis() - begin) + "ms");
+    LogManager.instance().log(this, Level.FINE, "TEST: Lookup finished in " + (System.currentTimeMillis() - begin) + "ms");
   }
 }

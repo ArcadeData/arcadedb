@@ -2897,7 +2897,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     result.close();
   }
 
-  //    @Test  TODO check the execution plan (no fetch from bucket? why?)
+  @Test
   public void testSelectFromStringParam() {
     String className = "testSelectFromStringParam";
     database.getSchema().createDocumentType(className);
@@ -2921,7 +2921,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     result.close();
   }
 
-  //    @Test TODO
+  @Test
   public void testSelectFromStringNamedParam() {
     String className = "testSelectFromStringNamedParam";
     database.getSchema().createDocumentType(className);
@@ -2932,7 +2932,7 @@ public class SelectStatementExecutionTest extends TestHelper {
       doc.save();
     }
     database.commit();
-    Map<Object, Object> params = new HashMap<>();
+    Map<String, Object> params = new HashMap<>();
     params.put("target", className);
     ResultSet result = database.query("sql", "select from :target", params);
     printExecutionPlan(result);

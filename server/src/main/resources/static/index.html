@@ -9,35 +9,69 @@
 
   <link rel="stylesheet" href="css/bootstrap.min.css">
   <link rel="stylesheet" href="components/DataTables/datatables.min.css">
+  <link rel="stylesheet" href="components/fontawesome/css/fontawesome.min.css">
+  <link rel="stylesheet" href="components/fontawesome/css/solid.min.css">
+  <link rel="stylesheet" href="css/studio.css">
 
+  <script src="js/popper.min.js"></script>
   <script src="js/jquery-1.12.4.min.js"></script>
   <script src="js/bootstrap.min.js"></script>
   <script src="js/bootstrap-notify.min.js"></script>
   <script src="js/sweetalert2.all.min.js"></script>
   <script src="components/DataTables/datatables.min.js"></script>
 
-  <script src="js/studio.js"></script>
+  <script src="components/fontawesome/js/fontawesome.min.js"></script>
+  <script src="components/fontawesome/js/solid.min.js"></script>
+
+  <script src="js/cytoscape.min.js"></script>
+  <script src="js/cola.min.js"></script>
+  <script src="js/cytoscape-cola.js"></script>
+  <script src="js/cytoscape-cxtmenu.js"></script>
+  <script src="js/cytoscape-graphml.js"></script>
+
+  <script src="js/studio-utils.js"></script>
+  <script src="js/studio-database.js"></script>
+  <script src="js/studio-graph.js"></script>
 </head>
 <body>
 
-<h2 style="text-align: center"><img src="images/arcadedb-logo-mini.png"> Server</h2>
-<br><br>
-
 <div class="card-hover-shadow-2x mb-3 card">
   <div class="card-header-tab card-header">
+    <div class="row">
 
-    <ul class="nav nav-tabs" id="tabs">
-      <li class="nav-item"><a data-toggle="tab" href="#tab-database" class="active nav-link" id="tab-database-sel"><i class="fa fa-database"></i>&nbsp;Database</a>
-      </li>
-      <li class="nav-item"><a data-toggle="tab" href="#tab-api" class="nav-link" id="tab-api-sel"><i class="fa fa-address-card"></i>&nbsp;HTTP API</a></li>
-      <li class="nav-item"><a data-toggle="tab" href="#tab-resources" class="nav-link" id="tab-resources-sel"><i class="fa fa-bell"></i>&nbsp;Resources</a></li>
-    </ul>
+      <div class="col-1">
+        <ul class="nav nav-tabs flex-column" id="tabs">
+          <li class="nav-item"><a data-toggle="tab" href="#tab-database" class="active nav-link" id="tab-database-sel">
+            <h3>
+              <center><i class="fa fa-database"></i></center>
+            </h3>
+          </a></li>
+          <li class="nav-item"><a data-toggle="tab" href="#tab-query" class="nav-link" id="tab-query-sel">
+            <h3>
+              <center><i class="fa fa-terminal"></i></center>
+            </h3>
+          </a></li>
+          <li class="nav-item"><a data-toggle="tab" href="#tab-api" class="nav-link" id="tab-api-sel">
+            <h3>
+              <center><i class="fa fa-plug"></i></center>
+            </h3>
+          </a></li>
+          <li class="nav-item"><a data-toggle="tab" href="#tab-resources" class="nav-link" id="tab-resources-sel">
+            <h3>
+              <center><i class="fa fa-info-circle"></i></center>
+            </h3>
+          </a>
+          </li>
+        </ul>
+      </div>
 
-    <div class="card-body">
-      <div class="tab-content">
-        ${include:database.html}
-        ${include:api.html}
-        ${include:resources.html}
+      <div class="col-11">
+        <div class="tab-content">
+          ${include:query.html}
+          ${include:database.html}
+          ${include:api.html}
+          ${include:resources.html}
+        </div>
       </div>
     </div>
   </div>
@@ -46,7 +80,7 @@
 
 ${include:popup-login.html}
 
-<p style="text-align: center">Copyright 2021 <a href="https://arcadedata.com" rel="nofollow">Arcade Data Ltd</a></p>
+<p style="text-align: center">Copyright 2021 <a href="https://arcadedb.com" rel="nofollow">Arcade Data Ltd</a></p>
 
 </body>
 </html>

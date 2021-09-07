@@ -167,7 +167,7 @@ public class Rid extends SimpleNode {
     public PInteger getBucket() {
         if (expression != null) {
             RID rid = toRecordId((Result) null, new BasicCommandContext());
-            if (rid == null) {
+            if (rid != null) {
                 PInteger result = new PInteger(-1);
                 result.setValue(rid.getBucketId());
                 return result;
@@ -179,7 +179,7 @@ public class Rid extends SimpleNode {
     public PInteger getPosition() {
         if (expression != null) {
             RID rid = toRecordId((Result) null, new BasicCommandContext());
-            if (rid == null) {
+            if (rid != null) {
                 PInteger result = new PInteger(-1);
                 result.setValue(rid.getPosition());
                 return result;

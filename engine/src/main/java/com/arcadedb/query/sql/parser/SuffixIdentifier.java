@@ -87,6 +87,9 @@ public class SuffixIdentifier extends SimpleNode {
       return null;
     }
     if (recordAttribute != null) {
+      if("@rid".equalsIgnoreCase(recordAttribute.name)) {
+        return iCurrentRecord.getIdentity();
+      }
       return ((Document) iCurrentRecord.getRecord()).get(recordAttribute.name);
     }
     return null;

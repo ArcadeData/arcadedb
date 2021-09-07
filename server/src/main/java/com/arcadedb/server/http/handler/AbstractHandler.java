@@ -21,6 +21,7 @@
 
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.Constants;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.log.LogManager;
@@ -33,16 +34,16 @@ import io.undertow.server.HttpHandler;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HeaderValues;
 import io.undertow.util.Headers;
+import org.json.JSONObject;
 
 import java.io.IOException;
 import java.util.Base64;
 import java.util.logging.Level;
 
 public abstract class AbstractHandler implements HttpHandler {
-  private              boolean requireAuthentication = true;
-  private static final String  AUTHORIZATION_BASIC   = "Basic";
-
-  protected final HttpServer httpServer;
+  private              boolean    requireAuthentication = true;
+  private static final String     AUTHORIZATION_BASIC   = "Basic";
+  protected final      HttpServer httpServer;
 
   public AbstractHandler(final HttpServer httpServer) {
     this.httpServer = httpServer;
@@ -155,5 +156,13 @@ public abstract class AbstractHandler implements HttpHandler {
 
   protected ServerSecurity.ServerUser authenticate(final String userName, final String userPassword) {
     return httpServer.getServer().getSecurity().authenticate(userName, userPassword);
+  }
+
+  protected JSONObject createResult(final ServerSecurity.ServerUser user) {
+    return new JSONObject().put("user", user.name).put("version", Constants.getVersion());
+  }
+
+  protected String decode(final String command) {
+    return command.replace("&amp;", " ").replace("&lt;", "<").replace("&gt;", "<").replace("&quot;", "\"").replace("&#039;", "'");
   }
 }

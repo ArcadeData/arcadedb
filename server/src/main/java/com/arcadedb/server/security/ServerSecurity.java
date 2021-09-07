@@ -235,9 +235,9 @@ public class ServerSecurity implements ServerPlugin {
   }
 
   protected void createDefaultSecurity() throws IOException {
-    String rootPassword = GlobalConfiguration.SERVER_ROOT_PASSWORD.getValueAsString();
+    String rootPassword = server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_ROOT_PASSWORD);
     if (rootPassword == null) {
-      if (GlobalConfiguration.HA_K8S.getValueAsBoolean()) {
+      if (server.getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_K8S)) {
         // UNDER KUBERNETES IF THE ROOT PASSWORD IS NOT SET (USUALLY WITH A SECRET) THE POD MUST TERMINATE
         LogManager.instance()
             .log(this, Level.SEVERE, "Unable to start a server under Kubernetes if the environment variable `arcadedb.server.rootPassword` is not set");

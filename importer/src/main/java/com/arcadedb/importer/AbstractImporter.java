@@ -31,6 +31,7 @@ import com.arcadedb.utility.FileUtils;
 
 import java.io.File;
 import java.util.Timer;
+import java.util.TimerTask;
 import java.util.logging.Level;
 
 public abstract class AbstractImporter {
@@ -41,6 +42,7 @@ public abstract class AbstractImporter {
   protected Source           source;
   protected Timer            timer;
   protected boolean          databaseCreatedDuringImporting = true;
+  protected ImporterLogger   logger                         = new ImporterLogger(settings);
 
   public AbstractImporter(final String[] args) {
     settings.parseParameters(args);
@@ -52,14 +54,18 @@ public abstract class AbstractImporter {
   }
 
   protected void printProgress() {
+    if (settings.verboseLevel < 2)
+      return;
+
     try {
       long deltaInSecs = (System.currentTimeMillis() - context.lastLapOn) / 1000;
       if (deltaInSecs == 0)
         deltaInSecs = 1;
 
       if (source == null || source.compressed || source.totalSize < 0) {
-        LogManager.instance().log(this, Level.INFO,
-            "Parsed %d (%d/sec) - %d documents (%d/sec) - %d vertices (%d/sec) - %d edges (%d/sec) - %d skipped edges - %d linked edges (%d/sec - %d%%)", null,
+        logger.log(2,//
+            "- Status update: parsed %d (%d/sec) - %d documents (%d/sec) - %d vertices (%d/sec) - %d edges (%d/sec) - %d skipped edges - %d linked edges (%d/sec - %d%%)",
+//
             context.parsed.get(), ((context.parsed.get() - context.lastParsed) / deltaInSecs), context.createdDocuments.get(),
             (context.createdDocuments.get() - context.lastDocuments) / deltaInSecs, context.createdVertices.get(),
             (context.createdVertices.get() - context.lastVertices) / deltaInSecs, context.createdEdges.get(),
@@ -68,9 +74,9 @@ public abstract class AbstractImporter {
             context.createdEdges.get() > 0 ? (int) (context.linkedEdges.get() * 100 / context.createdEdges.get()) : 0);
       } else {
         final int progressPerc = (int) (parser.getPosition() * 100 / source.totalSize);
-        LogManager.instance().log(this, Level.INFO,
-            "Parsed %d (%d/sec - %d%%) - %d records (%d/sec) - %d vertices (%d/sec) - %d edges (%d/sec) - %d skipped edges - %d linked edges (%d/sec - %d%%)",
-            null, context.parsed.get(), ((context.parsed.get() - context.lastParsed) / deltaInSecs), progressPerc, context.createdDocuments.get(),
+        logger.log(2,//
+            "Status update: parsed %d (%d/sec - %d%%) - %d records (%d/sec) - %d vertices (%d/sec) - %d edges (%d/sec) - %d skipped edges - %d linked edges (%d/sec - %d%%)",
+            context.parsed.get(), ((context.parsed.get() - context.lastParsed) / deltaInSecs), progressPerc, context.createdDocuments.get(),
             (context.createdDocuments.get() - context.lastDocuments) / deltaInSecs, context.createdVertices.get(),
             (context.createdVertices.get() - context.lastVertices) / deltaInSecs, context.createdEdges.get(),
             (context.createdEdges.get() - context.lastEdges) / deltaInSecs, context.skippedEdges.get(), context.linkedEdges.get(),
@@ -86,20 +92,20 @@ public abstract class AbstractImporter {
       context.lastLinkedEdges = context.linkedEdges.get();
 
     } catch (Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error on print statistics", e);
+      logger.error("Error on print statistics: " + e.getMessage());
     }
   }
 
   protected void startImporting() {
     context.startedOn = context.lastLapOn = System.currentTimeMillis();
 
-//    timer = new Timer();
-//    timer.schedule(new TimerTask() {
-//      @Override
-//      public void run() {
-//        printProgress();
-//      }
-//    }, 5000, 5000);
+    timer = new Timer();
+    timer.schedule(new TimerTask() {
+      @Override
+      public void run() {
+        printProgress();
+      }
+    }, 5000, 5000);
   }
 
   protected void stopImporting() {

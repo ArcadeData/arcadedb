@@ -26,6 +26,7 @@ import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.server.ServerMetrics;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.server.security.ServerSecurity;
 import io.undertow.server.HttpServerExchange;
 import org.json.JSONObject;
 
@@ -41,7 +42,7 @@ public class PostQueryHandler extends DatabaseAbstractHandler {
   }
 
   @Override
-  public void execute(final HttpServerExchange exchange, final Database database) throws IOException {
+  public void execute(final HttpServerExchange exchange, ServerSecurity.ServerUser user, final Database database) throws IOException {
 
     final String payload = parseRequestPayload(exchange);
     if (payload == null || payload.isEmpty()) {
