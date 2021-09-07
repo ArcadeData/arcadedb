@@ -1679,6 +1679,32 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
   }
 
   @Test
+  public void testNestedProjectionsStar() {
+    String clazz = "testNestedProjectionsStar";
+    database.command("sql", "CREATE vertex type " + clazz + " ");
+
+    database.command("sql", "CREATE VERTEX " + clazz + " SET name = 'bbb', surname = 'ccc'");
+
+    if(database.isTransactionActive()){
+      database.commit();
+      database.begin();
+    }
+
+    String query = "MATCH { type: " + clazz + ", as:a} RETURN a:{*, @rid}, 'x' ";
+
+    ResultSet result = database.query("sql", query);
+    Assertions.assertTrue(result.hasNext());
+    Result item = result.next();
+    Result a = item.getProperty("a");
+    Assertions.assertEquals("bbb", a.getProperty("name"));
+    Assertions.assertEquals("ccc", a.getProperty("surname"));
+    Assertions.assertNotNull(a.getProperty("@rid"));
+    Assertions.assertEquals(3, a.getPropertyNames().size());
+    Assertions.assertFalse(result.hasNext());
+    result.close();
+  }
+
+  @Test
   public void testAggregate() {
     String clazz = "testAggregate";
     database.command("sql", "CREATE vertex type " + clazz);
