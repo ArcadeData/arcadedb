@@ -52,7 +52,7 @@
     </div>
     <div class="col-11">
       <textarea id="inputCommand"
-                style="width: 100%; height: 100px;">MATCH {type: Users, as: user}.out("rated"){as: rated} RETURN user, rated LIMIT 30</textarea>
+                style="width: 100%; height: 100px;"></textarea>
     </div>
 
     <div class="col-12">
@@ -89,34 +89,44 @@
             <div class="collapse navbar-collapse" id="navbarSupportedContent">
               <ul class="navbar-nav mr-auto">
                 <li class="nav-item">
-                  <span id="customToolbar"></span>
+
                 </li>
               </ul>
               <ul class="navbar-nav">
                 <li class="nav-item">
-                  <a class="nav-link" href="#" onclick="renderGraph()"><i class="fa fa-sync"></i> Refresh</a>
+                  <button type="button" class="btn" data-toggle="tooltip" data-placement="top" data-html="true"
+                          title="1) Hold MOUSE CLICK for context menu<br>2) CMD + MOUSE for block selection">
+                    <i class="fa fa-question-circle"></i>
+                  </button>
+                </li>
+                <li class="nav-item">
+                  <a class="nav-link" href="#" onclick="renderGraph()"><i class="fa fa-sync"></i> Redraw</a>
                 </li>
                 <li class="nav-item">
                   <a class="nav-link" href="#" onclick="exportGraph()"><i class="fa fa-download"></i> Export .graphml</a>
                 </li>
                 <li class="nav-item dropdown">
-                  <a class="nav-link dropdown-toggle" href="#" id="navbarDropdown" role="button" data-toggle="dropdown" aria-haspopup="true"
-                     aria-expanded="false">
+                  <a class="nav-link" href="#" role="button" aria-haspopup="true" aria-expanded="false" class="dropdown-toggle" data-toggle="dropdown"
+                     id="graphSettings">
                     <i class="fa fa-sliders-h"></i> Settings
                   </a>
-                  <div class="dropdown-menu" aria-labelledby="navbarDropdown">
+                  <ul class="dropdown-menu" aria-labelledby="navbarDropdown" style="width: 300px">
 
-                    <a class="dropdown-item w-150" href="#">
-                      <label for="edgeLength">Edge Length</label>
-                      <input type="range" class="custom-range" min="50" max="300" step="50" id="edgeLength" value="100">
-                    </a>
+                    <li class="dropdown-item">
+                      <span id="customToolbar"></span>
+                    </li>
 
-                  </div>
+                    <li class="dropdown-item">
+                      <label for="graphSpacing">Spacing</label>
+                      <input id="graphSpacing" type="range" class="custom-range" min="10" max="100" step="10" value="30" style="width: 100px">
+                    </li>
+
+                  </ul>
                 </li>
               </ul>
               <form class="form-inline my-2 my-lg-0">
-                <input class="form-control mr-sm-2" type="search" placeholder="Search" aria-label="Search">
-                <button class="btn btn-outline-success my-2 my-sm-0" type="submit">Search</button>
+                <input class="form-control mr-sm-2" type="search" placeholder="Search" aria-label="Search" disabled>
+                <button class="btn btn-outline-success my-2 my-sm-0" type="submit" disabled>Search</button>
               </form>
             </div>
           </nav>
@@ -134,12 +144,22 @@
 </div>
 
 <script>
-$('a[data-toggle="tab"]').on('shown.bs.tab', function (e) {
-  executeCommand(false);
-});
+$(function () {
+  $('[data-toggle="tooltip"]').tooltip()
 
-$("#edgeLength").change( function(){
-  globalGraphEdgeLength = $("#edgeLength").val();
-  renderGraph();
-});
+  $('a[data-toggle="tab"]').on('shown.bs.tab', function (e) {
+    executeCommand(false);
+  });
+
+  $("#graphSpacing").change( function(){
+    globalGraphSpacing = parseInt( $("#graphSpacing").val() );
+    renderGraph();
+  });
+
+  $('.dropdown-menu').on("click.bs.dropdown", function (e) {
+    e.stopPropagation();
+    e.preventDefault();
+  });
+})
+
 </script>

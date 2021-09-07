@@ -1,10 +1,11 @@
-var globalColors = ['aqua', 'orange', 'gray', 'green', 'lime', 'teal', 'maroon', 'navy', 'olive', 'purple', 'red', 'silver', 'blue', 'yellow', 'fuchsia', 'white'];
-var globalColorsByType = {};
+var globalBgColors = ['aqua', 'orange', 'green', 'purple', 'red', 'lime', 'teal', 'maroon', 'navy', 'olive', 'silver', 'blue', 'yellow', 'fuchsia', 'gray', 'white'];
+var globalFgColors = ['black', 'black', 'white', 'white', 'black', 'black', 'black', 'white', 'white', 'black', 'black', 'white', 'black', 'black', 'white', 'black'];
+var globalColorsIndexByType = {};
 var globalLastColorIndex = 0;
 var globalTableResult = null;
 var globalGraphResult = null;
 var globalGraphMaxResult = 1000;
-var globalGraphEdgeLength = 100;
+var globalGraphSpacing = 100;
 var globalGraphLabelPerType = {};
 var globalGraphPropertiesPerType = {};
 var globalCy = null;
@@ -323,18 +324,12 @@ function renderGraph(){
   let elements = [];
 
   globalLastColorIndex = 0;
-  globalColorsByType = {};
+  globalColorsIndexByType = {};
   for( i in globalGraphResult.vertices ){
     let vertex = globalGraphResult.vertices[i];
     let type = vertex["t"];
 
-    let color = globalColorsByType[type];
-    if( color == null ){
-      if( globalLastColorIndex >= globalColors.length )
-        globalLastColorIndex = 0;
-      color = globalColors[ globalLastColorIndex++ ];
-      globalColorsByType[type] = color;
-    }
+    assignVertexColor(type);
 
     let properties = globalGraphPropertiesPerType[type];
     if( properties == null ) {
@@ -370,15 +365,7 @@ function renderGraph(){
     if( rid == null )
       continue;
 
-    let label = "@type";
-    if( globalGraphLabelPerType[vertex["t"]] != null )
-      label = globalGraphLabelPerType[vertex["t"]];
-    if( label == "@type" )
-      label = vertex["t"];
-    else
-      label = vertex["p"][label];
-
-    elements.push( { data: { id: rid, label: label, type: vertex["t"], color: globalColorsByType[ vertex["t"] ], properties: vertex["p"] } } );
+    elements.push( { data: createVertex(vertex) } );
     if( elements.length > globalGraphMaxResult ){
       reachedMax = true;
       break;
@@ -387,19 +374,7 @@ function renderGraph(){
 
   if( !reachedMax ) {
     for( i in globalGraphResult.edges ){
-      let edge = globalGraphResult.edges[i];
-      let rid = edge["r"];
-
-      let label = "@type";
-      if( globalGraphLabelPerType[edge["edge"]] != null )
-        label = globalGraphLabelPerType[vertex["t"]];
-      if( label == "@type" )
-        label = edge["t"];
-      else
-        label = edge["p"][label];
-
-      elements.push( { data: { id: rid, label: label, type: edge["t"], source: edge["o"], target: edge["i"], properties: edge["p"] } } );
-
+      elements.push( { data: createEdge( globalGraphResult.edges[i] ) } );
       if( elements.length > globalGraphMaxResult ){
         reachedMax = true;
         break;
@@ -409,11 +384,11 @@ function renderGraph(){
 
   globalLayout = {
      name: 'cola',
+     animate: true,
      refresh: 2,
-     maxSimulationTime: 10000,
      ungrabifyWhileSimulating: true,
-     edgeLength: parseInt( $("#globalGraphEdgeLength").val() ),
-     nodeSpacing: function( node ){ return 30; }
+     nodeSpacing: function( node ){ return globalGraphSpacing },
+     spacingFactor: 1.75
    };
 
   globalCy = cytoscape({
@@ -425,17 +400,36 @@ function renderGraph(){
         selector: 'node',
         selectionType: 'single',
         style: {
-          'background-color': 'data(color)',
+          'color': 'data(fgColor)',
+          'background-color': 'data(bgColor)',
           'label': 'data(label)',
-          'width': '100px',
-          'height': '100px',
+          'width': 'data(size)',
+          'height': 'data(size)',
           'border-color': 'gray',
           'border-width': 1,
           'text-valign': "center",
-          'text-halign': "center"
+          'text-halign': "center",
+          'text-wrap': 'wrap',
+          'text-max-width': 100
         }
       },
-
+      {
+        selector: 'node:selected',
+        selectionType: 'single',
+        style: {
+          'color': 'data(fgColor)',
+          'background-color': 'data(bgColor)',
+          'label': 'data(label)',
+          'width': 'data(size)',
+          'height': 'data(size)',
+          'border-color': 'red',
+          'border-width': 5,
+          'text-valign': "center",
+          'text-halign': "center",
+          'text-wrap': 'wrap',
+          'text-max-width': 100
+        }
+      },
       {
         selector: 'edge',
         style: {
@@ -470,13 +464,18 @@ function renderGraph(){
       }, {
         content: '<span class="fa fa-project-diagram fa-2x"></span>',
         select: function(ele){
-          loadNodeNeighbors( ele.data('id') );
+          loadNodeNeighbors( "both", ele.data('id') );
         },
       }, {
-        content: 'Text',
+        content: '<span class="fa fa-arrow-circle-right fa-2x"></span>',
         select: function(ele){
-          console.log( ele.position() );
-        }
+          loadNodeNeighbors( "out", ele.data('id') );
+        },
+      }, {
+        content: '<span class="fa fa-arrow-circle-left fa-2x"></span>',
+        select: function(ele){
+          loadNodeNeighbors( "in", ele.data('id') );
+        },
       }
     ]
   });
@@ -494,31 +493,13 @@ function renderGraph(){
     ]
   });
 
-//  globalCy.cxtmenu({
-//    selector: 'core',
-//    commands: [
-//      {
-//        content: 'bg1',
-//        select: function(){
-//          console.log( 'bg1' );
-//        }
-//      },
-//      {
-//        content: 'bg2',
-//        select: function(){
-//          console.log( 'bg2' );
-//        }
-//      }
-//    ]
-//  });
-
   globalCy.on('select', 'node', function(event){
     let selected = globalCy.$('node:selected');
     if( selected.length != 1 ) {
       $("#customToolbar").empty();
     } else {
       let type = selected[0].data()["type"];
-      let customToolbar = "Selected Type: " + type + " label: ";
+      let customToolbar = type + " label: ";
 
       properties = globalGraphPropertiesPerType[type];
 
@@ -544,6 +525,44 @@ function renderGraph(){
 
   if( reachedMax ){
     globalNotify( "Warning", "Returned more than " + globalGraphMaxResult + " items, partial results will be returned. Consider setting a limit in the query.", "warning");
+  }
+}
+
+function createVertex(vertex){
+  let label = "@type";
+  if( globalGraphLabelPerType[vertex["t"]] != null )
+    label = globalGraphLabelPerType[vertex["t"]];
+  if( label == "@type" )
+    label = vertex["t"];
+  else
+    label = vertex["p"][label];
+
+  let colorIndex = globalColorsIndexByType[ vertex["t"] ];
+
+  return { id: vertex["r"], label: label, size: (70 + ( 2 * label.length ) ), type: vertex["t"],
+           fgColor: globalFgColors[ colorIndex ], bgColor: globalBgColors[ colorIndex ],
+           weight: vertex["i"] + vertex["o"],
+           properties: vertex["p"] };
+}
+
+function createEdge(edge){
+  let label = "@type";
+  if( globalGraphLabelPerType[edge["edge"]] != null )
+    label = globalGraphLabelPerType[vertex["t"]];
+  if( label == "@type" )
+    label = edge["t"];
+  else
+    label = edge["p"][label];
+
+  return { id: edge["r"], label: label, type: edge["t"], source: edge["o"], target: edge["i"], properties: edge["p"] };
+}
+
+function assignVertexColor(type){
+  let color = globalColorsIndexByType[type];
+  if( color == null ){
+    if( globalLastColorIndex >= globalBgColors.length )
+      globalLastColorIndex = 0;
+    globalColorsIndexByType[type] = globalLastColorIndex++;
   }
 }
 
@@ -578,7 +597,7 @@ function exportGraph(){
   }
 }
 
-function loadNodeNeighbors( rid ){
+function loadNodeNeighbors( direction, rid ){
   let database = escapeHtml( $("#inputDatabase").val() );
 
   $("#executeSpinner").show();
@@ -591,7 +610,7 @@ function loadNodeNeighbors( rid ){
     data: JSON.stringify(
       {
         language: "sql",
-        command: "select bothE() from " + rid,
+        command: "select "+direction+"E() from " + rid,
         serializer: "graph"
       }
     ),
@@ -605,21 +624,13 @@ function loadNodeNeighbors( rid ){
     for( i in data.result.vertices ){
       let vertex = data.result.vertices[i];
 
+      assignVertexColor(vertex["t"]);
+
       globalGraphResult.vertices.push( vertex );
-      let type = vertex["t"];
-
-      let color = globalColorsByType[type];
-      if( color == null ){
-        if( globalLastColorIndex >= globalColors.length )
-          globalLastColorIndex = 0;
-        color = globalColors[ globalLastColorIndex++ ];
-        globalColorsByType[type] = color;
-      }
-
       globalCy.add([
         {
           group: 'nodes',
-          data: { id: vertex['r'], label: vertex["t"], properties: vertex['p'] }
+          data: createVertex( vertex )
         }
       ]);
     }
@@ -630,14 +641,13 @@ function loadNodeNeighbors( rid ){
       globalCy.add([
         {
           group: 'edges',
-          data: { id: edge['r'], source: edge["o"], target: edge["i"], label: edge["t"], properties: edge['p'] }
+          data: createEdge( edge )
         }
       ]);
     }
     globalCy.endBatch();
 
-    let layout = globalCy.makeLayout(globalLayout);
-    layout.run();
+    globalCy.makeLayout(globalLayout).run();
 
   })
   .fail(function( jqXHR, textStatus, errorThrown ){
