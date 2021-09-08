@@ -433,14 +433,15 @@ public class ArcadeDBServer implements ServerLogger {
       // CREATE DEFAULT DATABASES
       final String[] dbs = defaultDatabases.split(";");
       for (String db : dbs) {
-        final int credentialPos = db.indexOf('[');
-        if (credentialPos < 0) {
+        final int credentialBegin = db.indexOf('[');
+        if (credentialBegin < 0) {
           LogManager.instance().log(this, Level.WARNING, "Error in default databases format: '%s'", null, defaultDatabases);
           break;
         }
 
-        final String dbName = db.substring(0, credentialPos);
-        final String credentials = db.substring(credentialPos + 1, db.length() - 1);
+        final String dbName = db.substring(0, credentialBegin);
+        final int credentialEnd = db.indexOf(']', credentialBegin);
+        final String credentials = db.substring(credentialBegin + 1, credentialEnd);
 
         final String[] credentialPairs = credentials.split(",");
         for (String credential : credentialPairs) {
@@ -493,9 +494,34 @@ public class ArcadeDBServer implements ServerLogger {
         }
 
         // CREATE THE DATABASE
-        if (!existsDatabase(dbName)) {
+        Database database;
+        if (existsDatabase(dbName)) {
+          database = getDatabase(dbName);
+        } else {
           LogManager.instance().log(this, Level.INFO, "Creating default database '%s'...", null, dbName);
-          createDatabase(dbName);
+          database = createDatabase(dbName);
+        }
+
+        if (credentialEnd < db.length() - 1 && db.charAt(credentialEnd + 1) == '{') {
+          // PARSE IMPORTS
+          final String commands = db.substring(credentialEnd + 2, db.length() - 1);
+
+          final String[] commandParts = commands.split(",");
+          for (String command : commandParts) {
+            final int commandSeparator = command.indexOf(":");
+            if (commandSeparator < 0) {
+              LogManager.instance().log(this, Level.WARNING, "Error in startup command configuration format: '%s'", null, commands);
+              break;
+            }
+            final String commandType = command.substring(0, commandSeparator).toLowerCase();
+            final String commandParams = command.substring(commandSeparator + 1);
+
+            switch (commandType) {
+            case "import":
+              database.command("sql", "import database " + commandParams);
+              break;
+            }
+          }
         }
       }
     }
