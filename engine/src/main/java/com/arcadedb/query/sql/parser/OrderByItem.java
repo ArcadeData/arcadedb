@@ -136,7 +136,7 @@ public class OrderByItem {
         result = 0;
       }
     }
-    if (type == DESC) {
+    if (DESC.equals(type)) {
       result = -1 * result;
     }
     return result;
