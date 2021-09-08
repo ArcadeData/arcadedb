@@ -91,7 +91,7 @@ public class EdgeIteratorFilter extends IteratorFilterBase<Edge> {
 
       LogManager.instance().log(this, Level.WARNING, "Error on loading edge %s %s. Fixing it...", e, edge, vertex != null ? "vertex " + vertex : "");
 
-      database.transaction((tx) -> {
+      database.transaction(tx -> {
         final EdgeLinkedList outEdges = database.getGraphEngine().getEdgeHeadChunk((VertexInternal) this.vertex, direction);
         if (outEdges != null)
           outEdges.removeEdgeRID(edge);

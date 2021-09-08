@@ -33,7 +33,7 @@ import java.util.stream.Collectors;
 
 public class BucketList extends SimpleNode {
 
-  protected List<Identifier> buckets = new ArrayList<Identifier>();
+  protected List<Identifier> buckets = new ArrayList<>();
 
   public BucketList(int id) {
     super(id);

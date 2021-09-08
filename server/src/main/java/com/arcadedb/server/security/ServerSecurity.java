@@ -37,7 +37,6 @@ import javax.crypto.SecretKey;
 import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.PBEKeySpec;
 import java.io.IOException;
-import java.nio.charset.Charset;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.security.spec.InvalidKeySpecException;
@@ -48,6 +47,7 @@ import java.util.concurrent.ConcurrentMap;
 import java.util.logging.Level;
 
 import static com.arcadedb.GlobalConfiguration.*;
+import java.nio.charset.StandardCharsets;
 
 public class ServerSecurity implements ServerPlugin {
 
@@ -170,7 +170,7 @@ public class ServerSecurity implements ServerPlugin {
       throw new ServerSecurityException("Could NOT retrieve '" + algorithm + "' algorithm", e);
     }
 
-    final KeySpec keySpec = new PBEKeySpec(password.toCharArray(), salt.getBytes(Charset.forName("UTF-8")), iterations, 256);
+    final KeySpec keySpec = new PBEKeySpec(password.toCharArray(), salt.getBytes(StandardCharsets.UTF_8), iterations, 256);
     final SecretKey secret;
     try {
       secret = keyFactory.generateSecret(keySpec);

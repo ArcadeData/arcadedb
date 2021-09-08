@@ -110,7 +110,7 @@ public class CSVFormatImporter extends AbstractFormatImporter {
 
       LogManager.instance().log(this, Level.INFO, "Importing the following document properties: %s", null, properties);
 
-      database.async().onError((exception) -> {
+      database.async().onError(exception -> {
         LogManager.instance().log(this, Level.SEVERE, "Error on inserting documents", exception);
       });
 
@@ -190,7 +190,7 @@ public class CSVFormatImporter extends AbstractFormatImporter {
 
     final long beginTime = System.currentTimeMillis();
 
-    database.async().onError((exception) -> {
+    database.async().onError(exception -> {
       LogManager.instance().log(this, Level.SEVERE, "Error on inserting vertices", exception);
     });
 
@@ -309,7 +309,7 @@ public class CSVFormatImporter extends AbstractFormatImporter {
     context.graphImporter = new GraphImporter(database, (int) expectedVertices, (int) expectedEdges, Type.valueOf(settings.typeIdType.toUpperCase()));
     context.graphImporter.startImportingEdges();
 
-    database.async().onError((exception) -> {
+    database.async().onError(exception -> {
       LogManager.instance().log(this, Level.SEVERE, "Error on inserting edges", exception);
     });
 

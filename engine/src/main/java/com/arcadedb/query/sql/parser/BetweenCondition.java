@@ -207,7 +207,7 @@ public class BetweenCondition extends BooleanExpression {
 
   @Override
   public List<String> getMatchPatternInvolvedAliases() {
-    List<String> result = new ArrayList<String>();
+    List<String> result = new ArrayList<>();
     List<String> x = first.getMatchPatternInvolvedAliases();
     if (x != null) {
       result.addAll(x);
@@ -221,7 +221,7 @@ public class BetweenCondition extends BooleanExpression {
       result.addAll(x);
     }
 
-    if (result.size() == 0) {
+    if (result.isEmpty()) {
       return null;
     }
     return result;

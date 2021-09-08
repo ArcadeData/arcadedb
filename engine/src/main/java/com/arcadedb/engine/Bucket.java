@@ -229,7 +229,7 @@ public class Bucket extends PaginatedComponent {
         if (recordCountInPage > 0) {
           for (int recordIdInPage = 0; recordIdInPage < recordCountInPage; ++recordIdInPage) {
             final int recordPositionInPage = (int) page.readUnsignedInt(PAGE_RECORD_TABLE_OFFSET + recordIdInPage * INT_SERIALIZED_SIZE);
-            final long recordSize[] = page.readNumberAndSize(recordPositionInPage);
+            final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
 
             if (recordSize[0] > 0 || recordSize[0] == -1)
               total++;
@@ -272,7 +272,7 @@ public class Bucket extends PaginatedComponent {
 
         for (int positionInPage = 0; positionInPage < recordCountInPage; ++positionInPage) {
           final int recordPositionInPage = (int) page.readUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE);
-          final long recordSize[] = page.readNumberAndSize(recordPositionInPage);
+          final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
 
           totalRecords++;
 
@@ -344,7 +344,7 @@ public class Bucket extends PaginatedComponent {
         throw new RecordNotFoundException("Record " + rid + " not found", rid);
 
       final int recordPositionInPage = (int) page.readUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE);
-      final long recordSize[] = page.readNumberAndSize(recordPositionInPage);
+      final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
 
       if (recordSize[0] == 0)
         // DELETED
@@ -472,7 +472,7 @@ public class Bucket extends PaginatedComponent {
         throw new RecordNotFoundException("Record " + rid + " not found", rid);
 
       int recordPositionInPage = (int) page.readUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE);
-      final long recordSize[] = page.readNumberAndSize(recordPositionInPage);
+      final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
       if (recordSize[0] == 0)
         // DELETED
         throw new RecordNotFoundException("Record " + rid + " not found", rid);
@@ -503,7 +503,7 @@ public class Bucket extends PaginatedComponent {
         // MAKE ROOM IN THE PAGE IF POSSIBLE
 
         final int lastRecordPositionInPage = (int) page.readUnsignedInt(PAGE_RECORD_TABLE_OFFSET + (recordCountInPage - 1) * INT_SERIALIZED_SIZE);
-        final long lastRecordSize[] = page.readNumberAndSize(lastRecordPositionInPage);
+        final long[] lastRecordSize = page.readNumberAndSize(lastRecordPositionInPage);
 
         if (lastRecordSize[0] == -1) {
           lastRecordSize[0] = LONG_SERIALIZED_SIZE;

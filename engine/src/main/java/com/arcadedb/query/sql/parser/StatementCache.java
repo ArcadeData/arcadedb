@@ -28,6 +28,7 @@ import com.arcadedb.log.LogManager;
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.io.UnsupportedEncodingException;
+import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.logging.Level;
@@ -96,14 +97,7 @@ public class StatementCache {
       if (db == null) {
         is = new ByteArrayInputStream(statement.getBytes());
       } else {
-        try {
-
-          is = new ByteArrayInputStream(statement.getBytes("UTF-8"));
-//          is = new ByteArrayInputStream(statement.getBytes(db.getStorage().getConfiguration().getCharset()));
-        } catch (UnsupportedEncodingException e2) {
-          LogManager.instance().log(this, Level.WARNING, "Unsupported charset for database " + db);
-          is = new ByteArrayInputStream(statement.getBytes());
-        }
+        is = new ByteArrayInputStream(statement.getBytes(StandardCharsets.UTF_8));
       }
 
       SqlParser osql = null;

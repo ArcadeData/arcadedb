@@ -1164,9 +1164,9 @@ public class EmbeddedSchema implements Schema {
           LogManager.instance().log(this, Level.WARNING, "Error on renaming previous schema file '%s'", null, copy);
       }
 
-      final FileWriter file = new FileWriter(databasePath + "/" + SCHEMA_FILE_NAME);
-      file.write(root.toString());
-      file.close();
+      try( FileWriter file = new FileWriter(databasePath + "/" + SCHEMA_FILE_NAME)){
+        file.write(root.toString());
+      }
 
       dirtyConfiguration = false;
 

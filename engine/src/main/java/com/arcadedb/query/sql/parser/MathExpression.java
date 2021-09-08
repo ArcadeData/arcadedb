@@ -625,7 +625,7 @@ public class MathExpression extends SimpleNode {
   }
 
   public Object execute(Identifiable iCurrentRecord, CommandContext ctx) {
-    if (childExpressions.size() == 0) {
+    if (childExpressions.isEmpty()) {
       return null;
     }
     if (childExpressions.size() == 1) {
@@ -642,7 +642,7 @@ public class MathExpression extends SimpleNode {
   }
 
   public Object execute(Result iCurrentRecord, CommandContext ctx) {
-    if (childExpressions.size() == 0) {
+    if (childExpressions.isEmpty()) {
       return null;
     }
     if (childExpressions.size() == 1) {
@@ -716,7 +716,7 @@ public class MathExpression extends SimpleNode {
 
   private Object iterateOnPriorities(Deque values, Deque<Operator> operators) {
     while (true) {
-      if (values.size() == 0) {
+      if (values.isEmpty()) {
         return null;
       }
       if (values.size() == 1) {
@@ -1045,7 +1045,7 @@ public class MathExpression extends SimpleNode {
         result.addAll(x);
       }
     }
-    if (result.size() == 0) {
+    if (result.isEmpty()) {
       return null;
     }
     return result;

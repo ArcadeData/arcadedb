@@ -175,7 +175,7 @@ public class UpdateItem extends SimpleNode {
 
     if (newValue instanceof Collection) {
       if (prop.getType() == Type.LINK) {
-        if (((Collection) newValue).size() == 0) {
+        if (((Collection) newValue).isEmpty()) {
           newValue = null;
         } else if (((Collection) newValue).size() == 1) {
           newValue = ((Collection) newValue).iterator().next();

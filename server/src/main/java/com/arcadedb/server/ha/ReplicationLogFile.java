@@ -440,7 +440,7 @@ public class ReplicationLogFile extends LockContext {
 
   private void openLastFileChunk(final File logFile) throws FileNotFoundException {
     final String prefix = logFile.getName() + ".";
-    final List<File> fileChunks = Arrays.asList(logFile.getParentFile().listFiles((f) -> f.getName().startsWith(prefix)));
+    final List<File> fileChunks = Arrays.asList(logFile.getParentFile().listFiles(f -> f.getName().startsWith(prefix)));
     fileChunks.sort(LOG_COMPARATOR);
 
     totalArchivedChunks = fileChunks.isEmpty() ? 0 : fileChunks.size() - 1;
