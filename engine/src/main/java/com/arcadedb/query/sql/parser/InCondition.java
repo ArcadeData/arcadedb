@@ -315,7 +315,7 @@ public class InCondition extends BooleanExpression {
             result.addAll(conditionX);
         }
 
-        return result.size() == 0 ? null : result;
+        return result.isEmpty() ? null : result;
     }
 
     @Override

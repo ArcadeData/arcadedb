@@ -92,7 +92,7 @@ public class QueryOperatorEquals {
         if (iRecord instanceof Document && iRecord.getIdentity() == null) {
             // ODOCUMENT AS RESULT OF SUB-QUERY: GET THE FIRST FIELD IF ANY
             final Set<String> firstFieldName = ((Document) iRecord).getPropertyNames();
-            if (firstFieldName.size() > 0) {
+            if (!firstFieldName.isEmpty()) {
                 Object fieldValue = ((Document) iRecord).get(firstFieldName.iterator().next());
                 if (fieldValue != null) {
                     if (iConsiderIn && MultiValue.isMultiValue(fieldValue)) {
@@ -119,7 +119,7 @@ public class QueryOperatorEquals {
         }
         // ODOCUMENT AS RESULT OF SUB-QUERY: GET THE FIRST FIELD IF ANY
         final Set<String> firstFieldName = iRecord.getPropertyNames();
-        if (firstFieldName.size() > 0) {
+        if (!firstFieldName.isEmpty()) {
             Object fieldValue = iRecord.getProperty(firstFieldName.iterator().next());
             if (fieldValue != null) {
                 if (iConsiderIn && MultiValue.isMultiValue(fieldValue)) {

@@ -26,6 +26,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.misc.OAbstractSQLMethod;
 
 import java.io.UnsupportedEncodingException;
+import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 
@@ -73,7 +74,7 @@ public class SQLMethodHash extends OAbstractSQLMethod {
 
     final MessageDigest msgDigest = MessageDigest.getInstance(iAlgorithm);
 
-    return byteArrayToHexStr(msgDigest.digest(iInput.getBytes("UTF-8")));
+    return byteArrayToHexStr(msgDigest.digest(iInput.getBytes(StandardCharsets.UTF_8)));
   }
 
   public static String byteArrayToHexStr(final byte[] data) {

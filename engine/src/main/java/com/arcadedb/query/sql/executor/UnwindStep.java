@@ -130,7 +130,7 @@ public class UnwindStep extends AbstractExecutionStep {
   private Collection<Result> unwind(final Result doc, final List<String> unwindFields, final CommandContext iContext) {
     final List<Result> result = new ArrayList<>();
 
-    if (unwindFields.size() == 0) {
+    if (unwindFields.isEmpty()) {
       result.add(doc);
     } else {
       String firstField = unwindFields.get(0);

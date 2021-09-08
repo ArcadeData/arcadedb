@@ -61,9 +61,9 @@ public class ServerSecurityFileRepository {
       user.put("databases", u.databases);
     }
 
-    final FileWriter writer = new FileWriter(file);
-    writer.write(root.toString());
-    writer.close();
+    try(FileWriter writer = new FileWriter(file)){
+      writer.write(root.toString());
+    }
   }
 
   public Map<String, ServerSecurity.ServerUser> loadConfiguration() throws IOException {

@@ -376,7 +376,7 @@ public class Console {
       if (value instanceof byte[])
         value = "byte[" + ((byte[]) value).length + "]";
       else if (value instanceof Iterator<?>) {
-        final List<Object> coll = new ArrayList<Object>();
+        final List<Object> coll = new ArrayList<>();
         while (((Iterator<?>) value).hasNext())
           coll.add(((Iterator<?>) value).next());
         value = coll;

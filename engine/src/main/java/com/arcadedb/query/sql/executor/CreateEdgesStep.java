@@ -76,7 +76,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
 
       @Override
       public boolean hasNext() {
-        return (currentBatch < nRecords && (toIterator.hasNext() || (toList.size() > 0 && fromIter.hasNext())));
+        return (currentBatch < nRecords && (toIterator.hasNext() || (!toList.isEmpty() && fromIter.hasNext())));
       }
 
       @Override
@@ -88,7 +88,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
           }
           currentFrom = fromIter.hasNext() ? asVertex(fromIter.next()) : null;
         }
-        if (currentBatch < nRecords && (toIterator.hasNext() || (toList.size() > 0 && fromIter.hasNext()))) {
+        if (currentBatch < nRecords && (toIterator.hasNext() || (!toList.isEmpty() && fromIter.hasNext()))) {
 
           if (currentFrom == null) {
             throw new CommandExecutionException("Invalid FROM vertex for edge");

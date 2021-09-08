@@ -187,14 +187,14 @@ public class ArrayConcatExpression extends SimpleNode {
   }
 
   public List<String> getMatchPatternInvolvedAliases() {
-    List<String> result = new ArrayList<String>();
+    List<String> result = new ArrayList<>();
     for (ArrayConcatExpressionElement exp : childExpressions) {
       List<String> x = exp.getMatchPatternInvolvedAliases();
       if (x != null) {
         result.addAll(x);
       }
     }
-    if (result.size() == 0) {
+    if (result.isEmpty()) {
       return null;
     }
     return result;

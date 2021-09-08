@@ -241,7 +241,7 @@ public class OrBlock extends BooleanExpression {
         result.addAll(x);
       }
     }
-    return result.size() == 0 ? null : result;
+    return result.isEmpty() ? null : result;
   }
 
   @Override

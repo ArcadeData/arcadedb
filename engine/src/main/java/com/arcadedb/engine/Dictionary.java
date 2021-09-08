@@ -93,7 +93,7 @@ public class Dictionary extends PaginatedComponent {
           final int itemCountBeforeIncrement = itemCount;
 
           try {
-            database.transaction((tx) -> {
+            database.transaction(tx -> {
               itemCount = itemCountBeforeIncrement; // RESET COUNTER IN CASE OF RETRY
               addItemToPage(name);
             }, false);

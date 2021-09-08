@@ -35,7 +35,7 @@ import java.util.Map;
 import java.util.Set;
 
 public class AndBlock extends BooleanExpression {
-  List<BooleanExpression> subBlocks = new ArrayList<BooleanExpression>();
+  List<BooleanExpression> subBlocks = new ArrayList<>();
 
   public AndBlock(int id) {
     super(id);
@@ -120,7 +120,7 @@ public class AndBlock extends BooleanExpression {
 
   @Override
   protected List<Object> getExternalCalculationConditions() {
-    List<Object> result = new ArrayList<Object>();
+    List<Object> result = new ArrayList<>();
     for (BooleanExpression expr : subBlocks) {
       result.addAll(expr.getExternalCalculationConditions());
     }
@@ -131,7 +131,7 @@ public class AndBlock extends BooleanExpression {
     if (subBlocks == null) {
       return null;
     }
-    List<BinaryCondition> result = new ArrayList<BinaryCondition>();
+    List<BinaryCondition> result = new ArrayList<>();
     for (BooleanExpression exp : subBlocks) {
       List<BinaryCondition> sub = exp.getIndexedFunctionConditions(iSchemaClass, database);
       if (sub != null && sub.size() > 0) {
@@ -142,12 +142,12 @@ public class AndBlock extends BooleanExpression {
   }
 
   public List<AndBlock> flatten() {
-    List<AndBlock> result = new ArrayList<AndBlock>();
+    List<AndBlock> result = new ArrayList<>();
     boolean first = true;
     for (BooleanExpression sub : subBlocks) {
       List<AndBlock> subFlattened = sub.flatten();
       List<AndBlock> oldResult = result;
-      result = new ArrayList<AndBlock>();
+      result = new ArrayList<>();
       for (AndBlock subAndItem : subFlattened) {
         if (first) {
           result.add(subAndItem);
@@ -243,14 +243,14 @@ public class AndBlock extends BooleanExpression {
 
   @Override
   public List<String> getMatchPatternInvolvedAliases() {
-    List<String> result = new ArrayList<String>();
+    List<String> result = new ArrayList<>();
     for (BooleanExpression exp : subBlocks) {
       List<String> x = exp.getMatchPatternInvolvedAliases();
       if (x != null) {
         result.addAll(x);
       }
     }
-    return result.size() == 0 ? null : result;
+    return result.isEmpty() ? null : result;
   }
 
   @Override

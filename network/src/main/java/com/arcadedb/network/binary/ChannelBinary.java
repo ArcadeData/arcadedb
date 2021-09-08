@@ -30,6 +30,7 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.Socket;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.logging.Level;
 
@@ -180,7 +181,7 @@ public abstract class ChannelBinary extends Channel implements ChannelDataInput,
 
       updateMetricReceivedBytes(Binary.INT_SERIALIZED_SIZE + len);
 
-      final String value = new String(tmp, "UTF-8");
+      final String value = new String(tmp, StandardCharsets.UTF_8);
       LogManager.instance().log(this, Level.INFO, "%s - Read string: %s", null, socket.getRemoteSocketAddress(), value);
       return value;
     }
@@ -194,7 +195,7 @@ public abstract class ChannelBinary extends Channel implements ChannelDataInput,
 
     updateMetricReceivedBytes(Binary.INT_SERIALIZED_SIZE + len);
 
-    return new String(tmp, "UTF-8");
+    return new String(tmp, StandardCharsets.UTF_8);
   }
 
   public void readBytes(final byte[] buffer) throws IOException {
@@ -315,7 +316,7 @@ public abstract class ChannelBinary extends Channel implements ChannelDataInput,
       out.writeInt(-1);
       updateMetricTransmittedBytes(Binary.INT_SERIALIZED_SIZE);
     } else {
-      final byte[] buffer = iContent.getBytes("UTF-8");
+      final byte[] buffer = iContent.getBytes(StandardCharsets.UTF_8);
       out.writeInt(buffer.length);
       out.write(buffer, 0, buffer.length);
       updateMetricTransmittedBytes(Binary.INT_SERIALIZED_SIZE + buffer.length);

@@ -28,7 +28,6 @@ import java.io.*;
 import java.lang.management.ManagementFactory;
 import java.lang.management.ThreadInfo;
 import java.lang.management.ThreadMXBean;
-import java.math.BigInteger;
 import java.nio.channels.FileChannel;
 import java.nio.file.FileSystem;
 import java.nio.file.FileSystems;
@@ -309,9 +308,8 @@ public class FileUtils {
   }
 
   public static String readStreamAsString(final InputStream iStream, final String iCharset, final long limit) throws IOException {
-    final StringBuffer fileData = new StringBuffer(1000);
-    final BufferedReader reader = new BufferedReader(new InputStreamReader(iStream, iCharset));
-    try {
+    final StringBuilder fileData = new StringBuilder(1000);
+    try (final BufferedReader reader = new BufferedReader(new InputStreamReader(iStream, iCharset))){
       final char[] buf = new char[1024];
       int numRead;
 
@@ -333,8 +331,6 @@ public class FileUtils {
           // LIMIT REACHED
           break;
       }
-    } finally {
-      reader.close();
     }
     return fileData.toString();
   }

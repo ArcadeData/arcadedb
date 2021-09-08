@@ -86,7 +86,7 @@ public class TruncateTypeStatement extends ODDLStatement {
       }
     }
 
-    db.scanType(typeName.getStringValue(), polymorphic, (rec) -> {
+    db.scanType(typeName.getStringValue(), polymorphic, rec -> {
       rec.delete();
       return true;
     });

@@ -215,7 +215,7 @@ public class Neo4jImporter {
   }
 
   private void syncSchema() throws IOException {
-    readFile((json) -> {
+    readFile(json -> {
       switch (json.getString("type")) {
       case "node":
         final Pair<String, List<String>> labels = typeNameFromLabels(json);
@@ -226,7 +226,7 @@ public class Neo4jImporter {
             for (String parent : labels.getSecond())
               type.addParentType(parent);
 
-          database.transaction((tx) -> {
+          database.transaction(tx -> {
             final Property id = type.createProperty("id", Type.STRING);
             id.createIndex(Schema.INDEX_TYPE.LSM_TREE, true);
           });
@@ -293,7 +293,7 @@ public class Neo4jImporter {
 
     final AtomicInteger lineNumber = new AtomicInteger();
 
-    readFile((json) -> {
+    readFile(json -> {
       lineNumber.incrementAndGet();
 
       switch (json.getString("type")) {
@@ -350,7 +350,7 @@ public class Neo4jImporter {
 
     final AtomicInteger lineNumber = new AtomicInteger();
 
-    readFile((json) -> {
+    readFile(json -> {
       lineNumber.incrementAndGet();
 
       switch (json.getString("type")) {

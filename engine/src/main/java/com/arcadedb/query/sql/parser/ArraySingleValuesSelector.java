@@ -35,7 +35,7 @@ import java.util.stream.Collectors;
 
 public class ArraySingleValuesSelector extends SimpleNode {
 
-  protected List<ArraySelector> items = new ArrayList<ArraySelector>();
+  protected List<ArraySelector> items = new ArrayList<>();
 
   public ArraySingleValuesSelector(int id) {
     super(id);
@@ -57,7 +57,7 @@ public class ArraySingleValuesSelector extends SimpleNode {
   }
 
   public Object execute(Identifiable iCurrentRecord, Object iResult, CommandContext ctx) {
-    List<Object> result = new ArrayList<Object>();
+    List<Object> result = new ArrayList<>();
     for (ArraySelector item : items) {
       Object index = item.getValue(iCurrentRecord, iResult, ctx);
       if (index == null) {
@@ -89,7 +89,7 @@ public class ArraySingleValuesSelector extends SimpleNode {
   }
 
   public Object execute(Result iCurrentRecord, Object iResult, CommandContext ctx) {
-    List<Object> result = new ArrayList<Object>();
+    List<Object> result = new ArrayList<>();
     for (ArraySelector item : items) {
       Object index = item.getValue(iCurrentRecord, iResult, ctx);
       if (index == null) {

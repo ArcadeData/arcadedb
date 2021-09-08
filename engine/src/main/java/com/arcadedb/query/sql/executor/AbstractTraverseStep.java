@@ -107,7 +107,7 @@ public abstract class AbstractTraverseStep extends AbstractExecutionStep {
 
   private void fetchNextBlock(CommandContext ctx, int nRecords) {
     if (this.entryPoints == null) {
-      this.entryPoints = new ArrayList<Result>();
+      this.entryPoints = new ArrayList<>();
     }
     if (!this.results.isEmpty()) {
       return;

@@ -420,11 +420,8 @@ public class Replica2LeaderNetworkExecutor extends Thread {
       throws IOException {
 
     // WRITE THE SCHEMA
-    final FileWriter schemaFile = new FileWriter(database.getDatabasePath() + "/" + EmbeddedSchema.SCHEMA_FILE_NAME);
-    try {
+    try(final FileWriter schemaFile = new FileWriter(database.getDatabasePath() + "/" + EmbeddedSchema.SCHEMA_FILE_NAME)) {
       schemaFile.write(dbStructure.getSchemaJson());
-    } finally {
-      schemaFile.close();
     }
 
     // WRITE ALL THE FILES

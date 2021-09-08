@@ -254,7 +254,7 @@ public class NotInCondition extends BooleanExpression {
       result.addAll(rightX);
     }
 
-    return result.size() == 0 ? null : result;
+    return result.isEmpty() ? null : result;
   }
 
   @Override
