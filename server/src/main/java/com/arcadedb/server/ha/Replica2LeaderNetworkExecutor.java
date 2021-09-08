@@ -419,7 +419,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
   private void installDatabase(final Binary buffer, final String db, final DatabaseStructureResponse dbStructure, final DatabaseInternal database)
       throws IOException {
 
-    // WRITE THE SCHEMA    
+    // WRITE THE SCHEMA
     try(final FileWriter schemaFile = new FileWriter(database.getDatabasePath() + "/" + EmbeddedSchema.SCHEMA_FILE_NAME)) {
       schemaFile.write(dbStructure.getSchemaJson());
     }
