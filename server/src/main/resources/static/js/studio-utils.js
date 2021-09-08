@@ -82,3 +82,24 @@ function escapeHtml(unsafe) {
        .replace(/"/g, "&quot;")
        .replace(/'/g, "&#039;");
 }
+
+function arrayRemove(array, predicate) {
+  for (var i = 0; i < array.length; i++) {
+   if (predicate(array[i])) {
+    return array.splice(i, 1);
+   }
+  }
+}
+
+function arrayRemoveAll(array, predicate) {
+  var removed = [];
+
+  for (var i = 0; i < array.length; ) {
+   if (predicate(array[i])) {
+    removed.push(array.splice(i, 1));
+    continue;
+   }
+   i++;
+  }
+  return removed;
+}

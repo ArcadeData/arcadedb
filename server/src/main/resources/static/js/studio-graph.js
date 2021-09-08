@@ -127,7 +127,7 @@ function renderGraph(){
       {
         content: '<span class="fa fa-eye-slash fa-2x"></span>',
         select: function(ele){
-          globalCy.remove( ele );
+          removeGraphElement(ele);
         }
       }, {
         content: '<span class="fa fa-project-diagram fa-2x"></span>',
@@ -155,7 +155,7 @@ function renderGraph(){
       {
         content: '<span class="fa fa-eye-slash fa-2x"></span>',
         select: function(ele){
-          globalCy.remove( ele );
+          removeGraphElement( ele );
         }
       },
     ]
@@ -192,7 +192,7 @@ function renderGraph(){
       actions += "<li>Load adjacent <a class='link' href='#' onclick='loadNodeNeighbors(\"out\", \""+data.id+"\")'>outgoing</a>, ";
       actions += "<a class='link' href='#' onclick='loadNodeNeighbors(\"in\", \""+data.id+"\")'>incoming</a> or ";
       actions += "<a class='link' href='#' onclick='loadNodeNeighbors(\"both\", \""+data.id+"\")'>both</a></li>";
-      actions += "<li><a class='link' href='#' onclick='globalCy.remove(globalSelected)'>Hide</a> selected elements</li>";
+      actions += "<li><a class='link' href='#' onclick='removeGraphElement(globalSelected)'>Hide</a> selected elements</li>";
       actions += "</ul>";
 
       $("#graphActions").html( actions );
@@ -287,6 +287,28 @@ function assignProperties(element){
 
   for( p in element.p )
     properties[ p ] = true;;
+}
+
+function removeGraphElement( ele ) {
+  if( ele == null )
+    return;
+
+  globalCy.remove( ele );
+
+  let elements;
+  if( ele instanceof Array )
+    elements = ele;
+  else {
+    elements = [];
+    elements.push(ele.data().id );
+  }
+
+  for( i in elements ) {
+    let rid = elements[i].data().id;
+
+    arrayRemoveAll(globalGraphResult.vertices, row => row.r == rid );
+    arrayRemoveAll(globalGraphResult.edges, row => row.r == rid || row.i == rid || row.o == rid );
+  }
 }
 
 function exportGraph(){
@@ -390,7 +412,7 @@ function cutSelection(){
   if( selected.length == 0 )
     return;
 
-  globalCy.remove( selected );
+  removeGraphElement( selected );
   globalCy.makeLayout(globalLayout).run();
 }
 
@@ -399,7 +421,7 @@ function cropSelection(){
   if( selected.length == 0 )
     return;
 
-  globalCy.remove( selected );
+  removeGraphElement( selected );
   globalCy.makeLayout(globalLayout).run();
 }
 
