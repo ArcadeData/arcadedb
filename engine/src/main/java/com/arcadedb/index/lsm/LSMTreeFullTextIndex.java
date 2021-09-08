@@ -255,6 +255,11 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   }
 
   @Override
+  public byte[] getKeyTypes() {
+    return underlyingIndex.getKeyTypes();
+  }
+
+  @Override
   public int getAssociatedBucketId() {
     return underlyingIndex.getAssociatedBucketId();
   }

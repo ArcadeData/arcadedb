@@ -22,6 +22,7 @@
 package com.arcadedb.database;
 
 import com.arcadedb.index.IndexCursor;
+import com.arcadedb.serializer.BinaryComparator;
 
 import java.util.Collection;
 import java.util.Iterator;
@@ -58,6 +59,16 @@ public class IndexCursorCollection implements IndexCursor {
   @Override
   public String dumpStats() {
     return "no-stats";
+  }
+
+  @Override
+  public BinaryComparator getComparator() {
+    return null;
+  }
+
+  @Override
+  public byte[] getKeyTypes() {
+    return new byte[0];
   }
 
   public long size() {

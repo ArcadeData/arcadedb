@@ -379,7 +379,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     return size;
   }
 
-  protected static int compareKeys(final BinaryComparator comparator, final byte[] keyTypes, final Object[] keys1, final Object[] keys2) {
+  public static int compareKeys(final BinaryComparator comparator, final byte[] keyTypes, final Object[] keys1, final Object[] keys2) {
     final int minKeySize = Math.min(keys1.length, keys2.length);
 
     for (int k = 0; k < minKeySize; ++k) {

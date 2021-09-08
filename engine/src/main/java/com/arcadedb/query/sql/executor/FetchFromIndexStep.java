@@ -338,7 +338,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       if (secondValue.equals(thirdValue) && fromKeyIncluded && toKeyIncluded && index.getPropertyNames().length == converted.length)
         cursor = index.get(converted);
       else if (index.supportsOrderedIterations()) {
-        cursor = index.range(converted, fromKeyIncluded, convertToObjectArray(thirdValue), toKeyIncluded);
+        cursor = index.range(isOrderAsc(), converted, fromKeyIncluded, convertToObjectArray(thirdValue), toKeyIncluded);
       } else if (additionalRangeCondition == null && allEqualities((AndBlock) condition)) {
         cursor = index.iterator(isOrderAsc(), converted, true);
       } else {
@@ -451,9 +451,9 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     final Object secondValue = second.execute((Result) null, ctx);
     final Object thirdValue = third.execute((Result) null, ctx);
     if (isOrderAsc())
-      cursor = index.range(new Object[] { secondValue }, true, new Object[] { thirdValue }, true);
+      cursor = index.range(true, new Object[] { secondValue }, true, new Object[] { thirdValue }, true);
     else
-      cursor = index.range(new Object[] { secondValue }, true, new Object[] { thirdValue }, true);
+      cursor = index.range(false, new Object[] { secondValue }, true, new Object[] { thirdValue }, true);
 
     if (cursor != null)
       fetchNextEntry();
@@ -515,7 +515,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
     if (operator instanceof EqualsCompareOperator) {
       //return index.get(values);
-      return index.range(values, true, values, true);
+      return index.range(orderAsc, values, true, values, true);
     } else if (operator instanceof GeOperator) {
       return index.iterator(true, values, true);
     } else if (operator instanceof GtOperator) {

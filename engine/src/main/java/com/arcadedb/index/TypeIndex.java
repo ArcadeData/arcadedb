@@ -74,15 +74,16 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   }
 
   @Override
-  public IndexCursor range(final Object[] beginKeys, final boolean beginKeysInclusive, final Object[] endKeys, boolean endKeysInclusive) {
+  public IndexCursor range(final boolean ascending, final Object[] beginKeys, final boolean beginKeysInclusive, final Object[] endKeys,
+      boolean endKeysInclusive) {
     if (!supportsOrderedIterations())
       throw new UnsupportedOperationException("Index '" + getName() + "' does not support ordered iterations");
 
     final List<IndexCursor> cursors = new ArrayList<>(indexesOnBuckets.size());
     for (Index index : indexesOnBuckets)
-      cursors.add(((RangeIndex) index).range(beginKeys, beginKeysInclusive, endKeys, endKeysInclusive));
+      cursors.add(((RangeIndex) index).range(ascending, beginKeys, beginKeysInclusive, endKeys, endKeysInclusive));
 
-    return new MultiIndexCursor(cursors, -1);
+    return new MultiIndexCursor(cursors, -1, ascending);
   }
 
   @Override
@@ -316,6 +317,11 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   @Override
   public PaginatedComponent getPaginatedComponent() {
     throw new UnsupportedOperationException("getPaginatedComponent");
+  }
+
+  @Override
+  public byte[] getKeyTypes() {
+    return indexesOnBuckets.get(0).getKeyTypes();
   }
 
   @Override

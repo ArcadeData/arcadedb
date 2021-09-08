@@ -165,6 +165,9 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     return range(null, true, fromKeys, inclusive);
   }
 
+  /**
+   * Auto determine if it's ascending or descending by checking the keys. In case of partial match index, pass the ascending parameter.
+   */
   public IndexCursor range(final Object[] fromKeys, final boolean beginKeysInclusive, final Object[] toKeys, final boolean endKeysInclusive)
       throws IOException {
     boolean ascending = true;
@@ -172,6 +175,11 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     if (fromKeys != null && toKeys != null)
       ascending = LSMTreeIndexMutable.compareKeys(comparator, keyTypes, fromKeys, toKeys) <= 0;
 
+    return new LSMTreeIndexCursor(this, ascending, fromKeys, beginKeysInclusive, toKeys, endKeysInclusive);
+  }
+
+  public IndexCursor range(final boolean ascending, final Object[] fromKeys, final boolean beginKeysInclusive, final Object[] toKeys,
+      final boolean endKeysInclusive) throws IOException {
     return new LSMTreeIndexCursor(this, ascending, fromKeys, beginKeysInclusive, toKeys, endKeysInclusive);
   }
 

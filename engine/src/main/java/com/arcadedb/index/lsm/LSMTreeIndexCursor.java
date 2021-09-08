@@ -234,6 +234,16 @@ public class LSMTreeIndexCursor implements IndexCursor {
   }
 
   @Override
+  public BinaryComparator getComparator() {
+    return comparator;
+  }
+
+  @Override
+  public byte[] getKeyTypes() {
+    return keyTypes;
+  }
+
+  @Override
   public long size() {
     return 0;
   }

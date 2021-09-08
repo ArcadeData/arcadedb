@@ -23,6 +23,7 @@ package com.arcadedb.index;
 
 import com.arcadedb.database.Cursor;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.serializer.BinaryComparator;
 
 /**
  * Cursor to browse an result set from an index.
@@ -39,4 +40,8 @@ public interface IndexCursor extends Cursor {
   void close();
 
   String dumpStats();
+
+  BinaryComparator getComparator();
+
+  byte[] getKeyTypes();
 }

@@ -188,15 +188,15 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
 
     if (index.supportsOrderedIterations()) {
       if (isOrderAsc())
-        cursor = index.range(new Object[] { secondValue }, fromKeyIncluded, new Object[] { thirdValue }, toKeyIncluded);
+        cursor = index.range(true, new Object[] { secondValue }, fromKeyIncluded, new Object[] { thirdValue }, toKeyIncluded);
       else
-        cursor = index.range(new Object[] { secondValue }, fromKeyIncluded, new Object[] { thirdValue }, toKeyIncluded);
+        cursor = index.range(false, new Object[] { secondValue }, fromKeyIncluded, new Object[] { thirdValue }, toKeyIncluded);
     } else if (additional == null && allEqualities((AndBlock) condition)) {
 
       if (isOrderAsc())
-        cursor = index.range(new Object[] { secondValue }, fromKeyIncluded, new Object[] { thirdValue }, toKeyIncluded);
+        cursor = index.range(true, new Object[] { secondValue }, fromKeyIncluded, new Object[] { thirdValue }, toKeyIncluded);
       else
-        cursor = index.range(new Object[] { secondValue }, fromKeyIncluded, new Object[] { thirdValue }, toKeyIncluded);
+        cursor = index.range(false, new Object[] { secondValue }, fromKeyIncluded, new Object[] { thirdValue }, toKeyIncluded);
 
       cursor = index.iterator(isOrderAsc(), new Object[] { secondValue }, true);
     } else {
@@ -231,9 +231,9 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
     Object secondValue = second.execute((Result) null, ctx);
     Object thirdValue = third.execute((Result) null, ctx);
     if (isOrderAsc())
-      cursor = index.range(new Object[] { secondValue }, true, new Object[] { thirdValue }, true);
+      cursor = index.range(true, new Object[] { secondValue }, true, new Object[] { thirdValue }, true);
     else
-      cursor = index.range(new Object[] { thirdValue }, true, new Object[] { secondValue }, true);
+      cursor = index.range(false, new Object[] { thirdValue }, true, new Object[] { secondValue }, true);
   }
 
   private void processBinaryCondition() {

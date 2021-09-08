@@ -91,7 +91,7 @@ public class LSMTreeIndexTest extends TestHelper {
 
             final IndexCursor iterator;
             try {
-              iterator = ((RangeIndex) index).range(new Object[] { i }, true, new Object[] { i }, true);
+              iterator = ((RangeIndex) index).range(true, new Object[] { i }, true, new Object[] { i }, true);
               Assertions.assertNotNull(iterator);
 
               while (iterator.hasNext()) {
@@ -135,7 +135,7 @@ public class LSMTreeIndexTest extends TestHelper {
             Assertions.assertNotNull(index);
 
             final IndexCursor iterator;
-            iterator = ((RangeIndex) index).range(new Object[] { i }, true, new Object[] { i + 1 }, true);
+            iterator = ((RangeIndex) index).range(true, new Object[] { i }, true, new Object[] { i + 1 }, true);
             Assertions.assertNotNull(iterator);
 
             while (iterator.hasNext()) {
@@ -272,7 +272,7 @@ public class LSMTreeIndexTest extends TestHelper {
             if (index instanceof TypeIndex)
               continue;
 
-            final IndexCursor cursor = ((RangeIndex) index).range(new Object[] { i }, true, new Object[] { i }, true);
+            final IndexCursor cursor = ((RangeIndex) index).range(true, new Object[] { i }, true, new Object[] { i }, true);
             Assertions.assertFalse(cursor.hasNext() && cursor.next() != null, "Found item with key " + i + " after the TX was committed by using range()");
           }
         }
@@ -358,7 +358,7 @@ public class LSMTreeIndexTest extends TestHelper {
             if (index instanceof TypeIndex)
               continue;
 
-            final IndexCursor cursor = ((RangeIndex) index).range(new Object[] { i }, true, new Object[] { i }, true);
+            final IndexCursor cursor = ((RangeIndex) index).range(true, new Object[] { i }, true, new Object[] { i }, true);
             Assertions.assertFalse(cursor.hasNext() && cursor.next() != null, "Found item with key " + i + " after the TX was committed by using range()");
           }
         }
@@ -871,7 +871,7 @@ public class LSMTreeIndexTest extends TestHelper {
 
           final IndexCursor iterator;
           try {
-            iterator = ((RangeIndex) index).range(new Object[] { 10 }, true, new Object[] { 19 }, true);
+            iterator = ((RangeIndex) index).range(true, new Object[] { 10 }, true, new Object[] { 19 }, true);
             Assertions.assertNotNull(iterator);
 
             while (iterator.hasNext()) {
@@ -914,7 +914,7 @@ public class LSMTreeIndexTest extends TestHelper {
 
           final IndexCursor iterator;
           try {
-            iterator = ((RangeIndex) index).range(new Object[] { 10 }, true, new Object[] { 19 }, false);
+            iterator = ((RangeIndex) index).range(true, new Object[] { 10 }, true, new Object[] { 19 }, false);
             Assertions.assertNotNull(iterator);
 
             while (iterator.hasNext()) {
@@ -957,7 +957,7 @@ public class LSMTreeIndexTest extends TestHelper {
 
           final IndexCursor iterator;
           try {
-            iterator = ((RangeIndex) index).range(new Object[] { 10 }, false, new Object[] { 19 }, true);
+            iterator = ((RangeIndex) index).range(true, new Object[] { 10 }, false, new Object[] { 19 }, true);
             Assertions.assertNotNull(iterator);
 
             while (iterator.hasNext()) {
@@ -1000,7 +1000,7 @@ public class LSMTreeIndexTest extends TestHelper {
 
           final IndexCursor iterator;
           try {
-            iterator = ((RangeIndex) index).range(new Object[] { 10 }, false, new Object[] { 19 }, false);
+            iterator = ((RangeIndex) index).range(true, new Object[] { 10 }, false, new Object[] { 19 }, false);
             Assertions.assertNotNull(iterator);
 
             while (iterator.hasNext()) {

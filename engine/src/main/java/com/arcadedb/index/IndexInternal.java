@@ -45,4 +45,6 @@ public interface IndexInternal extends Index {
   int getFileId();
 
   PaginatedComponent getPaginatedComponent();
+
+  byte[] getKeyTypes();
 }

@@ -116,6 +116,11 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   }
 
   @Override
+  public byte[] getKeyTypes() {
+    return mutable.keyTypes;
+  }
+
+  @Override
   public boolean equals(final Object obj) {
     if (obj == this)
       return true;
@@ -222,8 +227,9 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   }
 
   @Override
-  public IndexCursor range(final Object[] beginKeys, final boolean beginKeysInclusive, final Object[] endKeys, final boolean endKeysInclusive) {
-    return lock.executeInReadLock(() -> mutable.range(beginKeys, beginKeysInclusive, endKeys, endKeysInclusive));
+  public IndexCursor range(final boolean ascendingOrder, final Object[] beginKeys, final boolean beginKeysInclusive, final Object[] endKeys,
+      final boolean endKeysInclusive) {
+    return lock.executeInReadLock(() -> mutable.range(ascendingOrder, beginKeys, beginKeysInclusive, endKeys, endKeysInclusive));
   }
 
   @Override

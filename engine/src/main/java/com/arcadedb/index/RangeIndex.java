@@ -41,5 +41,5 @@ public interface RangeIndex extends Index {
    * The returning iterator does not skip deleted entries and it might contains duplicated entries.
    * WARNING: this method does not read pending changes in transaction.
    */
-  IndexCursor range(Object[] beginKeys, boolean beginKeysInclusive, Object[] endKeys, boolean endKeysInclusive);
+  IndexCursor range(boolean ascending, Object[] beginKeys, boolean beginKeysInclusive, Object[] endKeys, boolean endKeysInclusive);
 }

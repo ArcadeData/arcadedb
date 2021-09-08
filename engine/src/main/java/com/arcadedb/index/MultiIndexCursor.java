@@ -22,6 +22,8 @@
 package com.arcadedb.index;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.index.lsm.LSMTreeIndexMutable;
+import com.arcadedb.serializer.BinaryComparator;
 
 import java.util.ArrayList;
 import java.util.Iterator;
@@ -29,17 +31,21 @@ import java.util.List;
 import java.util.NoSuchElementException;
 
 public class MultiIndexCursor implements IndexCursor {
-  private final List<IndexCursor> cursors;
-  private final int               limit;
-  private       int               browsed      = 0;
-  private       int               currentIndex = 0;
-  private       IndexCursor       current;
+  private final List<IndexCursor>  cursors;
+  private final int                limit;
+  private final byte[]             keyTypes;
+  private final boolean            ascendingOrder;
+  private       int                browsed         = 0;
+  private       Object[]           nextKeys;
+  private       int                nextCursorIndex = -1;
+  private       List<Identifiable> cursorsNextValues;
 
-  public MultiIndexCursor(final List<IndexCursor> cursors, final int limit) {
+  public MultiIndexCursor(final List<IndexCursor> cursors, final int limit, final boolean ascendingOrder) {
     this.cursors = cursors;
     this.limit = limit;
-    if (!cursors.isEmpty())
-      this.current = cursors.get(0);
+    this.ascendingOrder = ascendingOrder;
+    this.keyTypes = cursors.get(0).getKeyTypes();
+    initCursors();
   }
 
   public MultiIndexCursor(final List<IndexInternal> indexes, final boolean ascendingOrder, final int limit) {
@@ -51,9 +57,9 @@ public class MultiIndexCursor implements IndexCursor {
 
       this.cursors.add(((RangeIndex) i).iterator(ascendingOrder));
     }
-
-    if (!cursors.isEmpty())
-      this.current = cursors.get(0);
+    this.ascendingOrder = ascendingOrder;
+    this.keyTypes = indexes.get(0).getKeyTypes();
+    initCursors();
   }
 
   public MultiIndexCursor(final List<IndexInternal> indexes, final Object[] fromKeys, final boolean ascendingOrder, final boolean includeFrom,
@@ -66,36 +72,30 @@ public class MultiIndexCursor implements IndexCursor {
 
       this.cursors.add(((RangeIndex) i).iterator(ascendingOrder, fromKeys, includeFrom));
     }
-
-    if (!cursors.isEmpty())
-      this.current = cursors.get(0);
+    this.ascendingOrder = ascendingOrder;
+    this.keyTypes = indexes.get(0).getKeyTypes();
+    initCursors();
   }
 
   @Override
   public Object[] getKeys() {
-    return getCurrent().getKeys();
+    return nextKeys;
   }
 
   @Override
   public Identifiable getRecord() {
-    return getCurrent().getRecord();
+    return cursors.get(nextCursorIndex).getRecord();
   }
 
   @Override
   public boolean hasNext() {
-    if (limit > -1 && browsed > limit) {
-      current = null;
+    if (limit > -1 && browsed > limit)
       return false;
-    }
 
-    while (current != null) {
-      if (current.hasNext())
+    for (int i = 0; i < cursors.size(); ++i) {
+      final IndexCursor cursor = cursors.get(i);
+      if (cursor != null && (cursorsNextValues.get(i) != null || cursor.hasNext()))
         return true;
-
-      if (currentIndex < cursors.size() - 1)
-        current = cursors.get(++currentIndex);
-      else
-        current = null;
     }
 
     return false;
@@ -103,17 +103,57 @@ public class MultiIndexCursor implements IndexCursor {
 
   @Override
   public Identifiable next() {
-    if (hasNext()) {
-      ++browsed;
-      return current.next();
+    nextCursorIndex = -1;
+    nextKeys = null;
+
+    for (int i = 0; i < cursors.size(); ++i) {
+
+      final IndexCursor cursor = cursors.get(i);
+
+      if (cursor == null)
+        continue;
+
+      final Identifiable cursorsNextValue = cursorsNextValues.get(i);
+      if (cursorsNextValue == null && !cursor.hasNext()) {
+        cursors.set(i, null);
+        continue;
+      }
+
+      if (nextCursorIndex == -1) {
+        nextCursorIndex = i;
+        nextKeys = cursor.getKeys();
+        continue;
+      }
+
+      final int cmp = LSMTreeIndexMutable.compareKeys(cursor.getComparator(), keyTypes, cursor.getKeys(), nextKeys);
+      if (ascendingOrder) {
+        if (cmp < 0) {
+          nextCursorIndex = i;
+          nextKeys = cursor.getKeys();
+        }
+      } else {
+        if (cmp > 0) {
+          nextCursorIndex = i;
+          nextKeys = cursor.getKeys();
+        }
+      }
     }
 
-    throw new NoSuchElementException();
+    if (nextCursorIndex < 0)
+      throw new NoSuchElementException();
+
+    ++browsed;
+
+    final Identifiable nextValue = cursorsNextValues.set(nextCursorIndex, null);
+    if (cursors.get(nextCursorIndex).hasNext())
+      cursorsNextValues.set(nextCursorIndex, cursors.get(nextCursorIndex).next());
+
+    return nextValue;
   }
 
   @Override
   public int getScore() {
-    return getCurrent().getScore();
+    return -1;
   }
 
   @Override
@@ -140,10 +180,39 @@ public class MultiIndexCursor implements IndexCursor {
     return this;
   }
 
-  private IndexCursor getCurrent() {
-    if (current == null)
-      throw new NoSuchElementException();
+  @Override
+  public BinaryComparator getComparator() {
+    for (IndexCursor cursor : cursors) {
+      if (cursor != null && cursor.hasNext())
+        return cursor.getComparator();
+    }
+    return null;
+  }
 
-    return current;
+  @Override
+  public byte[] getKeyTypes() {
+    for (IndexCursor cursor : cursors) {
+      if (cursor != null && cursor.hasNext())
+        return cursor.getKeyTypes();
+    }
+    return null;
+  }
+
+  private void initCursors() {
+    cursorsNextValues = new ArrayList<Identifiable>(cursors.size());
+    for (int i = 0; i < cursors.size(); ++i) {
+      cursorsNextValues.add(null);
+
+      final IndexCursor cursor = cursors.get(i);
+      if (cursor == null)
+        continue;
+
+      if (!cursor.hasNext()) {
+        cursors.set(i, null);
+        continue;
+      }
+
+      cursorsNextValues.set(i, cursor.next());
+    }
   }
 }
