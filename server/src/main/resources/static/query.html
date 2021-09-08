@@ -1,7 +1,7 @@
 <div class="tab-pane fade show active" id="tab-query" role="tabpanel">
   <div class="row" id="queryPanel">
-    <div class="col-1">
-      <select id="inputLanguage" class="col-12 form-control">
+    <div class="col-1" style="padding: 0px;">
+      <select id="inputLanguage" class="col-12 form-control" style="color: #00AEEE; font-family: Courier; font-size: 1.3em; height: 53px; text-align: center; padding-left: 0px; padding-right: 0px;">
         <option value="sql">SQL</option>
         <option value="gremlin">Gremlin</option>
         <option value="cypher">Cypher</option>
@@ -11,7 +11,8 @@
 
     <div class="col-11">
       <textarea id="inputCommand" name="inputCommand"></textarea>
-      <button class="btn btn-primary" onclick="executeCommand(true)" style="z-index: 100; position:absolute; top: 10px; right: 30px;"><i class="fa fa-play"></i>
+      <button class="btn btn-primary" onclick="executeCommand(true)" style="z-index: 100; position: absolute; top: 10px; right: 30px;"><i
+              class="fa fa-play"></i>
         <img id="executeSpinner" class="ui-loading" src="/images/color-spin-small.svg" style="display: none;">
       </button>
     </div>
@@ -181,7 +182,11 @@ function initQuery() {
   $('[data-toggle="tooltip"]').tooltip()
 
   $('a[data-toggle="tab"]').on('shown.bs.tab', function (e) {
-    executeCommand(false);
+    let activeTab = $("#tabs-command .active").attr("id");
+    if( activeTab == "tab-table-sel" )
+      renderTable();
+    else if( activeTab == "tab-graph-sel" )
+      renderGraph();
   });
 
   $("#graphSpacing").change( function(){

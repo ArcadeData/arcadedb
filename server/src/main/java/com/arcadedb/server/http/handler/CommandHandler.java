@@ -94,22 +94,26 @@ public class CommandHandler extends DatabaseAbstractHandler {
         final Set<Identifiable> includedVertices = new HashSet<>();
         final JSONArray vertices = new JSONArray();
         final JSONArray edges = new JSONArray();
+        final JSONArray records = new JSONArray();
 
         while (qResult.hasNext()) {
-          Result row = qResult.next();
+          final Result row = qResult.next();
+
+          records.put(serializerImpl.serializeResult(row));
 
           if (row.isVertex()) {
             final Vertex v = row.getVertex().get();
             includedVertices.add(v.getIdentity());
-            vertices.put(serializerImpl.serializeRecord(v));
+            vertices.put(serializerImpl.serializeGraphElement(v));
           } else if (row.isEdge()) {
             final Edge e = row.getEdge().get();
-            edges.put(serializerImpl.serializeRecord(e));
+            edges.put(serializerImpl.serializeGraphElement(e));
             includedVertices.add(e.getIn());
-            vertices.put(serializerImpl.serializeRecord(e.getInVertex()));
+            vertices.put(serializerImpl.serializeGraphElement(e.getInVertex()));
             includedVertices.add(e.getOut());
-            vertices.put(serializerImpl.serializeRecord(e.getOutVertex()));
+            vertices.put(serializerImpl.serializeGraphElement(e.getOutVertex()));
           } else {
+
             for (String prop : row.getPropertyNames()) {
               final Object value = row.getProperty(prop);
               if (value instanceof Identifiable) {
@@ -118,7 +122,7 @@ public class CommandHandler extends DatabaseAbstractHandler {
                 final DocumentType type = database.getSchema().getTypeByBucketId(rid.getBucketId());
                 if (type instanceof VertexType) {
                   includedVertices.add((Identifiable) value);
-                  vertices.put(serializerImpl.serializeRecord(((Identifiable) value).asVertex(true)));
+                  vertices.put(serializerImpl.serializeGraphElement(((Identifiable) value).asVertex(true)));
                 }
               } else if (value instanceof Collection) {
                 for (Iterator<?> it = ((Collection<?>) value).iterator(); it.hasNext(); ) {
@@ -130,16 +134,16 @@ public class CommandHandler extends DatabaseAbstractHandler {
                     final DocumentType type = database.getSchema().getTypeByBucketId(rid.getBucketId());
                     if (type instanceof VertexType) {
                       includedVertices.add((Identifiable) item);
-                      vertices.put(serializerImpl.serializeRecord(((Identifiable) item).asVertex(true)));
+                      vertices.put(serializerImpl.serializeGraphElement(((Identifiable) item).asVertex(true)));
                     } else if (type instanceof EdgeType) {
                       final Edge edge = ((Identifiable) item).asEdge(true);
 
-                      edges.put(serializerImpl.serializeRecord(edge));
+                      edges.put(serializerImpl.serializeGraphElement(edge));
 
                       includedVertices.add(edge.getIn());
-                      vertices.put(serializerImpl.serializeRecord(edge.getInVertex()));
+                      vertices.put(serializerImpl.serializeGraphElement(edge.getInVertex()));
                       includedVertices.add(edge.getOut());
-                      vertices.put(serializerImpl.serializeRecord(edge.getOutVertex()));
+                      vertices.put(serializerImpl.serializeGraphElement(edge.getOutVertex()));
                     }
                   }
                 }
@@ -155,21 +159,21 @@ public class CommandHandler extends DatabaseAbstractHandler {
           final Iterable<Edge> vEdgesOut = vertex.getEdges(Vertex.DIRECTION.OUT);
           for (Edge e : vEdgesOut) {
             if (includedVertices.contains(e.getIn()))
-              edges.put(serializerImpl.serializeRecord(e));
+              edges.put(serializerImpl.serializeGraphElement(e));
           }
 
           final Iterable<Edge> vEdgesIn = vertex.getEdges(Vertex.DIRECTION.IN);
           for (Edge e : vEdgesIn) {
             if (includedVertices.contains(e.getOut()))
-              edges.put(serializerImpl.serializeRecord(e));
+              edges.put(serializerImpl.serializeGraphElement(e));
           }
         }
 
-        response.put("result", new JSONObject().put("vertices", vertices).put("edges", edges));
+        response.put("result", new JSONObject().put("vertices", vertices).put("edges", edges).put("records", records));
         break;
       }
       default: {
-        final JsonSerializer serializerImpl = new JsonSerializer().setIncludeVertexEdges(true).setUseCollectionSize(true);
+        final JsonSerializer serializerImpl = new JsonSerializer().setIncludeVertexEdges(true).setUseCollectionSize(false);
         final JSONArray result = new JSONArray(qResult.stream().limit(limit + 1).map(r -> serializerImpl.serializeResult(r)).collect(Collectors.toList()));
         response.put("result", result);
       }

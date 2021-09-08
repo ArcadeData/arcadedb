@@ -1,5 +1,6 @@
 var globalBgColors = ['aqua', 'orange', 'green', 'purple', 'red', 'lime', 'teal', 'maroon', 'navy', 'olive', 'silver', 'blue', 'yellow', 'fuchsia', 'gray', 'white'];
 var globalFgColors = ['black', 'black', 'white', 'white', 'black', 'black', 'black', 'white', 'white', 'black', 'black', 'white', 'black', 'black', 'white', 'black'];
+var globalRenderedVerticesRID = {};
 var globalColorsIndexByType = {};
 var globalLastColorIndex = 0;
 var globalGraphSpacing = 20;
@@ -10,43 +11,43 @@ var globalSelected = null;
 
 function renderGraph(){
   let elements = [];
+  globalRenderedVerticesRID = {};
 
   globalLastColorIndex = 0;
   globalColorsIndexByType = {};
-  for( i in globalGraphResult.vertices ){
-    let vertex = globalGraphResult.vertices[i];
+  for( i in globalResultset.vertices ){
+    let vertex = globalResultset.vertices[i];
     assignVertexColor(vertex.t);
     assignProperties(vertex);
   }
 
-  for( i in globalGraphResult.edges ){
-    let edge = globalGraphResult.edges[i];
+  for( i in globalResultset.edges ){
+    let edge = globalResultset.edges[i];
     assignProperties(edge);
   }
 
   let reachedMax = false;
-  for( i in globalGraphResult.vertices ){
-    let vertex = globalGraphResult.vertices[i];
+  for( i in globalResultset.vertices ){
+    let vertex = globalResultset.vertices[i];
 
     let rid = vertex["r"];
     if( rid == null )
       continue;
 
     elements.push( { data: createVertex(vertex) } );
+    globalRenderedVerticesRID[rid] = true;
+
     if( elements.length > globalGraphMaxResult ){
       reachedMax = true;
       break;
     }
   }
 
-  if( !reachedMax ) {
-    for( i in globalGraphResult.edges ){
-      elements.push( { data: createEdge( globalGraphResult.edges[i] ) } );
-      if( elements.length > globalGraphMaxResult ){
-        reachedMax = true;
-        break;
-      }
-    }
+  for( i in globalResultset.edges ) {
+    let edge = globalResultset.edges[i];
+    if( globalRenderedVerticesRID[edge.i] && globalRenderedVerticesRID[edge.o]  )
+      // DISPLAY ONLY EDGES RELATIVE TO VERTICES THAT ARE PART OF THE GRAPH
+      elements.push( { data: createEdge( edge ) } );
   }
 
   globalLayout = {
@@ -234,9 +235,8 @@ function renderGraph(){
     });
   });
 
-  if( reachedMax ){
+  if( reachedMax )
     globalNotify( "Warning", "Returned more than " + globalGraphMaxResult + " items, partial results will be returned. Consider setting a limit in the query.", "warning");
-  }
 }
 
 function createVertex(vertex){
@@ -306,8 +306,8 @@ function removeGraphElement( ele ) {
   for( i in elements ) {
     let rid = elements[i].data().id;
 
-    arrayRemoveAll(globalGraphResult.vertices, row => row.r == rid );
-    arrayRemoveAll(globalGraphResult.edges, row => row.r == rid || row.i == rid || row.o == rid );
+    arrayRemoveAll(globalResultset.vertices, row => row.r == rid );
+    arrayRemoveAll(globalResultset.edges, row => row.r == rid || row.i == rid || row.o == rid );
   }
 }
 
@@ -367,26 +367,39 @@ function loadNodeNeighbors( direction, rid ){
     globalCy.startBatch();
 
     for( i in data.result.vertices ){
+      if( globalResultset.vertices.length > globalGraphMaxResult ){
+        reachedMax = true;
+        break;
+      }
+
       let vertex = data.result.vertices[i];
 
       assignVertexColor(vertex.t);
       assignProperties(vertex);
 
-      globalGraphResult.vertices.push( vertex );
+      globalResultset.vertices.push( vertex );
+      globalResultset.records.push( vertex );
+
       globalCy.add([
         {
           group: 'nodes',
           data: createVertex( vertex )
         }
       ]);
+
+      globalRenderedVerticesRID[vertex.r] = true;
     }
 
     for( i in data.result.edges ){
       let edge = data.result.edges[i];
 
+      if( !globalRenderedVerticesRID[edge.i] || !globalRenderedVerticesRID[edge.o] )
+        continue;
+
       assignProperties(edge);
 
-      globalGraphResult.edges.push( edge );
+      globalResultset.edges.push( edge );
+      globalResultset.records.push( edge );
       globalCy.add([
         {
           group: 'edges',
@@ -394,9 +407,13 @@ function loadNodeNeighbors( direction, rid ){
         }
       ]);
     }
+
     globalCy.endBatch();
 
     globalCy.makeLayout(globalLayout).run();
+
+    if( reachedMax )
+      globalNotify( "Warning", "Returned more than " + globalGraphMaxResult + " items, partial results will be returned. Consider setting a limit in the query.", "warning");
 
   })
   .fail(function( jqXHR, textStatus, errorThrown ){

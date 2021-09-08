@@ -1,6 +1,5 @@
 var editor = null;
-var globalTableResult = null;
-var globalGraphResult = null;
+var globalResultset = null;
 var globalGraphMaxResult = 1000;
 var globalCredentials = null;
 
@@ -191,10 +190,11 @@ function dropDatabase(){
 }
 
 function executeCommand(reset){
-  if( reset ){
-    globalTableResult = null;
-    globalGraphResult = null;
-  }
+  if( reset )
+    globalResultset = null;
+  else
+    if( globalResultset != null )
+      return;
 
   if( escapeHtml( $("#inputDatabase").val() ) == "" )
     return;
@@ -204,9 +204,9 @@ function executeCommand(reset){
     return;
 
   let activeTab = $("#tabs-command .active").attr("id");
-  if( activeTab == "tab-table-sel" && globalTableResult == null )
+  if( activeTab == "tab-table-sel" )
     executeCommandTable();
-  else if( activeTab == "tab-graph-sel" && globalGraphResult == null )
+  else if( activeTab == "tab-graph-sel" )
     executeCommandGraph();
 }
 
@@ -234,119 +234,14 @@ function executeCommandTable(){
     }
   })
   .done(function(data){
-    globalTableResult = data.result;
-
     $("#resultJson").val( JSON.stringify(data, null, 2) );
-
-    if ( $.fn.dataTable.isDataTable( '#result' ) )
-      try{ $('#result').DataTable().destroy(); $('#result').empty(); } catch(e){};
-
-    var tableColumns = [];
-    var tableRecords = [];
-
-    if( data.result.length > 0 ) {
-      let columns = {};
-      for( i in data.result ){
-        let row = data.result[i];
-
-        for( p in row ){
-          if( !columns[p] )
-            columns[p] = true;
-        }
-      }
-
-      orderedColumns = [];
-      if( columns["@rid"])
-        orderedColumns.push("@rid");
-      if( columns["@type"])
-        orderedColumns.push("@type");
-
-      for( colName in columns ){
-        if( !colName.startsWith("@"))
-          orderedColumns.push(colName);
-      }
-
-      if( columns["@in"])
-        orderedColumns.push("@in");
-      if( columns["@out"])
-        orderedColumns.push("@out");
-
-      for( i in orderedColumns )
-        tableColumns.push( { sTitle: escapeHtml( orderedColumns[i] ), "defaultContent": "" } );
-
-      for( i in data.result ){
-        let row = data.result[i];
-
-
-        let record = [];
-        for( i in orderedColumns )
-          record.push( escapeHtml( row[orderedColumns[i]] ) );
-        tableRecords.push( record );
-      }
-    }
 
     $( "#result-num" ).html( data.result.length );
     let elapsed = new Date() - beginTime;
     $("#result-elapsed").html( elapsed );
 
-    if( data.result.length > 0 ) {
-      $("#result").DataTable({
-        orderCellsTop: true,
-        fixedHeader: true,
-        paging:   true,
-        pageLength: 20,
-        bLengthChange: true,
-        initComplete: function() {
-          $('div.dataTables_filter input').attr('autocomplete', 'off')
-        },
-        aoColumns: tableColumns,
-        aaData: tableRecords,
-        deferRender: true,
-        dom: '<Blf>rt<ip>',
-        lengthMenu: [
-          [ 10, 20, 50, 100, -1 ],
-          [ '10', '20', '50', '100', 'all' ]
-        ],
-        buttons: [
-          { extend: 'copy',
-            text: "<i class='fas fa-copy'></i> Copy",
-            className: 'btn btn-secondary',
-          },
-          { extend: 'excel',
-            text: "<i class='fas fa-file-excel'></i> Excel",
-            className: 'btn btn-secondary',
-          },
-          { extend: 'csv',
-            text: "<i class='fas fa-file-csv'></i> CSV",
-            className: 'btn btn-secondary',
-          },
-          {
-            extend: 'pdf',
-            text: "<i class='fas fa-file-pdf'></i> PDF",
-            className: 'btn btn-secondary',
-            orientation: 'landscape',
-          },
-          {
-            extend: 'print',
-            text: "<i class='fas fa-print'></i> Print",
-            className: 'btn btn-secondary',
-            orientation: 'landscape',
-          },
-        ]
-      });
-
-      $('.dt-buttons').css('padding', '7px');
-      $('.dataTables_length').css('padding', '7px');
-      $('.dataTables_filter').css('padding', '7px');
-      $('.buttons-copy').removeClass('buttons-copy').removeClass('buttons-html5');
-      $('.buttons-excel').removeClass('buttons-excel').removeClass('buttons-html5');
-      $('.buttons-csv').removeClass('buttons-csv').removeClass('buttons-html5');
-      $('.buttons-pdf').removeClass('buttons-pdf').removeClass('buttons-html5');
-      $('.buttons-print').removeClass('buttons-print').removeClass('buttons-html5');
-    }
-
-    // FORCE RESET OF THE SEARCH FIELD
-    $("#result_filter>label>input").val("");
+      globalResultset = data.result;
+    renderTable();
   })
   .fail(function( jqXHR, textStatus, errorThrown ){
     globalNotify( "Error", escapeHtml( jqXHR.responseText ), "danger");
@@ -386,7 +281,13 @@ function executeCommandGraph(){
     let elapsed = new Date() - beginTime;
     $("#result-elapsed").html( elapsed );
 
-    globalGraphResult = data.result;
+    if( data.result.vertices.length == 0 && data.result.records.length > 0 ){
+      globalResultset = data.result;
+      globalActivateTab("tab-table");
+      renderTable();
+    }
+
+    globalResultset = data.result;
     renderGraph();
 
     // FORCE RESET OF THE SEARCH FIELD

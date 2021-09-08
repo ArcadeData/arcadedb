@@ -24,7 +24,6 @@ package com.arcadedb.serializer;
 import com.arcadedb.database.Document;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
-import com.arcadedb.query.sql.executor.Result;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -32,11 +31,11 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 
-public class JsonGraphSerializer {
+public class JsonGraphSerializer extends JsonSerializer {
 
   private boolean expandVertexEdges = false;
 
-  public JSONObject serializeRecord(final Document document) {
+  public JSONObject serializeGraphElement(final Document document) {
     final JSONObject object = new JSONObject();
 
     object.put("r", document.getIdentity().toString());
@@ -49,12 +48,12 @@ public class JsonGraphSerializer {
       Object value = document.get(p);
 
       if (value instanceof Document)
-        value = serializeRecord((Document) value);
+        value = serializeGraphElement((Document) value);
       else if (value instanceof Collection) {
         final List<Object> list = new ArrayList<>();
         for (Object o : (Collection) value) {
           if (o instanceof Document)
-            o = serializeRecord((Document) o);
+            o = serializeGraphElement((Document) o);
           list.add(o);
         }
         value = list;
@@ -63,43 +62,6 @@ public class JsonGraphSerializer {
     }
 
     setMetadata(document, object);
-
-    return object;
-  }
-
-  public JSONObject serializeResult(final Result record) {
-    final JSONObject object = new JSONObject();
-
-    if (record.isElement()) {
-      final Document document = record.toElement();
-      object.put("r", document.getIdentity().toString());
-      object.put("t", document.getTypeName());
-      setMetadata(document, object);
-    }
-
-    final JSONObject properties = new JSONObject();
-    object.put("p", properties);
-
-    for (String p : record.getPropertyNames()) {
-      Object value = record.getProperty(p);
-
-      if (value instanceof Document)
-        value = serializeRecord((Document) value);
-      else if (value instanceof Result)
-        value = serializeResult((Result) value);
-      else if (value instanceof Collection) {
-        final List<Object> list = new ArrayList<>();
-        for (Object o : (Collection) value) {
-          if (o instanceof Document)
-            o = serializeRecord((Document) o);
-          else if (o instanceof Result)
-            o = serializeResult((Result) o);
-          list.add(o);
-        }
-        value = list;
-      }
-      properties.put(p, value);
-    }
 
     return object;
   }
