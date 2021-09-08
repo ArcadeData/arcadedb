@@ -21,11 +21,42 @@ a, a:visited {
   font-size: 0.6em;
 }
 
-#inputCommand {
+.CodeMirror {
   color: black;
   border-size: 2px;
   font-size: 1.2em;
   padding: 8px;
   width: 100%;
-  height: 80px;
+  height: auto;
+}
+.CodeMirror-scroll {
+  overflow-y: hidden;
+  overflow-x: auto;
+  min-height: 30px;
+  max-height: 400px;
+}
+
+div.dt-buttons {
+  float: left;
+}
+div.dataTables_length {
+  float: left;
+  margin-left: 50px;
+}
+div.dataTables_filter {
+  float: right;
+}
+
+#graphMainPanel {
+  transition: width 0.3s ease;
+}
+
+#graphPropertiesPanel {
+  /* for the animation */
+  transition: margin 0.3s ease;
+}
+
+.collapsed {
+  /* hide it for small displays*/
+  display: none;
 }

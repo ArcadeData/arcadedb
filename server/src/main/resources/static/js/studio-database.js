@@ -1,9 +1,42 @@
+var editor = null;
 var globalTableResult = null;
 var globalGraphResult = null;
 var globalGraphMaxResult = 1000;
+var globalCredentials = null;
+
+function make_base_auth(user, password) {
+  var tok = user + ':' + password;
+  var hash = btoa(tok);
+  return "Basic " + hash;
+}
+
+function login(){
+  var userName = escapeHtml( $("#inputUserName").val().trim() );
+  if( userName.length == 0 )
+    return;
+
+  var userPassword = escapeHtml( $("#inputUserPassword").val().trim() );
+  if( userPassword.length == 0 )
+    return;
+
+  $( "#loginSpinner" ).show();
+
+  globalCredentials = make_base_auth(userName, userPassword);
+
+  updateDatabases();
+}
 
 function showLoginPopup(){
   $("#loginPopup").modal("show");
+}
+
+function editorFocus(){
+  let value = editor.getValue();
+  editor.setValue("");
+  editor.setValue(value);
+
+  editor.setCursor(editor.lineCount(), 0);
+  editor.focus();
 }
 
 function updateDatabases(){
@@ -15,10 +48,6 @@ function updateDatabases(){
     }
   })
   .done(function(data){
-    $("#loginPanel").hide();
-    $("#databasePanel").show();
-    $("#queryPanel").show();
-
     let databases = "";
     for( i in data.result ){
       let dbName = data.result[i];
@@ -36,6 +65,8 @@ function updateDatabases(){
     $("#version").html(version);
 
     $("#loginPopup").modal("hide");
+    $("#welcomePanel").hide();
+    $("#studioPanel").show();
   })
   .fail(function( jqXHR, textStatus, errorThrown ){
     globalNotify( "Error", escapeHtml( jqXHR.responseText ), "danger");
@@ -161,6 +192,13 @@ function executeCommand(reset){
     globalGraphResult = null;
   }
 
+  if( escapeHtml( $("#inputDatabase").val() ) == "" )
+    return;
+  if( escapeHtml( $("#inputLanguage").val() ) == "" )
+    return;
+  if( escapeHtml( editor.getValue() ) == "" )
+    return;
+
   let activeTab = $("#tabs-command .active").attr("id");
   if( activeTab == "tab-table-sel" && globalTableResult == null )
     executeCommandTable();
@@ -171,7 +209,7 @@ function executeCommand(reset){
 function executeCommandTable(){
   let database = escapeHtml( $("#inputDatabase").val() );
   let language = escapeHtml( $("#inputLanguage").val() );
-  let command = escapeHtml( $("#inputCommand").val() );
+  let command = escapeHtml( editor.getValue() );
 
   $("#executeSpinner").show();
 
@@ -268,6 +306,9 @@ function executeCommandTable(){
         ],
       });
     }
+
+    // FORCE RESET OF THE SEARCH FIELD
+    $("#result_filter>label>input").val("");
   })
   .fail(function( jqXHR, textStatus, errorThrown ){
     globalNotify( "Error", escapeHtml( jqXHR.responseText ), "danger");
@@ -280,7 +321,7 @@ function executeCommandTable(){
 function executeCommandGraph(){
   let database = escapeHtml( $("#inputDatabase").val() );
   let language = escapeHtml( $("#inputLanguage").val() );
-  let command = escapeHtml( $("#inputCommand").val() );
+  let command = escapeHtml( editor.getValue() );
 
   $("#executeSpinner").show();
 
@@ -304,6 +345,9 @@ function executeCommandGraph(){
     $("#resultJson").val( JSON.stringify(data, null, 2) );
     globalGraphResult = data.result;
     renderGraph();
+
+    // FORCE RESET OF THE SEARCH FIELD
+    $("#inputGraphSearch").val("");
   })
   .fail(function( jqXHR, textStatus, errorThrown ){
     globalNotify( "Error", escapeHtml( jqXHR.responseText ), "danger");

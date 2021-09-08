@@ -2,7 +2,7 @@ var globalBgColors = ['aqua', 'orange', 'green', 'purple', 'red', 'lime', 'teal'
 var globalFgColors = ['black', 'black', 'white', 'white', 'black', 'black', 'black', 'white', 'white', 'black', 'black', 'white', 'black', 'black', 'white', 'black'];
 var globalColorsIndexByType = {};
 var globalLastColorIndex = 0;
-var globalGraphSpacing = 100;
+var globalGraphSpacing = 20;
 var globalGraphLabelPerType = {};
 var globalGraphPropertiesPerType = {};
 var globalCy = null;
@@ -161,33 +161,66 @@ function renderGraph(){
   });
 
   globalCy.on('select', 'node', function(event){
-    let selected = globalCy.$('node:selected');
-    if( selected.length != 1 ) {
+    let selected = globalCy.elements('node:selected');
+    if( selected.length < 1 ) {
       $("#customToolbar").empty();
-    } else {
-      let type = selected[0].data()["type"];
-      let customToolbar = type + " label: ";
-
-      properties = globalGraphPropertiesPerType[type];
-
-      let sel = globalGraphLabelPerType[type];
-      if( sel == null )
-        sel = "@type";
-
-      customToolbar += "<select id='customToolbarLabel'>";
-      customToolbar += "<option value='@type'"+(sel == "@type" ? " selected": "" )+">@type</option>" ;
-      for( p in properties ){
-        customToolbar += "<option value='"+p+"'"+(sel == p ? " selected": "" )+">" + p + "</option>" ;
-      }
-      customToolbar += "</select>";
-
-      $("#customToolbar").html(customToolbar);
-
-      $("#customToolbarLabel").change( function(){
-        globalGraphLabelPerType[type] = $("#customToolbarLabel").val();
-        renderGraph();
-      });
+      $("#graphPropertiesTable").empty();
+      $("#graphPropertiesType").html("Select an element to see its properties");
+      return;
     }
+
+    if( selected.length == 1 ) {
+      let data = selected[0].data();
+
+      let summary = "<label class='form-label'>RID&nbsp</label><label class='form-label'><b>" + data.id + "</b></label>&nbsp;";
+      summary += "<label class='form-label'>Type&nbsp</label><label class='form-label'><b>" + data.type+ "</b></label><br>";
+      summary += "<hr><h5>Properties</h5>";
+
+      $("#graphPropertiesType").html( summary );
+
+      let table = "<thead><tr><th scope='col'>Name</th><th scope='col'>Value</th></tr>";
+      table += "<tbody>";
+      for( let p in data.properties )
+        table += "<tr><td>"+p+"</td><td>" + data.properties[p]+ "</td>";
+      table += "</tbody>";
+
+      $("#graphPropertiesTable").html(table);
+    }
+
+    let types = {};
+
+    for( i = 0; i < selected.length; ++i ){
+      let type = selected[i].data()["type"];
+      types[type] = true;
+    }
+
+    if( Object.keys(types).length > 1 ){
+      $("#customToolbar").empty();
+      return;
+    }
+
+    let type = selected[0].data()["type"];
+    let customToolbar = "<label for='customToolbarLabel' class='form-label'><b>" + type + "</b> label</label>";
+
+    properties = globalGraphPropertiesPerType[type];
+
+    let sel = globalGraphLabelPerType[type];
+    if( sel == null )
+      sel = "@type";
+
+    customToolbar += "<select id='customToolbarLabel' class='form-control'>";
+    customToolbar += "<option value='@type'"+(sel == "@type" ? " selected": "" )+">@type</option>" ;
+    for( p in properties ){
+      customToolbar += "<option value='"+p+"'"+(sel == p ? " selected": "" )+">" + p + "</option>" ;
+    }
+    customToolbar += "</select>";
+
+    $("#customToolbar").html(customToolbar);
+
+    $("#customToolbarLabel").change( function(){
+      globalGraphLabelPerType[type] = $("#customToolbarLabel").val();
+      renderGraph();
+    });
   });
 
   if( reachedMax ){
@@ -339,4 +372,55 @@ function loadNodeNeighbors( direction, rid ){
   .always(function(data) {
     $("#executeSpinner").hide();
   });
+}
+
+function cutSelection(){
+  let selected = globalCy.elements(':selected');
+  if( selected.length == 0 )
+    return;
+
+  globalCy.remove( selected );
+  globalCy.makeLayout(globalLayout).run();
+}
+
+function cropSelection(){
+  let selected = globalCy.elements().not(globalCy.elements(':selected'));
+  if( selected.length == 0 )
+    return;
+
+  globalCy.remove( selected );
+  globalCy.makeLayout(globalLayout).run();
+}
+
+function toggleSidebar(){
+  $("#graphPropertiesPanel").toggleClass("collapsed");
+  $("#graphMainPanel").toggleClass("col-md-12 col-md-9");
+}
+
+function searchInGraph(){
+  let text = $("#inputGraphSearch").val().trim();
+  if( text == "" )
+    return;
+
+  for( let i in globalCy.elements() ){
+    let el = globalCy.elements()[i];
+    if( !el.data )
+      continue;
+
+    let data = el.data();
+
+    if( data.label != null && data.label.indexOf( text ) > -1 )
+      el.select();
+
+    if( data.t != null && data.t.indexOf( text ) > -1 )
+      el.select();
+
+    for( let prop in data.properties ){
+      let value = data.properties[prop];
+      if( value != null && value.toString().indexOf( text ) > -1 ){
+        el.select();
+        break;
+      }
+    }
+  }
 }

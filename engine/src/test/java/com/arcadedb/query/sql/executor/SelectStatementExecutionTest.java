@@ -2464,7 +2464,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     result.close();
   }
 
-  //    @Test  TODO
+  @Test
   public void testIndexPlusSort2() {
     String className = "testIndexPlusSort2";
     DocumentType clazz = database.getSchema().createDocumentType(className);

@@ -31,16 +31,6 @@ function globalConfirm(title, text, icon, yes, no ){
   });
 }
 
-var globalCredentials;
-
-$(function(){
-  $('#loginForm').keypress(function(e){
-    if(e.which == 13) {
-      login();
-    }
-  })
-})
-
 function globalNotify(title, message, type){
   $.notify({
     title: "<strong>"+title+"</strong>",
@@ -53,28 +43,6 @@ function globalNotify(title, message, type){
   },{
     type: type
   });
-}
-
-function make_base_auth(user, password) {
-  var tok = user + ':' + password;
-  var hash = btoa(tok);
-  return "Basic " + hash;
-}
-
-function login(){
-  var userName = escapeHtml( $("#inputUserName").val().trim() );
-  if( userName.length == 0 )
-    return;
-
-  var userPassword = escapeHtml( $("#inputUserPassword").val().trim() );
-  if( userPassword.length == 0 )
-    return;
-
-  $( "#loginSpinner" ).show();
-
-  globalCredentials = make_base_auth(userName, userPassword);
-
-  updateDatabases();
 }
 
 function globalSetCookie(key, value, expiry) {
