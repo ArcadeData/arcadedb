@@ -240,7 +240,7 @@ function executeCommandTable(){
     let elapsed = new Date() - beginTime;
     $("#result-elapsed").html( elapsed );
 
-      globalResultset = data.result;
+    globalResultset = { records: data.result };
     renderTable();
   })
   .fail(function( jqXHR, textStatus, errorThrown ){
