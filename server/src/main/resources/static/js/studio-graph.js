@@ -6,6 +6,7 @@ var globalGraphSpacing = 20;
 var globalGraphLabelPerType = {};
 var globalGraphPropertiesPerType = {};
 var globalCy = null;
+var globalSelected = null;
 
 function renderGraph(){
   let elements = [];
@@ -161,20 +162,20 @@ function renderGraph(){
   });
 
   globalCy.on('select', 'node', function(event){
-    let selected = globalCy.elements('node:selected');
-    if( selected.length < 1 ) {
+    globalSelected = globalCy.elements('node:selected');
+    if( globalSelected.length < 1 ) {
       $("#customToolbar").empty();
       $("#graphPropertiesTable").empty();
       $("#graphPropertiesType").html("Select an element to see its properties");
       return;
     }
 
-    if( selected.length == 1 ) {
-      let data = selected[0].data();
+    if( globalSelected.length == 1 ) {
+      let data = globalSelected[0].data();
 
       let summary = "<label class='form-label'>RID&nbsp</label><label class='form-label'><b>" + data.id + "</b></label>&nbsp;";
       summary += "<label class='form-label'>Type&nbsp</label><label class='form-label'><b>" + data.type+ "</b></label><br>";
-      summary += "<hr><h5>Properties</h5>";
+      summary += "<br><h5>Properties</h5>";
 
       $("#graphPropertiesType").html( summary );
 
@@ -185,12 +186,22 @@ function renderGraph(){
       table += "</tbody>";
 
       $("#graphPropertiesTable").html(table);
+
+      let actions = "<br><h5>Actions</h5>";
+      actions += "<ul>";
+      actions += "<li>Load adjacent <a class='link' href='#' onclick='loadNodeNeighbors(\"out\", \""+data.id+"\")'>outgoing</a>, ";
+      actions += "<a class='link' href='#' onclick='loadNodeNeighbors(\"in\", \""+data.id+"\")'>incoming</a> or ";
+      actions += "<a class='link' href='#' onclick='loadNodeNeighbors(\"both\", \""+data.id+"\")'>both</a></li>";
+      actions += "<li><a class='link' href='#' onclick='globalCy.remove(globalSelected)'>Hide</a> selected elements</li>";
+      actions += "</ul>";
+
+      $("#graphActions").html( actions );
     }
 
     let types = {};
 
-    for( i = 0; i < selected.length; ++i ){
-      let type = selected[i].data()["type"];
+    for( i = 0; i < globalSelected.length; ++i ){
+      let type = globalSelected[i].data()["type"];
       types[type] = true;
     }
 
@@ -199,7 +210,7 @@ function renderGraph(){
       return;
     }
 
-    let type = selected[0].data()["type"];
+    let type = globalSelected[0].data()["type"];
     let customToolbar = "<label for='customToolbarLabel' class='form-label'><b>" + type + "</b> label</label>";
 
     properties = globalGraphPropertiesPerType[type];

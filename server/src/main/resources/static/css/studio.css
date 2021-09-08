@@ -7,6 +7,10 @@ a, a:visited {
   color: #545454;
 }
 
+.link {
+  color: #02A3FF !important;
+}
+
 .btn-secondary {
   color: black;
   background-color: #F7F7F7 !important;
