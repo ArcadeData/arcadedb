@@ -499,11 +499,13 @@ public interface SqlParserConstants {
   /** RegularExpression Id. */
   int FILE_URL = 252;
   /** RegularExpression Id. */
-  int SCHEMA_IDENTIFIER = 253;
+  int CLASSPATH_URL = 253;
   /** RegularExpression Id. */
-  int LETTER = 254;
+  int SCHEMA_IDENTIFIER = 254;
   /** RegularExpression Id. */
-  int PART_LETTER = 255;
+  int LETTER = 255;
+  /** RegularExpression Id. */
+  int PART_LETTER = 256;
 
   /** Lexical state. */
   int DEFAULT = 0;
@@ -767,6 +769,7 @@ public interface SqlParserConstants {
     "<HTTP_URL>",
     "<HTTPS_URL>",
     "<FILE_URL>",
+    "<CLASSPATH_URL>",
     "<SCHEMA_IDENTIFIER>",
     "<LETTER>",
     "<PART_LETTER>",

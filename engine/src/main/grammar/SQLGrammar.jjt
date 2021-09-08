@@ -598,6 +598,15 @@ TOKEN :
                         	          )
                         	      )* >
 |
+  < CLASSPATH_URL: "classpath://" (   (~["\"","\\","\n","\r"," ",";"])
+                        	        | ("\\"
+                        	            ( ["n","t","b","r","f","\\","'","\"","/"]
+                        	            | ["0"-"7"] ( ["0"-"7"] )?
+                        	            | ["0"-"3"] ["0"-"7"] ["0"-"7"]
+                        	            )
+                        	          )
+                        	      )* >
+|
   < SCHEMA_IDENTIFIER: "schema:" <IDENTIFIER>  >
 |
   < #LETTER:
@@ -4538,6 +4547,8 @@ WhileBlock WhileBlock():
         token = <HTTPS_URL> { jjtThis.urlString = token.image;}
         |
         token = <FILE_URL> { jjtThis.urlString = token.image;}
+        |
+        token = <CLASSPATH_URL> { jjtThis.urlString = token.image;}
       )
       { return jjtThis; }
    }

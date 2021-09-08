@@ -42,6 +42,7 @@ import java.util.zip.ZipInputStream;
 public class SourceDiscovery {
   private static final String  RESOURCE_SEPARATOR = ":::";
   private static final String  FILE_PREFIX        = "file://";
+  private static final String  CLASSPATH_PREFIX   = "classpath://";
   private              String  url;
   private              long    limitBytes         = 10000000;
   private              long    limitEntries       = 0;
@@ -141,6 +142,10 @@ public class SourceDiscovery {
 
     if (filePath.startsWith(FILE_PREFIX))
       filePath = filePath.substring(FILE_PREFIX.length());
+    else if (filePath.startsWith(CLASSPATH_PREFIX)) {
+      filePath = filePath.substring(CLASSPATH_PREFIX.length());
+      filePath = getClass().getClassLoader().getResource(filePath).getFile();
+    }
 
     final File file = new File(filePath);
     final BufferedInputStream fis = new BufferedInputStream(new FileInputStream(file));
