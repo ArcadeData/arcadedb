@@ -45,6 +45,10 @@ function globalNotify(title, message, type){
   });
 }
 
+function globalActivateTab(tab) {
+  $('.nav a[href="#' + tab + '"]').tab('show');
+}
+
 function globalSetCookie(key, value, expiry) {
   var expires = new Date();
   expires.setTime(expires.getTime() + (expiry * 24 * 60 * 60 * 1000));

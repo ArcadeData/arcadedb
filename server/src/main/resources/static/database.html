@@ -1,4 +1,4 @@
-<div class="tab-pane fade show active" id="tab-database" role="tabpanel">
+<div class="tab-pane fade" id="tab-database" role="tabpanel">
 
   <div class="row" id="databasePanel">
     <div class="col-2">
@@ -17,13 +17,21 @@
     </div>
 
     <div class="col-2">
-      <label for="inputDatabase" class="form-label">Database</label>
+      <label for="inputDatabase" class="form-label">Current database</label>
     </div>
-    <div class="col-10">
+    <div class="col-7">
       <select id="inputDatabase" class="form-control"></select>
-      <button class="btn btn-pill" onclick="createDatabase()">+ Create</button>
-      <button class="btn btn-pill" onclick="dropDatabase()">- Drop</button>
-      <button class="btn btn-pill" onclick="importDatabase()">&lt; Import</button>
+    </div>
+    <div class="col-3">
+      <button class="btn btn-pill" onclick="createDatabase()"><i class="fa fa-plus"></i> Create</button>
+      <button class="btn btn-pill" onclick="dropDatabase()"><i class="fa fa-minus"></i> Drop</button>
+      <button class="btn btn-pill" onclick="importDatabase()"><i class="fa fa-upload"></i> Import</button>
     </div>
   </div>
 </div>
+
+<script>
+  $("#inputDatabase").change( function() {
+    $("#currentDatabase").html( $("#inputDatabase").val() );
+  });
+</script>

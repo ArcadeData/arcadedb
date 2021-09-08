@@ -7,18 +7,40 @@ a, a:visited {
   color: #545454;
 }
 
+.btn-secondary {
+  color: black;
+  background-color: #F7F7F7 !important;
+  border: 0px;
+}
+.btn-secondary:hover{
+  background-color: #B9D8F9 !important;
+}
+
+.nav-link {
+  background-color: white;
+}
+.nav-link:hover{
+  background-color: #B9D8F9 !important;
+}
+
+a.vertical-tab.nav-link.active.show {
+  background-color: #F7F7F7;
+  border-right-color: #F7F7F7;
+}
+
+a.nav-link.active.show {
+  background-color: #F7F7F7;
+  border-bottom-color: #F7F7F7;
+}
+
 .btn-primary {
-  background-color: #50D9E0;
-  border-color: #47CCD1;
+  background-color: #00AEEE;
+  border-color: #0E76BC;
 }
 
 .btn-primary:hover, .page-item.active .page-link {
-  background-color: #47CCD1;
-  border-color: #47CCD1;
-}
-
-.mini-text {
-  font-size: 0.6em;
+  background-color: #B9D8F9;
+  border-color: #B9D8F9;
 }
 
 .CodeMirror {

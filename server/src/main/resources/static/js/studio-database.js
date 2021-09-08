@@ -55,6 +55,8 @@ function updateDatabases(){
     }
     $("#inputDatabase").html(databases);
 
+    $("#currentDatabase").html( $("#inputDatabase").val() );
+
     $("#user").html(data.user);
 
     let version = data.version;
@@ -67,6 +69,8 @@ function updateDatabases(){
     $("#loginPopup").modal("hide");
     $("#welcomePanel").hide();
     $("#studioPanel").show();
+
+    initQuery();
   })
   .fail(function( jqXHR, textStatus, errorThrown ){
     globalNotify( "Error", escapeHtml( jqXHR.responseText ), "danger");
@@ -282,7 +286,6 @@ function executeCommandTable(){
     }
 
     $( "#result-num" ).html( data.result.length );
-
     let elapsed = new Date() - beginTime;
     $("#result-elapsed").html( elapsed );
 
@@ -304,7 +307,42 @@ function executeCommandTable(){
           [ 10, 20, 50, 100, -1 ],
           [ '10', '20', '50', '100', 'all' ]
         ],
+        buttons: [
+          { extend: 'copy',
+            text: "<i class='fas fa-copy'></i> Copy",
+            className: 'btn btn-secondary',
+          },
+          { extend: 'excel',
+            text: "<i class='fas fa-file-excel'></i> Excel",
+            className: 'btn btn-secondary',
+          },
+          { extend: 'csv',
+            text: "<i class='fas fa-file-csv'></i> CSV",
+            className: 'btn btn-secondary',
+          },
+          {
+            extend: 'pdf',
+            text: "<i class='fas fa-file-pdf'></i> PDF",
+            className: 'btn btn-secondary',
+            orientation: 'landscape',
+          },
+          {
+            extend: 'print',
+            text: "<i class='fas fa-print'></i> Print",
+            className: 'btn btn-secondary',
+            orientation: 'landscape',
+          },
+        ]
       });
+
+      $('.dt-buttons').css('padding', '7px');
+      $('.dataTables_length').css('padding', '7px');
+      $('.dataTables_filter').css('padding', '7px');
+      $('.buttons-copy').removeClass('buttons-copy').removeClass('buttons-html5');
+      $('.buttons-excel').removeClass('buttons-excel').removeClass('buttons-html5');
+      $('.buttons-csv').removeClass('buttons-csv').removeClass('buttons-html5');
+      $('.buttons-pdf').removeClass('buttons-pdf').removeClass('buttons-html5');
+      $('.buttons-print').removeClass('buttons-print').removeClass('buttons-html5');
     }
 
     // FORCE RESET OF THE SEARCH FIELD
@@ -343,6 +381,11 @@ function executeCommandGraph(){
   })
   .done(function(data){
     $("#resultJson").val( JSON.stringify(data, null, 2) );
+
+    $( "#result-num" ).html( data.result.vertices.length + data.result.edges.length );
+    let elapsed = new Date() - beginTime;
+    $("#result-elapsed").html( elapsed );
+
     globalGraphResult = data.result;
     renderGraph();
 

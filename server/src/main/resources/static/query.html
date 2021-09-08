@@ -1,4 +1,4 @@
-<div class="tab-pane fade" id="tab-query" role="tabpanel">
+<div class="tab-pane fade show active" id="tab-query" role="tabpanel">
   <div class="row" id="queryPanel">
     <div class="col-1">
       <select id="inputLanguage" class="col-12 form-control">
@@ -16,21 +16,25 @@
       </button>
     </div>
 
-    <div class="col-12 text-right">
-      <label>Result <span id="result-num"></span>&nbsp;records, </label>
-      <label>Time <span id="result-elapsed"></span>ms</label>
+    <div class="col-1">
+    </div>
+    <div class="col-5 text-left">
+      <label>Current database:&nbsp;<b><a href="#" onclick="globalActivateTab('tab-database');"><span id="currentDatabase"></span></a></b></label>
+    </div>
+    <div class="col-6 text-right">
+      <label>Returned <span id="result-num"></span>&nbsp;records in <span id="result-elapsed"></span>ms</label>
     </div>
 
     <div class="col-12">
       <ul class="nav nav-tabs" id="tabs-command">
-        <li class="nav-item"><a data-toggle="tab" href="#tab-graph" class="active nav-link" id="tab-graph-sel">
-          <center><i class="fa fa-project-diagram"></i><br><span class="mini-text">Graph</span></center>
+        <li class="nav-item"><a data-toggle="tab" href="#tab-graph" class="active show nav-link" id="tab-graph-sel">
+          <center><i class="fa fa-project-diagram"></i> <span class="mini-text">Graph</span></center>
         </a></li>
         <li class="nav-item"><a data-toggle="tab" href="#tab-table" class="nav-link" id="tab-table-sel">
-          <center><i class="fa fa-table"></i><br><span class="mini-text">Table</span></center>
+          <center><i class="fa fa-table"></i> <span class="mini-text">Table</span></center>
         </a></li>
         <li class="nav-item"><a data-toggle="tab" href="#tab-json" class="nav-link" id="tab-json-sel">
-          <center><i class="fa fa-file-code"></i><br><span class="mini-text">Json</span></center>
+          <center><i class="fa fa-file-code"></i> <span class="mini-text">Json</span></center>
         </a></li>
       </ul>
 
@@ -47,7 +51,7 @@
                 <div class="collapse navbar-collapse" id="navbarSupportedContent">
                   <div class="form-inline my-2 my-lg-0">
                     <input id="inputGraphSearch" class="form-control mr-sm-2" type="search" placeholder="Search" aria-label="Search">
-                    <button class="btn btn-outline-success my-2 my-sm-0" onclick="searchInGraph()" href="#">Search</button>
+                    <button class="btn btn-secondary" onclick="searchInGraph()" href="#"><i class="fa fa-search"></i></button>
                   </div>
                   <ul class="navbar-nav mr-auto">
                     <li class="nav-item">
@@ -56,21 +60,22 @@
                   </ul>
                   <ul class="navbar-nav">
                     <li class="nav-item">
-                      <a class="nav-link" href="#" onclick="toggleSidebar()" href="#" id="toggleSidebar"><i class="fa fa-eye-slash"></i> Hide
-                        Properties</a>
+                      <a class="nav-link btn btn-secondary" href="#" onclick="toggleSidebar()" href="#" id="toggleSidebar"><i
+                              class="fa fa-eye-slash"></i> Hide Properties</a>
                     </li>
 
                     <li class="nav-item">
-                      <a class="nav-link" href="#" onclick="cutSelection()"><i class="fa fa-cut"></i> Cut</a>
+                      <a class="nav-link btn btn-secondary" href="#" onclick="cutSelection()"><i class="fa fa-cut"></i> Cut</a>
                     </li>
                     <li class="nav-item">
-                      <a class="nav-link" href="#" onclick="cropSelection()"><i class="fa fa-crop"></i> Crop</a>
+                      <a class="nav-link btn btn-secondary" href="#" onclick="cropSelection()"><i class="fa fa-crop"></i> Crop</a>
                     </li>
                     <li class="nav-item">
-                      <a class="nav-link" href="#" onclick="renderGraph()"><i class="fa fa-sync"></i> Redraw</a>
+                      <a class="nav-link btn btn-secondary" href="#" onclick="renderGraph()"><i class="fa fa-sync"></i> Redraw</a>
                     </li>
                     <li class="nav-item dropdown">
-                      <a class="nav-link dropdown-toggle" href="#" role="button" aria-haspopup="true" aria-expanded="false" class="dropdown-toggle"
+                      <a class="nav-link dropdown-toggle btn btn-secondary" href="#" role="button" aria-haspopup="true" aria-expanded="false"
+                         class="dropdown-toggle"
                          data-toggle="dropdown">
                         <i class="fa fa-upload"></i> Import
                       </a>
@@ -87,7 +92,8 @@
                       </ul>
                     </li>
                     <li class="nav-item dropdown">
-                      <a class="nav-link dropdown-toggle" href="#" role="button" aria-haspopup="true" aria-expanded="false" class="dropdown-toggle"
+                      <a class="nav-link dropdown-toggle btn btn-secondary" href="#" role="button" aria-haspopup="true" aria-expanded="false"
+                         class="dropdown-toggle"
                          data-toggle="dropdown">
                         <i class="fa fa-download"></i> Export
                       </a>
@@ -104,7 +110,8 @@
                       </ul>
                     </li>
                     <li class="nav-item dropdown">
-                      <a class="nav-link dropdown-toggle" href="#" role="button" aria-haspopup="true" aria-expanded="false" class="dropdown-toggle"
+                      <a class="nav-link dropdown-toggle btn btn-secondary" href="#" role="button" aria-haspopup="true" aria-expanded="false"
+                         class="dropdown-toggle"
                          data-toggle="dropdown">
                         <i class="fa fa-sliders-h"></i> Settings
                       </a>
@@ -152,7 +159,14 @@
         </div>
 
         <div class="tab-pane fade" id="tab-json" role="tabpanel">
-          <textarea id="resultJson" style="width: 100%; height: 600px;" disabled></textarea>
+          <ul class="navbar-nav">
+            <li class="nav-item">
+              <a id='jsonToClipboard' type='button' data-clipboard-target='#resultJson' class='clipboard-trigger nav-link btn btn-secondary'>
+                <i class='fa fa-copy'></i> Copy to clipboard
+              </a>
+            </li>
+          </ul>
+          <textarea id="resultJson" style="width: 100%; height: 600px;" readonly></textarea>
         </div>
       </div>
 
@@ -162,7 +176,7 @@
 </div>
 
 <script>
-$(function () {
+function initQuery() {
   $('[data-toggle="tooltip"]').tooltip()
 
   $('a[data-toggle="tab"]').on('shown.bs.tab', function (e) {
@@ -183,8 +197,13 @@ $(function () {
     e.preventDefault();
   });
 
+  new ClipboardJS("#jsonToClipboard").on('success', function(e) {
+    globalNotify( "Content", "successfully copied in the clipboard", "success");
+  });
+
   renderCodeEditor();
-});
+  executeCommand(true);
+}
 
 function renderCodeEditor(){
   editor = CodeMirror.fromTextArea(document.getElementById('inputCommand'), {
@@ -196,6 +215,15 @@ function renderCodeEditor(){
     autofocus: true,
     viewportMargin: Infinity,
     theme: 'neo'
+  });
+
+  editor.addKeyMap({
+    "Ctrl-Enter": function(cm){
+      executeCommand(true);
+    },
+    "Cmd-Enter": function(cm){
+      executeCommand(true);
+    }
   });
 
   setTimeout(function() {

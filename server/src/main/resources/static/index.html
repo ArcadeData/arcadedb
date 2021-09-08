@@ -20,6 +20,7 @@
   <script src="js/bootstrap.min.js"></script>
   <script src="js/bootstrap-notify.min.js"></script>
   <script src="js/sweetalert2.all.min.js"></script>
+  <script src="js/clipboard.min.js"></script>
   <script src="components/codemirror/js/codemirror.js"></script>
   <script src="components/codemirror/js/cypher.js"></script>
   <script src="components/codemirror/js/javascript.js"></script>
@@ -60,23 +61,23 @@
     <div class="row">
 
       <div class="col-1">
-        <ul class="nav nav-tabs flex-column" id="tabs">
-          <li class="nav-item"><a data-toggle="tab" href="#tab-database" class="active nav-link" id="tab-database-sel">
-            <h3>
-              <center><i class="fa fa-database"></i></center>
-            </h3>
-          </a></li>
-          <li class="nav-item"><a data-toggle="tab" href="#tab-query" class="nav-link" id="tab-query-sel">
+        <ul class="nav nav-tabs flex-column" id="tabs" style="height: 100%; background-color: white;">
+          <li class="nav-item"><a data-toggle="tab" href="#tab-query" class="vertical-tab nav-link active show" id="tab-query-sel">
             <h3>
               <center><i class="fa fa-terminal"></i></center>
             </h3>
           </a></li>
-          <li class="nav-item"><a data-toggle="tab" href="#tab-api" class="nav-link" id="tab-api-sel">
+          <li class="nav-item"><a data-toggle="tab" href="#tab-database" class="vertical-tab nav-link" id="tab-database-sel">
+            <h3>
+              <center><i class="fa fa-database"></i></center>
+            </h3>
+          </a></li>
+          <li class="nav-item"><a data-toggle="tab" href="#tab-api" class="vertical-tab nav-link" id="tab-api-sel">
             <h3>
               <center><i class="fa fa-plug"></i></center>
             </h3>
           </a></li>
-          <li class="nav-item"><a data-toggle="tab" href="#tab-resources" class="nav-link" id="tab-resources-sel">
+          <li class="nav-item"><a data-toggle="tab" href="#tab-resources" class="vertical-tab nav-link" id="tab-resources-sel">
             <h3>
               <center><i class="fa fa-info-circle"></i></center>
             </h3>
@@ -100,7 +101,9 @@
 
 ${include:popup-login.html}
 
-<p style="text-align: center">Copyright 2021 <a href="https://arcadedb.com" rel="nofollow">Arcade Data Ltd</a></p>
+<div style="text-align: center; vertical-align: bottom;"><a href="https://arcadedb.com" rel="nofollow">
+  <img src="images/arcadedb-logo-mini.png" style="width: 80px;"></a>&nbsp;&nbsp;Copyright 2021 <a href="https://arcadedb.com" rel="nofollow">Arcade Data Ltd</a>
+</div>
 
 <script>
 $(function () {
