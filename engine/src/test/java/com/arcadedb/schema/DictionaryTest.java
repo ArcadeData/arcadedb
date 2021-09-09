@@ -52,7 +52,7 @@ public class DictionaryTest extends TestHelper {
       }
     });
 
-    Assertions.assertEquals(4, database.getSchema().getDictionary().getDictionaryMap().size());
+    Assertions.assertEquals(3, database.getSchema().getDictionary().getDictionaryMap().size());
 
     database.transaction((database) -> {
       Assertions.assertTrue(database.getSchema().existsType("V"));
@@ -65,14 +65,14 @@ public class DictionaryTest extends TestHelper {
       v.save();
     });
 
-    Assertions.assertEquals(5, database.getSchema().getDictionary().getDictionaryMap().size());
+    Assertions.assertEquals(4, database.getSchema().getDictionary().getDictionaryMap().size());
 
     database.transaction((database) -> {
       Assertions.assertTrue(database.getSchema().existsType("V"));
       database.getSchema().getDictionary().updateName("name", "firstName");
     });
 
-    Assertions.assertEquals(5, database.getSchema().getDictionary().getDictionaryMap().size());
+    Assertions.assertEquals(4, database.getSchema().getDictionary().getDictionaryMap().size());
 
     database.transaction((database) -> {
       final ResultSet iter = database.query("sql", "select from V order by id asc");
@@ -133,6 +133,107 @@ public class DictionaryTest extends TestHelper {
       for (int k = 1; k <= 10; k++) {
         final Integer value = v.getInteger("p" + (origin * k));
         Assertions.assertEquals(origin * k, value);
+      }
+    }
+  }
+
+  @Test
+  public void namesClashPropertyCreatedOnSchemaBefore() {
+    final VertexType babylonia = database.getSchema().getOrCreateVertexType("Babylonia");
+
+    for (int i = 0; i < 10; i++) {
+      int finalI = i;
+
+      for (int k = 1; k < 10; k++)
+        babylonia.createProperty("p" + ((finalI * 10) + k), Type.INTEGER);
+
+      database.transaction((database) -> {
+        final MutableVertex v = database.newVertex("Babylonia");
+        for (int k = 0; k < 10; k++) {
+          v.set("origin", finalI);
+          v.set("p" + ((finalI * 10) + k), ((finalI * 10) + k));
+        }
+        v.save();
+      });
+    }
+
+    for (Iterator<Record> iterator = database.iterateType("Babylonia", true); iterator.hasNext(); ) {
+      final Vertex v = iterator.next().asVertex();
+      Assertions.assertEquals(11, v.getPropertyNames().size());
+
+      final int origin = v.getInteger("origin");
+
+      for (int k = 0; k < 10; k++) {
+        final Integer value = v.getInteger("p" + ((origin * 10) + k));
+        Assertions.assertEquals((origin * 10) + k, value);
+      }
+    }
+  }
+
+  @Test
+  public void namesClashPropertyCreatedOnSchemaSameTx() {
+    final VertexType babylonia = database.getSchema().getOrCreateVertexType("Babylonia");
+
+    for (int i = 0; i < 10; i++) {
+      int finalI = i;
+
+      database.transaction((database) -> {
+        for (int k = 1; k < 10; k++)
+          babylonia.createProperty("p" + ((finalI * 10) + k), Type.INTEGER);
+
+        final MutableVertex v = database.newVertex("Babylonia");
+        for (int k = 0; k < 10; k++) {
+          v.set("origin", finalI);
+          v.set("p" + ((finalI * 10) + k), ((finalI * 10) + k));
+        }
+        v.save();
+      });
+    }
+
+    for (Iterator<Record> iterator = database.iterateType("Babylonia", true); iterator.hasNext(); ) {
+      final Vertex v = iterator.next().asVertex();
+      Assertions.assertEquals(11, v.getPropertyNames().size());
+
+      final int origin = v.getInteger("origin");
+
+      for (int k = 0; k < 10; k++) {
+        final Integer value = v.getInteger("p" + ((origin * 10) + k));
+        Assertions.assertEquals((origin * 10) + k, value);
+      }
+    }
+  }
+
+  @Test
+  public void namesClashPropertyCreatedOnSchemaSubTx() {
+    final VertexType babylonia = database.getSchema().getOrCreateVertexType("Babylonia");
+
+    for (int i = 0; i < 10; i++) {
+      int finalI = i;
+
+      database.transaction((database) -> {
+        for (int k = 1; k < 10; k++)
+          babylonia.createProperty("p" + ((finalI * 10) + k), Type.INTEGER);
+
+        database.transaction((database2) -> {
+          final MutableVertex v = database.newVertex("Babylonia");
+          for (int k = 0; k < 10; k++) {
+            v.set("origin", finalI);
+            v.set("p" + ((finalI * 10) + k), ((finalI * 10) + k));
+          }
+          v.save();
+        });
+      });
+    }
+
+    for (Iterator<Record> iterator = database.iterateType("Babylonia", true); iterator.hasNext(); ) {
+      final Vertex v = iterator.next().asVertex();
+      Assertions.assertEquals(11, v.getPropertyNames().size());
+
+      final int origin = v.getInteger("origin");
+
+      for (int k = 0; k < 10; k++) {
+        final Integer value = v.getInteger("p" + ((origin * 10) + k));
+        Assertions.assertEquals((origin * 10) + k, value);
       }
     }
   }

@@ -770,9 +770,6 @@ public class EmbeddedSchema implements Schema {
         if (types.containsKey(typeName))
           throw new SchemaException("Type '" + typeName + "' already exists");
 
-        // CREATE ENTRY IN DICTIONARY IF NEEDED
-        dictionary.getIdByName(typeName, true);
-
         final DocumentType c = new DocumentType(EmbeddedSchema.this, typeName);
         types.put(typeName, c);
 
@@ -843,6 +840,7 @@ public class EmbeddedSchema implements Schema {
 
         if (types.containsKey(typeName))
           throw new SchemaException("Vertex type '" + typeName + "' already exists");
+
         final VertexType c = new VertexType(EmbeddedSchema.this, typeName);
         types.put(typeName, c);
 
@@ -1164,7 +1162,7 @@ public class EmbeddedSchema implements Schema {
           LogManager.instance().log(this, Level.WARNING, "Error on renaming previous schema file '%s'", null, copy);
       }
 
-      try( FileWriter file = new FileWriter(databasePath + "/" + SCHEMA_FILE_NAME)){
+      try (FileWriter file = new FileWriter(databasePath + "/" + SCHEMA_FILE_NAME)) {
         file.write(root.toString());
       }
 
