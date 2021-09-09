@@ -340,16 +340,25 @@ function displaySchema(){
       panelHtml += "<br>Type: <b>" + row.name + "</b>";
       if( row.parentTypes != "" )
        ", Super Types: <b>" + row.parentTypes + "</b>";
-      if( row.indexes != "" )
-        panelHtml += ", Indexes: <b>" + row.indexes + "</b>";
+      if( row.indexes != "" ){
+        panelHtml += ", Indexes: <b>";
+        panelHtml += row.indexes.map(i => i.name);
+        panelHtml += "</b>";
+      }
 
       panelHtml += "<br><br><table class='table table-striped table-sm' style='border: 0px; width: 100%'>";
-      panelHtml += "<thead><tr><th scope='col'>Name</th><th scope='col'>Type</th>";
+      panelHtml += "<thead><tr><th scope='col'>Name</th><th scope='col'>Type</th><th scope='col'>Indexed</th>";
       panelHtml += "<tbody>";
 
       for( k in row.properties ) {
         let property = row.properties[k];
         panelHtml += "<tr><td>"+property.name+"</td><td>" + property.type + "</td>";
+
+        let propIndexes = [];
+        if( row.indexes != null && row.indexes.length > 0 ) {
+          propIndexes.push( row.indexes.filter(i => i.properties.includes( property.name )).map(i => (i.unique ? "" : "Not ") + "Unique, Type(" + i.type + ")" + ( i.properties.length > 1 ? ", on multi properties " + i.properties : "" )) );
+        }
+        panelHtml += "<td>" + ( propIndexes.length > 0 ? propIndexes : "" ) + "</td>";
       }
 
       panelHtml += "</tbody></table></div>";
