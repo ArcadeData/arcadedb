@@ -770,6 +770,9 @@ public class EmbeddedSchema implements Schema {
         if (types.containsKey(typeName))
           throw new SchemaException("Type '" + typeName + "' already exists");
 
+        // CREATE ENTRY IN DICTIONARY IF NEEDED. THIS IS USED BY EMBEDDED DOCUMENT WHERE THE DICTIONARY ID IS SAVED
+        dictionary.getIdByName(typeName, true);
+
         final DocumentType c = new DocumentType(EmbeddedSchema.this, typeName);
         types.put(typeName, c);
 
