@@ -24,9 +24,14 @@ package com.arcadedb.schema;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.Record;
+import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import java.util.Iterator;
 
 public class DictionaryTest extends TestHelper {
   @Test
@@ -100,6 +105,35 @@ public class DictionaryTest extends TestHelper {
       });
       Assertions.fail();
     } catch (Exception e) {
+    }
+  }
+
+  @Test
+  public void namesClash() {
+    database.getSchema().getOrCreateVertexType("Babylonia");
+
+    for (int i = 1; i <= 10; i++) {
+      int finalI = i;
+      database.transaction((database) -> {
+        final MutableVertex v = database.newVertex("Babylonia");
+        for (int k = 1; k <= 10; k++) {
+          v.set("origin", finalI);
+          v.set("p" + (finalI * k), (finalI * k));
+        }
+        v.save();
+      });
+    }
+
+    for (Iterator<Record> iterator = database.iterateType("Babylonia", true); iterator.hasNext(); ) {
+      final Vertex v = iterator.next().asVertex();
+      Assertions.assertEquals(11, v.getPropertyNames().size());
+
+      final int origin = v.getInteger("origin");
+
+      for (int k = 1; k <= 10; k++) {
+        final Integer value = v.getInteger("p" + (origin * k));
+        Assertions.assertEquals(origin * k, value);
+      }
     }
   }
 }

@@ -126,8 +126,11 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
    * @param properties Array containing pairs of name (String) and value (Object)
    */
   public MutableDocument set(final Object... properties) {
+    if (properties == null || properties.length == 0)
+      throw new IllegalArgumentException("Empty list of properties");
+
     if (properties.length % 2 != 0)
-      throw new IllegalArgumentException("properties must be an even pair of key/values");
+      throw new IllegalArgumentException("Properties must be an even pair of key/values");
 
     checkForLazyLoadingProperties();
     dirty = true;
