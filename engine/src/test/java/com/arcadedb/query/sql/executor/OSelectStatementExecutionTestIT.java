@@ -60,7 +60,7 @@ public class OSelectStatementExecutionTestIT extends TestHelper {
       Assertions.assertFalse(result.hasNext());
       result.close();
       long end = System.nanoTime();
-      System.out.println("new: " + ((end - begin) / 1000000));
+      //System.out.println("new: " + ((end - begin) / 1000000));
     }
   }
 

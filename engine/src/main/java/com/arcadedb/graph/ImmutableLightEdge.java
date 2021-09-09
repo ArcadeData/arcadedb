@@ -21,16 +21,15 @@
 
 package com.arcadedb.graph;
 
-import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.serializer.BinaryTypes;
 import org.json.JSONObject;
 
 import java.util.Collections;
 import java.util.Map;
+import java.util.Set;
 
 public class ImmutableLightEdge extends ImmutableDocument implements LightEdge {
   private RID out;
@@ -40,16 +39,6 @@ public class ImmutableLightEdge extends ImmutableDocument implements LightEdge {
     super(graph, type, edgeRID, null);
     this.out = out;
     this.in = in;
-  }
-
-  public ImmutableLightEdge(final Database graph, final DocumentType type, final Binary buffer) {
-    super(graph, type, null, buffer);
-    if (buffer != null) {
-      buffer.position(1); // SKIP RECORD TYPE
-      out = (RID) database.getSerializer().deserializeValue(graph, buffer, BinaryTypes.TYPE_COMPRESSED_RID, null);
-      in = (RID) database.getSerializer().deserializeValue(graph, buffer, BinaryTypes.TYPE_COMPRESSED_RID, null);
-      propertiesStartingPosition = buffer.position();
-    }
   }
 
   @Override
@@ -92,6 +81,11 @@ public class ImmutableLightEdge extends ImmutableDocument implements LightEdge {
       return (Vertex) out.getRecord();
     else
       return (Vertex) in.getRecord();
+  }
+
+  @Override
+  public synchronized Set<String> getPropertyNames() {
+    return Collections.EMPTY_SET;
   }
 
   @Override
