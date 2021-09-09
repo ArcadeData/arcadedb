@@ -191,12 +191,13 @@ function dropDatabase(){
   });
 }
 
-function executeCommand(reset){
-  if( reset )
-    globalResultset = null;
-  else
-    if( globalResultset != null )
-      return;
+function executeCommand(language, query){
+  globalResultset = null;
+
+  if( language != null )
+    $("#inputLanguage").val( language );
+  if( query != null )
+    editor.setValue( query );
 
   if( escapeHtml( $("#inputDatabase").val() ) == "" )
     return;
@@ -210,6 +211,8 @@ function executeCommand(reset){
     executeCommandTable();
   else if( activeTab == "tab-graph-sel" )
     executeCommandGraph();
+
+  globalActivateTab("tab-query");
 }
 
 function executeCommandTable(){
@@ -332,7 +335,7 @@ function displaySchema(){
     for( i in data.result ){
       let row = data.result[i];
 
-      let tabHtml = "<li class='nav-item'><a data-toggle='tab' href='#tab-" + row.name + "' class='nav-link" + (i == 0 ? " active show" : "");
+      let tabHtml = "<li class='nav-item'><a data-toggle='tab' href='#tab-" + row.name + "' class='nav-link vertical-tab" + (i == 0 ? " active show" : "");
       tabHtml += "' id='tab-" + row.name + "-sel'>" + row.name + " (" + row.properties.length + ")</a></li>";
 
       let panelHtml = "<div class='tab-pane fade"+(i == 0 ? " active show" : "") +"' id='tab-"+row.name+"' role='tabpanel'>";
@@ -346,7 +349,7 @@ function displaySchema(){
         panelHtml += "</b>";
       }
 
-      panelHtml += "<br><br><table class='table table-striped table-sm' style='border: 0px; width: 100%'>";
+      panelHtml += "<br><br><h6>Properties</h6><table class='table table-striped table-sm' style='border: 0px; width: 100%'>";
       panelHtml += "<thead><tr><th scope='col'>Name</th><th scope='col'>Type</th><th scope='col'>Indexed</th>";
       panelHtml += "<tbody>";
 
@@ -361,7 +364,16 @@ function displaySchema(){
         panelHtml += "<td>" + ( propIndexes.length > 0 ? propIndexes : "" ) + "</td>";
       }
 
-      panelHtml += "</tbody></table></div>";
+      panelHtml += "</tbody></table>";
+
+      panelHtml += "<br><h6>Actions</h6>";
+      panelHtml += "<ul>";
+      panelHtml += "<li><a class='link' href='#' onclick='executeCommand(\"sql\", \"select from "+row.name+" limit 100\")'>Display the first 100 records of "+row.name+"</a>";
+      if( row.type == "vertex" )
+        panelHtml += "<li><a class='link' href='#' onclick='executeCommand(\"sql\", \"select $this, bothE() from "+row.name+" limit 100\")'>Display the first 100 records of "+row.name+" together with all the vertices that are directly connected</a>";
+      panelHtml += "</ul>";
+
+      panelHtml += "</div>";
 
       if( row.type == "vertex" ) {
         tabVHtml += tabHtml;

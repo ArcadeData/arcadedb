@@ -30,6 +30,7 @@ a, a:visited {
 a.vertical-tab.nav-link.active.show {
   background-color: #F7F7F7;
   border-right-color: #F7F7F7;
+  border-top-right-radius: 0;
 }
 
 a.nav-link.active.show {

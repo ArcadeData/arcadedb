@@ -35,21 +35,77 @@
 
   <div class="row">
     <div class="col-12">
+      <br><br>
+      <h5>Schema</h5>
       <br>
-      <h5>Vertex Types</h5>
-      <ul id='vTypesTabs' class='nav nav-tabs'></ul>
-      <div id='vTypesPanels' class="tab-content"></div>
-      <br><br>
-
-      <h5>Edge Types</h5>
-      <ul id='eTypesTabs' class='nav nav-tabs'></ul>
-      <div id='eTypesPanels' class="tab-content"></div>
-      <br><br>
-
-      <h5>Document Types</h5>
-      <ul id='dTypesTabs' class='nav nav-tabs'></ul>
-      <div id='dTypesPanels' class="tab-content"></div>
     </div>
+    <div class="col-12">
+      <ul class="nav nav-tabs" id="tabs-schema">
+        <li class="nav-item"><a data-toggle="tab" href="#tab-vertices" class="active show nav-link" id="tab-vertices-sel">
+          <center>Vertices</center>
+        </a></li>
+        <li class="nav-item"><a data-toggle="tab" href="#tab-edges" class="nav-link" id="tab-edges-sel">
+          <center>Edges</center>
+        </a></li>
+        <li class="nav-item"><a data-toggle="tab" href="#tab-documents" class="nav-link" id="tab-documents-sel">
+          <center>Documents</center>
+        </a></li>
+      </ul>
+    </div>
+
+    <div class="col-12">
+      <div class="tab-content">
+        <div class="tab-pane fade show active" id="tab-vertices" role="tabpanel">
+          <div class="row">
+            <div class="col-12">
+              <br>Below you can find the declared Vertex Types with the number of defined properties in parentheses. Click on the type on the left to display it
+              properties and indexes.<br><br>
+            </div>
+          </div>
+          <div class="row">
+            <div class="col-3">
+              <ul id='vTypesTabs' class='nav nav-tabs flex-column'></ul>
+            </div>
+            <div class="col-9">
+              <div id='vTypesPanels' class="tab-content"></div>
+            </div>
+          </div>
+        </div>
+        <div class="tab-pane fade" id="tab-edges" role="tabpanel">
+          <div class="row">
+            <div class="col-12">
+              <br>Below you can find the declared Edge Types with the number of defined properties in parentheses. Click on the type on the left to display it
+              properties and indexes.<br><br>
+            </div>
+          </div>
+          <div class="row">
+            <div class="col-3">
+              <ul id='eTypesTabs' class='nav nav-tabs flex-column'></ul>
+            </div>
+            <div class="col-9">
+              <div id='eTypesPanels' class="tab-content"></div>
+            </div>
+          </div>
+        </div>
+        <div class="tab-pane fade" id="tab-documents" role="tabpanel">
+          <div class="row">
+            <div class="col-12">
+              <br>Below you can find the declared Document Types with the number of defined properties in parentheses. Click on the type on the left to display
+              it properties and indexes.<br><br>
+            </div>
+          </div>
+          <div class="row">
+            <div class="col-3">
+              <ul id='dTypesTabs' class='nav nav-tabs flex-column'></ul>
+            </div>
+            <div class="col-9">
+              <div id='dTypesPanels' class="tab-content"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
   </div>
 </div>
 
