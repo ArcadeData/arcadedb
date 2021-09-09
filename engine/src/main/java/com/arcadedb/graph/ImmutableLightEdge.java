@@ -104,6 +104,16 @@ public class ImmutableLightEdge extends ImmutableDocument implements LightEdge {
   }
 
   @Override
+  public Edge asEdge() {
+    return this;
+  }
+
+  @Override
+  public Edge asEdge(final boolean loadContent) {
+    return this;
+  }
+
+  @Override
   public JSONObject toJSON() {
     return new JSONObject();
   }
