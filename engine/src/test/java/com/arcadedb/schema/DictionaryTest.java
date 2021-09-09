@@ -52,7 +52,7 @@ public class DictionaryTest extends TestHelper {
       }
     });
 
-    Assertions.assertEquals(3, database.getSchema().getDictionary().getDictionaryMap().size());
+    Assertions.assertEquals(4, database.getSchema().getDictionary().getDictionaryMap().size());
 
     database.transaction((database) -> {
       Assertions.assertTrue(database.getSchema().existsType("V"));
@@ -65,14 +65,14 @@ public class DictionaryTest extends TestHelper {
       v.save();
     });
 
-    Assertions.assertEquals(4, database.getSchema().getDictionary().getDictionaryMap().size());
+    Assertions.assertEquals(5, database.getSchema().getDictionary().getDictionaryMap().size());
 
     database.transaction((database) -> {
       Assertions.assertTrue(database.getSchema().existsType("V"));
       database.getSchema().getDictionary().updateName("name", "firstName");
     });
 
-    Assertions.assertEquals(4, database.getSchema().getDictionary().getDictionaryMap().size());
+    Assertions.assertEquals(5, database.getSchema().getDictionary().getDictionaryMap().size());
 
     database.transaction((database) -> {
       final ResultSet iter = database.query("sql", "select from V order by id asc");
