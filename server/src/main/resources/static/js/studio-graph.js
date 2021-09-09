@@ -489,10 +489,13 @@ function searchInGraph(){
 
     let data = el.data();
 
+    if( text == data.id )
+      el.select();
+
     if( data.label != null && data.label.indexOf( text ) > -1 )
       el.select();
 
-    if( data.t != null && data.t.indexOf( text ) > -1 )
+    if( data.type != null && data.type.indexOf( text ) > -1 )
       el.select();
 
     for( let prop in data.properties ){
