@@ -1,39 +1,69 @@
-![example branch parameter](https://github.com/ArcadeData/arcadedb/actions/workflows/mvn-deploy.yml/badge.svg?branch=main)
-[![Codacy Badge](https://api.codacy.com/project/badge/Grade/d40cc721f39b49eb81408307960f145b)](https://app.codacy.com/gh/ArcadeData/arcadedb?utm_source=github.com&utm_medium=referral&utm_content=ArcadeData/arcadedb&utm_campaign=Badge_Grade_Settings)
-[![security status](https://www.meterian.io/badge/gh/ArcadeData/arcadedb/security?branch=main)](https://www.meterian.io/report/gh/ArcadeData/arcadedb)
-[![stability status](https://www.meterian.io/badge/gh/ArcadeData/arcadedb/stability?branch=main)](https://www.meterian.io/report/gh/ArcadeData/arcadedb)
+## OrientDB
 
-![ArcadeDB Logo](https://arcadedb.com/assets/images/arcadedb-logo.png)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+------
 
-ArcadeDB is a Multi-Model DBMS (created originally as a fork from [OrientDB Open Source project](https://github.com/orientechnologies/orientdb) after the acquisition by SAP) with
-a brand new engine made of Alien Technology, able to crunch millions of records per second on common hardware with the usage of
-minimal resources. ArcadeDB is written in LLJ: Low Level Java. It's still Java8+ but only using low level API to use advanced
-mechanical sympathy techniques and a reduced pressure of the Garbage Collector.
+<!---<img src="http://orientdb.com/orientdb-studio_800px.png">-->
 
-ArcadeDB supports the following models:
-- [Graph Database](https://docs.arcadedb.com#Graph-Model) (compatible with Neo4j Cypher, Apache Tinkerpop Gremlin and OrientDB SQL)
-- [Document Database](https://docs.arcadedb.com#Document-Model) (compatible with the MongoDB driver + MongoDB queries and OrientDB SQL)
-- [Key/Value](https://docs.arcadedb.com#KeyValue-Model) (compatible with the Redis driver)
-- [Time Series](https://docs.arcadedb.com#TimeSeries-Model)
+## What is OrientDB?
 
-ArcadeDB understands multiple languages:
-- [SQL](https://docs.arcadedb.com#SQL) (from OrientDB SQL)
-- Neo4j [Cypher (Open Cypher)](https://docs.arcadedb.com#Cypher)
-- [Apache Gremlin (Apache Tinkerpop v3.4.x)](https://docs.arcadedb.com#Gremlin-API)
-- [MongoDB Query Language](https://docs.arcadedb.com#MongoDB-API)
+**OrientDB** is an Open Source Multi-Model [NoSQL](http://en.wikipedia.org/wiki/NoSQL) DBMS with the support of Native Graphs, Documents, Full-Text search, Reactivity, Geo-Spatial and Object Oriented concepts. It's written in Java and it's amazingly fast. No expensive run-time JOINs, connections are managed as persistent pointers between records. You can traverse thousands of records in no time. Supports schema-less, schema-full and schema-mixed modes. Has a strong security profiling system based on user, roles and predicate security and supports [SQL](https://orientdb.org/docs/3.1.x/sql/) amongst the query languages. Thanks to the [SQL](https://orientdb.org/docs/3.1.x/sql/) layer it's straightforward to use for people skilled in the Relational world.
 
-ArcadeDB can be used as:
-- Embedded from any language on top of the Java Virtual Machine
-- Remotely by using [HTTP/JSON](https://docs.arcadedb.com#HTTP-API)
-- Remotely by using a [Postgres driver](https://docs.arcadedb.com#Postgres-Driver) (ArcadeDB implements Postgres Wire protocol)
-- Remotely by using a [MongoDB driver](https://docs.arcadedb.com#MongoDB-API) (only a subset of the operations are implemented)
-- Remotely by using a [Redis driver](https://docs.arcadedb.com#Redis-API) (only a subset of the operations are implemented)
+[Get started with OrientDB](http://orientdb.org/docs/3.1.x/gettingstarted/) | [OrientDB Community Group](https://github.com/orientechnologies/orientdb/discussions).
 
-ArcadeDB is Free for any usage and licensed under the liberal [Open Source Apache 2 license](LICENSE). To contribute to the project check [CONTRIBUTING](CONTRIBUTING.md). If you need commercial support or you need to have an issue fixed ASAP, check our [GitHub Sponsor page](https://github.com/sponsors/ArcadeData) on both Recurrent and One-Time tiers. All the sponsorship received will be distributed to the active contributors of this project.
+## Is OrientDB a Relational DBMS?
 
-Have fun with data!
+No. OrientDB adheres to the [NoSQL](http://en.wikipedia.org/wiki/NoSQL) movement even though it supports [ACID Transactions](https://orientdb.org/docs/3.1.x/internals/Transactions.html) and [SQL](https://orientdb.org/docs/3.1.x/sql/) as query language. In this way it's easy to start using it without having to learn too much new stuff. 
 
-The ArcadeDB Team
+## Scalability: the database is the bottleneck of most applications
+
+The most common reason applications scale out badly is, very often, the database. The database is the bottleneck of most applications. OrientDB scales out very well on multiple machines. The database can be up to 302,231,454,903,657 billion (2^78) records for the maximum capacity of 19,807,040,628,566,084 Terabytes of data on a single server or multiple nodes.
+
+## I can't believe it! Why is it so fast?
+
+OrientDB has been designed to be very fast. It inherits the best features and concepts from Object Databases, Graph DBMS and modern [NoSQL](http://en.wikipedia.org/wiki/NoSQL) engines. OrientDB manages relationships without the run-time costly join operation, but rather with direct pointers (links) between records. No matters if you have 1 or 1,000 Billion of records, the traversing cost remains constant. Download the Benchmark PDF <a href="https://docs.google.com/viewer?a=v&pid=sites&srcid=ZGVmYXVsdGRvbWFpbnx0b2t5b3RlY2hzdXp1bXVyYWxhYmVuZ3xneDoyMGRiOGFlM2Y2OGY5Mzhj">XGDBench: A Benchmarking Platform for Graph Stores in Exascale Clouds</a> by <a href="http://www.cs.titech.ac.jp/cs-home-e.html">Tokyo Institute of Technology</a> and <a href="http://www.research.ibm.com/labs/tokyo/">IBM Research</a>.
+
+## Easy to install and use
+
+Yes. OrientDB is totally written in [Java](http://en.wikipedia.org/wiki/Java_%28programming_language%29) and can run on any platform without configuration and installation. The full Server distribution is a few MBs without the demo database. Do you develop with a language different than Java? No problem, look at the [Programming Language Binding](http://orientdb.org/docs/3.1.x/apis-and-drivers/).
 
 
-[![Java CI - deploy](https://github.com/ArcadeData/arcadedb/actions/workflows/mvn-deploy.yml/badge.svg)](https://github.com/ArcadeData/arcadedb/actions/workflows/mvn-deploy.yml)
+## Main References
+- [Documentation](http://orientdb.org/docs/3.1.x/)
+- For any questions visit the [OrientDB Community Group](https://github.com/orientechnologies/orientdb/discussions)
+
+[Get started with OrientDB](http://orientdb.org/docs/3.1.x/gettingstarted/).
+
+--------
+
+## Licensing
+OrientDB is licensed by OrientDB LTD under the Apache 2 license. OrientDB relies on the following 3rd party libraries, which are compatible with the Apache license:
+
+- Javamail: CDDL license (http://www.oracle.com/technetwork/java/faq-135477.html)
+- java persistence 2.0: CDDL license
+- JNA: Apache 2 (https://github.com/twall/jna/blob/master/LICENSE)
+- Hibernate JPA 2.0 API: Eclipse Distribution License 1.0
+- ASM: OW2
+
+References:
+- Apache 2 license (Apache2):
+  http://www.apache.org/licenses/LICENSE-2.0.html
+
+- Common Development and Distribution License (CDDL-1.0):
+  http://opensource.org/licenses/CDDL-1.0
+
+- Eclipse Distribution License (EDL-1.0):
+  http://www.eclipse.org/org/documents/edl-v10.php (http://www.eclipse.org/org/documents/edl-v10.php)
+  
+### Sponsors
+
+|[![](https://www.yourkit.com/images/yklogo.png)](https://www.yourkit.com/.net/profiler/index.jsp)|YourKit supports open source projects with its full-featured Java Profiler. YourKit, LLC is the creator of <a href="https://www.yourkit.com/java/profiler/index.jsp">YourKit Java Profiler</a> and <a href="https://www.yourkit.com/.net/profiler/index.jsp">YourKit .NET Profiler</a>, innovative and intelligent tools for profiling Java and .NET applications.|
+|---|---|
+
+--------
+
+[![](http://s1.softpedia-static.com/_img/sp100free.png?1)](http://www.softpedia.com/get/Internet/Servers/Database-Utils/OrientDB.shtml#status)
+
+--------
+
+[![security status](https://www.meterian.io/badge/gh/orientechnologies/orientdb/security)](https://www.meterian.io/report/gh/orientechnologies/orientdb) | [![stability status](https://www.meterian.io/badge/gh/orientechnologies/orientdb/stability)](https://www.meterian.io/report/gh/orientechnologies/orientdb)

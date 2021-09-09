@@ -1,0 +1,164 @@
+/*
+ *
+ *  *  Copyright 2010-2016 OrientDB LTD (http://orientdb.com)
+ *  *
+ *  *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  *  you may not use this file except in compliance with the License.
+ *  *  You may obtain a copy of the License at
+ *  *
+ *  *       http://www.apache.org/licenses/LICENSE-2.0
+ *  *
+ *  *  Unless required by applicable law or agreed to in writing, software
+ *  *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  *  See the License for the specific language governing permissions and
+ *  *  limitations under the License.
+ *  *
+ *  * For more information: http://orientdb.com
+ *
+ */
+package com.orientechnologies.orient.server.network.protocol.http.command;
+
+import com.orientechnologies.orient.server.config.OServerConfiguration;
+import com.orientechnologies.orient.server.network.protocol.http.OHttpRequest;
+import com.orientechnologies.orient.server.network.protocol.http.OHttpResponse;
+import com.orientechnologies.orient.server.network.protocol.http.OHttpSession;
+import com.orientechnologies.orient.server.network.protocol.http.OHttpUtils;
+import java.io.IOException;
+import java.util.Map;
+
+/**
+ * Server based authenticated commands. Authenticates against the OrientDB server users found in
+ * configuration.
+ *
+ * @author Luca Garulli (l.garulli--(at)--orientdb.com)
+ */
+public abstract class OServerCommandAuthenticatedServerAbstract extends OServerCommandAbstract {
+
+  private static final String SESSIONID_UNAUTHORIZED = "-";
+  private static final String SESSIONID_LOGOUT = "!";
+
+  private final String resource;
+  protected String serverUser;
+  protected String serverPassword;
+
+  protected OServerCommandAuthenticatedServerAbstract(final String iRequiredResource) {
+    resource = iRequiredResource;
+  }
+
+  @Override
+  public boolean beforeExecute(final OHttpRequest iRequest, final OHttpResponse iResponse)
+      throws IOException {
+    super.beforeExecute(iRequest, iResponse);
+    return authenticate(iRequest, iResponse, true);
+  }
+
+  protected boolean authenticate(
+      final OHttpRequest iRequest,
+      final OHttpResponse iResponse,
+      final boolean iAskForAuthentication,
+      String resource)
+      throws IOException {
+    if (checkGuestAccess()) {
+      // GUEST ACCESSES TO THE RESOURCE: OK ALSO WITHOUT AN AUTHENTICATION.
+      iResponse.setSessionId(null);
+      return true;
+    }
+
+    if (iAskForAuthentication)
+      if (iRequest.getAuthorization() == null || SESSIONID_LOGOUT.equals(iRequest.getSessionId())) {
+        // NO AUTHENTICATION AT ALL
+        sendAuthorizationRequest(iRequest, iResponse);
+        return false;
+      }
+
+    if (iRequest.getAuthorization() != null) {
+      // GET CREDENTIALS
+      final String[] authParts = iRequest.getAuthorization().split(":");
+      if (authParts.length != 2) {
+        // NO USER : PASSWD
+        sendAuthorizationRequest(iRequest, iResponse);
+        return false;
+      }
+
+      serverUser = authParts[0];
+      serverPassword = authParts[1];
+      if (authParts.length == 2 && server.authenticate(serverUser, serverPassword, resource))
+        // AUTHORIZED
+        return true;
+    }
+
+    // NON AUTHORIZED FOR RESOURCE
+    sendNotAuthorizedResponse(iRequest, iResponse);
+    return false;
+  }
+
+  protected boolean authenticate(
+      final OHttpRequest iRequest,
+      final OHttpResponse iResponse,
+      final boolean iAskForAuthentication)
+      throws IOException {
+    return authenticate(iRequest, iResponse, iAskForAuthentication, resource);
+  }
+
+  protected boolean checkGuestAccess() {
+    return server.getSecurity().isAuthorized(OServerConfiguration.GUEST_USER, resource);
+  }
+
+  protected void sendNotAuthorizedResponse(
+      final OHttpRequest iRequest, final OHttpResponse iResponse) throws IOException {
+    sendAuthorizationRequest(iRequest, iResponse);
+  }
+
+  protected void sendAuthorizationRequest(
+      final OHttpRequest iRequest, final OHttpResponse iResponse) throws IOException {
+    // UNAUTHORIZED
+    iRequest.setSessionId(SESSIONID_UNAUTHORIZED);
+
+    String header = null;
+    String xRequestedWithHeader = iRequest.getHeader("X-Requested-With");
+    if (xRequestedWithHeader == null || !xRequestedWithHeader.equals("XMLHttpRequest")) {
+      // Defaults to "WWW-Authenticate: Basic" if not an AJAX Request.
+      header = server.getSecurity().getAuthenticationHeader(null);
+
+      Map<String, String> headers = server.getSecurity().getAuthenticationHeaders(null);
+      headers.entrySet().forEach(s -> iResponse.addHeader(s.getKey(), s.getValue()));
+    }
+
+    if (isJsonResponse(iResponse)) {
+      sendJsonError(
+          iResponse,
+          OHttpUtils.STATUS_AUTH_CODE,
+          OHttpUtils.STATUS_AUTH_DESCRIPTION,
+          OHttpUtils.CONTENT_TEXT_PLAIN,
+          "401 Unauthorized.",
+          header);
+    } else {
+      iResponse.send(
+          OHttpUtils.STATUS_AUTH_CODE,
+          OHttpUtils.STATUS_AUTH_DESCRIPTION,
+          OHttpUtils.CONTENT_TEXT_PLAIN,
+          "401 Unauthorized.",
+          header);
+    }
+  }
+
+  public String getUser(final OHttpRequest iRequest) {
+    OHttpSession session = server.getHttpSessionManager().getSession(iRequest.getSessionId());
+    if (session != null) {
+      return session.getUserName();
+    }
+    if (iRequest.getAuthorization() != null) {
+      // GET CREDENTIALS
+      final String[] authParts = iRequest.getAuthorization().split(":");
+      if (authParts.length == 2) {
+        return authParts[0];
+      }
+    }
+    return null;
+  }
+
+  public String getResource() {
+    return resource;
+  }
+}

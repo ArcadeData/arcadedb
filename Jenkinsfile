@@ -1,50 +1,64 @@
-#!/usr/bin/env groovy
+@Library(['piper-lib', 'piper-lib-os']) _
 
-/*
- * Copyright (c) 2018 - Arcade Analytics LTD (https://arcadeanalytics.com)
- */
-
+properties([[$class: 'BuildDiscarderProperty', strategy: [$class: 'LogRotator', numToKeepStr: '4']]]);
 
 node {
-    try {
-        properties([buildDiscarder(logRotator(artifactDaysToKeepStr: '10', artifactNumToKeepStr: '10', daysToKeepStr: '10', numToKeepStr: '10')), disableConcurrentBuilds()])
 
-        cleanWs()
 
-        stage('checkout') {
-            checkout scm
+    stage('build')   {
+        sh "rm -rf *"
+        sh "cp /var/jenkins_home/uploadedContent/settings.xml ."
+
+        dockerExecute(
+        dockerImage:'ldellaquila/maven-gradle-node-zulu-openjdk8:1.1.0',
+          dockerWorkspace: '/orientdb-${env.BRANCH_NAME}'
+          ) {
+
+          try{
+              sh "rm -rf orientdb-studio"
+              sh "rm -rf orientdb"
+
+            // needed after the release and tag change, otherwise Studio is not found on Sonatype
+              checkout(
+                    [$class: 'GitSCM', branches: [[name: "develop"]],
+                    doGenerateSubmoduleConfigurations: false,
+                    extensions: [],
+                    submoduleCfg: [],
+                    extensions: [[$class: 'RelativeTargetDirectory', relativeTargetDir: 'orientdb-studio']],
+                    userRemoteConfigs: [[url: 'https://github.com/orientechnologies/orientdb-studio']]])
+
+                checkout(
+                    [$class: 'GitSCM', branches: [[name: env.BRANCH_NAME]],
+                    doGenerateSubmoduleConfigurations: false,
+                    extensions: [],
+                    submoduleCfg: [],
+                    extensions: [[$class: 'RelativeTargetDirectory', relativeTargetDir: 'orientdb']],
+                    userRemoteConfigs: [[url: 'https://github.com/orientechnologies/orientdb']]])
+
+
+              withMaven(globalMavenSettingsFilePath: 'settings.xml') {
+                  sh "cd orientdb-studio && mvn clean install -DskipTests"
+                  sh "cd orientdb && mvn clean deploy"
+
+                  //TODO publish javadoc
+                  //sh "cd orientdb && mvn  javadoc:aggregate"
+                  //sh "cd orientdb && rsync -ra --stats ${WORKSPACE}/target/site/apidocs/ -e ${env.RSYNC_JAVADOC}/${env.BRANCH_NAME}/"
+              }
+
+              try{
+                  build job: "orientdb-gremlin-multibranch/${env.BRANCH_NAME}", wait: false
+                  build job: "orientdb-security-multibranch/${env.BRANCH_NAME}", wait: false
+                  build job: "orientdb-sap-enterprise-multibranch/${env.BRANCH_NAME}", wait: false
+              } catch (ex){
+                  slackSend(color: '#FFAAAA', channel: '#jenkins-failures', message: "Error scheduling downstream builds: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]' (${env.BUILD_URL})\n${ex}")
+              }
+
+          }catch(e){
+              slackSend(color: '#FF0000', channel: '#jenkins-failures', message: "FAILED: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]' (${env.BUILD_URL})\n${e}")
+              throw e
+          }
+          slackSend(color: '#00FF00', channel: '#jenkins', message: "SUCCESS: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]' (${env.BUILD_URL})")
         }
-        docker.image('adoptopenjdk:11-jdk-hotspot').inside(' -u root -v /home/player/volumes/jenkins_home/.m2:/root/.m2 -v /usr/bin/git:/usr/bin/git ') {
-
-            stage('check java') {
-                sh "./mvnw -version"
-            }
-
-            stage('build') {
-                try {
-                    sh "./mvnw -Pdocker -fae --quiet -B clean install "
-                } catch (err) {
-                    throw err
-                } finally {
-//                    junit '**/surefire-reports/**/*.xml'
-//                    step([$class       : 'JacocoPublisher',
-//                          execPattern  : '**/**.exec',
-//                          classPattern : '**/classes',
-//                          sourcePattern: '**/src/main/java'])
-                }
-            }
-
-            stage('build downstream') {
-//                build job: "trader/${env.BRANCH_NAME}", wait: false
-                //master branch hardcoded
-                build job: "trader/master", wait: false
-            }
-        }
-        googlechatnotification url: 'id:chat_jenkins_id', message: "SUCCESS: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]' (${env.BUILD_URL})"
-    } catch (e) {
-        currentBuild.result = 'FAILURE'
-        googlechatnotification url: 'id:chat_jenkins_id', message: "FAILED: Job '${env.JOB_NAME} [${env.BUILD_NUMBER}]' (${env.BUILD_URL})\n${e}"
-        throw e
     }
 
 }

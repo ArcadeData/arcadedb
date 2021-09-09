@@ -1,0 +1,12 @@
+*.class
+
+# Package Files #
+*.jar
+*.war
+*.ear
+databases/
+plugins
+target/
+.idea
+src/test/java/com/orientechnologies/lucene/test/local/
+*.iml
