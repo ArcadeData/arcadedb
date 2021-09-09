@@ -1,5 +1,8 @@
 
 function renderTable(){
+  if( globalResultset == null )
+    return;
+
   if ( $.fn.dataTable.isDataTable( '#result' ) )
     try{ $('#result').DataTable().destroy(); $('#result').empty(); } catch(e){};
 

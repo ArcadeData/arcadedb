@@ -11,6 +11,9 @@ var globalCy = null;
 var globalSelected = null;
 
 function renderGraph(){
+  if( globalResultset == null )
+    return;
+
   let elements = [];
   globalRenderedVerticesRID = {};
 

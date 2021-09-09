@@ -70,6 +70,8 @@ function updateDatabases(){
     $("#studioPanel").show();
 
     initQuery();
+
+    displaySchema();
   })
   .fail(function( jqXHR, textStatus, errorThrown ){
     globalNotify( "Error", escapeHtml( jqXHR.responseText ), "danger");
@@ -292,6 +294,85 @@ function executeCommandGraph(){
 
     // FORCE RESET OF THE SEARCH FIELD
     $("#inputGraphSearch").val("");
+  })
+  .fail(function( jqXHR, textStatus, errorThrown ){
+    globalNotify( "Error", escapeHtml( jqXHR.responseText ), "danger");
+  })
+  .always(function(data) {
+    $("#executeSpinner").hide();
+  });
+}
+
+function displaySchema(){
+  let database = escapeHtml( $("#inputDatabase").val() );
+
+  jQuery.ajax({
+    type: "POST",
+    url: "/api/v1/query/" + database,
+    data: JSON.stringify(
+      {
+        language: "sql",
+        command: "select from schema:types"
+      }
+    ),
+    beforeSend: function (xhr){
+      xhr.setRequestHeader('Authorization', globalCredentials);
+    }
+  })
+  .done(function(data){
+
+    let tabVHtml = "";
+    let tabEHtml = "";
+    let tabDHtml = "";
+
+    let panelVHtml = "";
+    let panelEHtml = "";
+    let panelDHtml = "";
+
+    for( i in data.result ){
+      let row = data.result[i];
+
+      let tabHtml = "<li class='nav-item'><a data-toggle='tab' href='#tab-" + row.name + "' class='nav-link" + (i == 0 ? " active show" : "");
+      tabHtml += "' id='tab-" + row.name + "-sel'>" + row.name + " (" + row.properties.length + ")</a></li>";
+
+      let panelHtml = "<div class='tab-pane fade"+(i == 0 ? " active show" : "") +"' id='tab-"+row.name+"' role='tabpanel'>";
+
+      panelHtml += "<br>Type: <b>" + row.name + "</b>";
+      if( row.parentTypes != "" )
+       ", Super Types: <b>" + row.parentTypes + "</b>";
+      if( row.indexes != "" )
+        panelHtml += ", Indexes: <b>" + row.indexes + "</b>";
+
+      panelHtml += "<br><br><table class='table table-striped table-sm' style='border: 0px; width: 100%'>";
+      panelHtml += "<thead><tr><th scope='col'>Name</th><th scope='col'>Type</th>";
+      panelHtml += "<tbody>";
+
+      for( k in row.properties ) {
+        let property = row.properties[k];
+        panelHtml += "<tr><td>"+property.name+"</td><td>" + property.type + "</td>";
+      }
+
+      panelHtml += "</tbody></table></div>";
+
+      if( row.type == "vertex" ) {
+        tabVHtml += tabHtml;
+        panelVHtml += panelHtml;
+      } else if( row.type == "edge" ) {
+        tabEHtml += tabHtml;
+        panelEHtml += panelHtml;
+      } else {
+        tabDHtml += tabHtml;
+        panelDHtml += panelHtml;
+      }
+    }
+
+    $("#vTypesTabs").html(tabVHtml);
+    $("#eTypesTabs").html(tabEHtml);
+    $("#dTypesTabs").html(tabDHtml);
+
+    $("#vTypesPanels").html(panelVHtml != "" ? panelVHtml : "Not defined." );
+    $("#eTypesPanels").html(panelEHtml != "" ? panelEHtml : "Not defined." );
+    $("#dTypesPanels").html(panelDHtml != "" ? panelDHtml : "Not defined." );
   })
   .fail(function( jqXHR, textStatus, errorThrown ){
     globalNotify( "Error", escapeHtml( jqXHR.responseText ), "danger");
