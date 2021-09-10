@@ -29,11 +29,11 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
-import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.schema.Schema;
 
 import java.util.ArrayList;
@@ -49,7 +49,7 @@ public class CreateIndexStatement extends ODDLStatement {
   protected List<Property>                     propertyList = new ArrayList<Property>();
   protected Identifier                         type;
   protected Identifier                         engine;
-  protected LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy;
+  protected LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy = LSMTreeIndexAbstract.NULL_STRATEGY.ERROR;
   protected List<Identifier>                   keyTypes     = new ArrayList<Identifier>();
   protected Json                               schema;
   protected boolean                            ifNotExists  = false;
