@@ -1,6 +1,6 @@
 FROM adoptopenjdk/openjdk11:alpine-slim
 
-MAINTAINER ArcateData LTD (info@arcadedata.com)
+MAINTAINER Arcade Data LTD (info@arcadedb.com)
 
 ENV JAVA_OPTS=" -XX:+UnlockExperimentalVMOptions -XX:+UseZGC "
 
