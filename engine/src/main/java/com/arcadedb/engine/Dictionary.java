@@ -35,6 +35,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
 /**
@@ -44,12 +45,10 @@ import java.util.logging.Level;
 public class Dictionary extends PaginatedComponent {
   public static final  String               DICT_EXT               = "dict";
   public static final  int                  DEF_PAGE_SIZE          = 65536 * 5;
-  private static final int                  DICTIONARY_ITEM_COUNT  = 0;
-  private static final int                  DICTIONARY_HEADER_SIZE = Binary.INT_SERIALIZED_SIZE;
-  private              int                  itemCount;
   private              List<String>         dictionary             = new CopyOnWriteArrayList<>();
   private              Map<String, Integer> dictionaryMap          = new ConcurrentHashMap<>();
-  private              int                  endOffset              = -1;
+  // THIS IS LEGACY BECAUSE THE NUMBER OF ITEMS WAS STORED IN THE HEADER. NOW THE DICTIONARY IS POPULATED FROM THE ACTUAL CONTENT IN THE PAGES
+  private static final int                  DICTIONARY_HEADER_SIZE = Binary.INT_SERIALIZED_SIZE;
 
   public static class PaginatedComponentFactoryHandler implements PaginatedComponentFactory.PaginatedComponentFactoryHandler {
     @Override
@@ -67,7 +66,6 @@ public class Dictionary extends PaginatedComponent {
     if (file.getSize() == 0) {
       // NEW FILE, CREATE HEADER PAGE
       final MutablePage header = database.getTransaction().addPage(new PageId(file.getFileId(), 0), pageSize);
-      itemCount = 0;
       updateCounters(header);
     }
   }
@@ -91,22 +89,17 @@ public class Dictionary extends PaginatedComponent {
       synchronized (this) {
         pos = dictionaryMap.get(name);
         if (pos == null) {
-          final int itemCountBeforeIncrement = itemCount;
 
-          try {
-            database.transaction(tx -> {
-              itemCount = itemCountBeforeIncrement; // RESET COUNTER IN CASE OF RETRY
-              addItemToPage(name);
-            }, false);
+          final AtomicInteger newPos = new AtomicInteger();
 
-            if (dictionaryMap.putIfAbsent(name, itemCountBeforeIncrement) == null)
-              dictionary.add(name);
-            pos = dictionaryMap.get(name);
+          database.transaction(tx -> {
+            newPos.set(dictionary.size());
+            addItemToPage(name);
+          }, false);
 
-          } catch (Exception e) {
-            itemCount = itemCountBeforeIncrement; // RESET COUNTER IN CASE OF ERROR
-            throw e;
-          }
+          if (dictionaryMap.putIfAbsent(name, newPos.get()) == null)
+            dictionary.add(name);
+          pos = dictionaryMap.get(name);
         }
       }
     }
@@ -174,19 +167,13 @@ public class Dictionary extends PaginatedComponent {
       header.clearContent();
       updateCounters(header);
 
-      itemCount = 0;
       for (String d : dictionary) {
         final byte[] property = d.getBytes();
 
         if (header.getAvailableContentSize() < Binary.SHORT_SERIALIZED_SIZE + property.length)
-          throw new DatabaseMetadataException("No space left in dictionary file (items=" + itemCount + ")");
+          throw new DatabaseMetadataException("No space left in dictionary file (items=" + dictionary.size() + ")");
 
-        header.writeString(endOffset, d);
-
-        // USE THE LATEST POSITION AS OFFSET FOR THE NEXT ENTRY
-        endOffset = header.getContentSize();
-
-        itemCount++;
+        header.writeString(header.getContentSize(), d);
       }
 
       updateCounters(header);
@@ -216,11 +203,9 @@ public class Dictionary extends PaginatedComponent {
       header = database.getTransaction().getPageToModify(new PageId(file.getFileId(), 0), pageSize, false);
 
       if (header.getAvailableContentSize() < Binary.SHORT_SERIALIZED_SIZE + property.length)
-        throw new DatabaseMetadataException("No space left in dictionary file (items=" + itemCount + ")");
+        throw new DatabaseMetadataException("No space left in dictionary file (items=" + dictionary.size() + ")");
 
       header.writeString(header.getContentSize(), propertyName);
-
-      itemCount++;
 
       updateCounters(header);
     } catch (IOException e) {
@@ -229,36 +214,30 @@ public class Dictionary extends PaginatedComponent {
   }
 
   private void updateCounters(final MutablePage header) {
-    header.writeInt(DICTIONARY_ITEM_COUNT, itemCount);
   }
 
   public void reload() throws IOException {
     if (file.getSize() == 0) {
       // NEW FILE, CREATE HEADER PAGE
       final MutablePage header = database.getTransaction().addPage(new PageId(file.getFileId(), 0), pageSize);
-      itemCount = 0;
       updateCounters(header);
 
     } else {
       final BasePage header = database.getTransaction().getPage(new PageId(file.getFileId(), 0), pageSize);
 
       header.setBufferPosition(0);
-      final int newItemCount = header.readInt(DICTIONARY_ITEM_COUNT);
 
       final List<String> newDictionary = new CopyOnWriteArrayList<>();
 
       // LOAD THE DICTIONARY IN RAM
       header.setBufferPosition(DICTIONARY_HEADER_SIZE);
-      for (int i = 0; i < newItemCount; ++i)
+      for (int i = 0; header.getBufferPosition() < header.getContentSize(); ++i)
         newDictionary.add(header.readString());
-
-      endOffset = header.getContentSize();
 
       final Map<String, Integer> newDictionaryMap = new ConcurrentHashMap<>();
       for (int i = 0; i < newDictionary.size(); ++i)
         newDictionaryMap.putIfAbsent(newDictionary.get(i), i);
 
-      this.itemCount = newItemCount;
       this.dictionary = newDictionary;
       this.dictionaryMap = newDictionaryMap;
     }
