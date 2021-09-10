@@ -29,10 +29,7 @@ import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.*;
 
-import java.util.ArrayList;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.stream.Collectors;
 
 public class ProjectionItem extends SimpleNode {
@@ -101,6 +98,9 @@ public class ProjectionItem extends SimpleNode {
     if (all) {
       builder.append("*");
     } else {
+      if (exclude) {
+        builder.append("!");
+      }
       if (expression != null) {
         expression.toString(params, builder);
       }
@@ -235,6 +235,7 @@ public class ProjectionItem extends SimpleNode {
 
   public ProjectionItem copy() {
     ProjectionItem result = new ProjectionItem(-1);
+    result.exclude = this.exclude;
     result.all = all;
     result.alias = alias == null ? null : alias.copy();
     result.expression = expression == null ? null : expression.copy();
@@ -245,32 +246,15 @@ public class ProjectionItem extends SimpleNode {
 
   @Override
   public boolean equals(Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
+    if (this == o) return true;
+    if (o == null || getClass() != o.getClass()) return false;
     ProjectionItem that = (ProjectionItem) o;
-
-    if (all != that.all)
-      return false;
-    if (alias != null ? !alias.equals(that.alias) : that.alias != null)
-      return false;
-    if (expression != null ? !expression.equals(that.expression) : that.expression != null)
-      return false;
-    if (nestedProjection != null ? !nestedProjection.equals(that.nestedProjection) : that.nestedProjection != null)
-      return false;
-    return aggregate != null ? aggregate.equals(that.aggregate) : that.aggregate == null;
+    return exclude == that.exclude && all == that.all && Objects.equals(alias, that.alias) && Objects.equals(expression, that.expression) && Objects.equals(aggregate, that.aggregate) && Objects.equals(nestedProjection, that.nestedProjection);
   }
 
   @Override
   public int hashCode() {
-    int result = (all ? 1 : 0);
-    result = 31 * result + (alias != null ? alias.hashCode() : 0);
-    result = 31 * result + (expression != null ? expression.hashCode() : 0);
-    result = 31 * result + (nestedProjection != null ? nestedProjection.hashCode() : 0);
-    result = 31 * result + (aggregate != null ? aggregate.hashCode() : 0);
-    return result;
+    return Objects.hash(exclude, all, alias, expression, aggregate, nestedProjection);
   }
 
   public void extractSubQueries(SubQueryCollector collector) {
@@ -299,6 +283,7 @@ public class ProjectionItem extends SimpleNode {
     if (nestedProjection != null) {
       result.setProperty("nestedProjection", nestedProjection.serialize());
     }
+    result.setProperty("exclude", exclude);
     return result;
   }
 
@@ -316,6 +301,10 @@ public class ProjectionItem extends SimpleNode {
       nestedProjection = new NestedProjection(-1);
       nestedProjection.deserialize(fromResult.getProperty("nestedProjection"));
     }
+    if (Boolean.TRUE.equals(fromResult.getProperty("exclude"))) {
+      exclude = true;
+    }
+
   }
 
   public void setNestedProjection(NestedProjection nestedProjection) {

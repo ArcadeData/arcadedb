@@ -4031,7 +4031,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     }
   }
 
-  //    @Test TODO port exclude (!prop) syntax from OrientDB
+  @Test
   public void testExclude() {
     String className = "TestExclude";
     database.begin();
