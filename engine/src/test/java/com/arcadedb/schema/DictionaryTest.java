@@ -112,13 +112,13 @@ public class DictionaryTest extends TestHelper {
   public void namesClash() {
     database.getSchema().getOrCreateVertexType("Babylonia");
 
-    for (int i = 1; i <= 10; i++) {
+    for (int i = 0; i < 10; i++) {
       int finalI = i;
       database.transaction((database) -> {
         final MutableVertex v = database.newVertex("Babylonia");
-        for (int k = 1; k <= 10; k++) {
+        for (int k = 0; k < 10; k++) {
           v.set("origin", finalI);
-          v.set("p" + (finalI * k), (finalI * k));
+          v.set("p" + ((finalI * 10) + k), ((finalI * 10) + k));
         }
         v.save();
       });
@@ -130,9 +130,9 @@ public class DictionaryTest extends TestHelper {
 
       final int origin = v.getInteger("origin");
 
-      for (int k = 1; k <= 10; k++) {
-        final Integer value = v.getInteger("p" + (origin * k));
-        Assertions.assertEquals(origin * k, value);
+      for (int k = 0; k < 10; k++) {
+        final Integer value = v.getInteger("p" + ((origin * 10) + k));
+        Assertions.assertEquals((origin * 10) + k, value);
       }
     }
   }
