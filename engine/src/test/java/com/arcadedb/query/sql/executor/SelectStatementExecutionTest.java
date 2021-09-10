@@ -2852,7 +2852,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     result.close();
   }
 
-  //    @Test  TODO check that index entries are returned in the right order
+  @Test
   public void testIndexPlusSort12() {
     String className = "testIndexPlusSort12";
     database.begin();
