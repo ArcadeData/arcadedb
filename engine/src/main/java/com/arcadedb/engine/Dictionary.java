@@ -49,6 +49,7 @@ public class Dictionary extends PaginatedComponent {
   private              int                  itemCount;
   private              List<String>         dictionary             = new CopyOnWriteArrayList<>();
   private              Map<String, Integer> dictionaryMap          = new ConcurrentHashMap<>();
+  private              int                  endOffset              = -1;
 
   public static class PaginatedComponentFactoryHandler implements PaginatedComponentFactory.PaginatedComponentFactoryHandler {
     @Override
@@ -180,7 +181,10 @@ public class Dictionary extends PaginatedComponent {
         if (header.getAvailableContentSize() < Binary.SHORT_SERIALIZED_SIZE + property.length)
           throw new DatabaseMetadataException("No space left in dictionary file (items=" + itemCount + ")");
 
-        header.writeString(header.getContentSize(), d);
+        header.writeString(endOffset, d);
+
+        // USE THE LATEST POSITION AS OFFSET FOR THE NEXT ENTRY
+        endOffset = header.getContentSize();
 
         itemCount++;
       }
@@ -247,6 +251,8 @@ public class Dictionary extends PaginatedComponent {
       header.setBufferPosition(DICTIONARY_HEADER_SIZE);
       for (int i = 0; i < newItemCount; ++i)
         newDictionary.add(header.readString());
+
+      endOffset = header.getContentSize();
 
       final Map<String, Integer> newDictionaryMap = new ConcurrentHashMap<>();
       for (int i = 0; i < newDictionary.size(); ++i)
