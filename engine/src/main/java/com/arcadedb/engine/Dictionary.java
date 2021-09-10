@@ -97,8 +97,17 @@ public class Dictionary extends PaginatedComponent {
             addItemToPage(name);
           }, false);
 
-          if (dictionaryMap.putIfAbsent(name, newPos.get()) == null)
+          if (dictionaryMap.putIfAbsent(name, newPos.get()) == null) {
             dictionary.add(name);
+            if (dictionary.size() != newPos.get() + 1) {
+              try {
+                reload();
+              } catch (IOException e) {
+                // IGNORE IT
+              }
+              throw new SchemaException("Error on updating dictionary for key '" + name + "'");
+            }
+          }
           pos = dictionaryMap.get(name);
         }
       }
@@ -176,8 +185,6 @@ public class Dictionary extends PaginatedComponent {
         header.writeString(header.getContentSize(), d);
       }
 
-      updateCounters(header);
-
       final Integer newIndex = dictionaryMap.get(newName);
       if (newIndex == null)
         dictionaryMap.putIfAbsent(newName, oldIndexes.get(0)); // IF ALREADY PRESENT, USE THE PREVIOUS KEY INDEX
@@ -207,13 +214,14 @@ public class Dictionary extends PaginatedComponent {
 
       header.writeString(header.getContentSize(), propertyName);
 
-      updateCounters(header);
     } catch (IOException e) {
       throw new SchemaException("Error on adding new item to the database schema dictionary");
     }
   }
 
   private void updateCounters(final MutablePage header) {
+    // THIS IS LEGACY CODE CONTAINING THE NUMBER OF ITEMS. NOW THE ITEMS ARE DIRECTLY READ FORM THE PAGE
+    header.writeInt(0, 0);
   }
 
   public void reload() throws IOException {
