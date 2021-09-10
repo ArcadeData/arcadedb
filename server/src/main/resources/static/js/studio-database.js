@@ -239,11 +239,12 @@ function executeCommandTable(){
     }
   })
   .done(function(data){
-    $("#resultJson").val( JSON.stringify(data, null, 2) );
-
-    $( "#result-num" ).html( data.result.length );
     let elapsed = new Date() - beginTime;
     $("#result-elapsed").html( elapsed );
+
+    $("#result-num").html( data.result.length );
+
+    $("#resultJson").val( JSON.stringify(data, null, 2) );
 
     globalResultset = { records: data.result };
     renderTable();
@@ -280,11 +281,12 @@ function executeCommandGraph(){
     }
   })
   .done(function(data){
-    $("#resultJson").val( JSON.stringify(data, null, 2) );
-
-    $( "#result-num" ).html( data.result.vertices.length + data.result.edges.length );
     let elapsed = new Date() - beginTime;
     $("#result-elapsed").html( elapsed );
+
+    $("#result-num").html( data.result.vertices.length + data.result.edges.length );
+
+    $("#resultJson").val( JSON.stringify(data, null, 2) );
 
     if( data.result.vertices.length == 0 && data.result.records.length > 0 ){
       globalResultset = data.result;
