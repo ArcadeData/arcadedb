@@ -115,7 +115,7 @@ public abstract class AbstractHandler implements HttpHandler {
       }
 
     } catch (ServerSecurityException e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error on command execution (%s)", e, getClass().getSimpleName());
+      LogManager.instance().log(this, Level.FINE, "Security error on command execution (%s)", e, getClass().getSimpleName());
       exchange.setStatusCode(403);
       exchange.getResponseSender()
           .send("{ \"error\" : \"Security error\", \"detail\":\"" + e.toString() + "\", \"exception\": \"" + e.getClass().getName() + "\"}");
@@ -137,7 +137,7 @@ public abstract class AbstractHandler implements HttpHandler {
           "{ \"error\" : \"Cannot execute command\", \"detail\":\"" + e.toString() + "\", \"exception\": \"" + e.getClass().getName()
               + "\", \"exceptionArg\": \"" + e.getIndexName() + "|" + e.getKeys() + "|" + e.getCurrentIndexedRID() + "\" }");
     } catch (Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error on command execution (%s)", e, getClass().getSimpleName());
+      LogManager.instance().log(this, Level.FINE, "Error on command execution (%s)", e, getClass().getSimpleName());
       exchange.setStatusCode(500);
       exchange.getResponseSender()
           .send("{ \"error\" : \"Internal error\", \"detail\":\"" + e.toString() + "\", \"exception\": \"" + e.getClass().getName() + "\"}");
