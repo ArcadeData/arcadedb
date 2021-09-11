@@ -82,21 +82,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   protected final        WALFileFactory                            walFactory;
   protected final        DocumentIndexer                           indexer;
   protected final        QueryEngineManager                        queryEngineManager;
-  // STATISTICS
-  private final          AtomicLong                                statsTxCommits          = new AtomicLong();
-  private final          AtomicLong                                statsTxRollbacks        = new AtomicLong();
-  private final          AtomicLong                                statsCreateRecord       = new AtomicLong();
-  private final          AtomicLong                                statsReadRecord         = new AtomicLong();
-  private final          AtomicLong                                statsUpdateRecord       = new AtomicLong();
-  private final          AtomicLong                                statsDeleteRecord       = new AtomicLong();
-  private final          AtomicLong                                statsQueries            = new AtomicLong();
-  private final          AtomicLong                                statsCommands           = new AtomicLong();
-  private final          AtomicLong                                statsScanType           = new AtomicLong();
-  private final          AtomicLong                                statsScanBucket         = new AtomicLong();
-  private final          AtomicLong                                statsIterateType        = new AtomicLong();
-  private final          AtomicLong                                statsIterateBucket      = new AtomicLong();
-  private final          AtomicLong                                statsCountType          = new AtomicLong();
-  private final          AtomicLong                                statsCountBucket        = new AtomicLong();
+  protected final        DatabaseStats                             stats                   = new DatabaseStats();
   protected              FileManager                               fileManager;
   protected              PageManager                               pageManager;
   protected              EmbeddedSchema                            schema;
@@ -332,21 +318,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
   @Override
   public Map<String, Object> getStats() {
-    final Map<String, Object> map = new HashMap<>();
-    map.put("txCommits", statsTxCommits.get());
-    map.put("txRollbacks", statsTxRollbacks.get());
-    map.put("createRecord", statsCreateRecord.get());
-    map.put("readRecord", statsReadRecord.get());
-    map.put("updateRecord", statsUpdateRecord.get());
-    map.put("deleteRecord", statsDeleteRecord.get());
-    map.put("queries", statsQueries.get());
-    map.put("commands", statsCommands.get());
-    map.put("scanType", statsScanType.get());
-    map.put("scanBucket", statsScanBucket.get());
-    map.put("iterateType", statsIterateType.get());
-    map.put("iterateBucket", statsIterateBucket.get());
-    map.put("countType", statsCountType.get());
-    map.put("countBucket", statsCountBucket.get());
+    final Map<String, Object> map = stats.toMap();
     map.put("indexCompactions", indexCompactions.get());
     return map;
   }
@@ -401,12 +373,12 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   }
 
   public void incrementStatsTxCommits() {
-    statsTxCommits.incrementAndGet();
+    stats.txCommits.incrementAndGet();
   }
 
   @Override
   public void commit() {
-    statsTxCommits.incrementAndGet();
+    stats.txCommits.incrementAndGet();
 
     executeInReadLock(() -> {
       checkTransactionIsActive(false);
@@ -424,7 +396,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
   @Override
   public void rollback() {
-    statsTxRollbacks.incrementAndGet();
+    stats.txRollbacks.incrementAndGet();
 
     executeInReadLock(() -> {
       try {
@@ -442,7 +414,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
   @Override
   public void rollbackAllNested() {
-    statsTxRollbacks.incrementAndGet();
+    stats.txRollbacks.incrementAndGet();
 
     executeInReadLock(() -> {
       final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(EmbeddedDatabase.this.getDatabasePath());
@@ -467,14 +439,14 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
   @Override
   public long countBucket(final String bucketName) {
-    statsCountBucket.incrementAndGet();
+    stats.countBucket.incrementAndGet();
 
     return (Long) executeInReadLock((Callable<Object>) () -> schema.getBucketByName(bucketName).count());
   }
 
   @Override
   public long countType(final String typeName, final boolean polymorphic) {
-    statsCountType.incrementAndGet();
+    stats.countType.incrementAndGet();
 
     return (Long) executeInReadLock((Callable<Object>) () -> {
       final DocumentType type = schema.getType(typeName);
@@ -489,7 +461,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
   @Override
   public void scanType(final String typeName, final boolean polymorphic, final DocumentCallback callback) {
-    statsScanType.incrementAndGet();
+    stats.scanType.incrementAndGet();
 
     executeInReadLock(() -> {
       boolean success = false;
@@ -525,7 +497,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
   @Override
   public void scanBucket(final String bucketName, final RecordCallback callback) {
-    statsScanBucket.incrementAndGet();
+    stats.scanBucket.incrementAndGet();
 
     executeInReadLock(() -> {
 
@@ -542,7 +514,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
   @Override
   public Iterator<Record> iterateType(final String typeName, final boolean polymorphic) {
-    statsIterateType.incrementAndGet();
+    stats.iterateType.incrementAndGet();
 
     return (Iterator<Record>) executeInReadLock((Callable<Object>) () -> {
 
@@ -561,7 +533,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
   @Override
   public Iterator<Record> iterateBucket(final String bucketName) {
-    statsIterateBucket.incrementAndGet();
+    stats.iterateBucket.incrementAndGet();
 
     readLock();
     try {
@@ -584,7 +556,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     if (rid == null)
       throw new IllegalArgumentException("record is null");
 
-    statsReadRecord.incrementAndGet();
+    stats.readRecord.incrementAndGet();
 
     return (Record) executeInReadLock((Callable<Object>) () -> {
 
@@ -617,7 +589,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
   @Override
   public IndexCursor lookupByKey(final String type, final String[] keyNames, final Object[] keyValues) {
-    statsReadRecord.incrementAndGet();
+    stats.readRecord.incrementAndGet();
 
     return (IndexCursor) executeInReadLock((Callable<Object>) () -> {
 
@@ -922,7 +894,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     if (!type.getClass().equals(DocumentType.class))
       throw new IllegalArgumentException("Cannot create a document of type '" + typeName + "' because is not a document type");
 
-    statsCreateRecord.incrementAndGet();
+    stats.createRecord.incrementAndGet();
 
     return new MutableDocument(wrappedDatabaseInstance, type, null);
   }
@@ -948,7 +920,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     if (!type.getClass().equals(VertexType.class))
       throw new IllegalArgumentException("Cannot create a vertex of type '" + typeName + "' because is not a vertex type");
 
-    statsCreateRecord.incrementAndGet();
+    stats.createRecord.incrementAndGet();
 
     return new MutableVertex(wrappedDatabaseInstance, type, null);
   }
@@ -997,7 +969,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     } else
       destinationVertex = v2Result.next().getIdentity().asVertex();
 
-    statsCreateRecord.incrementAndGet();
+    stats.createRecord.incrementAndGet();
 
     return sourceVertex.newEdge(edgeType, destinationVertex, bidirectional, properties);
   }
@@ -1028,7 +1000,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     } else
       destinationVertex = v2Result.next().getIdentity().asVertex();
 
-    statsCreateRecord.incrementAndGet();
+    stats.createRecord.incrementAndGet();
 
     return sourceVertex.newEdge(edgeType, destinationVertex, bidirectional, properties);
   }
@@ -1115,7 +1087,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   public ResultSet command(final String language, final String query, final Object... parameters) {
     checkDatabaseIsOpen();
 
-    statsCommands.incrementAndGet();
+    stats.commands.incrementAndGet();
 
     return queryEngineManager.create(language, this).command(query, parameters);
   }
@@ -1124,7 +1096,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   public ResultSet command(final String language, final String query, final Map<String, Object> parameters) {
     checkDatabaseIsOpen();
 
-    statsCommands.incrementAndGet();
+    stats.commands.incrementAndGet();
 
     return queryEngineManager.create(language, this).command(query, parameters);
   }
@@ -1201,7 +1173,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   public ResultSet query(final String language, final String query, final Object... parameters) {
     checkDatabaseIsOpen();
 
-    statsQueries.incrementAndGet();
+    stats.queries.incrementAndGet();
 
     return queryEngineManager.create(language, this).query(query, parameters);
   }
@@ -1210,7 +1182,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   public ResultSet query(final String language, final String query, final Map<String, Object> parameters) {
     checkDatabaseIsOpen();
 
-    statsQueries.incrementAndGet();
+    stats.queries.incrementAndGet();
 
     return queryEngineManager.create(language, this).query(query, parameters);
   }
