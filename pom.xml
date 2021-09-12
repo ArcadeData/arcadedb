@@ -14,10 +14,7 @@
     <description>ArcadeDB</description>
 
     <properties>
-        <!--maven.compiler.release>8</maven.compiler.release-->
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-
-        <junit.jupiter.version>5.7.2</junit.jupiter.version>
 
         <docker.plugin.version>1.2.2</docker.plugin.version>
         <maven-compiler-plugin.version>3.8.1</maven-compiler-plugin.version>
@@ -27,8 +24,15 @@
         <maven-assembly-plugin.version>3.3.0</maven-assembly-plugin.version>
         <maven-javadoc-plugin.version>3.3.0</maven-javadoc-plugin.version>
         <maven-source-plugin.version>3.2.1</maven-source-plugin.version>
+        <maven-gpg-plugin.version>1.6</maven-gpg-plugin.version>
+        <maven-versions-plugin.version>2.8.1</maven-versions-plugin.version>
+        <nexus-staging-maven-plugin.version>1.6.8</nexus-staging-maven-plugin.version>
+
         <assertj-core.version>3.20.2</assertj-core.version>
+        <junit.jupiter.version>5.7.2</junit.jupiter.version>
+
         <skipIntegration>true</skipIntegration>
+
     </properties>
 
     <developers>
@@ -61,6 +65,19 @@
             <url>https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/</url>
         </repository>
     </distributionManagement>
+
+    <modules>
+        <module>engine</module>
+        <module>gremlin</module>
+        <module>network</module>
+        <module>importer</module>
+        <module>console</module>
+        <module>server</module>
+        <module>mongodbw</module>
+        <module>redisw</module>
+        <module>postgresw</module>
+        <module>package</module>
+    </modules>
 
     <build>
         <resources>
@@ -125,8 +142,8 @@
                     </execution>
                 </executions>
             </plugin>
-
         </plugins>
+
         <pluginManagement>
             <plugins>
                 <plugin>
@@ -194,18 +211,7 @@
             </plugins>
         </pluginManagement>
     </build>
-    <modules>
-        <module>engine</module>
-        <module>gremlin</module>
-        <module>network</module>
-        <module>importer</module>
-        <module>console</module>
-        <module>server</module>
-        <module>mongodbw</module>
-        <module>redisw</module>
-        <module>postgresw</module>
-        <module>package</module>
-    </modules>
+
     <dependencies>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
@@ -223,7 +229,7 @@
 
     <profiles>
         <profile>
-            <id>release</id>
+            <id>deploy</id>
             <build>
                 <plugins>
                     <plugin>
@@ -245,6 +251,63 @@
                 </plugins>
             </build>
         </profile>
+        <profile>
+            <id>deploy-central</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-gpg-plugin</artifactId>
+                        <version>${maven-gpg-plugin.version}</version>
+                        <executions>
+                            <execution>
+                                <id>sign-artifacts</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>sign</goal>
+                                </goals>
+                                <configuration>
+                                    <gpgArguments>
+                                        <arg>--pinentry-mode</arg>
+                                        <arg>loopback</arg>
+                                    </gpgArguments>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>versions-maven-plugin</artifactId>
+                        <version>${maven-versions-plugin.version}</version>
+                        <configuration>
+                            <generateBackupPoms>false</generateBackupPoms>
+                        </configuration>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.sonatype.plugins</groupId>
+                        <artifactId>nexus-staging-maven-plugin</artifactId>
+                        <version>${nexus-staging-maven-plugin.version}</version>
+                        <extensions>true</extensions>
+                        <configuration>
+                            <serverId>ossrh</serverId>
+                            <nexusUrl>https://oss.sonatype.org/</nexusUrl>
+                            <autoReleaseAfterClose>false</autoReleaseAfterClose>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <id>deploy-to-sonatype</id>
+                                <phase>deploy</phase>
+                                <goals>
+                                    <goal>deploy</goal>
+                                    <goal>release</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
         <profile>
             <id>integration</id>
             <properties>
