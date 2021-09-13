@@ -121,7 +121,7 @@ function renderGraph(){
           'text-outline-color': "#F7F7F7",
           'text-outline-width': 8,
         }
-      }
+      },
     ],
 
     layout: globalLayout,
@@ -182,7 +182,7 @@ function renderGraph(){
     if( globalSelected.length == 1 ) {
       let data = globalSelected[0].data();
 
-      let summary = "<label class='form-label'>RID&nbsp</label><label class='form-label'><b>" + data.id + "</b></label>&nbsp;";
+      let summary = "<label class='form-label'>Node&nbsp</label><label class='form-label'><b>" + data.id + "</b></label>&nbsp;";
       summary += "<label class='form-label'>Type&nbsp</label><label class='form-label'><b>" + data.type+ "</b></label><br>";
       summary += "<br><h5>Properties</h5>";
 
@@ -201,6 +201,77 @@ function renderGraph(){
       actions += "<li>Load adjacent <a class='link' href='#' onclick='loadNodeNeighbors(\"out\", \""+data.id+"\")'>outgoing</a>, ";
       actions += "<a class='link' href='#' onclick='loadNodeNeighbors(\"in\", \""+data.id+"\")'>incoming</a> or ";
       actions += "<a class='link' href='#' onclick='loadNodeNeighbors(\"both\", \""+data.id+"\")'>both</a></li>";
+      actions += "<li><a class='link' href='#' onclick='removeGraphElement(globalSelected)'>Hide</a> selected elements</li>";
+      actions += "<li>Select all the element of type <a class='link' href='#' onclick='selectGraphElementByType(\"" + data.type+ "\")'>" + data.type+ "</a></li>";
+      actions += "</ul>";
+
+      $("#graphActions").html( actions );
+    }
+
+    let types = {};
+
+    for( i = 0; i < globalSelected.length; ++i ){
+      let type = globalSelected[i].data()["type"];
+      types[type] = true;
+    }
+
+    if( Object.keys(types).length > 1 ){
+      $("#customToolbar").empty();
+      return;
+    }
+
+    let type = globalSelected[0].data()["type"];
+    let customToolbar = "<label for='customToolbarLabel' class='form-label'><b>" + type + "</b> label</label>";
+
+    properties = globalGraphPropertiesPerType[type];
+
+    let sel = globalGraphLabelPerType[type];
+    if( sel == null )
+      sel = "@type";
+
+    customToolbar += "<select id='customToolbarLabel' class='form-control'>";
+    customToolbar += "<option value='@type'"+(sel == "@type" ? " selected": "" )+">@type</option>" ;
+    for( p in properties ){
+      customToolbar += "<option value='"+p+"'"+(sel == p ? " selected": "" )+">" + p + "</option>" ;
+    }
+    customToolbar += "</select>";
+
+    $("#customToolbar").html(customToolbar);
+
+    $("#customToolbarLabel").change( function(){
+      globalGraphLabelPerType[type] = $("#customToolbarLabel").val();
+      renderGraph();
+    });
+  });
+
+  globalCy.on('select', 'edge', function(event){
+    globalSelected = globalCy.elements('edge:selected');
+    if( globalSelected.length < 1 ) {
+      $("#customToolbar").empty();
+      $("#graphPropertiesTable").empty();
+      $("#graphPropertiesType").html("Select an element to see its properties");
+      return;
+    }
+
+    if( globalSelected.length == 1 ) {
+      let data = globalSelected[0].data();
+
+      let summary = "<label class='form-label'>Edge&nbsp</label><label class='form-label'><b>" + data.id + "</b></label>&nbsp;";
+      summary += "<label class='form-label'>Type&nbsp</label><label class='form-label'><b>" + data.type+ "</b></label><br>";
+      summary += "<br><h5>Properties</h5>";
+
+      $("#graphPropertiesType").html( summary );
+
+      let table = "<thead><tr><th scope='col'>Name</th><th scope='col'>Value</th></tr>";
+      table += "<tbody>";
+      for( let p in data.properties )
+        table += "<tr><td>"+p+"</td><td>" + data.properties[p]+ "</td>";
+      table += "</tbody>";
+
+      $("#graphPropertiesTable").html(table);
+
+      let actions = "<br><h5>Actions</h5>";
+      actions += "<ul>";
       actions += "<li><a class='link' href='#' onclick='removeGraphElement(globalSelected)'>Hide</a> selected elements</li>";
       actions += "<li>Select all the element of type <a class='link' href='#' onclick='selectGraphElementByType(\"" + data.type+ "\")'>" + data.type+ "</a></li>";
       actions += "</ul>";
