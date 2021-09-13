@@ -70,6 +70,12 @@
             <scope>compile</scope>
         </dependency>
         <dependency>
+            <groupId>com.arcadedb</groupId>
+            <artifactId>arcadedb-gremlin</artifactId>
+            <version>${project.parent.version}</version>
+            <scope>compile</scope>
+        </dependency>
+        <dependency>
             <groupId>io.undertow</groupId>
             <artifactId>undertow-core</artifactId>
             <version>${undertow-core.version}</version>
