@@ -22,7 +22,9 @@ function login(){
 
   globalCredentials = make_base_auth(userName, userPassword);
 
-  updateDatabases();
+  updateDatabases( function(){
+    initQuery();
+  });
 }
 
 function showLoginPopup(){
@@ -38,7 +40,7 @@ function editorFocus(){
   editor.focus();
 }
 
-function updateDatabases(){
+function updateDatabases( callback ){
   jQuery.ajax({
     type: "GET",
     url: "/api/v1/databases",
@@ -69,9 +71,10 @@ function updateDatabases(){
     $("#welcomePanel").hide();
     $("#studioPanel").show();
 
-    initQuery();
-
     displaySchema();
+
+    if( callback )
+      callback();
   })
   .fail(function( jqXHR, textStatus, errorThrown ){
     globalNotify( "Error", escapeHtml( jqXHR.responseText ), "danger");
