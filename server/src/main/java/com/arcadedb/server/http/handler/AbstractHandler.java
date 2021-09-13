@@ -22,6 +22,7 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.Constants;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.log.LogManager;
@@ -136,6 +137,15 @@ public abstract class AbstractHandler implements HttpHandler {
       exchange.getResponseSender().send(
           "{ \"error\" : \"Cannot execute command\", \"detail\":\"" + e.toString() + "\", \"exception\": \"" + e.getClass().getName()
               + "\", \"exceptionArg\": \"" + e.getIndexName() + "|" + e.getKeys() + "|" + e.getCurrentIndexedRID() + "\" }");
+    } catch (CommandExecutionException e) {
+      Throwable realException = e;
+      if (e.getCause() != null)
+        realException = e.getCause();
+
+      LogManager.instance().log(this, Level.FINE, "Error on command execution (%s)", e, getClass().getSimpleName());
+      exchange.setStatusCode(500);
+      exchange.getResponseSender().send(
+          "{ \"error\" : \"Internal error\", \"detail\":\"" + realException.toString() + "\", \"exception\": \"" + realException.getClass().getName() + "\"}");
     } catch (Exception e) {
       LogManager.instance().log(this, Level.FINE, "Error on command execution (%s)", e, getClass().getSimpleName());
       exchange.setStatusCode(500);
@@ -163,6 +173,6 @@ public abstract class AbstractHandler implements HttpHandler {
   }
 
   protected String decode(final String command) {
-    return command.replace("&amp;", " ").replace("&lt;", "<").replace("&gt;", "<").replace("&quot;", "\"").replace("&#039;", "'");
+    return command.replace("&amp;", " ").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#039;", "'");
   }
 }

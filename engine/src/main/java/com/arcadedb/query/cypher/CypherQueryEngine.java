@@ -23,11 +23,13 @@ package com.arcadedb.query.cypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.QueryParsingException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ResultSet;
 
+import java.lang.reflect.InvocationTargetException;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.logging.Level;
@@ -90,6 +92,8 @@ public class CypherQueryEngine implements QueryEngine {
       final Object arcadeGremlin = CypherQueryEngineFactory.arcadeGraphClass.getMethod("cypher", String.class).invoke(arcadeGraph, query);
       CypherQueryEngineFactory.arcadeCypherClass.getMethod("setParameters", Map.class).invoke(arcadeGremlin, parameters);
       return (ResultSet) CypherQueryEngineFactory.arcadeCypherClass.getMethod("execute").invoke(arcadeGremlin);
+    } catch (InvocationTargetException e) {
+      throw new CommandExecutionException("Error on executing cypher command", e.getTargetException());
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on initializing Cypher query engine", e);
       throw new QueryParsingException("Error on initializing Cypher query engine", e);
