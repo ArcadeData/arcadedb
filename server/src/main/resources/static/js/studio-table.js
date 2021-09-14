@@ -93,7 +93,10 @@ function renderTable(){
           className: 'btn btn-secondary',
           orientation: 'landscape',
         },
-      ]
+      ],
+      initComplete: function() {
+        $(this.api().table().container()).find('input').attr('autocomplete', 'off');
+      },
     });
 
     $('.dt-buttons').css('padding', '7px');

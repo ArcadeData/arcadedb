@@ -64,6 +64,15 @@ public class DynamicContentHandler extends AbstractHandler {
     } else if (uri.endsWith(".ico")) {
       contentType = "image/x-icon";
       processTemplate = false;
+    } else if (uri.endsWith(".woff")) {
+      contentType = "font/woff";
+      processTemplate = false;
+    } else if (uri.endsWith(".woff2")) {
+      contentType = "font/woff2";
+      processTemplate = false;
+    } else if (uri.endsWith(".tff")) {
+      contentType = "font/tff";
+      processTemplate = false;
     } else
       processTemplate = false;
 

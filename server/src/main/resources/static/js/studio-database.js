@@ -298,7 +298,6 @@ function executeCommandGraph(){
     }
 
     globalResultset = data.result;
-    renderGraph();
 
     // FORCE RESET OF THE SEARCH FIELD
     $("#inputGraphSearch").val("");

@@ -9,10 +9,12 @@
 
   <link rel="stylesheet" href="css/bootstrap.min.css">
   <link rel="stylesheet" href="components/DataTables/datatables.min.css">
-  <link rel="stylesheet" href="components/fontawesome/css/fontawesome.min.css">
-  <link rel="stylesheet" href="components/fontawesome/css/solid.min.css">
   <link rel="stylesheet" href="components/codemirror/css/codemirror.css">
   <link rel="stylesheet" href="components/codemirror/css/neo.css">
+  <link rel="stylesheet" href="components/fontawesome/css/fontawesome.min.css">
+  <link rel="stylesheet" href="components/fontawesome/css/solid.min.css">
+  <link rel="stylesheet" href="components/fontawesome-iconpicker/css/fontawesome-iconpicker.min.css">
+
   <link rel="stylesheet" href="css/studio.css">
 
   <script src="js/popper.min.js"></script>
@@ -31,7 +33,10 @@
   <script src="components/fontawesome/js/fontawesome.min.js"></script>
   <script src="components/fontawesome/js/solid.min.js"></script>
 
+  <script src="components/fontawesome-iconpicker/js/fontawesome-iconpicker.min.js"></script>
+
   <script src="js/cytoscape.min.js"></script>
+  <script src="js/cytoscape-node-html-label.min.js"></script>
   <script src="js/cola.min.js"></script>
   <script src="js/cytoscape-cola.js"></script>
   <script src="js/cytoscape-cxtmenu.js"></script>
@@ -100,7 +105,20 @@
   </div>
 
 </div>
-
+<div class="modal fade" id="popup" tabindex="-1" role="dialog" aria-labelledby="popupLabel" aria-hidden="true" style="z-index: 10000;">
+  <div class="modal-dialog modal-lg" role="document">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="popupLabel"></h5>
+        <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+          <span aria-hidden="true">&times;</span>
+        </button>
+      </div>
+      <div id="popupBody" class="modal-body">
+      </div>
+    </div>
+  </div>
+</div>
 ${include:popup-login.html}
 
 <div style="text-align: center; vertical-align: bottom;">

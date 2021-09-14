@@ -2,23 +2,28 @@ var globalBgColors = ['aqua', 'orange', 'green', 'purple', 'red', 'lime', 'teal'
 var globalFgColors = ['black', 'black', 'white', 'white', 'black', 'black', 'black', 'white', 'white', 'black', 'black', 'white', 'black', 'black', 'white', 'black'];
 var globalRenderedVerticesRID = {};
 var globalTotalEdges = 0;
-var globalColorsIndexByType = {};
 var globalLastColorIndex = 0;
-var globalGraphSpacing = 20;
-var globalGraphLabelPerType = {};
 var globalGraphPropertiesPerType = {};
 var globalCy = null;
 var globalSelected = null;
+var globalGraphSettings = {
+  graphSpacing: 20,
+  labels: {},
+  icons: {},
+  colors: {}
+};
 
 function renderGraph(){
   if( globalResultset == null )
     return;
 
+  $("#graphSpacing").val( globalGraphSettings.graphSpacing );
+
   let elements = [];
   globalRenderedVerticesRID = {};
 
   globalLastColorIndex = 0;
-  globalColorsIndexByType = {};
+  globalGraphSettings.colors = {};
   globalTotalEdges = 0;
 
   for( i in globalResultset.vertices ){
@@ -40,7 +45,9 @@ function renderGraph(){
     if( rid == null )
       continue;
 
-    elements.push( { data: createVertex(vertex) } );
+    let v = { data: createVertex(vertex), classes: vertex["t"] };
+    elements.push( v );
+
     globalRenderedVerticesRID[rid] = true;
 
     if( elements.length >= globalGraphMaxResult ){
@@ -53,79 +60,77 @@ function renderGraph(){
     let edge = globalResultset.edges[i];
     if( globalRenderedVerticesRID[edge.i] && globalRenderedVerticesRID[edge.o]  ){
       // DISPLAY ONLY EDGES RELATIVE TO VERTICES THAT ARE PART OF THE GRAPH
-      elements.push( { data: createEdge( edge ) } );
+      elements.push( { data: createEdge( edge ), classes: edge["t"] } );
       ++globalTotalEdges;
     }
   }
 
   globalLayout = {
-     name: 'cola',
-     animate: true,
-     refresh: 2,
-     ungrabifyWhileSimulating: true,
-     nodeSpacing: function( node ){ return globalGraphSpacing },
-     spacingFactor: 1.75
-   };
+    name: 'cola',
+    animate: true,
+    refresh: 2,
+    ungrabifyWhileSimulating: true,
+    nodeSpacing: function( node ){ return globalGraphSettings.graphSpacing },
+    spacingFactor: 1.75
+  };
+
+  let styles = [
+    {
+     selector: 'node',
+     selectionType: 'single',
+     style: {
+      'label': 'data(label)',
+      'width': 'data(size)',
+      'height': 'data(size)',
+      'border-color': 'gray',
+      'border-width': 0,
+      'text-valign': "center",
+      'text-halign': "center",
+      'text-wrap': 'wrap',
+      'text-max-width': 200,
+     }
+    }, {
+     selector: 'node:selected',
+     selectionType: 'single',
+     style: {
+      'label': 'data(label)',
+      'width': 'data(size)',
+      'height': 'data(size)',
+      'border-color': 'red',
+      'border-width': 5,
+      'text-valign': "center",
+      'text-halign': "center",
+      'text-wrap': 'wrap',
+      'text-max-width': 200,
+     }
+    }, {
+     selector: 'edge',
+     style: {
+      'width': 1,
+      'label': 'data(label)',
+      'color': 'gray',
+      'line-color': 'gray',
+      'target-arrow-color': 'gray',
+      'target-arrow-shape': 'triangle',
+      'curve-style': 'bezier',
+      'edge-text-rotation': 'autorotate',
+      'target-arrow-shape': 'triangle',
+      'text-outline-color': "#F7F7F7",
+      'text-outline-width': 8,
+     }
+    },
+  ];
+
+  assignStyles(styles);
 
   globalCy = cytoscape({
     container: $('#graph'),
     elements: elements,
-
-    style: [ // the stylesheet for the graph
-      {
-        selector: 'node',
-        selectionType: 'single',
-        style: {
-          'color': 'data(fgColor)',
-          'background-color': 'data(bgColor)',
-          'label': 'data(label)',
-          'width': 'data(size)',
-          'height': 'data(size)',
-          'border-color': 'gray',
-          'border-width': 1,
-          'text-valign': "center",
-          'text-halign': "center",
-          'text-wrap': 'wrap',
-          'text-max-width': 100
-        }
-      },
-      {
-        selector: 'node:selected',
-        selectionType: 'single',
-        style: {
-          'color': 'data(fgColor)',
-          'background-color': 'data(bgColor)',
-          'label': 'data(label)',
-          'width': 'data(size)',
-          'height': 'data(size)',
-          'border-color': 'red',
-          'border-width': 5,
-          'text-valign': "center",
-          'text-halign': "center",
-          'text-wrap': 'wrap',
-          'text-max-width': 100
-        }
-      },
-      {
-        selector: 'edge',
-        style: {
-          'width': 1,
-          'label': 'data(label)',
-          'color': 'black',
-          'line-color': 'black',
-          'target-arrow-color': 'black',
-          'target-arrow-shape': 'triangle',
-          'curve-style': 'bezier',
-          'edge-text-rotation': 'autorotate',
-          'target-arrow-shape': 'triangle',
-          'text-outline-color': "#F7F7F7",
-          'text-outline-width': 8,
-        }
-      },
-    ],
-
+    style: styles,
     layout: globalLayout,
   });
+
+  setGraphStyles();
 
   globalCy.cxtmenu({
     selector: 'node',
@@ -179,8 +184,9 @@ function renderGraph(){
       return;
     }
 
+    let data = null;
     if( globalSelected.length == 1 ) {
-      let data = globalSelected[0].data();
+      data = globalSelected[0].data();
 
       let summary = "<label class='form-label'>Node&nbsp</label><label class='form-label'><b>" + data.id + "</b></label>&nbsp;";
       summary += "<label class='form-label'>Type&nbsp</label><label class='form-label'><b>" + data.type+ "</b></label><br>";
@@ -195,53 +201,64 @@ function renderGraph(){
       table += "</tbody>";
 
       $("#graphPropertiesTable").html(table);
+    }
 
+    let selectedElementTypes = {};
+    for( i = 0; i < globalSelected.length; ++i ){
+      let type = globalSelected[i].data()["type"];
+      selectedElementTypes[type] = true;
+    }
+
+    let type = null;
+    if( Object.keys(selectedElementTypes).length == 1 ){
+      type = globalSelected[0].data()["type"];
+      properties = globalGraphPropertiesPerType[type];
+
+      let sel = globalGraphSettings.labels[type];
+      if( sel == null )
+        sel = "@type";
+
+      layout = "<br><h5>Layout for type "+type+"</h5>";
+      layout += "<div class='row'><div class='col-3'><label for='graphLabel' class='form-label'>Label</label></div>";
+      layout += "<div class='col-9'><select id='graphLabel' class='form-control'>";
+      layout += "<option value='@type'"+(sel == "@type" ? " selected": "" )+">@type</option>" ;
+      for( p in properties ){
+        layout += "<option value='"+p+"'"+(sel == p ? " selected": "" )+">" + p + "</option>" ;
+      }
+      layout += "</select></div></div>";
+
+      layout += "<div class='row'><div class='col-3'><label for='graphIcon' class='form-label'>icon</label></div>";
+      layout += "<div class='col-9'><div class='form-group'><div class='btn-group'>";
+
+      layout += "<button id='graphIcon' data-selected='graduation-cap' type='button' class='icp icp-dd btn btn-default dropdown-toggle iconpicker-component' data-toggle='dropdown'>";
+      layout += "<i class='fa fa-fw'></i><span class='caret'></span></button>";
+      layout += "<div class='dropdown-menu'></div>";
+      layout += "</div></div></div></div>";
+
+      $("#graphLayout").html( layout );
+      $("#graphLabel").change( function(){
+        globalGraphSettings.labels[type] = $("#graphLabel").val();
+        renderGraph();
+      });
+      $('#graphIcon').iconpicker();
+      $("#graphIcon").on( "iconpickerSelected", function(event){
+        globalGraphSettings.icons[type] = event.iconpickerValue + " 4x";
+        renderGraph();
+      });
+    }
+
+    if( globalSelected.length == 1 ) {
       let actions = "<br><h5>Actions</h5>";
       actions += "<ul>";
       actions += "<li>Load adjacent <a class='link' href='#' onclick='loadNodeNeighbors(\"out\", \""+data.id+"\")'>outgoing</a>, ";
       actions += "<a class='link' href='#' onclick='loadNodeNeighbors(\"in\", \""+data.id+"\")'>incoming</a> or ";
       actions += "<a class='link' href='#' onclick='loadNodeNeighbors(\"both\", \""+data.id+"\")'>both</a></li>";
       actions += "<li><a class='link' href='#' onclick='removeGraphElement(globalSelected)'>Hide</a> selected elements</li>";
-      actions += "<li>Select all the element of type <a class='link' href='#' onclick='selectGraphElementByType(\"" + data.type+ "\")'>" + data.type+ "</a></li>";
+      actions += "<li>Select all the element of type <a class='link' href='#' onclick='selectGraphElementByType(\"" + type+ "\")'>" + type+ "</a></li>";
       actions += "</ul>";
 
       $("#graphActions").html( actions );
     }
-
-    let types = {};
-
-    for( i = 0; i < globalSelected.length; ++i ){
-      let type = globalSelected[i].data()["type"];
-      types[type] = true;
-    }
-
-    if( Object.keys(types).length > 1 ){
-      $("#customToolbar").empty();
-      return;
-    }
-
-    let type = globalSelected[0].data()["type"];
-    let customToolbar = "<label for='customToolbarLabel' class='form-label'><b>" + type + "</b> label</label>";
-
-    properties = globalGraphPropertiesPerType[type];
-
-    let sel = globalGraphLabelPerType[type];
-    if( sel == null )
-      sel = "@type";
-
-    customToolbar += "<select id='customToolbarLabel' class='form-control'>";
-    customToolbar += "<option value='@type'"+(sel == "@type" ? " selected": "" )+">@type</option>" ;
-    for( p in properties ){
-      customToolbar += "<option value='"+p+"'"+(sel == p ? " selected": "" )+">" + p + "</option>" ;
-    }
-    customToolbar += "</select>";
-
-    $("#customToolbar").html(customToolbar);
-
-    $("#customToolbarLabel").change( function(){
-      globalGraphLabelPerType[type] = $("#customToolbarLabel").val();
-      renderGraph();
-    });
   });
 
   globalCy.on('select', 'edge', function(event){
@@ -253,8 +270,9 @@ function renderGraph(){
       return;
     }
 
+    let data = null;
     if( globalSelected.length == 1 ) {
-      let data = globalSelected[0].data();
+      data = globalSelected[0].data();
 
       let summary = "<label class='form-label'>Edge&nbsp</label><label class='form-label'><b>" + data.id + "</b></label>&nbsp;";
       summary += "<label class='form-label'>Type&nbsp</label><label class='form-label'><b>" + data.type+ "</b></label><br>";
@@ -269,7 +287,40 @@ function renderGraph(){
       table += "</tbody>";
 
       $("#graphPropertiesTable").html(table);
+    }
 
+    let selectedElementTypes = {};
+    for( i = 0; i < globalSelected.length; ++i ){
+      let type = globalSelected[i].data()["type"];
+      selectedElementTypes[type] = true;
+    }
+
+    let type = null;
+    if( Object.keys(selectedElementTypes).length == 1 ){
+      type = globalSelected[0].data()["type"];
+      properties = globalGraphPropertiesPerType[type];
+
+      let sel = globalGraphSettings.labels[type];
+      if( sel == null )
+        sel = "@type";
+
+      layout = "<br><h5>Layout for type "+type+"</h5>";
+      layout += "<div class='row'><div class='col-3'><label for='graphLabel' class='form-label'>Label</label></div>";
+      layout += "<div class='col-9'><select id='graphLabel' class='form-control'>";
+      layout += "<option value='@type'"+(sel == "@type" ? " selected": "" )+">@type</option>" ;
+      for( p in properties ){
+        layout += "<option value='"+p+"'"+(sel == p ? " selected": "" )+">" + p + "</option>" ;
+      }
+      layout += "</select></div></div>";
+
+      $("#graphLayout").html( layout );
+      $("#graphLabel").change( function(){
+        globalGraphSettings.labels[type] = $("#graphLabel").val();
+        renderGraph();
+      });
+    }
+
+    if( globalSelected.length == 1 ) {
       let actions = "<br><h5>Actions</h5>";
       actions += "<ul>";
       actions += "<li><a class='link' href='#' onclick='removeGraphElement(globalSelected)'>Hide</a> selected elements</li>";
@@ -278,41 +329,6 @@ function renderGraph(){
 
       $("#graphActions").html( actions );
     }
-
-    let types = {};
-
-    for( i = 0; i < globalSelected.length; ++i ){
-      let type = globalSelected[i].data()["type"];
-      types[type] = true;
-    }
-
-    if( Object.keys(types).length > 1 ){
-      $("#customToolbar").empty();
-      return;
-    }
-
-    let type = globalSelected[0].data()["type"];
-    let customToolbar = "<label for='customToolbarLabel' class='form-label'><b>" + type + "</b> label</label>";
-
-    properties = globalGraphPropertiesPerType[type];
-
-    let sel = globalGraphLabelPerType[type];
-    if( sel == null )
-      sel = "@type";
-
-    customToolbar += "<select id='customToolbarLabel' class='form-control'>";
-    customToolbar += "<option value='@type'"+(sel == "@type" ? " selected": "" )+">@type</option>" ;
-    for( p in properties ){
-      customToolbar += "<option value='"+p+"'"+(sel == p ? " selected": "" )+">" + p + "</option>" ;
-    }
-    customToolbar += "</select>";
-
-    $("#customToolbar").html(customToolbar);
-
-    $("#customToolbarLabel").change( function(){
-      globalGraphLabelPerType[type] = $("#customToolbarLabel").val();
-      renderGraph();
-    });
   });
 
   let warning = null;
@@ -325,26 +341,24 @@ function renderGraph(){
 }
 
 function createVertex(vertex){
+  let type = vertex["t"];
   let label = "@type";
-  if( globalGraphLabelPerType[vertex["t"]] != null )
-    label = globalGraphLabelPerType[vertex["t"]];
+  if( globalGraphSettings.labels[type] != null )
+    label = globalGraphSettings.labels[type];
   if( label == "@type" )
-    label = vertex["t"];
+    label = type;
   else
     label = vertex["p"][label];
 
-  let colorIndex = globalColorsIndexByType[ vertex["t"] ];
-
-  return { id: vertex["r"], label: label, size: (70 + ( 2 * label.length ) ), type: vertex["t"],
-           fgColor: globalFgColors[ colorIndex ], bgColor: globalBgColors[ colorIndex ],
+  return { id: vertex["r"], label: label, size: (70 + ( 2 * label.length ) ), type: type,
            weight: vertex["i"] + vertex["o"],
            properties: vertex["p"] };
 }
 
 function createEdge(edge){
   let label = "@type";
-  if( globalGraphLabelPerType[edge["edge"]] != null )
-    label = globalGraphLabelPerType[vertex["t"]];
+  if( globalGraphSettings.labels[edge["t"]] != null )
+    label = globalGraphSettings.labels[edge["t"]];
   if( label == "@type" )
     label = edge["t"];
   else
@@ -354,11 +368,11 @@ function createEdge(edge){
 }
 
 function assignVertexColor(type){
-  let color = globalColorsIndexByType[type];
+  let color = globalGraphSettings.colors[type];
   if( color == null ){
     if( globalLastColorIndex >= globalBgColors.length )
       globalLastColorIndex = 0;
-    globalColorsIndexByType[type] = globalLastColorIndex++;
+    globalGraphSettings.colors[type] = globalLastColorIndex++;
   }
 }
 
@@ -372,6 +386,56 @@ function assignProperties(element){
 
   for( p in element.p )
     properties[ p ] = true;;
+}
+
+function assignStyles(styles){
+  if( styles == null )
+    styles = [];
+
+  for( type in globalGraphSettings.colors ) {
+    let colorIndex = globalGraphSettings.colors[type];
+    let icon = globalGraphSettings.icons[type];
+
+    let style = { selector: '.' + type,
+                  style: {
+                  }};
+
+    if( icon != null ){
+      style.style['background-opacity'] = 0;
+      style.style['text-valign'] = "bottom";
+    } else {
+      style.style['color'] = globalFgColors[ colorIndex ];
+      style.style['background-color'] = globalBgColors[ colorIndex ];
+      style.style['border-width'] = 1;
+      style.style['text-valign'] = "center";
+    }
+
+    styles.push( style );
+  }
+
+  return styles;
+}
+
+function setGraphStyles(){
+  let nodeHtmlStyles = [];
+  for( type in globalGraphSettings.colors ) {
+    let colorIndex = globalGraphSettings.colors[type];
+    let icon = globalGraphSettings.icons[type];
+    if( icon != null ) {
+      nodeHtmlStyles.push(
+        {
+          query: '.' + type,
+          valign: "center",
+          halign: "center",
+          valignBox: "center",
+          tpl: function (data) {
+            return "<span style='color: "+globalBgColors[ colorIndex ]+ "'><i class='"+icon+"'></i></span>";
+          }
+        }
+      );
+    }
+  }
+  globalCy.nodeHtmlLabel(nodeHtmlStyles);
 }
 
 function removeGraphElement( ele ) {
@@ -405,34 +469,38 @@ function removeGraphElement( ele ) {
   }
 }
 
-function exportGraph(){
-  globalCy.graphml({
-    node: {
-      css: false,
-      data: true,
-      position: false,
-      discludeds: []
-    },
-    edge: {
-      css: false,
-      data: true,
-      discludeds: []
-    },
-    layoutBy: "cola"
-  });
+function exportGraph(format){
+  switch( format ) {
+    case "graphml":
+      globalCy.graphml({
+        node: {
+          css: false,
+          data: true,
+          position: false,
+          discludeds: []
+        },
+        edge: {
+          css: false,
+          data: true,
+          discludeds: []
+        },
+        layoutBy: "cola"
+      });
 
-  let graphml = globalCy.graphml();
+      let graphml = globalCy.graphml();
 
-  const blob = new Blob([graphml], {type: 'text/xml'});
-  if(window.navigator.msSaveOrOpenBlob) {
-    window.navigator.msSaveBlob(blob, filename);
-  } else {
-    const elem = window.document.createElement('a');
-    elem.href = window.URL.createObjectURL(blob);
-    elem.download = "arcade.graphml";
-    document.body.appendChild(elem);
-    elem.click();
-    document.body.removeChild(elem);
+      const blob = new Blob([graphml], {type: 'text/xml'});
+      if(window.navigator.msSaveOrOpenBlob) {
+        window.navigator.msSaveBlob(blob, filename);
+      } else {
+        const elem = window.document.createElement('a');
+        elem.href = window.URL.createObjectURL(blob);
+        elem.download = "arcade.graphml";
+        document.body.appendChild(elem);
+        elem.click();
+        document.body.removeChild(elem);
+      }
+      break;
   }
 }
 
@@ -478,7 +546,8 @@ function loadNodeNeighbors( direction, rid ){
       globalCy.add([
         {
           group: 'nodes',
-          data: createVertex( vertex )
+          data: createVertex( vertex ),
+          classes: vertex["t"]
         }
       ]);
 
@@ -498,12 +567,21 @@ function loadNodeNeighbors( direction, rid ){
       globalCy.add([
         {
           group: 'edges',
-          data: createEdge( edge )
+          data: createEdge( edge ),
+          classes: edge["t"]
         }
       ]);
 
       ++globalTotalEdges;
     }
+
+    let typeStyles = assignStyles();
+    for( i in typeStyles ){
+      let s = typeStyles[i];
+      globalCy.style().selector(s.selector).style( s.style );
+    }
+
+    setGraphStyles();
 
     globalCy.endBatch();
 
@@ -546,6 +624,51 @@ function cropSelection(){
 function toggleSidebar(){
   $("#graphPropertiesPanel").toggleClass("collapsed");
   $("#graphMainPanel").toggleClass("col-md-12 col-md-9");
+}
+
+function importSettings(){
+  var html = "<center><h5>Copy below the JSON configuration to import</h5>";
+  html += "<center><textarea id='importContent' rows='30' cols='90'></textarea><br>";
+  html += "<button id='importSettings' type='button' class='btn btn-primary'>";
+  html += "<i class='fa fa-download'></i> Import settings</button></center>";
+
+  $("#popupBody").html(html);
+
+  $("#importSettings").on( "click", function(){
+    let imported = JSON.parse( $("#importContent").val() );
+    globalGraphSettings = imported;
+    renderGraph();
+    $('#popup').modal("hide");
+  });
+
+  $("#popupLabel").text("Import Settings");
+
+  $('#popup').on('shown.bs.modal', function () {
+    $("#importContent").focus();
+  });
+  $('#popup').modal("show");
+}
+
+
+function exportSettings(){
+  var html = "<center><h5>This is the JSON configuration exported</h5>";
+  html += "<center><textarea id='exportContent' rows='30' cols='90'></textarea><br>";
+  html += "<button id='popupClipboard' type='button' data-clipboard-target='#exportContent' class='clipboard-trigger btn btn-primary'>";
+  html += "<i class='fa fa-copy'></i> Copy to clipboard and close</button></center>";
+  $("#popupBody").html(html);
+
+  $("#popupLabel").text("Export Settings");
+
+  $("#exportContent").text( JSON.stringify( globalGraphSettings, null, 2 ) );
+  new ClipboardJS("#popupClipboard")
+    .on('success', function(e) {
+      $('#popup').modal("hide")
+    });;
+
+  $('#popup').on('shown.bs.modal', function () {
+    $("#exportContent").focus();
+  });
+  $('#popup').modal();
 }
 
 function searchInGraph(){
