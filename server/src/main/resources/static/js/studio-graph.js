@@ -7,10 +7,8 @@ var globalGraphPropertiesPerType = {};
 var globalCy = null;
 var globalSelected = null;
 var globalGraphSettings = {
-  graphSpacing: 20,
-  labels: {},
-  icons: {},
-  colors: {}
+  graphSpacing: 50,
+  types: {},
 };
 
 function renderGraph(){
@@ -23,7 +21,8 @@ function renderGraph(){
   globalRenderedVerticesRID = {};
 
   globalLastColorIndex = 0;
-  globalGraphSettings.colors = {};
+  for( type in globalGraphSettings.types )
+    globalGraphSettings.types[type].color = null;
   globalTotalEdges = 0;
 
   for( i in globalResultset.vertices ){
@@ -87,7 +86,7 @@ function renderGraph(){
       'text-valign': "center",
       'text-halign': "center",
       'text-wrap': 'wrap',
-      'text-max-width': 200,
+      'text-max-width': 100,
      }
     }, {
      selector: 'node:selected',
@@ -101,7 +100,7 @@ function renderGraph(){
       'text-valign': "center",
       'text-halign': "center",
       'text-wrap': 'wrap',
-      'text-max-width': 200,
+      'text-max-width': 100,
      }
     }, {
      selector: 'edge',
@@ -214,7 +213,7 @@ function renderGraph(){
       type = globalSelected[0].data()["type"];
       properties = globalGraphPropertiesPerType[type];
 
-      let sel = globalGraphSettings.labels[type];
+      let sel = getOrCreateStyleTypeAttrib(type, "label");
       if( sel == null )
         sel = "@type";
 
@@ -231,18 +230,23 @@ function renderGraph(){
       layout += "<div class='col-9'><div class='form-group'><div class='btn-group'>";
 
       layout += "<button id='graphIcon' data-selected='graduation-cap' type='button' class='icp icp-dd btn btn-default dropdown-toggle iconpicker-component' data-toggle='dropdown'>";
-      layout += "<i class='fa fa-fw'></i><span class='caret'></span></button>";
+
+      let icon = getOrCreateStyleTypeAttrib( type, "icon");
+      if( icon == null )
+        icon = "";
+
+      layout += "<i class='fa fa-fw "+icon+"'></i><span class='caret'></span></button>";
       layout += "<div class='dropdown-menu'></div>";
       layout += "</div></div></div></div>";
 
       $("#graphLayout").html( layout );
       $("#graphLabel").change( function(){
-        globalGraphSettings.labels[type] = $("#graphLabel").val();
+        getOrCreateStyleTypeAttrib( type, "label", $("#graphLabel").val() );
         renderGraph();
       });
       $('#graphIcon').iconpicker();
       $("#graphIcon").on( "iconpickerSelected", function(event){
-        globalGraphSettings.icons[type] = event.iconpickerValue + " 4x";
+        getOrCreateStyleTypeAttrib( type, "icon", event.iconpickerValue );
         renderGraph();
       });
     }
@@ -300,7 +304,7 @@ function renderGraph(){
       type = globalSelected[0].data()["type"];
       properties = globalGraphPropertiesPerType[type];
 
-      let sel = globalGraphSettings.labels[type];
+      let sel = getOrCreateStyleTypeAttrib(type, "label");
       if( sel == null )
         sel = "@type";
 
@@ -315,7 +319,7 @@ function renderGraph(){
 
       $("#graphLayout").html( layout );
       $("#graphLabel").change( function(){
-        globalGraphSettings.labels[type] = $("#graphLabel").val();
+        getOrCreateStyleTypeAttrib(type, "label", $("#graphLabel").val() );
         renderGraph();
       });
     }
@@ -343,8 +347,8 @@ function renderGraph(){
 function createVertex(vertex){
   let type = vertex["t"];
   let label = "@type";
-  if( globalGraphSettings.labels[type] != null )
-    label = globalGraphSettings.labels[type];
+  if( getOrCreateStyleTypeAttrib( type, "label" ) != null )
+    label =getOrCreateStyleTypeAttrib( type, "label" );
   if( label == "@type" )
     label = type;
   else
@@ -357,8 +361,8 @@ function createVertex(vertex){
 
 function createEdge(edge){
   let label = "@type";
-  if( globalGraphSettings.labels[edge["t"]] != null )
-    label = globalGraphSettings.labels[edge["t"]];
+  if( getOrCreateStyleTypeAttrib( edge["t"], "label" ) != null )
+    label = getOrCreateStyleTypeAttrib( edge["t"], "label" );
   if( label == "@type" )
     label = edge["t"];
   else
@@ -368,11 +372,11 @@ function createEdge(edge){
 }
 
 function assignVertexColor(type){
-  let color = globalGraphSettings.colors[type];
+  let color = getOrCreateStyleTypeAttrib(type, "color");
   if( color == null ){
     if( globalLastColorIndex >= globalBgColors.length )
       globalLastColorIndex = 0;
-    globalGraphSettings.colors[type] = globalLastColorIndex++;
+    getOrCreateStyleTypeAttrib(type, "color", globalLastColorIndex++ );
   }
 }
 
@@ -392,9 +396,9 @@ function assignStyles(styles){
   if( styles == null )
     styles = [];
 
-  for( type in globalGraphSettings.colors ) {
-    let colorIndex = globalGraphSettings.colors[type];
-    let icon = globalGraphSettings.icons[type];
+  for( type in globalGraphSettings.types ) {
+    let colorIndex = getOrCreateStyleTypeAttrib( type, "color" );
+    let icon = getOrCreateStyleTypeAttrib( type, "icon" );
 
     let style = { selector: '.' + type,
                   style: {
@@ -403,11 +407,13 @@ function assignStyles(styles){
     if( icon != null ){
       style.style['background-opacity'] = 0;
       style.style['text-valign'] = "bottom";
+      style.style['text-max-width'] = 200;
     } else {
       style.style['color'] = globalFgColors[ colorIndex ];
       style.style['background-color'] = globalBgColors[ colorIndex ];
       style.style['border-width'] = 1;
       style.style['text-valign'] = "center";
+      style.style['text-max-width'] = 100;
     }
 
     styles.push( style );
@@ -418,9 +424,9 @@ function assignStyles(styles){
 
 function setGraphStyles(){
   let nodeHtmlStyles = [];
-  for( type in globalGraphSettings.colors ) {
-    let colorIndex = globalGraphSettings.colors[type];
-    let icon = globalGraphSettings.icons[type];
+  for( type in globalGraphSettings.types ) {
+    let colorIndex = getOrCreateStyleTypeAttrib( type, "color" );
+    let icon = getOrCreateStyleTypeAttrib( type, "icon" );
     if( icon != null ) {
       nodeHtmlStyles.push(
         {
@@ -429,7 +435,7 @@ function setGraphStyles(){
           halign: "center",
           valignBox: "center",
           tpl: function (data) {
-            return "<span style='color: "+globalBgColors[ colorIndex ]+ "'><i class='"+icon+"'></i></span>";
+            return "<span style='font-size: 2.2em; color: "+globalBgColors[ colorIndex ]+ "'><i class='"+icon+"'></i></span>";
           }
         }
       );
@@ -726,4 +732,17 @@ function updateGraphStatus(warning){
     html += " <b>WARNING</b>: " + warning;
 
   $("#graphStatus").html( html );
+}
+
+function getOrCreateStyleTypeAttrib( type, attrib, value ){
+  let style = globalGraphSettings.types[type];
+  if( style == null ) {
+    style = {};
+    globalGraphSettings.types[type] = style;
+  }
+
+  if( typeof(value) !== 'undefined' )
+    style[attrib] = value;
+
+  return style[attrib];
 }
