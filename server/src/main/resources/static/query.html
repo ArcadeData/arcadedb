@@ -95,7 +95,7 @@
                       <ul class="dropdown-menu" aria-labelledby="navbarDropdown" style="width: 300px">
 
                         <li class="dropdown-item">
-                          <a class="nav-link" href="#" disabled>JSON</a>
+                          <a class="nav-link" href="#" onclick="importGraph('json')">JSON</a>
                         </li>
 
                         <li class="dropdown-item">
@@ -120,6 +120,14 @@
 
                         <li class="dropdown-item">
                           <a class="nav-link" href="#" onclick="exportGraph('graphml')">GraphML</a>
+                        </li>
+
+                        <li class="dropdown-item">
+                          <a class="nav-link" href="#" onclick="exportGraph('png')">PNG image</a>
+                        </li>
+
+                        <li class="dropdown-item">
+                          <a class="nav-link" href="#" onclick="exportGraph('jpeg')">JPEG image</a>
                         </li>
 
                         <li class="dropdown-item">

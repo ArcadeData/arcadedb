@@ -126,6 +126,18 @@ function renderGraph(){
     layout: globalLayout,
   });
 
+  initGraph();
+
+  let warning = null;
+  if( reachedMax ){
+    warning = "Returned more than " + globalGraphMaxResult + " items, partial results will be returned. Consider setting a limit in the query.";
+    globalNotify( "Warning", warning, "warning");
+  }
+
+  updateGraphStatus(warning);
+}
+
+function initGraph(){
   setGraphStyles();
 
   globalCy.cxtmenu({
@@ -500,14 +512,6 @@ function renderGraph(){
       $("#graphActions").html( actions );
     }
   });
-
-  let warning = null;
-  if( reachedMax ){
-    warning = "Returned more than " + globalGraphMaxResult + " items, partial results will be returned. Consider setting a limit in the query.";
-    globalNotify( "Warning", warning, "warning");
-  }
-
-  updateGraphStatus(warning);
 }
 
 function createVertex(vertex){
@@ -708,41 +712,6 @@ function removeGraphElement( ele ) {
   }
 }
 
-function exportGraph(format){
-  switch( format ) {
-    case "graphml":
-      globalCy.graphml({
-        node: {
-          css: false,
-          data: true,
-          position: false,
-          discludeds: []
-        },
-        edge: {
-          css: false,
-          data: true,
-          discludeds: []
-        },
-        layoutBy: "cola"
-      });
-
-      let graphml = globalCy.graphml();
-
-      const blob = new Blob([graphml], {type: 'text/xml'});
-      if(window.navigator.msSaveOrOpenBlob) {
-        window.navigator.msSaveBlob(blob, filename);
-      } else {
-        const elem = window.document.createElement('a');
-        elem.href = window.URL.createObjectURL(blob);
-        elem.download = "arcade.graphml";
-        document.body.appendChild(elem);
-        elem.click();
-        document.body.removeChild(elem);
-      }
-      break;
-  }
-}
-
 function loadNodeNeighbors( direction, rid ){
   let database = escapeHtml( $("#inputDatabase").val() );
 
@@ -865,6 +834,81 @@ function toggleSidebar(){
   $("#graphMainPanel").toggleClass("col-md-12 col-md-9");
 }
 
+function importGraph(format){
+  var html = "<center><h5>Copy below the "+format.toUpperCase();+" of the graph to import</h5>";
+  html += "<center><textarea id='importContent' rows='30' cols='75'></textarea><br>";
+  html += "<button id='importGraph' type='button' class='btn btn-primary'>";
+  html += "<i class='fa fa-download'></i> Import the graph</button></center>";
+
+  $("#popupBody").html(html);
+
+  $("#importGraph").on( "click", function(){
+    switch( format ) {
+      case "json":
+        globalResultset = JSON.parse( $("#importContent").val() );
+
+        globalGraphSettings = globalResultset.settings;
+        delete globalResultset.settings;
+
+        renderGraph();
+        break;
+    }
+    renderGraph();
+    $('#popup').modal("hide");
+  });
+
+  $("#popupLabel").text("Import Graph");
+
+  $('#popup').on('shown.bs.modal', function () {
+    $("#importContent").focus();
+  });
+  $('#popup').modal("show");
+}
+
+function exportGraph(format){
+  switch( format ) {
+    case "graphml":
+      globalCy.graphml({
+        node: {
+          css: false,
+          data: true,
+          position: false,
+          discludeds: []
+        },
+        edge: {
+          css: false,
+          data: true,
+          discludeds: []
+        },
+        layoutBy: "cola"
+      });
+
+      let graphml = globalCy.graphml();
+
+      const blob = new Blob([graphml], {type: 'text/xml'});
+      saveAs(blob, "arcade.graphml");
+      break;
+
+    case "json":
+      var json = JSON.parse( JSON.stringify( globalResultset ) );
+      json.records = [];
+      json.settings = globalGraphSettings;
+      var jsonBlob = new Blob([ JSON.stringify( json ) ], { type: 'application/javascript;charset=utf-8' });
+      saveAs( jsonBlob, 'arcadedb-graph.json' );
+      break;
+
+    case "png":
+      var imgBlob = globalCy.png( {"output": "blob"} );
+      saveAs( imgBlob, 'arcadedb-graph.png' );
+      break;
+
+    case "jpeg":
+      var imgBlob = globalCy.jpg( {"output": "blob"} );
+      saveAs( imgBlob, 'arcadedb-graph.jpg' );
+      break;
+  }
+}
+
 function importSettings(){
   var html = "<center><h5>Copy below the JSON configuration to import</h5>";
   html += "<center><textarea id='importContent' rows='30' cols='90'></textarea><br>";
@@ -887,7 +931,6 @@ function importSettings(){
   });
   $('#popup').modal("show");
 }
-
 
 function exportSettings(){
   var html = "<center><h5>This is the JSON configuration exported</h5>";
