@@ -835,10 +835,11 @@ function toggleSidebar(){
 }
 
 function importGraph(format){
-  var html = "<center><h5>Copy below the "+format.toUpperCase();+" of the graph to import</h5>";
+  var html = "<center><h5>Copy below the "+format.toUpperCase()+" of the graph to import or upload a file</h5>";
+  html += "<input id='uploadFile' type='file' accept='.json, .txt, .js' />";
   html += "<center><textarea id='importContent' rows='30' cols='75'></textarea><br>";
-  html += "<button id='importGraph' type='button' class='btn btn-primary'>";
-  html += "<i class='fa fa-download'></i> Import the graph</button></center>";
+  html += "<button id='importGraph' type='button' class='btn btn-primary'><i class='fa fa-upload'></i> Import the graph</button><br>";
+  html += "<div id='importStatus'><span>&nbsp;</span><div></center>";
 
   $("#popupBody").html(html);
 
@@ -855,6 +856,29 @@ function importGraph(format){
     }
     renderGraph();
     $('#popup').modal("hide");
+  });
+
+  const reader = new FileReader();
+  const fileUploader = document.getElementById('uploadFile');
+  fileUploader.addEventListener('change', (event) => {
+    const files = event.target.files;
+    const file = files[0];
+    console.log('files', files);
+
+    if (file.size > 10 * 1024 * 1024) {
+      $("#importStatus").html( "<span style='color:red;'>The maximum file size is 10MB.</span>" );
+      return;
+    } else {
+      $("#importStatus").html( "<span style='color:green;'> The file has been uploaded successfully.</span>" );
+    }
+
+    reader.onload = function() {
+      $("#importContent").val( reader.result );
+    };
+    reader.onerror = function() {
+      $("#importStatus").html( "<span style='color:red;'>Error: "+reader.error+".</span>" );
+    };
+    reader.readAsText(file);
   });
 
   $("#popupLabel").text("Import Graph");
@@ -910,10 +934,11 @@ function exportGraph(format){
 }
 
 function importSettings(){
-  var html = "<center><h5>Copy below the JSON configuration to import</h5>";
+  var html = "<center><h5>Copy below the JSON configuration to import or upload a file</h5>";
+  html += "<input id='uploadFile' type='file' accept='.json, .txt, .js' />";
   html += "<center><textarea id='importContent' rows='30' cols='90'></textarea><br>";
-  html += "<button id='importSettings' type='button' class='btn btn-primary'>";
-  html += "<i class='fa fa-download'></i> Import settings</button></center>";
+  html += "<button id='importSettings' type='button' class='btn btn-primary'><i class='fa fa-download'></i> Import settings</button><br>";
+  html += "<div id='importStatus'><span>&nbsp;</span><div></center>";
 
   $("#popupBody").html(html);
 
@@ -922,6 +947,29 @@ function importSettings(){
     globalGraphSettings = imported;
     renderGraph();
     $('#popup').modal("hide");
+  });
+
+  const reader = new FileReader();
+  const fileUploader = document.getElementById('uploadFile');
+  fileUploader.addEventListener('change', (event) => {
+    const files = event.target.files;
+    const file = files[0];
+    console.log('files', files);
+
+    if (file.size > 1024 * 1024) {
+      $("#importStatus").html( "<span style='color:red;'>The maximum file size is 1MB.</span>" );
+      return;
+    } else {
+      $("#importStatus").html( "<span style='color:green;'> The file has been uploaded successfully.</span>" );
+    }
+
+    reader.onload = function() {
+      $("#importContent").val( reader.result );
+    };
+    reader.onerror = function() {
+      $("#importStatus").html( "<span style='color:red;'>Error: "+reader.error+".</span>" );
+    };
+    reader.readAsText(file);
   });
 
   $("#popupLabel").text("Import Settings");
@@ -937,6 +985,7 @@ function exportSettings(){
   html += "<center><textarea id='exportContent' rows='30' cols='90'></textarea><br>";
   html += "<button id='popupClipboard' type='button' data-clipboard-target='#exportContent' class='clipboard-trigger btn btn-primary'>";
   html += "<i class='fa fa-copy'></i> Copy to clipboard and close</button></center>";
+
   $("#popupBody").html(html);
 
   $("#popupLabel").text("Export Settings");
