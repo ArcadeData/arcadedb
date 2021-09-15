@@ -72,13 +72,17 @@
                       <ul class="dropdown-menu" aria-labelledby="navbarDropdown" style="width: 300px">
 
                         <li class="dropdown-item">
+                          <a class="nav-link" href="#" onclick="selectNeighbors(1)" disabled>Direct Neighbors</a>
+                        </li>
+                        <li class="dropdown-item">
                           <a class="nav-link" href="#" onclick="selectOrphanVertices()" disabled>Orphan Vertices</a>
                         </li>
                         <li class="dropdown-item">
                           <a class="nav-link" href="#" onclick="invertVertexSelection()" disabled>Invert Node Selection</a>
                         </li>
-
-
+                        <li class="dropdown-item">
+                          <a class="nav-link" href="#" onclick="shortestPath()" disabled>Shortest Path</a>
+                        </li>
                       </ul>
                     </li>
                     <li class="nav-item">
@@ -147,6 +151,15 @@
                           <label for="graphSpacing" class="form-label">Graph Spacing</label>
                           <input id="graphSpacing" class="form-control" type="range" class="custom-range" min="10" max="100" step="10" value="20"
                                  style="width: 100%">
+                        </li>
+
+                        <li class="dropdown-item" onclick="globalToggleCheckbox('#cumulativeSelection');globalGraphSettings.cumulativeSelection = $('#cumulativeSelection').prop('checked')">
+                          <div class="form-check">
+                            <input id="cumulativeSelection" class="form-check-input" type="checkbox">
+                            <label for="cumulativeSelection" class="form-label">Cumulative Selection</label>
+                            <i class="fa fa-question-circle" data-toggle="tooltip" data-html="true"
+                               title="If enabled, any new selection of elements will be added to the current selection, otherwise it will replace it."></i>
+                          </div>
                         </li>
                       </ul>
                     </li>

@@ -106,6 +106,9 @@ function arrayRemoveAll(array, predicate) {
   return removed;
 }
 
+function globalToggleCheckbox(element){
+  $(element).prop('checked', !$(element).prop('checked') );
+}
 
 function globalTogglePanel(panelId1, panelId2, panelId3, panelId4, panelId5){
   $('#'+panelId1).collapse('toggle');
