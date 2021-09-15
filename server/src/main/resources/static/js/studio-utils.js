@@ -1,3 +1,5 @@
+var globalWidgetExpanded = {};
+
 function globalAlert(title, text, icon, callback ){
   if( !icon )
     icon = "error";
@@ -102,4 +104,32 @@ function arrayRemoveAll(array, predicate) {
    i++;
   }
   return removed;
+}
+
+
+function globalTogglePanel(panelId1, panelId2, panelId3, panelId4, panelId5){
+  $('#'+panelId1).collapse('toggle');
+  if( panelId2 )
+    $('#'+panelId2).collapse('toggle');
+  if( panelId3 )
+    $('#'+panelId3).collapse('toggle');
+  if( panelId4 )
+    $('#'+panelId4).collapse('toggle');
+  if( panelId5 )
+    $('#'+panelId5).collapse('toggle');
+  return false;
+}
+
+function globalToggleWidget(panelId, expandButtonId){
+  if( $('#'+panelId).hasClass('show') ){
+    $("#"+expandButtonId).removeClass( "fa-minus" );
+    $("#"+expandButtonId).addClass( "fa-plus" );
+    globalWidgetExpanded[panelId] = false;
+  } else {
+    $("#"+expandButtonId).removeClass( "fa-plus" );
+    $("#"+expandButtonId).addClass( "fa-minus" );
+    globalWidgetExpanded[panelId] = true;
+  }
+  globalTogglePanel(panelId);
+  return false;
 }
