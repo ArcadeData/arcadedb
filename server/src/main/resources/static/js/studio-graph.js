@@ -937,7 +937,7 @@ function importSettings(){
   var html = "<center><h5>Copy below the JSON configuration to import or upload a file</h5>";
   html += "<input id='uploadFile' type='file' accept='.json, .txt, .js' />";
   html += "<center><textarea id='importContent' rows='30' cols='90'></textarea><br>";
-  html += "<button id='importSettings' type='button' class='btn btn-primary'><i class='fa fa-download'></i> Import settings</button><br>";
+  html += "<button id='importSettings' type='button' class='btn btn-primary'><i class='fa fa-upload'></i> Import settings</button><br>";
   html += "<div id='importStatus'><span>&nbsp;</span><div></center>";
 
   $("#popupBody").html(html);
@@ -982,19 +982,28 @@ function importSettings(){
 
 function exportSettings(){
   var html = "<center><h5>This is the JSON configuration exported</h5>";
-  html += "<center><textarea id='exportContent' rows='30' cols='90'></textarea><br>";
+  html += "<center><textarea id='exportContent' rows='30' cols='90' readonly></textarea><br>";
   html += "<button id='popupClipboard' type='button' data-clipboard-target='#exportContent' class='clipboard-trigger btn btn-primary'>";
-  html += "<i class='fa fa-copy'></i> Copy to clipboard and close</button></center>";
+  html += "<i class='fa fa-copy'></i> Copy to clipboard and close</button> or ";
+  html += "<button id='downloadFile' type='button' class='btn btn-primary'>";
+  html += "<i class='fa fa-download'></i> Download it</button></center>";
 
   $("#popupBody").html(html);
 
   $("#popupLabel").text("Export Settings");
 
   $("#exportContent").text( JSON.stringify( globalGraphSettings, null, 2 ) );
+
   new ClipboardJS("#popupClipboard")
     .on('success', function(e) {
       $('#popup').modal("hide")
     });;
+
+  $("#downloadFile").on( "click", function(){
+    var jsonBlob = new Blob([ $("#exportContent").val() ], { type: 'application/javascript;charset=utf-8' });
+    saveAs( jsonBlob, 'arcadedb-studio-settings.json' );
+    $('#popup').modal("hide");
+  });
 
   $('#popup').on('shown.bs.modal', function () {
     $("#exportContent").focus();
