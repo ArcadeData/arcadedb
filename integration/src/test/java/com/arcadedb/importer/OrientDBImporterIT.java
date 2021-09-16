@@ -48,10 +48,9 @@ public class OrientDBImporterIT {
 
       final OrientDBImporter importer = new OrientDBImporter(
           ("-i " + inputFile.getFile() + " -d " + DATABASE_PATH + " -s " + SECURITY_PATH + " -o").split(" "));
-      importer.run();
+      importer.run().close();
 
       Assertions.assertFalse(importer.isError());
-
       Assertions.assertTrue(databaseDirectory.exists());
 
       try (final DatabaseFactory factory = new DatabaseFactory(DATABASE_PATH)) {

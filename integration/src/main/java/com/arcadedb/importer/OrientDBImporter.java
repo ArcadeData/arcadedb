@@ -92,8 +92,6 @@ public class OrientDBImporter {
   }
 
   public OrientDBImporter(final String[] args) {
-    printHeader();
-
     String state = null;
     for (String arg : args) {
       if (arg.equals("-?"))
@@ -126,6 +124,8 @@ public class OrientDBImporter {
 
     logger = new ConsoleLogger(settings.verboseLevel);
 
+    printHeader();
+
     if (inputFile == null)
       syntaxError("Missing input file. Use -f <file-path>");
 
@@ -146,7 +146,7 @@ public class OrientDBImporter {
     return new GZIPInputStream(new FileInputStream(file));
   }
 
-  public void run() throws IOException {
+  public Database run() throws IOException {
     if (file != null && !file.exists()) {
       error = true;
       throw new IllegalArgumentException("File '" + inputFile + "' not found");
@@ -164,7 +164,7 @@ public class OrientDBImporter {
         if (factory.exists()) {
           if (!overwriteDatabase) {
             logger.error("Database already exists on path '%s'", databasePath);
-            return;
+            return null;
           } else {
             database = factory.open();
             logger.error("Found existent database at '%s', dropping it and recreate a new one", databasePath);
@@ -238,6 +238,8 @@ public class OrientDBImporter {
 
     if (database != null)
       logger.log(1, "- you can find your new ArcadeDB database in '" + database.getDatabasePath() + "'");
+
+    return database;
   }
 
   public boolean isError() {

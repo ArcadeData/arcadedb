@@ -37,24 +37,26 @@ public class ExporterSettings {
 
   protected void parseParameters(final String[] args) {
     if (args != null)
-      for (int i = 0; i < args.length - 1; i += 2)
-        parseParameter(args[i].substring(1), args[i + 1]);
-  }
-
-  public void parseParameter(final String name, final String value) {
-    if ("format".equals(name))
-      format = value;
-    else if ("file".equals(name))
-      file = value;
-    else if ("database".equals(name))
-      databaseURL = value;
-    else if ("o".equals(name))
-      overwriteFile = Boolean.parseBoolean(value);
-    else
-      // ADDITIONAL OPTIONS
-      options.put(name, value);
+      for (int i = 0; i < args.length - 1; )
+        i += parseParameter(args[i].substring(1), i < args.length - 1 ? args[i + 1] : null);
 
     if (format == null)
       throw new IllegalArgumentException("Missing export format");
+  }
+
+  public int parseParameter(final String name, final String value) {
+    if ("format".equals(name))
+      format = value;
+    else if ("f".equals(name))
+      file = value;
+    else if ("d".equals(name))
+      databaseURL = value;
+    else if ("o".equals(name)) {
+      overwriteFile = true;
+      return 1;
+    } else
+      // ADDITIONAL OPTIONS
+      options.put(name, value);
+    return 2;
   }
 }
