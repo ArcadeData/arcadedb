@@ -23,7 +23,8 @@ package com.arcadedb.exporter;
 
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.importer.AnalyzedSchema;
+import com.arcadedb.exporter.format.AbstractExporter;
+import com.arcadedb.exporter.format.JsonExporter;
 import com.arcadedb.importer.ConsoleLogger;
 import com.arcadedb.log.LogManager;
 
@@ -37,6 +38,7 @@ public class Exporter {
   protected DatabaseInternal database;
   protected Timer            timer;
   protected ConsoleLogger    logger;
+  protected AbstractExporter formatImplementation;
 
   public Exporter(final String[] args) {
     settings.parseParameters(args);
@@ -48,19 +50,28 @@ public class Exporter {
   }
 
   public static void main(final String[] args) {
-    new Exporter(args).write();
+    new Exporter(args).exportDatabase();
     System.exit(0);
   }
 
-  public void write() {
+  public void exportDatabase() {
     try {
-      final String cfgValue = settings.options.get("maxValueSampling");
-
-      final AnalyzedSchema analyzedSchema = new AnalyzedSchema(cfgValue != null ? Integer.parseInt(cfgValue) : 100);
+      startExporting();
 
       openDatabase();
 
-      startExporting();
+      formatImplementation = createFormatImplementation();
+      formatImplementation.exportDatabase();
+
+      long elapsedInSecs = (System.currentTimeMillis() - context.startedOn) / 1000;
+      if (elapsedInSecs == 0)
+        elapsedInSecs = 1;
+
+      final long totalRecords = context.vertices.get() + context.edges.get() + context.documents.get();
+
+      logger.log(0,//
+          "Database exported successfully: %,d records exported in %s secs (%,d records/secs %,d documents %,d vertices %,d edges)",//
+          totalRecords, elapsedInSecs, (totalRecords / elapsedInSecs), context.documents.get(), context.vertices.get(), context.edges.get());
 
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on writing to %s", e, settings.file);
@@ -69,11 +80,13 @@ public class Exporter {
         stopExporting();
         closeDatabase();
       }
-      closeOutputFile();
     }
   }
 
   protected void startExporting() {
+    if (logger == null)
+      logger = new ConsoleLogger(settings.verboseLevel);
+
     context.startedOn = context.lastLapOn = System.currentTimeMillis();
 
     timer = new Timer();
@@ -88,10 +101,6 @@ public class Exporter {
   protected void stopExporting() {
     if (timer != null)
       timer.cancel();
-    printProgress();
-  }
-
-  protected void closeOutputFile() {
   }
 
   protected void openDatabase() {
@@ -105,7 +114,7 @@ public class Exporter {
       return;
     }
 
-    LogManager.instance().log(this, Level.INFO, "Opening database '%s'...", null, settings.databaseURL);
+    logger.log(0, "Opening database '%s'...", settings.databaseURL);
     database = (DatabaseInternal) factory.open();
     database.begin();
   }
@@ -119,11 +128,8 @@ public class Exporter {
       if (deltaInSecs == 0)
         deltaInSecs = 1;
 
-      if (logger == null)
-        logger = new ConsoleLogger(settings.verboseLevel);
-
       logger.log(2,//
-          "- Status update: %d documents (%d/sec) - %d vertices (%d/sec) - %d edges (%d/sec)",//
+          "- Status update: %,d documents (%,d/sec) - %,d vertices (%,d/sec) - %,d edges (%,d/sec)",//
           context.documents.get(), (context.documents.get() - context.lastDocuments) / deltaInSecs,//
           context.vertices.get(), (context.vertices.get() - context.lastVertices) / deltaInSecs,//
           context.edges.get(), (context.edges.get() - context.lastEdges) / deltaInSecs);
@@ -144,6 +150,16 @@ public class Exporter {
       if (database.isTransactionActive())
         database.commit();
       database.close();
+    }
+  }
+
+  protected AbstractExporter createFormatImplementation() {
+    switch (settings.format.toUpperCase()) {
+    case "JSON":
+      return new JsonExporter(database, settings, context, logger);
+
+    default:
+      throw new IllegalArgumentException("Format '" + settings.format + "' not supported");
     }
   }
 }

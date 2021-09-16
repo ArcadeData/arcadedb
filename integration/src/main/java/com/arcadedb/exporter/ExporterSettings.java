@@ -25,10 +25,12 @@ import java.util.HashMap;
 import java.util.Map;
 
 public class ExporterSettings {
+  public       String              format;
   public       String              databaseURL;
-  public       String              file         = "arcadedb-export.tgz";
-  public       int                 verboseLevel = 2;
-  public final Map<String, String> options      = new HashMap<>();
+  public       String              file          = "arcadedb-export.tgz";
+  public       boolean             overwriteFile = false;
+  public       int                 verboseLevel  = 2;
+  public final Map<String, String> options       = new HashMap<>();
 
   public ExporterSettings() {
   }
@@ -40,12 +42,19 @@ public class ExporterSettings {
   }
 
   public void parseParameter(final String name, final String value) {
-    if ("file".equals(name))
+    if ("format".equals(name))
+      format = value;
+    else if ("file".equals(name))
       file = value;
     else if ("database".equals(name))
       databaseURL = value;
+    else if ("o".equals(name))
+      overwriteFile = Boolean.parseBoolean(value);
     else
       // ADDITIONAL OPTIONS
       options.put(name, value);
+
+    if (format == null)
+      throw new IllegalArgumentException("Missing export format");
   }
 }

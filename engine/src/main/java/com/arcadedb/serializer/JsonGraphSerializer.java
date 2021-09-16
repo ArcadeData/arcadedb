@@ -33,27 +33,41 @@ import java.util.List;
 
 public class JsonGraphSerializer extends JsonSerializer {
 
-  private boolean expandVertexEdges = false;
+  private boolean    expandVertexEdges = false;
+  private JSONObject sharedJson        = null;
 
   public JSONObject serializeGraphElement(final Document document) {
-    final JSONObject object = new JSONObject();
+    if (sharedJson != null)
+      return serializeGraphElement(document, sharedJson);
+    return serializeGraphElement(document, new JSONObject());
+  }
+
+  public JSONObject serializeGraphElement(final Document document, final JSONObject object) {
+    final JSONObject properties;
+
+    if (object.has("p")) {
+      // REUSE PROPERTY OBJECT
+      properties = object.getJSONObject("p");
+      properties.clear();
+    } else
+      properties = new JSONObject();
+
+    sharedJson.clear();
+    object.put("p", properties);
 
     object.put("r", document.getIdentity().toString());
     object.put("t", document.getTypeName());
-
-    final JSONObject properties = new JSONObject();
-    object.put("p", properties);
 
     for (String p : document.getPropertyNames()) {
       Object value = document.get(p);
 
       if (value instanceof Document)
-        value = serializeGraphElement((Document) value);
+        value = serializeGraphElement((Document) value, new JSONObject());
       else if (value instanceof Collection) {
         final List<Object> list = new ArrayList<>();
         for (Object o : (Collection) value) {
           if (o instanceof Document)
-            o = serializeGraphElement((Document) o);
+            o = serializeGraphElement((Document) o, new JSONObject());
           list.add(o);
         }
         value = list;
@@ -99,5 +113,10 @@ public class JsonGraphSerializer extends JsonSerializer {
       object.put("i", edge.getIn());
       object.put("o", edge.getOut());
     }
+  }
+
+  public JsonGraphSerializer setSharedJson(final JSONObject json) {
+    sharedJson = json;
+    return this;
   }
 }

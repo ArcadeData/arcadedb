@@ -62,12 +62,9 @@ public abstract class AbstractImporter {
       if (deltaInSecs == 0)
         deltaInSecs = 1;
 
-      if (logger == null)
-        logger = new ConsoleLogger(settings.verboseLevel);
-
       if (source == null || source.compressed || source.totalSize < 0) {
         logger.log(2,//
-            "- Status update: parsed %d (%d/sec) - %d documents (%d/sec) - %d vertices (%d/sec) - %d edges (%d/sec) - %d skipped edges - %d linked edges (%d/sec - %d%%)",
+            "- Status update: parsed %,d (%,d/sec) - %,d documents (%,d/sec) - %,d vertices (%,d/sec) - %,d edges (%,d/sec) - %,d skipped edges - %,d linked edges (%,d/sec - %,d%%)",
 //
             context.parsed.get(), ((context.parsed.get() - context.lastParsed) / deltaInSecs), context.createdDocuments.get(),
             (context.createdDocuments.get() - context.lastDocuments) / deltaInSecs, context.createdVertices.get(),
@@ -78,7 +75,7 @@ public abstract class AbstractImporter {
       } else {
         final int progressPerc = (int) (parser.getPosition() * 100 / source.totalSize);
         logger.log(2,//
-            "Status update: parsed %d (%d/sec - %d%%) - %d records (%d/sec) - %d vertices (%d/sec) - %d edges (%d/sec) - %d skipped edges - %d linked edges (%d/sec - %d%%)",
+            "Status update: parsed %,d (%,d/sec - %,d%%) - %,d records (%,d/sec) - %,d vertices (%,d/sec) - %,d edges (%,d/sec) - %,d skipped edges - %,d linked edges (%,d/sec - %,d%%)",
             context.parsed.get(), ((context.parsed.get() - context.lastParsed) / deltaInSecs), progressPerc, context.createdDocuments.get(),
             (context.createdDocuments.get() - context.lastDocuments) / deltaInSecs, context.createdVertices.get(),
             (context.createdVertices.get() - context.lastVertices) / deltaInSecs, context.createdEdges.get(),
@@ -100,6 +97,9 @@ public abstract class AbstractImporter {
   }
 
   protected void startImporting() {
+    if (logger == null)
+      logger = new ConsoleLogger(settings.verboseLevel);
+
     context.startedOn = context.lastLapOn = System.currentTimeMillis();
 
     timer = new Timer();
