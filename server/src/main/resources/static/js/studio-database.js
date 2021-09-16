@@ -209,13 +209,13 @@ function executeCommand(language, query){
   if( escapeHtml( editor.getValue() ) == "" )
     return;
 
+  globalActivateTab("tab-query");
+
   let activeTab = $("#tabs-command .active").attr("id");
   if( activeTab == "tab-table-sel" )
     executeCommandTable();
   else if( activeTab == "tab-graph-sel" )
     executeCommandGraph();
-
-  globalActivateTab("tab-query");
 }
 
 function executeCommandTable(){
@@ -234,7 +234,7 @@ function executeCommandTable(){
       {
         language: language,
         command: command,
-        serializer: "default"
+        serializer: "graph"
       }
     ),
     beforeSend: function (xhr){
@@ -245,11 +245,11 @@ function executeCommandTable(){
     let elapsed = new Date() - beginTime;
     $("#result-elapsed").html( elapsed );
 
-    $("#result-num").html( data.result.length );
-
+    $("#result-num").html( data.result.records.length );
     $("#resultJson").val( JSON.stringify(data, null, 2) );
 
-    globalResultset = { records: data.result };
+    globalResultset = data.result;
+    globalCy = null;
     renderTable();
   })
   .fail(function( jqXHR, textStatus, errorThrown ){
@@ -288,16 +288,16 @@ function executeCommandGraph(){
     $("#result-elapsed").html( elapsed );
 
     $("#result-num").html( data.result.vertices.length + data.result.edges.length );
-
     $("#resultJson").val( JSON.stringify(data, null, 2) );
 
-    if( data.result.vertices.length == 0 && data.result.records.length > 0 ){
-      globalResultset = data.result;
-      globalActivateTab("tab-table");
-      renderTable();
-    }
-
     globalResultset = data.result;
+    globalCy = null;
+
+    if( data.result.vertices.length == 0 && data.result.records.length > 0 ){
+      globalActivateTab("tab-table");
+    } else {
+      globalActivateTab("tab-graph");
+    }
 
     // FORCE RESET OF THE SEARCH FIELD
     $("#inputGraphSearch").val("");

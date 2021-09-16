@@ -1,4 +1,3 @@
-
 function renderTable(){
   if( globalResultset == null )
     return;
@@ -36,16 +35,31 @@ function renderTable(){
     if( columns["@out"])
       orderedColumns.push("@out");
 
-    for( i in orderedColumns )
-      tableColumns.push( { sTitle: escapeHtml( orderedColumns[i] ), "defaultContent": "" } );
+    for( i in orderedColumns ){
+      if( orderedColumns[i] == "@rid" )
+        tableColumns.push( { "mRender": function ( data, type, full ) {
+                                                   return $("<div/>").html(data).text();
+                                                   } } );
+      else
+        tableColumns.push( { sTitle: escapeHtml( orderedColumns[i] ), "defaultContent": "" } );
+    }
 
     for( i in globalResultset.records ){
       let row = globalResultset.records[i];
 
-
       let record = [];
-      for( i in orderedColumns )
-        record.push( escapeHtml( row[orderedColumns[i]] ) );
+      for( i in orderedColumns ){
+        let colName = orderedColumns[i];
+        let value = row[colName];
+
+        if( colName == "@rid" ){
+          //RID
+          value = "<a class='link' onclick=\"addNodeFromRecord('"+value+"')\">"+value+"</a>";
+        } else if ( value != null && ( typeof value === 'string' || value instanceof String) && value.toString().length > 30 )
+          value = value.toString().substr( 0, 30) + "...";
+
+        record.push( escapeHtml( value ) );
+      }
       tableRecords.push( record );
     }
   }

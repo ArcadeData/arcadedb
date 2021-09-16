@@ -4,8 +4,10 @@ var globalRenderedVerticesRID = {};
 var globalTotalEdges = 0;
 var globalLastColorIndex = 0;
 var globalGraphPropertiesPerType = {};
+var globalLayout = null;
 var globalCy = null;
 var globalSelected = null;
+var globalEnableElementPanel = true;
 var globalGraphSettings = {
   graphSpacing: 50,
   cumulativeSelection: false,
