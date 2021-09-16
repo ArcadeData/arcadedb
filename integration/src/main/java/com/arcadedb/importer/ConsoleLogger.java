@@ -22,19 +22,19 @@
 package com.arcadedb.importer;
 
 /**
- * Importer from OrientDB. OrientDB is a registered mark of SAP.
+ * Console logger used by importers and exporters.
  *
  * @author Luca Garulli
  */
-public class ImporterLogger {
-  private final ImporterSettings settings;
+public class ConsoleLogger {
+  private final int verboseLevel;
 
-  public ImporterLogger(final ImporterSettings settings) {
-    this.settings = settings;
+  public ConsoleLogger(final int verboseLevel) {
+    this.verboseLevel = verboseLevel;
   }
 
   public void log(final int level, final String text, final Object... args) {
-    if (level > settings.verboseLevel)
+    if (level > verboseLevel)
       return;
 
     if (args.length == 0)

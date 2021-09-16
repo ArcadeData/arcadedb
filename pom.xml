@@ -70,7 +70,7 @@
         <module>engine</module>
         <module>gremlin</module>
         <module>network</module>
-        <module>importer</module>
+        <module>integration</module>
         <module>console</module>
         <module>server</module>
         <module>mongodbw</module>

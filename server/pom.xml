@@ -65,7 +65,7 @@
         </dependency>
         <dependency>
             <groupId>com.arcadedb</groupId>
-            <artifactId>arcadedb-importer</artifactId>
+            <artifactId>arcadedb-integration</artifactId>
             <version>${project.parent.version}</version>
             <scope>compile</scope>
         </dependency>

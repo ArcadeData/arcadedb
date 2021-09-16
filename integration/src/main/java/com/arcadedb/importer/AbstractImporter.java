@@ -42,7 +42,7 @@ public abstract class AbstractImporter {
   protected Source           source;
   protected Timer            timer;
   protected boolean          databaseCreatedDuringImporting = true;
-  protected ImporterLogger   logger                         = new ImporterLogger(settings);
+  protected ConsoleLogger    logger;
 
   public AbstractImporter(final String[] args) {
     settings.parseParameters(args);
@@ -61,6 +61,9 @@ public abstract class AbstractImporter {
       long deltaInSecs = (System.currentTimeMillis() - context.lastLapOn) / 1000;
       if (deltaInSecs == 0)
         deltaInSecs = 1;
+
+      if (logger == null)
+        logger = new ConsoleLogger(settings.verboseLevel);
 
       if (source == null || source.compressed || source.totalSize < 0) {
         logger.log(2,//

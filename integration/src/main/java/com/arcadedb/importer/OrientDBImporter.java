@@ -60,8 +60,8 @@ public class OrientDBImporter {
   private       long                       totalAttributesParsed           = 0L;
   private       long                       errors                          = 0L;
   private       long                       warnings                        = 0L;
-  private       Set<String>                excludeClasses                  = new HashSet<>(
-      Arrays.asList(new String[] { "OUser", "ORole", "OSchedule", "OSequence", "OTriggered", "OSecurityPolicy", "ORestricted", "OIdentity", "OFunction", "_studio" }));
+  private       Set<String>                excludeClasses                  = new HashSet<>(Arrays.asList(
+      new String[] { "OUser", "ORole", "OSchedule", "OSequence", "OTriggered", "OSecurityPolicy", "ORestricted", "OIdentity", "OFunction", "_studio" }));
   private       DatabaseFactory            factory;
   private       Database                   database;
   private       Set<String>                edgeClasses                     = new HashSet<>();
@@ -81,7 +81,7 @@ public class OrientDBImporter {
   private       boolean                    error                           = false;
   private       ImporterContext            context                         = new ImporterContext();
   private       ImporterSettings           settings                        = new ImporterSettings();
-  private       ImporterLogger             logger                          = new ImporterLogger(settings);
+  private       ConsoleLogger              logger;
 
   private enum PHASE {OFF, CREATE_SCHEMA, CREATE_RECORDS, CREATE_EDGES}
 
@@ -123,6 +123,8 @@ public class OrientDBImporter {
           settings.verboseLevel = Integer.parseInt(arg);
       }
     }
+
+    logger = new ConsoleLogger(settings.verboseLevel);
 
     if (inputFile == null)
       syntaxError("Missing input file. Use -f <file-path>");
