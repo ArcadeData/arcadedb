@@ -69,7 +69,7 @@ public class IndexMatchCondition extends BooleanExpression {
   public void toString(Map<Object, Object> params, StringBuilder builder) {
     builder.append("KEY ");
     if (operator != null) {
-      builder.append(operator.toString());
+      builder.append(operator);
       builder.append(" [");
       boolean first = true;
       for (Expression x : leftExpressions) {

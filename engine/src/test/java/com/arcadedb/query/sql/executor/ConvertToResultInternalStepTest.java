@@ -16,7 +16,7 @@ public class ConvertToResultInternalStepTest {
 
   private static final String         STRING_PROPERTY  = "stringPropertyName";
   private static final String         INTEGER_PROPERTY = "integerPropertyName";
-  private              List<Document> documents        = new ArrayList<>();
+  private final        List<Document> documents        = new ArrayList<>();
 
   @Test
   public void shouldConvertUpdatableResult() throws Exception {

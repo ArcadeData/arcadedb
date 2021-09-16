@@ -49,8 +49,8 @@ import java.util.logging.Level;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class PerformanceInsertGraphIndexTest extends TestHelper {
-  private static       boolean CREATEDB         = true;
-  private static final int     VERTICES         = 5_000_000; //31_623;
+  private static final boolean CREATEDB = true;
+  private static final int     VERTICES = 5_000_000; //31_623;
   private static final int     EDGES_PER_VERTEX = 20; //31_623;
   private static final String  VERTEX_TYPE_NAME = "Person";
   private static final String  EDGE_TYPE_NAME   = "Friend";
@@ -236,13 +236,13 @@ public class PerformanceInsertGraphIndexTest extends TestHelper {
 
     final VertexType vertex = database.getSchema().createVertexType(VERTEX_TYPE_NAME, PARALLEL);
     vertex.createProperty("id", Integer.class);
-    database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, VERTEX_TYPE_NAME, new String[] { "id" });
+    database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, VERTEX_TYPE_NAME, "id");
     vertex.setBucketSelectionStrategy(new PartitionedBucketSelectionStrategy(new String[] { "id" }));
 
     final EdgeType edge = database.getSchema().createEdgeType(EDGE_TYPE_NAME, PARALLEL);
     if (EDGE_IDS) {
       edge.createProperty("id", Integer.class);
-      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, EDGE_TYPE_NAME, new String[] { "id" });
+      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, EDGE_TYPE_NAME, "id");
       edge.setBucketSelectionStrategy(new PartitionedBucketSelectionStrategy(new String[] { "id" }));
     }
 

@@ -45,8 +45,8 @@ import java.util.logging.Level;
 public class RebuildIndexStatement extends SimpleExecStatement {
 
   protected boolean   all      = false;
-  protected IndexName name;
-  private   int       pageSize = LSMTreeIndexAbstract.DEF_PAGE_SIZE;
+  protected     IndexName name;
+  private final int       pageSize = LSMTreeIndexAbstract.DEF_PAGE_SIZE;
 
   public RebuildIndexStatement(int id) {
     super(id);

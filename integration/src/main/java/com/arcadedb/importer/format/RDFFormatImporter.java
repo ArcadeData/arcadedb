@@ -41,7 +41,7 @@ public class RDFFormatImporter extends CSVFormatImporter {
       // BY DEFAULT SKIP THE FIRST LINE AS HEADER
       skipEntries = 1l;
 
-    try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream());) {
+    try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream())) {
       csvParser.beginParsing(inputFileReader);
 
       if (!database.isTransactionActive())

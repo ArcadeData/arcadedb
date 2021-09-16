@@ -19,7 +19,7 @@ public class CountFromIndexStepTest {
   private static final String ALIAS          = "size";
   private static       String indexName;
 
-  private IndexIdentifier.Type identifierType;
+  private final IndexIdentifier.Type identifierType;
 
   public CountFromIndexStepTest() {
     this.identifierType = IndexIdentifier.Type.INDEX;

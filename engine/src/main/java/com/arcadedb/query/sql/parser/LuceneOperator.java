@@ -41,7 +41,7 @@ public class LuceneOperator extends SimpleNode implements BinaryCompareOperator 
 
   @Override
   public boolean execute(DatabaseInternal database, Object left, Object right) {
-    throw new UnsupportedOperationException(toString() + " operator cannot be evaluated in this context");
+    throw new UnsupportedOperationException(this + " operator cannot be evaluated in this context");
   }
 
   @Override

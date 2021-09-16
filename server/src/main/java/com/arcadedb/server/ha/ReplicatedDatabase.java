@@ -61,7 +61,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
   private final ArcadeDBServer   server;
   private final EmbeddedDatabase proxied;
   private final ReplicatedSchema schema;
-  private       HAServer.QUORUM  quorum;
+  private final HAServer.QUORUM  quorum;
   private final long             timeout;
 
   public ReplicatedDatabase(final ArcadeDBServer server, final EmbeddedDatabase proxied) {

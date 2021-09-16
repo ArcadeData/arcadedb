@@ -139,10 +139,10 @@ public class ArcadeVertex extends ArcadeElement<MutableVertex> implements Vertex
 
     if (edgeLabels.length == 0)
       for (com.arcadedb.graph.Edge edge : this.baseElement.getEdges(ArcadeGraph.mapDirection(direction)))
-        result.add(new ArcadeEdge(this.graph, (MutableEdge) edge.modify()));
+        result.add(new ArcadeEdge(this.graph, edge.modify()));
     else
       for (com.arcadedb.graph.Edge edge : this.baseElement.getEdges(ArcadeGraph.mapDirection(direction), edgeLabels))
-        result.add(new ArcadeEdge(this.graph, (MutableEdge) edge.modify()));
+        result.add(new ArcadeEdge(this.graph, edge.modify()));
 
     return result.iterator();
   }
@@ -153,10 +153,10 @@ public class ArcadeVertex extends ArcadeElement<MutableVertex> implements Vertex
 
     if (edgeLabels.length == 0)
       for (com.arcadedb.graph.Vertex vertex : this.baseElement.getVertices(ArcadeGraph.mapDirection(direction)))
-        result.add(new ArcadeVertex(this.graph, (MutableVertex) vertex.modify()));
+        result.add(new ArcadeVertex(this.graph, vertex.modify()));
     else
       for (com.arcadedb.graph.Vertex vertex : this.baseElement.getVertices(ArcadeGraph.mapDirection(direction), edgeLabels))
-        result.add(new ArcadeVertex(this.graph, (MutableVertex) vertex.modify()));
+        result.add(new ArcadeVertex(this.graph, vertex.modify()));
 
     return result.iterator();
   }

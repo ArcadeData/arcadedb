@@ -32,8 +32,8 @@ import java.util.Map;
 import java.util.Set;
 
 public class ImmutableLightEdge extends ImmutableDocument implements LightEdge {
-  private RID out;
-  private RID in;
+  private final RID out;
+  private final RID in;
 
   public ImmutableLightEdge(final Database graph, final DocumentType type, final RID edgeRID, final RID out, final RID in) {
     super(graph, type, edgeRID, null);

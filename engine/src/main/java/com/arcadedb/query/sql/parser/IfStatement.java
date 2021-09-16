@@ -186,10 +186,7 @@ public class IfStatement extends Statement {
       return false;
     if (statements != null ? !statements.equals(that.statements) : that.statements != null)
       return false;
-    if (elseStatements != null ? !elseStatements.equals(that.elseStatements) : that.elseStatements != null)
-      return false;
-
-    return true;
+    return elseStatements != null ? elseStatements.equals(that.elseStatements) : that.elseStatements == null;
   }
 
   @Override

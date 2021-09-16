@@ -64,7 +64,7 @@ public class ContainsValueCondition extends BooleanExpression {
         return false;
       } else {
         Object rightValue = expression.execute(currentRecord, ctx);
-        return map.values().contains(rightValue);//TODO type conversions...?
+        return map.containsValue(rightValue);//TODO type conversions...?
       }
 
     }
@@ -85,7 +85,7 @@ public class ContainsValueCondition extends BooleanExpression {
         return false;
       } else {
         Object rightValue = expression.execute(currentRecord, ctx);
-        return map.values().contains(rightValue);//TODO type conversions...?
+        return map.containsValue(rightValue);//TODO type conversions...?
       }
 
     }

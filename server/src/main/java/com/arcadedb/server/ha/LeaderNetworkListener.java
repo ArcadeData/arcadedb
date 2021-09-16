@@ -37,14 +37,14 @@ public class LeaderNetworkListener extends Thread {
     void connected();
   }
 
-  private final    HAServer            ha;
-  private          ServerSocketFactory socketFactory;
-  private          ServerSocket        serverSocket;
+  private final HAServer            ha;
+  private final ServerSocketFactory socketFactory;
+  private       ServerSocket        serverSocket;
   private          InetSocketAddress   inboundAddr;
-  private volatile boolean             active           = true;
-  private          int                 socketBufferSize = 0;
-  private          int                 protocolVersion  = -1;
-  private final    String              hostName;
+  private volatile boolean active           = true;
+  private final    int     socketBufferSize = 0;
+  private final    int     protocolVersion  = -1;
+  private final String hostName;
   private          int                 port;
   private          ClientConnected     callback;
 

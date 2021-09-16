@@ -55,7 +55,7 @@ public class ArcadeGraphFeatures implements Graph.Features {
 
   public class ArcadeGraphGraphFeatures implements GraphFeatures {
 
-    private VariableFeatures variableFeatures = new ArcadeVariableFeatures();
+    private final VariableFeatures variableFeatures = new ArcadeVariableFeatures();
 
     @Override
     public boolean supportsConcurrentAccess() {

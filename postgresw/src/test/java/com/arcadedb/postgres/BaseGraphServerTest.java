@@ -47,8 +47,8 @@ import java.util.logging.Level;
  */
 public abstract class BaseGraphServerTest {
   public static final String           DEFAULT_PASSWORD_FOR_TESTS = "DefaultPasswordForTests";
-  private             ArcadeDBServer[] servers;
-  private             Database         databases[];
+  private ArcadeDBServer[] servers;
+  private Database[]       databases;
 
   protected Database getDatabase(final int serverId) {
     return databases[serverId];

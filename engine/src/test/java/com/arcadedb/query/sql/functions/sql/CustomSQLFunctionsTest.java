@@ -20,7 +20,7 @@ public class CustomSQLFunctionsTest {
   public void testLog10() throws Exception {
     TestHelper.executeInNewDatabase("testRandom", (db) -> {
       ResultSet result = db.query("sql", "select math_log10(10000) as log10");
-      Assertions.assertEquals((Double) result.next().getProperty("log10"), 4.0, 0.0001);
+      Assertions.assertEquals(result.next().getProperty("log10"), 4.0, 0.0001);
     });
   }
 

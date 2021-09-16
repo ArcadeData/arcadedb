@@ -362,7 +362,7 @@ public class Modifier extends SimpleNode {
       } else if (suffix != null) {
         suffix.applyRemove(currentValue, ctx);
       } else {
-        throw new CommandExecutionException("cannot apply REMOVE " + toString());
+        throw new CommandExecutionException("cannot apply REMOVE " + this);
       }
     }
 

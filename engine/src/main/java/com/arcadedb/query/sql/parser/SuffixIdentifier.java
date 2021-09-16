@@ -266,11 +266,11 @@ public class SuffixIdentifier extends SimpleNode {
   }
 
   public void aggregate(Object value, CommandContext ctx) {
-    throw new UnsupportedOperationException("this operation does not support plain aggregation: " + toString());
+    throw new UnsupportedOperationException("this operation does not support plain aggregation: " + this);
   }
 
   public AggregationContext getAggregationContext(CommandContext ctx) {
-    throw new UnsupportedOperationException("this operation does not support plain aggregation: " + toString());
+    throw new UnsupportedOperationException("this operation does not support plain aggregation: " + this);
   }
 
   public SuffixIdentifier copy() {

@@ -231,7 +231,7 @@ public class SerializerTest extends TestHelper {
           listOfStrings.add("" + i);
 
         List<Object> listOfMixed = new ArrayList<>();
-        listOfMixed.add((int) 0);
+        listOfMixed.add(0);
         listOfMixed.add((long) 1);
         listOfMixed.add((short) 2);
         listOfMixed.add("3");
@@ -339,7 +339,7 @@ public class SerializerTest extends TestHelper {
           mapOfStrings.put("" + i, "" + i);
 
         Map<Object, Object> mapOfMixed = new HashMap<>();
-        mapOfMixed.put("0", (int) 0);
+        mapOfMixed.put("0", 0);
         mapOfMixed.put(1l, (long) 1);
         mapOfMixed.put("2short", (short) 2);
         mapOfMixed.put("3string", "3");

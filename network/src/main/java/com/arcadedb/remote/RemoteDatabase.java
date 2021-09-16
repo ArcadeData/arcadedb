@@ -62,9 +62,9 @@ public class RemoteDatabase extends RWLockContext {
   private             CONNECTION_STRATEGY         connectionStrategy        = CONNECTION_STRATEGY.ROUND_ROBIN;
   private             Pair<String, Integer>       leaderServer;
   private             int                         currentReplicaServerIndex = -1;
-  private             int                         timeout                   = 5000;
-  private             String                      protocol                  = "http";
-  private             String                      charset                   = "UTF-8";
+  private       int    timeout  = 5000;
+  private final String protocol = "http";
+  private final String charset  = "UTF-8";
 
   public RemoteDatabase(final String server, final int port, final String name, final String userName, final String userPassword) {
     this(server, port, name, userName, userPassword, new ContextConfiguration());

@@ -73,7 +73,7 @@ public class Neo4jImporterIT {
           Assertions.assertEquals(33.46789, place.get("latitude"));
           Assertions.assertNull(place.get("height"));
 
-          Assertions.assertEquals(Arrays.asList(new String[] { "Sam", "Anna", "Grace" }), ((List) v.get("kids")));
+          Assertions.assertEquals(Arrays.asList("Sam", "Anna", "Grace"), v.get("kids"));
 
           DocumentType friendType = database.getSchema().getType("KNOWS");
           Assertions.assertNotNull(friendType);

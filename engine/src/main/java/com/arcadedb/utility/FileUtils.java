@@ -322,7 +322,7 @@ public class FileUtils {
 
         if (limit > 0 && fileData.length() + readData.length() > limit) {
           // LIMIT REACHED
-          fileData.append(readData.substring(0, (int) (limit - fileData.length())));
+          fileData.append(readData, 0, (int) (limit - fileData.length()));
           break;
         } else
           fileData.append(readData);
@@ -366,7 +366,7 @@ public class FileUtils {
   public static void gzipFile(final File sourceFile, final File destFile) throws IOException {
     try (FileInputStream fis = new FileInputStream(sourceFile);
         FileOutputStream fos = new FileOutputStream(destFile);
-        GZIPOutputStream gzipOS = new GZIPOutputStream(fos);) {
+        GZIPOutputStream gzipOS = new GZIPOutputStream(fos)) {
       byte[] buffer = new byte[1024 * 1024];
       int len;
       while ((len = fis.read(buffer)) != -1) {

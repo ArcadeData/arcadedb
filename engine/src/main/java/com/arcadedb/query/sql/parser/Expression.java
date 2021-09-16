@@ -231,7 +231,7 @@ public class Expression extends SimpleNode {
     } else if (json != null) {
       json.toString(params, builder);
     } else if (booleanValue != null) {
-      builder.append(booleanValue.toString());
+      builder.append(booleanValue);
     } else if (value instanceof SimpleNode) {
       ((SimpleNode) value).toString(params, builder);//only for translated input params, will disappear with new executor
     } else if (value instanceof String) {
@@ -413,7 +413,7 @@ public class Expression extends SimpleNode {
         } else if (splitResult instanceof Expression) {
           return (Expression) splitResult;
         } else {
-          throw new IllegalStateException("something went wrong while splitting expression for aggregate " + toString());
+          throw new IllegalStateException("something went wrong while splitting expression for aggregate " + this);
         }
       }
       if (arrayConcatExpression != null) {
@@ -423,7 +423,7 @@ public class Expression extends SimpleNode {
         } else if (splitResult instanceof Expression) {
           return (Expression) splitResult;
         } else {
-          throw new IllegalStateException("something went wrong while splitting expression for aggregate " + toString());
+          throw new IllegalStateException("something went wrong while splitting expression for aggregate " + this);
         }
       }
       if (json != null) {
@@ -441,7 +441,7 @@ public class Expression extends SimpleNode {
     } else if (arrayConcatExpression != null) {
       return arrayConcatExpression.getAggregationContext(ctx);
     } else {
-      throw new CommandExecutionException("Cannot aggregate on " + toString());
+      throw new CommandExecutionException("Cannot aggregate on " + this);
     }
   }
 
@@ -567,7 +567,7 @@ public class Expression extends SimpleNode {
     if (mathExpression != null) {
       mathExpression.applyRemove(result, ctx);
     } else {
-      throw new CommandExecutionException("Cannot apply REMOVE " + toString());
+      throw new CommandExecutionException("Cannot apply REMOVE " + this);
     }
   }
 

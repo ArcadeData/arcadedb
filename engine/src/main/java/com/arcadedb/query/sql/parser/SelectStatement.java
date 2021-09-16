@@ -326,9 +326,7 @@ public class SelectStatement extends Statement {
       return false;
     if (letClause != null ? !letClause.equals(that.letClause) : that.letClause != null)
       return false;
-    if (timeout != null ? !timeout.equals(that.timeout) : that.timeout != null)
-      return false;
-    return true;
+    return timeout != null ? timeout.equals(that.timeout) : that.timeout == null;
   }
 
   @Override

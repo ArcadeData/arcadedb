@@ -56,8 +56,8 @@ public abstract class BaseGraphServerTest {
   protected static final String EDGE2_TYPE_NAME            = "E2";
 
   protected static RID              root;
-  private          ArcadeDBServer[] servers;
-  private          Database         databases[];
+  private ArcadeDBServer[] servers;
+  private Database[]       databases;
 
   protected Database getDatabase(final int serverId) {
     return databases[serverId];
@@ -98,7 +98,7 @@ public abstract class BaseGraphServerTest {
           VertexType v = database.getSchema().createVertexType(VERTEX1_TYPE_NAME, 3);
           v.createProperty("id", Long.class);
 
-          database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, VERTEX1_TYPE_NAME, new String[] { "id" });
+          database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, VERTEX1_TYPE_NAME, "id");
 
           Assertions.assertFalse(database.getSchema().existsType(VERTEX2_TYPE_NAME));
           database.getSchema().createVertexType(VERTEX2_TYPE_NAME, 3);
@@ -125,7 +125,7 @@ public abstract class BaseGraphServerTest {
       v2.save();
 
       // CREATION OF EDGE PASSING PARAMS AS VARARGS
-      MutableEdge e1 = (MutableEdge) v1.newEdge(EDGE1_TYPE_NAME, v2, true, "name", "E1");
+      MutableEdge e1 = v1.newEdge(EDGE1_TYPE_NAME, v2, true, "name", "E1");
       Assertions.assertEquals(e1.getOut(), v1);
       Assertions.assertEquals(e1.getIn(), v2);
 
@@ -137,11 +137,11 @@ public abstract class BaseGraphServerTest {
       params.put("name", "E2");
 
       // CREATION OF EDGE PASSING PARAMS AS MAP
-      MutableEdge e2 = (MutableEdge) v2.newEdge(EDGE2_TYPE_NAME, v3, true, params);
+      MutableEdge e2 = v2.newEdge(EDGE2_TYPE_NAME, v3, true, params);
       Assertions.assertEquals(e2.getOut(), v2);
       Assertions.assertEquals(e2.getIn(), v3);
 
-      MutableEdge e3 = (MutableEdge) v1.newEdge(EDGE2_TYPE_NAME, v3, true);
+      MutableEdge e3 = v1.newEdge(EDGE2_TYPE_NAME, v3, true);
       Assertions.assertEquals(e3.getOut(), v1);
       Assertions.assertEquals(e3.getIn(), v3);
 

@@ -33,7 +33,7 @@ import java.util.List;
 import java.util.Map;
 
 public class QueryEngineManager {
-  private Map<String, QueryEngine.QueryEngineFactory> implementations = new HashMap<>();
+  private final Map<String, QueryEngine.QueryEngineFactory> implementations = new HashMap<>();
 
   public QueryEngineManager() {
     register(new SQLQueryEngine.SQLQueryEngineFactory());

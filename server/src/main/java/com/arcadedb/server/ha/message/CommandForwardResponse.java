@@ -104,7 +104,7 @@ public class CommandForwardResponse extends HAAbstractCommand {
         buffer.flip();
 
         final DocumentType t = database.getSchema().getTypeByBucketId(rid.getBucketId());
-        final Record record = database.getRecordFactory().newImmutableRecord(database, t != null ? t : null, rid, buffer.copy(), null);
+        final Record record = database.getRecordFactory().newImmutableRecord(database, t, rid, buffer.copy(), null);
         list.add(new ResultInternal(record));
       }
     }

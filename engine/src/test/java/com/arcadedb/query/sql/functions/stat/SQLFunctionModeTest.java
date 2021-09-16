@@ -53,8 +53,8 @@ public class SQLFunctionModeTest {
   @Test
   public void testMultiValue() {
     List[] scores = new List[2];
-    scores[0] = Arrays.asList(new Integer[] { 1, 2, null, 3, 4 });
-    scores[1] = Arrays.asList(new Integer[] { 1, 1, 1, 2, null });
+    scores[0] = Arrays.asList(1, 2, null, 3, 4);
+    scores[1] = Arrays.asList(1, 1, 1, 2, null);
 
     for (List s : scores) {
       mode.execute(null, null, null, new Object[] { s }, null);

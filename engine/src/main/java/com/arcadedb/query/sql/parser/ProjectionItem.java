@@ -228,7 +228,7 @@ public class ProjectionItem extends SimpleNode {
 
   public AggregationContext getAggregationContext(CommandContext ctx) {
     if (expression == null) {
-      throw new CommandExecutionException("Cannot aggregate on this projection: " + toString());
+      throw new CommandExecutionException("Cannot aggregate on this projection: " + this);
     }
     return expression.getAggregationContext(ctx);
   }

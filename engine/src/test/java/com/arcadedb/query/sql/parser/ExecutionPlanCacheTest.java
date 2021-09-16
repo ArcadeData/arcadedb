@@ -56,7 +56,7 @@ public class ExecutionPlanCacheTest {
       cache = ExecutionPlanCache.instance(db);
       Assertions.assertTrue(cache.contains(stm));
 
-      db.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, testName, new String[] { "name" });
+      db.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, testName, "name");
       Assertions.assertFalse(cache.contains(stm));
 
     } finally {

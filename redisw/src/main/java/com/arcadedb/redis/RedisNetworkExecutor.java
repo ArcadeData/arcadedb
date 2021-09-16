@@ -37,9 +37,9 @@ import java.util.logging.Level;
 public class RedisNetworkExecutor extends Thread {
   private static final byte[]              LF       = new byte[] { '\r', '\n' };
   private final        ArcadeDBServer      server;
-  private final        Database            database;
-  private              ChannelBinaryServer channel;
-  private volatile     boolean             shutdown = false;
+  private final    Database            database;
+  private final    ChannelBinaryServer channel;
+  private volatile boolean             shutdown = false;
 
   private       int           posInBuffer = 0;
   private final StringBuilder value       = new StringBuilder();

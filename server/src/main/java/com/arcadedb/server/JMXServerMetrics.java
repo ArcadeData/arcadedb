@@ -28,8 +28,8 @@ import com.codahale.metrics.Timer;
 import com.codahale.metrics.jmx.JmxReporter;
 
 public class JMXServerMetrics implements ServerMetrics {
-  private MetricRegistry metricsRegistry;
-  private JmxReporter    jmxReporter;
+  private       MetricRegistry metricsRegistry;
+  private final JmxReporter    jmxReporter;
 
   public JMXServerMetrics() {
     metricsRegistry = new MetricRegistry();

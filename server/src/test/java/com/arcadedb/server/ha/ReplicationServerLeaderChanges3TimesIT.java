@@ -47,8 +47,8 @@ import java.util.logging.Level;
 public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT {
   private final AtomicInteger                       messagesInTotal    = new AtomicInteger();
   private final AtomicInteger                       messagesPerRestart = new AtomicInteger();
-  private       AtomicInteger                       restarts           = new AtomicInteger();
-  private       ConcurrentHashMap<Integer, Boolean> semaphore          = new ConcurrentHashMap<>();
+  private final AtomicInteger                       restarts           = new AtomicInteger();
+  private final ConcurrentHashMap<Integer, Boolean> semaphore          = new ConcurrentHashMap<>();
 
   @Override
   public void setTestConfiguration() {

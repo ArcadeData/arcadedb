@@ -141,7 +141,7 @@ public class InstanceofCondition extends BooleanExpression {
   @Override
   protected List<Object> getExternalCalculationConditions() {
     if (!left.supportsBasicCalculation()) {
-      return (List) Collections.singletonList(left);
+      return Collections.singletonList(left);
     }
     return Collections.EMPTY_LIST;
   }

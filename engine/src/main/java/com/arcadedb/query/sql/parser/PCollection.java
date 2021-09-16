@@ -111,7 +111,7 @@ public class PCollection extends SimpleNode {
         if (exp.isAggregate() || exp.isEarlyCalculated()) {
           result.expressions.add(exp.splitForAggregation(aggregateProj));
         } else {
-          throw new CommandExecutionException("Cannot mix aggregate and non-aggregate operations in a collection: " + toString());
+          throw new CommandExecutionException("Cannot mix aggregate and non-aggregate operations in a collection: " + this);
         }
       }
       return result;

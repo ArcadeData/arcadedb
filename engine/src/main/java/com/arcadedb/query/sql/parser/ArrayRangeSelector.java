@@ -344,7 +344,7 @@ public class ArrayRangeSelector extends SimpleNode {
       to = toSelector.getValue(originalRecord, null, ctx);
     }
     if (from == null || to == null) {
-      throw new CommandExecutionException("Invalid range expression: " + toString() + " one of the elements is null");
+      throw new CommandExecutionException("Invalid range expression: " + this + " one of the elements is null");
     }
     if (included) {
       to++;

@@ -59,10 +59,10 @@ public class ArcadeDBServer implements ServerLogger {
   private             String                                  serverRootPath;
   private             HAServer                                haServer;
   private             ServerSecurity                          security;
-  private             HttpServer                              httpServer;
-  private             ConcurrentMap<String, DatabaseInternal> databases                            = new ConcurrentHashMap<>();
-  private             List<TestCallback>                      testEventListeners                   = new ArrayList<>();
-  private volatile    STATUS                                  status                               = STATUS.OFFLINE;
+  private       HttpServer                              httpServer;
+  private final ConcurrentMap<String, DatabaseInternal> databases          = new ConcurrentHashMap<>();
+  private final List<TestCallback>                      testEventListeners = new ArrayList<>();
+  private volatile STATUS                                  status             = STATUS.OFFLINE;
   private             ServerMetrics                           serverMetrics                        = new NoServerMetrics();
 
   public ArcadeDBServer() {

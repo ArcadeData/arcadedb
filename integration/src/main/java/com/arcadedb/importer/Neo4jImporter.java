@@ -64,15 +64,15 @@ public class Neo4jImporter {
   private              String                         databasePath;
   private              String                         inputFile;
   private              boolean                        overwriteDatabase     = false;
-  private              Type                           typeForDecimals       = Type.DECIMAL;
-  private              Map<String, Long>              totalVerticesByType   = new HashMap<>();
-  private              long                           totalVerticesParsed   = 0L;
-  private              Map<String, Long>              totalEdgesByType      = new HashMap<>();
-  private              long                           totalEdgesParsed      = 0L;
-  private              long                           totalAttributesParsed = 0L;
-  private              long                           errors                = 0L;
-  private              long                           warnings              = 0L;
-  private              DatabaseFactory                factory;
+  private       Type              typeForDecimals     = Type.DECIMAL;
+  private final Map<String, Long> totalVerticesByType = new HashMap<>();
+  private final long              totalVerticesParsed = 0L;
+  private final Map<String, Long> totalEdgesByType    = new HashMap<>();
+  private final long              totalEdgesParsed    = 0L;
+  private       long              totalAttributesParsed = 0L;
+  private final long errors                = 0L;
+  private final long warnings              = 0L;
+  private       DatabaseFactory factory;
   private              Database                       database;
   private              int                            batchSize             = 10_000;
   private              long                           processedItems        = 0L;
@@ -86,7 +86,7 @@ public class Neo4jImporter {
   private              BufferedReader                 reader;
   private              boolean                        error                 = false;
   private              File                           file;
-  private              Map<String, Map<String, Type>> schemaProperties      = new HashMap<>();
+  private final        Map<String, Map<String, Type>> schemaProperties      = new HashMap<>();
   private final static SimpleDateFormat               dateTimeISO8601Format = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss");
 
   private enum PHASE {OFF, CREATE_SCHEMA, CREATE_VERTICES, CREATE_EDGES}

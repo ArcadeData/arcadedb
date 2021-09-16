@@ -35,8 +35,8 @@ public class AnalyzedEntity {
   private final ENTITY_TYPE                   type;
   private final Map<String, AnalyzedProperty> properties;
   private       long                          totalRowLength = 0;
-  private       long                          analyzedRows   = 0;
-  private       long                          maxValueSampling;
+  private       long analyzedRows   = 0;
+  private final long maxValueSampling;
 
   public AnalyzedEntity(final String name, final ENTITY_TYPE type, final long maxValueSampling) {
     this.name = name;

@@ -40,7 +40,7 @@ import static io.undertow.UndertowOptions.SHUTDOWN_TIMEOUT;
 
 public class HttpServer implements ServerPlugin {
   private       Undertow       undertow;
-  private       JsonSerializer jsonSerializer = new JsonSerializer();
+  private final JsonSerializer jsonSerializer = new JsonSerializer();
   private final ArcadeDBServer server;
   private       String         listeningAddress;
   private       String         host;

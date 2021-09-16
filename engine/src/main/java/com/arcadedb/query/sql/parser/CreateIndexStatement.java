@@ -174,7 +174,7 @@ public class CreateIndexStatement extends ODDLStatement {
     }
     if (nullStrategy != null) {
       builder.append(" NULL_STRATEGY ");
-      builder.append(nullStrategy.toString());
+      builder.append(nullStrategy);
     }
     if (keyTypes != null && keyTypes.size() > 0) {
       boolean first = true;

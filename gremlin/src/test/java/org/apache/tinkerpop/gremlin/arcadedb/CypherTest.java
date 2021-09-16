@@ -64,7 +64,7 @@ public class CypherTest {
         Assertions.assertTrue(row.getProperty("p.age") instanceof Number);
         Assertions.assertTrue((int) row.getProperty("p.age") > lastAge);
 
-        lastAge = (int) row.getProperty("p.age");
+        lastAge = row.getProperty("p.age");
       }
 
       Assertions.assertEquals(25, i);
@@ -100,7 +100,7 @@ public class CypherTest {
         Assertions.assertTrue(row.getProperty("p.age") instanceof Number);
         Assertions.assertTrue((int) row.getProperty("p.age") > lastAge);
 
-        lastAge = (int) row.getProperty("p.age");
+        lastAge = row.getProperty("p.age");
       }
 
       Assertions.assertEquals(25, i);

@@ -36,9 +36,9 @@ public class LocalResultSetLifecycleDecorator implements ResultSet {
 
   private static final AtomicLong counter = new AtomicLong(0);
 
-  private ResultSet                     entity;
-  private List<OQueryLifecycleListener> lifecycleListeners = new ArrayList<>();
-  private String                        queryId;
+  private final ResultSet                     entity;
+  private final List<OQueryLifecycleListener> lifecycleListeners = new ArrayList<>();
+  private final String                        queryId;
 
   private boolean hasNextPage;
 

@@ -24,9 +24,9 @@ package com.arcadedb.exception;
 import com.arcadedb.database.RID;
 
 public class DuplicatedKeyException extends ArcadeDBException {
-  private String indexName;
-  private String keys;
-  private RID    currentIndexedRID;
+  private final String indexName;
+  private final String keys;
+  private final RID    currentIndexedRID;
 
   public DuplicatedKeyException(final String indexName, final String keys, final RID currentIndexedRID) {
     super("Duplicated key " + keys + " found on index '" + indexName + "' already assigned to record " + currentIndexedRID);

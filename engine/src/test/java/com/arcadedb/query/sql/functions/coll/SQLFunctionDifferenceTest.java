@@ -38,9 +38,9 @@ public class SQLFunctionDifferenceTest {
 
     List<List<Object>> incomes =
         Arrays.asList(
-            Arrays.<Object>asList(1, 2, 3, 4, 5, 1),
-            Arrays.<Object>asList(3, 5, 6, 7, 0, 1, 3, 3, 6),
-            Arrays.<Object>asList(2, 2, 8, 9));
+            Arrays.asList(1, 2, 3, 4, 5, 1),
+            Arrays.asList(3, 5, 6, 7, 0, 1, 3, 3, 6),
+            Arrays.asList(2, 2, 8, 9));
 
     Set<Object> expectedResult = new HashSet<Object>(Arrays.<Object>asList(4));
 
@@ -52,8 +52,8 @@ public class SQLFunctionDifferenceTest {
 
     incomes =
         Arrays.asList(
-            Arrays.<Object>asList(1, 2, 3, 4, 5, 1),
-            Arrays.<Object>asList(3, 5, 6, 7, 0, 1, 3, 3, 6));
+            Arrays.asList(1, 2, 3, 4, 5, 1),
+            Arrays.asList(3, 5, 6, 7, 0, 1, 3, 3, 6));
 
     expectedResult = new HashSet<Object>(Arrays.<Object>asList(2, 4));
 

@@ -108,7 +108,7 @@ public class Projection extends SimpleNode {
   public Result calculateSingle(CommandContext iContext, Result iRecord) {
     initExcludes(iContext);
     if (isExpand()) {
-      throw new IllegalStateException("This is an expand projection, it cannot be calculated as a single result" + toString());
+      throw new IllegalStateException("This is an expand projection, it cannot be calculated as a single result" + this);
     }
 
     if (items.size() == 0 || (items.size() == 1 && items.get(0).isAll()) && items.get(0).nestedProjection == null) {

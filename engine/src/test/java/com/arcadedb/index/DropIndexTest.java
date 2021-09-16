@@ -93,7 +93,7 @@ public class DropIndexTest extends TestHelper {
 
         for (Index idx : subIndexes)
           try {
-            database.getSchema().getFileById(((IndexInternal) idx).getAssociatedBucketId());
+            database.getSchema().getFileById(idx.getAssociatedBucketId());
             database.getSchema().getFileById(((IndexInternal) idx).getFileId());
             Assertions.fail("Found removed file " + ((IndexInternal) idx).getFileId());
           } catch (SchemaException e) {

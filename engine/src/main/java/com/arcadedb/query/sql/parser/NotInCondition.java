@@ -43,7 +43,7 @@ public class NotInCondition extends BooleanExpression {
   protected MathExpression rightMathExpression;
 
   private static final Object UNSET           = new Object();
-  private              Object inputFinalValue = UNSET;
+  private final        Object inputFinalValue = UNSET;
 
   public NotInCondition(int id) {
     super(id);

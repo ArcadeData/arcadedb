@@ -31,7 +31,7 @@ import java.util.NoSuchElementException;
 public class IterableObjectArray<T> implements Iterable<T> {
 
   private final Object object;
-  private       int    length;
+  private final int    length;
 
   public IterableObjectArray(Object o) {
     object = o;

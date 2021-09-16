@@ -233,7 +233,7 @@ public class TableFormatter {
       if (rightBorder)
         format.append('|');
 
-      out.onMessage("\n" + format.toString(), vargs.toArray());
+      out.onMessage("\n" + format, vargs.toArray());
 
     } catch (Exception t) {
       out.onMessage("%3d|%9s|%s\n", iIndex, iRecord, "Error on loading record due to: " + t);
@@ -625,17 +625,17 @@ public class TableFormatter {
     while (true) {
       int pos = fieldValueAsString.indexOf("$ANSI{", lastPos);
       if (pos < 0) {
-        formattedString.append(fieldValueAsString.substring(lastPos, fieldValueAsString.length()));
+        formattedString.append(fieldValueAsString.substring(lastPos));
         break;
       }
 
-      formattedString.append(fieldValueAsString.substring(lastPos, pos));
+      formattedString.append(fieldValueAsString, lastPos, pos);
 
       final int sepPos = fieldValueAsString.indexOf(" ", pos);
 
       final int closePos = fieldValueAsString.indexOf("}", sepPos);
 
-      formattedString.append(fieldValueAsString.substring(sepPos + 1, closePos));
+      formattedString.append(fieldValueAsString, sepPos + 1, closePos);
 
       lastPos = closePos + 1;
     }

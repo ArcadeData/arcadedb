@@ -40,8 +40,8 @@ public class InCondition extends BooleanExpression {
     protected MathExpression rightMathExpression;
     protected Object right;
 
-    private static final Object UNSET = new Object();
-    private Object inputFinalValue = UNSET;
+    private static final Object UNSET           = new Object();
+    private final        Object inputFinalValue = UNSET;
 
     public InCondition(int id) {
         super(id);

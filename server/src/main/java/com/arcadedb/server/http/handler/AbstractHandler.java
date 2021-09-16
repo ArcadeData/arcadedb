@@ -119,23 +119,23 @@ public abstract class AbstractHandler implements HttpHandler {
       LogManager.instance().log(this, Level.FINE, "Security error on command execution (%s)", e, getClass().getSimpleName());
       exchange.setStatusCode(403);
       exchange.getResponseSender()
-          .send("{ \"error\" : \"Security error\", \"detail\":\"" + e.toString() + "\", \"exception\": \"" + e.getClass().getName() + "\"}");
+          .send("{ \"error\" : \"Security error\", \"detail\":\"" + e + "\", \"exception\": \"" + e.getClass().getName() + "\"}");
     } catch (ServerIsNotTheLeaderException e) {
       LogManager.instance().log(this, Level.FINE, "Error on command execution (%s)", e, getClass().getSimpleName());
       exchange.setStatusCode(400);
       exchange.getResponseSender().send(
-          "{ \"error\" : \"Cannot execute command\", \"detail\":\"" + e.toString() + "\", \"exception\": \"" + e.getClass().getName()
+          "{ \"error\" : \"Cannot execute command\", \"detail\":\"" + e + "\", \"exception\": \"" + e.getClass().getName()
               + "\", \"exceptionArg\": \"" + e.getLeaderAddress() + "\"}");
     } catch (NeedRetryException e) {
       LogManager.instance().log(this, Level.FINE, "Error on command execution (%s)", e, getClass().getSimpleName());
       exchange.setStatusCode(503);
       exchange.getResponseSender()
-          .send("{ \"error\" : \"Cannot execute command\", \"detail\":\"" + e.toString() + "\", \"exception\": \"" + e.getClass().getName() + "\"}");
+          .send("{ \"error\" : \"Cannot execute command\", \"detail\":\"" + e + "\", \"exception\": \"" + e.getClass().getName() + "\"}");
     } catch (DuplicatedKeyException e) {
       LogManager.instance().log(this, Level.FINE, "Error on command execution (%s)", e, getClass().getSimpleName());
       exchange.setStatusCode(503);
       exchange.getResponseSender().send(
-          "{ \"error\" : \"Cannot execute command\", \"detail\":\"" + e.toString() + "\", \"exception\": \"" + e.getClass().getName()
+          "{ \"error\" : \"Cannot execute command\", \"detail\":\"" + e + "\", \"exception\": \"" + e.getClass().getName()
               + "\", \"exceptionArg\": \"" + e.getIndexName() + "|" + e.getKeys() + "|" + e.getCurrentIndexedRID() + "\" }");
     } catch (CommandExecutionException e) {
       Throwable realException = e;
@@ -150,7 +150,7 @@ public abstract class AbstractHandler implements HttpHandler {
       LogManager.instance().log(this, Level.FINE, "Error on command execution (%s)", e, getClass().getSimpleName());
       exchange.setStatusCode(500);
       exchange.getResponseSender()
-          .send("{ \"error\" : \"Internal error\", \"detail\":\"" + e.toString() + "\", \"exception\": \"" + e.getClass().getName() + "\"}");
+          .send("{ \"error\" : \"Internal error\", \"detail\":\"" + e + "\", \"exception\": \"" + e.getClass().getName() + "\"}");
     } finally {
       LogManager.instance().setContext(null);
     }

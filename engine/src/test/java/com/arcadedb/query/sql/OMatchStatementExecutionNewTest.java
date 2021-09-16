@@ -240,7 +240,7 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
     for (int i = 0; i < 6; i++) {
       Result item = qResult.next();
       Assertions.assertTrue(item.getPropertyNames().size() == 1);
-      Document person = database.lookupByRID((RID) item.getProperty("person"), true).asVertex();
+      Document person = database.lookupByRID(item.getProperty("person"), true).asVertex();
 
       String name = person.getString("name");
       Assertions.assertTrue(name.startsWith("n"));
@@ -303,7 +303,7 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
 
       Result item = qResult.next();
       Assertions.assertTrue(item.getPropertyNames().size() == 1);
-      Document person = database.lookupByRID((RID) item.getProperty("person"), true).asVertex();
+      Document person = database.lookupByRID(item.getProperty("person"), true).asVertex();
 
       String name = person.getString("name");
       Assertions.assertTrue(name.equals("n1") || name.equals("n2"));
@@ -1055,12 +1055,12 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
     printExecutionPlan(result);
     Assertions.assertTrue(result.hasNext());
     Result doc = result.next();
-    Document friend1 = database.lookupByRID((RID) doc.getProperty("friend1"), true).asVertex();
-    Document friend2 = database.lookupByRID((RID) doc.getProperty("friend2"), true).asVertex();
-    Document friend3 = database.lookupByRID((RID) doc.getProperty("friend3"), true).asVertex();
-    Assertions.assertEquals(0, friend1.<Object>getInteger("uid"));
-    Assertions.assertEquals(1, friend2.<Object>getInteger("uid"));
-    Assertions.assertEquals(2, friend3.<Object>getInteger("uid"));
+    Document friend1 = database.lookupByRID(doc.getProperty("friend1"), true).asVertex();
+    Document friend2 = database.lookupByRID(doc.getProperty("friend2"), true).asVertex();
+    Document friend3 = database.lookupByRID(doc.getProperty("friend3"), true).asVertex();
+    Assertions.assertEquals(0, friend1.getInteger("uid"));
+    Assertions.assertEquals(1, friend2.getInteger("uid"));
+    Assertions.assertEquals(2, friend3.getInteger("uid"));
     result.close();
   }
 
@@ -1079,12 +1079,12 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
     Assertions.assertTrue(result.hasNext());
     Result doc = result.next();
     Assertions.assertFalse(result.hasNext());
-    Document friend1 = database.lookupByRID((RID) doc.getProperty("friend1"), true).asVertex();
-    Document friend2 = database.lookupByRID((RID) doc.getProperty("friend2"), true).asVertex();
-    Document friend3 = database.lookupByRID((RID) doc.getProperty("friend3"), true).asVertex();
-    Assertions.assertEquals(0, friend1.<Object>getInteger("uid"));
-    Assertions.assertEquals(1, friend2.<Object>getInteger("uid"));
-    Assertions.assertEquals(2, friend3.<Object>getInteger("uid"));
+    Document friend1 = database.lookupByRID(doc.getProperty("friend1"), true).asVertex();
+    Document friend2 = database.lookupByRID(doc.getProperty("friend2"), true).asVertex();
+    Document friend3 = database.lookupByRID(doc.getProperty("friend3"), true).asVertex();
+    Assertions.assertEquals(0, friend1.getInteger("uid"));
+    Assertions.assertEquals(1, friend2.getInteger("uid"));
+    Assertions.assertEquals(2, friend3.getInteger("uid"));
     result.close();
   }
 
@@ -1103,12 +1103,12 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
     Assertions.assertTrue(result.hasNext());
     Result doc = result.next();
     Assertions.assertFalse(result.hasNext());
-    Document friend1 = database.lookupByRID((RID) doc.getProperty("friend1"), true).asVertex();
-    Document friend2 = database.lookupByRID((RID) doc.getProperty("friend2"), true).asVertex();
-    Document friend3 = database.lookupByRID((RID) doc.getProperty("friend3"), true).asVertex();
-    Assertions.assertEquals(0, friend1.<Object>getInteger("uid"));
-    Assertions.assertEquals(1, friend2.<Object>getInteger("uid"));
-    Assertions.assertEquals(2, friend3.<Object>getInteger("uid"));
+    Document friend1 = database.lookupByRID(doc.getProperty("friend1"), true).asVertex();
+    Document friend2 = database.lookupByRID(doc.getProperty("friend2"), true).asVertex();
+    Document friend3 = database.lookupByRID(doc.getProperty("friend3"), true).asVertex();
+    Assertions.assertEquals(0, friend1.getInteger("uid"));
+    Assertions.assertEquals(1, friend2.getInteger("uid"));
+    Assertions.assertEquals(2, friend3.getInteger("uid"));
     result.close();
   }
 
@@ -1199,8 +1199,8 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
     for (int i = 0; i < 2; i++) {
       Assertions.assertTrue(result.hasNext());
       Result doc = result.next();
-      Document friend1 = database.lookupByRID((RID) doc.getProperty("friend1"), true).asVertex();
-      Assertions.assertEquals(friend1.<Object>getInteger("uid"), 1);
+      Document friend1 = database.lookupByRID(doc.getProperty("friend1"), true).asVertex();
+      Assertions.assertEquals(friend1.getInteger("uid"), 1);
     }
     Assertions.assertFalse(result.hasNext());
     result.close();
@@ -1238,8 +1238,8 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
 
     Assertions.assertTrue(result.hasNext());
     Result d = result.next();
-    Document friend1 = database.lookupByRID((RID) d.getProperty("friend1"), true).asVertex();
-    Assertions.assertEquals(friend1.<Object>getInteger("uid"), 1);
+    Document friend1 = database.lookupByRID(d.getProperty("friend1"), true).asVertex();
+    Assertions.assertEquals(friend1.getInteger("uid"), 1);
     Assertions.assertFalse(result.hasNext());
     result.close();
   }
@@ -1256,7 +1256,7 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
     Assertions.assertTrue(result.hasNext());
 
     Result doc = result.next();
-    Object foo = database.lookupByRID((RID) doc.getProperty("foo"), true);
+    Object foo = database.lookupByRID(doc.getProperty("foo"), true);
     Assertions.assertNotNull(foo);
     Assertions.assertTrue(foo instanceof Vertex);
     result.close();
@@ -1354,7 +1354,7 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
     Assertions.assertTrue(foo instanceof List);
     Assertions.assertEquals(1, ((List) foo).size());
     Vertex resultVertex = (Vertex) ((List) foo).get(0);
-    Assertions.assertEquals(2, resultVertex.<Object>getInteger("uid"));
+    Assertions.assertEquals(2, resultVertex.getInteger("uid"));
     result.close();
   }
 
@@ -1576,7 +1576,7 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
       Assertions.assertTrue(qResult.hasNext());
       Result doc = qResult.next();
       Assertions.assertTrue(doc.getPropertyNames().size() == 2);
-      Document person = database.lookupByRID((RID) doc.getProperty("person"), true).asVertex();
+      Document person = database.lookupByRID(doc.getProperty("person"), true).asVertex();
 
       String name = person.getString("name");
       Assertions.assertTrue(name.startsWith("n"));
@@ -1591,7 +1591,7 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
       Assertions.assertTrue(qResult.hasNext());
       Result doc = qResult.next();
       Assertions.assertTrue(doc.getPropertyNames().size() == 2);
-      Document person = database.lookupByRID((RID) doc.getProperty("person"), true).asVertex();
+      Document person = database.lookupByRID(doc.getProperty("person"), true).asVertex();
 
       String name = person.getString("name");
       Assertions.assertTrue(name.startsWith("n"));
@@ -1818,7 +1818,7 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
     for (int i = 0; i < 4; i++) {
       Assertions.assertTrue(result.hasNext());
       Result item = result.next();
-      sum += (int) item.getProperty("num");
+      sum += (Integer) item.getProperty("num");
     }
 
     Assertions.assertFalse(result.hasNext());

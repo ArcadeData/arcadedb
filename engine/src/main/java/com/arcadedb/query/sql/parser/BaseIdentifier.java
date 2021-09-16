@@ -237,10 +237,10 @@ public class BaseIdentifier extends SimpleNode {
       } else if (suffix != null) {
         return suffix.getAggregationContext(ctx);
       } else {
-        throw new CommandExecutionException("cannot aggregate on " + toString());
+        throw new CommandExecutionException("cannot aggregate on " + this);
       }
     } else {
-      throw new CommandExecutionException("cannot aggregate on " + toString());
+      throw new CommandExecutionException("cannot aggregate on " + this);
     }
   }
 
@@ -296,7 +296,7 @@ public class BaseIdentifier extends SimpleNode {
     if (suffix != null) {
       suffix.applyRemove(result, ctx);
     } else {
-      throw new CommandExecutionException("cannot apply REMOVE " + toString());
+      throw new CommandExecutionException("cannot apply REMOVE " + this);
     }
   }
 

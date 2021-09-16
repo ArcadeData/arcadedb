@@ -128,10 +128,7 @@ public class MatchesCondition extends BooleanExpression {
     if (!expression.supportsBasicCalculation()) {
       return false;
     }
-    if (rightExpression != null && !rightExpression.supportsBasicCalculation()) {
-      return false;
-    }
-    return true;
+    return rightExpression == null || rightExpression.supportsBasicCalculation();
   }
 
   @Override
@@ -163,10 +160,7 @@ public class MatchesCondition extends BooleanExpression {
     if (expression.needsAliases(aliases)) {
       return true;
     }
-    if (rightExpression.needsAliases(aliases)) {
-      return true;
-    }
-    return false;
+    return rightExpression.needsAliases(aliases);
   }
 
   @Override
@@ -192,10 +186,7 @@ public class MatchesCondition extends BooleanExpression {
     if (expression != null && expression.refersToParent()) {
       return true;
     }
-    if (rightExpression != null && rightExpression.refersToParent()) {
-      return true;
-    }
-    return false;
+    return rightExpression != null && rightExpression.refersToParent();
   }
 
   @Override
@@ -240,10 +231,7 @@ public class MatchesCondition extends BooleanExpression {
     if (!expression.isCacheable()) {
       return false;
     }
-    if (rightExpression != null && !rightExpression.isCacheable()) {
-      return false;
-    }
-    return true;
+    return rightExpression == null || rightExpression.isCacheable();
   }
 
 }

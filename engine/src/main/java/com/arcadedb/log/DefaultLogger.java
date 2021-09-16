@@ -71,7 +71,7 @@ public class DefaultLogger implements Logger {
         }
       }
     } catch (Exception e) {
-      System.err.println("Error while installing custom formatter. Logging could be disabled. Cause: " + e.toString());
+      System.err.println("Error while installing custom formatter. Logging could be disabled. Cause: " + e);
     }
   }
 
@@ -118,7 +118,7 @@ public class DefaultLogger implements Logger {
         System.err.println(msg);
 
       } catch (Exception e) {
-        System.err.print(String.format("Error on formatting message '%s'. Exception: %s", message, e.toString()));
+        System.err.print(String.format("Error on formatting message '%s'. Exception: %s", message, e));
       } finally {
         if (level == Level.SEVERE)
           System.err.flush();
@@ -143,7 +143,7 @@ public class DefaultLogger implements Logger {
           flush();
 
       } catch (Exception e) {
-        System.err.print(String.format("Error on formatting message '%s'. Exception: %s", message, e.toString()));
+        System.err.print(String.format("Error on formatting message '%s'. Exception: %s", message, e));
         System.err.flush();
       }
     }
@@ -185,7 +185,7 @@ public class DefaultLogger implements Logger {
           System.err.println(msg);
 
         } catch (Exception e) {
-          System.err.print(String.format("Error on formatting message '%s'. Exception: %s", message, e.toString()));
+          System.err.print(String.format("Error on formatting message '%s'. Exception: %s", message, e));
         }
       } else if (log.isLoggable(level)) {
         // USE THE LOG
@@ -202,7 +202,7 @@ public class DefaultLogger implements Logger {
           else
             log.log(level, msg);
         } catch (Exception e) {
-          System.err.print(String.format("Error on formatting message '%s'. Exception: %s", message, e.toString()));
+          System.err.print(String.format("Error on formatting message '%s'. Exception: %s", message, e));
         }
       }
     }

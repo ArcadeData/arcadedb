@@ -32,7 +32,7 @@ public class AnalyzedProperty {
   private       Type        type;
   private final int         index;
   private       String      lastContent;
-  private       Set<String> contents            = new HashSet<>();
+  private final Set<String> contents            = new HashSet<>();
   private       boolean     candidateForInteger = true;
   private       boolean     candidateForDecimal = true;
   private       boolean     collectingSamples   = true;

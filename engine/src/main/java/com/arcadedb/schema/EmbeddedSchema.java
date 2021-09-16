@@ -65,9 +65,9 @@ public class EmbeddedSchema implements Schema {
   private final        String                     databasePath;
   private              Dictionary                 dictionary;
   private              String                     dateFormat                = DEFAULT_DATE_FORMAT;
-  private              String                     dateTimeFormat            = DEFAULT_DATETIME_FORMAT;
-  private              String                     encoding                  = DEFAULT_ENCODING;
-  private              TimeZone                   timeZone                  = TimeZone.getDefault();
+  private       String   dateTimeFormat = DEFAULT_DATETIME_FORMAT;
+  private final String   encoding       = DEFAULT_ENCODING;
+  private       TimeZone timeZone       = TimeZone.getDefault();
   private final        PaginatedComponentFactory  paginatedComponentFactory;
   private final        IndexFactory               indexFactory              = new IndexFactory();
   private              boolean                    readingFromFile           = false;
@@ -108,7 +108,7 @@ public class EmbeddedSchema implements Schema {
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on opening dictionary '%s' (error=%s)", e, databasePath, e.toString());
       database.rollback();
-      throw new DatabaseMetadataException("Error on loading dictionary (error=" + e.toString() + ")", e);
+      throw new DatabaseMetadataException("Error on loading dictionary (error=" + e + ")", e);
     }
   }
 

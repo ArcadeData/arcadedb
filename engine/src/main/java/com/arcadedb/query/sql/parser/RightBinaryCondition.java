@@ -61,7 +61,7 @@ public class RightBinaryCondition extends SimpleNode {
   @Override
   public void toString(Map<Object, Object> params, StringBuilder builder) {
     if (operator != null) {
-      builder.append(operator.toString());
+      builder.append(operator);
       builder.append(" ");
       right.toString(params, builder);
     } else if (inOperator != null) {

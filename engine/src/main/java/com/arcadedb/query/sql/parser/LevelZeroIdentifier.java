@@ -232,7 +232,7 @@ public class LevelZeroIdentifier extends SimpleNode {
         return functionCall.getAggregationContext(ctx);
       }
     }
-    throw new CommandExecutionException("cannot aggregate on " + toString());
+    throw new CommandExecutionException("cannot aggregate on " + this);
   }
 
   public LevelZeroIdentifier copy() {

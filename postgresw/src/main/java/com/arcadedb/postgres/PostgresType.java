@@ -110,7 +110,7 @@ public enum PostgresType {
       break;
 
     default:
-      throw new PostgresProtocolException("Type " + toString() + " not supported for serializing");
+      throw new PostgresProtocolException("Type " + this + " not supported for serializing");
     }
   }
 

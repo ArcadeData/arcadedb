@@ -47,7 +47,7 @@ public enum AnsiCode {
 
   NULL("");
 
-  private String code;
+  private final String code;
 
   AnsiCode(final String code) {
     this.code = code;

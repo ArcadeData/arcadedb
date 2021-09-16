@@ -81,7 +81,7 @@ public class CSVFormatImporter extends AbstractFormatImporter {
       // BY DEFAULT SKIP THE FIRST LINE AS HEADER
       skipEntries = 1l;
 
-    try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream());) {
+    try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream())) {
       csvParser.beginParsing(inputFileReader);
 
       if (!database.isTransactionActive())
@@ -199,7 +199,7 @@ public class CSVFormatImporter extends AbstractFormatImporter {
       // BY DEFAULT SKIP THE FIRST LINE AS HEADER
       skipEntries = 1l;
 
-    try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream());) {
+    try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream())) {
       csvParser.beginParsing(inputFileReader);
 
       final int idIndex = id.getIndex();
@@ -318,7 +318,7 @@ public class CSVFormatImporter extends AbstractFormatImporter {
       // BY DEFAULT SKIP THE FIRST LINE AS HEADER
       skipEntries = 1l;
 
-    try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream());) {
+    try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream())) {
       csvParser.beginParsing(inputFileReader);
 
       final List<AnalyzedProperty> properties = new ArrayList<>();
@@ -494,7 +494,7 @@ public class CSVFormatImporter extends AbstractFormatImporter {
       LogManager.instance().log(this, Level.INFO, "Parsing with custom header: %s", null, fieldNames);
     }
 
-    try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream());) {
+    try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream())) {
       csvParser.beginParsing(inputFileReader);
 
       String[] row;

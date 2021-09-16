@@ -74,6 +74,6 @@ public class GetQueryHandler extends DatabaseAbstractHandler {
     }
 
     exchange.setStatusCode(200);
-    exchange.getResponseSender().send("{ \"result\" : [" + result.toString() + "] }");
+    exchange.getResponseSender().send("{ \"result\" : [" + result + "] }");
   }
 }

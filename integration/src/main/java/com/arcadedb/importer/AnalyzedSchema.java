@@ -27,7 +27,7 @@ import java.util.Map;
 
 public class AnalyzedSchema {
   private       String                      name;
-  private       Map<String, AnalyzedEntity> entities = new LinkedHashMap<>();
+  private final Map<String, AnalyzedEntity> entities = new LinkedHashMap<>();
   private final long                        maxValueSampling;
 
   public AnalyzedSchema(final long maxValueSampling) {

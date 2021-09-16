@@ -67,7 +67,7 @@ public class ValueExpression extends Expression {
   }
 
   public void toString(Map<Object, Object> params, StringBuilder builder) {
-    builder.append(String.valueOf(value));
+    builder.append(value);
   }
 
   public boolean supportsBasicCalculation() {
@@ -111,7 +111,7 @@ public class ValueExpression extends Expression {
   }
 
   public AggregationContext getAggregationContext(CommandContext ctx) {
-    throw new CommandExecutionException("Cannot aggregate on " + toString());
+    throw new CommandExecutionException("Cannot aggregate on " + this);
   }
 
   public ValueExpression copy() {
@@ -151,7 +151,7 @@ public class ValueExpression extends Expression {
   }
 
   public void applyRemove(ResultInternal result, CommandContext ctx) {
-    throw new CommandExecutionException("Cannot apply REMOVE " + toString());
+    throw new CommandExecutionException("Cannot apply REMOVE " + this);
   }
 
   public boolean isCount() {

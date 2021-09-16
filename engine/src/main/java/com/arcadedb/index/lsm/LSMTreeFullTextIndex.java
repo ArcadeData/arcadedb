@@ -60,8 +60,8 @@ import java.util.concurrent.atomic.AtomicInteger;
  * the query result will be the TreeMap ordered by score, so if the query has a limit, only the first X items will be returned ordered by score desc
  */
 public class LSMTreeFullTextIndex implements Index, IndexInternal {
-  private LSMTreeIndex underlyingIndex;
-  private Analyzer     analyzer;
+  private final LSMTreeIndex underlyingIndex;
+  private final Analyzer     analyzer;
 
   public static class IndexFactoryHandler implements com.arcadedb.index.IndexFactoryHandler {
     @Override

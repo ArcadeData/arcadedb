@@ -52,7 +52,7 @@ public class SQLMethodSubStringTest {
     Assertions.assertEquals(result, "foobar".substring(1));
 
     result = function.execute("foobar", null, null, null, new Object[] { 0 });
-    Assertions.assertEquals(result, "foobar".substring(0));
+    Assertions.assertEquals(result, "foobar");
 
     result = function.execute("foobar", null, null, null, new Object[] { 6 });
     Assertions.assertEquals(result, "foobar".substring(6));
@@ -61,7 +61,7 @@ public class SQLMethodSubStringTest {
     Assertions.assertEquals(result, "");
 
     result = function.execute("foobar", null, null, null, new Object[] { -7 });
-    Assertions.assertEquals(result, "foobar".substring(0));
+    Assertions.assertEquals(result, "foobar");
   }
 
   @Test

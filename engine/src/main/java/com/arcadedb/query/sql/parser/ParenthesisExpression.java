@@ -222,7 +222,7 @@ public class ParenthesisExpression extends MathExpression {
     if (expression != null) {
       expression.applyRemove(result, ctx);
     } else {
-      throw new CommandExecutionException("Cannot apply REMOVE " + toString());
+      throw new CommandExecutionException("Cannot apply REMOVE " + this);
     }
   }
 

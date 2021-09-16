@@ -488,7 +488,7 @@ public class LSMTreeIndexTest extends TestHelper {
 
           Assertions.assertNotNull(r.getElement().get().get("id"));
 
-          final MutableDocument record = (MutableDocument) r.getElement().get().modify();
+          final MutableDocument record = r.getElement().get().modify();
           record.set("id", (Integer) record.get("id") + 1000000);
           record.save();
         }

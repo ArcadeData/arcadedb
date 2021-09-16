@@ -302,7 +302,7 @@ public class FunctionCall extends SimpleNode {
           for (Expression param : params) {
             if (param.isAggregate()) {
               throw new CommandExecutionException(
-                  "Cannot calculate an aggregate function of another aggregate function " + toString());
+                  "Cannot calculate an aggregate function of another aggregate function " + this);
             }
             Identifier nextAlias = aggregateProj.getNextAlias();
             ProjectionItem paramItem = new ProjectionItem(-1);

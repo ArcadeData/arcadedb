@@ -92,7 +92,7 @@ public class IsNullCondition extends BooleanExpression {
     if (expression.supportsBasicCalculation()) {
       return Collections.EMPTY_LIST;
     }
-    return (List) Collections.singletonList(expression);
+    return Collections.singletonList(expression);
   }
 
   @Override

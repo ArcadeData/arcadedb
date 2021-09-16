@@ -46,9 +46,9 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
   private final List<Index<Long>> indexes = new ArrayList<>();
 
   private static class ProjectingIterable implements Iterable<Document> {
-    private Iterable<Document> iterable;
-    private Document           fieldSelector;
-    private String             idField;
+    private final Iterable<Document> iterable;
+    private final Document           fieldSelector;
+    private final String             idField;
 
     ProjectingIterable(Iterable<Document> iterable, Document fieldSelector, String idField) {
       this.iterable = iterable;
@@ -62,9 +62,9 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
   }
 
   private static class ProjectingIterator implements Iterator<Document> {
-    private Iterator<Document> iterator;
-    private Document           fieldSelector;
-    private String             idField;
+    private final Iterator<Document> iterator;
+    private final Document           fieldSelector;
+    private final String             idField;
 
     ProjectingIterator(Iterator<Document> iterator, Document fieldSelector, String idField) {
       this.iterator = iterator;

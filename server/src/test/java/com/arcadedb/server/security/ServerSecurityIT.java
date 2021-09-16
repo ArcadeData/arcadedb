@@ -125,7 +125,7 @@ public class ServerSecurityIT {
         security.encode("ThisIsATest", "ThisIsTheSalt"));
 
     for (int i = 0; i < 1000000; ++i) {
-      Assertions.assertFalse(security.generateRandomSalt().contains("$"));
+      Assertions.assertFalse(ServerSecurity.generateRandomSalt().contains("$"));
     }
 
     security.stopService();

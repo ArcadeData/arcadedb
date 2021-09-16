@@ -28,11 +28,11 @@ public class Parser {
   private final Source            source;
   private       InputStream       is;
   private final InputStreamReader reader;
-  private final long              limit;
-  private       AtomicLong        position = new AtomicLong();
-  private       long              total;
-  private       char              currentChar;
-  private       boolean           compressed;
+  private final long       limit;
+  private final AtomicLong position = new AtomicLong();
+  private final long       total;
+  private       char       currentChar;
+  private final boolean compressed;
 
   public Parser(final Source source, final long limit) throws IOException {
     this.source = source;

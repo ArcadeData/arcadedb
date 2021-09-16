@@ -38,15 +38,15 @@ public class SocketFactory {
 
   private javax.net.SocketFactory socketFactory;
   private boolean                 useSSL  = false;
-  private SSLContext              context = null;
-  private ContextConfiguration    config;
+  private       SSLContext           context = null;
+  private final ContextConfiguration config;
 
-  private String keyStorePath;
-  private String keyStorePassword;
-  private String keyStoreType   = KeyStore.getDefaultType();
-  private String trustStorePath;
-  private String trustStorePassword;
-  private String trustStoreType = KeyStore.getDefaultType();
+  private final String keyStorePath;
+  private final String keyStorePassword;
+  private final String keyStoreType = KeyStore.getDefaultType();
+  private final String trustStorePath;
+  private final String trustStorePassword;
+  private final String trustStoreType = KeyStore.getDefaultType();
 
   private SocketFactory(final ContextConfiguration iConfig) {
     config = iConfig;

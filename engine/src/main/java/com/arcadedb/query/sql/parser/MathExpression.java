@@ -208,7 +208,7 @@ public class MathExpression extends SimpleNode {
           Number result = apply(toLong(left), toLong(right));
           return new Date(result.longValue());
         }
-        return String.valueOf(left) + String.valueOf(right);
+        return String.valueOf(left) + right;
       }
     }, MINUS(20) {
       @Override
@@ -1053,7 +1053,7 @@ public class MathExpression extends SimpleNode {
 
   public void applyRemove(ResultInternal result, CommandContext ctx) {
     if (childExpressions.size() != 1) {
-      throw new CommandExecutionException("cannot apply REMOVE " + toString());
+      throw new CommandExecutionException("cannot apply REMOVE " + this);
     }
     childExpressions.get(0).applyRemove(result, ctx);
   }

@@ -35,8 +35,8 @@ import java.util.Map;
 
 public class JsonSerializer {
   private boolean useCollectionSize  = false;
-  private boolean includeVertexEdges = true;
-  private boolean useVertexEdgeSize  = true;
+  private       boolean includeVertexEdges = true;
+  private final boolean useVertexEdgeSize  = true;
 
   public JSONObject serializeDocument(final Document document) {
     final JSONObject object = new JSONObject();

@@ -38,11 +38,11 @@ public abstract class Channel {
   public               InputStream  inStream;
   public               OutputStream outStream;
   public               int          socketBufferSize;
-  protected            long         timeout;
-  private              AtomicLong   metricTransmittedBytes       = new AtomicLong();
-  private              AtomicLong   metricReceivedBytes          = new AtomicLong();
-  private              AtomicLong   metricFlushes                = new AtomicLong();
-  private              String       profilerMetric;
+  protected     long       timeout;
+  private final AtomicLong metricTransmittedBytes = new AtomicLong();
+  private final AtomicLong metricReceivedBytes    = new AtomicLong();
+  private final AtomicLong metricFlushes          = new AtomicLong();
+  private       String     profilerMetric;
 
   public Channel(final Socket iSocket) throws IOException {
     socketBufferSize = 0;

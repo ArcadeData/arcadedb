@@ -174,7 +174,7 @@ public class AlterTypeStatement extends ODDLStatement {
         } else if (numberValue != null) {
           oClass.addBucket(ctx.getDatabase().getSchema().getBucketById(numberValue.getValue().intValue()));
         } else {
-          throw new CommandExecutionException("Invalid bucket value: " + toString());
+          throw new CommandExecutionException("Invalid bucket value: " + this);
         }
         break;
 
@@ -185,7 +185,7 @@ public class AlterTypeStatement extends ODDLStatement {
         } else if (numberValue != null) {
           oClass.removeBucket(ctx.getDatabase().getSchema().getBucketById(numberValue.getValue().intValue()));
         } else {
-          throw new CommandExecutionException("Invalid bucket value: " + toString());
+          throw new CommandExecutionException("Invalid bucket value: " + this);
         }
         break;
 
@@ -220,11 +220,11 @@ public class AlterTypeStatement extends ODDLStatement {
 
   private void doSetSuperclass(CommandContext ctx, DocumentType oClass, Identifier superclassName) {
     if (superclassName == null) {
-      throw new CommandExecutionException("Invalid parent type name: " + toString());
+      throw new CommandExecutionException("Invalid parent type name: " + this);
     }
     DocumentType superclass = ctx.getDatabase().getSchema().getType(superclassName.getStringValue());
     if (superclass == null) {
-      throw new CommandExecutionException("parent type not found: " + toString());
+      throw new CommandExecutionException("parent type not found: " + this);
     }
     if (Boolean.TRUE.equals(add)) {
       oClass.addParentType(superclass);
@@ -235,13 +235,13 @@ public class AlterTypeStatement extends ODDLStatement {
 
   private void doSetSuperclasses(CommandContext ctx, DocumentType oClass, List<Identifier> superclassNames) {
     if (superclassNames == null) {
-      throw new CommandExecutionException("Invalid parent type name: " + toString());
+      throw new CommandExecutionException("Invalid parent type name: " + this);
     }
     List<DocumentType> superclasses = new ArrayList<>();
     for (Identifier superclassName : superclassNames) {
       DocumentType superclass = ctx.getDatabase().getSchema().getType(superclassName.getStringValue());
       if (superclass == null) {
-        throw new CommandExecutionException("parent type not found: " + toString());
+        throw new CommandExecutionException("parent type not found: " + this);
       }
       superclasses.add(superclass);
     }

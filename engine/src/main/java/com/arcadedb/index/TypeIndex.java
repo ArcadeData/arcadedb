@@ -41,7 +41,7 @@ import java.util.*;
  */
 public class TypeIndex implements RangeIndex, IndexInternal {
   private final String              logicName;
-  private       List<IndexInternal> indexesOnBuckets = new ArrayList<>();
+  private final List<IndexInternal> indexesOnBuckets = new ArrayList<>();
   private final DocumentType        type;
 
   public TypeIndex(final String logicName, final DocumentType type) {

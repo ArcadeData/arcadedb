@@ -58,9 +58,9 @@ public class Replica2LeaderNetworkExecutor extends Thread {
   private          String              leaderServerHTTPAddress;
   private final    boolean             testOn;
   private          ChannelBinaryClient channel;
-  private volatile boolean             shutdown          = false;
-  private          Object              channelOutputLock = new Object();
-  private          Object              channelInputLock  = new Object();
+  private volatile boolean shutdown          = false;
+  private final    Object  channelOutputLock = new Object();
+  private final    Object  channelInputLock  = new Object();
 
   public Replica2LeaderNetworkExecutor(final HAServer ha, final String host, final int port) {
     this.server = ha;

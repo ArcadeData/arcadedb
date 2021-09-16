@@ -39,8 +39,8 @@ public class MatchStatement extends Statement {
   static final String DEFAULT_ALIAS_PREFIX = "$ARCADEDB_DEFAULT_ALIAS_";
 
   long threshold = 20;
-  private int      limitFromProtocol = -1;
-  private Database database;
+  private final int      limitFromProtocol = -1;
+  private       Database database;
 
   public List<NestedProjection> getReturnNestedProjections() {
     return returnNestedProjections;

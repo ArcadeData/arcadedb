@@ -40,7 +40,7 @@ import java.util.Set;
 public class Profiler {
   public static final Profiler INSTANCE = new Profiler();
 
-  private Set<DatabaseInternal> databases = new LinkedHashSet<>();
+  private final Set<DatabaseInternal> databases = new LinkedHashSet<>();
 
   protected Profiler() {
   }
@@ -207,7 +207,7 @@ public class Profiler {
       buffer.append(String.format("\n FILE-MANAGER FS=%s/%s openFiles=%d maxFilesOpened=%d", FileUtils.getSizeAsString(freeSpaceInMB),
           FileUtils.getSizeAsString(totalSpaceInMB), totalOpenFiles, maxOpenFiles));
 
-      out.println(buffer.toString());
+      out.println(buffer);
     } catch (Exception e) {
       out.println("Error on displaying metrics (" + e + ")");
     }

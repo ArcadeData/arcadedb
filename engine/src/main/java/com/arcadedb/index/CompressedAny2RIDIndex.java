@@ -46,10 +46,10 @@ public class CompressedAny2RIDIndex<K> {
   private final Database         database;
   private final BinarySerializer serializer;
   private final byte             keyBinaryType;
-  private final Type             keyType;
-  private       Binary           chunk;
-  private       int              keys;
-  private       int              totalEntries   = 0;
+  private final Type   keyType;
+  private final Binary chunk;
+  private final int    keys;
+  private       int    totalEntries   = 0;
   private       int              totalUsedSlots = 0;
 
   public class EntryIterator implements Iterator<RID> {

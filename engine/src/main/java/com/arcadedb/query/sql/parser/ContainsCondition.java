@@ -75,10 +75,7 @@ public class ContainsCondition extends BooleanExpression {
           }
         }
 
-        if (MultiValue.contains(left, right)) {
-          return true;
-        }
-        return false;
+        return MultiValue.contains(left, right);
       }
       if (right instanceof Iterable) {
         right = ((Iterable) right).iterator();

@@ -193,7 +193,7 @@ public class BasicGraphTest extends BaseGraphTest {
       final Vertex v1 = (Vertex) database.lookupByRID(root, false);
       Assertions.assertNotNull(v1);
 
-      final MutableVertex v1Copy = (MutableVertex) v1.modify();
+      final MutableVertex v1Copy = v1.modify();
       v1Copy.set("newProperty1", "TestUpdate1");
       v1Copy.save();
 
@@ -206,7 +206,7 @@ public class BasicGraphTest extends BaseGraphTest {
 
       Assertions.assertNotNull(e1);
 
-      final MutableEdge e1Copy = (MutableEdge) e1.modify();
+      final MutableEdge e1Copy = e1.modify();
       e1Copy.set("newProperty2", "TestUpdate2");
       e1Copy.save();
 

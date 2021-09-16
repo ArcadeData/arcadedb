@@ -53,24 +53,24 @@ public class PostgresNetworkExecutor extends Thread {
   public static        String                                         PG_SERVER_VERSION          = "10.5";
   private static final int                                            BUFFER_LENGTH              = 32 * 1024;
   private final        ArcadeDBServer                                 server;
-  private              Database                                       database;
-  private              ChannelBinaryServer                            channel;
-  private volatile     boolean                                        shutdown                   = false;
-  private              int                                            posInBuffer                = 0;
-  private final        byte[]                                         buffer                     = new byte[BUFFER_LENGTH];
-  private              int                                            bytesRead                  = 0;
-  private              int                                            nextByte                   = 0;
+  private          Database            database;
+  private final    ChannelBinaryServer channel;
+  private volatile boolean             shutdown    = false;
+  private final    int     posInBuffer = 0;
+  private final    byte[]  buffer      = new byte[BUFFER_LENGTH];
+  private final int    bytesRead = 0;
+  private       int    nextByte  = 0;
   private              boolean                                        reuseLastByte              = false;
   private              String                                         userName                   = null;
   private              String                                         databaseName               = null;
   private              String                                         userPassword               = null;
   private              int                                            consecutiveErrors          = 0;
-  private              long                                           processIdSequence          = 0;
-  private static       Map<Long, Pair<Long, PostgresNetworkExecutor>> ACTIVE_SESSIONS            = new ConcurrentHashMap<>();
-  private              Map<String, PostgresPortal>                    portals                    = new HashMap<>();
-  private              boolean                                        DEBUG                      = false;
-  private              Map<String, Object>                            connectionProperties       = new HashMap<>();
-  private              boolean                                        explicitTransactionStarted = false;
+  private              long                                           processIdSequence = 0;
+  private static final Map<Long, Pair<Long, PostgresNetworkExecutor>> ACTIVE_SESSIONS   = new ConcurrentHashMap<>();
+  private final        Map<String, PostgresPortal>                    portals           = new HashMap<>();
+  private final  boolean                                        DEBUG           = false;
+  private final Map<String, Object>         connectionProperties = new HashMap<>();
+  private       boolean             explicitTransactionStarted = false;
   private              boolean                                        errorInTransaction         = false;
 
   private interface ReadMessageCallback {

@@ -50,7 +50,7 @@ public class PokecLoader {
   private static final WALFile.FLUSH_TYPE USE_WAL_SYNC            = WALFile.FLUSH_TYPE.NO;
   private static final int                COMMIT_EVERY            = 100;
 
-  private static String[] COLUMNS = new String[] { "id", "public", "completion_percentage", "gender", "region", "last_login", "registration", "age", "body",
+  private static final String[] COLUMNS = new String[] { "id", "public", "completion_percentage", "gender", "region", "last_login", "registration", "age", "body",
       "I_am_working_in_field", "spoken_languages", "hobbies", "I_most_enjoy_good_food", "pets", "body_type", "my_eyesight", "eye_color", "hair_color",
       "hair_type", "completed_level_of_education", "favourite_color", "relation_to_smoking", "relation_to_alcohol", "sign_in_zodiac",
       "on_pokec_i_am_looking_for", "love_is_for_me", "relation_to_casual_sex", "my_partner_should_be", "marital_status", "children", "relation_to_children",

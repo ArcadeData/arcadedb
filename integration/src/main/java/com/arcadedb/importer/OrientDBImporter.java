@@ -51,37 +51,37 @@ public class OrientDBImporter {
   private       String                     inputFile;
   private       String                     securityFileName;
   private       String                     databaseName;
-  private       boolean                    overwriteDatabase               = false;
-  private       Map<String, Integer>       clustersNameToId                = new LinkedHashMap<>();
-  private       Map<Integer, String>       clustersIdToName                = new LinkedHashMap<>();
-  private       Map<String, OrientDBClass> classes                         = new LinkedHashMap<>();
-  private       Map<String, Long>          totalRecordByType               = new HashMap<>();
-  private       long                       totalRecordParsed               = 0L;
-  private       long                       totalAttributesParsed           = 0L;
-  private       long                       errors                          = 0L;
-  private       long                       warnings                        = 0L;
-  private       Set<String>                excludeClasses                  = new HashSet<>(Arrays.asList(
-      new String[] { "OUser", "ORole", "OSchedule", "OSequence", "OTriggered", "OSecurityPolicy", "ORestricted", "OIdentity", "OFunction", "_studio" }));
-  private       DatabaseFactory            factory;
-  private       Database                   database;
-  private       Set<String>                edgeClasses                     = new HashSet<>();
-  private       List<Map<String, Object>>  parsedUsers                     = new ArrayList<>();
-  private       Map<RID, RID>              vertexRidMap                    = new HashMap<>();
-  private       int                        batchSize                       = 10_000;
+  private       boolean              overwriteDatabase = false;
+  private final Map<String, Integer> clustersNameToId  = new LinkedHashMap<>();
+  private final Map<Integer, String> clustersIdToName  = new LinkedHashMap<>();
+  private final Map<String, OrientDBClass> classes          = new LinkedHashMap<>();
+  private final Map<String, Long>          totalRecordByType = new HashMap<>();
+  private       long                       totalRecordParsed = 0L;
+  private       long totalAttributesParsed = 0L;
+  private final long errors                = 0L;
+  private       long warnings              = 0L;
+  private final Set<String>     excludeClasses = new HashSet<>(Arrays.asList("OUser", "ORole", "OSchedule", "OSequence",
+      "OTriggered", "OSecurityPolicy", "ORestricted", "OIdentity", "OFunction", "_studio"));
+  private       DatabaseFactory factory;
+  private       Database                  database;
+  private final Set<String>               edgeClasses = new HashSet<>();
+  private final List<Map<String, Object>> parsedUsers = new ArrayList<>();
+  private final Map<RID, RID>             vertexRidMap = new HashMap<>();
+  private       int                       batchSize    = 10_000;
   private       PHASE                      phase                           = PHASE.OFF; // phase1 = create DB and cache edges in RAM, phase2 = create vertices and edges
   private       long                       processedItems                  = 0L;
   private       long                       skippedRecordBecauseNullKey     = 0L;
-  private       long                       skippedEdgeBecauseMissingVertex = 0l;
-  private       Map<String, Long>          totalEdgesByVertexType          = new HashMap<>();
-  private       long                       beginTime;
+  private       long              skippedEdgeBecauseMissingVertex = 0l;
+  private final Map<String, Long> totalEdgesByVertexType          = new HashMap<>();
+  private       long              beginTime;
   private       long                       beginTimeRecordsCreation;
   private       long                       beginTimeEdgeCreation;
   private       GZIPInputStream            inputStream;
   private       JsonReader                 reader;
   private       boolean                    error                           = false;
-  private       ImporterContext            context                         = new ImporterContext();
-  private       ImporterSettings           settings                        = new ImporterSettings();
-  private       ConsoleLogger              logger;
+  private       ImporterContext  context  = new ImporterContext();
+  private final ImporterSettings settings = new ImporterSettings();
+  private final ConsoleLogger    logger;
 
   private enum PHASE {OFF, CREATE_SCHEMA, CREATE_RECORDS, CREATE_EDGES}
 

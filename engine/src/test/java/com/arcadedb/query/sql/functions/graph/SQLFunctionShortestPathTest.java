@@ -17,8 +17,8 @@ import static java.util.Arrays.asList;
 
 public class SQLFunctionShortestPathTest {
 
-  private Map<Integer, MutableVertex> vertices = new HashMap<>();
-  private SQLFunctionShortestPath     function;
+  private final Map<Integer, MutableVertex> vertices = new HashMap<>();
+  private       SQLFunctionShortestPath     function;
 
   @Test
   public void testExecute() throws Exception {

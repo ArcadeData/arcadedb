@@ -40,7 +40,7 @@ public class OTruncateClassStatementExecutionTest extends TestHelper {
 
     Set<Integer> set = new HashSet<Integer>();
     while (result.hasNext()) {
-      set.addAll((Collection<Integer>) result.next().getProperty("data"));
+      set.addAll(result.next().getProperty("data"));
     }
     result.close();
     Assertions.assertTrue(set.containsAll(Arrays.asList(5, 6, 7, 8, 9, -1)));

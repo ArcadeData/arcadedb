@@ -63,10 +63,10 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
   private          long                                               leftOn                = 0;
   private          ChannelBinaryServer                                channel;
   private          STATUS                                             status                = STATUS.JOINING;
-  private          Object                                             lock                  = new Object();
-  private          Object                                             channelOutputLock     = new Object();
-  private          Object                                             channelInputLock      = new Object();
-  private volatile boolean                                            shutdownCommunication = false;
+  private       Object lock              = new Object();
+  private final Object channelOutputLock = new Object();
+  private final Object channelInputLock  = new Object();
+  private volatile boolean shutdownCommunication = false;
 
   // STATS
   private long totalMessages;

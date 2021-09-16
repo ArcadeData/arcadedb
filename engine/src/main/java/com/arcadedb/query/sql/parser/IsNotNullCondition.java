@@ -78,7 +78,7 @@ public class IsNotNullCondition extends BooleanExpression {
 
   @Override protected List<Object> getExternalCalculationConditions() {
     if (!expression.supportsBasicCalculation()) {
-      return (List) Collections.singletonList(expression);
+      return Collections.singletonList(expression);
     }
     return Collections.EMPTY_LIST;
   }

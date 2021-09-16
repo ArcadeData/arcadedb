@@ -192,7 +192,7 @@ public class CRUDTest extends TestHelper {
     database.scanType("V", true, new DocumentCallback() {
       @Override
       public boolean onRecord(Document record) {
-        final MutableDocument document = (MutableDocument) record.modify();
+        final MutableDocument document = record.modify();
         document.set("update", true);
         document.set(largeField, "This is a large field to force the page overlap at some point"); // FORCE THE PAGE OVERLAP
         document.save();

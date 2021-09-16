@@ -41,8 +41,8 @@ import java.util.List;
 import java.util.logging.Level;
 
 public class GraphImporter {
-  private       CompressedAny2RIDIndex       verticesIndex;
-  private final DatabaseInternal             database;
+  private final CompressedAny2RIDIndex verticesIndex;
+  private final DatabaseInternal       database;
   private final GraphImporterThreadContext[] threadContexts;
 
   enum STATUS {IMPORTING_VERTEX, IMPORTING_EDGE, CLOSED}
@@ -121,7 +121,7 @@ public class GraphImporter {
         @Override
         public void call(final Record newDocument) {
           // PRE-CREATE OUT/IN CHUNKS TO SPEEDUP EDGE CREATION
-          final DatabaseInternal db = (DatabaseInternal) database;
+          final DatabaseInternal db = database;
           db.getGraphEngine().createOutEdgeChunk(db, sourceVertex);
           db.getGraphEngine().createInEdgeChunk(db, sourceVertex);
 
