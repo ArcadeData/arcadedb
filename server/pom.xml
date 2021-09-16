@@ -37,7 +37,7 @@
 
     <properties>
         <metrics.version>4.2.3</metrics.version>
-        <slf4j-simple.version>1.7.31</slf4j-simple.version>
+        <slf4j-simple.version>1.7.32</slf4j-simple.version>
         <undertow-core.version>2.2.10.Final</undertow-core.version>
     </properties>
 
