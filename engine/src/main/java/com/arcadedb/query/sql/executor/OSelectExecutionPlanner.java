@@ -41,9 +41,9 @@ import java.util.stream.Collectors;
  */
 public class OSelectExecutionPlanner {
 
-  private static String LOCAL_NODE_NAME = "local";
+  private static final String LOCAL_NODE_NAME = "local";
   QueryPlanningInfo info;
-  SelectStatement   statement;
+  final SelectStatement statement;
 
   public OSelectExecutionPlanner(SelectStatement oSelectStatement) {
     this.statement = oSelectStatement;
@@ -118,8 +118,6 @@ public class OSelectExecutionPlanner {
     // TODO optimization: in most cases the projections can be calculated on remote nodes
     buildDistributedExecutionPlan(result, info, ctx, enableProfiling);
 
-    handleLockRecord(result, info, ctx, enableProfiling);
-
     handleProjectionsBlock(result, info, ctx, enableProfiling);
 
     if (info.timeout != null) {
@@ -130,13 +128,6 @@ public class OSelectExecutionPlanner {
       db.getExecutionPlanCache().put(statement.getOriginalStatement(), result);
     }
     return result;
-  }
-
-  private void handleLockRecord(SelectExecutionPlan result, QueryPlanningInfo info, CommandContext ctx, boolean enableProfiling) {
-    //TODO
-//    if (info.lockRecord != null) {
-//      result.chain(new LockRecordStep(info.lockRecord, ctx, enableProfiling));
-//    }
   }
 
   public static void handleProjectionsBlock(SelectExecutionPlan result, QueryPlanningInfo info, CommandContext ctx, boolean enableProfiling) {
@@ -272,7 +263,7 @@ public class OSelectExecutionPlanner {
    * @return a map that has node names as a key and clusters (data files) for each node as a value
    */
   private Map<String, Set<String>> getMinimalSetOfNodesForShardedQuery(String localNode, Map<String, Set<String>> clusterMap, Set<String> queryClusters) {
-    HashMap<String, Set<String>> result = new HashMap<String, Set<String>>();
+    HashMap<String, Set<String>> result = new HashMap<>();
     result.put(LOCAL_NODE_NAME, queryClusters);
     return result;
 
@@ -315,8 +306,7 @@ public class OSelectExecutionPlanner {
     String lastFound = null;
     int lastSize = -1;
     for (Map.Entry<String, Set<String>> nodeConfig : clusterMap.entrySet()) {
-      Set<String> current = new HashSet<>();
-      current.addAll(nodeConfig.getValue());
+      Set<String> current = new HashSet<>(nodeConfig.getValue());
       current.retainAll(uncovered);
       int thisSize = current.size();
       if (lastFound == null || thisSize > lastSize) {
@@ -1804,7 +1794,7 @@ public class OSelectExecutionPlanner {
 //        return null;
 //    }
 
-    List<ExecutionStepInternal> result = new ArrayList<>();
+    List<ExecutionStepInternal> result;
 
     List<IndexSearchDescriptor> optimumIndexSearchDescriptors = commonFactor(indexSearchDescriptors);
 
@@ -2159,11 +2149,7 @@ public class OSelectExecutionPlanner {
     //index, key condition, additional filter (to aggregate in OR)
     Map<RangeIndex, Map<IndexCondPair, OrBlock>> aggregation = new HashMap<>();
     for (IndexSearchDescriptor item : indexSearchDescriptors) {
-      Map<IndexCondPair, OrBlock> filtersForIndex = aggregation.get(item.idx);
-      if (filtersForIndex == null) {
-        filtersForIndex = new HashMap<>();
-        aggregation.put(item.idx, filtersForIndex);
-      }
+      Map<IndexCondPair, OrBlock> filtersForIndex = aggregation.computeIfAbsent(item.idx, k -> new HashMap<>());
       IndexCondPair extendedCond = new IndexCondPair(item.keyCondition, item.additionalRangeCondition);
 
       OrBlock existingAdditionalConditions = filtersForIndex.get(extendedCond);

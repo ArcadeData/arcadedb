@@ -43,11 +43,7 @@ public class BasicCommandContext implements CommandContext {
   protected Map<String, Object> variables;
   protected Map<Object, Object> inputParameters;
 
-  // MANAGES THE TIMEOUT
-  private long executionStartedOn;
-  private long timeoutMs;
-
-  protected AtomicLong resultsProcessed = new AtomicLong(0);
+  protected final AtomicLong resultsProcessed = new AtomicLong(0);
 
   public BasicCommandContext() {
   }
@@ -210,7 +206,7 @@ public class BasicCommandContext implements CommandContext {
     if (value == null)
       value = iValue;
     else
-      value = value.longValue() + iValue;
+      value = value + iValue;
     variables.put(iName, value);
     return value;
   }
@@ -284,11 +280,11 @@ public class BasicCommandContext implements CommandContext {
 
   @Override
   public void beginExecution(final long iTimeout, final TIMEOUT_STRATEGY iStrategy) {
-    if (iTimeout > 0) {
-      executionStartedOn = System.currentTimeMillis();
-      timeoutMs = iTimeout;
-//      timeoutStrategy = iStrategy;
-    }
+//    if (iTimeout > 0) {
+    // MANAGES THE TIMEOUT
+    //long executionStartedOn = System.currentTimeMillis();
+    //      timeoutStrategy = iStrategy;
+//    }
   }
 
   public boolean checkTimeout() {
@@ -323,11 +319,6 @@ public class BasicCommandContext implements CommandContext {
     copy.parent = parent;
     copy.child = child;
     return copy;
-  }
-
-  @Override
-  public void merge(final CommandContext iContext) {
-    // TODO: SOME VALUES NEED TO BE MERGED
   }
 
   private void init() {
@@ -390,7 +381,7 @@ public class BasicCommandContext implements CommandContext {
             continue;
           }
           if (iText.charAt(i) == '"' && !singleQuote) {
-            singleQuote = !singleQuote;
+            doubleQuote = !doubleQuote;
             continue;
           }
 

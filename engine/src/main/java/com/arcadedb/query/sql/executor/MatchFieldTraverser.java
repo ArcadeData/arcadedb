@@ -50,7 +50,8 @@ public class MatchFieldTraverser extends MatchEdgeTraverser {
     }
     if (qR instanceof Iterable) {
       final Iterator<Object> iter = ((Iterable) qR).iterator();
-      Iterable<ResultInternal> result = () -> new Iterator<ResultInternal>() {
+
+      return () -> new Iterator<ResultInternal>() {
         private ResultInternal nextElement;
 
         @Override
@@ -91,8 +92,6 @@ public class MatchFieldTraverser extends MatchEdgeTraverser {
           }
         }
       };
-
-      return result;
     }
     return Collections.EMPTY_LIST;
   }

@@ -33,7 +33,7 @@ public class EmptyDataGeneratorStep extends AbstractExecutionStep {
 
   private long cost = 0;
 
-  int size;
+  final int size;
   int served = 0;
 
   public EmptyDataGeneratorStep(int size, CommandContext ctx, boolean profilingEnabled) {
@@ -76,7 +76,7 @@ public class EmptyDataGeneratorStep extends AbstractExecutionStep {
 
       @Override
       public Optional<ExecutionPlan> getExecutionPlan() {
-        return null;
+        return Optional.empty();
       }
 
       @Override

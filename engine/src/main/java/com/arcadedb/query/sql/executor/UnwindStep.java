@@ -37,7 +37,7 @@ import java.util.stream.Collectors;
 public class UnwindStep extends AbstractExecutionStep {
 
   private final Unwind       unwind;
-  private       List<String> unwindFields;
+  private final List<String> unwindFields;
 
   ResultSet        lastResult      = null;
   Iterator<Result> nextSubsequence = null;
@@ -51,7 +51,7 @@ public class UnwindStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    if (prev == null || !prev.isPresent()) {
+    if (prev == null || prev.isEmpty()) {
       throw new CommandExecutionException("Cannot expand without a target");
     }
     return new ResultSet() {
@@ -94,7 +94,7 @@ public class UnwindStep extends AbstractExecutionStep {
 
       @Override
       public Optional<ExecutionPlan> getExecutionPlan() {
-        return null;
+        return Optional.empty();
       }
 
       @Override

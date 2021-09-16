@@ -94,7 +94,7 @@ public class CheckIsEdgeTypeStep extends AbstractExecutionStep {
     result.append(spaces);
     result.append("+ CHECK USERTYPE HIERARCHY (E)");
     if (profilingEnabled) {
-      result.append(" (" + getCostFormatted() + ")");
+      result.append(" (").append(getCostFormatted()).append(")");
     }
     return result.toString();
   }

@@ -22,7 +22,6 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Document;
-import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.TimeoutException;
@@ -58,9 +57,9 @@ public class SetDocumentClassStep extends AbstractExecutionStep {
         Result result = upstream.next();
 
         if (result.isElement()) {
-          Identifiable element = result.getElement().get().getRecord();
+          Record element = result.getElement().get().getRecord();
           if (element instanceof Record) {
-            Record doc = (Record) element;
+            Record doc = element;
             if (!(result instanceof ResultInternal)) {
               result = new UpdatableResult((MutableDocument) doc);
             } else {
@@ -78,7 +77,7 @@ public class SetDocumentClassStep extends AbstractExecutionStep {
 
       @Override
       public Optional<ExecutionPlan> getExecutionPlan() {
-        return null;
+        return Optional.empty();
       }
 
       @Override
@@ -91,12 +90,7 @@ public class SetDocumentClassStep extends AbstractExecutionStep {
   @Override
   public String prettyPrint(int depth, int indent) {
     String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    StringBuilder result = new StringBuilder();
-    result.append(spaces);
-    result.append("+ SET TYPE\n");
-    result.append(spaces);
-    result.append("  ");
-    result.append(this.targetClass);
-    return result.toString();
+    String result = spaces + "+ SET TYPE\n" + spaces + "  " + this.targetClass;
+    return result;
   }
 }

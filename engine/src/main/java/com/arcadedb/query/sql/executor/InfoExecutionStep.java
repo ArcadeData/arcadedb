@@ -35,7 +35,7 @@ public class InfoExecutionStep implements ExecutionStep {
   String              targetNode;
   String              description;
   long                cost;
-  List<ExecutionStep> subSteps = new ArrayList<>();
+  final List<ExecutionStep> subSteps = new ArrayList<>();
 
   @Override public String getName() {
     return name;

@@ -167,16 +167,13 @@ public class BreadthFirstTraverseStep extends AbstractTraverseStep {
     if (nextStep instanceof TraverseResult) {
       ((TraverseResult) nextStep).depth = depth;
       ((TraverseResult) nextStep).setMetadata("$depth", depth);
-      List<Identifiable> newPath = new ArrayList<>();
-      newPath.addAll(path);
+      List<Identifiable> newPath = new ArrayList<>(path);
       nextStep.getIdentity().ifPresent(x -> newPath.add(x.getIdentity()));
       ((TraverseResult) nextStep).setMetadata("$path", newPath);
 
-      List reverseStack = new ArrayList();
-      reverseStack.addAll(newPath);
+      List reverseStack = new ArrayList(newPath);
       Collections.reverse(reverseStack);
-      List newStack = new ArrayList();
-      newStack.addAll(reverseStack);
+      List newStack = new ArrayList(reverseStack);
       ((TraverseResult) nextStep).setMetadata("$stack", newStack);
 
       tryAddEntryPoint(nextStep, ctx);
@@ -185,16 +182,13 @@ public class BreadthFirstTraverseStep extends AbstractTraverseStep {
       res.setElement(nextStep.getElement().get());
       res.depth = depth;
       res.setMetadata("$depth", depth);
-      List<Identifiable> newPath = new ArrayList<>();
-      newPath.addAll(path);
+      List<Identifiable> newPath = new ArrayList<>(path);
       nextStep.getIdentity().ifPresent(x -> newPath.add(x.getIdentity()));
       ((TraverseResult) nextStep).setMetadata("$path", newPath);
 
-      List reverseStack = new ArrayList();
-      reverseStack.addAll(newPath);
+      List reverseStack = new ArrayList(newPath);
       Collections.reverse(reverseStack);
-      List newStack = new ArrayList();
-      newStack.addAll(reverseStack);
+      List newStack = new ArrayList(reverseStack);
       ((TraverseResult) nextStep).setMetadata("$stack", newStack);
 
       tryAddEntryPoint(res, ctx);
@@ -232,11 +226,11 @@ public class BreadthFirstTraverseStep extends AbstractTraverseStep {
     result.append(spaces);
     result.append("+ DEPTH-FIRST TRAVERSE \n");
     result.append(spaces);
-    result.append("  " + projections.toString());
+    result.append("  ").append(projections.toString());
     if (whileClause != null) {
       result.append("\n");
       result.append(spaces);
-      result.append("WHILE " + whileClause.toString());
+      result.append("WHILE ").append(whileClause);
     }
     return result.toString();
   }

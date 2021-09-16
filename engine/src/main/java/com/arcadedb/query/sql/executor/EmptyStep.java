@@ -34,8 +34,7 @@ public class EmptyStep extends AbstractExecutionStep {
   @Override
   public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
     getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
-    InternalResultSet result = new InternalResultSet();
-    return result;
+    return new InternalResultSet();
   }
 
   public boolean canBeCached() {

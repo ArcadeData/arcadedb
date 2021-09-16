@@ -33,23 +33,23 @@ import java.util.stream.Collectors;
  */
 public class OUpdateExecutionPlanner {
   private final FromClause  target;
-  public        WhereClause whereClause;
+  public final  WhereClause whereClause;
 
-  protected boolean upsert = false;
+  protected boolean upsert;
 
-  protected List<UpdateOperations> operations   = new ArrayList<UpdateOperations>();
-  protected boolean                returnBefore = false;
-  protected boolean                returnAfter  = false;
-  protected boolean                returnCount  = false;
+  protected List<UpdateOperations> operations;
+  protected boolean                returnBefore;
+  protected boolean                returnAfter;
+  protected boolean                returnCount;
 
   protected boolean updateEdge = false;
 
-  protected Projection returnProjection;
+  protected final Projection returnProjection;
 
 //  public OStorage.LOCKING_STRATEGY lockRecord = null;
 
-  public Limit   limit;
-  public Timeout timeout;
+  public final Limit   limit;
+  public final Timeout timeout;
 
   public OUpdateExecutionPlanner(UpdateStatement oUpdateStatement) {
     if (oUpdateStatement instanceof UpdateEdgeStatement) {

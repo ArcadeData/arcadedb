@@ -41,15 +41,12 @@ public class CreateEdgesStep extends AbstractExecutionStep {
   private final Identifier targetCluster;
   private final Identifier fromAlias;
   private final Identifier toAlias;
-  private final Number     wait;
-  private final Number     retry;
-  private final Batch      batch;
 
   //operation stuff
   Iterator fromIter;
   Iterator toIterator;
   Vertex   currentFrom;
-  List     toList = new ArrayList<>();
+  final   List    toList = new ArrayList<>();
   private boolean inited = false;
 
   private long cost = 0;
@@ -61,9 +58,6 @@ public class CreateEdgesStep extends AbstractExecutionStep {
     this.targetCluster = targetClusterName;
     this.fromAlias = fromAlias;
     this.toAlias = toAlias;
-    this.wait = wait;
-    this.retry = retry;
-    this.batch = batch;
 
   }
 
@@ -128,7 +122,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
 
       @Override
       public Optional<ExecutionPlan> getExecutionPlan() {
-        return null;
+        return Optional.empty();
       }
 
       @Override

@@ -27,9 +27,9 @@ import com.arcadedb.exception.ConcurrentModificationException;
 
 public class DatabaseAsyncTransaction extends DatabaseAsyncAbstractTask {
   public final Database.TransactionScope tx;
-  public final int                       retries;
-  private      OkCallback                onOkCallback;
-  private      ErrorCallback             onErrorCallback;
+  public final  int           retries;
+  private final OkCallback    onOkCallback;
+  private final ErrorCallback onErrorCallback;
 
   public DatabaseAsyncTransaction(final Database.TransactionScope tx, final int retries, final OkCallback okCallback, final ErrorCallback errorCallback) {
     this.tx = tx;

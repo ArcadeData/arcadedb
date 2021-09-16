@@ -19,7 +19,7 @@ public class GuaranteeEmptyCountStep extends AbstractExecutionStep {
 
     @Override
     public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-        if (!prev.isPresent()) {
+        if (prev.isEmpty()) {
             throw new IllegalStateException("filter step requires a previous step");
         }
         ResultSet upstream = prev.get().syncPull(ctx, nRecords);
@@ -79,8 +79,6 @@ public class GuaranteeEmptyCountStep extends AbstractExecutionStep {
 
     @Override
     public String prettyPrint(int depth, int indent) {
-        StringBuilder result = new StringBuilder();
-        result.append(ExecutionStepInternal.getIndent(depth, indent) + "+ GUARANTEE FOR ZERO COUNT ");
-        return result.toString();
+        return ExecutionStepInternal.getIndent(depth, indent) + "+ GUARANTEE FOR ZERO COUNT ";
     }
 }

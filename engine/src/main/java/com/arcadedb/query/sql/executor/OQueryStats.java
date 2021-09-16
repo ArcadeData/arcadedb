@@ -35,7 +35,7 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public class OQueryStats {
 
-  public Map<String, Long> stats = new ConcurrentHashMap<>();
+  public final Map<String, Long> stats = new ConcurrentHashMap<>();
 
   public static OQueryStats get(Database db) {
     return new OQueryStats();//TODO
@@ -109,7 +109,7 @@ public class OQueryStats {
       //refine this ;-)
       val = ((Double) ((val * .9) + (value * .1))).longValue();
       if (value > 0 && val == 0) {
-        val = 1l;
+        val = 1L;
       }
     }
     stats.put(key, val);

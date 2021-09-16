@@ -33,9 +33,9 @@ import java.util.*;
  * Created by luigidellaquila on 23/09/16.
  */
 public class MatchEdgeTraverser {
-  protected Result        sourceRecord;
-  protected EdgeTraversal edge;
-  protected MatchPathItem item;
+  protected final Result        sourceRecord;
+  protected       EdgeTraversal edge;
+  protected final MatchPathItem item;
 
   Iterator<ResultInternal> downstream;
 
@@ -110,11 +110,11 @@ public class MatchEdgeTraverser {
 
   protected void init(CommandContext ctx) {
     if (downstream == null) {
-      Object startingElem = sourceRecord.getElementProperty(getStartingPointAlias());
+      Identifiable startingElem = sourceRecord.getElementProperty(getStartingPointAlias());
       if (startingElem instanceof Result) {
         startingElem = ((Result) startingElem).getElement().orElse(null);
       }
-      downstream = executeTraversal(ctx, this.item, (Identifiable) startingElem, 0, null).iterator();
+      downstream = executeTraversal(ctx, this.item, startingElem, 0, null).iterator();
     }
   }
 
@@ -361,7 +361,6 @@ public class MatchEdgeTraverser {
         } else if (o instanceof ResultInternal) {
           result.add((ResultInternal) o);
         } else if (o == null) {
-          continue;
         } else {
           throw new UnsupportedOperationException();
         }

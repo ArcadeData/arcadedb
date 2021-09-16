@@ -37,7 +37,7 @@ public class RidSet implements Set<RID> {
 
   CommandContext ctx; //TODO, set this!!!
 
-  protected static int INITIAL_BLOCK_SIZE = 4096;
+  protected static final int INITIAL_BLOCK_SIZE = 4096;
 
   /*
    * bucket / offset / bitmask
@@ -49,7 +49,7 @@ public class RidSet implements Set<RID> {
 
   long size = 0;
 
-  protected int maxArraySize;
+  protected final int maxArraySize;
 
   /**
    * instantiates an ORidSet with a bucket size of Integer.MAX_VALUE / 10

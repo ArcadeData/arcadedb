@@ -83,7 +83,7 @@ public class SQLStaticReflectiveFunction extends SQLFunctionAbstract {
     PRIMITIVE_WEIGHT.put(void.class, 9);
   }
 
-  private Method[] methods;
+  private final Method[] methods;
 
   public SQLStaticReflectiveFunction(String name, int minParams, int maxParams, Method... methods) {
     super(name);

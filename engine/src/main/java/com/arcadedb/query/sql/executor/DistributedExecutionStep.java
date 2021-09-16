@@ -68,7 +68,7 @@ public class DistributedExecutionStep extends AbstractExecutionStep {
 
       @Override
       public Optional<ExecutionPlan> getExecutionPlan() {
-        return null;
+        return Optional.empty();
       }
 
       @Override
@@ -104,7 +104,7 @@ public class DistributedExecutionStep extends AbstractExecutionStep {
     StringBuilder builder = new StringBuilder();
     String ind = ExecutionStepInternal.getIndent(depth, indent);
     builder.append(ind);
-    builder.append("+ EXECUTE ON NODE " + nodeName + "----------- \n");
+    builder.append("+ EXECUTE ON NODE ").append(nodeName).append("----------- \n");
     builder.append(subExecuitonPlan.prettyPrint(depth + 1, indent));
     builder.append("  ------------------------------------------- \n");
     builder.append("   |\n");

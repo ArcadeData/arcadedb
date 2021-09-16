@@ -45,7 +45,7 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
 
   Pair<Object, Identifiable> nextEntry = null;
 
-  BooleanExpression condition;
+  final BooleanExpression condition;
 
   private boolean     inited = false;
   private IndexCursor cursor;
@@ -108,7 +108,7 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
 
       @Override
       public Optional<ExecutionPlan> getExecutionPlan() {
-        return null;
+        return Optional.empty();
       }
 
       @Override

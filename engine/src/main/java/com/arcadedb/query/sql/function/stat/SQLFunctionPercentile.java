@@ -39,8 +39,8 @@ public class SQLFunctionPercentile extends SQLFunctionAbstract {
 
   public static final String NAME = "percentile";
 
-  protected List<Double> quantiles = new ArrayList<Double>();
-  private   List<Number> values    = new ArrayList<Number>();
+  protected     List<Double> quantiles = new ArrayList<Double>();
+  private final List<Number> values    = new ArrayList<Number>();
 
   public SQLFunctionPercentile() {
     this(NAME, 2, -1);

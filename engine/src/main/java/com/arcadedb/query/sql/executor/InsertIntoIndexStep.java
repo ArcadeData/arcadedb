@@ -29,15 +29,11 @@ import com.arcadedb.query.sql.parser.InsertBody;
  * Created by luigidellaquila on 20/03/17.
  */
 public class InsertIntoIndexStep extends AbstractExecutionStep {
-  private final IndexIdentifier targetIndex;
-  private final InsertBody      body;
 
   boolean executed = false;
 
   public InsertIntoIndexStep(IndexIdentifier targetIndex, InsertBody insertBody, CommandContext ctx, boolean profilingEnabled) {
     super(ctx, profilingEnabled);
-    this.targetIndex = targetIndex;
-    this.body = insertBody;
   }
 
   @Override

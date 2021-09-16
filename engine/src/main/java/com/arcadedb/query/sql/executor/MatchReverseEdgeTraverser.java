@@ -83,7 +83,6 @@ public class MatchReverseEdgeTraverser extends MatchEdgeTraverser {
         } else if (o instanceof ResultInternal) {
           result.add((ResultInternal) o);
         } else if (o == null) {
-          continue;
         } else {
           throw new UnsupportedOperationException();
         }

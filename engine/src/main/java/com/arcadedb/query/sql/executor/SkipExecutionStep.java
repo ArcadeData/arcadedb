@@ -27,20 +27,18 @@ import com.arcadedb.query.sql.parser.Skip;
  * Created by luigidellaquila on 08/07/16.
  */
 public class SkipExecutionStep extends AbstractExecutionStep {
-  private final Skip skip;
-
-  int skipped = 0;
-
-  ResultSet lastFetch;
-  private boolean finished;
+  private final Skip    skip;
+  private       int     skipped = 0;
+  private       boolean finished;
 
   public SkipExecutionStep(Skip skip, CommandContext ctx, boolean profilingEnabled) {
     super(ctx, profilingEnabled);
     this.skip = skip;
   }
 
-  @Override public ResultSet syncPull(CommandContext ctx, int nRecords) {
-    if (finished == true) {
+  @Override
+  public ResultSet syncPull(CommandContext ctx, int nRecords) {
+    if (finished) {
       return new InternalResultSet();//empty
     }
     int skipValue = skip.getValue(ctx);
@@ -61,15 +59,18 @@ public class SkipExecutionStep extends AbstractExecutionStep {
 
   }
 
-  @Override public void sendTimeout() {
+  @Override
+  public void sendTimeout() {
 
   }
 
-  @Override public void close() {
+  @Override
+  public void close() {
     prev.ifPresent(x -> x.close());
   }
 
-  @Override public String prettyPrint(int depth, int indent) {
+  @Override
+  public String prettyPrint(int depth, int indent) {
     return ExecutionStepInternal.getIndent(depth, indent) + "+ SKIP (" + skip.toString() + ")";
   }
 

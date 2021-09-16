@@ -110,10 +110,10 @@ public class CheckClassTypeStep extends AbstractExecutionStep {
     result.append(spaces);
     result.append("+ CHECK TYPE HIERARCHY");
     if (profilingEnabled) {
-      result.append(" (" + getCostFormatted() + ")");
+      result.append(" (").append(getCostFormatted()).append(")");
     }
     result.append("\n");
-    result.append("  " + this.parentClass);
+    result.append("  ").append(this.parentClass);
     return result.toString();
   }
 

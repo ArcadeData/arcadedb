@@ -35,7 +35,7 @@ import java.util.Set;
 public class SQLFunctionDistinct extends SQLFunctionAbstract {
   public static final String NAME = "distinct";
 
-  private Set<Object> context = new LinkedHashSet<Object>();
+  private final Set<Object> context = new LinkedHashSet<Object>();
 
   public SQLFunctionDistinct() {
     super(NAME);

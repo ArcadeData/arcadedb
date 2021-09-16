@@ -26,8 +26,8 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.index.RangeIndex;
-import com.arcadedb.schema.DocumentType;
 import com.arcadedb.query.sql.parser.*;
+import com.arcadedb.schema.DocumentType;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -38,23 +38,17 @@ import java.util.stream.Collectors;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class OTraverseExecutionPlanner {
-
-  private List<TraverseProjectionItem> projections = null;
-  private FromClause target;
-
-  private WhereClause whileClause;
-
-  private final TraverseStatement.Strategy strategy;
-  private final PInteger                    maxDepth;
-
-  private Skip  skip;
-  private Limit limit;
+  private final List<TraverseProjectionItem> projections;
+  private final FromClause                   target;
+  private final WhereClause                  whileClause;
+  private final TraverseStatement.Strategy   strategy;
+  private final PInteger                     maxDepth;
+  private final Skip                         skip;
+  private final Limit                        limit;
 
   public OTraverseExecutionPlanner(TraverseStatement statement) {
     //copying the content, so that it can be manipulated and optimized
-    this.projections = statement.getProjections() == null ?
-        null :
-        statement.getProjections().stream().map(x -> x.copy()).collect(Collectors.toList());
+    this.projections = statement.getProjections() == null ? null : statement.getProjections().stream().map(x -> x.copy()).collect(Collectors.toList());
 
     this.target = statement.getTarget();
     this.whileClause = statement.getWhileClause() == null ? null : statement.getWhileClause().copy();
@@ -250,18 +244,16 @@ public class OTraverseExecutionPlanner {
   }
 
   private void handleClustersAsTarget(SelectExecutionPlan plan, List<Bucket> clusters, CommandContext ctx, boolean profilingEnabled) {
-    Database db = ctx.getDatabase();
+    final Database db = ctx.getDatabase();
     Boolean orderByRidAsc = null;//null: no order. true: asc, false:desc
     if (clusters.size() == 1) {
-      Bucket bucket = clusters.get(0);
+      final Bucket bucket = clusters.get(0);
       java.lang.Integer bucketId = bucket.getBucketNumber();
       if (bucketId == null) {
         bucketId = db.getSchema().getBucketByName(bucket.getBucketName()).getId();
       }
-      if (bucketId == null) {
-        throw new CommandExecutionException("Cluster " + bucket + " does not exist");
-      }
-      FetchFromClusterExecutionStep step = new FetchFromClusterExecutionStep(bucketId, ctx, profilingEnabled);
+
+      final FetchFromClusterExecutionStep step = new FetchFromClusterExecutionStep(bucketId, ctx, profilingEnabled);
       if (Boolean.TRUE.equals(orderByRidAsc)) {
         step.setOrder(FetchFromClusterExecutionStep.ORDER_ASC);
       } else if (Boolean.FALSE.equals(orderByRidAsc)) {
@@ -271,17 +263,14 @@ public class OTraverseExecutionPlanner {
     } else {
       int[] bucketIds = new int[clusters.size()];
       for (int i = 0; i < clusters.size(); i++) {
-        Bucket bucket = clusters.get(i);
+        final Bucket bucket = clusters.get(i);
         java.lang.Integer bucketId = bucket.getBucketNumber();
         if (bucketId == null) {
           bucketId = db.getSchema().getBucketByName(bucket.getBucketName()).getId();
         }
-        if (bucketId == null) {
-          throw new CommandExecutionException("Cluster " + bucket + " does not exist");
-        }
         bucketIds[i] = bucketId;
       }
-      FetchFromClustersExecutionStep step = new FetchFromClustersExecutionStep(bucketIds, ctx, orderByRidAsc, profilingEnabled);
+      final FetchFromClustersExecutionStep step = new FetchFromClustersExecutionStep(bucketIds, ctx, orderByRidAsc, profilingEnabled);
       plan.chain(step);
     }
   }

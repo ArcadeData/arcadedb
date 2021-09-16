@@ -67,7 +67,7 @@ public class UpdateContentStep extends AbstractExecutionStep {
           if (!(result.getElement().get() instanceof Document)) {
             return result;
           }
-          handleContent((Document) result.getElement().get(), ctx);
+          handleContent(result.getElement().get(), ctx);
         }
         return result;
       }

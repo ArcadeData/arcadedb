@@ -92,7 +92,7 @@ public class RemoveEdgePointersStep extends AbstractExecutionStep {
 
       @Override
       public Optional<ExecutionPlan> getExecutionPlan() {
-        return null;
+        return Optional.empty();
       }
 
       @Override
@@ -109,7 +109,7 @@ public class RemoveEdgePointersStep extends AbstractExecutionStep {
     result.append(spaces);
     result.append("+ CHECK AND EXCLUDE (possible) EXISTING EDGES ");
     if (profilingEnabled) {
-      result.append(" (" + getCostFormatted() + ")");
+      result.append(" (").append(getCostFormatted()).append(")");
     }
     return result.toString();
   }

@@ -51,7 +51,7 @@ public abstract class AbstractUnrollStep extends AbstractExecutionStep {
   }
 
   @Override public ResultSet syncPull(CommandContext ctx, int nRecords) {
-    if (prev == null || !prev.isPresent()) {
+    if (prev == null || prev.isEmpty()) {
       throw new CommandExecutionException("Cannot expand without a target");
     }
     return new ResultSet() {
@@ -90,7 +90,7 @@ public abstract class AbstractUnrollStep extends AbstractExecutionStep {
       }
 
       @Override public Optional<ExecutionPlan> getExecutionPlan() {
-        return null;
+        return Optional.empty();
       }
 
       @Override public Map<String, Long> getQueryStats() {

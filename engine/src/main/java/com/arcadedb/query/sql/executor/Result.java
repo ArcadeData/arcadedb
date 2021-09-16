@@ -130,12 +130,11 @@ public interface Result {
       StringBuilder builder = new StringBuilder();
       builder.append("[");
       boolean first = true;
-      Iterator iterator = ((Iterable) val).iterator();
-      while (iterator.hasNext()) {
+      for (Object o : (Iterable) val) {
         if (!first) {
           builder.append(", ");
         }
-        builder.append(toJson(iterator.next()));
+        builder.append(toJson(o));
         first = false;
       }
       builder.append("]");

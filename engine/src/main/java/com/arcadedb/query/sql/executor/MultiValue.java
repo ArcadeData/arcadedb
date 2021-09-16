@@ -64,7 +64,7 @@ public class MultiValue {
   }
 
   public static boolean isIterable(final Object iObject) {
-    return iObject != null && (iObject instanceof Iterable<?> || iObject instanceof Iterator<?>);
+    return (iObject instanceof Iterable<?> || iObject instanceof Iterator<?>);
   }
 
   /**
@@ -260,7 +260,7 @@ public class MultiValue {
       return temp;
     }
 
-    return new IterableObject<Object>(iObject);
+    return new IterableObject<>(iObject);
   }
 
   /**
@@ -280,15 +280,15 @@ public class MultiValue {
     else if (iObject instanceof Map<?, ?>)
       return ((Map<?, Object>) iObject).values();
     else if (iObject.getClass().isArray())
-      return new IterableObjectArray<Object>(iObject);
+      return new IterableObjectArray<>(iObject);
     else if (iObject instanceof Iterator<?>) {
-      final List<Object> temp = new ArrayList<Object>();
+      final List<Object> temp = new ArrayList<>();
       for (Iterator<Object> it = (Iterator<Object>) iObject; it.hasNext(); )
         temp.add(it.next());
       return temp;
     }
 
-    return new IterableObject<Object>(iObject);
+    return new IterableObject<>(iObject);
   }
 
   /**
@@ -310,9 +310,9 @@ public class MultiValue {
     if (iObject instanceof Map<?, ?>)
       return ((Map<?, Object>) iObject).values().iterator();
     if (iObject.getClass().isArray())
-      return new IterableObjectArray<Object>(iObject).iterator();
+      return new IterableObjectArray<>(iObject).iterator();
 
-    return new IterableObject<Object>(iObject);
+    return new IterableObject<>(iObject);
   }
 
   /**
@@ -333,9 +333,9 @@ public class MultiValue {
     if (iObject instanceof Map<?, ?>)
       return ((Map<?, Object>) iObject).values().iterator();
     if (iObject.getClass().isArray())
-      return new IterableObjectArray<Object>(iObject).iterator();
+      return new IterableObjectArray<>(iObject).iterator();
 
-    return new IterableObject<Object>(iObject);
+    return new IterableObject<>(iObject);
   }
 
   /**
@@ -471,7 +471,7 @@ public class MultiValue {
   public static Object remove(Object iObject, Object iToRemove, final boolean iAllOccurrences) {
     if (iObject != null) {
       if (iObject instanceof MultiIterator<?>) {
-        final Collection<Object> list = new LinkedList<Object>();
+        final Collection<Object> list = new LinkedList<>();
         for (Object o : ((MultiIterator<?>) iObject))
           list.add(o);
         iObject = list;
@@ -479,7 +479,7 @@ public class MultiValue {
 
       if (iToRemove instanceof MultiIterator<?>) {
         // TRANSFORM IN SET ONCE TO OPTIMIZE LOOPS DURING REMOVE
-        final Set<Object> set = new HashSet<Object>();
+        final Set<Object> set = new HashSet<>();
         for (Object o : ((MultiIterator<?>) iToRemove))
           set.add(o);
         iToRemove = set;
@@ -577,12 +577,7 @@ public class MultiValue {
   protected static void removeFromOCollection(final Object iObject, final Collection<Object> coll, final Object iToRemove, final boolean iAllOccurrences) {
     if (iAllOccurrences && !(iObject instanceof Set)) {
       // BROWSE THE COLLECTION ONE BY ONE TO REMOVE ALL THE OCCURRENCES
-      final Iterator<Object> it = coll.iterator();
-      while (it.hasNext()) {
-        final Object o = it.next();
-        if (iToRemove.equals(o))
-          it.remove();
-      }
+      coll.removeIf(iToRemove::equals);
     } else
       coll.remove(iToRemove);
 
@@ -640,7 +635,7 @@ public class MultiValue {
         result[i] = (T) convert(it.next(), iCallback);
     } else if (isIterable(iValue)) {
       // SIZE UNKNOWN: USE A LIST AS TEMPORARY OBJECT
-      final List<T> temp = new ArrayList<T>();
+      final List<T> temp = new ArrayList<>();
       for (Iterator<T> it = (Iterator<T>) getMultiValueIterator(iValue, false); it.hasNext(); )
         temp.add((T) convert(it.next(), iCallback));
 
@@ -744,7 +739,7 @@ public class MultiValue {
   }
 
   public static <T> List<T> getSingletonList(final T item) {
-    final List<T> list = new ArrayList<T>(1);
+    final List<T> list = new ArrayList<>(1);
     list.add(item);
     return list;
   }

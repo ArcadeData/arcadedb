@@ -22,7 +22,6 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Document;
-import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 
@@ -61,7 +60,7 @@ public class CheckRecordTypeStep extends AbstractExecutionStep {
           if (!result.isElement()) {
             throw new CommandExecutionException("record " + result + " is not an instance of " + typez);
           }
-          Record record = result.getElement().get();
+          Document record = result.getElement().get();
           if (record == null) {
             throw new CommandExecutionException("record " + result + " is not an instance of " + typez);
           }
@@ -70,9 +69,7 @@ public class CheckRecordTypeStep extends AbstractExecutionStep {
             throw new CommandExecutionException("record " + result + " is not a document");
           }
 
-          final Document doc = (Document) record;
-
-          if (!doc.getType().isSubTypeOf(typez)) {
+          if (!record.getType().isSubTypeOf(typez)) {
             throw new CommandExecutionException("record " + result + " is not an instance of " + typez);
           }
           return result;
@@ -90,7 +87,7 @@ public class CheckRecordTypeStep extends AbstractExecutionStep {
 
       @Override
       public Optional<ExecutionPlan> getExecutionPlan() {
-        return null;
+        return Optional.empty();
       }
 
       @Override

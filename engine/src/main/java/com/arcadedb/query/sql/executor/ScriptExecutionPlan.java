@@ -63,10 +63,10 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
   public ResultSet fetchNext(int n) {
     dexecute(n);
     return new ResultSet() {
-      private int totalFetched = 0;
 
       @Override
       public boolean hasNext() {
+        int totalFetched = 0;
         return finalResult.hasNext() && totalFetched < n;
       }
 
@@ -160,7 +160,7 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
 
   @Override
   public long getCost() {
-    return 0l;
+    return 0L;
   }
 
   @Override
@@ -220,8 +220,7 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
    * @return
    */
   public ExecutionStepInternal executeFull() {
-    for (int i = 0; i < steps.size(); i++) {
-      ScriptLineStep step = steps.get(i);
+    for (ScriptLineStep step : steps) {
       if (step.containsReturn()) {
         ExecutionStepInternal returnStep = step.executeUntilReturn(ctx);
         if (returnStep != null) {

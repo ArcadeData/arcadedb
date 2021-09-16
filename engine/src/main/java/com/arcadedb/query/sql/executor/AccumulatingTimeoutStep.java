@@ -98,12 +98,10 @@ public class AccumulatingTimeoutStep extends AbstractExecutionStep {
     };
   }
 
-  private ResultSet fail() {
+  private void fail() {
     this.timedOut = true;
     sendTimeout();
-    if (Timeout.RETURN.equals(this.timeout.getFailureStrategy())) {
-      return new InternalResultSet();
-    } else {
+    if (!Timeout.RETURN.equals(this.timeout.getFailureStrategy())) {
       throw new TimeoutException("Timeout expired");
     }
   }

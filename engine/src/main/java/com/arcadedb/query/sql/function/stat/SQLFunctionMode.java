@@ -40,9 +40,9 @@ public class SQLFunctionMode extends SQLFunctionAbstract {
 
   public static final String NAME = "mode";
 
-  private Map<Object, Integer> seen     = new HashMap<Object, Integer>();
-  private int                  max      = 0;
-  private List<Object>         maxElems = new ArrayList<Object>();
+  private final Map<Object, Integer> seen = new HashMap<Object, Integer>();
+  private       int                  max  = 0;
+  private final List<Object> maxElems = new ArrayList<Object>();
 
   public SQLFunctionMode() {
     super(NAME);

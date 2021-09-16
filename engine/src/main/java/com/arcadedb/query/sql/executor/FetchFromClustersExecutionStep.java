@@ -31,8 +31,8 @@ import java.util.*;
  */
 public class FetchFromClustersExecutionStep extends AbstractExecutionStep {
 
-  List<ExecutionStep> subSteps;
-  private boolean orderByRidAsc  = false;
+  final   List<ExecutionStep> subSteps;
+  private boolean             orderByRidAsc  = false;
   private boolean orderByRidDesc = false;
 
   ResultSet currentResultSet;
@@ -54,10 +54,10 @@ public class FetchFromClustersExecutionStep extends AbstractExecutionStep {
       orderByRidDesc = true;
     }
 
-    subSteps = new ArrayList<ExecutionStep>();
+    subSteps = new ArrayList<>();
     sort(bucketIds);
-    for (int i = 0; i < bucketIds.length; i++) {
-      FetchFromClusterExecutionStep step = new FetchFromClusterExecutionStep(bucketIds[i], ctx, profilingEnabled);
+    for (int bucketId : bucketIds) {
+      FetchFromClusterExecutionStep step = new FetchFromClusterExecutionStep(bucketId, ctx, profilingEnabled);
       if (orderByRidAsc) {
         step.setOrder(FetchFromClusterExecutionStep.ORDER_ASC);
       } else if (orderByRidDesc) {
@@ -176,7 +176,7 @@ public class FetchFromClustersExecutionStep extends AbstractExecutionStep {
     builder.append(ind);
     builder.append("+ FETCH FROM BUCKETSS");
     if (profilingEnabled) {
-      builder.append(" (" + getCostFormatted() + ")");
+      builder.append(" (").append(getCostFormatted()).append(")");
     }
     builder.append("\n");
     for (int i = 0; i < subSteps.size(); i++) {

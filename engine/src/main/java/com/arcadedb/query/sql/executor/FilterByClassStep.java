@@ -48,7 +48,7 @@ public class FilterByClassStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    if (!prev.isPresent()) {
+    if (prev.isEmpty()) {
       throw new IllegalStateException("filter step requires a previous step");
     }
     ExecutionStepInternal prevStep = prev.get();
@@ -135,7 +135,7 @@ public class FilterByClassStep extends AbstractExecutionStep {
 
       @Override
       public Optional<ExecutionPlan> getExecutionPlan() {
-        return null;
+        return Optional.empty();
       }
 
       @Override
@@ -152,7 +152,7 @@ public class FilterByClassStep extends AbstractExecutionStep {
     result.append(ExecutionStepInternal.getIndent(depth, indent));
     result.append("+ FILTER ITEMS BY TYPE");
     if (profilingEnabled) {
-      result.append(" (" + getCostFormatted() + ")");
+      result.append(" (").append(getCostFormatted()).append(")");
     }
     result.append(" \n");
     result.append(ExecutionStepInternal.getIndent(depth, indent));

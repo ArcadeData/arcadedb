@@ -36,8 +36,8 @@ import java.util.Arrays;
  * @author Luca Garulli
  */
 public class PartitionedBucketSelectionStrategy extends DefaultBucketSelectionStrategy {
-  private DocumentType type;
-  private String[]     propertyNames;
+  private       DocumentType type;
+  private final String[]     propertyNames;
 
   public PartitionedBucketSelectionStrategy(final String[] propertyNames) {
     this.propertyNames = propertyNames;

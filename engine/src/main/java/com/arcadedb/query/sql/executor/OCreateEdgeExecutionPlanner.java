@@ -33,15 +33,15 @@ import java.util.List;
  */
 public class OCreateEdgeExecutionPlanner {
 
-  protected Identifier targetClass;
-  protected Identifier targetClusterName;
-  protected Expression leftExpression;
-  protected Expression rightExpression;
+  protected       Identifier targetClass;
+  protected final Identifier targetClusterName;
+  protected final Expression leftExpression;
+  protected final Expression rightExpression;
 
-  protected InsertBody body;
-  protected Number     retry;
-  protected Number     wait;
-  protected Batch      batch;
+  protected final InsertBody body;
+  protected final Number     retry;
+  protected final Number     wait;
+  protected final Batch      batch;
 
 
   public OCreateEdgeExecutionPlanner(CreateEdgeStatement statement) {

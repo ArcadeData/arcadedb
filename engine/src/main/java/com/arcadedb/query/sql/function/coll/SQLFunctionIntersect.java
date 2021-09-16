@@ -81,7 +81,7 @@ public class SQLFunctionIntersect extends SQLFunctionMultiValueAbstract<Object> 
         value = intersectWith(iterator, value);
         iterator = MultiValue.getMultiValueIterator(value, false);
       } else {
-        return new ArrayList().iterator();
+        return Collections.emptyIterator();
       }
     }
 

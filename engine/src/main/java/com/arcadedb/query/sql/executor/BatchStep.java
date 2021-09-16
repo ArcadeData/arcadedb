@@ -32,7 +32,7 @@ import java.util.Optional;
  * Created by luigidellaquila on 14/02/17.
  */
 public class BatchStep extends AbstractExecutionStep {
-  Integer batchSize;
+  final Integer batchSize;
 
   int count = 0;
 
@@ -71,7 +71,7 @@ public class BatchStep extends AbstractExecutionStep {
 
       @Override
       public Optional<ExecutionPlan> getExecutionPlan() {
-        return null;
+        return Optional.empty();
       }
 
       @Override
@@ -88,10 +88,6 @@ public class BatchStep extends AbstractExecutionStep {
 
   @Override
   public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    StringBuilder result = new StringBuilder();
-    result.append(spaces);
-    result.append("+ BATCH COMMIT EVERY " + batchSize);
-    return result.toString();
+    return ExecutionStepInternal.getIndent(depth, indent) + "+ BATCH COMMIT EVERY " + batchSize;
   }
 }

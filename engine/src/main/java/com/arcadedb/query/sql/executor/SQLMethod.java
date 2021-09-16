@@ -77,7 +77,7 @@ public interface SQLMethod extends Comparable<SQLMethod> {
   /**
    * Process a record.
    *
-   * @param iThis
+   * @param iThis          current object
    * @param iCurrentRecord : current record
    * @param iContext       execution context
    * @param ioResult       : field value

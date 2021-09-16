@@ -85,13 +85,6 @@ public interface CommandContext {
    */
   CommandContext copy();
 
-  /**
-   * Merges a context with current one.
-   *
-   * @param iContext
-   */
-  void merge(CommandContext iContext);
-
   DatabaseInternal getDatabase();
 
 }

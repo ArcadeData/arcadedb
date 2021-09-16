@@ -57,9 +57,7 @@ public class IfExecutionPlan implements InternalExecutionPlan {
   }
 
   @Override public String prettyPrint(int depth, int indent) {
-    StringBuilder result = new StringBuilder();
-    result.append(step.prettyPrint(depth, indent));
-    return result.toString();
+    return step.prettyPrint(depth, indent);
   }
 
   public void chain(IfStep step) {
@@ -86,7 +84,7 @@ public class IfExecutionPlan implements InternalExecutionPlan {
   }
 
   @Override public long getCost() {
-    return 0l;
+    return 0L;
   }
 
   @Override

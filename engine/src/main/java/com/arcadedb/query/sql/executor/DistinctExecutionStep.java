@@ -37,8 +37,8 @@ import java.util.Set;
  */
 public class DistinctExecutionStep extends AbstractExecutionStep {
 
-  Set<Result> pastItems = new HashSet<>();
-  RidSet      pastRids  = new RidSet();
+  final Set<Result> pastItems = new HashSet<>();
+  final RidSet      pastRids  = new RidSet();
 
   ResultSet lastResult = null;
   Result    nextValue;
@@ -57,7 +57,7 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
   @Override
   public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
 
-    ResultSet result = new ResultSet() {
+    return new ResultSet() {
       int nextLocal = 0;
 
       @Override
@@ -83,10 +83,10 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
         if (nextValue == null) {
           throw new IllegalStateException();
         }
-        Result result = nextValue;
+        Result result1 = nextValue;
         nextValue = null;
         nextLocal++;
-        return result;
+        return result1;
       }
 
       @Override
@@ -96,7 +96,7 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
 
       @Override
       public Optional<ExecutionPlan> getExecutionPlan() {
-        return null;
+        return Optional.empty();
       }
 
       @Override
@@ -104,8 +104,6 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
         return null;
       }
     };
-
-    return result;
   }
 
   private void fetchNext(int nRecords) {

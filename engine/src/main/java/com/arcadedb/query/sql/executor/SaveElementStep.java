@@ -76,7 +76,7 @@ public class SaveElementStep extends AbstractExecutionStep {
 
       @Override
       public Optional<ExecutionPlan> getExecutionPlan() {
-        return null;
+        return Optional.empty();
       }
 
       @Override
@@ -95,7 +95,7 @@ public class SaveElementStep extends AbstractExecutionStep {
     if (bucket != null) {
       result.append("\n");
       result.append(spaces);
-      result.append("  on bucket " + bucket);
+      result.append("  on bucket ").append(bucket);
     }
     return result.toString();
   }

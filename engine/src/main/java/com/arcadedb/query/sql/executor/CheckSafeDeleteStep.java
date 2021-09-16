@@ -21,10 +21,7 @@
 
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.database.Document;
-import com.arcadedb.database.Record;
 import com.arcadedb.exception.TimeoutException;
-import com.arcadedb.schema.DocumentType;
 
 import java.util.Map;
 import java.util.Optional;
@@ -62,13 +59,13 @@ public class CheckSafeDeleteStep extends AbstractExecutionStep {
         Result result = upstream.next();
         long begin = profilingEnabled ? System.nanoTime() : 0;
         try {
-          if (result.isElement()) {
-
-            Record record = result.getElement().get();
-            if (record instanceof Document) {
-              Document doc = (Document) record;
-              DocumentType typez = doc.getType();
-              //TODO
+//          if (result.isElement()) {
+//
+//            Record record = result.getElement().get();
+//            if (record instanceof Document) {
+          //TODO
+//              Document doc = (Document) record;
+//              DocumentType typez = doc.getType();
 //              if (typez != null) {
 //                if (typez.getName().equalsIgnoreCase("V") || typez.isSubClassOf("V")) {
 //                  throw new PCommandExecutionException("Cannot safely delete a vertex, please use DELETE VERTEX or UNSAFE");
@@ -77,8 +74,8 @@ public class CheckSafeDeleteStep extends AbstractExecutionStep {
 //                  throw new PCommandExecutionException("Cannot safely delete an edge, please use DELETE EDGE or UNSAFE");
 //                }
 //              }
-            }
-          }
+//            }
+//          }
           return result;
         } finally {
           if (profilingEnabled) {
@@ -94,7 +91,7 @@ public class CheckSafeDeleteStep extends AbstractExecutionStep {
 
       @Override
       public Optional<ExecutionPlan> getExecutionPlan() {
-        return null;
+        return Optional.empty();
       }
 
       @Override
@@ -111,7 +108,7 @@ public class CheckSafeDeleteStep extends AbstractExecutionStep {
     result.append(spaces);
     result.append("+ CHECK SAFE DELETE");
     if (profilingEnabled) {
-      result.append(" (" + getCostFormatted() + ")");
+      result.append(" (").append(getCostFormatted()).append(")");
     }
     return result.toString();
   }

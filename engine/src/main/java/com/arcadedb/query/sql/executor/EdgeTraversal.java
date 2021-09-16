@@ -28,9 +28,9 @@ import com.arcadedb.query.sql.parser.WhereClause;
  * Created by luigidellaquila on 20/09/16.
  */
 public class EdgeTraversal {
-  boolean out = true;
-  public  PatternEdge edge;
-  private String      leftClass;
+  boolean out;
+  public final PatternEdge edge;
+  private      String      leftClass;
   private String      leftCluster;
   private Rid         leftRid;
   private WhereClause leftFilter;

@@ -8,7 +8,7 @@ import java.util.Optional;
 
 public class FilterNotMatchPatternStep extends AbstractExecutionStep {
 
-  private List<AbstractExecutionStep> subSteps;
+  private final List<AbstractExecutionStep> subSteps;
 
   private ResultSet prevResult = null;
 
@@ -21,7 +21,7 @@ public class FilterNotMatchPatternStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    if (!prev.isPresent()) {
+    if (prev.isEmpty()) {
       throw new IllegalStateException("filter step requires a previous step");
     }
     ExecutionStepInternal prevStep = prev.get();
@@ -78,11 +78,7 @@ public class FilterNotMatchPatternStep extends AbstractExecutionStep {
           fetchNextItem();
         }
 
-        if (nextItem != null) {
-          return true;
-        }
-
-        return false;
+        return nextItem != null;
       }
 
       @Override
@@ -171,10 +167,5 @@ public class FilterNotMatchPatternStep extends AbstractExecutionStep {
     result.append(spaces);
     result.append("  )");
     return result.toString();
-  }
-
-  @Override
-  public void close() {
-    super.close();
   }
 }

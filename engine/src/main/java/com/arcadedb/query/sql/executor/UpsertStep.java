@@ -91,16 +91,7 @@ public class UpsertStep extends AbstractExecutionStep {
   @Override
   public String prettyPrint(int depth, int indent) {
     String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    StringBuilder result = new StringBuilder();
-    result.append(spaces);
-    result.append("+ INSERT (upsert, if needed)\n");
-    result.append(spaces);
-    result.append("  target: ");
-    result.append(commandTarget);
-    result.append("\n");
-    result.append(spaces);
-    result.append("  content: ");
-    result.append(initialFilter);
-    return result.toString();
+    String result = spaces + "+ INSERT (upsert, if needed)\n" + spaces + "  target: " + commandTarget + "\n" + spaces + "  content: " + initialFilter;
+    return result;
   }
 }

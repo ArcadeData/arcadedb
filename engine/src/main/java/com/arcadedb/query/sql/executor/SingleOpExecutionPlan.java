@@ -36,7 +36,7 @@ public class SingleOpExecutionPlan implements InternalExecutionPlan {
 
   protected final SimpleExecStatement statement;
 
-  CommandContext ctx;
+  final CommandContext ctx;
 
   boolean executed = false;
 
@@ -89,7 +89,7 @@ public class SingleOpExecutionPlan implements InternalExecutionPlan {
 
       @Override
       public Optional<ExecutionPlan> getExecutionPlan() {
-        return null;
+        return Optional.empty();
       }
 
       @Override
@@ -133,11 +133,8 @@ public class SingleOpExecutionPlan implements InternalExecutionPlan {
   @Override
   public String prettyPrint(int depth, int indent) {
     String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    StringBuilder result = new StringBuilder();
-    result.append(spaces);
-    result.append("+ ");
-    result.append(statement.toString());
-    return result.toString();
+    String result = spaces + "+ " + statement.toString();
+    return result;
   }
 
   @Override

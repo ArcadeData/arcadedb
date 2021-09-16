@@ -38,21 +38,21 @@ public class OMatchExecutionPlanner {
 
   static final String DEFAULT_ALIAS_PREFIX = "$ARCADEDB_DEFAULT_ALIAS_";
 
-  protected List<MatchExpression>  matchExpressions;
-  protected List<MatchExpression>  notMatchExpressions;
-  protected List<Expression>       returnItems;
-  protected List<Identifier>       returnAliases;
-  protected List<NestedProjection> returnNestedProjections;
-  boolean returnElements     = false;
-  boolean returnPaths        = false;
-  boolean returnPatterns     = false;
-  boolean returnPathElements = false;
-  boolean returnDistinct     = false;
-  protected     Skip    skip;
-  private final GroupBy groupBy;
+  protected final List<MatchExpression>  matchExpressions;
+  protected final List<MatchExpression>  notMatchExpressions;
+  protected final List<Expression>       returnItems;
+  protected final List<Identifier>       returnAliases;
+  protected final List<NestedProjection> returnNestedProjections;
+  boolean returnElements;
+  boolean returnPaths;
+  boolean returnPatterns;
+  boolean returnPathElements;
+  boolean returnDistinct;
+  protected final Skip    skip;
+  private final   GroupBy groupBy;
   private final OrderBy orderBy;
-  private final Unwind  unwind;
-  protected     Limit   limit;
+  private final   Unwind  unwind;
+  protected final Limit   limit;
 
   //post-parsing
   private Pattern                  pattern;
@@ -62,7 +62,7 @@ public class OMatchExecutionPlanner {
   private Map<String, String>      aliasBuckets;
   private Map<String, Rid>         aliasRids;
   boolean foundOptional = false;
-  private long threshold = 100;
+  private final long threshold = 100;
 
   public OMatchExecutionPlanner(MatchStatement stm) {
     this.matchExpressions = stm.getMatchExpressions().stream().map(x -> x.copy()).collect(Collectors.toList());
@@ -92,7 +92,7 @@ public class OMatchExecutionPlanner {
     Map<String, Long> estimatedRootEntries = estimateRootEntries(aliasTypes, aliasBuckets, aliasRids, aliasFilters, context);
     Set<String> aliasesToPrefetch = estimatedRootEntries.entrySet().stream().filter(x -> x.getValue() < this.threshold).map(x -> x.getKey())
         .collect(Collectors.toSet());
-    if (estimatedRootEntries.values().contains(0l)) {
+    if (estimatedRootEntries.containsValue(0L)) {
       result.chain(new EmptyStep(context, enableProfiling));
       return result;
     }
@@ -188,7 +188,7 @@ public class OMatchExecutionPlanner {
       List<AbstractExecutionStep> steps = new ArrayList<>();
       for (MatchPathItem item : exp.getItems()) {
         if (item instanceof MultiMatchPathItem) {
-          throw new CommandExecutionException("This kind of NOT expression is not supported (yet): " + item.toString());
+          throw new CommandExecutionException("This kind of NOT expression is not supported (yet): " + item);
         }
         PatternEdge edge = new PatternEdge();
         edge.item = item;
@@ -278,28 +278,21 @@ public class OMatchExecutionPlanner {
     for (Map.Entry<String, Long> root : estimatedRootEntries.entrySet()) {
       rootWeights.add(new Pair<>(root.getValue(), root.getKey()));
     }
-    Collections.sort(rootWeights, new Comparator<Pair<Long, String>>() {
-      @Override
-      public int compare(Pair<Long, String> o1, Pair<Long, String> o2) {
-        return o1.getFirst().compareTo(o2.getFirst());
-      }
-    });
+    rootWeights.sort((o1, o2) -> o1.getFirst().compareTo(o2.getFirst()));
 
     // Add the starting vertices, in the correct order, to an ordered set.
-    Set<String> remainingStarts = new LinkedHashSet<String>();
+    Set<String> remainingStarts = new LinkedHashSet<>();
     for (Pair<Long, String> item : rootWeights) {
       remainingStarts.add(item.getSecond());
     }
     // Add all the remaining aliases after all the suggested start points.
-    for (String alias : pattern.aliasToNode.keySet()) {
-      remainingStarts.add(alias);
-    }
+    remainingStarts.addAll(pattern.aliasToNode.keySet());
 
     while (resultingSchedule.size() < pattern.numOfEdges) {
       // Start a new depth-first pass, adding all nodes with satisfied dependencies.
       // 1. Find a starting vertex for the depth-first pass.
       PatternNode startingNode = null;
-      List<String> startsToRemove = new ArrayList<String>();
+      List<String> startsToRemove = new ArrayList<>();
       for (String currentAlias : remainingStarts) {
         PatternNode currentNode = pattern.aliasToNode.get(currentAlias);
 
@@ -313,7 +306,7 @@ public class OMatchExecutionPlanner {
           break;
         }
       }
-      remainingStarts.removeAll(startsToRemove);
+      startsToRemove.forEach(remainingStarts::remove);
 
       if (startingNode == null) {
         // We didn't manage to find a valid root, and yet we haven't constructed a complete schedule.
@@ -374,7 +367,7 @@ public class OMatchExecutionPlanner {
       dependencies.remove(startNode.alias);
     }
 
-    Map<PatternEdge, Boolean> edges = new LinkedHashMap<PatternEdge, Boolean>();
+    Map<PatternEdge, Boolean> edges = new LinkedHashMap<>();
     for (PatternEdge outEdge : startNode.out) {
       edges.put(outEdge, true);
     }
@@ -441,10 +434,10 @@ public class OMatchExecutionPlanner {
    * @return map of alias to the set of aliases it depends on
    */
   private Map<String, Set<String>> getDependencies(Pattern pattern) {
-    Map<String, Set<String>> result = new HashMap<String, Set<String>>();
+    Map<String, Set<String>> result = new HashMap<>();
 
     for (PatternNode node : pattern.aliasToNode.values()) {
-      Set<String> currentDependencies = new HashSet<String>();
+      Set<String> currentDependencies = new HashSet<>();
 
       WhereClause filter = aliasFilters.get(node.alias);
       if (filter != null && filter.getBaseExpression() != null) {
@@ -538,22 +531,17 @@ public class OMatchExecutionPlanner {
     }
     //TODO use the stats
 
-    List<EdgeTraversal> result = new ArrayList<EdgeTraversal>();
+    List<EdgeTraversal> result = new ArrayList<>();
 
-    List<Pair<Long, String>> rootWeights = new ArrayList<Pair<Long, String>>();
+    List<Pair<Long, String>> rootWeights = new ArrayList<>();
     for (Map.Entry<String, Long> root : estimatedRootEntries.entrySet()) {
-      rootWeights.add(new Pair<Long, String>(root.getValue(), root.getKey()));
+      rootWeights.add(new Pair<>(root.getValue(), root.getKey()));
     }
-    Collections.sort(rootWeights, new Comparator<Pair<Long, String>>() {
-      @Override
-      public int compare(Pair<Long, String> o1, Pair<Long, String> o2) {
-        return o1.getFirst().compareTo(o2.getFirst());
-      }
-    });
+    rootWeights.sort((o1, o2) -> o1.getFirst().compareTo(o2.getFirst()));
 
-    Set<PatternEdge> traversedEdges = new HashSet<PatternEdge>();
-    Set<PatternNode> traversedNodes = new HashSet<PatternNode>();
-    List<PatternNode> nextNodes = new ArrayList<PatternNode>();
+    Set<PatternEdge> traversedEdges = new HashSet<>();
+    Set<PatternNode> traversedNodes = new HashSet<>();
+    List<PatternNode> nextNodes = new ArrayList<>();
 
     while (result.size() < pattern.getNumOfEdges()) {
       for (Pair<Long, String> rootPair : rootWeights) {
@@ -734,7 +722,7 @@ public class OMatchExecutionPlanner {
 
   private Map<String, Long> estimateRootEntries(Map<String, String> aliasUserTypes, Map<String, String> aliasClusters, Map<String, Rid> aliasRids,
       Map<String, WhereClause> aliasFilters, CommandContext ctx) {
-    Set<String> allAliases = new LinkedHashSet<String>();
+    Set<String> allAliases = new LinkedHashSet<>();
     allAliases.addAll(aliasUserTypes.keySet());
     allAliases.addAll(aliasFilters.keySet());
     allAliases.addAll(aliasClusters.keySet());
@@ -742,7 +730,7 @@ public class OMatchExecutionPlanner {
 
     Schema schema = ctx.getDatabase().getSchema();
 
-    Map<String, Long> result = new LinkedHashMap<String, Long>();
+    Map<String, Long> result = new LinkedHashMap<>();
     for (String alias : allAliases) {
       String typeName = aliasUserTypes.get(alias);
       String bucketName = aliasClusters.get(alias);

@@ -75,13 +75,13 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
 //          iterator.last();
 //        }
       }
-      ResultSet rs = new ResultSet() {
+      return new ResultSet() {
 
         int nFetched = 0;
 
         @Override
         public boolean hasNext() {
-          long begin = profilingEnabled ? System.nanoTime() : 0;
+          long begin1 = profilingEnabled ? System.nanoTime() : 0;
           try {
             if (nFetched >= nRecords) {
               return false;
@@ -94,14 +94,14 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
 //            }
           } finally {
             if (profilingEnabled) {
-              cost += (System.nanoTime() - begin);
+              cost += (System.nanoTime() - begin1);
             }
           }
         }
 
         @Override
         public Result next() {
-          long begin = profilingEnabled ? System.nanoTime() : 0;
+          long begin1 = profilingEnabled ? System.nanoTime() : 0;
           try {
             if (nFetched >= nRecords) {
               throw new IllegalStateException();
@@ -126,7 +126,7 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
             return result;
           } finally {
             if (profilingEnabled) {
-              cost += (System.nanoTime() - begin);
+              cost += (System.nanoTime() - begin1);
             }
           }
         }
@@ -138,7 +138,7 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
 
         @Override
         public Optional<ExecutionPlan> getExecutionPlan() {
-          return null;
+          return Optional.empty();
         }
 
         @Override
@@ -147,7 +147,6 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
         }
 
       };
-      return rs;
     } finally {
       if (profilingEnabled) {
         cost += (System.nanoTime() - begin);
@@ -217,16 +216,6 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
   }
 
   @Override
-  public void sendTimeout() {
-    super.sendTimeout();
-  }
-
-  @Override
-  public void close() {
-    super.close();
-  }
-
-  @Override
   public String prettyPrint(int depth, int indent) {
     String result =
         ExecutionStepInternal.getIndent(depth, indent) + "+ FETCH FROM BUCKET " + bucketId + " (" + ctx.getDatabase().getSchema().getBucketById(bucketId)
@@ -275,8 +264,7 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
 
   @Override
   public ExecutionStep copy(CommandContext ctx) {
-    FetchFromClusterExecutionStep result = new FetchFromClusterExecutionStep(this.bucketId, this.queryPlanning == null ? null : this.queryPlanning.copy(), ctx,
+    return new FetchFromClusterExecutionStep(this.bucketId, this.queryPlanning == null ? null : this.queryPlanning.copy(), ctx,
         profilingEnabled);
-    return result;
   }
 }

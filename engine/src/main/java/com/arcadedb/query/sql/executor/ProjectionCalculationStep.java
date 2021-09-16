@@ -42,7 +42,7 @@ public class ProjectionCalculationStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    if (!prev.isPresent()) {
+    if (prev.isEmpty()) {
       throw new IllegalStateException("Cannot calculate projections without a previous source");
     }
 
@@ -70,7 +70,7 @@ public class ProjectionCalculationStep extends AbstractExecutionStep {
 
       @Override
       public Optional<ExecutionPlan> getExecutionPlan() {
-        return null;
+        return Optional.empty();
       }
 
       @Override

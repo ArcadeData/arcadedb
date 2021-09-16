@@ -122,7 +122,7 @@ public class TransactionIndexContext {
         } else if (v1 instanceof List) {
           List l1 = (List) v1;
           for (int j = 0; j < l1.size(); j++) {
-            cmp = j > 0 ? 1 : BinaryComparator.compareTo((Comparable) l1.get(j), v2);
+            cmp = j > 0 ? 1 : BinaryComparator.compareTo(l1.get(j), v2);
             if (cmp != 0)
               return cmp;
           }

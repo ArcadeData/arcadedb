@@ -34,8 +34,8 @@ import java.util.Optional;
  * Created by luigidellaquila on 20/09/16.
  */
 public class MatchFirstStep extends AbstractExecutionStep {
-  private final PatternNode node;
-  InternalExecutionPlan executionPlan;
+  private final PatternNode           node;
+  final         InternalExecutionPlan executionPlan;
 
   Iterator<Result> iterator;
   ResultSet        subResultSet;
@@ -102,7 +102,7 @@ public class MatchFirstStep extends AbstractExecutionStep {
 
       @Override
       public Optional<ExecutionPlan> getExecutionPlan() {
-        return null;
+        return Optional.empty();
       }
 
       @Override

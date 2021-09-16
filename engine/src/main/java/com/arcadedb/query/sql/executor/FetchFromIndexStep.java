@@ -39,20 +39,16 @@ import java.util.*;
  * Created by luigidellaquila on 23/07/16.
  */
 public class FetchFromIndexStep extends AbstractExecutionStep {
-  protected RangeIndex        index;
-  protected BooleanExpression condition;
-  private   BinaryCondition   additionalRangeCondition;
-
-  private boolean orderAsc;
-
-  protected String indexName;
-
-  private long cost  = 0;
-  private long count = 0;
-
-  private boolean           inited      = false;
-  private IndexCursor       cursor;
-  private List<IndexCursor> nextCursors = new ArrayList<>();
+  protected     RangeIndex        index;
+  protected     BooleanExpression condition;
+  private       BinaryCondition   additionalRangeCondition;
+  private       boolean           orderAsc;
+  protected     String            indexName;
+  private       long              cost        = 0;
+  private       long              count       = 0;
+  private       boolean           inited      = false;
+  private       IndexCursor       cursor;
+  private final List<IndexCursor> nextCursors = new ArrayList<>();
 
   private MultiIterator<Map.Entry<Object, Identifiable>> customIterator;
 
@@ -125,7 +121,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
       @Override
       public Optional<ExecutionPlan> getExecutionPlan() {
-        return null;
+        return Optional.empty();
       }
 
       @Override
@@ -171,9 +167,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     boolean range = false;
     int size = 0;
 
-    if (condition == null) {
-      size = 0;
-    } else if (condition instanceof BinaryCondition) {
+    if (condition instanceof BinaryCondition) {
       size = 1;
     } else if (condition instanceof BetweenCondition) {
       size = 1;
@@ -383,7 +377,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
         for (Expression exp : head.getExpressions()) {
           newHead.add(exp.copy());
         }
-        newHead.add(toExpression(elemInKey, ctx));
+        newHead.add(toExpression(elemInKey));
         PCollection tail = key.copy();
         tail.getExpressions().remove(0);
         result.addAll(cartesianProduct(newHead, tail));
@@ -402,11 +396,11 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
   }
 
-  private Expression toExpression(Object value, CommandContext ctx) {
+  private Expression toExpression(final Object value) {
     return new ValueExpression(value);
   }
 
-  private Object convertToIndexDefinitionTypes(Object val/*, OType[] types*/) {
+  private Object convertToIndexDefinitionTypes(final Object val/*, OType[] types*/) {
     //TODO
     return val;
 

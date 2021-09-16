@@ -39,8 +39,8 @@ import java.util.TimeZone;
 public class SQLFunctionDate extends SQLFunctionAbstract {
   public static final String NAME = "date";
 
-  private Date             date;
-  private SimpleDateFormat format;
+  private final Date             date;
+  private       SimpleDateFormat format;
 
   /**
    * Get the date at construction to have the same date for all the iteration.

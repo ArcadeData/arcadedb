@@ -73,10 +73,7 @@ public class MatchPrefetchStep extends AbstractExecutionStep {
   @Override
   public String prettyPrint(int depth, int indent) {
     String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    StringBuilder result = new StringBuilder();
-    result.append(spaces);
-    result.append("+ PREFETCH " + alias + "\n");
-    result.append(prefetchExecutionPlan.prettyPrint(depth + 1, indent));
-    return result.toString();
+    String result = spaces + "+ PREFETCH " + alias + "\n" + prefetchExecutionPlan.prettyPrint(depth + 1, indent);
+    return result;
   }
 }

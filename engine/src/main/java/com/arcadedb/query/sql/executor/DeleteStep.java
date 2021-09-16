@@ -70,7 +70,7 @@ public class DeleteStep extends AbstractExecutionStep {
 
       @Override
       public Optional<ExecutionPlan> getExecutionPlan() {
-        return null;
+        return Optional.empty();
       }
 
       @Override
@@ -87,7 +87,7 @@ public class DeleteStep extends AbstractExecutionStep {
     result.append(spaces);
     result.append("+ DELETE");
     if (profilingEnabled) {
-      result.append(" (" + getCostFormatted() + ")");
+      result.append(" (").append(getCostFormatted()).append(")");
     }
     return result.toString();
   }

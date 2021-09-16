@@ -34,7 +34,7 @@ public abstract class AbstractExecutionStep implements ExecutionStepInternal {
   protected       Optional<ExecutionStepInternal> next     = Optional.empty();
   protected       boolean                         timedOut = false;
 
-  protected boolean profilingEnabled = false;
+  protected boolean profilingEnabled;
 
   public AbstractExecutionStep(CommandContext ctx, boolean profilingEnabled) {
     this.ctx = ctx;
@@ -66,7 +66,7 @@ public abstract class AbstractExecutionStep implements ExecutionStepInternal {
   @Override
   public void sendTimeout() {
     this.timedOut = true;
-    prev.ifPresent(p -> p.sendTimeout());
+    prev.ifPresent(ExecutionStepInternal::sendTimeout);
   }
 
   public boolean isTimedOut() {
@@ -75,7 +75,7 @@ public abstract class AbstractExecutionStep implements ExecutionStepInternal {
 
   @Override
   public void close() {
-    prev.ifPresent(p -> p.close());
+    prev.ifPresent(ExecutionStepInternal::close);
   }
 
   public boolean isProfilingEnabled() {

@@ -30,10 +30,10 @@ import java.util.Set;
  * Created by luigidellaquila on 28/07/15.
  */
 public class PatternNode {
-  public String alias;
-  public Set<PatternEdge> out        = new LinkedHashSet<PatternEdge>();
-  public Set<PatternEdge> in         = new LinkedHashSet<PatternEdge>();
-  public int              centrality = 0;
+  public       String           alias;
+  public final Set<PatternEdge> out        = new LinkedHashSet<>();
+  public final Set<PatternEdge> in         = new LinkedHashSet<>();
+  public       int              centrality = 0;
   public boolean          optional   = false;
 
   public int addEdge(MatchPathItem item, PatternNode to) {

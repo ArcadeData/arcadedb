@@ -24,6 +24,8 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.query.sql.parser.AndBlock;
 import com.arcadedb.query.sql.parser.BinaryCondition;
 
+import java.util.Objects;
+
 /**
  * For internal use.
  * It is used to keep info about an index range search,
@@ -31,8 +33,8 @@ import com.arcadedb.query.sql.parser.BinaryCondition;
  */
 class IndexCondPair {
 
-  AndBlock        mainCondition;
-  BinaryCondition additionalRange;
+  final AndBlock        mainCondition;
+  final BinaryCondition additionalRange;
 
   public IndexCondPair(AndBlock keyCondition, BinaryCondition additionalRangeCondition) {
     this.mainCondition = keyCondition;
@@ -47,9 +49,9 @@ class IndexCondPair {
 
     IndexCondPair that = (IndexCondPair) o;
 
-    if (mainCondition != null ? !mainCondition.equals(that.mainCondition) : that.mainCondition != null)
+    if (!Objects.equals(mainCondition, that.mainCondition))
       return false;
-    return additionalRange != null ? additionalRange.equals(that.additionalRange) : that.additionalRange == null;
+    return Objects.equals(additionalRange, that.additionalRange);
   }
 
   @Override public int hashCode() {

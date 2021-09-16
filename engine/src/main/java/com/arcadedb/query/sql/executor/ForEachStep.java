@@ -37,8 +37,8 @@ import java.util.List;
  */
 public class ForEachStep extends AbstractExecutionStep {
     private final Identifier loopVariable;
-    private final Expression source;
-    public List<Statement> body;
+    private final Expression      source;
+    public final  List<Statement> body;
 
     Iterator iterator;
     private ExecutionStepInternal finalResult = null;

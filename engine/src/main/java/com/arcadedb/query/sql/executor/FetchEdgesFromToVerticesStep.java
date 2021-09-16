@@ -49,8 +49,8 @@ public class FetchEdgesFromToVerticesStep extends AbstractExecutionStep {
   Iterator<Edge> currentFromEdgesIter;
   Iterator       toIterator;
 
-  Set<RID> toList = new HashSet<>();
-  private boolean inited = false;
+  final   Set<RID> toList = new HashSet<>();
+  private boolean  inited = false;
 
   private Edge nextEdge = null;
 
@@ -68,7 +68,7 @@ public class FetchEdgesFromToVerticesStep extends AbstractExecutionStep {
     getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
     init();
     return new ResultSet() {
-      int currentBatch = 0;
+      final int currentBatch = 0;
 
       @Override
       public boolean hasNext() {
@@ -96,7 +96,7 @@ public class FetchEdgesFromToVerticesStep extends AbstractExecutionStep {
 
       @Override
       public Optional<ExecutionPlan> getExecutionPlan() {
-        return null;
+        return Optional.empty();
       }
 
       @Override
@@ -127,7 +127,7 @@ public class FetchEdgesFromToVerticesStep extends AbstractExecutionStep {
       inited = true;
     }
 
-    Object fromValues = null;
+    Object fromValues;
 
     fromValues = ctx.getVariable(fromAlias);
     if (fromValues instanceof Iterable && !(fromValues instanceof Identifiable)) {
@@ -136,7 +136,7 @@ public class FetchEdgesFromToVerticesStep extends AbstractExecutionStep {
       fromValues = Collections.singleton(fromValues).iterator();
     }
 
-    Object toValues = null;
+    Object toValues;
 
     toValues = ctx.getVariable(toAlias);
     if (toValues instanceof Iterable && !(toValues instanceof Identifiable)) {

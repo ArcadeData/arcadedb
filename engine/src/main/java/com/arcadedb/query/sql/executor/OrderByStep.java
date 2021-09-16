@@ -64,17 +64,14 @@ public class OrderByStep extends AbstractExecutionStep {
 
     return new ResultSet() {
       private int currentBatchReturned = 0;
-      private int offset = nextElement;
+      private final int offset = nextElement;
 
       @Override
       public boolean hasNext() {
         if (currentBatchReturned >= nRecords) {
           return false;
         }
-        if (cachedResult.size() <= nextElement) {
-          return false;
-        }
-        return true;
+        return cachedResult.size() > nextElement;
       }
 
       @Override

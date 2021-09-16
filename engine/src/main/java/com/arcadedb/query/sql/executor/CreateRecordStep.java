@@ -21,7 +21,6 @@
 
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.DocumentType;
@@ -36,12 +35,10 @@ import java.util.Optional;
  */
 public class CreateRecordStep extends AbstractExecutionStep {
 
-  private long cost = 0;
-
-  int created = 0;
-  int total   = 0;
-
-  String typeName = null;
+  private       long   cost    = 0;
+  private       int    created = 0;
+  private final int    total;
+  private final String typeName;
 
   public CreateRecordStep(final String typeName, CommandContext ctx, int total, boolean profilingEnabled) {
     super(ctx, profilingEnabled);
@@ -75,7 +72,7 @@ public class CreateRecordStep extends AbstractExecutionStep {
 
           final DocumentType type = ctx.getDatabase().getSchema().getType(typeName);
 
-          final Document instance;
+          final MutableDocument instance;
           if (type instanceof VertexType)
             instance = ctx.getDatabase().newVertex(typeName);
           else if (type instanceof EdgeType)
@@ -83,7 +80,7 @@ public class CreateRecordStep extends AbstractExecutionStep {
           else
             instance = ctx.getDatabase().newDocument(typeName);
 
-          return new UpdatableResult((MutableDocument) instance);
+          return new UpdatableResult(instance);
         } finally {
           if (profilingEnabled) {
             cost += (System.nanoTime() - begin);
@@ -98,7 +95,7 @@ public class CreateRecordStep extends AbstractExecutionStep {
 
       @Override
       public Optional<ExecutionPlan> getExecutionPlan() {
-        return null;
+        return Optional.empty();
       }
 
       @Override
@@ -115,14 +112,14 @@ public class CreateRecordStep extends AbstractExecutionStep {
     result.append(spaces);
     result.append("+ CREATE EMPTY RECORDS");
     if (profilingEnabled) {
-      result.append(" (" + getCostFormatted() + ")");
+      result.append(" (").append(getCostFormatted()).append(")");
     }
     result.append("\n");
     result.append(spaces);
     if (total == 1) {
       result.append("  1 record");
     } else {
-      result.append("  " + total + " record");
+      result.append("  ").append(total).append(" record");
     }
     return result.toString();
   }

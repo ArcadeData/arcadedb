@@ -213,7 +213,7 @@ public class ResultInternal implements Result {
     if (element != null && element.getPropertyNames().contains(propName))
       return true;
 
-    return content != null && content.keySet().contains(propName);
+    return content != null && content.containsKey(propName);
   }
 
   @Override
@@ -300,29 +300,6 @@ public class ResultInternal implements Result {
     return metadata == null ? Collections.emptySet() : metadata.keySet();
   }
 
-  private Object convertToElement(final Object property) {
-    if (property instanceof Result) {
-      return ((Result) property).toElement();
-    }
-    if (property instanceof List) {
-      return ((List) property).stream().map(x -> convertToElement(x)).collect(Collectors.toList());
-    }
-
-    if (property instanceof Set) {
-      return ((Set) property).stream().map(x -> convertToElement(x)).collect(Collectors.toSet());
-    }
-
-    if (property instanceof Map) {
-      Map<Object, Object> result = new HashMap<>();
-      Map<Object, Object> prop = ((Map) property);
-      for (Map.Entry<Object, Object> o : prop.entrySet()) {
-        result.put(o.getKey(), convertToElement(o.getValue()));
-      }
-    }
-
-    return property;
-  }
-
   public void setElement(final Document element) {
     this.element = element;
   }
@@ -348,7 +325,7 @@ public class ResultInternal implements Result {
     }
     final ResultInternal resultObj = (ResultInternal) obj;
     if (element != null) {
-      if (!resultObj.getElement().isPresent()) {
+      if (resultObj.getElement().isEmpty()) {
         return false;
       }
       return element.equals(resultObj.getElement().get());
@@ -369,8 +346,6 @@ public class ResultInternal implements Result {
   }
 
   public void setPropertiesFromMap(final Map<String, Object> stats) {
-    for (Map.Entry<String, Object> entry : stats.entrySet()) {
-      content.put(entry.getKey(), entry.getValue());
-    }
+    content.putAll(stats);
   }
 }

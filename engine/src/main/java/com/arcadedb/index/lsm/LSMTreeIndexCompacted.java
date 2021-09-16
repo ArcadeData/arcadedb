@@ -86,15 +86,17 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
     }
   }
 
-  public MutablePage appendDuringCompaction(final Binary keyValueContent, MutablePage currentPage, TrackableBinary currentPageBuffer,
+  public MutablePage appendDuringCompaction(final Binary keyValueContent, MutablePage currentPage, final TrackableBinary currentPageBuffer,
       final int compactedPageNumberOfSeries, final Object[] keys, final RID[] rids) throws IOException, InterruptedException {
     if (keys == null)
       throw new IllegalArgumentException("Keys parameter is null");
 
+    TrackableBinary pageBuffer = currentPageBuffer;
+
     if (currentPage == null) {
       // CREATE A NEW PAGE
       currentPage = createNewPage(compactedPageNumberOfSeries);
-      currentPageBuffer = currentPage.getTrackable();
+      pageBuffer = currentPage.getTrackable();
     }
 
     int count = getCount(currentPage);
@@ -112,7 +114,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
       database.getPageManager().updatePage(currentPage, true, false);
 
       currentPage = createNewPage(compactedPageNumberOfSeries);
-      currentPageBuffer = currentPage.getTrackable();
+      pageBuffer = currentPage.getTrackable();
       pageNum = currentPage.getPageId().getPageNumber();
       count = 0;
       keyValueFreePosition = currentPage.getMaxContentSize();
@@ -121,10 +123,10 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
     keyValueFreePosition -= keyValueContent.size();
 
     // WRITE KEY/VALUE PAIR CONTENT
-    currentPageBuffer.putByteArray(keyValueFreePosition, keyValueContent.toByteArray());
+    pageBuffer.putByteArray(keyValueFreePosition, keyValueContent.toByteArray());
 
     final int startPos = getHeaderSize(pageNum) + (count * INT_SERIALIZED_SIZE);
-    currentPageBuffer.putInt(startPos, keyValueFreePosition);
+    pageBuffer.putInt(startPos, keyValueFreePosition);
 
     setCount(currentPage, count + 1);
     setValuesFreePosition(currentPage, keyValueFreePosition);

@@ -35,7 +35,7 @@ import java.util.stream.Collectors;
  * Created by luigidellaquila on 22/07/16.
  */
 public class FetchFromRidsStep extends AbstractExecutionStep {
-  private Collection<RID> rids;
+  private final Collection<RID> rids;
 
   private Iterator<RID> iterator;
 
@@ -70,7 +70,9 @@ public class FetchFromRidsStep extends AbstractExecutionStep {
           Identifiable nextDoc = null;
           try {
             nextDoc = ctx.getDatabase().lookupByRID(nextRid, true);
-          } catch (RecordNotFoundException e) {}
+          } catch (RecordNotFoundException e) {
+            // IGNORE HERE< HANDLED BELOW
+          }
           if (nextDoc == null) {
             continue;
           }
@@ -78,7 +80,6 @@ public class FetchFromRidsStep extends AbstractExecutionStep {
           ((ResultInternal) nextResult).setElement((Document) nextDoc);
           return;
         }
-        return;
       }
 
       @Override
@@ -111,7 +112,7 @@ public class FetchFromRidsStep extends AbstractExecutionStep {
 
       @Override
       public Optional<ExecutionPlan> getExecutionPlan() {
-        return null;
+        return Optional.empty();
       }
 
       @Override
@@ -123,8 +124,7 @@ public class FetchFromRidsStep extends AbstractExecutionStep {
 
   @Override
   public String prettyPrint(int depth, int indent) {
-    return ExecutionStepInternal.getIndent(depth, indent) + "+ FETCH FROM RIDs\n" + ExecutionStepInternal.getIndent(depth, indent)
-        + "  " + rids;
+    return ExecutionStepInternal.getIndent(depth, indent) + "+ FETCH FROM RIDs\n" + ExecutionStepInternal.getIndent(depth, indent) + "  " + rids;
   }
 
   @Override

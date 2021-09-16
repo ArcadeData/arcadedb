@@ -35,7 +35,7 @@ import java.util.List;
  */
 public class InsertExecutionPlan extends SelectExecutionPlan {
 
-  List<Result> result = new ArrayList<>();
+  final List<Result> result = new ArrayList<>();
   int          next   = 0;
 
   public InsertExecutionPlan(CommandContext ctx) {

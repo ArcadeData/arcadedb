@@ -606,11 +606,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
   @Override
   public void registerCallback(final CALLBACK_EVENT event, final Callable<Void> callback) {
-    List<Callable<Void>> callbacks = this.callbacks.get(event);
-    if (callbacks == null) {
-      callbacks = new ArrayList<>();
-      this.callbacks.put(event, callbacks);
-    }
+    List<Callable<Void>> callbacks = this.callbacks.computeIfAbsent(event, k -> new ArrayList<>());
     callbacks.add(callback);
   }
 
@@ -1198,7 +1194,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
     final EmbeddedDatabase pDatabase = (EmbeddedDatabase) o;
 
-    return databasePath != null ? databasePath.equals(pDatabase.databasePath) : pDatabase.databasePath == null;
+    return Objects.equals(databasePath, pDatabase.databasePath);
   }
 
   public DatabaseContext.DatabaseContextTL getContext() {
@@ -1209,7 +1205,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
    * Executes a callback in a shared lock.
    */
   @Override
-  public <RET extends Object> RET executeInReadLock(final Callable<RET> callable) {
+  public <RET> RET executeInReadLock(final Callable<RET> callable) {
     readLock();
     try {
 
@@ -1235,7 +1231,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
    * Executes a callback in an exclusive lock.
    */
   @Override
-  public <RET extends Object> RET executeInWriteLock(final Callable<RET> callable) {
+  public <RET> RET executeInWriteLock(final Callable<RET> callable) {
     writeLock();
     try {
 

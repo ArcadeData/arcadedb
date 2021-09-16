@@ -27,8 +27,8 @@ import java.util.*;
  * Created by luigidellaquila on 07/07/16.
  */
 public class InternalResultSet implements ResultSet {
-  private   List<Result>  content = new ArrayList<>();
-  private   int           next    = 0;
+  private final List<Result> content = new ArrayList<>();
+  private       int          next    = 0;
   protected ExecutionPlan plan;
 
   @Override

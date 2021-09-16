@@ -31,14 +31,10 @@ import java.util.stream.Collectors;
  * Created by luigidellaquila on 06/07/16.
  */
 public class SelectExecutionPlan implements InternalExecutionPlan {
-
-  private String location;
-
-  private CommandContext ctx;
-
-  protected List<ExecutionStepInternal> steps = new ArrayList<>();
-
-  ExecutionStepInternal lastStep = null;
+  private       String                      location;
+  private final CommandContext              ctx;
+  protected     List<ExecutionStepInternal> steps    = new ArrayList<>();
+  private       ExecutionStepInternal       lastStep = null;
 
   public SelectExecutionPlan(CommandContext ctx) {
     this.ctx = ctx;
@@ -109,7 +105,7 @@ public class SelectExecutionPlan implements InternalExecutionPlan {
 
   @Override
   public long getCost() {
-    return 0l;
+    return 0L;
   }
 
   public Result serialize() {
@@ -137,15 +133,15 @@ public class SelectExecutionPlan implements InternalExecutionPlan {
   }
 
   @Override
-  public InternalExecutionPlan copy(CommandContext ctx) {
-    SelectExecutionPlan copy = new SelectExecutionPlan(ctx);
+  public InternalExecutionPlan copy(final CommandContext ctx) {
+    final SelectExecutionPlan copy = new SelectExecutionPlan(ctx);
 
-    ExecutionStep lastStep = null;
-    for (ExecutionStep step : this.steps) {
-      ExecutionStepInternal newStep = (ExecutionStepInternal) ((ExecutionStepInternal) step).copy(ctx);
-      newStep.setPrevious((ExecutionStepInternal) lastStep);
+    ExecutionStepInternal lastStep = null;
+    for (ExecutionStepInternal step : this.steps) {
+      ExecutionStepInternal newStep = (ExecutionStepInternal) step.copy(ctx);
+      newStep.setPrevious(lastStep);
       if (lastStep != null) {
-        ((ExecutionStepInternal) lastStep).setNext(newStep);
+        lastStep.setNext(newStep);
       }
       lastStep = newStep;
       copy.getSteps().add(newStep);

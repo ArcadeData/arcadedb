@@ -22,7 +22,6 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Document;
-import com.arcadedb.database.Record;
 import com.arcadedb.exception.TimeoutException;
 
 import java.util.Map;
@@ -48,7 +47,7 @@ public class ConvertToResultInternalStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    if (!prev.isPresent()) {
+    if (prev.isEmpty()) {
       throw new IllegalStateException("filter step requires a previous step");
     }
     ExecutionStepInternal prevStep = prev.get();
@@ -83,10 +82,10 @@ public class ConvertToResultInternalStep extends AbstractExecutionStep {
           long begin = profilingEnabled ? System.nanoTime() : 0;
           try {
             if (nextItem instanceof UpdatableResult) {
-              Record element = nextItem.getElement().get();
+              Document element = nextItem.getElement().get();
               if (element != null && element instanceof Document) {
                 nextItem = new ResultInternal();
-                ((ResultInternal) nextItem).setElement((Document) element);
+                ((ResultInternal) nextItem).setElement(element);
               }
               break;
             }
@@ -136,7 +135,7 @@ public class ConvertToResultInternalStep extends AbstractExecutionStep {
 
       @Override
       public Optional<ExecutionPlan> getExecutionPlan() {
-        return null;
+        return Optional.empty();
       }
 
       @Override

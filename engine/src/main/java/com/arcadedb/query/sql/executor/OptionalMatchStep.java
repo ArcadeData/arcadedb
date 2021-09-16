@@ -24,18 +24,18 @@ package com.arcadedb.query.sql.executor;
 /**
  * Created by luigidellaquila on 17/10/16.
  */
-public class OptionalMatchStep extends MatchStep{
+public class OptionalMatchStep extends MatchStep {
   public OptionalMatchStep(CommandContext context, EdgeTraversal edge, boolean profilingEnabled) {
     super(context, edge, profilingEnabled);
   }
 
-  @Override protected MatchEdgeTraverser createTraverser(Result lastUpstreamRecord) {
+  @Override
+  protected MatchEdgeTraverser createTraverser(Result lastUpstreamRecord) {
     return new OptionalMatchEdgeTraverser(lastUpstreamRecord, edge);
   }
 
-
-
-  @Override public String prettyPrint(int depth, int indent) {
+  @Override
+  public String prettyPrint(int depth, int indent) {
     String spaces = ExecutionStepInternal.getIndent(depth, indent);
     StringBuilder result = new StringBuilder();
     result.append(spaces);
@@ -47,9 +47,9 @@ public class OptionalMatchStep extends MatchStep{
     }
     result.append(spaces);
     result.append("  ");
-    result.append("{" + edge.edge.out.alias + "}");
+    result.append("{").append(edge.edge.out.alias).append("}");
     result.append(edge.edge.item.getMethod());
-    result.append("{" + edge.edge.in.alias + "}");
+    result.append("{").append(edge.edge.in.alias).append("}");
     return result.toString();
   }
 }

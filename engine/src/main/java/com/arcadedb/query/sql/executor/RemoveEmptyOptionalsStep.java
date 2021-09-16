@@ -68,7 +68,7 @@ public class RemoveEmptyOptionalsStep extends AbstractExecutionStep {
 
       @Override
       public Optional<ExecutionPlan> getExecutionPlan() {
-        return null;
+        return Optional.empty();
       }
 
       @Override
@@ -81,9 +81,7 @@ public class RemoveEmptyOptionalsStep extends AbstractExecutionStep {
   @Override
   public String prettyPrint(int depth, int indent) {
     String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    StringBuilder result = new StringBuilder();
-    result.append(spaces);
-    result.append("+ REMOVE EMPTY OPTIONALS");
-    return result.toString();
+    String result = spaces + "+ REMOVE EMPTY OPTIONALS";
+    return result;
   }
 }

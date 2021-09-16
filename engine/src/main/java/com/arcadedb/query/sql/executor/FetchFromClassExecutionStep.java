@@ -94,8 +94,7 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
     bucketIds[bucketIds.length - 1] = -1;//temporary bucket, data in tx
 
     long typeFileSize = 0;
-    for (int i = 0; i < bucketIds.length; i++) {
-      final int fileId = bucketIds[i];
+    for (final int fileId : bucketIds) {
       if (fileId > -1) {
         final PaginatedFile f = ctx.getDatabase().getFileManager().getFile(fileId);
         if (f != null) {
@@ -115,8 +114,7 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
     }
 
     sortBuckets(bucketIds);
-    for (int i = 0; i < bucketIds.length; i++) {
-      int bucketId = bucketIds[i];
+    for (int bucketId : bucketIds) {
       if (bucketId > 0) {
         FetchFromClusterExecutionStep step = new FetchFromClusterExecutionStep(bucketId, planningInfo, ctx, profilingEnabled);
         if (orderByRidAsc) {
@@ -234,9 +232,9 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
     StringBuilder builder = new StringBuilder();
     String ind = ExecutionStepInternal.getIndent(depth, indent);
     builder.append(ind);
-    builder.append("+ FETCH FROM TYPE " + className);
+    builder.append("+ FETCH FROM TYPE ").append(className);
     if (profilingEnabled) {
-      builder.append(" (" + getCostFormatted() + ")");
+      builder.append(" (").append(getCostFormatted()).append(")");
     }
     builder.append("\n");
     for (int i = 0; i < getSubSteps().size(); i++) {

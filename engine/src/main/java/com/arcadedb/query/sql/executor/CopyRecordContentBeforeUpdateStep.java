@@ -88,7 +88,7 @@ public class CopyRecordContentBeforeUpdateStep extends AbstractExecutionStep {
 
       @Override
       public Optional<ExecutionPlan> getExecutionPlan() {
-        return null;
+        return Optional.empty();
       }
 
       @Override
@@ -105,7 +105,7 @@ public class CopyRecordContentBeforeUpdateStep extends AbstractExecutionStep {
     result.append(spaces);
     result.append("+ COPY RECORD CONTENT BEFORE UPDATE");
     if (profilingEnabled) {
-      result.append(" (" + getCostFormatted() + ")");
+      result.append(" (").append(getCostFormatted()).append(")");
     }
     return result.toString();
   }

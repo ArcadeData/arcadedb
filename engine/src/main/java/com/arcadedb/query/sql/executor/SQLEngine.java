@@ -55,7 +55,7 @@ public class SQLEngine {
       iCurrent = ((Iterable) iCurrent).iterator();
     }
     if (MultiValue.isMultiValue(iCurrent) || iCurrent instanceof Iterator) {
-      final MultiIterator<Object> result = new MultiIterator<Object>();
+      final MultiIterator<Object> result = new MultiIterator<>();
       for (Object o : MultiValue.getMultiValueIterable(iCurrent, false)) {
         if (iContext != null && !iContext.checkTimeout())
           return null;
@@ -109,8 +109,7 @@ public class SQLEngine {
   public static List<Statement> parseScript(InputStream script, final DatabaseInternal database) {
     try {
       final SqlParser parser = new SqlParser(script);
-      List<Statement> result = parser.parseScript();
-      return result;
+      return parser.parseScript();
     } catch (ParseException e) {
       throw new CommandSQLParsingException(e);
     }

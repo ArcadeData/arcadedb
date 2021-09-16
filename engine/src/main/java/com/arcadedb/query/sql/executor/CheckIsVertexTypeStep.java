@@ -92,7 +92,7 @@ public class CheckIsVertexTypeStep extends AbstractExecutionStep {
     result.append(spaces);
     result.append("+ CHECK TYPE HIERARCHY (V)");
     if (profilingEnabled) {
-      result.append(" (" + getCostFormatted() + ")");
+      result.append(" (").append(getCostFormatted()).append(")");
     }
     return result.toString();
   }

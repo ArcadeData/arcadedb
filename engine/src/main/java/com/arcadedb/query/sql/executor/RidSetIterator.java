@@ -30,9 +30,9 @@ import java.util.Iterator;
  */
 public class RidSetIterator implements Iterator<RID> {
 
-  CommandContext ctx;
+  final CommandContext ctx;
 
-  private RidSet set;
+  private final RidSet set;
   int  currentCluster = -1;
   long currentId      = -1;
 

@@ -35,7 +35,7 @@ import java.util.List;
  */
 public class UpdateExecutionPlan extends SelectExecutionPlan {
 
-  List<Result> result = new ArrayList<>();
+  final List<Result> result = new ArrayList<>();
   int          next   = 0;
 
   public UpdateExecutionPlan(CommandContext ctx) {

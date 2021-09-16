@@ -33,19 +33,19 @@ import java.util.stream.Collectors;
  */
 public class ODeleteEdgeExecutionPlanner {
 
-  protected Identifier className;
-  protected Identifier targetClusterName;
+  protected final Identifier className;
+  protected final Identifier targetClusterName;
 
-  protected List<Rid> rids;
+  protected final List<Rid> rids;
 
-  private Expression leftExpression;
-  private Expression rightExpression;
+  private final Expression leftExpression;
+  private final Expression rightExpression;
 
-  protected Batch batch = null;
+  protected Batch batch;
 
-  private WhereClause whereClause;
+  private final WhereClause whereClause;
 
-  private Limit limit;
+  private final Limit limit;
 
   public ODeleteEdgeExecutionPlanner(DeleteEdgeStatement stm) {
 

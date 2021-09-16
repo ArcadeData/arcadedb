@@ -28,7 +28,6 @@ import com.arcadedb.exception.TimeoutException;
  */
 public class SubQueryStep extends AbstractExecutionStep {
   private final InternalExecutionPlan subExecuitonPlan;
-  private final CommandContext        childCtx;
 
   /**
    * executes a sub-query
@@ -41,7 +40,6 @@ public class SubQueryStep extends AbstractExecutionStep {
       boolean profilingEnabled) {
     super(ctx, profilingEnabled);
     this.subExecuitonPlan = subExecutionPlan;
-    this.childCtx = subCtx;
   }
 
   @Override

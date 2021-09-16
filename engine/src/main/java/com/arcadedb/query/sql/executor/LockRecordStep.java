@@ -47,9 +47,8 @@ public class LockRecordStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        Result result = upstream.next();
-//        result.getElement().ifPresent(x -> ctx.getDatabase().getTransaction().lockRecord(x, lockStrategy));
-        return result;
+        //        result.getElement().ifPresent(x -> ctx.getDatabase().getTransaction().lockRecord(x, lockStrategy));
+        return upstream.next();
       }
 
       @Override
@@ -59,7 +58,7 @@ public class LockRecordStep extends AbstractExecutionStep {
 
       @Override
       public Optional<ExecutionPlan> getExecutionPlan() {
-        return null;
+        return Optional.empty();
       }
 
       @Override
@@ -72,13 +71,8 @@ public class LockRecordStep extends AbstractExecutionStep {
   @Override
   public String prettyPrint(int depth, int indent) {
     String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    StringBuilder result = new StringBuilder();
-    result.append(spaces);
-    result.append("+ LOCK RECORD");
-    result.append("\n");
-    result.append(spaces);
-    result.append("  lock strategy: " + lockStrategy);
+    String result = spaces + "+ LOCK RECORD" + "\n" + spaces + "  lock strategy: " + lockStrategy;
 
-    return result.toString();
+    return result;
   }
 }

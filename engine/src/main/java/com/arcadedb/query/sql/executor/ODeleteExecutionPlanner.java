@@ -85,7 +85,7 @@ public class ODeleteExecutionPlanner {
 
     switch (indexIdentifier.getType()) {
     case INDEX:
-      BooleanExpression keyCondition = null;
+      BooleanExpression keyCondition;
       BooleanExpression ridCondition = null;
       if (flattenedWhereClause == null || flattenedWhereClause.size() == 0) {
         //TODO

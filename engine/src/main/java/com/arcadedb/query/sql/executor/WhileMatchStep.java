@@ -57,26 +57,12 @@ public class WhileMatchStep extends AbstractUnrollStep {
   @Override public String prettyPrint(int depth, int indent) {
     String indentStep = ExecutionStepInternal.getIndent(1, indent);
     String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    StringBuilder result = new StringBuilder();
-    result.append(spaces);
-    result.append("+ WHILE\n");
 
-    result.append(spaces);
-    result.append(indentStep);
-    result.append(condition.toString());
-    result.append("\n");
+    String result =
+        spaces + "+ WHILE\n" + spaces + indentStep + condition.toString() + "\n" + spaces + "  DO\n" + body.prettyPrint(depth + 1, indent) + "\n" + spaces
+            + "  END\n";
 
-    result.append(spaces);
-    result.append("  DO\n");
-
-
-    result.append(body.prettyPrint(depth+1, indent));
-    result.append("\n");
-
-    result.append(spaces);
-    result.append("  END\n");
-
-    return result.toString();
+    return result;
   }
 
 }

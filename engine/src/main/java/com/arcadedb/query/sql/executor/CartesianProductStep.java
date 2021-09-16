@@ -34,14 +34,14 @@ import java.util.Optional;
  */
 public class CartesianProductStep extends AbstractExecutionStep {
 
-  private List<InternalExecutionPlan> subPlans = new ArrayList<>();
+  private final List<InternalExecutionPlan> subPlans = new ArrayList<>();
 
-  private boolean inited = false;
-  List<Boolean>           completedPrefetch = new ArrayList<>();
-  List<InternalResultSet> preFetches        = new ArrayList<>();//consider using resultset.reset() instead of buffering
+  private       boolean                 inited            = false;
+  private final List<Boolean>           completedPrefetch = new ArrayList<>();
+  private final List<InternalResultSet> preFetches        = new ArrayList<>();//consider using resultset.reset() instead of buffering
 
-  List<ResultSet> resultSets   = new ArrayList<>();
-  List<Result>    currentTuple = new ArrayList<>();
+  private final List<ResultSet> resultSets   = new ArrayList<>();
+  private       List<Result>    currentTuple = new ArrayList<>();
 
   ResultInternal nextRecord;
 
@@ -54,7 +54,7 @@ public class CartesianProductStep extends AbstractExecutionStep {
   @Override
   public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
     getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
-    init(ctx);
+    init();
     //    return new OInternalResultSet();
     return new ResultSet() {
       int currentCount = 0;
@@ -80,12 +80,12 @@ public class CartesianProductStep extends AbstractExecutionStep {
 
       @Override
       public void close() {
-
+        // EMPTY METHOD
       }
 
       @Override
       public Optional<ExecutionPlan> getExecutionPlan() {
-        return null;
+        return Optional.empty();
       }
 
       @Override
@@ -97,8 +97,8 @@ public class CartesianProductStep extends AbstractExecutionStep {
     //TODO
   }
 
-  private void init(CommandContext ctx) {
-    if (subPlans == null || subPlans.isEmpty()) {
+  private void init() {
+    if (subPlans.isEmpty()) {
       return;
     }
     if (inited) {
@@ -114,7 +114,6 @@ public class CartesianProductStep extends AbstractExecutionStep {
   }
 
   private void fetchFirstRecord() {
-    int i = 0;
     for (ResultSet rs : resultSets) {
       if (!rs.hasNext()) {
         nextRecord = null;
@@ -210,7 +209,7 @@ public class CartesianProductStep extends AbstractExecutionStep {
     result += foot(blockSizes);
     result = ind + result;
     result = result.replaceAll("\n", "\n" + ind);
-    result = head(depth, indent, subPlans.size()) + "\n" + result;
+    result = head(depth, indent) + "\n" + result;
     return result;
   }
 
@@ -262,7 +261,7 @@ public class CartesianProductStep extends AbstractExecutionStep {
 
   }
 
-  private String head(int depth, int indent, int nItems) {
+  private String head(int depth, int indent) {
     String ind = ExecutionStepInternal.getIndent(depth, indent);
     String result = ind + "+ CARTESIAN PRODUCT";
     if (profilingEnabled) {

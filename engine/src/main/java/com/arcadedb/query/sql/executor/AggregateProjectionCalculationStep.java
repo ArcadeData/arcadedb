@@ -39,8 +39,8 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
   private final long    limit;
 
   //the key is the GROUP BY key, the value is the (partially) aggregated value
-  private Map<List, ResultInternal> aggregateResults = new LinkedHashMap<>();
-  private List<ResultInternal>      finalResults     = null;
+  private final Map<List, ResultInternal> aggregateResults = new LinkedHashMap<>();
+  private       List<ResultInternal>      finalResults     = null;
 
   private int  nextItem = 0;
   private long cost     = 0;
@@ -85,7 +85,7 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
 
       @Override
       public Optional<ExecutionPlan> getExecutionPlan() {
-        return null;
+        return Optional.empty();
       }
 
       @Override
@@ -97,7 +97,7 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
 
   private void executeAggregation(CommandContext ctx, int nRecords) {
     long timeoutBegin = System.currentTimeMillis();
-    if (!prev.isPresent()) {
+    if (prev.isEmpty()) {
       throw new CommandExecutionException("Cannot execute an aggregation or a GROUP BY without a previous result");
     }
     ExecutionStepInternal prevStep = prev.get();
@@ -178,7 +178,7 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
     if (profilingEnabled) {
       result += " (" + getCostFormatted() + ")";
     }
-    result += "\n" + spaces + "      " + projection.toString() + "" + (groupBy == null ? "" : (spaces + "\n  " + groupBy.toString()));
+    result += "\n" + spaces + "      " + projection.toString() + "" + (groupBy == null ? "" : (spaces + "\n  " + groupBy));
     return result;
   }
 

@@ -32,12 +32,11 @@ import java.util.Optional;
  * @author Luigi Dell'Aquila
  */
 public class MatchStep extends AbstractExecutionStep {
-  protected final EdgeTraversal edge;
-
-  ResultSet          upstream;
-  Result             lastUpstreamRecord;
-  MatchEdgeTraverser traverser;
-  Result             nextResult;
+  protected final EdgeTraversal      edge;
+  private         ResultSet          upstream;
+  private         Result             lastUpstreamRecord;
+  private         MatchEdgeTraverser traverser;
+  private         Result             nextResult;
 
   public MatchStep(CommandContext context, EdgeTraversal edge, boolean profilingEnabled) {
     super(context, profilingEnabled);
@@ -93,7 +92,7 @@ public class MatchStep extends AbstractExecutionStep {
 
       @Override
       public Optional<ExecutionPlan> getExecutionPlan() {
-        return null;
+        return Optional.empty();
       }
 
       @Override
@@ -161,9 +160,9 @@ public class MatchStep extends AbstractExecutionStep {
     }
     result.append(spaces);
     result.append("  ");
-    result.append("{" + edge.edge.out.alias + "}");
+    result.append("{").append(edge.edge.out.alias).append("}");
     result.append(edge.edge.item.getMethod());
-    result.append("{" + edge.edge.in.alias + "}");
+    result.append("{").append(edge.edge.in.alias).append("}");
     return result.toString();
   }
 }

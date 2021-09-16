@@ -60,7 +60,7 @@ public class FetchEdgesToVerticesStep extends AbstractExecutionStep {
     init();
 
     return new ResultSet() {
-      int currentBatch = 0;
+      final int currentBatch = 0;
 
       @Override
       public boolean hasNext() {
@@ -88,7 +88,7 @@ public class FetchEdgesToVerticesStep extends AbstractExecutionStep {
 
       @Override
       public Optional<ExecutionPlan> getExecutionPlan() {
-        return null;
+        return Optional.empty();
       }
 
       @Override
@@ -106,7 +106,7 @@ public class FetchEdgesToVerticesStep extends AbstractExecutionStep {
       inited = true;
     }
 
-    Object toValues = null;
+    Object toValues;
 
     toValues = ctx.getVariable(toAlias);
     if (toValues instanceof Iterable && !(toValues instanceof Identifiable)) {

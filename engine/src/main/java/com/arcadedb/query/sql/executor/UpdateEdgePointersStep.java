@@ -57,14 +57,6 @@ public class UpdateEdgePointersStep extends AbstractExecutionStep {
         return result;
       }
 
-      private void updateIn(Result item) {
-
-      }
-
-      private void updateOut(Result item) {
-
-      }
-
       @Override
       public void close() {
         upstream.close();
@@ -72,7 +64,7 @@ public class UpdateEdgePointersStep extends AbstractExecutionStep {
 
       @Override
       public Optional<ExecutionPlan> getExecutionPlan() {
-        return null;
+        return Optional.empty();
       }
 
       @Override
@@ -85,10 +77,8 @@ public class UpdateEdgePointersStep extends AbstractExecutionStep {
   @Override
   public String prettyPrint(int depth, int indent) {
     String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    StringBuilder result = new StringBuilder();
-    result.append(spaces);
-    result.append("+ UPDATE EDGE POINTERS");
-    return result.toString();
+    String result = spaces + "+ UPDATE EDGE POINTERS";
+    return result;
   }
 
   /**

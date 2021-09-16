@@ -32,8 +32,8 @@ import java.util.List;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class FunctionAggregationContext implements AggregationContext {
-  private SQLFunction      aggregateFunction;
-  private List<Expression> params;
+  private final SQLFunction      aggregateFunction;
+  private       List<Expression> params;
 
   public FunctionAggregationContext(SQLFunction function, List<Expression> params) {
     this.aggregateFunction = function;

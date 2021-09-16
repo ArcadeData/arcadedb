@@ -25,8 +25,8 @@ package com.arcadedb.engine;
  * Immutable.
  */
 public class PageId implements Comparable<PageId> {
-  private int fileId;
-  private int pageNumber;
+  private final int fileId;
+  private final int pageNumber;
 
   public PageId(final int fileId, final int pageNumber) {
     this.fileId = fileId;

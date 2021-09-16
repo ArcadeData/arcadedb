@@ -37,18 +37,18 @@ public abstract class AbstractTraverseStep extends AbstractExecutionStep {
   protected final List<TraverseProjectionItem> projections;
   protected final PInteger                     maxDepth;
 
-  protected List<Result> entryPoints = null;
-  protected List<Result> results     = new ArrayList<>();
-  private   long         cost        = 0;
+  protected       List<Result> entryPoints = null;
+  protected final List<Result> results     = new ArrayList<>();
+  private         long         cost        = 0;
 
-  Set<RID> traversed = new RidSet();
+  final Set<RID> traversed = new RidSet();
 
-  public AbstractTraverseStep(List<TraverseProjectionItem> projections, WhereClause whileClause, PInteger maxDepth,
-      CommandContext ctx, boolean profilingEnabled) {
+  public AbstractTraverseStep(List<TraverseProjectionItem> projections, WhereClause whileClause, PInteger maxDepth, CommandContext ctx,
+      boolean profilingEnabled) {
     super(ctx, profilingEnabled);
     this.whileClause = whileClause;
     this.maxDepth = maxDepth;
-    this.projections = projections.stream().map(x -> x.copy()).collect(Collectors.toList());
+    this.projections = projections.stream().map(TraverseProjectionItem::copy).collect(Collectors.toList());
   }
 
   @Override
@@ -95,7 +95,7 @@ public abstract class AbstractTraverseStep extends AbstractExecutionStep {
 
       @Override
       public Optional<ExecutionPlan> getExecutionPlan() {
-        return null;
+        return Optional.empty();
       }
 
       @Override
@@ -109,9 +109,7 @@ public abstract class AbstractTraverseStep extends AbstractExecutionStep {
     if (this.entryPoints == null) {
       this.entryPoints = new ArrayList<>();
     }
-    if (!this.results.isEmpty()) {
-      return;
-    }
+
     while (this.results.isEmpty()) {
       if (this.entryPoints.isEmpty()) {
         fetchNextEntryPoints(ctx, nRecords);
@@ -123,9 +121,6 @@ public abstract class AbstractTraverseStep extends AbstractExecutionStep {
       fetchNextResults(ctx, nRecords);
       if (profilingEnabled) {
         cost += (System.nanoTime() - begin);
-      }
-      if (!this.results.isEmpty()) {
-        return;
       }
     }
   }

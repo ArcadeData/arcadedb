@@ -60,7 +60,7 @@ public class UpdateMergeStep extends AbstractExecutionStep {
           if (!(result.getElement().orElse(null) instanceof Document)) {
             return result;
           }
-          handleMerge((Document) result.getElement().orElse(null), ctx);
+          handleMerge(result.getElement().orElse(null), ctx);
         }
         return result;
       }
@@ -72,7 +72,7 @@ public class UpdateMergeStep extends AbstractExecutionStep {
 
       @Override
       public Optional<ExecutionPlan> getExecutionPlan() {
-        return null;
+        return Optional.empty();
       }
 
       @Override
@@ -92,12 +92,7 @@ public class UpdateMergeStep extends AbstractExecutionStep {
   @Override
   public String prettyPrint(int depth, int indent) {
     String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    StringBuilder result = new StringBuilder();
-    result.append(spaces);
-    result.append("+ UPDATE MERGE\n");
-    result.append(spaces);
-    result.append("  ");
-    result.append(json);
-    return result.toString();
+    String result = spaces + "+ UPDATE MERGE\n" + spaces + "  " + json;
+    return result;
   }
 }
