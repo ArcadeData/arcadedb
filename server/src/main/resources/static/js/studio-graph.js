@@ -1,5 +1,5 @@
-var globalBgColors = ['aqua', 'orange', 'green', 'purple', 'red', 'lime', 'teal', 'maroon', 'navy', 'olive', 'silver', 'blue', 'yellow', 'fuchsia', 'gray', 'white', 'black'];
-var globalFgColors = ['black', 'black', 'white', 'white', 'black', 'black', 'black', 'white', 'white', 'black', 'black', 'white', 'black', 'black', 'white', 'black', 'white'];
+var globalBgColors = ['aqua', 'orange', 'green', 'purple', 'lime', 'teal', 'maroon', 'navy', 'olive', 'silver', 'blue', 'yellow', 'fuchsia', 'gray', 'white', 'black'];
+var globalFgColors = ['black', 'black', 'white', 'white', 'black', 'black', 'white', 'white', 'black', 'black', 'white', 'black', 'black', 'white', 'black', 'white'];
 var globalRenderedVerticesRID = {};
 var globalTotalEdges = 0;
 var globalLastColorIndex = 0;
