@@ -252,7 +252,7 @@ public class SourceDiscovery {
 
     if (!candidateSeparators.isEmpty()) {
       // EXCLUDE SPACE IF OTHER DELIMITERS ARE PRESENT
-      if (candidateSeparators.size() > 1 && candidateSeparators.containsKey(' '))
+      if (candidateSeparators.size() > 1)
         candidateSeparators.remove(' ');
 
       final ArrayList<Map.Entry<Character, AtomicInteger>> list = new ArrayList(candidateSeparators.entrySet());

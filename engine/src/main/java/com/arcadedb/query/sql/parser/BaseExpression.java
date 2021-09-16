@@ -306,7 +306,7 @@ public class BaseExpression extends MathExpression {
     if (identifier != null) {
       return identifier.getAggregationContext(ctx);
     } else {
-      throw new CommandExecutionException("cannot aggregate on " + toString());
+      throw new CommandExecutionException("cannot aggregate on " + this);
     }
   }
 
@@ -548,7 +548,7 @@ public class BaseExpression extends MathExpression {
 
     // CHANGE THE INPUT STRING
     final StringBuilder buffer = new StringBuilder(textSize);
-    buffer.append(iText.substring(0, pos));
+    buffer.append(iText, 0, pos);
 
     boolean escaped = false;
     for (int i = pos; i < textSize; ++i) {
@@ -564,11 +564,8 @@ public class BaseExpression extends MathExpression {
           buffer.append('\r');
         } else if (c == '\\') {
           buffer.append('\\');
-        } else if (c == '\f') {
-          buffer.append('\f');
-        } else {
+        } else
           buffer.append(c);
-        }
         continue;
       } else if (c == '\\') {
         escaped = true;

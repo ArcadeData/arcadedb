@@ -212,7 +212,7 @@ public class ReplicationLogFile extends LockContext {
           final long chunkBeginMessageNumber = bufferHeader.getLong();
           if (messageNumberToFind == chunkBeginMessageNumber)
             // MESSAGE FOUND AS FIRST MESSAGE OF THE CHUNK
-            return (long) (chunkId * CHUNK_SIZE);
+            return chunkId * CHUNK_SIZE;
           else if (messageNumberToFind > chunkBeginMessageNumber)
             // CHUNK FOUND
             break;
@@ -230,7 +230,7 @@ public class ReplicationLogFile extends LockContext {
           final long messageNumber = bufferHeader.getLong();
           if (messageNumber == messageNumberToFind)
             // FOUND
-            return pos + ((long) chunkId * CHUNK_SIZE);
+            return pos + (chunkId * CHUNK_SIZE);
 
           if (messageNumber > messageNumberToFind)
             // NOT IN LOG ANYMORE
@@ -316,7 +316,7 @@ public class ReplicationLogFile extends LockContext {
         else
           nextPos = positionInFile + BUFFER_HEADER_SIZE + contentLength + BUFFER_FOOTER_SIZE;
 
-        return new Pair<>(new ReplicationMessage(messageNumber, new Binary((ByteBuffer) bufferPayload.rewind())), nextPos);
+        return new Pair<>(new ReplicationMessage(messageNumber, new Binary(bufferPayload.rewind())), nextPos);
       }
     });
   }
@@ -376,7 +376,7 @@ public class ReplicationLogFile extends LockContext {
         final ByteBuffer bufferPayload = ByteBuffer.allocate(contentLength);
         lastChunkChannel.read(bufferPayload, pos - entrySize + BUFFER_HEADER_SIZE);
 
-        return new ReplicationMessage(messageNumber, new Binary((ByteBuffer) bufferPayload.rewind()));
+        return new ReplicationMessage(messageNumber, new Binary(bufferPayload.rewind()));
       }
     });
   }
