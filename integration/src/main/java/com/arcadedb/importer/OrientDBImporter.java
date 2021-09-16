@@ -136,6 +136,7 @@ public class OrientDBImporter {
     this.database = database;
     this.databasePath = database.getDatabasePath();
     this.file = null;
+    logger = new ConsoleLogger(settings.verboseLevel);
   }
 
   public static void main(final String[] args) throws IOException {
