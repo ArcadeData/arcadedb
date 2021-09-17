@@ -51,37 +51,37 @@ public class OrientDBImporter {
   private       String                     inputFile;
   private       String                     securityFileName;
   private       String                     databaseName;
-  private       boolean              overwriteDatabase = false;
-  private final Map<String, Integer> clustersNameToId  = new LinkedHashMap<>();
-  private final Map<Integer, String> clustersIdToName  = new LinkedHashMap<>();
-  private final Map<String, OrientDBClass> classes          = new LinkedHashMap<>();
-  private final Map<String, Long>          totalRecordByType = new HashMap<>();
-  private       long                       totalRecordParsed = 0L;
-  private       long totalAttributesParsed = 0L;
-  private final long errors                = 0L;
-  private       long warnings              = 0L;
-  private final Set<String>     excludeClasses = new HashSet<>(Arrays.asList("OUser", "ORole", "OSchedule", "OSequence",
-      "OTriggered", "OSecurityPolicy", "ORestricted", "OIdentity", "OFunction", "_studio"));
-  private       DatabaseFactory factory;
-  private       Database                  database;
-  private final Set<String>               edgeClasses = new HashSet<>();
-  private final List<Map<String, Object>> parsedUsers = new ArrayList<>();
-  private final Map<RID, RID>             vertexRidMap = new HashMap<>();
-  private       int                       batchSize    = 10_000;
+  private       boolean                    overwriteDatabase               = false;
+  private final Map<String, Integer>       clustersNameToId                = new LinkedHashMap<>();
+  private final Map<Integer, String>       clustersIdToName                = new LinkedHashMap<>();
+  private final Map<String, OrientDBClass> classes                         = new LinkedHashMap<>();
+  private final Map<String, Long>          totalRecordByType               = new HashMap<>();
+  private       long                       totalRecordParsed               = 0L;
+  private       long                       totalAttributesParsed           = 0L;
+  private final long                       errors                          = 0L;
+  private       long                       warnings                        = 0L;
+  private final Set<String>                excludeClasses                  = new HashSet<>(
+      Arrays.asList("OUser", "ORole", "OSchedule", "OSequence", "OTriggered", "OSecurityPolicy", "ORestricted", "OIdentity", "OFunction", "_studio"));
+  private       DatabaseFactory            factory;
+  private       Database                   database;
+  private final Set<String>                edgeClasses                     = new HashSet<>();
+  private final List<Map<String, Object>>  parsedUsers                     = new ArrayList<>();
+  private final Map<RID, RID>              vertexRidMap                    = new HashMap<>();
+  private       int                        batchSize                       = 10_000;
   private       PHASE                      phase                           = PHASE.OFF; // phase1 = create DB and cache edges in RAM, phase2 = create vertices and edges
   private       long                       processedItems                  = 0L;
   private       long                       skippedRecordBecauseNullKey     = 0L;
-  private       long              skippedEdgeBecauseMissingVertex = 0l;
-  private final Map<String, Long> totalEdgesByVertexType          = new HashMap<>();
-  private       long              beginTime;
+  private       long                       skippedEdgeBecauseMissingVertex = 0l;
+  private final Map<String, Long>          totalEdgesByVertexType          = new HashMap<>();
+  private       long                       beginTime;
   private       long                       beginTimeRecordsCreation;
   private       long                       beginTimeEdgeCreation;
   private       GZIPInputStream            inputStream;
   private       JsonReader                 reader;
   private       boolean                    error                           = false;
-  private       ImporterContext  context  = new ImporterContext();
-  private final ImporterSettings settings = new ImporterSettings();
-  private final ConsoleLogger    logger;
+  private       ImporterContext            context                         = new ImporterContext();
+  private final ImporterSettings           settings                        = new ImporterSettings();
+  private final ConsoleLogger              logger;
 
   private enum PHASE {OFF, CREATE_SCHEMA, CREATE_RECORDS, CREATE_EDGES}
 
@@ -956,7 +956,8 @@ public class OrientDBImporter {
     final List<Index> indexes = type.getAllIndexes(true);
     for (Index index : indexes) {
       if (index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.ERROR) {
-        final Object value = properties.get(index.getPropertyNames()[0]);
+        final String indexedPropName = index.getPropertyNames().get(0);
+        final Object value = properties.get(indexedPropName);
         if (value == null) {
           ++skippedRecordBecauseNullKey;
 
@@ -964,8 +965,7 @@ public class OrientDBImporter {
             logger.log(2,
                 "- Skipped 100 records where indexed field is null and the index is not accepting NULLs. Not reporting further case to reduce the output");
           else if (settings.verboseLevel > 2 || skippedRecordBecauseNullKey < 100)
-            logger.log(2, "- Skipped record %s because indexed field '%s' is null and the index is not accepting NULLs", properties,
-                index.getPropertyNames()[0]);
+            logger.log(2, "- Skipped record %s because indexed field '%s' is null and the index is not accepting NULLs", properties, indexedPropName);
 
           valid = false;
         }

@@ -34,9 +34,9 @@ import java.io.Serializable;
  * Immutable class.
  */
 public class RID implements Identifiable, Comparable<Identifiable>, Serializable {
-  private final Database database;
-  private final int      bucketId;
-  private final long     offset;
+  private transient final Database database;
+  private final           int      bucketId;
+  private final           long     offset;
 
   public RID(final Database database, final int bucketId, final long offset) {
     this.database = database;

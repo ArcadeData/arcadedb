@@ -186,7 +186,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   }
 
   @Override
-  public String[] getPropertyNames() {
+  public List<String> getPropertyNames() {
     return indexesOnBuckets.get(0).getPropertyNames();
   }
 
@@ -262,14 +262,14 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     if (!getName().equals(index2.getName()))
       return false;
 
-    final String[] index1Properties = getPropertyNames();
-    final String[] index2Properties = index2.getPropertyNames();
+    final List<String> index1Properties = getPropertyNames();
+    final List<String> index2Properties = index2.getPropertyNames();
 
-    if (index1Properties.length != index2Properties.length)
+    if (index1Properties.size() != index2Properties.size())
       return false;
 
-    for (int p = 0; p < index1Properties.length; ++p) {
-      if (!index1Properties[p].equals(index2Properties[p]))
+    for (int p = 0; p < index1Properties.size(); ++p) {
+      if (!index1Properties.get(p).equals(index2Properties.get(p)))
         return false;
     }
 

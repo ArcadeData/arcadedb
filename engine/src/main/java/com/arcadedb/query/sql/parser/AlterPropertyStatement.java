@@ -23,7 +23,6 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -32,14 +31,13 @@ import java.util.Map;
 
 public class AlterPropertyStatement extends ODDLStatement {
 
-  Identifier typeName;
+  public Expression settingValue;
 
+  Identifier typeName;
   Identifier propertyName;
   Identifier customPropertyName;
   Expression customPropertyValue;
-
   Identifier settingName;
-  public Expression settingValue;
 
   public AlterPropertyStatement(int id) {
     super(id);
@@ -51,9 +49,9 @@ public class AlterPropertyStatement extends ODDLStatement {
 
   @Override
   public ResultSet executeDDL(CommandContext ctx) {
-    Database db = ctx.getDatabase();
 
     throw new UnsupportedOperationException();
+//    Database db = ctx.getDatabase();
 //    OClass typez = db.getMetadata().getSchema().getClass(className.getStringValue());
 //
 //    if (typez == null) {

@@ -141,7 +141,7 @@ public class FetchFromRidsStep extends AbstractExecutionStep {
     try {
       ExecutionStepInternal.basicDeserialize(fromResult, this);
       if (fromResult.getProperty("rids") != null) {
-        List<String> ser = fromResult.getProperty("rids");
+//        List<String> ser = fromResult.getProperty("rids");
         throw new UnsupportedOperationException();
 //        rids = ser.stream().map(x -> new PRID(x)).collect(Collectors.toList());
       }

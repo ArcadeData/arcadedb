@@ -30,8 +30,8 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.RangeIndex;
 import com.arcadedb.index.TypeIndex;
-import com.arcadedb.schema.DocumentType;
 import com.arcadedb.query.sql.parser.*;
+import com.arcadedb.schema.DocumentType;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -561,13 +561,8 @@ public class OSelectExecutionPlanner {
   }
 
   private static boolean isCountOnly(QueryPlanningInfo info) {
-    if (info.aggregateProjection == null
-            || info.projection == null
-            || info.aggregateProjection.getItems().size() != 1
-            || info.projection.getItems().stream()
-            .filter(x -> !x.getProjectionAliasAsString().startsWith("_$$$ORDER_BY_ALIAS$$$_"))
-            .count()
-            != 1) {
+    if (info.aggregateProjection == null || info.projection == null || info.aggregateProjection.getItems().size() != 1
+        || info.projection.getItems().stream().filter(x -> !x.getProjectionAliasAsString().startsWith("_$$$ORDER_BY_ALIAS$$$_")).count() != 1) {
       return false;
     }
     ProjectionItem item = info.aggregateProjection.getItems().get(0);
@@ -620,9 +615,7 @@ public class OSelectExecutionPlanner {
         result.chain(new AggregateProjectionCalculationStep(info.aggregateProjection, info.groupBy, aggregationLimit, ctx,
             info.timeout != null ? info.timeout.getVal().longValue() : -1, profilingEnabled));
         if (isCountOnly(info) && info.groupBy == null) {
-          result.chain(
-                  new GuaranteeEmptyCountStep(
-                          info.aggregateProjection.getItems().get(0), ctx, profilingEnabled));
+          result.chain(new GuaranteeEmptyCountStep(info.aggregateProjection.getItems().get(0), ctx, profilingEnabled));
         }
       }
       result.chain(new ProjectionCalculationStep(info.projection, ctx, profilingEnabled));
@@ -1610,15 +1603,15 @@ public class OSelectExecutionPlanner {
     }
 
     for (Index idx : typez.getAllIndexes(true).stream().filter(i -> i.supportsOrderedIterations()).collect(Collectors.toList())) {
-      String[] indexFields = idx.getPropertyNames();
-      if (indexFields.length < info.orderBy.getItems().size()) {
+      List<String> indexFields = idx.getPropertyNames();
+      if (indexFields.size() < info.orderBy.getItems().size()) {
         continue;
       }
       boolean indexFound = true;
       String orderType = null;
       for (int i = 0; i < info.orderBy.getItems().size(); i++) {
         OrderByItem orderItem = info.orderBy.getItems().get(i);
-        String indexField = indexFields[i];
+        String indexField = indexFields.get(i);
         if (i == 0) {
           orderType = orderItem.getType();
         } else {
@@ -1690,7 +1683,7 @@ public class OSelectExecutionPlanner {
   private boolean isEmptyNoSubclasses(DocumentType typez) {
     List<com.arcadedb.engine.Bucket> buckets = typez.getBuckets(false);
     for (com.arcadedb.engine.Bucket bucket : buckets) {
-      if(bucket.iterator().hasNext()){
+      if (bucket.iterator().hasNext()) {
         return false;
       }
     }
@@ -1801,7 +1794,7 @@ public class OSelectExecutionPlanner {
     if (indexSearchDescriptors.size() == 1) {
       IndexSearchDescriptor desc = indexSearchDescriptors.get(0);
       result = new ArrayList<>();
-      Boolean orderAsc = getOrderDirection(info);
+      final Boolean orderAsc = getOrderDirection(info);
       result.add(new FetchFromIndexStep(desc.idx, desc.keyCondition, desc.additionalRangeCondition, !Boolean.FALSE.equals(orderAsc), ctx, profilingEnabled));
       int[] filterClusterIds = null;
       if (filterClusters != null) {
@@ -1872,14 +1865,14 @@ public class OSelectExecutionPlanner {
     }
     orderedFields.addAll(orderItems);
 
-    final String[] fields = idx.getPropertyNames();
-    if (fields.length < orderedFields.size()) {
+    final List<String> fields = idx.getPropertyNames();
+    if (fields.size() < orderedFields.size()) {
       return false;
     }
 
     for (int i = 0; i < orderedFields.size(); i++) {
       final String orderFieldName = orderedFields.get(i);
-      final String indexFieldName = fields[i];
+      final String indexFieldName = fields.get(i);
       if (!orderFieldName.equals(indexFieldName)) {
         return false;
       }
@@ -1991,7 +1984,7 @@ public class OSelectExecutionPlanner {
    * @return
    */
   private IndexSearchDescriptor buildIndexSearchDescriptor(final CommandContext ctx, final Index index, final AndBlock block, final DocumentType typez) {
-    final String[] indexFields = index.getPropertyNames();
+    final List<String> indexFields = index.getPropertyNames();
     BinaryCondition keyCondition = new BinaryCondition(-1);
     Identifier key = new Identifier("key");
     keyCondition.setLeft(new Expression(key));

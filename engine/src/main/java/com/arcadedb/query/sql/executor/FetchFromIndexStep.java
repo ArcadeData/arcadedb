@@ -329,7 +329,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
       final Object[] converted = convertToObjectArray(secondValue);
 
-      if (secondValue.equals(thirdValue) && fromKeyIncluded && toKeyIncluded && index.getPropertyNames().length == converted.length)
+      if (secondValue.equals(thirdValue) && fromKeyIncluded && toKeyIncluded && index.getPropertyNames().size() == converted.length)
         cursor = index.get(converted);
       else if (index.supportsOrderedIterations()) {
         cursor = index.range(isOrderAsc(), converted, fromKeyIncluded, convertToObjectArray(thirdValue), toKeyIncluded);

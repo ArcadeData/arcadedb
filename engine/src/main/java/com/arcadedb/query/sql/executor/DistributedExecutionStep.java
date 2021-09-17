@@ -21,7 +21,6 @@
 
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.database.Database;
 import com.arcadedb.exception.TimeoutException;
 
 import java.util.Map;
@@ -86,7 +85,7 @@ public class DistributedExecutionStep extends AbstractExecutionStep {
   }
 
   private ResultSet sendSerializedExecutionPlan(String nodeName, ExecutionPlan serializedExecutionPlan, CommandContext ctx) {
-    Database db = ctx.getDatabase();
+//    Database db = ctx.getDatabase();
     throw new UnsupportedOperationException();
 //    return db.queryOnNode(nodeName, serializedExecutionPlan, ctx.getInputParameters());
   }

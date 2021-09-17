@@ -611,6 +611,21 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
   }
 
   @Override
+  public boolean equals(final Object o) {
+    if (this == o)
+      return true;
+    if (!(o instanceof Binary))
+      return false;
+    final Binary binary = (Binary) o;
+    return UnsignedBytesComparator.BEST_COMPARATOR.compare(content, binary.content) == 0;
+  }
+
+  @Override
+  public int hashCode() {
+    return Arrays.hashCode(content);
+  }
+
+  @Override
   public int compareTo(final Binary o) {
     return UnsignedBytesComparator.BEST_COMPARATOR.compare(content, o.content);
   }

@@ -32,8 +32,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * taken.
  **/
 public class ContextConfiguration implements Serializable {
-  private final Map<String, Object>    config         = new ConcurrentHashMap<String, Object>();
-  private final SystemVariableResolver customResolver = new SystemVariableResolver() {
+  private final           Map<String, Object>    config         = new ConcurrentHashMap<String, Object>();
+  private transient final SystemVariableResolver customResolver = new SystemVariableResolver() {
     @Override
     public String resolve(final String variable) {
       Object result = config.get(variable);

@@ -562,8 +562,6 @@ public class BaseExpression extends MathExpression {
           buffer.append('\t');
         } else if (c == 'r') {
           buffer.append('\r');
-        } else if (c == '\\') {
-          buffer.append('\\');
         } else
           buffer.append(c);
         continue;

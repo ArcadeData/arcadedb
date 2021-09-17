@@ -34,8 +34,8 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import java.util.*;
 
 public class DocumentType {
-  protected final EmbeddedSchema schema;
-  protected final String         name;
+  protected final EmbeddedSchema                    schema;
+  protected final String                            name;
   protected final List<DocumentType>                parentTypes             = new ArrayList<>();
   protected final List<DocumentType>                subTypes                = new ArrayList<>();
   protected final List<Bucket>                      buckets                 = new ArrayList<>();
@@ -320,7 +320,11 @@ public class DocumentType {
   }
 
   public TypeIndex getPolymorphicIndexByProperties(final String... properties) {
-    TypeIndex idx = indexesByProperties.get(Arrays.asList(properties));
+    return getPolymorphicIndexByProperties(Arrays.asList(properties));
+  }
+
+  public TypeIndex getPolymorphicIndexByProperties(final List<String> properties) {
+    TypeIndex idx = indexesByProperties.get(properties);
 
     if (idx == null)
       for (DocumentType t : parentTypes) {
@@ -430,11 +434,11 @@ public class DocumentType {
           return false;
         if (!m1.getName().equals(m2.getName()))
           return false;
-        if (m1.getPropertyNames().length != m2.getPropertyNames().length)
+        if (m1.getPropertyNames().size() != m2.getPropertyNames().size())
           return false;
 
-        for (int p = 0; p < m1.getPropertyNames().length; ++p) {
-          if (!m1.getPropertyNames()[p].equals(m2.getPropertyNames()[p]))
+        for (int p = 0; p < m1.getPropertyNames().size(); ++p) {
+          if (!m1.getPropertyNames().get(p).equals(m2.getPropertyNames().get(p)))
             return false;
         }
       }

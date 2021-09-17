@@ -34,10 +34,7 @@ import com.arcadedb.utility.RWLockContext;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.util.Arrays;
-import java.util.HashSet;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
@@ -51,7 +48,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   private final        RWLockContext                                           lock               = new RWLockContext();
   private              int                                                     associatedBucketId = -1;
   private              String                                                  typeName;
-  protected            String[]                                                propertyNames;
+  protected            List<String>                                            propertyNames;
   protected            LSMTreeIndexMutable                                     mutable;
   protected            AtomicReference<LSMTreeIndexAbstract.COMPACTING_STATUS> compactingStatus   = new AtomicReference<>(
       LSMTreeIndexAbstract.COMPACTING_STATUS.NO);
@@ -111,13 +108,18 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
   public void setMetadata(final String typeName, final String[] propertyNames, final int associatedBucketId) {
     this.typeName = typeName;
-    this.propertyNames = propertyNames;
+    this.propertyNames = Collections.unmodifiableList(Arrays.asList(propertyNames));
     this.associatedBucketId = associatedBucketId;
   }
 
   @Override
   public byte[] getKeyTypes() {
     return mutable.keyTypes;
+  }
+
+  @Override
+  public int hashCode() {
+    return Objects.hash(name, associatedBucketId, typeName, propertyNames);
   }
 
   @Override
@@ -139,7 +141,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     if (associatedBucketId != m2.associatedBucketId)
       return false;
 
-    return Arrays.equals(propertyNames, m2.propertyNames);
+    return propertyNames.equals(m2.propertyNames);
   }
 
   @Override
@@ -153,7 +155,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   }
 
   @Override
-  public String[] getPropertyNames() {
+  public List<String> getPropertyNames() {
     return propertyNames;
   }
 
@@ -456,7 +458,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   public long build(final BuildIndexCallback callback) {
     final AtomicLong total = new AtomicLong();
 
-    if (propertyNames == null || propertyNames.length == 0)
+    if (propertyNames == null || propertyNames.isEmpty())
       throw new IndexException("Cannot rebuild index '" + name + "' because metadata information are missing");
 
     final DatabaseInternal db = mutable.getDatabase();

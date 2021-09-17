@@ -33,29 +33,22 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import java.util.Map;
 
 public class CreateBucketStatement extends ODDLStatement {
-
-  /**
-   * Class name
-   */
   protected Identifier name;
+  protected boolean    ifNotExists = false;
+  protected PInteger   id;
+  protected boolean    blob        = false;
 
-  protected boolean ifNotExists = false;
-
-  protected PInteger id;
-
-  protected boolean blob = false;
-
-  public CreateBucketStatement(int id) {
+  public CreateBucketStatement(final int id) {
     super(id);
   }
 
-  public CreateBucketStatement(SqlParser p, int id) {
+  public CreateBucketStatement(final SqlParser p, int id) {
     super(p, id);
   }
 
   @Override
-  public ResultSet executeDDL(CommandContext ctx) {
-    Database db = ctx.getDatabase();
+  public ResultSet executeDDL(final CommandContext ctx) {
+    final Database db = ctx.getDatabase();
     int existingId = db.getSchema().getBucketByName(name.getStringValue()).getId();
     if (existingId >= 0) {
       if (ifNotExists) {
@@ -65,7 +58,7 @@ public class CreateBucketStatement extends ODDLStatement {
       }
     }
     if (id != null) {
-      String existingName = db.getSchema().getBucketById(id.getValue().intValue()).getName();
+      final String existingName = db.getSchema().getBucketById(id.getValue().intValue()).getName();
       if (existingName != null) {
         if (ifNotExists) {
           return new InternalResultSet();
@@ -75,39 +68,17 @@ public class CreateBucketStatement extends ODDLStatement {
       }
     }
 
-    ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal();
     result.setProperty("operation", "create bucket");
     result.setProperty("bucketName", name.getStringValue());
 
-    int requestedId = id == null ? -1 : id.getValue().intValue();
-    int finalId = -1;
-    if (blob) {
-//      if (requestedId == -1) {
-//        finalId = db.addBlobCluster(name.getStringValue());
-//        result.setProperty("finalId", finalId);
-//      } else {
-//        throw new PCommandExecutionException("Request id not supported by blob bucket creation.");
-//      }
-      throw new UnsupportedOperationException();
-    } else {
-      if (requestedId == -1) {
-//        finalId = db.getSchema().createBucket(name.getStringValue());
-        throw new UnsupportedOperationException();
-      } else {
-//        result.setProperty("requestedId", requestedId);
-//        finalId = db.getSchema().createBucket(name.getStringValue(), requestedId, null);
-        throw new UnsupportedOperationException();
-      }
-    }
-//    result.setProperty("finalId", finalId);
-//
-//    OInternalResultSet rs = new OInternalResultSet();
-//    rs.add(result);
-//    return rs;
+    final InternalResultSet rs = new InternalResultSet();
+    rs.add(result);
+    return rs;
   }
 
   @Override
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(final Map<Object, Object> params, final StringBuilder builder) {
     builder.append("CREATE ");
     if (blob) {
       builder.append("BLOB ");
@@ -125,7 +96,7 @@ public class CreateBucketStatement extends ODDLStatement {
 
   @Override
   public CreateBucketStatement copy() {
-    CreateBucketStatement result = new CreateBucketStatement(-1);
+    final CreateBucketStatement result = new CreateBucketStatement(-1);
     result.name = name == null ? null : name.copy();
     result.ifNotExists = this.ifNotExists;
     result.id = id == null ? null : id.copy();
@@ -134,13 +105,13 @@ public class CreateBucketStatement extends ODDLStatement {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    CreateBucketStatement that = (CreateBucketStatement) o;
+    final CreateBucketStatement that = (CreateBucketStatement) o;
 
     if (ifNotExists != that.ifNotExists)
       return false;

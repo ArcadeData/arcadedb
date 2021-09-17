@@ -170,7 +170,7 @@ public class Profiler {
           final long osTotalMem = ((Number) mbs.getAttribute(osMBeanName, "TotalPhysicalMemorySize")).longValue();
           final long osUsedMem = osTotalMem - ((Number) mbs.getAttribute(osMBeanName, "FreePhysicalMemorySize")).longValue();
 
-          buffer.append(String.format("\n JVM heap=%s/%s os=%s/%s gc=%dms", FileUtils.getSizeAsString(runtime.totalMemory() - runtime.freeMemory()),
+          buffer.append(String.format("%n JVM heap=%s/%s os=%s/%s gc=%dms", FileUtils.getSizeAsString(runtime.totalMemory() - runtime.freeMemory()),
               FileUtils.getSizeAsString(runtime.maxMemory()), FileUtils.getSizeAsString(osUsedMem), FileUtils.getSizeAsString(osTotalMem), gcTime));
 
           dumpWithJmx = true;
@@ -180,31 +180,31 @@ public class Profiler {
       }
 
       if (!dumpWithJmx)
-        buffer.append(String.format("\n JVM heap=%s/%s gc=%dms", FileUtils.getSizeAsString(runtime.totalMemory() - runtime.freeMemory()),
+        buffer.append(String.format("%n JVM heap=%s/%s gc=%dms", FileUtils.getSizeAsString(runtime.totalMemory() - runtime.freeMemory()),
             FileUtils.getSizeAsString(runtime.maxMemory()), gcTime));
 
       buffer.append(String
-          .format("\n PAGE-CACHE read=%s (pages=%d) write=%s (pages=%d) max=%s readOps=%d (%s) writeOps=%d (%s)", FileUtils.getSizeAsString(readCacheUsed),
+          .format("%n PAGE-CACHE read=%s (pages=%d) write=%s (pages=%d) max=%s readOps=%d (%s) writeOps=%d (%s)", FileUtils.getSizeAsString(readCacheUsed),
               readCachePages, FileUtils.getSizeAsString(writeCacheUsed), writeCachePages, FileUtils.getSizeAsString(cacheMax), pagesRead,
               FileUtils.getSizeAsString(pagesReadSize), pagesWritten, FileUtils.getSizeAsString(pagesWrittenSize)));
 
-      buffer.append(String.format("\n DB databases=%d asyncParallelLevel=%d asyncQueue=%d txCommits=%d txRollbacks=%d queries=%d commands=%d", databases.size(),
+      buffer.append(String.format("%n DB databases=%d asyncParallelLevel=%d asyncQueue=%d txCommits=%d txRollbacks=%d queries=%d commands=%d", databases.size(),
           asyncParallelLevel, asyncQueueLength, txCommits, txRollbacks, queries, commands));
-      buffer.append(String.format("\n    createRecord=%d readRecord=%d updateRecord=%d deleteRecord=%d", createRecord, readRecord, updateRecord, deleteRecord));
+      buffer.append(String.format("%n    createRecord=%d readRecord=%d updateRecord=%d deleteRecord=%d", createRecord, readRecord, updateRecord, deleteRecord));
       buffer.append(String
-          .format("\n    scanType=%d scanBucket=%d iterateType=%d iterateBucket=%d countType=%d countBucket=%d", scanType, scanBucket, iterateType,
+          .format("%n    scanType=%d scanBucket=%d iterateType=%d iterateBucket=%d countType=%d countBucket=%d", scanType, scanBucket, iterateType,
               iterateBucket, countType, countBucket));
 
-      buffer.append(String.format("\n INDEXES compactions=%d", indexCompactions));
+      buffer.append(String.format("%n INDEXES compactions=%d", indexCompactions));
 
       buffer.append(String
-          .format("\n PAGE-MANAGER flushQueue=%d cacheHits=%d cacheMiss=%d concModExceptions=%d evictionRuns=%d pagesEvicted=%d", pageFlushQueueLength,
+          .format("%n PAGE-MANAGER flushQueue=%d cacheHits=%d cacheMiss=%d concModExceptions=%d evictionRuns=%d pagesEvicted=%d", pageFlushQueueLength,
               pageCacheHits, pageCacheMiss, concurrentModificationExceptions, evictionRuns, pagesEvicted));
 
       buffer.append(
-          String.format("\n WAL totalFiles=%d pagesWritten=%d bytesWritten=%s", walTotalFiles, walPagesWritten, FileUtils.getSizeAsString(walBytesWritten)));
+          String.format("%n WAL totalFiles=%d pagesWritten=%d bytesWritten=%s", walTotalFiles, walPagesWritten, FileUtils.getSizeAsString(walBytesWritten)));
 
-      buffer.append(String.format("\n FILE-MANAGER FS=%s/%s openFiles=%d maxFilesOpened=%d", FileUtils.getSizeAsString(freeSpaceInMB),
+      buffer.append(String.format("%n FILE-MANAGER FS=%s/%s openFiles=%d maxFilesOpened=%d", FileUtils.getSizeAsString(freeSpaceInMB),
           FileUtils.getSizeAsString(totalSpaceInMB), totalOpenFiles, maxOpenFiles));
 
       out.println(buffer);

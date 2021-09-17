@@ -204,7 +204,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   }
 
   @Override
-  public String[] getPropertyNames() {
+  public List<String> getPropertyNames() {
     return underlyingIndex.getPropertyNames();
   }
 

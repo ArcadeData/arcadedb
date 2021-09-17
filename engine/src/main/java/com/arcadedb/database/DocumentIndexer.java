@@ -62,11 +62,11 @@ public class DocumentIndexer {
 
   public void addToIndex(final Index entry, final RID rid, final Document record) {
     final Index index = entry;
-    final String[] keyNames = entry.getPropertyNames();
+    final List<String> keyNames = entry.getPropertyNames();
 
-    final Object[] keyValues = new Object[keyNames.length];
+    final Object[] keyValues = new Object[keyNames.size()];
     for (int i = 0; i < keyValues.length; ++i)
-      keyValues[i] = record.get(keyNames[i]);
+      keyValues[i] = record.get(keyNames.get((i)));
 
     index.put(keyValues, new RID[] { rid });
   }
@@ -86,14 +86,14 @@ public class DocumentIndexer {
       return;
 
     for (Index index : indexes) {
-      final String[] keyNames = index.getPropertyNames();
-      final Object[] oldKeyValues = new Object[keyNames.length];
-      final Object[] newKeyValues = new Object[keyNames.length];
+      final List<String> keyNames = index.getPropertyNames();
+      final Object[] oldKeyValues = new Object[keyNames.size()];
+      final Object[] newKeyValues = new Object[keyNames.size()];
 
       boolean keyValuesAreModified = false;
-      for (int i = 0; i < keyNames.length; ++i) {
-        oldKeyValues[i] = originalRecord.get(keyNames[i]);
-        newKeyValues[i] = modifiedRecord.get(keyNames[i]);
+      for (int i = 0; i < keyNames.size(); ++i) {
+        oldKeyValues[i] = originalRecord.get(keyNames.get(i));
+        newKeyValues[i] = modifiedRecord.get(keyNames.get(i));
 
         if ((newKeyValues[i] == null && oldKeyValues[i] != null) || (newKeyValues[i] != null && !newKeyValues[i].equals(oldKeyValues[i]))) {
           keyValuesAreModified = true;
@@ -130,10 +130,10 @@ public class DocumentIndexer {
         ((RecordInternal) record).unsetDirty();
 
       for (Index index : metadata) {
-        final String[] keyNames = index.getPropertyNames();
-        final Object[] keyValues = new Object[keyNames.length];
-        for (int i = 0; i < keyNames.length; ++i) {
-          keyValues[i] = record.get(keyNames[i]);
+        final List<String> keyNames = index.getPropertyNames();
+        final Object[] keyValues = new Object[keyNames.size()];
+        for (int i = 0; i < keyNames.size(); ++i) {
+          keyValues[i] = record.get(keyNames.get(i));
         }
 
         index.remove(keyValues, record.getIdentity());

@@ -26,6 +26,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.serializer.BinaryComparator;
 
 import java.util.Iterator;
+import java.util.NoSuchElementException;
 
 public class EmptyIndexCursor implements IndexCursor {
   public EmptyIndexCursor() {
@@ -48,7 +49,7 @@ public class EmptyIndexCursor implements IndexCursor {
 
   @Override
   public Identifiable next() {
-    return null;
+    throw new NoSuchElementException();
   }
 
   @Override

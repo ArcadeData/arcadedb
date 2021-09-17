@@ -30,11 +30,11 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.EmbeddedSchema;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -44,7 +44,7 @@ import java.util.logging.Level;
 
 public class RebuildIndexStatement extends SimpleExecStatement {
 
-  protected boolean   all      = false;
+  protected     boolean   all      = false;
   protected     IndexName name;
   private final int       pageSize = LSMTreeIndexAbstract.DEF_PAGE_SIZE;
 
@@ -87,12 +87,13 @@ public class RebuildIndexStatement extends SimpleExecStatement {
             if (idx instanceof TypeIndex) {
               final EmbeddedSchema.INDEX_TYPE indexType = idx.getType();
               final boolean unique = idx.isUnique();
-              final String[] propNames = idx.getPropertyNames();
+              final List<String> propNames = idx.getPropertyNames();
 
               final String typeName = idx.getTypeName();
 
               database.getSchema().dropIndex(idx.getName());
-              database.getSchema().createTypeIndex(indexType, unique, typeName, propNames, LSMTreeIndexAbstract.DEF_PAGE_SIZE, callback);
+              database.getSchema()
+                  .createTypeIndex(indexType, unique, typeName, propNames.toArray(new String[propNames.size()]), LSMTreeIndexAbstract.DEF_PAGE_SIZE, callback);
               indexList.add(idx.getName());
             }
           } catch (Exception e) {
@@ -111,17 +112,18 @@ public class RebuildIndexStatement extends SimpleExecStatement {
         final EmbeddedSchema.INDEX_TYPE type = idx.getType();
         final String typeName = idx.getTypeName();
         final boolean unique = idx.isUnique();
-        final String[] propertyNames = idx.getPropertyNames();
+        final List<String> propertyNames = idx.getPropertyNames();
         final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy = idx.getNullStrategy();
 
         database.getSchema().dropIndex(idx.getName());
 
         if (typeName != null && idx instanceof TypeIndex) {
-          database.getSchema().getType(typeName).createTypeIndex(type, unique, propertyNames, LSMTreeIndexAbstract.DEF_PAGE_SIZE, nullStrategy, callback);
+          database.getSchema().getType(typeName)
+              .createTypeIndex(type, unique, propertyNames.toArray(new String[propertyNames.size()]), LSMTreeIndexAbstract.DEF_PAGE_SIZE, nullStrategy,
+                  callback);
         } else {
-          database.getSchema()
-              .createBucketIndex(type, unique, idx.getTypeName(), database.getSchema().getBucketById(idx.getAssociatedBucketId()).getName(), propertyNames,
-                  pageSize, nullStrategy, callback);
+          database.getSchema().createBucketIndex(type, unique, idx.getTypeName(), database.getSchema().getBucketById(idx.getAssociatedBucketId()).getName(),
+              propertyNames.toArray(new String[propertyNames.size()]), pageSize, nullStrategy, callback);
         }
 
         indexList.add(idx.getName());

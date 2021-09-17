@@ -79,7 +79,7 @@ public final class UnsignedBytesComparator {
         final long rw = theUnsafe.getLong(right, BYTE_ARRAY_BASE_OFFSET + (long) i);
         if (lw != rw) {
           if (BIG_ENDIAN) {
-            return UnsignedLongsCompare(lw, rw);
+            return unsignedLongsCompare(lw, rw);
           }
           final int n = Long.numberOfTrailingZeros(lw ^ rw) & ~0x7;
           return ((int) ((lw >>> n) & UNSIGNED_MASK)) - ((int) ((rw >>> n) & UNSIGNED_MASK));
@@ -125,7 +125,7 @@ public final class UnsignedBytesComparator {
     return (a & UNSIGNED_MASK) - (b & UNSIGNED_MASK);
   }
 
-  public static int UnsignedLongsCompare(final long a, final long b) {
+  public static int unsignedLongsCompare(final long a, final long b) {
     final long a2 = a ^ Long.MIN_VALUE;
     final long b2 = b ^ Long.MIN_VALUE;
     return Long.compare(a2, b2);

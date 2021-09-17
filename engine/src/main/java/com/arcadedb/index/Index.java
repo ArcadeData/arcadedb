@@ -27,6 +27,8 @@ import com.arcadedb.database.RID;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.schema.EmbeddedSchema;
 
+import java.util.List;
+
 /**
  * Basic Index interface.
  */
@@ -75,7 +77,7 @@ public interface Index {
 
   String getTypeName();
 
-  String[] getPropertyNames();
+  List<String> getPropertyNames();
 
   String getName();
 

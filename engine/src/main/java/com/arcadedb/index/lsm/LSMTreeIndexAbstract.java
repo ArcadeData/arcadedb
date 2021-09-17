@@ -474,7 +474,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
       for (int i = 0; i < keys.length; ++i)
         if (keys[i] == null)
           throw new IllegalArgumentException(
-              "Indexed key " + mainIndex.getTypeName() + Arrays.toString(mainIndex.propertyNames) + " cannot be NULL (" + Arrays.toString(keys) + ")");
+              "Indexed key " + mainIndex.getTypeName() + mainIndex.propertyNames + " cannot be NULL (" + Arrays.toString(keys) + ")");
     return keys;
   }
 
