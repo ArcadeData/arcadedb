@@ -165,7 +165,7 @@ public class FetchEdgesFromToVerticesStep extends AbstractExecutionStep {
         toList.add(((Vertex) elem).getIdentity());
       }
     }
-    
+
     fetchNextEdge();
   }
 
