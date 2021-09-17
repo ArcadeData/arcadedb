@@ -58,13 +58,10 @@ public class SetDocumentClassStep extends AbstractExecutionStep {
 
         if (result.isElement()) {
           Record element = result.getElement().get().getRecord();
-          if (element instanceof Record) {
-            Record doc = element;
-            if (!(result instanceof ResultInternal)) {
-              result = new UpdatableResult((MutableDocument) doc);
-            } else {
-              ((ResultInternal) result).setElement((Document) doc);
-            }
+          if (!(result instanceof ResultInternal)) {
+            result = new UpdatableResult((MutableDocument) element);
+          } else {
+            ((ResultInternal) result).setElement((Document) element);
           }
         }
         return result;

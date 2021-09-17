@@ -21,6 +21,8 @@
 
 package com.arcadedb.engine;
 
+import com.arcadedb.database.DatabaseFactory;
+
 /**
  * Murmur hash 2.0.
  * <br>
@@ -105,7 +107,7 @@ public final class MurmurHash {
    * @return 32-bit hash of the given string
    */
   public static int hash32(final String text) {
-    final byte[] bytes = text.getBytes();
+    final byte[] bytes = text.getBytes(DatabaseFactory.getDefaultCharset());
     return hash32(bytes, bytes.length);
   }
 
@@ -198,7 +200,7 @@ public final class MurmurHash {
    * @return 64-bit hash of the given string
    */
   public static long hash64(final String text) {
-    final byte[] bytes = text.getBytes();
+    final byte[] bytes = text.getBytes(DatabaseFactory.getDefaultCharset());
     return hash64(bytes, bytes.length);
   }
 

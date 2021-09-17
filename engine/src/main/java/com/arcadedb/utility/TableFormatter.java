@@ -483,7 +483,7 @@ public class TableFormatter {
    * @return
    */
   private Map<String, Integer> parseColumns(final List<? extends TableRow> rows, final int limit) {
-    final Map<String, Integer> columns = new LinkedHashMap<String, Integer>();
+    final Map<String, Integer> columns = new LinkedHashMap<>();
 
     for (String c : prefixedColumns)
       columns.put(c, minColumnSize);

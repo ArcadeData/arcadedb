@@ -22,6 +22,7 @@
 package com.arcadedb.engine;
 
 import com.arcadedb.database.Binary;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.TrackableBinary;
 
 /**
@@ -39,6 +40,21 @@ public class MutablePage extends BasePage implements TrackableContent {
 
   public MutablePage(final PageManager manager, final PageId pageId, final int size, final byte[] array, final int version, final int contentSize) {
     super(manager, pageId, size, array, version, contentSize);
+  }
+
+  /**
+   * Creates an immutable copy. The content is not copied (the same byte[] is used), because after invoking this method the original page is never modified.
+   */
+  @Override
+  public ImmutablePage createImmutableView() {
+    try {
+      return (ImmutablePage) content.executeInLock(
+          () -> new ImmutablePage(manager, pageId, getPhysicalSize(), content.getByteBuffer().array(), version, content.size()));
+    } catch (RuntimeException e) {
+      throw e;
+    } catch (Exception e) {
+      throw new RuntimeException("Cannot create an immutable copy of page " + this, e);
+    }
   }
 
   public TrackableBinary getTrackable() {
@@ -107,7 +123,7 @@ public class MutablePage extends BasePage implements TrackableContent {
   }
 
   public int writeString(final int index, final String content) {
-    return writeBytes(index, content.getBytes());
+    return writeBytes(index, content.getBytes(DatabaseFactory.getDefaultCharset()));
   }
 
   public int getAvailableContentSize() {

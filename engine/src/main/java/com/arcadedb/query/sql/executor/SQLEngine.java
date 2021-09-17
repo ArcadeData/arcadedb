@@ -21,6 +21,7 @@
 
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
@@ -101,8 +102,8 @@ public class SQLEngine {
     return database.getStatementCache().get(query);
   }
 
-  public static List<Statement> parseScript(String script, final DatabaseInternal database) {
-    final InputStream is = new ByteArrayInputStream(script.getBytes());
+  public static List<Statement> parseScript(final String script, final DatabaseInternal database) {
+    final InputStream is = new ByteArrayInputStream(script.getBytes(DatabaseFactory.getDefaultCharset()));
     return parseScript(is, database);
   }
 

@@ -23,7 +23,7 @@ package com.arcadedb.query.sql.parser;
 
 /**
  * This class is used by modifiers to return the documents that have to be updated AND the field that has to be updated.
- * Further operatios are then performed by the top level UpdateItem
+ * Further operations are then performed by the top level UpdateItem
  * <p>
  * Eg.
  * <p>
@@ -40,6 +40,6 @@ package com.arcadedb.query.sql.parser;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class UpdateContext {
-  public Iterable   docsToUpdate;
-  public Identifier fieldToSet;
+//  public Iterable   docsToUpdate;
+//  public Identifier fieldToSet;
 }

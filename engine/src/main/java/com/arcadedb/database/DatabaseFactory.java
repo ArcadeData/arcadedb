@@ -26,6 +26,7 @@ import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.schema.EmbeddedSchema;
 
 import java.io.File;
+import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -33,10 +34,11 @@ import java.util.Map;
 import java.util.concurrent.Callable;
 
 public class DatabaseFactory implements AutoCloseable {
-  private final ContextConfiguration                                       contextConfiguration = new ContextConfiguration();
-  private final String                                                     databasePath;
-  private       boolean                                                    autoTransaction      = false;
-  private final Map<DatabaseInternal.CALLBACK_EVENT, List<Callable<Void>>> callbacks            = new HashMap<>();
+  private final        ContextConfiguration                                       contextConfiguration = new ContextConfiguration();
+  private final        String                                                     databasePath;
+  private              boolean                                                    autoTransaction      = false;
+  private final        Map<DatabaseInternal.CALLBACK_EVENT, List<Callable<Void>>> callbacks            = new HashMap<>();
+  private final static Charset                                                    DEFAULT_CHARSET      = Charset.forName("UTF8");
 
   public DatabaseFactory(final String path) {
     if (path == null || path.isEmpty())
@@ -85,6 +87,10 @@ public class DatabaseFactory implements AutoCloseable {
 
   public ContextConfiguration getContextConfiguration() {
     return contextConfiguration;
+  }
+
+  public static Charset getDefaultCharset() {
+    return DEFAULT_CHARSET;
   }
 
   /**

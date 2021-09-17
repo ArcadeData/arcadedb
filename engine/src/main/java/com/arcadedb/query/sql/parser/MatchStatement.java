@@ -86,9 +86,9 @@ public class MatchStatement extends Statement {
   }
 
   public static class MatchExecutionPlan {
-    public List<EdgeTraversal> sortedEdges;
-    public Map<String, Long>   preFetchedAliases = new HashMap<String, Long>();
-    public String              rootAlias;
+//    public List<EdgeTraversal> sortedEdges;
+//    public Map<String, Long>   preFetchedAliases = new HashMap<String, Long>();
+//    public String              rootAlias;
   }
 
   public static final String                 KEYWORD_MATCH           = "MATCH";

@@ -140,7 +140,7 @@ public class BaseExpression extends MathExpression {
       // THIS IS DIFFERENT FROM ORIENTDB CODE BASE
       // @author Luca Garulli
       // @see Postgres Driver
-      if (ctx.getInputParameters() != null && identifier instanceof BaseIdentifier &&//
+      if (ctx.getInputParameters() != null && //
           identifier.getSuffix() != null && identifier.getSuffix().identifier != null) {
         final String v = identifier.getSuffix().identifier.getValue();
         if (v.startsWith("$") && v.length() > 1) {

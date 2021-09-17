@@ -212,8 +212,8 @@ public class OTraverseExecutionPlanner {
   }
 
   private void handleMetadataAsTarget(final SelectExecutionPlan plan, SchemaIdentifier metadata, CommandContext ctx, boolean profilingEnabled) {
-    final Database db = ctx.getDatabase();
     throw new UnsupportedOperationException();
+//    final Database db = ctx.getDatabase();
 //    String schemaRecordIdAsString = null;
 //    if (metadata.getName().equalsIgnoreCase(OCommandExecutorSQLAbstract.METADATA_SCHEMA)) {
 //      schemaRecordIdAsString = db.getStorage().getConfiguration().getSchemaRecordId();
@@ -254,6 +254,7 @@ public class OTraverseExecutionPlanner {
       }
 
       final FetchFromClusterExecutionStep step = new FetchFromClusterExecutionStep(bucketId, ctx, profilingEnabled);
+      // TODO: THIS SEEMS A BUG
       if (Boolean.TRUE.equals(orderByRidAsc)) {
         step.setOrder(FetchFromClusterExecutionStep.ORDER_ASC);
       } else if (Boolean.FALSE.equals(orderByRidAsc)) {

@@ -64,11 +64,11 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
     long begin = profilingEnabled ? System.nanoTime() : 0;
     try {
       if (iterator == null) {
-        long minClusterPosition = calculateMinClusterPosition();
-        long maxClusterPosition = calculateMaxClusterPosition();
         iterator = ctx.getDatabase().getSchema().getBucketById(bucketId).iterator();
 
         //TODO check how to support ranges and DESC
+//        long minClusterPosition = calculateMinClusterPosition();
+//        long maxClusterPosition = calculateMaxClusterPosition();
 //            new ORecordIteratorCluster((ODatabaseDocumentInternal) ctx.getDatabase(),
 //            (ODatabaseDocumentInternal) ctx.getDatabase(), bucketId, minClusterPosition, maxClusterPosition);
 //        if (ORDER_DESC == order) {

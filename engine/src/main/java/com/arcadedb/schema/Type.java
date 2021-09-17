@@ -349,7 +349,7 @@ public enum Type {
 
       } else if (iTargetClass.equals(Boolean.TYPE) || iTargetClass.equals(Boolean.class)) {
         if (iValue instanceof Boolean)
-          return ((Boolean) iValue).booleanValue();
+          return iValue;
         else if (iValue instanceof String) {
           if (((String) iValue).equalsIgnoreCase("true"))
             return Boolean.TRUE;

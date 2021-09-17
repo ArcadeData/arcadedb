@@ -309,10 +309,7 @@ public class DocumentType {
       // MOST COMMON CASE, SAVE CREATING AND COPYING TO A NEW ARRAY
       return Collections.unmodifiableList(r);
 
-    final List<Index> result = new ArrayList<>();
-    if (r != null)
-      result.addAll(r);
-
+    final List<Index> result = r != null ? new ArrayList<>(r) : new ArrayList<>();
     for (DocumentType t : parentTypes)
       result.addAll(t.getPolymorphicBucketIndexByBucketId(bucketId));
 

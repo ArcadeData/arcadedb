@@ -58,7 +58,7 @@ public class DatabaseChecker {
       totalMaxOffset += stats.get("totalMaxOffset");
     }
 
-    final float avgPageUsed = totalPages > 0 ? (float) (totalMaxOffset / totalPages) * 100f / pageSize : 0;
+    final float avgPageUsed = totalPages > 0 ? ((float) totalMaxOffset) / totalPages * 100F / pageSize : 0;
 
     if (verboseLevel > 0) {
       LogManager.instance()

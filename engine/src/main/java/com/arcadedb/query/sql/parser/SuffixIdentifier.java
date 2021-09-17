@@ -87,7 +87,7 @@ public class SuffixIdentifier extends SimpleNode {
       return null;
     }
     if (recordAttribute != null) {
-      if("@rid".equalsIgnoreCase(recordAttribute.name)) {
+      if ("@rid".equalsIgnoreCase(recordAttribute.name)) {
         return iCurrentRecord.getIdentity();
       }
       return ((Document) iCurrentRecord.getRecord()).get(recordAttribute.name);
@@ -331,10 +331,7 @@ public class SuffixIdentifier extends SimpleNode {
     if (target instanceof MutableDocument) {
       doc = (MutableDocument) target;
     } else {
-      Record rec = target.getRecord();
-      if (rec instanceof Record) {
-        doc = (MutableDocument) rec;
-      }
+      doc = target.getRecord().asDocument().modify();
     }
     if (doc != null) {
       doc.set(identifier.getStringValue(), value);

@@ -116,9 +116,9 @@ public class WhereClause extends SimpleNode {
         Map<String, Object> conditions = getEqualityOperations(condition, ctx);
 
         for (Index index : indexes) {
-          if (index.getType().equals(Schema.INDEX_TYPE.FULL_TEXT.name())) {
+          if (index.getType().equals(Schema.INDEX_TYPE.FULL_TEXT))
             continue;
-          }
+
           final List<String> indexedFields = index.getPropertyNames();
           int nMatchingKeys = 0;
           for (String indexedField : indexedFields) {

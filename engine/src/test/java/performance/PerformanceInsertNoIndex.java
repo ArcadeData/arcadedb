@@ -68,6 +68,7 @@ public class PerformanceInsertNoIndex extends TestHelper {
   }
 
   private void run() {
+    database.setReadYourWrites(false);
     if (!database.getSchema().existsType(TYPE_NAME)) {
       database.begin();
 

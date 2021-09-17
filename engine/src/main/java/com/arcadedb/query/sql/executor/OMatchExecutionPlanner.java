@@ -645,19 +645,19 @@ public class OMatchExecutionPlanner {
           previousFilter.setBaseExpression(new AndBlock(-1));
           aliasFilters.put(alias, previousFilter);
         }
-        AndBlock filterBlock = (AndBlock) previousFilter.getBaseExpression();
-        if (filter != null && filter.getBaseExpression() != null) {
+        final AndBlock filterBlock = (AndBlock) previousFilter.getBaseExpression();
+        if (filter.getBaseExpression() != null) {
           filterBlock.getSubBlocks().add(filter.getBaseExpression());
         }
       }
 
-      String typez = matchFilter.getTypeName(context);
+      final String typez = matchFilter.getTypeName(context);
       if (typez != null) {
-        String previousClass = aliasUserTypes.get(alias);
+        final String previousClass = aliasUserTypes.get(alias);
         if (previousClass == null) {
           aliasUserTypes.put(alias, typez);
         } else {
-          String lower = getLowerSubclass(context.getDatabase(), typez, previousClass);
+          final String lower = getLowerSubclass(context.getDatabase(), typez, previousClass);
           if (lower == null) {
             throw new CommandExecutionException("classes defined for alias " + alias + " (" + typez + ", " + previousClass + ") are not in the same hierarchy");
           }
@@ -665,9 +665,9 @@ public class OMatchExecutionPlanner {
         }
       }
 
-      String bucketName = matchFilter.getBucketName(context);
+      final String bucketName = matchFilter.getBucketName(context);
       if (bucketName != null) {
-        String previousCluster = aliasClusters.get(alias);
+        final String previousCluster = aliasClusters.get(alias);
         if (previousCluster == null) {
           aliasClusters.put(alias, bucketName);
         } else if (!previousCluster.equalsIgnoreCase(bucketName)) {
@@ -675,9 +675,9 @@ public class OMatchExecutionPlanner {
         }
       }
 
-      Rid rid = matchFilter.getRid(context);
+      final Rid rid = matchFilter.getRid(context);
       if (rid != null) {
-        Rid previousRid = aliasRids.get(alias);
+        final Rid previousRid = aliasRids.get(alias);
         if (previousRid == null) {
           aliasRids.put(alias, rid);
         } else if (!previousRid.equals(rid)) {
@@ -687,10 +687,10 @@ public class OMatchExecutionPlanner {
     }
   }
 
-  private String getLowerSubclass(Database db, String className1, String className2) {
-    Schema schema = db.getSchema();
-    DocumentType class1 = schema.getType(className1);
-    DocumentType class2 = schema.getType(className2);
+  private String getLowerSubclass(final Database db, final String className1, final String className2) {
+    final Schema schema = db.getSchema();
+    final DocumentType class1 = schema.getType(className1);
+    final DocumentType class2 = schema.getType(className2);
     if (class1.equals(class2)) {
       return class1.getName();
     }

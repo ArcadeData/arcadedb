@@ -181,7 +181,7 @@ public class DefaultLogger implements Logger {
         try {
           String msg = message;
           if (args.length > 0)
-            String.format(message, args);
+            msg = String.format(message, args);
           System.err.println(msg);
 
         } catch (Exception e) {

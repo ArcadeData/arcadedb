@@ -22,6 +22,7 @@
 package com.arcadedb.utility;
 
 import com.arcadedb.database.Binary;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.log.LogManager;
 
 import java.io.*;
@@ -309,7 +310,7 @@ public class FileUtils {
 
   public static String readStreamAsString(final InputStream iStream, final String iCharset, final long limit) throws IOException {
     final StringBuilder fileData = new StringBuilder(1000);
-    try (final BufferedReader reader = new BufferedReader(new InputStreamReader(iStream, iCharset))){
+    try (final BufferedReader reader = new BufferedReader(new InputStreamReader(iStream, iCharset))) {
       final char[] buf = new char[1024];
       int numRead;
 
@@ -348,7 +349,7 @@ public class FileUtils {
   }
 
   public static void writeContentToStream(final OutputStream output, final String iContent) throws IOException {
-    final OutputStreamWriter os = new OutputStreamWriter(output);
+    final OutputStreamWriter os = new OutputStreamWriter(output, DatabaseFactory.getDefaultCharset());
     final BufferedWriter writer = new BufferedWriter(os);
     writer.write(iContent);
     writer.flush();

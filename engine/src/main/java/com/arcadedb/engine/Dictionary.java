@@ -22,6 +22,7 @@
 package com.arcadedb.engine;
 
 import com.arcadedb.database.Binary;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.DatabaseMetadataException;
 import com.arcadedb.exception.SchemaException;
@@ -177,7 +178,7 @@ public class Dictionary extends PaginatedComponent {
       updateCounters(header);
 
       for (String d : dictionary) {
-        final byte[] property = d.getBytes();
+        final byte[] property = d.getBytes(DatabaseFactory.getDefaultCharset());
 
         if (header.getAvailableContentSize() < Binary.SHORT_SERIALIZED_SIZE + property.length)
           throw new DatabaseMetadataException("No space left in dictionary file (items=" + dictionary.size() + ")");
@@ -203,7 +204,7 @@ public class Dictionary extends PaginatedComponent {
     if (!database.isTransactionActive())
       throw new SchemaException("Error on adding new item to the database schema dictionary because no transaction was active");
 
-    final byte[] property = propertyName.getBytes();
+    final byte[] property = propertyName.getBytes(DatabaseFactory.getDefaultCharset());
 
     final MutablePage header;
     try {

@@ -21,18 +21,19 @@
 
 package com.arcadedb.engine;
 
+import com.arcadedb.database.Binary;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
-import com.arcadedb.database.*;
+import com.arcadedb.database.RecordInternal;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.FileUtils;
 
-import java.io.IOException;
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.Map;
-import java.util.logging.Level;
+import java.io.*;
+import java.util.*;
+import java.util.logging.*;
 
 import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
 import static com.arcadedb.database.Binary.LONG_SERIALIZED_SIZE;
@@ -307,7 +308,7 @@ public class Bucket extends PaginatedComponent {
       }
     }
 
-    final float avgPageUsed = totalPages > 0 ? (float) (totalMaxOffset / totalPages) * 100f / pageSize : 0;
+    final float avgPageUsed = totalPages > 0 ? ((float) totalMaxOffset) / totalPages * 100F / pageSize : 0;
 
     if (verboseLevel > 1)
       LogManager.instance()

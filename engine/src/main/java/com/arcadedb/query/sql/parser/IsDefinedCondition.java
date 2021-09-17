@@ -24,7 +24,6 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.database.Record;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
@@ -37,36 +36,32 @@ public class IsDefinedCondition extends BooleanExpression implements SimpleBoole
 
   protected Expression expression;
 
-  public IsDefinedCondition(int id) {
+  public IsDefinedCondition(final int id) {
     super(id);
   }
 
-  public IsDefinedCondition(SqlParser p, int id) {
+  public IsDefinedCondition(final SqlParser p, final int id) {
     super(p, id);
   }
 
   /**
    * Accept the visitor.
    **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
+  public Object jjtAccept(final SqlParserVisitor visitor, final Object data) {
     return visitor.visit(this, data);
   }
 
   @Override
-  public boolean evaluate(Identifiable currentRecord, CommandContext ctx) {
-    Object elem = currentRecord.getRecord();
-    if (elem instanceof Record) {
-      return expression.isDefinedFor((Record) elem);
-    }
-    return false;
+  public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
+    return expression.isDefinedFor(currentRecord.getRecord());
   }
 
   @Override
-  public boolean evaluate(Result currentRecord, CommandContext ctx) {
+  public boolean evaluate(final Result currentRecord, final CommandContext ctx) {
     return expression.isDefinedFor(currentRecord);
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(final Map<Object, Object> params, final StringBuilder builder) {
     expression.toString(params, builder);
     builder.append(" is defined");
   }
@@ -87,7 +82,7 @@ public class IsDefinedCondition extends BooleanExpression implements SimpleBoole
   }
 
   @Override
-  public boolean needsAliases(Set<String> aliases) {
+  public boolean needsAliases(final Set<String> aliases) {
     return expression.needsAliases(aliases);
   }
 
@@ -109,13 +104,13 @@ public class IsDefinedCondition extends BooleanExpression implements SimpleBoole
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    IsDefinedCondition that = (IsDefinedCondition) o;
+    final IsDefinedCondition that = (IsDefinedCondition) o;
 
     return expression != null ? expression.equals(that.expression) : that.expression == null;
   }

@@ -22,6 +22,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.log.LogManager;
 
@@ -95,7 +96,7 @@ public class StatementCache {
       InputStream is;
 
       if (db == null) {
-        is = new ByteArrayInputStream(statement.getBytes());
+        is = new ByteArrayInputStream(statement.getBytes(DatabaseFactory.getDefaultCharset()));
       } else {
         is = new ByteArrayInputStream(statement.getBytes(StandardCharsets.UTF_8));
       }

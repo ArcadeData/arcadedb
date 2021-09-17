@@ -87,10 +87,10 @@ public class UpdateEdgePointersStep extends AbstractExecutionStep {
    * @param record the edge record
    */
   private void handleUpdateEdge(Document record) {
-    Object currentOut = record.get("out");
-    Object currentIn = record.get("in");
-
     throw new UnsupportedOperationException();
+//    Object currentOut = record.get("out");
+//    Object currentIn = record.get("in");
+
 //    Object prevOut = record.getOriginalValue("out");
 //    Object prevIn = record.getOriginalValue("in");
 //
@@ -157,9 +157,6 @@ public class UpdateEdgePointersStep extends AbstractExecutionStep {
       return false;
     }
     final Document record = ((Identifiable) iRecord).asDocument();
-    if (iRecord == null) {
-      return false;
-    }
     return (record.getTypeName().equals(orientClass));
   }
 }

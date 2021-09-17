@@ -23,9 +23,7 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.database.Database;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.Map;
@@ -46,10 +44,10 @@ public class DropPropertyStatement extends ODDLStatement {
   }
 
   @Override public ResultSet executeDDL(CommandContext ctx) {
-    InternalResultSet rs = new InternalResultSet();
-    final Database database = ctx.getDatabase();
 
     throw new UnsupportedOperationException();
+//    InternalResultSet rs = new InternalResultSet();
+//    final Database database = ctx.getDatabase();
 //    final OClassImpl sourceClass = (OClassImpl) database.getMetadata().getSchema().getClass(className.getStringValue());
 //    if (sourceClass == null)
 //      throw new PCommandExecutionException("Source class '" + className + "' not found");

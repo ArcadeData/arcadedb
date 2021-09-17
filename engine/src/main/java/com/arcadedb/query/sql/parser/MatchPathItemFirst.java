@@ -31,9 +31,8 @@ import java.util.Map;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class MatchPathItemFirst extends MatchPathItem {
-  protected FunctionCall function;
-
-  protected volatile MethodCall methodWrapper;
+  protected          FunctionCall function;
+  protected volatile MethodCall   methodWrapper;
 
   public MatchPathItemFirst(int id) {
     super(id);

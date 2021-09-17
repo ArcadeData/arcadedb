@@ -65,10 +65,6 @@ public class CheckRecordTypeStep extends AbstractExecutionStep {
             throw new CommandExecutionException("record " + result + " is not an instance of " + typez);
           }
 
-          if (!(record instanceof Document)) {
-            throw new CommandExecutionException("record " + result + " is not a document");
-          }
-
           if (!record.getType().isSubTypeOf(typez)) {
             throw new CommandExecutionException("record " + result + " is not an instance of " + typez);
           }

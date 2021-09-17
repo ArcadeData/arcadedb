@@ -49,8 +49,8 @@ import java.util.logging.Level;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class PerformanceInsertGraphIndexTest extends TestHelper {
-  private static final boolean CREATEDB = true;
-  private static final int     VERTICES = 5_000_000; //31_623;
+  private static final boolean CREATEDB         = true;
+  private static final int     VERTICES         = 5_000_000; //31_623;
   private static final int     EDGES_PER_VERTEX = 20; //31_623;
   private static final String  VERTEX_TYPE_NAME = "Person";
   private static final String  EDGE_TYPE_NAME   = "Friend";
@@ -65,6 +65,8 @@ public class PerformanceInsertGraphIndexTest extends TestHelper {
       FileUtils.deleteRecursively(new File(PerformanceTest.DATABASE_PATH));
 
     final PerformanceInsertGraphIndexTest test = new PerformanceInsertGraphIndexTest();
+
+    test.database.setReadYourWrites(false);
 
     try {
       // PHASE 1

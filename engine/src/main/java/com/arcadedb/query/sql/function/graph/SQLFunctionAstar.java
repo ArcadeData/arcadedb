@@ -194,7 +194,7 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
   }
 
   private Vertex getNeighbor(Vertex current, Edge neighborEdge, Database graph) {
-    if (neighborEdge.getOut().equals(current)) {
+    if (neighborEdge.getOut().equals(current.getIdentity())) {
       return toVertex(neighborEdge.getIn());
     }
     return toVertex(neighborEdge.getOut());
@@ -252,8 +252,8 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
       ctx.paramDFactor = doubleOrDefault(mapParams.get(SQLFunctionAstar.PARAM_D_FACTOR), ctx.paramDFactor);
       if (mapParams.get(SQLFunctionAstar.PARAM_HEURISTIC_FORMULA) != null) {
         if (mapParams.get(SQLFunctionAstar.PARAM_HEURISTIC_FORMULA) instanceof String) {
-          ctx.paramHeuristicFormula = SQLHeuristicFormula
-              .valueOf(stringOrDefault(mapParams.get(SQLFunctionAstar.PARAM_HEURISTIC_FORMULA), "MANHATAN").toUpperCase(Locale.ENGLISH));
+          ctx.paramHeuristicFormula = SQLHeuristicFormula.valueOf(
+              stringOrDefault(mapParams.get(SQLFunctionAstar.PARAM_HEURISTIC_FORMULA), "MANHATAN").toUpperCase(Locale.ENGLISH));
         } else {
           ctx.paramHeuristicFormula = (SQLHeuristicFormula) mapParams.get(SQLFunctionAstar.PARAM_HEURISTIC_FORMULA);
         }
@@ -278,7 +278,7 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
     Edge e = null;
     while (edges.hasNext()) {
       Edge next = edges.next();
-      if (next.getOut().equals(target) || next.getIn().equals(target)) {
+      if (next.getOut().equals(target.getIdentity()) || next.getIn().equals(target.getIdentity())) {
         e = next;
         break;
       }

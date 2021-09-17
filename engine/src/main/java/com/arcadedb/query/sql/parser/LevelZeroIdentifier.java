@@ -104,8 +104,7 @@ public class LevelZeroIdentifier extends SimpleNode {
     return -1;
   }
 
-  public Iterable<Record> executeIndexedFunction(FromClause target, CommandContext context,
-      BinaryCompareOperator operator, Object right) {
+  public Iterable<Record> executeIndexedFunction(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {
     if (functionCall != null) {
       return functionCall.executeIndexedFunction(target, context, operator, right);
     }
@@ -119,10 +118,10 @@ public class LevelZeroIdentifier extends SimpleNode {
    * @param context  the execution context
    * @param operator
    * @param right
+   *
    * @return true if current expression is an indexed funciton AND that function can also be executed without using the index, false otherwise
    */
-  public boolean canExecuteIndexedFunctionWithoutIndex(FromClause target, CommandContext context, BinaryCompareOperator operator,
-      Object right) {
+  public boolean canExecuteIndexedFunctionWithoutIndex(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {
     if (this.functionCall == null) {
       return false;
     }
@@ -131,14 +130,15 @@ public class LevelZeroIdentifier extends SimpleNode {
 
   /**
    * tests if current expression is an indexed function AND that function can be used on this target
-   * @param target the query target
-   * @param context the execution context
+   *
+   * @param target   the query target
+   * @param context  the execution context
    * @param operator
    * @param right
+   *
    * @return true if current expression involves an indexed function AND that function can be used on this target, false otherwise
    */
-  public boolean allowsIndexedFunctionExecutionOnTarget(FromClause target, CommandContext context, BinaryCompareOperator operator,
-      Object right){
+  public boolean allowsIndexedFunctionExecutionOnTarget(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {
     if (this.functionCall == null) {
       return false;
     }
@@ -149,12 +149,13 @@ public class LevelZeroIdentifier extends SimpleNode {
    * tests if current expression is an indexed function AND the function has also to be executed after the index search.
    * In some cases, the index search is accurate, so this condition can be excluded from further evaluation. In other cases
    * the result from the index is a superset of the expected result, so the function has to be executed anyway for further filtering
-   * @param target the query target
+   *
+   * @param target  the query target
    * @param context the execution context
+   *
    * @return true if current expression is an indexed function AND the function has also to be executed after the index search.
    */
-  public boolean executeIndexedFunctionAfterIndexSearch(FromClause target, CommandContext context, BinaryCompareOperator operator,
-      Object right){
+  public boolean executeIndexedFunctionAfterIndexSearch(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {
     if (this.functionCall == null) {
       return false;
     }
@@ -190,7 +191,7 @@ public class LevelZeroIdentifier extends SimpleNode {
   }
 
   public boolean isCount() {
-    return functionCall!=null && functionCall.name.getStringValue().equalsIgnoreCase("count");
+    return functionCall != null && functionCall.name.getStringValue().equalsIgnoreCase("count");
   }
 
   public boolean isEarlyCalculated() {
@@ -227,7 +228,6 @@ public class LevelZeroIdentifier extends SimpleNode {
 
   public AggregationContext getAggregationContext(CommandContext ctx) {
     if (isAggregate()) {
-      LevelZeroIdentifier result = new LevelZeroIdentifier(-1);
       if (functionCall != null) {
         return functionCall.getAggregationContext(ctx);
       }
@@ -236,20 +236,21 @@ public class LevelZeroIdentifier extends SimpleNode {
   }
 
   public LevelZeroIdentifier copy() {
-    LevelZeroIdentifier result = new LevelZeroIdentifier(-1);
-    result.functionCall=  functionCall==null?null:functionCall.copy();
+    final LevelZeroIdentifier result = new LevelZeroIdentifier(-1);
+    result.functionCall = functionCall == null ? null : functionCall.copy();
     result.self = self;
-    result.collection = collection==null?null:collection.copy();
+    result.collection = collection == null ? null : collection.copy();
     return result;
   }
 
-  @Override public boolean equals(Object o) {
+  @Override
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    LevelZeroIdentifier that = (LevelZeroIdentifier) o;
+    final LevelZeroIdentifier that = (LevelZeroIdentifier) o;
 
     if (functionCall != null ? !functionCall.equals(that.functionCall) : that.functionCall != null)
       return false;
@@ -258,7 +259,8 @@ public class LevelZeroIdentifier extends SimpleNode {
     return collection != null ? collection.equals(that.collection) : that.collection == null;
   }
 
-  @Override public int hashCode() {
+  @Override
+  public int hashCode() {
     int result = functionCall != null ? functionCall.hashCode() : 0;
     result = 31 * result + (self != null ? self.hashCode() : 0);
     result = 31 * result + (collection != null ? collection.hashCode() : 0);
@@ -270,7 +272,7 @@ public class LevelZeroIdentifier extends SimpleNode {
   }
 
   public boolean refersToParent() {
-    if(functionCall!=null && functionCall.refersToParent()){
+    if (functionCall != null && functionCall.refersToParent()) {
       return true;
     }
     return collection != null && collection.refersToParent();
@@ -289,7 +291,7 @@ public class LevelZeroIdentifier extends SimpleNode {
   }
 
   public Result serialize() {
-    ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal();
     if (functionCall != null) {
       result.setProperty("functionCall", functionCall.serialize());
     }
@@ -325,10 +327,10 @@ public class LevelZeroIdentifier extends SimpleNode {
   }
 
   public boolean isCacheable() {
-    if(functionCall!=null){
+    if (functionCall != null) {
       return functionCall.isCacheable();
     }
-    if(collection!=null){
+    if (collection != null) {
       return collection.isCacheable();
     }
     return false;

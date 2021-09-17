@@ -72,9 +72,6 @@ public class PageId implements Comparable<PageId> {
     if (o == this)
       return 0;
 
-    if (!(o instanceof PageId))
-      throw new IllegalArgumentException("cannot compare a page id with " + o.getClass());
-
     if (fileId > o.fileId)
       return 1;
     else if (fileId < o.fileId)

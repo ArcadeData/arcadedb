@@ -22,6 +22,7 @@
 package com.arcadedb.engine;
 
 import com.arcadedb.database.Binary;
+import com.arcadedb.database.DatabaseFactory;
 
 import java.nio.ByteBuffer;
 import java.util.Arrays;
@@ -53,6 +54,8 @@ public abstract class BasePage {
     this.version = version;
   }
 
+  public abstract ImmutablePage createImmutableView();
+
   public MutablePage modify() {
     final byte[] array = this.content.getByteBuffer().array();
     // COPY THE CONTENT, SO CHANGES DOES NOT AFFECT IMMUTABLE COPY
@@ -75,20 +78,6 @@ public abstract class BasePage {
 
   public int getMaxContentSize() {
     return getPhysicalSize() - PAGE_HEADER_SIZE;
-  }
-
-  /**
-   * Creates an immutable copy. The content is not copied (the same byte[] is used), because after invoking this method the original page is never modified.
-   */
-  public ImmutablePage createImmutableView() {
-    try {
-      return (ImmutablePage) content.executeInLock(
-          () -> new ImmutablePage(manager, pageId, getPhysicalSize(), content.getByteBuffer().array(), version, content.size()));
-    } catch (RuntimeException e) {
-      throw e;
-    } catch (Exception e) {
-      throw new RuntimeException("Cannot create an immutable copy of page " + this, e);
-    }
   }
 
   public int getAvailableContentSize() {
@@ -160,11 +149,11 @@ public abstract class BasePage {
   }
 
   public String readString() {
-    return new String(readBytes());
+    return new String(readBytes(), DatabaseFactory.getDefaultCharset());
   }
 
   public String readString(final int index) {
-    return new String(readBytes(PAGE_HEADER_SIZE + index));
+    return new String(readBytes(PAGE_HEADER_SIZE + index),DatabaseFactory.getDefaultCharset());
   }
 
   /**

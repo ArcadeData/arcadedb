@@ -24,7 +24,6 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.database.Record;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
@@ -37,32 +36,28 @@ public class IsNotDefinedCondition extends BooleanExpression {
 
   protected Expression expression;
 
-  public IsNotDefinedCondition(int id) {
+  public IsNotDefinedCondition(final int id) {
     super(id);
   }
 
-  public IsNotDefinedCondition(SqlParser p, int id) {
+  public IsNotDefinedCondition(final SqlParser p, final int id) {
     super(p, id);
   }
 
   /**
    * Accept the visitor.
    **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
+  public Object jjtAccept(final SqlParserVisitor visitor, final Object data) {
     return visitor.visit(this, data);
   }
 
   @Override
-  public boolean evaluate(Identifiable currentRecord, CommandContext ctx) {
-    Object elem = currentRecord.getRecord();
-    if (elem instanceof Record) {
-      return !expression.isDefinedFor((Record) elem);
-    }
-    return true;
+  public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
+    return !expression.isDefinedFor(currentRecord.getRecord());
   }
 
   @Override
-  public boolean evaluate(Result currentRecord, CommandContext ctx) {
+  public boolean evaluate(final Result currentRecord, final CommandContext ctx) {
     return !expression.isDefinedFor(currentRecord);
   }
 
@@ -88,7 +83,7 @@ public class IsNotDefinedCondition extends BooleanExpression {
 
   @Override
   public IsNotDefinedCondition copy() {
-    IsNotDefinedCondition result = new IsNotDefinedCondition(-1);
+    final IsNotDefinedCondition result = new IsNotDefinedCondition(-1);
     result.expression = expression.copy();
     return result;
   }
@@ -103,19 +98,19 @@ public class IsNotDefinedCondition extends BooleanExpression {
     return expression != null && expression.refersToParent();
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(final Map<Object, Object> params, final StringBuilder builder) {
     expression.toString(params, builder);
     builder.append(" is not defined");
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    IsNotDefinedCondition that = (IsNotDefinedCondition) o;
+    final IsNotDefinedCondition that = (IsNotDefinedCondition) o;
 
     return expression != null ? expression.equals(that.expression) : that.expression == null;
   }

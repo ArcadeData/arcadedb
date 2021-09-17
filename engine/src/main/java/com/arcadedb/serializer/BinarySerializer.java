@@ -156,7 +156,7 @@ public class BinarySerializer {
   }
 
   public Set<String> getPropertyNames(final Database database, final Binary buffer) {
-    final int headerSize = buffer.getInt();
+    buffer.getInt(); // HEADER-SIZE
     final int properties = (int) buffer.getUnsignedNumber();
     final Set<String> result = new LinkedHashSet<>(properties);
 

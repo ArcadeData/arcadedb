@@ -83,7 +83,7 @@ public class ConvertToResultInternalStep extends AbstractExecutionStep {
           try {
             if (nextItem instanceof UpdatableResult) {
               Document element = nextItem.getElement().get();
-              if (element != null && element instanceof Document) {
+              if (element != null) {
                 nextItem = new ResultInternal();
                 ((ResultInternal) nextItem).setElement(element);
               }

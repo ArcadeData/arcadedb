@@ -30,17 +30,17 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
 //import com.orientechnologies.orient.core.sql.executor.LetExpressionStep;
 
 public class ForEachBlock extends Statement {
 
-  static int FOREACH_VARIABLE_PROGR = 0;
-
-  protected Identifier loopVariable;
-  protected Expression loopValues;
-  protected List<Statement> statements = new ArrayList<>();
+  protected static AtomicInteger   FOREACH_VARIABLE_PROGR = new AtomicInteger();
+  protected        Identifier      loopVariable;
+  protected        Expression      loopValues;
+  protected        List<Statement> statements             = new ArrayList<>();
 
   public ForEachBlock(int id) {
     super(id);
@@ -50,7 +50,8 @@ public class ForEachBlock extends Statement {
     super(p, id);
   }
 
-  @Override public ResultSet execute(Database db, Object[] args, CommandContext parentCtx, boolean usePlanCache) {
+  @Override
+  public ResultSet execute(Database db, Object[] args, CommandContext parentCtx, boolean usePlanCache) {
     BasicCommandContext ctx = new BasicCommandContext();
     if (parentCtx != null) {
       ctx.setParentWithoutOverridingChild(parentCtx);
@@ -68,7 +69,8 @@ public class ForEachBlock extends Statement {
     return new LocalResultSet(executionPlan);
   }
 
-  @Override public ResultSet execute(Database db, Map params, CommandContext parentCtx, boolean usePlanCache) {
+  @Override
+  public ResultSet execute(Database db, Map params, CommandContext parentCtx, boolean usePlanCache) {
     BasicCommandContext ctx = new BasicCommandContext();
     if (parentCtx != null) {
       ctx.setParentWithoutOverridingChild(parentCtx);
@@ -82,9 +84,9 @@ public class ForEachBlock extends Statement {
 
   public UpdateExecutionPlan createExecutionPlan(CommandContext ctx, boolean enableProfiling) {
     UpdateExecutionPlan plan = new UpdateExecutionPlan(ctx);
-    int nextProg = ++FOREACH_VARIABLE_PROGR;
-    if (FOREACH_VARIABLE_PROGR < 0) {
-      FOREACH_VARIABLE_PROGR = 0;
+    int nextProg = FOREACH_VARIABLE_PROGR.incrementAndGet();
+    if (FOREACH_VARIABLE_PROGR.get() < 0) {
+      FOREACH_VARIABLE_PROGR.set(0);
     }
     Identifier varName = new Identifier("__ARCADEDB_FOREACH_VAR_" + nextProg);
     plan.chain(new LetExpressionStep(varName, loopValues, ctx, enableProfiling));
@@ -92,7 +94,8 @@ public class ForEachBlock extends Statement {
     return plan;
   }
 
-  @Override public Statement copy() {
+  @Override
+  public Statement copy() {
     ForEachBlock result = new ForEachBlock(-1);
     result.loopVariable = loopVariable.copy();
     result.loopValues = loopValues.copy();
@@ -100,7 +103,8 @@ public class ForEachBlock extends Statement {
     return result;
   }
 
-  @Override public boolean equals(Object o) {
+  @Override
+  public boolean equals(Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
@@ -116,7 +120,8 @@ public class ForEachBlock extends Statement {
 
   }
 
-  @Override public int hashCode() {
+  @Override
+  public int hashCode() {
     int result = loopVariable != null ? loopVariable.hashCode() : 0;
     result = 31 * result + (loopValues != null ? loopValues.hashCode() : 0);
     result = 31 * result + (statements != null ? statements.hashCode() : 0);

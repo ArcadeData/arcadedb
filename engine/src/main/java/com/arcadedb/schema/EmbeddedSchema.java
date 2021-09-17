@@ -23,10 +23,16 @@ package com.arcadedb.schema;
 
 import com.arcadedb.Constants;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
+import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.Record;
-import com.arcadedb.database.*;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.Dictionary;
-import com.arcadedb.engine.*;
+import com.arcadedb.engine.PaginatedComponent;
+import com.arcadedb.engine.PaginatedComponentFactory;
+import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.DatabaseMetadataException;
 import com.arcadedb.exception.SchemaException;
@@ -34,19 +40,20 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexFactory;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
-import com.arcadedb.index.lsm.*;
+import com.arcadedb.index.lsm.LSMTreeFullTextIndex;
+import com.arcadedb.index.lsm.LSMTreeIndex;
+import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
+import com.arcadedb.index.lsm.LSMTreeIndexCompacted;
+import com.arcadedb.index.lsm.LSMTreeIndexMutable;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.FileUtils;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileWriter;
-import java.io.IOException;
+import java.io.*;
 import java.util.*;
-import java.util.concurrent.Callable;
-import java.util.logging.Level;
+import java.util.concurrent.*;
+import java.util.logging.*;
 
 public class EmbeddedSchema implements Schema {
   public static final String DEFAULT_DATE_FORMAT     = "yyyy-MM-dd";
@@ -341,10 +348,8 @@ public class EmbeddedSchema implements Schema {
           final MutableDocument newRecord;
           if (newType instanceof VertexType)
             newRecord = database.newVertex(newTypeName);
-          else if (newType instanceof DocumentType)
-            newRecord = database.newDocument(newTypeName);
           else
-            throw new IllegalArgumentException("Type '" + newType + "' not supported");
+            newRecord = database.newDocument(newTypeName);
 
           newRecord.fromMap(record.toMap());
           newRecord.save();

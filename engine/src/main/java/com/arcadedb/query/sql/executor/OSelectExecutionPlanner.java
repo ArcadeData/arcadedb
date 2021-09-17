@@ -214,10 +214,10 @@ public class OSelectExecutionPlanner {
    * @param ctx
    */
   private void calculateShardingStrategy(QueryPlanningInfo info, CommandContext ctx) {
-    Database db = ctx.getDatabase();
     info.distributedFetchExecutionPlans = new LinkedHashMap<>();
 
     //TODO remove all this
+//    Database db = ctx.getDatabase();
 //    Map<String, Set<String>> clusterMap = db.getActiveClusterMap();
     Map<String, Set<String>> clusterMap = new HashMap<>();
     clusterMap.put(LOCAL_NODE_NAME, new HashSet<>());
@@ -706,7 +706,7 @@ public class OSelectExecutionPlanner {
       return;
     }
 
-    OrderBy newOrderBy = info.orderBy == null ? null : info.orderBy.copy();
+    final OrderBy newOrderBy = info.orderBy.copy();
     List<ProjectionItem> additionalOrderByProjections = calculateAdditionalOrderByProjections(info.projection.getAllAliases(), newOrderBy);
     if (additionalOrderByProjections.size() > 0) {
       info.orderBy = newOrderBy;//the ORDER BY has changed

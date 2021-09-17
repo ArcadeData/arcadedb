@@ -47,7 +47,6 @@ public class FetchEdgesFromToVerticesStep extends AbstractExecutionStep {
   Iterator       fromIter;
   //iterator of edges on current from
   Iterator<Edge> currentFromEdgesIter;
-  Iterator       toIterator;
 
   final   Set<RID> toList = new HashSet<>();
   private boolean  inited = false;

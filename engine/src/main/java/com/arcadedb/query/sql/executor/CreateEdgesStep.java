@@ -25,7 +25,7 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
-import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.parser.Batch;
 import com.arcadedb.query.sql.parser.Identifier;
@@ -51,8 +51,8 @@ public class CreateEdgesStep extends AbstractExecutionStep {
 
   private long cost = 0;
 
-  public CreateEdgesStep(Identifier targetClass, Identifier targetClusterName, Identifier fromAlias, Identifier toAlias,
-      Number wait, Number retry, Batch batch, CommandContext ctx, boolean profilingEnabled) {
+  public CreateEdgesStep(Identifier targetClass, Identifier targetClusterName, Identifier fromAlias, Identifier toAlias, Number wait, Number retry, Batch batch,
+      CommandContext ctx, boolean profilingEnabled) {
     super(ctx, profilingEnabled);
     this.targetClass = targetClass;
     this.targetCluster = targetClusterName;
@@ -96,11 +96,8 @@ public class CreateEdgesStep extends AbstractExecutionStep {
               throw new CommandExecutionException("Invalid TO vertex for edge");
             }
 
-            Edge edge = currentFrom.newEdge(targetClass.getStringValue(), currentTo, true);
+            MutableEdge edge = currentFrom.newEdge(targetClass.getStringValue(), currentTo, true);
 
-            if (!(edge instanceof MutableDocument)) {
-              throw new UnsupportedOperationException("How to make an unmodifiable edge modifiable?");
-            }
             UpdatableResult result = new UpdatableResult((MutableDocument) edge);
             result.setElement(edge);
             currentBatch++;

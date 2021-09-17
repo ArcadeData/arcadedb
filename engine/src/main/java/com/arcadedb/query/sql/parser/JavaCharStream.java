@@ -23,6 +23,8 @@
 /* JavaCCOptions:STATIC=false,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.database.DatabaseFactory;
+
 /**
  * An implementation of interface CharStream, where the stream is assumed to
  * contain only ASCII characters (with java-like unicode escape processing).
@@ -478,7 +480,7 @@ class JavaCharStream implements CharStream
   public JavaCharStream(java.io.InputStream dstream, String encoding, int startline,
   int startcolumn, int buffersize) throws java.io.UnsupportedEncodingException
   {
-    this(encoding == null ? new java.io.InputStreamReader(dstream) : new java.io.InputStreamReader(dstream, encoding), startline, startcolumn, buffersize);
+    this(encoding == null ? new java.io.InputStreamReader(dstream, DatabaseFactory.getDefaultCharset()) : new java.io.InputStreamReader(dstream, encoding), startline, startcolumn, buffersize);
   }
 
 /** Constructor. */

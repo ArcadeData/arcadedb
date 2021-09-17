@@ -36,7 +36,6 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public class BasicCommandContext implements CommandContext {
   protected DatabaseInternal    database;
-  protected Object[]            args;
   protected boolean             recordMetrics = false;
   protected CommandContext      parent;
   protected CommandContext      child;

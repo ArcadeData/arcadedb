@@ -235,12 +235,12 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
 
   @Override
   public int putString(final int index, final String value) {
-    return putBytes(index, value.getBytes());
+    return putBytes(index, value.getBytes(DatabaseFactory.getDefaultCharset()));
   }
 
   @Override
   public int putString(final String value) {
-    return putBytes(value.getBytes());
+    return putBytes(value.getBytes(DatabaseFactory.getDefaultCharset()));
   }
 
   @Override
@@ -401,12 +401,12 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
 
   @Override
   public String getString() {
-    return new String(getBytes());
+    return new String(getBytes(),DatabaseFactory.getDefaultCharset());
   }
 
   @Override
   public String getString(final int index) {
-    return new String(getBytes(index));
+    return new String(getBytes(index), DatabaseFactory.getDefaultCharset());
   }
 
   @Override

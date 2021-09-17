@@ -22,6 +22,7 @@
 package com.arcadedb.index.lsm;
 
 import com.arcadedb.database.Binary;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.BasePage;
@@ -317,7 +318,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
 
         if (convertedKeys[i] instanceof String)
           // OPTIMIZATION: ALWAYS CONVERT STRINGS TO BYTE[]
-          convertedKeys[i] = ((String) convertedKeys[i]).getBytes();
+          convertedKeys[i] = ((String) convertedKeys[i]).getBytes(DatabaseFactory.getDefaultCharset());
       }
       return convertedKeys;
     }

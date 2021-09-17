@@ -24,7 +24,6 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.Map;
@@ -69,7 +68,7 @@ public class AlterBucketStatement extends ODDLStatement {
 
   @Override
   public ResultSet executeDDL(CommandContext ctx) {
-    InternalResultSet result = new InternalResultSet();
+//    InternalResultSet result = new InternalResultSet();
 //    List<com.orientechnologies.orient.core.storage.OCluster> clustersToUpdate = getClusters(ctx);
 //    Object finalValue = attributeValue.execute((PIdentifiable) null, ctx);
 //

@@ -205,7 +205,7 @@ public class PageManager extends LockContext {
     return page;
   }
 
-  public BasePage checkPageVersion(final MutablePage page, final boolean isNew) throws IOException {
+  public void checkPageVersion(final MutablePage page, final boolean isNew) throws IOException {
     final PageId pageId = page.getPageId();
 
     if (!fileManager.existsFile(pageId.getFileId()))
@@ -221,11 +221,6 @@ public class PageManager extends LockContext {
           "Concurrent modification on page " + pageId + " in file '" + fileManager.getFile(pageId.getFileId()).getFileName() + "' (current v."
               + page.getVersion() + " <> database v." + p.getVersion() + "). Please retry the operation (threadId=" + Thread.currentThread().getId() + ")");
     }
-
-    if (p != null)
-      return p.createImmutableView();
-
-    return null;
   }
 
   public void updatePages(final Map<PageId, MutablePage> newPages, final Map<PageId, MutablePage> modifiedPages, final boolean asyncFlush)
