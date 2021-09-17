@@ -165,10 +165,7 @@ public class FetchEdgesFromToVerticesStep extends AbstractExecutionStep {
         toList.add(((Vertex) elem).getIdentity());
       }
     }
-
-    // TODO: REMOVE THIS SAFELY??
-    toIterator = toList.iterator();
-
+    
     fetchNextEdge();
   }
 
