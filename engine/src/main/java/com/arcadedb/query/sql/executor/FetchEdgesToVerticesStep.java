@@ -60,8 +60,7 @@ public class FetchEdgesToVerticesStep extends AbstractExecutionStep {
     init();
 
     return new ResultSet() {
-      //TODO: BUG?
-      final int currentBatch = 0;
+      int currentBatch = 0;
 
       @Override
       public boolean hasNext() {

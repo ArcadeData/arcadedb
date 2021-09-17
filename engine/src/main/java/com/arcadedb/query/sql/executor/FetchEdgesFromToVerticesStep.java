@@ -68,7 +68,7 @@ public class FetchEdgesFromToVerticesStep extends AbstractExecutionStep {
     getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
     init();
     return new ResultSet() {
-      final int currentBatch = 0;
+      int currentBatch = 0;
 
       @Override
       public boolean hasNext() {
