@@ -84,6 +84,7 @@ public class FetchEdgesFromToVerticesStep extends AbstractExecutionStep {
         fetchNextEdge();
         ResultInternal result = new ResultInternal();
         result.setElement(edge);
+        currentBatch++;
         return result;
       }
 
