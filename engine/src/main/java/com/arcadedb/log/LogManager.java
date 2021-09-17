@@ -40,7 +40,7 @@ public class LogManager {
   static class LogContext extends ThreadLocal<String> {
   }
 
-  public static LogContext CONTEXT_INSTANCE = new LogContext();
+  public static final LogContext CONTEXT_INSTANCE = new LogContext();
 
   protected LogManager() {
   }

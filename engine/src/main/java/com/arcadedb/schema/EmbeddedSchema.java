@@ -66,7 +66,7 @@ public class EmbeddedSchema implements Schema {
   private              Dictionary                 dictionary;
   private              String                     dateFormat                = DEFAULT_DATE_FORMAT;
   private              String                     dateTimeFormat            = DEFAULT_DATETIME_FORMAT;
-  private final        String                     encoding                  = DEFAULT_ENCODING;
+  private static final String                     encoding                  = DEFAULT_ENCODING;
   private              TimeZone                   timeZone                  = TimeZone.getDefault();
   private final        PaginatedComponentFactory  paginatedComponentFactory;
   private final        IndexFactory               indexFactory              = new IndexFactory();

@@ -38,14 +38,13 @@ public class SQLMethodAsLong extends OAbstractSQLMethod {
   }
 
   @Override
-  public Object execute( final Object iThis, Identifiable iCurrentRecord, CommandContext iContext,
-      Object ioResult, Object[] iParams) {
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, Object ioResult, final Object[] iParams) {
     if (ioResult instanceof Number) {
       ioResult = ((Number) ioResult).longValue();
     } else if (ioResult instanceof Date) {
       ioResult = ((Date) ioResult).getTime();
     } else {
-      ioResult = ioResult != null ? new Long(ioResult.toString().trim()) : null;
+      ioResult = ioResult != null ? Long.valueOf(ioResult.toString().trim()) : null;
     }
     return ioResult;
   }

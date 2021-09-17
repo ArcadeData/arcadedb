@@ -63,13 +63,13 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   public static final    RID    REMOVED_ENTRY_RID = new RID(null, -1, -1L);
   protected static final String TEMP_EXT          = "temp_";
 
-  protected static final LSMTreeIndexCompacted.LookupResult LOWER  = new LSMTreeIndexCompacted.LookupResult(false, true, 0, null);
-  protected static final LSMTreeIndexCompacted.LookupResult HIGHER = new LSMTreeIndexCompacted.LookupResult(false, true, 0, null);
+  protected static final LSMTreeIndexCompacted.LookupResult LOWER     = new LSMTreeIndexCompacted.LookupResult(false, true, 0, null);
+  protected static final LSMTreeIndexCompacted.LookupResult HIGHER    = new LSMTreeIndexCompacted.LookupResult(false, true, 0, null);
+  protected static final byte                               valueType = BinaryTypes.TYPE_COMPRESSED_RID;
 
   protected       LSMTreeIndex     mainIndex;
   protected final BinaryComparator comparator;
   protected final BinarySerializer serializer;
-  protected final byte             valueType    = BinaryTypes.TYPE_COMPRESSED_RID;
   protected final boolean          unique;
   protected       byte[]           keyTypes;
   protected       NULL_STRATEGY    nullStrategy = NULL_STRATEGY.ERROR;

@@ -76,11 +76,11 @@ public enum Type {
   ;
 
   // Don't change the order, the type discover get broken if you change the order.
-  protected static final Type[] TYPES = new Type[] { LIST, MAP, LINK, STRING, DATETIME };
+  private static final Type[] TYPES = new Type[] { LIST, MAP, LINK, STRING, DATETIME };
 
-  protected static final Type[]              TYPES_BY_ID       = new Type[17];
+  private static final Type[]              TYPES_BY_ID       = new Type[17];
   // Values previosly stored in javaTypes
-  protected static final Map<Class<?>, Type> TYPES_BY_USERTYPE = new HashMap<Class<?>, Type>();
+  private static final Map<Class<?>, Type> TYPES_BY_USERTYPE = new HashMap<Class<?>, Type>();
 
   static {
     for (Type type : values()) {
@@ -652,7 +652,7 @@ public enum Type {
     if (iValue instanceof Number)
       return ((Number) iValue).intValue();
     else if (iValue instanceof String)
-      return Integer.valueOf((String) iValue);
+      return Integer.parseInt((String) iValue);
     else if (iValue instanceof Boolean)
       return ((Boolean) iValue) ? 1 : 0;
 
@@ -670,7 +670,7 @@ public enum Type {
     if (iValue instanceof Number)
       return ((Number) iValue).longValue();
     else if (iValue instanceof String)
-      return Long.valueOf((String) iValue);
+      return Long.parseLong((String) iValue);
     else if (iValue instanceof Boolean)
       return ((Boolean) iValue) ? 1 : 0;
 
@@ -688,7 +688,7 @@ public enum Type {
     if (iValue instanceof Number)
       return ((Number) iValue).floatValue();
     else if (iValue instanceof String)
-      return Float.valueOf((String) iValue);
+      return Float.parseFloat((String) iValue);
 
     throw new IllegalArgumentException("Cannot convert value " + iValue + " to float for type: " + name);
   }
@@ -704,7 +704,7 @@ public enum Type {
     if (iValue instanceof Number)
       return ((Number) iValue).doubleValue();
     else if (iValue instanceof String)
-      return Double.valueOf((String) iValue);
+      return Double.parseDouble((String) iValue);
 
     throw new IllegalArgumentException("Cannot convert value " + iValue + " to double for type: " + name);
   }

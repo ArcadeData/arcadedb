@@ -553,16 +553,15 @@ public class BinarySerializer {
     final int headerSizePosition = header.position();
     header.putInt(0); // TEMPORARY PLACEHOLDER FOR HEADER SIZE
 
-    final Set<String> propertyNames = properties.keySet();
-    header.putUnsignedNumber(propertyNames.size());
+    header.putUnsignedNumber(properties.size());
 
     final Dictionary dictionary = database.getSchema().getDictionary();
 
-    for (String p : propertyNames) {
+    for (Map.Entry<String, Object> entry : properties.entrySet()) {
       // WRITE PROPERTY ID FROM THE DICTIONARY
-      header.putUnsignedNumber(dictionary.getIdByName(p, true));
+      header.putUnsignedNumber(dictionary.getIdByName(entry.getKey(), true));
 
-      Object value = properties.get(p);
+      Object value = entry.getValue();
 
       final int startContentPosition = content.position();
 

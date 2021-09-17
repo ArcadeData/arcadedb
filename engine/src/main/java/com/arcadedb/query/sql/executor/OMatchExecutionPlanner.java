@@ -23,9 +23,9 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.query.sql.parser.*;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
-import com.arcadedb.query.sql.parser.*;
 import com.arcadedb.utility.Pair;
 
 import java.util.*;
@@ -50,7 +50,7 @@ public class OMatchExecutionPlanner {
   boolean returnDistinct;
   protected final Skip    skip;
   private final   GroupBy groupBy;
-  private final OrderBy orderBy;
+  private final   OrderBy orderBy;
   private final   Unwind  unwind;
   protected final Limit   limit;
 
@@ -62,7 +62,7 @@ public class OMatchExecutionPlanner {
   private Map<String, String>      aliasBuckets;
   private Map<String, Rid>         aliasRids;
   boolean foundOptional = false;
-  private final long threshold = 100;
+  private static final long threshold = 100;
 
   public OMatchExecutionPlanner(MatchStatement stm) {
     this.matchExpressions = stm.getMatchExpressions().stream().map(x -> x.copy()).collect(Collectors.toList());

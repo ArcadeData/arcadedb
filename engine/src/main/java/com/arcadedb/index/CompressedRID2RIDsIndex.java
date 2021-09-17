@@ -46,7 +46,7 @@ import java.util.logging.Level;
  * the position pointed by the hash table, then a fixed-size integer containing the next entry (with the same hash) and after that the
  * compressed RIDs pair (edge+vertex). Another slot is kept to point to the previous entry. The hash table always points to the last element
  * with a linked list in the only direction of the previous.
- *
+ * <p>
  * TODO support up to 4GB by using unsigned int
  */
 public class CompressedRID2RIDsIndex {
@@ -194,7 +194,7 @@ public class CompressedRID2RIDsIndex {
     if (key == null)
       throw new IllegalArgumentException("Key is null");
 
-    final int hash = Math.abs(key.hashCode()) % keys;
+    final int hash = (key.hashCode() & 0x7fffffff) % keys;
 
     final int pos = chunk.getInt(hash * Binary.INT_SERIALIZED_SIZE);
     if (pos == 0)
@@ -250,7 +250,7 @@ public class CompressedRID2RIDsIndex {
     if (vertexRID == null)
       throw new IllegalArgumentException("Source vertex RID is null");
 
-    final int hash = Math.abs(key.hashCode()) % keys;
+    final int hash = (key.hashCode() & 0x7fffffff) % keys;
 
     final int pos = chunk.getInt(hash * Binary.INT_SERIALIZED_SIZE);
     if (pos == 0) {

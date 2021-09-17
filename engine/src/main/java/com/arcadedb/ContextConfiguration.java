@@ -84,8 +84,8 @@ public class ContextConfiguration implements Serializable {
     final JSONObject cfg = new JSONObject();
     json.put("configuration", cfg);
 
-    for (String k : config.keySet()) {
-      cfg.put(k.substring(GlobalConfiguration.PREFIX.length()), config.get(k));
+    for (Map.Entry<String, Object> entry : config.entrySet()) {
+      cfg.put(entry.getKey().substring(GlobalConfiguration.PREFIX.length()), entry.getValue());
     }
 
     return json.toString();

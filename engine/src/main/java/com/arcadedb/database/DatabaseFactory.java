@@ -35,8 +35,8 @@ import java.util.concurrent.Callable;
 public class DatabaseFactory implements AutoCloseable {
   private final ContextConfiguration                                       contextConfiguration = new ContextConfiguration();
   private final String                                                     databasePath;
-  private       boolean                                                    autoTransaction = false;
-  private final Map<DatabaseInternal.CALLBACK_EVENT, List<Callable<Void>>> callbacks       = new HashMap<>();
+  private       boolean                                                    autoTransaction      = false;
+  private final Map<DatabaseInternal.CALLBACK_EVENT, List<Callable<Void>>> callbacks            = new HashMap<>();
 
   public DatabaseFactory(final String path) {
     if (path == null || path.isEmpty())
@@ -78,7 +78,7 @@ public class DatabaseFactory implements AutoCloseable {
     return database;
   }
 
-  public DatabaseFactory setAutoTransaction(final boolean enabled) {
+  public synchronized DatabaseFactory setAutoTransaction(final boolean enabled) {
     autoTransaction = enabled;
     return this;
   }

@@ -152,11 +152,11 @@ public class NestedProjection extends SimpleNode {
     ResultInternal result = new ResultInternal();
 
     if (starItem != null || includeItems.size() == 0) {
-      for (String property : input.keySet()) {
-        if (isExclude(property)) {
+      for (Map.Entry<String, Object> entry : input.entrySet()) {
+        if (isExclude(entry.getKey())) {
           continue;
         }
-        result.setProperty(property, convert(tryExpand(expression, property, input.get(property), ctx, recursion)));
+        result.setProperty(entry.getKey(), convert(tryExpand(expression, entry.getKey(), entry.getValue(), ctx, recursion)));
       }
     }
     if (includeItems.size() > 0) {

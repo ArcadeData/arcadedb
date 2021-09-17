@@ -39,17 +39,17 @@ import java.util.NoSuchElementException;
  * <br>
  * A Binary object is used to store the hash table (the first part of it) and then keys and values. The key is serialized in the position
  * pointed by the hash table, then a fixed-size integer containing the next entry (with the same hash) and after that the compressed RID.
- *
+ * <p>
  * TODO support up to 4GB by using unsigned int
  */
 public class CompressedAny2RIDIndex<K> {
   private final Database         database;
   private final BinarySerializer serializer;
   private final byte             keyBinaryType;
-  private final Type   keyType;
-  private final Binary chunk;
-  private final int    keys;
-  private       int    totalEntries   = 0;
+  private final Type             keyType;
+  private final Binary           chunk;
+  private final int              keys;
+  private       int              totalEntries   = 0;
   private       int              totalUsedSlots = 0;
 
   public class EntryIterator implements Iterator<RID> {
@@ -155,7 +155,7 @@ public class CompressedAny2RIDIndex<K> {
     if (key == null)
       throw new IllegalArgumentException("Key is null");
 
-    final int hash = Math.abs(key.hashCode()) % keys;
+    final int hash = (key.hashCode() & 0x7fffffff) % keys;
 
     final int pos = threadBuffer.getInt(hash * Binary.INT_SERIALIZED_SIZE);
     if (pos == 0)
@@ -188,7 +188,7 @@ public class CompressedAny2RIDIndex<K> {
     if (value == null)
       throw new IllegalArgumentException("Value is null");
 
-    final int hash = Math.abs(key.hashCode()) % keys;
+    final int hash = (key.hashCode() & 0x7fffffff) % keys;
 
     synchronized (this) {
       final int pos = chunk.getInt(hash * Binary.INT_SERIALIZED_SIZE);

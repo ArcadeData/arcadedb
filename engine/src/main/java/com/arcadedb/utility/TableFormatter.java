@@ -349,7 +349,9 @@ public class TableFormatter {
         value = ((Record) value).getIdentity().toString();
       }
     } else if (value instanceof Date) {
-      value = DEF_DATEFORMAT.format((Date) value);
+      synchronized (DEF_DATEFORMAT) {
+        value = DEF_DATEFORMAT.format((Date) value);
+      }
     } else if (value instanceof byte[])
       value = "byte[" + ((byte[]) value).length + "]";
 

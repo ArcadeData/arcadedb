@@ -40,15 +40,16 @@ public class JSONSerializer {
 
   public JSONObject map2json(final Map<String, Object> map) {
     final JSONObject json = new JSONObject();
-    for (String k : map.keySet()) {
-      final Object value = convertToJSONType(map.get(k));
+    for (Map.Entry<String, Object> entry : map.entrySet()) {
+      final Object value = convertToJSONType(entry.getValue());
 
       if (value instanceof Number && !Float.isFinite(((Number) value).floatValue())) {
-        LogManager.instance().log(this, Level.SEVERE, "Found non finite number in map with key '%s', ignore this entry in the conversion", null, k);
+        LogManager.instance()
+            .log(this, Level.SEVERE, "Found non finite number in map with key '%s', ignore this entry in the conversion", null, entry.getKey());
         continue;
       }
 
-      json.put(k, value);
+      json.put(entry.getKey(), value);
     }
 
     return json;

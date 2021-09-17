@@ -32,17 +32,17 @@ import java.util.*;
  * @author Saeed Tabrizi (saeed a_t  nowcando.com)
  */
 public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunctionMathAbstract {
-  public static final String PARAM_DIRECTION                = "direction";
-  public static final String PARAM_EDGE_TYPE_NAMES          = "edgeTypeNames";
-  public static final String PARAM_VERTEX_AXIS_NAMES        = "vertexAxisNames";
-  public static final String PARAM_PARALLEL                 = "parallel";
-  public static final String PARAM_MAX_DEPTH                = "maxDepth";
-  public static final String PARAM_HEURISTIC_FORMULA        = "heuristicFormula";
-  public static final String PARAM_CUSTOM_HEURISTIC_FORMULA = "customHeuristicFormula";
-  public static final String PARAM_D_FACTOR                 = "dFactor";
-  public static final String PARAM_TIE_BREAKER              = "tieBreaker";
-  public static final String PARAM_EMPTY_IF_MAX_DEPTH       = "emptyIfMaxDepth";
-  protected static    Random rnd                            = new Random();
+  public static final    String PARAM_DIRECTION                = "direction";
+  public static final    String PARAM_EDGE_TYPE_NAMES          = "edgeTypeNames";
+  public static final    String PARAM_VERTEX_AXIS_NAMES        = "vertexAxisNames";
+  public static final    String PARAM_PARALLEL                 = "parallel";
+  public static final    String PARAM_MAX_DEPTH                = "maxDepth";
+  public static final    String PARAM_HEURISTIC_FORMULA        = "heuristicFormula";
+  public static final    String PARAM_CUSTOM_HEURISTIC_FORMULA = "customHeuristicFormula";
+  public static final    String PARAM_D_FACTOR                 = "dFactor";
+  public static final    String PARAM_TIE_BREAKER              = "tieBreaker";
+  public static final    String PARAM_EMPTY_IF_MAX_DEPTH       = "emptyIfMaxDepth";
+  protected static final Random rnd                            = new Random();
 
   protected Boolean             paramParallel               = false;
   protected Boolean             paramTieBreaker             = true;
@@ -81,8 +81,7 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
 
   protected abstract double getDistance(final Vertex node, final Vertex parent, final Vertex target);
 
-  protected abstract double getHeuristicCost(final Vertex node, final Vertex parent, final Vertex target,
-      CommandContext iContext);
+  protected abstract double getHeuristicCost(final Vertex node, final Vertex parent, final Vertex target, CommandContext iContext);
 
   protected LinkedList<Vertex> getPath() {
     final LinkedList<Vertex> path = new LinkedList<Vertex>(route);
@@ -157,8 +156,7 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
     return heuristic;
   }
 
-  protected double getTieBreakingRandomHeuristicCost(double x, double y, double sx, double sy, double gx, double gy,
-      double heuristic) {
+  protected double getTieBreakingRandomHeuristicCost(double x, double y, double sx, double sy, double gx, double gy, double heuristic) {
     double dx1 = x - gx;
     double dy1 = y - gy;
     double dx2 = sx - gx;
@@ -168,9 +166,8 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
     return heuristic;
   }
 
-  protected double getManhatanHeuristicCost(final String[] axisNames, final Map<String, Double> slist,
-      final Map<String, Double> clist, final Map<String, Double> plist, final Map<String, Double> glist, long depth,
-      double dFactor) {
+  protected double getManhatanHeuristicCost(final String[] axisNames, final Map<String, Double> slist, final Map<String, Double> clist,
+      final Map<String, Double> plist, final Map<String, Double> glist, long depth, double dFactor) {
     Double heuristic = 0.0;
     double res = 0.0;
     for (String str : axisNames) {
@@ -180,65 +177,55 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
     return heuristic;
   }
 
-  protected double getMaxAxisHeuristicCost(final String[] axisNames, final Map<String, Double> slist,
-      final Map<String, Double> clist, final Map<String, Double> plist, final Map<String, Double> glist, long depth,
-      double dFactor) {
+  protected double getMaxAxisHeuristicCost(final String[] axisNames, final Map<String, Double> slist, final Map<String, Double> clist,
+      final Map<String, Double> plist, final Map<String, Double> glist, long depth, double dFactor) {
     Double heuristic = 0.0;
     double res = 0.0;
     for (String str : axisNames) {
-      res = Math
-          .max(Math.abs((clist.get(str) != null ? clist.get(str) : 0.0) - (glist.get(str) != null ? glist.get(str) : 0.0)), res);
+      res = Math.max(Math.abs((clist.get(str) != null ? clist.get(str) : 0.0) - (glist.get(str) != null ? glist.get(str) : 0.0)), res);
     }
     heuristic = dFactor * res;
     return heuristic;
   }
 
-  protected double getDiagonalHeuristicCost(final String[] axisNames, final Map<String, Double> slist,
-      final Map<String, Double> clist, final Map<String, Double> plist, final Map<String, Double> glist, long depth,
-      double dFactor) {
+  protected double getDiagonalHeuristicCost(final String[] axisNames, final Map<String, Double> slist, final Map<String, Double> clist,
+      final Map<String, Double> plist, final Map<String, Double> glist, long depth, double dFactor) {
 
     Double heuristic = 0.0;
     double h_diagonal = 0.0;
     double h_straight = 0.0;
     for (String str : axisNames) {
-      h_diagonal = Math
-          .min(Math.abs((clist.get(str) != null ? clist.get(str) : 0.0) - (glist.get(str) != null ? glist.get(str) : 0.0)),
-              h_diagonal);
+      h_diagonal = Math.min(Math.abs((clist.get(str) != null ? clist.get(str) : 0.0) - (glist.get(str) != null ? glist.get(str) : 0.0)), h_diagonal);
       h_straight += Math.abs((clist.get(str) != null ? clist.get(str) : 0.0) - (glist.get(str) != null ? glist.get(str) : 0.0));
     }
     heuristic = (dFactor * 2) * h_diagonal + dFactor * (h_straight - 2 * h_diagonal);
     return heuristic;
   }
 
-  protected double getEuclideanHeuristicCost(final String[] axisNames, final Map<String, Double> slist,
-      final Map<String, Double> clist, final Map<String, Double> plist, final Map<String, Double> glist, long depth,
-      double dFactor) {
+  protected double getEuclideanHeuristicCost(final String[] axisNames, final Map<String, Double> slist, final Map<String, Double> clist,
+      final Map<String, Double> plist, final Map<String, Double> glist, long depth, double dFactor) {
     Double heuristic = 0.0;
     double res = 0.0;
     for (String str : axisNames) {
-      res += Math
-          .pow(Math.abs((clist.get(str) != null ? clist.get(str) : 0.0) - (glist.get(str) != null ? glist.get(str) : 0.0)), 2);
+      res += Math.pow(Math.abs((clist.get(str) != null ? clist.get(str) : 0.0) - (glist.get(str) != null ? glist.get(str) : 0.0)), 2);
     }
     heuristic = Math.sqrt(res);
     return heuristic;
   }
 
-  protected double getEuclideanNoSQRHeuristicCost(final String[] axisNames, final Map<String, Double> slist,
-      final Map<String, Double> clist, final Map<String, Double> plist, final Map<String, Double> glist, long depth,
-      double dFactor) {
+  protected double getEuclideanNoSQRHeuristicCost(final String[] axisNames, final Map<String, Double> slist, final Map<String, Double> clist,
+      final Map<String, Double> plist, final Map<String, Double> glist, long depth, double dFactor) {
     Double heuristic = 0.0;
     double res = 0.0;
     for (String str : axisNames) {
-      res += Math
-          .pow(Math.abs((clist.get(str) != null ? clist.get(str) : 0.0) - (glist.get(str) != null ? glist.get(str) : 0.0)), 2);
+      res += Math.pow(Math.abs((clist.get(str) != null ? clist.get(str) : 0.0) - (glist.get(str) != null ? glist.get(str) : 0.0)), 2);
     }
     heuristic = dFactor * res;
     return heuristic;
   }
 
-  protected double getTieBreakingHeuristicCost(final String[] axisNames, final Map<String, Double> slist,
-      final Map<String, Double> clist, final Map<String, Double> plist, final Map<String, Double> glist, long depth,
-      double heuristic) {
+  protected double getTieBreakingHeuristicCost(final String[] axisNames, final Map<String, Double> slist, final Map<String, Double> clist,
+      final Map<String, Double> plist, final Map<String, Double> glist, long depth, double heuristic) {
 
     double res = 0.0;
     for (String str : axisNames) {

@@ -664,6 +664,6 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   }
 
   public int getSlot(final int value) {
-    return value % executorThreads.length;
+    return (value & 0x7fffffff) % executorThreads.length;
   }
 }

@@ -27,20 +27,18 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.query.sql.executor.*;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
-import com.arcadedb.query.sql.executor.*;
 
 import java.util.*;
 import java.util.stream.Collectors;
 
 public class MatchStatement extends Statement {
 
-  static final String DEFAULT_ALIAS_PREFIX = "$ARCADEDB_DEFAULT_ALIAS_";
-
-  long threshold = 20;
-  private final int      limitFromProtocol = -1;
-  private       Database database;
+  static final         String   DEFAULT_ALIAS_PREFIX = "$ARCADEDB_DEFAULT_ALIAS_";
+  private static final int      limitFromProtocol    = -1;
+  private              Database database;
 
   public List<NestedProjection> getReturnNestedProjections() {
     return returnNestedProjections;

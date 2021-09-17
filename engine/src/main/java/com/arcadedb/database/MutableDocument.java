@@ -49,8 +49,8 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   }
 
   public void merge(final Map<String, Object> other) {
-    for (String p : other.keySet())
-      set(p, other.get(p));
+    for (Map.Entry<String, Object> entry : other.entrySet())
+      set(entry.getKey(), entry.getValue());
   }
 
   public boolean isDirty() {
@@ -352,8 +352,8 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
       }
     } else if (value instanceof Map) {
       final Map<Object, Object> map = (Map<Object, Object>) value;
-      for (Object key : map.keySet()) {
-        Object v = map.get(key);
+      for (Map.Entry<Object, Object> entry : map.entrySet()) {
+        final Object v = entry.getValue();
         if (v instanceof Document && !((Document) v).getDatabase().getName().equals(database.getName())) {
           ((BaseDocument) v).buffer.rewind();
           final MutableDocument newRecord = (MutableDocument) database.getRecordFactory()
@@ -363,7 +363,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
           newRecord.map = new LinkedHashMap<>();
           newRecord.dirty = true;
           newRecord.set(((BaseDocument) v).toMap());
-          map.put(key, newRecord);
+          map.put(entry.getKey(), newRecord);
         }
       }
     }

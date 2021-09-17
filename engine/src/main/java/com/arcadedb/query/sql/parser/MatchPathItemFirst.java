@@ -33,7 +33,7 @@ import java.util.Map;
 public class MatchPathItemFirst extends MatchPathItem {
   protected FunctionCall function;
 
-  protected MethodCall methodWrapper;
+  protected volatile MethodCall methodWrapper;
 
   public MatchPathItemFirst(int id) {
     super(id);
@@ -55,8 +55,7 @@ public class MatchPathItemFirst extends MatchPathItem {
     }
   }
 
-  protected Iterable<Identifiable> traversePatternEdge(MatchStatement.MatchContext matchContext, Identifiable startingPoint,
-      CommandContext iCommandContext) {
+  protected Iterable<Identifiable> traversePatternEdge(MatchStatement.MatchContext matchContext, Identifiable startingPoint, CommandContext iCommandContext) {
     Object qR = this.function.execute(startingPoint, iCommandContext);
     return (qR instanceof Iterable) ? (Iterable) qR : Collections.singleton((Identifiable) qR);
   }

@@ -35,12 +35,10 @@ import java.util.Optional;
  */
 public class LocalResultSet implements ResultSet {
 
-  private       ResultSet             lastFetch = null;
   private final InternalExecutionPlan executionPlan;
-  private       boolean               finished  = false;
-
-  long totalExecutionTime = 0;
-  long startTime          = 0;
+  private       ResultSet             lastFetch          = null;
+  private       boolean               finished           = false;
+  private       long                  totalExecutionTime = 0;
 
   public LocalResultSet(InternalExecutionPlan executionPlan) {
     this.executionPlan = executionPlan;
@@ -50,9 +48,6 @@ public class LocalResultSet implements ResultSet {
   private boolean fetchNext() {
     long begin = System.currentTimeMillis();
     try {
-      if (lastFetch == null) {
-        startTime = begin;
-      }
       lastFetch = executionPlan.fetchNext(100);
       if (!lastFetch.hasNext()) {
         finished = true;

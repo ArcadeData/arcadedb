@@ -165,6 +165,7 @@ public class FetchEdgesFromToVerticesStep extends AbstractExecutionStep {
       }
     }
 
+    // TODO: REMOVE THIS SAFELY??
     toIterator = toList.iterator();
 
     fetchNextEdge();

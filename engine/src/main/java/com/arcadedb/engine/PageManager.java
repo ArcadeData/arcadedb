@@ -63,9 +63,7 @@ public class PageManager extends LockContext {
   private final AtomicLong                           evictionRuns                          = new AtomicLong();
   private final AtomicLong                           pagesEvicted                          = new AtomicLong();
 
-  private       long                   lastCheckForRAM        = 0;
-  private final long                   lastLowRAM             = 0;
-  private final long                   highPressureRAMCounter = 0;
+  private       long                   lastCheckForRAM = 0;
   private final PageManagerFlushThread flushThread;
   private final int                    freePageRAM;
 

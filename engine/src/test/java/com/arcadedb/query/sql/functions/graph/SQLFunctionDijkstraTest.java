@@ -2,7 +2,6 @@ package com.arcadedb.query.sql.functions.graph;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
@@ -14,9 +13,6 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 public class SQLFunctionDijkstraTest {
-
-  private DatabaseFactory orientDB;
-  private Database        graph;
 
   private MutableVertex       v1;
   private MutableVertex       v2;

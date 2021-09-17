@@ -52,7 +52,7 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
     super(NAME, 2, 5);
   }
 
-  private class OShortestPathContext {
+  private static class OShortestPathContext {
     Vertex           sourceVertex;
     Vertex           destinationVertex;
     Vertex.DIRECTION directionLeft  = Vertex.DIRECTION.BOTH;

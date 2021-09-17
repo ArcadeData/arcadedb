@@ -68,37 +68,37 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   public static final int EDGE_LIST_INITIAL_CHUNK_SIZE         = 64;
   public static final int MAX_RECOMMENDED_EDGE_LIST_CHUNK_SIZE = 8192;
 
-  protected static final Set<String>                               SUPPORTED_FILE_EXT      = new HashSet<>(
+  private static final Set<String>                               SUPPORTED_FILE_EXT      = Collections.unmodifiableSet(new HashSet<>(
       Arrays.asList(Dictionary.DICT_EXT, Bucket.BUCKET_EXT, LSMTreeIndexMutable.NOTUNIQUE_INDEX_EXT, LSMTreeIndexMutable.UNIQUE_INDEX_EXT,
-          LSMTreeIndexCompacted.NOTUNIQUE_INDEX_EXT, LSMTreeIndexCompacted.UNIQUE_INDEX_EXT));
-  public final           AtomicLong                                indexCompactions        = new AtomicLong();
-  protected final        String                                    name;
-  protected final        PaginatedFile.MODE                        mode;
-  protected final        ContextConfiguration                      configuration;
-  protected final        String                                    databasePath;
-  protected final        BinarySerializer                          serializer              = new BinarySerializer();
-  protected final        RecordFactory                             recordFactory           = new RecordFactory();
-  protected final        GraphEngine                               graphEngine             = new GraphEngine();
-  protected final        WALFileFactory                            walFactory;
-  protected final        DocumentIndexer                           indexer;
-  protected final        QueryEngineManager                        queryEngineManager;
-  protected final        DatabaseStats                             stats                   = new DatabaseStats();
-  protected              FileManager                               fileManager;
-  protected              PageManager                               pageManager;
-  protected              EmbeddedSchema                            schema;
-  protected              TransactionManager                        transactionManager;
-  protected volatile     DatabaseAsyncExecutorImpl                 async                   = null;
-  protected              Lock                                      asyncLock               = new ReentrantLock();
-  protected              boolean                                   autoTransaction         = false;
-  protected volatile     boolean                                   open                    = false;
-  private                boolean                                   readYourWrites          = true;
-  private                File                                      lockFile;
-  private                FileLock                                  lockFileIO;
-  private final          Map<CALLBACK_EVENT, List<Callable<Void>>> callbacks;
-  private final          StatementCache                            statementCache;
-  private final          ExecutionPlanCache                        executionPlanCache;
-  private                DatabaseInternal                          wrappedDatabaseInstance = this;
-  private                int                                       edgeListSize            = EDGE_LIST_INITIAL_CHUNK_SIZE;
+          LSMTreeIndexCompacted.NOTUNIQUE_INDEX_EXT, LSMTreeIndexCompacted.UNIQUE_INDEX_EXT)));
+  public final         AtomicLong                                indexCompactions        = new AtomicLong();
+  protected final      String                                    name;
+  protected final      PaginatedFile.MODE                        mode;
+  protected final      ContextConfiguration                      configuration;
+  protected final      String                                    databasePath;
+  protected final      BinarySerializer                          serializer              = new BinarySerializer();
+  protected final      RecordFactory                             recordFactory           = new RecordFactory();
+  protected final      GraphEngine                               graphEngine             = new GraphEngine();
+  protected final      WALFileFactory                            walFactory;
+  protected final      DocumentIndexer                           indexer;
+  protected final      QueryEngineManager                        queryEngineManager;
+  protected final      DatabaseStats                             stats                   = new DatabaseStats();
+  protected            FileManager                               fileManager;
+  protected            PageManager                               pageManager;
+  protected            EmbeddedSchema                            schema;
+  protected            TransactionManager                        transactionManager;
+  protected volatile   DatabaseAsyncExecutorImpl                 async                   = null;
+  protected            Lock                                      asyncLock               = new ReentrantLock();
+  protected            boolean                                   autoTransaction         = false;
+  protected volatile   boolean                                   open                    = false;
+  private              boolean                                   readYourWrites          = true;
+  private              File                                      lockFile;
+  private              FileLock                                  lockFileIO;
+  private final        Map<CALLBACK_EVENT, List<Callable<Void>>> callbacks;
+  private final        StatementCache                            statementCache;
+  private final        ExecutionPlanCache                        executionPlanCache;
+  private              DatabaseInternal                          wrappedDatabaseInstance = this;
+  private              int                                       edgeListSize            = EDGE_LIST_INITIAL_CHUNK_SIZE;
 
   protected EmbeddedDatabase(final String path, final PaginatedFile.MODE mode, final ContextConfiguration configuration,
       final Map<CALLBACK_EVENT, List<Callable<Void>>> callbacks) {

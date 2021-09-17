@@ -61,10 +61,9 @@ public class SQLStaticReflectiveFunction extends SQLFunctionAbstract {
   private static final Map<Class<?>, Class<?>> WRAPPER_TO_PRIMITIVE = new HashMap<>();
 
   static {
-    for (Class<?> primitive : PRIMITIVE_TO_WRAPPER.keySet()) {
-      Class<?> wrapper = PRIMITIVE_TO_WRAPPER.get(primitive);
-      if (!primitive.equals(wrapper)) {
-        WRAPPER_TO_PRIMITIVE.put(wrapper, primitive);
+    for (Map.Entry<Class<?>, Class<?>> entry : PRIMITIVE_TO_WRAPPER.entrySet()) {
+      if (!entry.getKey().equals(entry.getValue())) {
+        WRAPPER_TO_PRIMITIVE.put(entry.getValue(), entry.getKey());
       }
     }
   }
@@ -191,8 +190,8 @@ public class SQLStaticReflectiveFunction extends SQLFunctionAbstract {
       } else if (Short.TYPE.equals(fromClass)) {
         return Integer.TYPE.equals(iToClass) || Long.TYPE.equals(iToClass) || Float.TYPE.equals(iToClass) || Double.TYPE.equals(iToClass);
       } else if (Byte.TYPE.equals(fromClass)) {
-        return Short.TYPE.equals(iToClass) || Integer.TYPE.equals(iToClass) || Long.TYPE.equals(iToClass) || Float.TYPE.equals(iToClass) || Double.TYPE
-            .equals(iToClass);
+        return Short.TYPE.equals(iToClass) || Integer.TYPE.equals(iToClass) || Long.TYPE.equals(iToClass) || Float.TYPE.equals(iToClass) || Double.TYPE.equals(
+            iToClass);
       }
       // this should never happen
       return false;

@@ -67,7 +67,7 @@ public class PartitionedBucketSelectionStrategy extends DefaultBucketSelectionSt
         if (value != null)
           hash += value.hashCode();
       }
-      return Math.abs(hash) % total;
+      return (hash & 0x7fffffff) % total;
     }
 
     return super.getBucketIdByRecord(record, async);
@@ -82,7 +82,7 @@ public class PartitionedBucketSelectionStrategy extends DefaultBucketSelectionSt
         if (value != null)
           hash += value.hashCode();
       }
-      return hash % total;
+      return (hash & 0x7fffffff) % total;
     }
 
     return super.getBucketIdByKeys(keyValues, async);
