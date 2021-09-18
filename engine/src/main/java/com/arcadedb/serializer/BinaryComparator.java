@@ -26,14 +26,12 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Identifiable;
 
-import java.math.BigDecimal;
-import java.util.Calendar;
-import java.util.Date;
+import java.math.*;
+import java.util.*;
 
 public class BinaryComparator {
 
-  private final          BinarySerializer serializer;
-  protected static final long             MILLISEC_PER_DAY = 86400000;
+  private final BinarySerializer serializer;
 
   public BinaryComparator(final BinarySerializer serializer) {
     this.serializer = serializer;
@@ -115,7 +113,8 @@ public class BinaryComparator {
       break;
     }
 
-    case BinaryTypes.TYPE_STRING: {
+    case BinaryTypes.TYPE_STRING:
+    case BinaryTypes.TYPE_UUID: {
       return equals(value1, value2.toString());
     }
 
@@ -225,9 +224,12 @@ public class BinaryComparator {
     case BinaryTypes.TYPE_BINARY: {
       switch (type2) {
       case BinaryTypes.TYPE_BINARY: {
+        final byte[] v1 = value1 instanceof Binary ? ((Binary) value1).getContent() : (byte[]) value1;
+        final byte[] v2 = value2 instanceof Binary ? ((Binary) value2).getContent() : (byte[]) value2;
+        equalsBytes(v1, v2);
       }
       }
-      throw new UnsupportedOperationException("Comparing binary types");
+      break;
     }
 
     case BinaryTypes.TYPE_DECIMAL: {
@@ -250,6 +252,48 @@ public class BinaryComparator {
         return value1.equals(BigDecimal.valueOf((Double) value2));
       case BinaryTypes.TYPE_STRING:
         return value1.equals(new BigDecimal((String) value2));
+      }
+      break;
+    }
+
+    case BinaryTypes.TYPE_COMPRESSED_STRING: {
+      switch (type2) {
+      case BinaryTypes.TYPE_COMPRESSED_STRING:
+        return value1.equals(value2);
+      }
+      break;
+    }
+
+    case BinaryTypes.TYPE_LIST: {
+      switch (type2) {
+      case BinaryTypes.TYPE_LIST:
+        return value1.equals(value2);
+      }
+      break;
+    }
+
+    case BinaryTypes.TYPE_MAP: {
+      switch (type2) {
+      case BinaryTypes.TYPE_MAP:
+        return value1.equals(value2);
+      }
+      break;
+    }
+
+    case BinaryTypes.TYPE_EMBEDDED: {
+      switch (type2) {
+      case BinaryTypes.TYPE_EMBEDDED:
+        return value1.equals(value2);
+      }
+      break;
+    }
+
+
+    case BinaryTypes.TYPE_NULL: {
+      switch (type2) {
+      case BinaryTypes.TYPE_NULL: {
+        return true;
+      }
       }
       break;
     }
@@ -677,7 +721,6 @@ public class BinaryComparator {
     }
     }
 
-    // NO COMPARE SUPPORTED, RETURN NON EQUALS
     throw new IllegalArgumentException("Comparison between type " + type1 + " and " + type2 + " not supported");
   }
 }

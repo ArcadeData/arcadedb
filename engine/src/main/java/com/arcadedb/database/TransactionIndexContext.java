@@ -257,7 +257,7 @@ public class TransactionIndexContext {
 
     Set<IndexKey> values;
     if (keys == null) {
-      keys = new TreeMap<>(); // ORDERD TO KEEP INSERTION ORDER
+      keys = new TreeMap<>(); // ORDERED TO KEEP INSERTION ORDER
       indexEntries.put(indexName, keys);
 
       values = new HashSet<>();
