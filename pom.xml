@@ -291,6 +291,15 @@
                         <artifactId>jacoco-maven-plugin</artifactId>
                         <version>${jacoco-maven-plugin.version}</version>
                         <configuration>
+                            <excludes>
+                                <exclude>**/static/*</exclude>
+                                <exclude>**/*.sh</exclude>
+                                <exclude>**/*.md</exclude>
+                                <exclude>**/*.yml</exclude>
+                                <exclude>**/*.yaml</exclude>
+                                <exclude>LICENCE</exclude>
+                                <exclude>Jenkinsfile</exclude>
+                            </excludes>
                         </configuration>
                         <executions>
                             <execution>
