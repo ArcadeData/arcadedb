@@ -20,13 +20,14 @@
  */
 package com.arcadedb.postgres;
 
+import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ha.network.ServerSocketFactory;
 
-import java.io.IOException;
+import java.io.*;
 import java.net.*;
-import java.util.logging.Level;
+import java.util.logging.*;
 
 public class PostgresNetworkListener extends Thread {
 
@@ -144,10 +145,10 @@ public class PostgresNetworkListener extends Thread {
         server.log(this, Level.WARNING, "Port %s:%d busy, trying the next available...", hostName, tryPort);
       } catch (SocketException se) {
         server.log(this, Level.SEVERE, "Unable to create socket", se);
-        throw new RuntimeException(se);
+        throw new ArcadeDBException(se);
       } catch (IOException ioe) {
         server.log(this, Level.SEVERE, "Unable to read data from an open socket", ioe);
-        throw new RuntimeException(ioe);
+        throw new ArcadeDBException(ioe);
       }
     }
 

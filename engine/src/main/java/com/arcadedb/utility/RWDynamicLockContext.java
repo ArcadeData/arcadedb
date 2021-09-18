@@ -21,8 +21,10 @@
 
 package com.arcadedb.utility;
 
+import com.arcadedb.exception.ArcadeDBException;
+
 import java.util.concurrent.Callable;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.concurrent.locks.*;
 
 public class RWDynamicLockContext {
   private final ReentrantReadWriteLock lock;
@@ -61,7 +63,7 @@ public class RWDynamicLockContext {
       throw e;
 
     } catch (Throwable e) {
-      throw new RuntimeException("Error in execution in lock", e);
+      throw new ArcadeDBException("Error in execution in lock", e);
 
     } finally {
       readUnlock();
@@ -78,7 +80,7 @@ public class RWDynamicLockContext {
       throw e;
 
     } catch (Throwable e) {
-      throw new RuntimeException("Error in execution in lock", e);
+      throw new ArcadeDBException("Error in execution in lock", e);
 
     } finally {
       writeUnlock();

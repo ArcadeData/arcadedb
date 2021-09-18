@@ -32,7 +32,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.ScriptExecutionPlan;
 
-import java.util.List;
+import java.util.*;
 
 public class WhileStep extends AbstractExecutionStep {
     private final BooleanExpression condition;

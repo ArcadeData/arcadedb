@@ -550,7 +550,7 @@ public class BasicGraphTest extends BaseGraphTest {
 
         v1a.newEdge(EDGE2_TYPE_NAME, v2, false);
         v1a.newEdge(EDGE2_TYPE_NAME, v2, true);
-        //throw new RuntimeException();
+        //throw new ArcadeDBException();
       });
 
       //Assertions.fail();

@@ -21,6 +21,7 @@
 
 package com.arcadedb.database;
 
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.schema.DocumentType;
 import org.json.JSONObject;
 
@@ -125,7 +126,7 @@ public class ImmutableDocument extends BaseDocument {
   protected boolean checkForLazyLoading() {
     if (buffer == null) {
       if (rid == null)
-        throw new RuntimeException("Document cannot be loaded because RID is null");
+        throw new DatabaseOperationException("Document cannot be loaded because RID is null");
 
       buffer = database.getSchema().getBucketById(rid.getBucketId()).getRecord(rid);
       buffer.position(propertiesStartingPosition);

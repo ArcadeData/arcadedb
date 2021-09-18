@@ -25,16 +25,16 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
+import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.AggregationContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.math.BigDecimal;
-import java.math.RoundingMode;
+import java.math.*;
 import java.util.*;
-import java.util.stream.Collectors;
+import java.util.stream.*;
 
 public class MathExpression extends SimpleNode {
 
@@ -988,7 +988,7 @@ public class MathExpression extends SimpleNode {
     try {
       result = getClass().getConstructor(Integer.TYPE).newInstance(-1);
     } catch (Exception e) {
-      throw new RuntimeException(e);
+      throw new ArcadeDBException(e);
     }
     result.childExpressions = childExpressions.stream().map(x -> x.copy()).collect(Collectors.toList());
     result.operators.addAll(operators);

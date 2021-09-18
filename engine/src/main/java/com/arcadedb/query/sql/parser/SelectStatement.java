@@ -28,11 +28,17 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.CommandSQLParsingException;
-import com.arcadedb.query.sql.executor.*;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.InternalExecutionPlan;
+import com.arcadedb.query.sql.executor.OSelectExecutionPlanner;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.HashMap;
-import java.util.Map;
+import java.util.*;
 
 public class SelectStatement extends Statement {
 
@@ -279,7 +285,7 @@ public class SelectStatement extends Statement {
     try {
       result = getClass().getConstructor(Integer.TYPE).newInstance(-1);
     } catch (Exception e) {
-      throw new RuntimeException(e);
+      throw new ArcadeDBException(e);
     }
     result.originalStatement = originalStatement;
     result.target = target == null ? null : target.copy();

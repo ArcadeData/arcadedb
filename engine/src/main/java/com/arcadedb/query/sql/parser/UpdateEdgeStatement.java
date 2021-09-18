@@ -24,10 +24,10 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.UpdateExecutionPlan;
 import com.arcadedb.query.sql.executor.OUpdateExecutionPlanner;
+import com.arcadedb.query.sql.executor.UpdateExecutionPlan;
 
-import java.util.stream.Collectors;
+import java.util.stream.*;
 
 public class UpdateEdgeStatement extends UpdateStatement {
   public UpdateEdgeStatement(int id) {

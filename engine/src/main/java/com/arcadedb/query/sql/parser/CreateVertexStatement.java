@@ -24,10 +24,15 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.query.sql.executor.*;
+import com.arcadedb.exception.ArcadeDBException;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.InsertExecutionPlan;
+import com.arcadedb.query.sql.executor.InternalExecutionPlan;
+import com.arcadedb.query.sql.executor.OCreateVertexExecutionPlanner;
+import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.HashMap;
-import java.util.Map;
+import java.util.*;
 
 public class CreateVertexStatement extends Statement {
 
@@ -110,7 +115,7 @@ public class CreateVertexStatement extends Statement {
     try {
       result = getClass().getConstructor(Integer.TYPE).newInstance(-1);
     } catch (Exception e) {
-      throw new RuntimeException(e);
+      throw new ArcadeDBException(e);
     }
     result.targetType = targetType == null ? null : targetType.copy();
     result.targetBucketName = targetBucketName == null ? null : targetBucketName.copy();

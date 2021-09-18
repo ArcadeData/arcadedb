@@ -21,13 +21,12 @@
 
 package com.arcadedb.utility;
 
+import com.arcadedb.exception.ArcadeDBException;
 import com.sun.management.HotSpotDiagnosticMXBean;
 
 import javax.management.MBeanServer;
-import java.io.File;
-import java.lang.management.ManagementFactory;
-import java.lang.management.ThreadInfo;
-import java.lang.management.ThreadMXBean;
+import java.io.*;
+import java.lang.management.*;
 
 public class JVMUtils {
   // This is the name of the HotSpot Diagnostic MBean
@@ -107,7 +106,7 @@ public class JVMUtils {
           } catch (RuntimeException re) {
             throw re;
           } catch (Exception exp) {
-            throw new RuntimeException(exp);
+            throw new ArcadeDBException(exp);
           }
         }
       }
@@ -126,7 +125,7 @@ public class JVMUtils {
     } catch (RuntimeException re) {
       throw re;
     } catch (Exception exp) {
-      throw new RuntimeException(exp);
+      throw new ArcadeDBException(exp);
     }
   }
 }

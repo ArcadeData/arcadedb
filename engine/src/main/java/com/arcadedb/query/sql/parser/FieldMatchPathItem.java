@@ -4,11 +4,10 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.util.Collections;
-import java.util.Map;
-import java.util.Objects;
+import java.util.*;
 
 public
 class FieldMatchPathItem extends MatchPathItem {
@@ -87,7 +86,7 @@ class FieldMatchPathItem extends MatchPathItem {
     try {
       result = getClass().getConstructor(Integer.TYPE).newInstance(-1);
     } catch (Exception e) {
-      throw new RuntimeException(e);
+      throw new ArcadeDBException(e);
     }
     result.field = field == null ? null : field.copy();
     result.method = method == null ? null : method.copy();

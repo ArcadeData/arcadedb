@@ -25,7 +25,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.query.sql.executor.Result;
 
-import java.util.Map;
+import java.util.*;
 
 public class BothPathItem extends MatchPathItem {
   public BothPathItem(int id) {

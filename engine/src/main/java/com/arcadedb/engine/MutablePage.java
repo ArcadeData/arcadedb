@@ -24,6 +24,7 @@ package com.arcadedb.engine;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.TrackableBinary;
+import com.arcadedb.exception.ArcadeDBException;
 
 /**
  * Mutable page that accepts updates. It keeps track of the modified bytes.
@@ -53,7 +54,7 @@ public class MutablePage extends BasePage implements TrackableContent {
     } catch (RuntimeException e) {
       throw e;
     } catch (Exception e) {
-      throw new RuntimeException("Cannot create an immutable copy of page " + this, e);
+      throw new ArcadeDBException("Cannot create an immutable copy of page " + this, e);
     }
   }
 

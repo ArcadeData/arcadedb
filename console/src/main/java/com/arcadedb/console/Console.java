@@ -29,6 +29,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.DatabaseChecker;
 import com.arcadedb.engine.PaginatedFile;
+import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.MultiValue;
@@ -39,19 +40,19 @@ import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.RecordTableFormatter;
 import com.arcadedb.utility.TableFormatter;
-import org.jline.reader.*;
+import org.jline.reader.Completer;
+import org.jline.reader.EndOfFileException;
+import org.jline.reader.LineReader;
+import org.jline.reader.LineReaderBuilder;
+import org.jline.reader.ParsedLine;
+import org.jline.reader.UserInterruptException;
 import org.jline.reader.impl.completer.StringsCompleter;
 import org.jline.reader.impl.history.DefaultHistory;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
 
-import java.io.BufferedReader;
-import java.io.File;
-import java.io.FileReader;
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Iterator;
-import java.util.List;
+import java.io.*;
+import java.util.*;
 
 public class Console {
   private static final String           PROMPT               = "\n%s> ";
@@ -475,11 +476,11 @@ public class Console {
 
   private void executeLoad(final String fileName) throws IOException {
     if (fileName.isEmpty())
-      throw new RuntimeException("File name is empty");
+      throw new ArcadeDBException("File name is empty");
 
     final File file = new File(fileName);
     if (!file.exists())
-      throw new RuntimeException("File name '" + fileName + "' not found");
+      throw new ArcadeDBException("File name '" + fileName + "' not found");
 
     final FileReader fr = new FileReader(file);
     BufferedReader bufferedReader = new BufferedReader(fr);
@@ -575,7 +576,7 @@ public class Console {
 
   private void checkDatabaseIsOpen() {
     if (localDatabase == null && remoteDatabase == null)
-      throw new RuntimeException("No active database. Open a database first\n");
+      throw new ArcadeDBException("No active database. Open a database first\n");
   }
 
   private void connectToRemoteServer(final String url) {

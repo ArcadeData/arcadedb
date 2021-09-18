@@ -25,15 +25,14 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
-import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.Schema;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Schema;
 
-import java.util.Collection;
-import java.util.Map;
+import java.util.*;
 
 public class TruncateTypeStatement extends ODDLStatement {
 

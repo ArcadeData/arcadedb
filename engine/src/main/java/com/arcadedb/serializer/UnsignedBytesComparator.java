@@ -21,12 +21,13 @@
 
 package com.arcadedb.serializer;
 
+import com.arcadedb.exception.ArcadeDBException;
 import sun.misc.Unsafe;
 
-import java.lang.reflect.Field;
-import java.nio.ByteOrder;
-import java.security.PrivilegedExceptionAction;
-import java.util.Comparator;
+import java.lang.reflect.*;
+import java.nio.*;
+import java.security.*;
+import java.util.*;
 
 /**
  * This class was inspired by Guava's UnsignedBytes, under Apache 2 license.
@@ -156,7 +157,7 @@ public final class UnsignedBytesComparator {
         throw new NoSuchFieldError("the Unsafe");
       });
     } catch (java.security.PrivilegedActionException e) {
-      throw new RuntimeException("Could not initialize intrinsics", e.getCause());
+      throw new ArcadeDBException("Could not initialize intrinsics", e.getCause());
     }
   }
 

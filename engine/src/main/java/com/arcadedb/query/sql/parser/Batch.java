@@ -26,7 +26,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.util.Map;
+import java.util.*;
 
 public class Batch extends SimpleNode {
 

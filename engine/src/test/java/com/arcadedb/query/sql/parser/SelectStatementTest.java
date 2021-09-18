@@ -3,14 +3,15 @@ package com.arcadedb.query.sql.parser;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.io.ByteArrayInputStream;
-import java.io.InputStream;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
+import java.io.*;
+import java.util.*;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 public class SelectStatementTest {
 
@@ -57,10 +58,10 @@ public class SelectStatementTest {
     SimpleNode stm = checkRightSyntax("select from Foo");
     assertTrue(stm instanceof SelectStatement);
     SelectStatement select = (SelectStatement) stm;
-    assertTrue(select.getProjection() == null);
-    assertTrue(select.getTarget() != null);
+    assertNull(select.getProjection());
+    assertNotNull(select.getTarget());
     assertTrue(!Boolean.TRUE.equals(select.getLockRecord()));
-    assertTrue(select.getWhereClause() == null);
+    assertNull(select.getWhereClause());
   }
 
   @Test
@@ -68,12 +69,12 @@ public class SelectStatementTest {
     SimpleNode stm = checkRightSyntax("select bar from Foo");
     assertTrue(stm instanceof SelectStatement);
     SelectStatement select = (SelectStatement) stm;
-    assertTrue(select.getProjection() != null);
-    assertTrue(select.getProjection().getItems() != null);
+    assertNotNull(select.getProjection());
+    assertNotNull(select.getProjection().getItems());
     assertEquals(select.getProjection().getItems().size(), 1);
-    assertTrue(select.getTarget() != null);
+    assertNotNull(select.getTarget());
     assertTrue(!Boolean.TRUE.equals(select.getLockRecord()));
-    assertTrue(select.getWhereClause() == null);
+    assertNull(select.getWhereClause());
   }
 
   @Test

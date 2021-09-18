@@ -20,6 +20,7 @@
  */
 package com.arcadedb.server.ha;
 
+import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ChannelBinaryServer;
 import com.arcadedb.network.binary.ConnectionException;
@@ -145,10 +146,10 @@ public class LeaderNetworkListener extends Thread {
         ha.getServer().log(this, Level.WARNING, "Port %s:%d busy, trying the next available...", hostName, tryPort);
       } catch (SocketException se) {
         ha.getServer().log(this, Level.SEVERE, "Unable to create socket", se);
-        throw new RuntimeException(se);
+        throw new ArcadeDBException(se);
       } catch (IOException ioe) {
         ha.getServer().log(this, Level.SEVERE, "Unable to read data from an open socket", ioe);
-        throw new RuntimeException(ioe);
+        throw new ArcadeDBException(ioe);
       }
     }
 

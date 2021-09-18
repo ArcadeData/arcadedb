@@ -24,13 +24,15 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.query.sql.executor.*;
+import com.arcadedb.exception.ArcadeDBException;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.OUpdateExecutionPlanner;
+import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.UpdateExecutionPlan;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.stream.Collectors;
+import java.util.*;
+import java.util.stream.*;
 
 public class UpdateStatement extends Statement {
   public FromClause target;
@@ -128,7 +130,7 @@ public class UpdateStatement extends Statement {
     try {
       result = getClass().getConstructor(Integer.TYPE).newInstance(-1);
     } catch (Exception e) {
-      throw new RuntimeException(e);
+      throw new ArcadeDBException(e);
     }
 
     result.target = target == null ? null : target.copy();

@@ -27,7 +27,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.*;
-import java.util.stream.Collectors;
+import java.util.stream.*;
 
 public class MultiMatchPathItem extends MatchPathItem {
   protected List<MatchPathItem> items = new ArrayList<MatchPathItem>();

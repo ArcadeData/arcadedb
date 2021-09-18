@@ -24,12 +24,15 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.query.sql.executor.*;
+import com.arcadedb.exception.ArcadeDBException;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.DeleteExecutionPlan;
+import com.arcadedb.query.sql.executor.ODeleteEdgeExecutionPlanner;
+import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.stream.Collectors;
+import java.util.*;
+import java.util.stream.*;
 
 public class DeleteEdgeStatement extends Statement {
   private static final Object unset = new Object();
@@ -147,7 +150,7 @@ public class DeleteEdgeStatement extends Statement {
     try {
       result = getClass().getConstructor(Integer.TYPE).newInstance(-1);
     } catch (Exception e) {
-      throw new RuntimeException(e);
+      throw new ArcadeDBException(e);
     }
     result.typeName = typeName == null ? null : typeName.copy();
     result.targetBucketName = targetBucketName == null ? null : targetBucketName.copy();

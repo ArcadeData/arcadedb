@@ -26,13 +26,11 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
-import com.arcadedb.schema.DocumentType;
+import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.schema.DocumentType;
 
-import java.util.Collections;
-import java.util.HashSet;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 
 public class MatchPathItem extends SimpleNode {
   protected MethodCall  method;
@@ -183,11 +181,11 @@ public class MatchPathItem extends SimpleNode {
 
   @Override
   public MatchPathItem copy() {
-    MatchPathItem result = null;
+    MatchPathItem result;
     try {
       result = getClass().getConstructor(Integer.TYPE).newInstance(-1);
     } catch (Exception e) {
-      throw new RuntimeException(e);
+      throw new ArcadeDBException(e);
     }
     result.method = method == null ? null : method.copy();
     result.filter = filter == null ? null : filter.copy();

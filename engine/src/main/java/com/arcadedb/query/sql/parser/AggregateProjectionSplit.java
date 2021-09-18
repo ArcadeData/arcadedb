@@ -21,8 +21,7 @@
 
 package com.arcadedb.query.sql.parser;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
 
 /**
  *
