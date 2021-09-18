@@ -37,13 +37,20 @@ jobs:
           server-password: MAVEN_PASSWORD
 
       - name: Publish to OSS and Docker hub
-        run: mvn -Pdeploy -Pdocker  --batch-mode  --errors --fail-at-end --show-version  --file pom.xml deploy
+        run: mvn -Pcoverage -Pdeploy -Pdocker  --batch-mode  --errors --fail-at-end --show-version  --file pom.xml deploy
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MAVEN_USERNAME: ${{ secrets.OSSRH_USERNAME }}
           MAVEN_PASSWORD: ${{ secrets.OSSRH_TOKEN }}
           DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
           DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Codacy coverage reporter
+        if: ${{ always() }}
+        uses: codacy/codacy-coverage-reporter-action@v1
+        with:
+          project-token: ${{ secrets.CODACY_PROJECT_TOKEN }}
+          coverage-reports:  coverage/target/site/jacoco-aggregate/jacoco.xml
 
       - name: Test Report
         if: ${{ always() }}
