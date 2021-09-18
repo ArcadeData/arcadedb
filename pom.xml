@@ -76,6 +76,7 @@
         <module>mongodbw</module>
         <module>redisw</module>
         <module>postgresw</module>
+        <module>coverage</module>
         <module>package</module>
     </modules>
 
@@ -102,33 +103,6 @@
                     </compilerArgs>
                 </configuration>
             </plugin>
-
-            <!--            <plugin>-->
-            <!--                <groupId>org.jacoco</groupId>-->
-            <!--                <artifactId>jacoco-maven-plugin</artifactId>-->
-            <!--                <version>${jacoco-maven-plugin.version}</version>-->
-            <!--                <configuration>-->
-            <!--                    <excludes>-->
-            <!--                        <exclude>**/Q*.java</exclude>-->
-            <!--                        <exclude>**/static/**</exclude>-->
-            <!--                    </excludes>-->
-            <!--                </configuration>-->
-            <!--                <executions>-->
-            <!--                    <execution>-->
-            <!--                        <goals>-->
-            <!--                            <goal>prepare-agent</goal>-->
-            <!--                        </goals>-->
-            <!--                    </execution>-->
-            <!--                    <execution>-->
-            <!--                        <id>report</id>-->
-            <!--                        <phase>prepare-package</phase>-->
-            <!--                        <goals>-->
-            <!--                            <goal>report</goal>-->
-            <!--                        </goals>-->
-            <!--                    </execution>-->
-            <!--                </executions>-->
-            <!--            </plugin>-->
-
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-source-plugin</artifactId>
@@ -300,6 +274,35 @@
                                 <goals>
                                     <goal>deploy</goal>
                                     <goal>release</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <profile>
+            <id>coverage</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.jacoco</groupId>
+                        <artifactId>jacoco-maven-plugin</artifactId>
+                        <version>${jacoco-maven-plugin.version}</version>
+                        <configuration>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <goals>
+                                    <goal>prepare-agent</goal>
+                                </goals>
+                            </execution>
+                            <execution>
+                                <id>report</id>
+                                <phase>prepare-package</phase>
+                                <goals>
+                                    <goal>report</goal>
                                 </goals>
                             </execution>
                         </executions>
