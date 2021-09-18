@@ -3,7 +3,7 @@
 engines:
   coverage:
     exclude_paths:
-      - "server/src/main/resources/static"
+      - "server/src/main/resources/static/**"
       - "**/static/*"
       - "**/*.sh"
       - "**/*.md"
