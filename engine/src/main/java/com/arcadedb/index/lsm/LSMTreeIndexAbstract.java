@@ -37,11 +37,9 @@ import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.serializer.BinaryTypes;
 
-import java.io.File;
-import java.io.FileNotFoundException;
-import java.io.IOException;
+import java.io.*;
 import java.util.*;
-import java.util.logging.Level;
+import java.util.logging.*;
 
 import static com.arcadedb.database.Binary.BYTE_SERIALIZED_SIZE;
 import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
@@ -60,9 +58,9 @@ import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
 public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   public enum NULL_STRATEGY {ERROR, SKIP}
 
-  public static final    int    DEF_PAGE_SIZE     = 2 * 1024 * 1024;
-  public static final    RID    REMOVED_ENTRY_RID = new RID(null, -1, -1L);
-  protected static final String TEMP_EXT          = "temp_";
+  public static final    int    DEF_PAGE_SIZE = 2 * 1024 * 1024;
+  public final           RID    REMOVED_ENTRY_RID;
+  protected static final String TEMP_EXT      = "temp_";
 
   protected static final LSMTreeIndexCompacted.LookupResult LOWER     = new LSMTreeIndexCompacted.LookupResult(false, true, 0, null);
   protected static final LSMTreeIndexCompacted.LookupResult HIGHER    = new LSMTreeIndexCompacted.LookupResult(false, true, 0, null);
@@ -107,6 +105,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     this.unique = unique;
     this.keyTypes = keyTypes;
     this.nullStrategy = nullStrategy;
+    REMOVED_ENTRY_RID = new RID(database, -1, -1L);
   }
 
   /**
@@ -120,6 +119,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     this.comparator = serializer.getComparator();
     this.unique = unique;
     this.keyTypes = keyTypes;
+    REMOVED_ENTRY_RID = new RID(database, -1, -1L);
   }
 
   /**
@@ -132,6 +132,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     this.serializer = database.getSerializer();
     this.comparator = serializer.getComparator();
     this.unique = unique;
+    REMOVED_ENTRY_RID = new RID(database, -1, -1L);
   }
 
   /**

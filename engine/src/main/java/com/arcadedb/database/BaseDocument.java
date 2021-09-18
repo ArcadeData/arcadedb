@@ -24,8 +24,8 @@ package com.arcadedb.database;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 
-import java.math.BigDecimal;
-import java.util.Date;
+import java.math.*;
+import java.util.*;
 
 public abstract class BaseDocument extends BaseRecord implements Document {
   protected final DocumentType type;

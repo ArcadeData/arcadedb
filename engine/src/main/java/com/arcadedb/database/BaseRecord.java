@@ -25,6 +25,8 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 
+import java.util.*;
+
 public abstract class BaseRecord implements Record {
   protected final DatabaseInternal database;
   protected       RID              rid;
@@ -76,14 +78,12 @@ public abstract class BaseRecord implements Record {
 
     final RID pRID = ((Identifiable) o).getIdentity();
 
-    return rid != null ? rid.equals(pRID) : pRID == null;
+    return Objects.equals(rid, pRID);
   }
 
   @Override
   public int hashCode() {
-    int result = database.hashCode();
-    result = 31 * result + (rid != null ? rid.hashCode() : 0);
-    return result;
+    return rid.hashCode();
   }
 
   @Override

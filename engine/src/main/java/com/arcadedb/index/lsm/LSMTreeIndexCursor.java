@@ -21,7 +21,11 @@
 
 package com.arcadedb.index.lsm;
 
-import com.arcadedb.database.*;
+import com.arcadedb.database.Binary;
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
+import com.arcadedb.database.TransactionContext;
+import com.arcadedb.database.TransactionIndexContext;
 import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.index.IndexCursor;
@@ -30,7 +34,7 @@ import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.BinarySerializer;
 
-import java.io.IOException;
+import java.io.*;
 import java.util.*;
 
 /**
@@ -338,7 +342,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
         for (int k = currentValues.length - 1; k > -1; --k) {
           final RID rid = currentValues[k];
 
-          if (LSMTreeIndexAbstract.REMOVED_ENTRY_RID.equals(rid)) {
+          if (index.REMOVED_ENTRY_RID.equals(rid)) {
             removedEntry = true;
             break;
           }

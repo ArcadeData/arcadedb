@@ -24,6 +24,8 @@ package com.arcadedb.database;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.schema.DocumentType;
 
+import java.util.*;
+
 public class ImmutableEmbeddedDocument extends ImmutableDocument implements EmbeddedDocument {
   private final EmbeddedModifier modifier;
 
@@ -58,5 +60,49 @@ public class ImmutableEmbeddedDocument extends ImmutableDocument implements Embe
 
     // NEWEST IMMUTABLE VERSION, DELEGATE THE MODIFY TO THIS
     return (MutableEmbeddedDocument) mostRecent.modify();
+  }
+
+  @Override
+  public boolean equals(final Object o) {
+    return equals(this, o);
+  }
+
+  @Override
+  public int hashCode() {
+    return hashCode(this);
+  }
+
+  static boolean equals(final EmbeddedDocument me, final Object o) {
+    if (me == o)
+      return true;
+    if (!(o instanceof Document))
+      return false;
+    final Document that = (Document) o;
+
+    final Set<String> props = me.getPropertyNames();
+    if (!props.equals(that.getPropertyNames()))
+      return false;
+
+    for (String prop : props) {
+      final Object v1 = me.get(prop);
+      final Object v2 = that.get(prop);
+
+      if (v1 == null && v2 == null)
+        continue;
+      else if (!v1.equals(v2))
+        return false;
+    }
+
+    return true;
+  }
+
+  static int hashCode(final EmbeddedDocument me) {
+    int hash = 0;
+    final Set<String> props = me.getPropertyNames();
+    for (String prop : props) {
+      final Object value = me.get(prop);
+      hash += value != null ? value.hashCode() : 0;
+    }
+    return hash;
   }
 }

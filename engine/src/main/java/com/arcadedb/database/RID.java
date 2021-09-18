@@ -25,7 +25,8 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 
-import java.io.Serializable;
+import java.io.*;
+import java.util.*;
 
 /**
  * It represents the logical address of a record in the database. The record id is composed by the bucket id (the bucket containing the record) and the offset
@@ -126,15 +127,12 @@ public class RID implements Identifiable, Comparable<Identifiable>, Serializable
       return false;
 
     final RID o = ((Identifiable) obj).getIdentity();
-
-    return bucketId == o.bucketId && offset == o.offset;
+    return Objects.equals(database, o.getDatabase()) && bucketId == o.bucketId && offset == o.offset;
   }
 
   @Override
   public int hashCode() {
-    int result = bucketId;
-    result = 31 * result + (int) (offset ^ (offset >>> 32));
-    return result;
+    return Objects.hash(database, bucketId, offset);
   }
 
   @Override

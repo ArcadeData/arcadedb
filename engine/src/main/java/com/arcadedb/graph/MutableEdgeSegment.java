@@ -21,28 +21,35 @@
 
 package com.arcadedb.graph;
 
-import com.arcadedb.database.*;
+import com.arcadedb.database.BaseRecord;
+import com.arcadedb.database.Binary;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.RID;
+import com.arcadedb.database.RecordInternal;
 import com.arcadedb.serializer.BinaryTypes;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.util.Set;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.*;
+import java.util.concurrent.atomic.*;
 
 public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, RecordInternal {
-  public static final  byte RECORD_TYPE            = 3;
-  public static final  int  CONTENT_START_POSITION = Binary.BYTE_SERIALIZED_SIZE + Binary.INT_SERIALIZED_SIZE + BinaryTypes.getTypeSize(BinaryTypes.TYPE_RID);
-  private static final RID  NULL_RID               = new RID(null, -1, -1);
+  public static final byte RECORD_TYPE            = 3;
+  public static final int  CONTENT_START_POSITION = Binary.BYTE_SERIALIZED_SIZE + Binary.INT_SERIALIZED_SIZE + BinaryTypes.getTypeSize(BinaryTypes.TYPE_RID);
+  private final       RID  NULL_RID;
 
   private int bufferSize;
 
   public MutableEdgeSegment(final Database database, final RID rid) {
     super(database, rid, null);
+    NULL_RID = new RID(database, -1, -1);
     this.buffer = null;
   }
 
   public MutableEdgeSegment(final Database database, final RID rid, final Binary buffer) {
     super(database, rid, buffer);
+    NULL_RID = new RID(database, -1, -1);
     this.buffer = buffer;
     this.buffer.setAutoResizable(false);
     this.bufferSize = buffer.size();
@@ -50,6 +57,7 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
 
   public MutableEdgeSegment(final DatabaseInternal database, final int bufferSize) {
     super(database, null, new Binary(bufferSize));
+    NULL_RID = new RID(database, -1, -1);
     this.buffer.setAutoResizable(false);
     this.bufferSize = bufferSize;
     buffer.putByte(0, RECORD_TYPE);

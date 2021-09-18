@@ -413,7 +413,7 @@ public class OrientDBImporter {
       // EMBEDDED RECORD?
       return null;
 
-    final RID recordRid = new RID(null, rid);
+    final RID recordRid = new RID(database, rid);
     final String recordType = (String) attributes.get("@type");
     if (recordType != null) {
       switch (recordType) {

@@ -68,4 +68,14 @@ public class MutableEmbeddedDocument extends MutableDocument implements Embedded
   public byte getRecordType() {
     return EmbeddedDocument.RECORD_TYPE;
   }
+
+  @Override
+  public boolean equals(final Object o) {
+    return ImmutableEmbeddedDocument.equals(this, o);
+  }
+
+  @Override
+  public int hashCode() {
+    return ImmutableEmbeddedDocument.hashCode(this);
+  }
 }
