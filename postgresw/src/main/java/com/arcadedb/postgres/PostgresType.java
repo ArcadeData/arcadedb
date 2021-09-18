@@ -22,9 +22,10 @@
 package com.arcadedb.postgres;
 
 import com.arcadedb.database.Binary;
+import com.arcadedb.database.DatabaseFactory;
 
-import java.nio.ByteBuffer;
-import java.util.Date;
+import java.nio.*;
+import java.util.*;
 
 public enum PostgresType {
   SMALLINT(21, Short.class, 2, -1), //
@@ -59,7 +60,7 @@ public enum PostgresType {
 
     switch (this) {
     case VARCHAR:
-      final byte[] str = value.toString().getBytes();
+      final byte[] str = value.toString().getBytes(DatabaseFactory.getDefaultCharset());
       typeBuffer.putInt(str.length);
       typeBuffer.put(str);
       break;
@@ -117,7 +118,7 @@ public enum PostgresType {
   public static Object deserialize(final long code, final int formatCode, final byte[] valueAsBytes) {
     switch (formatCode) {
     case 0:
-      final String str = new String(valueAsBytes);
+      final String str = new String(valueAsBytes, DatabaseFactory.getDefaultCharset());
       if (code == VARCHAR.code)
         return str;
       else if (code == SMALLINT.code)

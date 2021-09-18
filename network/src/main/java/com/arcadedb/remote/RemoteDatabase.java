@@ -23,9 +23,14 @@ package com.arcadedb.remote;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.ConcurrentModificationException;
-import com.arcadedb.exception.*;
+import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.SchemaException;
+import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
@@ -38,33 +43,31 @@ import com.arcadedb.utility.RWLockContext;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.DataOutputStream;
-import java.io.IOException;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.nio.charset.StandardCharsets;
+import java.io.*;
+import java.net.*;
+import java.nio.charset.*;
 import java.util.*;
-import java.util.logging.Level;
+import java.util.logging.*;
 
 public class RemoteDatabase extends RWLockContext {
 
-  public static final int                         DEFAULT_PORT              = 2480;
-  private final       String                      originalServer;
-  private final       int                         originalPort;
-  private             int                         apiVersion                = 1;
-  private final       ContextConfiguration        configuration;
-  private final       String                      name;
-  private final       String                      userName;
-  private final       String                      userPassword;
-  private final       List<Pair<String, Integer>> replicaServerList         = new ArrayList<>();
-  private             String                      currentServer;
-  private             int                         currentPort;
-  private             CONNECTION_STRATEGY         connectionStrategy        = CONNECTION_STRATEGY.ROUND_ROBIN;
-  private             Pair<String, Integer>       leaderServer;
-  private             int                         currentReplicaServerIndex = -1;
-  private       int    timeout  = 5000;
-  private final String protocol = "http";
-  private final String charset  = "UTF-8";
+  public static final  int                         DEFAULT_PORT              = 2480;
+  private final        String                      originalServer;
+  private final        int                         originalPort;
+  private              int                         apiVersion                = 1;
+  private final        ContextConfiguration        configuration;
+  private final        String                      name;
+  private final        String                      userName;
+  private final        String                      userPassword;
+  private final        List<Pair<String, Integer>> replicaServerList         = new ArrayList<>();
+  private              String                      currentServer;
+  private              int                         currentPort;
+  private              CONNECTION_STRATEGY         connectionStrategy        = CONNECTION_STRATEGY.ROUND_ROBIN;
+  private              Pair<String, Integer>       leaderServer;
+  private              int                         currentReplicaServerIndex = -1;
+  private              int                         timeout                   = 5000;
+  private static final String                      protocol                  = "http";
+  private static final String                      charset                   = "UTF-8";
 
   public RemoteDatabase(final String server, final int port, final String name, final String userName, final String userPassword) {
     this(server, port, name, userName, userPassword, new ContextConfiguration());
@@ -360,7 +363,7 @@ public class RemoteDatabase extends RWLockContext {
     connection.setRequestMethod("POST");
 
     final String authorization = userName + ":" + userPassword;
-    connection.setRequestProperty("Authorization", "Basic " + Base64.getEncoder().encodeToString(authorization.getBytes()));
+    connection.setRequestProperty("Authorization", "Basic " + Base64.getEncoder().encodeToString(authorization.getBytes(DatabaseFactory.getDefaultCharset())));
 
     connection.setDoOutput(true);
     return connection;

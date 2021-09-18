@@ -40,17 +40,12 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.*;
-import java.math.BigDecimal;
-import java.text.ParseException;
-import java.text.SimpleDateFormat;
-import java.util.Comparator;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
-import java.util.zip.GZIPInputStream;
+import java.math.*;
+import java.text.*;
+import java.util.*;
+import java.util.concurrent.atomic.*;
+import java.util.stream.*;
+import java.util.zip.*;
 
 /**
  * Importer of a Neo4j dataabase exported in JSONL format. To export a Neo4j database follow the instructions in https://neo4j.com/labs/apoc/4.3/export/json/.
@@ -64,15 +59,15 @@ public class Neo4jImporter {
   private              String                         databasePath;
   private              String                         inputFile;
   private              boolean                        overwriteDatabase     = false;
-  private       Type              typeForDecimals     = Type.DECIMAL;
-  private final Map<String, Long> totalVerticesByType = new HashMap<>();
-  private final long              totalVerticesParsed = 0L;
-  private final Map<String, Long> totalEdgesByType    = new HashMap<>();
-  private final long              totalEdgesParsed    = 0L;
-  private       long              totalAttributesParsed = 0L;
-  private final long errors                = 0L;
-  private final long warnings              = 0L;
-  private       DatabaseFactory factory;
+  private              Type                           typeForDecimals       = Type.DECIMAL;
+  private final        Map<String, Long>              totalVerticesByType   = new HashMap<>();
+  private final        long                           totalVerticesParsed   = 0L;
+  private final        Map<String, Long>              totalEdgesByType      = new HashMap<>();
+  private final        long                           totalEdgesParsed      = 0L;
+  private              long                           totalAttributesParsed = 0L;
+  private final        long                           errors                = 0L;
+  private final        long                           warnings              = 0L;
+  private              DatabaseFactory                factory;
   private              Database                       database;
   private              int                            batchSize             = 10_000;
   private              long                           processedItems        = 0L;
@@ -450,7 +445,7 @@ public class Neo4jImporter {
   private void readFile(Callable<Void, JSONObject> callback) throws IOException {
     inputStream = file.getName().endsWith("gz") ? new GZIPInputStream(new FileInputStream(file)) : new FileInputStream(file);
     try {
-      reader = new BufferedReader(new InputStreamReader(inputStream));
+      reader = new BufferedReader(new InputStreamReader(inputStream, DatabaseFactory.getDefaultCharset()));
       try {
         for (long lineNumber = 0; reader.ready(); ++lineNumber) {
           final String line = reader.readLine();

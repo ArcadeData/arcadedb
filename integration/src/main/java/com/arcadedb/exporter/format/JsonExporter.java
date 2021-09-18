@@ -22,6 +22,7 @@
 package com.arcadedb.exporter.format;
 
 import com.arcadedb.Constants;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Record;
 import com.arcadedb.exporter.ExporterContext;
@@ -35,15 +36,10 @@ import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.JsonGraphSerializer;
 import org.json.JSONObject;
 
-import java.io.File;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.io.OutputStreamWriter;
-import java.util.ArrayList;
-import java.util.Iterator;
-import java.util.List;
-import java.util.logging.Level;
-import java.util.zip.GZIPOutputStream;
+import java.io.*;
+import java.util.*;
+import java.util.logging.*;
+import java.util.zip.*;
 
 public class JsonExporter extends AbstractExporter {
   protected final      JSONObject         sharedJson = new JSONObject();
@@ -63,7 +59,8 @@ public class JsonExporter extends AbstractExporter {
 
     logger.log(0, "Exporting database to '%s'...", settings.file);
 
-    try (OutputStreamWriter fileWriter = new OutputStreamWriter(new GZIPOutputStream(new FileOutputStream(settings.file)))) {
+    try (OutputStreamWriter fileWriter = new OutputStreamWriter(new GZIPOutputStream(new FileOutputStream(settings.file)),
+        DatabaseFactory.getDefaultCharset())) {
       writer = fileWriter;
 
       writeJsonLine("info", new JSONObject().put("description", "ArcadeDB Database Export").put("exporterVersion", VERSION)//

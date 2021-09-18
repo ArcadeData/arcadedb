@@ -22,6 +22,7 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.Constants;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
@@ -58,7 +59,7 @@ public abstract class AbstractHandler implements HttpHandler {
     e.getRequestReceiver().receiveFullBytes(
         // OK
         (exchange, data) -> {
-          result.append(new String(data));
+          result.append(new String(data,DatabaseFactory.getDefaultCharset()));
         },
         // ERROR
         (exchange, err) -> {
@@ -94,7 +95,7 @@ public abstract class AbstractHandler implements HttpHandler {
 
         final String authPairCypher = auth.substring(AUTHORIZATION_BASIC.length() + 1);
 
-        final String authPairClear = new String(Base64.getDecoder().decode(authPairCypher));
+        final String authPairClear = new String(Base64.getDecoder().decode(authPairCypher), DatabaseFactory.getDefaultCharset());
 
         final String[] authPair = authPairClear.split(":");
 

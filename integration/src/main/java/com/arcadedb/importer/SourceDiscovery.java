@@ -21,34 +21,30 @@
 
 package com.arcadedb.importer;
 
-import com.arcadedb.importer.format.*;
+import com.arcadedb.importer.format.CSVFormatImporter;
+import com.arcadedb.importer.format.FormatImporter;
+import com.arcadedb.importer.format.JSONFormatImporter;
+import com.arcadedb.importer.format.OrientDBFormatImporter;
+import com.arcadedb.importer.format.RDFFormatImporter;
+import com.arcadedb.importer.format.XMLFormatImporter;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.FileUtils;
 
-import java.io.BufferedInputStream;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.IOException;
-import java.net.HttpURLConnection;
-import java.net.URL;
+import java.io.*;
+import java.net.*;
 import java.util.*;
-import java.util.concurrent.Callable;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.logging.Level;
-import java.util.zip.GZIPInputStream;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipInputStream;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+import java.util.logging.*;
+import java.util.zip.*;
 
 public class SourceDiscovery {
-  private static final String  RESOURCE_SEPARATOR = ":::";
-  private static final String  FILE_PREFIX        = "file://";
-  private static final String  CLASSPATH_PREFIX   = "classpath://";
-  private              String  url;
-  private              long    limitBytes         = 10000000;
-  private              long    limitEntries       = 0;
-  private              int     objectNestLevel    = 1;
-  private              int     maxValueSampling   = 300;
-  private              boolean trimText           = true;
+  private static final String RESOURCE_SEPARATOR = ":::";
+  private static final String FILE_PREFIX        = "file://";
+  private static final String CLASSPATH_PREFIX   = "classpath://";
+  private              String url;
+  private              long   limitBytes         = 10000000;
+  private              long   limitEntries       = 0;
 
   public SourceDiscovery(final String url) {
     this.url = url;
@@ -196,6 +192,13 @@ public class SourceDiscovery {
       knownFileType = settings.edgesFileType;
       knownDelimiter = settings.edgesDelimiter;
       break;
+
+    case DATABASE:
+      // NO SPECIAL SETTINGS
+      break;
+
+    default:
+      throw new IllegalArgumentException("entityType '" + entityType + "' not supported");
     }
 
     if (knownFileType != null) {
@@ -362,12 +365,6 @@ public class SourceDiscovery {
       limitBytes = FileUtils.getSizeAsNumber(value);
     else if ("analyzeLimitEntries".equals(name))
       limitEntries = Long.parseLong(value);
-    else if ("analyzeMaxValueSampling".equals(name))
-      maxValueSampling = Integer.parseInt(value);
-    else if ("analyzeTrimText".equals(name))
-      trimText = Boolean.parseBoolean(value);
-    else if ("objectNestLevel".equals(name))
-      objectNestLevel = Integer.parseInt(value);
     else
       throw new IllegalArgumentException("Invalid setting '" + name + "'");
   }

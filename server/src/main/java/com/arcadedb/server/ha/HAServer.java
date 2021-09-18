@@ -48,16 +48,12 @@ import com.arcadedb.utility.RecordTableFormatter;
 import com.arcadedb.utility.TableFormatter;
 import io.undertow.server.handlers.PathHandler;
 
-import java.io.IOException;
-import java.net.InetAddress;
-import java.net.UnknownHostException;
+import java.io.*;
+import java.net.*;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.logging.Level;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+import java.util.logging.*;
 
 // TODO: REFACTOR LEADER/REPLICA IN 2 USERTYPEES
 public class HAServer implements ServerPlugin {
@@ -94,7 +90,7 @@ public class HAServer implements ServerPlugin {
   private volatile ELECTION_STATUS                            electionStatus                    = ELECTION_STATUS.DONE;
   private          boolean                                    started;
 
-  private class QuorumMessage {
+  private static class QuorumMessage {
     public final long           sentOn = System.currentTimeMillis();
     public final CountDownLatch semaphore;
 
@@ -103,7 +99,7 @@ public class HAServer implements ServerPlugin {
     }
   }
 
-  private class ForwardedMessage {
+  private static class ForwardedMessage {
     public final CountDownLatch semaphore;
     public       ErrorResponse  error;
     public       Object         result;
@@ -113,7 +109,7 @@ public class HAServer implements ServerPlugin {
     }
   }
 
-  private class RemovedServerInfo {
+  private static class RemovedServerInfo {
     String serverName;
     long   joinedOn;
     long   leftOn;
@@ -771,7 +767,7 @@ public class HAServer implements ServerPlugin {
   public void removeServer(final String remoteServerName) {
     final Leader2ReplicaNetworkExecutor c = replicaConnections.remove(remoteServerName);
     if (c != null) {
-      final RemovedServerInfo removedServer = new RemovedServerInfo(remoteServerName, c.getJoinedOn());
+      //final RemovedServerInfo removedServer = new RemovedServerInfo(remoteServerName, c.getJoinedOn());
       server.log(this, Level.SEVERE, "Replica '%s' seems not active, removing it from the cluster", remoteServerName);
       c.close();
     }

@@ -27,9 +27,9 @@ import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ha.network.ServerSocketFactory;
 import com.arcadedb.utility.Pair;
 
-import java.io.IOException;
+import java.io.*;
 import java.net.*;
-import java.util.logging.Level;
+import java.util.logging.*;
 
 public class LeaderNetworkListener extends Thread {
 
@@ -37,16 +37,16 @@ public class LeaderNetworkListener extends Thread {
     void connected();
   }
 
-  private final HAServer            ha;
-  private final ServerSocketFactory socketFactory;
-  private       ServerSocket        serverSocket;
-  private          InetSocketAddress   inboundAddr;
-  private volatile boolean active           = true;
-  private final    int     socketBufferSize = 0;
-  private final    int     protocolVersion  = -1;
-  private final String hostName;
-  private          int                 port;
-  private          ClientConnected     callback;
+  private final        HAServer            ha;
+  private final        ServerSocketFactory socketFactory;
+  private              ServerSocket        serverSocket;
+  private              InetSocketAddress   inboundAddr;
+  private volatile     boolean             active           = true;
+  private final static int                 socketBufferSize = 0;
+  private final static int                 protocolVersion  = -1;
+  private final        String              hostName;
+  private              int                 port;
+  private              ClientConnected     callback;
 
   public LeaderNetworkListener(final HAServer ha, final ServerSocketFactory iSocketFactory, final String iHostName, final String iHostPortRange) {
     super(ha.getServerName() + " replication listen at " + iHostName + ":" + iHostPortRange);

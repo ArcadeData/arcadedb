@@ -23,12 +23,29 @@ package com.arcadedb.server.ha;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Binary;
+import com.arcadedb.database.DatabaseContext;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.DocumentCallback;
+import com.arcadedb.database.DocumentIndexer;
+import com.arcadedb.database.EmbeddedDatabase;
+import com.arcadedb.database.EmbeddedModifier;
+import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.MutableEmbeddedDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
-import com.arcadedb.database.*;
+import com.arcadedb.database.RecordCallback;
+import com.arcadedb.database.RecordFactory;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.database.async.OkCallback;
-import com.arcadedb.engine.*;
+import com.arcadedb.engine.FileManager;
+import com.arcadedb.engine.MutablePage;
+import com.arcadedb.engine.PageManager;
+import com.arcadedb.engine.PaginatedFile;
+import com.arcadedb.engine.TransactionManager;
+import com.arcadedb.engine.WALFileFactory;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TransactionException;
@@ -49,13 +66,10 @@ import com.arcadedb.server.ha.message.TxForwardRequest;
 import com.arcadedb.server.ha.message.TxRequest;
 import com.arcadedb.utility.Pair;
 
-import java.io.IOException;
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.Callable;
-import java.util.concurrent.atomic.AtomicReference;
+import java.io.*;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
 
 public class ReplicatedDatabase implements DatabaseInternal {
   private final ArcadeDBServer   server;
@@ -471,6 +485,11 @@ public class ReplicatedDatabase implements DatabaseInternal {
   @Override
   public PageManager getPageManager() {
     return proxied.getPageManager();
+  }
+
+  @Override
+  public int hashCode() {
+    return Objects.hash(proxied);
   }
 
   public boolean equals(final Object o) {

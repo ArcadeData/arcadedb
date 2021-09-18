@@ -23,12 +23,15 @@ package com.arcadedb.server.security;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.DefaultConsoleReader;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.security.credential.CredentialsValidator;
+import com.arcadedb.server.security.credential.DefaultCredentialsValidator;
 import com.arcadedb.utility.AnsiCode;
 import com.arcadedb.utility.LRUCache;
 import io.undertow.server.handlers.PathHandler;
@@ -36,18 +39,17 @@ import io.undertow.server.handlers.PathHandler;
 import javax.crypto.SecretKey;
 import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.PBEKeySpec;
-import java.io.IOException;
-import java.security.NoSuchAlgorithmException;
-import java.security.SecureRandom;
-import java.security.spec.InvalidKeySpecException;
-import java.security.spec.KeySpec;
+import java.io.*;
+import java.nio.charset.*;
+import java.security.*;
+import java.security.spec.*;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
-import java.util.logging.Level;
+import java.util.concurrent.*;
+import java.util.logging.*;
 
-import static com.arcadedb.GlobalConfiguration.*;
-import java.nio.charset.StandardCharsets;
+import static com.arcadedb.GlobalConfiguration.SERVER_SECURITY_ALGORITHM;
+import static com.arcadedb.GlobalConfiguration.SERVER_SECURITY_SALT_CACHE_SIZE;
+import static com.arcadedb.GlobalConfiguration.SERVER_SECURITY_SALT_ITERATIONS;
 
 public class ServerSecurity implements ServerPlugin {
 
@@ -146,7 +148,7 @@ public class ServerSecurity implements ServerPlugin {
   }
 
   /**
-   * Override the default credentials validator providing a custom one.
+   * Override the default @{@link CredentialsValidator} implementation (@{@link DefaultCredentialsValidator}) providing a custom one.
    */
   public void setCredentialsValidator(final CredentialsValidator credentialsValidator) {
     this.credentialsValidator = credentialsValidator;
@@ -181,7 +183,7 @@ public class ServerSecurity implements ServerPlugin {
     final byte[] rawHash = secret.getEncoded();
     final byte[] hashBase64 = Base64.getEncoder().encode(rawHash);
 
-    return new String(hashBase64);
+    return new String(hashBase64, DatabaseFactory.getDefaultCharset());
   }
 
   @Override
@@ -210,7 +212,7 @@ public class ServerSecurity implements ServerPlugin {
   protected static String generateRandomSalt() {
     final byte[] salt = new byte[SALT_SIZE];
     RANDOM.nextBytes(salt);
-    return new String(Base64.getEncoder().encode(salt));
+    return new String(Base64.getEncoder().encode(salt), DatabaseFactory.getDefaultCharset());
   }
 
   protected String encode(final String password, final String salt, final int iterations) {

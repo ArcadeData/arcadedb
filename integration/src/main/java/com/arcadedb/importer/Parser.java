@@ -21,6 +21,8 @@
 
 package com.arcadedb.importer;
 
+import com.arcadedb.database.DatabaseFactory;
+
 import java.io.*;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -42,7 +44,7 @@ public class Parser {
     this.compressed = source.compressed;
     this.total = source.totalSize;
 
-    this.reader = new InputStreamReader(this.is);
+    this.reader = new InputStreamReader(this.is, DatabaseFactory.getDefaultCharset());
     this.is.mark(0);
   }
 

@@ -19,10 +19,12 @@
  * under the License.
  */
 
-package com.arcadedb.server.security;
+package com.arcadedb.server.security.credential;
+
+import com.arcadedb.server.security.ServerSecurityException;
 
 /**
- * Interface for validating credentials. The default implementation is
+ * Interface for validating credentials. The default implementation is @{@link DefaultCredentialsValidator}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

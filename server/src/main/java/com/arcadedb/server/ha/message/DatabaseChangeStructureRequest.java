@@ -21,6 +21,7 @@
 package com.arcadedb.server.ha.message;
 
 import com.arcadedb.database.Binary;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.EmbeddedSchema;
@@ -132,7 +133,7 @@ public class DatabaseChangeStructureRequest extends HAAbstractCommand {
 
       // REPLACE SCHEMA FILE
       final File file = new File(db.getDatabasePath() + "/" + EmbeddedSchema.SCHEMA_FILE_NAME);
-      FileUtils.writeContentToStream(file, schemaJson.getBytes());
+      FileUtils.writeContentToStream(file, schemaJson.getBytes(DatabaseFactory.getDefaultCharset()));
 
       // RELOAD SCHEMA
       db.getSchema().getEmbedded().loadChanges();

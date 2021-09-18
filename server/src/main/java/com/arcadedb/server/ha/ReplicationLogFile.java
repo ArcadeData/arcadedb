@@ -29,17 +29,12 @@ import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.LockContext;
 import com.arcadedb.utility.Pair;
 
-import java.io.File;
-import java.io.FileNotFoundException;
-import java.io.IOException;
-import java.io.RandomAccessFile;
-import java.nio.ByteBuffer;
-import java.nio.channels.FileChannel;
-import java.util.Arrays;
-import java.util.Comparator;
-import java.util.List;
-import java.util.concurrent.Callable;
-import java.util.logging.Level;
+import java.io.*;
+import java.nio.*;
+import java.nio.channels.*;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.logging.*;
 
 /**
  * Replication Log File. Writes the messages to send to a remote node on reconnection.
@@ -59,14 +54,14 @@ public class ReplicationLogFile extends LockContext {
   private final        ByteBuffer                    bufferHeader         = ByteBuffer.allocate(BUFFER_HEADER_SIZE);
   private static final int                           BUFFER_FOOTER_SIZE   = Binary.INT_SERIALIZED_SIZE + Binary.LONG_SERIALIZED_SIZE;
   private final        ByteBuffer                    bufferFooter         = ByteBuffer.allocate(BUFFER_FOOTER_SIZE);
-  private static final long                          MAGIC_NUMBER         = 93719829258702l;
-  private              long                          lastMessageNumber    = -1;
-  private final        long                          CHUNK_SIZE           = 64 * 1024 * 1024;
+  private static final long                          MAGIC_NUMBER         = 93719829258702L;
+  private              long                          lastMessageNumber    = -1L;
+  private final static long                          CHUNK_SIZE           = 64L * 1024L * 1024L;
   private              long                          chunkNumber          = 0L;
   private              WALFile.FLUSH_TYPE            flushPolicy          = WALFile.FLUSH_TYPE.NO;
   private              ReplicationLogArchiveCallback archiveChunkCallback = null;
-  private              long                          totalArchivedChunks  = 0;
-  private              long                          maxArchivedChunks    = 200;
+  private              long                          totalArchivedChunks  = 0L;
+  private              long                          maxArchivedChunks    = 200L;
 
   private static final Comparator<File> LOG_COMPARATOR = (file1, file2) -> {
     int seq1 = Integer.parseInt(file1.getName().substring(file1.getName().lastIndexOf(".") + 1));
@@ -303,7 +298,7 @@ public class ReplicationLogFile extends LockContext {
         searchChannel.read(bufferFooter, posInChunk + BUFFER_HEADER_SIZE + contentLength);
         bufferFooter.rewind();
 
-        final int entrySize = bufferFooter.getInt();
+        bufferFooter.getInt(); // ENTRY-SIZE
         final long magicNumber = bufferFooter.getLong();
 
         if (magicNumber != MAGIC_NUMBER)

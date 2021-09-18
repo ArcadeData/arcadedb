@@ -22,13 +22,11 @@ package com.arcadedb.network.binary;
 
 import com.arcadedb.log.LogManager;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
+import java.io.*;
 import java.net.*;
-import java.util.Enumeration;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.logging.Level;
+import java.util.*;
+import java.util.concurrent.atomic.*;
+import java.util.logging.*;
 
 public abstract class Channel {
   private static final AtomicLong   metricGlobalTransmittedBytes = new AtomicLong();
@@ -38,11 +36,9 @@ public abstract class Channel {
   public               InputStream  inStream;
   public               OutputStream outStream;
   public               int          socketBufferSize;
-  protected     long       timeout;
-  private final AtomicLong metricTransmittedBytes = new AtomicLong();
-  private final AtomicLong metricReceivedBytes    = new AtomicLong();
-  private final AtomicLong metricFlushes          = new AtomicLong();
-  private       String     profilerMetric;
+  private final        AtomicLong   metricTransmittedBytes       = new AtomicLong();
+  private final        AtomicLong   metricReceivedBytes          = new AtomicLong();
+  private final        AtomicLong   metricFlushes                = new AtomicLong();
 
   public Channel(final Socket iSocket) throws IOException {
     socketBufferSize = 0;

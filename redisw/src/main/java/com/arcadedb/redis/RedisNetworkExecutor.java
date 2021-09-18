@@ -22,24 +22,21 @@ package com.arcadedb.redis;
 
 import com.arcadedb.Constants;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.network.binary.ChannelBinaryServer;
 import com.arcadedb.server.ArcadeDBServer;
 
-import java.io.EOFException;
-import java.io.IOException;
-import java.net.Socket;
-import java.net.SocketException;
-import java.net.SocketTimeoutException;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.logging.Level;
+import java.io.*;
+import java.net.*;
+import java.util.*;
+import java.util.logging.*;
 
 public class RedisNetworkExecutor extends Thread {
   private static final byte[]              LF       = new byte[] { '\r', '\n' };
   private final        ArcadeDBServer      server;
-  private final    Database            database;
-  private final    ChannelBinaryServer channel;
-  private volatile boolean             shutdown = false;
+  private final        Database            database;
+  private final        ChannelBinaryServer channel;
+  private volatile     boolean             shutdown = false;
 
   private       int           posInBuffer = 0;
   private final StringBuilder value       = new StringBuilder();
@@ -223,7 +220,7 @@ public class RedisNetworkExecutor extends Thread {
   public void replyToClient(final StringBuilder response) throws IOException {
     server.log(this, Level.FINE, "Redis wrapper: Sending response back to the client '%s'...", response);
 
-    final byte[] buffer = response.toString().getBytes();
+    final byte[] buffer = response.toString().getBytes(DatabaseFactory.getDefaultCharset());
 
     channel.outStream.write(buffer);
     channel.flush();

@@ -21,17 +21,12 @@
 
 package com.arcadedb.server.security;
 
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.utility.FileUtils;
 import org.json.JSONObject;
 
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileWriter;
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.io.*;
+import java.util.*;
 
 public class ServerSecurityFileRepository {
 
@@ -61,7 +56,7 @@ public class ServerSecurityFileRepository {
       user.put("databases", u.databases);
     }
 
-    try(FileWriter writer = new FileWriter(file)){
+    try (FileWriter writer = new FileWriter(file, DatabaseFactory.getDefaultCharset())) {
       writer.write(root.toString());
     }
   }

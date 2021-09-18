@@ -21,27 +21,32 @@
 
 package com.arcadedb.importer.format;
 
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.importer.*;
+import com.arcadedb.importer.AnalyzedEntity;
+import com.arcadedb.importer.ImportException;
+import com.arcadedb.importer.ImporterContext;
+import com.arcadedb.importer.ImporterSettings;
+import com.arcadedb.importer.Parser;
+import com.arcadedb.importer.SourceSchema;
 import com.univocity.parsers.common.AbstractParser;
 
-import java.io.IOException;
-import java.io.InputStreamReader;
+import java.io.*;
 
 public class RDFFormatImporter extends CSVFormatImporter {
   private static final char[] STRING_CONTENT_SKIP = new char[] { '\'', '\'', '"', '"', '<', '>' };
 
   @Override
-  public void load(final SourceSchema sourceSchema, AnalyzedEntity.ENTITY_TYPE entityType, final Parser parser,
-      final DatabaseInternal database, final ImporterContext context, final ImporterSettings settings) throws ImportException {
+  public void load(final SourceSchema sourceSchema, AnalyzedEntity.ENTITY_TYPE entityType, final Parser parser, final DatabaseInternal database,
+      final ImporterContext context, final ImporterSettings settings) throws ImportException {
     AbstractParser csvParser = createCSVParser(settings, ",");
 
     long skipEntries = settings.edgesSkipEntries != null ? settings.edgesSkipEntries.longValue() : 0;
-    if (settings.edgesSkipEntries == null && settings.edgesSkipEntries == null)
+    if (settings.edgesSkipEntries == null)
       // BY DEFAULT SKIP THE FIRST LINE AS HEADER
       skipEntries = 1l;
 
-    try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream())) {
+    try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream(), DatabaseFactory.getDefaultCharset())) {
       csvParser.beginParsing(inputFileReader);
 
       if (!database.isTransactionActive())
@@ -60,9 +65,8 @@ public class RDFFormatImporter extends CSVFormatImporter {
         final String v2Id = getStringContent(row[2], STRING_CONTENT_SKIP);
 
         // CREATE AN EDGE
-        database.newEdgeByKeys(settings.vertexTypeName, new String[] { settings.typeIdProperty }, new Object[] { v1Id },
-            settings.vertexTypeName, new String[] { settings.typeIdProperty }, new Object[] { v2Id }, true, settings.edgeTypeName, true,
-            "label", edgeLabel);
+        database.newEdgeByKeys(settings.vertexTypeName, new String[] { settings.typeIdProperty }, new Object[] { v1Id }, settings.vertexTypeName,
+            new String[] { settings.typeIdProperty }, new Object[] { v2Id }, true, settings.edgeTypeName, true, "label", edgeLabel);
 
         context.createdEdges.incrementAndGet();
         context.parsed.incrementAndGet();

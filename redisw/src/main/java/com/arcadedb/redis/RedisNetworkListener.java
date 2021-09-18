@@ -24,9 +24,9 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ha.network.ServerSocketFactory;
 
-import java.io.IOException;
+import java.io.*;
 import java.net.*;
-import java.util.logging.Level;
+import java.util.logging.*;
 
 public class RedisNetworkListener extends Thread {
 
@@ -34,19 +34,18 @@ public class RedisNetworkListener extends Thread {
     void connected();
   }
 
-  private final ArcadeDBServer      server;
-  private final ServerSocketFactory socketFactory;
-  private       ServerSocket        serverSocket;
-  private          InetSocketAddress   inboundAddr;
-  private volatile boolean active           = true;
-  private final    int     socketBufferSize = 0;
-  private final    int     protocolVersion  = -1;
-  private final String hostName;
-  private          int                 port;
-  private          ClientConnected     callback;
+  private final        ArcadeDBServer      server;
+  private final        ServerSocketFactory socketFactory;
+  private              ServerSocket        serverSocket;
+  private              InetSocketAddress   inboundAddr;
+  private volatile     boolean             active           = true;
+  private static final int                 socketBufferSize = 0;
+  private static final int                 protocolVersion  = -1;
+  private final        String              hostName;
+  private              int                 port;
+  private              ClientConnected     callback;
 
-  public RedisNetworkListener(final ArcadeDBServer server, final ServerSocketFactory iSocketFactory, final String iHostName,
-      final String iHostPortRange) {
+  public RedisNetworkListener(final ArcadeDBServer server, final ServerSocketFactory iSocketFactory, final String iHostName, final String iHostPortRange) {
     super(server.getServerName() + " RedisW listening at " + iHostName + ":" + iHostPortRange);
 
     this.server = server;
@@ -135,8 +134,8 @@ public class RedisNetworkListener extends Thread {
 
         if (serverSocket.isBound()) {
           server.log(this, Level.INFO,
-              "Listening for replication connections on $ANSI{green " + inboundAddr.getAddress().getHostAddress() + ":" + inboundAddr
-                  .getPort() + "} (protocol v." + protocolVersion + ")");
+              "Listening for replication connections on $ANSI{green " + inboundAddr.getAddress().getHostAddress() + ":" + inboundAddr.getPort()
+                  + "} (protocol v." + protocolVersion + ")");
 
           port = tryPort;
           return;
@@ -152,11 +151,9 @@ public class RedisNetworkListener extends Thread {
       }
     }
 
-    server.log(this, Level.SEVERE, "Unable to listen for connections using the configured ports '%s' on host '%s'", null,
-        hostPortRange, hostName);
+    server.log(this, Level.SEVERE, "Unable to listen for connections using the configured ports '%s' on host '%s'", null, hostPortRange, hostName);
 
-    throw new ServerException(
-        "Unable to listen for connections using the configured ports '" + hostPortRange + "' on host '" + hostName + "'");
+    throw new ServerException("Unable to listen for connections using the configured ports '" + hostPortRange + "' on host '" + hostName + "'");
   }
 
   private static int[] getPorts(final String iHostPortRange) {

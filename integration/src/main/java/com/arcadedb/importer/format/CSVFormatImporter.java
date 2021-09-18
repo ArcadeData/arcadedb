@@ -22,9 +22,18 @@
 package com.arcadedb.importer.format;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
-import com.arcadedb.importer.*;
+import com.arcadedb.importer.AbstractFormatImporter;
+import com.arcadedb.importer.AnalyzedEntity;
+import com.arcadedb.importer.AnalyzedProperty;
+import com.arcadedb.importer.AnalyzedSchema;
+import com.arcadedb.importer.ImportException;
+import com.arcadedb.importer.ImporterContext;
+import com.arcadedb.importer.ImporterSettings;
+import com.arcadedb.importer.Parser;
+import com.arcadedb.importer.SourceSchema;
 import com.arcadedb.importer.graph.EdgeLinkedCallback;
 import com.arcadedb.importer.graph.GraphImporter;
 import com.arcadedb.index.CompressedAny2RIDIndex;
@@ -37,11 +46,9 @@ import com.univocity.parsers.csv.CsvParserSettings;
 import com.univocity.parsers.tsv.TsvParser;
 import com.univocity.parsers.tsv.TsvParserSettings;
 
-import java.io.EOFException;
-import java.io.IOException;
-import java.io.InputStreamReader;
+import java.io.*;
 import java.util.*;
-import java.util.logging.Level;
+import java.util.logging.*;
 
 public class CSVFormatImporter extends AbstractFormatImporter {
   private static final Object[] NO_PARAMS = new Object[] {};
@@ -81,7 +88,7 @@ public class CSVFormatImporter extends AbstractFormatImporter {
       // BY DEFAULT SKIP THE FIRST LINE AS HEADER
       skipEntries = 1l;
 
-    try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream())) {
+    try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream(), DatabaseFactory.getDefaultCharset())) {
       csvParser.beginParsing(inputFileReader);
 
       if (!database.isTransactionActive())
@@ -195,11 +202,11 @@ public class CSVFormatImporter extends AbstractFormatImporter {
     });
 
     long skipEntries = settings.verticesSkipEntries != null ? settings.verticesSkipEntries.longValue() : 0;
-    if (settings.verticesSkipEntries == null && settings.verticesSkipEntries == null)
+    if (settings.verticesSkipEntries == null)
       // BY DEFAULT SKIP THE FIRST LINE AS HEADER
       skipEntries = 1l;
 
-    try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream())) {
+    try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream(), DatabaseFactory.getDefaultCharset())) {
       csvParser.beginParsing(inputFileReader);
 
       final int idIndex = id.getIndex();
@@ -314,11 +321,11 @@ public class CSVFormatImporter extends AbstractFormatImporter {
     });
 
     long skipEntries = settings.edgesSkipEntries != null ? settings.edgesSkipEntries.longValue() : 0;
-    if (settings.edgesSkipEntries == null && settings.edgesSkipEntries == null)
+    if (settings.edgesSkipEntries == null)
       // BY DEFAULT SKIP THE FIRST LINE AS HEADER
       skipEntries = 1l;
 
-    try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream())) {
+    try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream(), DatabaseFactory.getDefaultCharset())) {
       csvParser.beginParsing(inputFileReader);
 
       final List<AnalyzedProperty> properties = new ArrayList<>();
@@ -458,7 +465,7 @@ public class CSVFormatImporter extends AbstractFormatImporter {
     case VERTEX:
       header = settings.verticesHeader;
       skipEntries = settings.verticesSkipEntries != null ? settings.verticesSkipEntries.longValue() : 0;
-      if (settings.verticesSkipEntries == null && settings.verticesSkipEntries == null)
+      if (settings.verticesSkipEntries == null)
         // BY DEFAULT SKIP THE FIRST LINE AS HEADER
         skipEntries = 1l;
       break;
@@ -466,7 +473,7 @@ public class CSVFormatImporter extends AbstractFormatImporter {
     case EDGE:
       header = settings.edgesHeader;
       skipEntries = settings.edgesSkipEntries != null ? settings.edgesSkipEntries.longValue() : 0;
-      if (settings.edgesSkipEntries == null && settings.edgesSkipEntries == null)
+      if (settings.edgesSkipEntries == null)
         // BY DEFAULT SKIP THE FIRST LINE AS HEADER
         skipEntries = 1l;
       break;
@@ -474,7 +481,7 @@ public class CSVFormatImporter extends AbstractFormatImporter {
     case DOCUMENT:
       header = settings.documentsHeader;
       skipEntries = settings.documentsSkipEntries != null ? settings.documentsSkipEntries.longValue() : 0;
-      if (settings.documentsSkipEntries == null && settings.documentsSkipEntries == null)
+      if (settings.documentsSkipEntries == null)
         // BY DEFAULT SKIP THE FIRST LINE AS HEADER
         skipEntries = 1l;
       break;
@@ -494,7 +501,7 @@ public class CSVFormatImporter extends AbstractFormatImporter {
       LogManager.instance().log(this, Level.INFO, "Parsing with custom header: %s", null, fieldNames);
     }
 
-    try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream())) {
+    try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream(), DatabaseFactory.getDefaultCharset())) {
       csvParser.beginParsing(inputFileReader);
 
       String[] row;

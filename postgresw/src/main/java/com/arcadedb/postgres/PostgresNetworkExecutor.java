@@ -22,6 +22,7 @@ package com.arcadedb.postgres;
 
 import com.arcadedb.Constants;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.DatabaseOperationException;
@@ -38,39 +39,36 @@ import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
 
-import java.io.EOFException;
-import java.io.IOException;
-import java.net.Socket;
-import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
+import java.io.*;
+import java.net.*;
+import java.nio.*;
+import java.nio.charset.*;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.logging.Level;
+import java.util.concurrent.*;
+import java.util.logging.*;
 
 public class PostgresNetworkExecutor extends Thread {
   public enum ERROR_SEVERITY {FATAL, ERROR}
 
-  public static        String                                         PG_SERVER_VERSION          = "10.5";
+  public static final  String                                         PG_SERVER_VERSION          = "10.5";
   private static final int                                            BUFFER_LENGTH              = 32 * 1024;
   private final        ArcadeDBServer                                 server;
-  private          Database            database;
-  private final    ChannelBinaryServer channel;
-  private volatile boolean             shutdown    = false;
-  private final    int     posInBuffer = 0;
-  private final    byte[]  buffer      = new byte[BUFFER_LENGTH];
-  private final int    bytesRead = 0;
-  private       int    nextByte  = 0;
+  private              Database                                       database;
+  private final        ChannelBinaryServer                            channel;
+  private volatile     boolean                                        shutdown                   = false;
+  private final        byte[]                                         buffer                     = new byte[BUFFER_LENGTH];
+  private              int                                            nextByte                   = 0;
   private              boolean                                        reuseLastByte              = false;
   private              String                                         userName                   = null;
   private              String                                         databaseName               = null;
   private              String                                         userPassword               = null;
   private              int                                            consecutiveErrors          = 0;
-  private              long                                           processIdSequence = 0;
-  private static final Map<Long, Pair<Long, PostgresNetworkExecutor>> ACTIVE_SESSIONS   = new ConcurrentHashMap<>();
-  private final        Map<String, PostgresPortal>                    portals           = new HashMap<>();
-  private final  boolean                                        DEBUG           = false;
-  private final Map<String, Object>         connectionProperties = new HashMap<>();
-  private       boolean             explicitTransactionStarted = false;
+  private              long                                           processIdSequence          = 0;
+  private static final Map<Long, Pair<Long, PostgresNetworkExecutor>> ACTIVE_SESSIONS            = new ConcurrentHashMap<>();
+  private final        Map<String, PostgresPortal>                    portals                    = new HashMap<>();
+  private final        boolean                                        DEBUG                      = false;
+  private final        Map<String, Object>                            connectionProperties       = new HashMap<>();
+  private              boolean                                        explicitTransactionStarted = false;
   private              boolean                                        errorInTransaction         = false;
 
   private interface ReadMessageCallback {
@@ -440,7 +438,7 @@ public class PostgresNetworkExecutor extends Thread {
       final String columnName = col.getKey();
       final PostgresType columnType = col.getValue();
 
-      bufferDescription.put(columnName.getBytes());//The field name.
+      bufferDescription.put(columnName.getBytes(DatabaseFactory.getDefaultCharset()));//The field name.
       bufferDescription.put((byte) 0);
 
       bufferDescription.putInt(0); //If the field can be identified as a column of a specific table, the object ID of the table; otherwise zero.
@@ -885,7 +883,7 @@ public class PostgresNetworkExecutor extends Thread {
     for (; len < buffer.length; len++) {
       final int b = readNextByte();
       if (b == 0)
-        return new String(buffer, 0, len);
+        return new String(buffer, 0, len, DatabaseFactory.getDefaultCharset());
 
       buffer[len] = (byte) b;
     }

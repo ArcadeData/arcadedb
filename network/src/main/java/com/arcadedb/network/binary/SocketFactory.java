@@ -27,30 +27,24 @@ import com.arcadedb.exception.ConfigurationException;
 import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManagerFactory;
-import java.io.FileInputStream;
-import java.io.FileNotFoundException;
-import java.io.IOException;
-import java.io.InputStream;
+import java.io.*;
 import java.net.*;
-import java.security.KeyStore;
+import java.security.*;
 
 public class SocketFactory {
 
   private javax.net.SocketFactory socketFactory;
   private boolean                 useSSL  = false;
-  private       SSLContext           context = null;
-  private final ContextConfiguration config;
+  private SSLContext              context = null;
 
   private final String keyStorePath;
   private final String keyStorePassword;
-  private final String keyStoreType = KeyStore.getDefaultType();
+  private final String keyStoreType   = KeyStore.getDefaultType();
   private final String trustStorePath;
   private final String trustStorePassword;
   private final String trustStoreType = KeyStore.getDefaultType();
 
   private SocketFactory(final ContextConfiguration iConfig) {
-    config = iConfig;
-
     useSSL = iConfig.getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
     keyStorePath = (String) iConfig.getValue(GlobalConfiguration.NETWORK_SSL_KEYSTORE);
     keyStorePassword = (String) iConfig.getValue(GlobalConfiguration.NETWORK_SSL_KEYSTORE_PASSWORD);
@@ -90,24 +84,21 @@ public class SocketFactory {
           throw new ConfigurationException("Please provide a truststore password");
         }
 
-        SSLContext context = SSLContext.getInstance("TLS");
+        final SSLContext context = SSLContext.getInstance("TLS");
 
-        KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+        final KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
 
-        KeyStore keyStore = KeyStore.getInstance(keyStoreType);
-        char[] keyStorePass = keyStorePassword.toCharArray();
+        final KeyStore keyStore = KeyStore.getInstance(keyStoreType);
+        final char[] keyStorePass = keyStorePassword.toCharArray();
         keyStore.load(getAsStream(keyStorePath), keyStorePass);
 
         kmf.init(keyStore, keyStorePass);
 
-        TrustManagerFactory tmf = null;
-        if (trustStorePath != null) {
-          tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
-          KeyStore trustStore = KeyStore.getInstance(trustStoreType);
-          char[] trustStorePass = trustStorePassword.toCharArray();
-          trustStore.load(getAsStream(trustStorePath), trustStorePass);
-          tmf.init(trustStore);
-        }
+        final TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+        final KeyStore trustStore = KeyStore.getInstance(trustStoreType);
+        final char[] trustStorePass = trustStorePassword.toCharArray();
+        trustStore.load(getAsStream(trustStorePath), trustStorePass);
+        tmf.init(trustStore);
 
         context.init(kmf.getKeyManagers(), (tmf == null ? null : tmf.getTrustManagers()), null);
 

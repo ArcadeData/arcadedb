@@ -24,6 +24,7 @@ import com.arcadedb.Constants;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseContext;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
@@ -420,7 +421,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
       throws IOException {
 
     // WRITE THE SCHEMA
-    try(final FileWriter schemaFile = new FileWriter(database.getDatabasePath() + "/" + EmbeddedSchema.SCHEMA_FILE_NAME)) {
+    try(final FileWriter schemaFile = new FileWriter(database.getDatabasePath() + "/" + EmbeddedSchema.SCHEMA_FILE_NAME, DatabaseFactory.getDefaultCharset())) {
       schemaFile.write(dbStructure.getSchemaJson());
     }
 

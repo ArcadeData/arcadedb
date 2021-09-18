@@ -6,6 +6,7 @@ package com.arcadedb.server.http.handler;
 
 import com.arcadedb.Constants;
 import com.arcadedb.database.Binary;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurity;
@@ -13,13 +14,10 @@ import com.arcadedb.utility.FileUtils;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.Headers;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.nio.ByteBuffer;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Set;
-import java.util.logging.Level;
+import java.io.*;
+import java.nio.*;
+import java.util.*;
+import java.util.logging.*;
 
 public class DynamicContentHandler extends AbstractHandler {
 
@@ -93,7 +91,7 @@ public class DynamicContentHandler extends AbstractHandler {
     byte[] bytes = fileContent.toByteArray();
 
     if (processTemplate)
-      bytes = templating(exchange, new String(bytes), new HashMap<>()).getBytes();
+      bytes = templating(exchange, new String(bytes, DatabaseFactory.getDefaultCharset()), new HashMap<>()).getBytes(DatabaseFactory.getDefaultCharset());
 
     if (!processTemplate)
       exchange.getResponseHeaders().put(Headers.CACHE_CONTROL, "max-age=86400");
@@ -148,9 +146,10 @@ public class DynamicContentHandler extends AbstractHandler {
         byte[] includeBytes = FileUtils.readStreamAsBinary(fis).toByteArray();
 
         // RECURSIVE
-        includeBytes = templating(exchange, new String(includeBytes), variables).getBytes();
+        includeBytes = templating(exchange, new String(includeBytes, DatabaseFactory.getDefaultCharset()), variables).getBytes(
+            DatabaseFactory.getDefaultCharset());
 
-        buffer.append(new String(includeBytes));
+        buffer.append(new String(includeBytes, DatabaseFactory.getDefaultCharset()));
 
       } else if (command.startsWith("var:")) {
         final int assignmentPos = command.indexOf("=");

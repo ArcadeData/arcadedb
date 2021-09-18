@@ -22,12 +22,20 @@
 package com.arcadedb.importer;
 
 import com.arcadedb.Constants;
-import com.arcadedb.database.*;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
-import com.arcadedb.schema.*;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
+import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.FileUtils;
 import com.google.gson.stream.JsonReader;
 import com.google.gson.stream.JsonToken;
@@ -36,9 +44,13 @@ import org.json.JSONObject;
 
 import java.io.*;
 import java.util.*;
-import java.util.zip.GZIPInputStream;
+import java.util.zip.*;
 
-import static com.google.gson.stream.JsonToken.*;
+import static com.google.gson.stream.JsonToken.BEGIN_OBJECT;
+import static com.google.gson.stream.JsonToken.END_ARRAY;
+import static com.google.gson.stream.JsonToken.END_OBJECT;
+import static com.google.gson.stream.JsonToken.NAME;
+import static com.google.gson.stream.JsonToken.NULL;
 
 /**
  * Importer from OrientDB. OrientDB is a registered mark of SAP.
@@ -85,7 +97,7 @@ public class OrientDBImporter {
 
   private enum PHASE {OFF, CREATE_SCHEMA, CREATE_RECORDS, CREATE_EDGES}
 
-  private class OrientDBClass {
+  private static class OrientDBClass {
     List<String>        superClasses = new ArrayList<>();
     List<Integer>       clusterIds   = new ArrayList<>();
     Map<String, String> properties   = new LinkedHashMap<>();
@@ -259,7 +271,7 @@ public class OrientDBImporter {
   private void parseInputFile() throws IOException {
     inputStream = openInputStream();
 
-    reader = new JsonReader(new InputStreamReader(inputStream));
+    reader = new JsonReader(new InputStreamReader(inputStream, DatabaseFactory.getDefaultCharset()));
     reader.setLenient(true);
     reader.beginObject();
 
