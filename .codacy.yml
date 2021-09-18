@@ -4,3 +4,5 @@ engines:
   coverage:
     exclude_paths:
       - "**/static/*"
+      - "**/*.sh"
+      - "**/*.md"
