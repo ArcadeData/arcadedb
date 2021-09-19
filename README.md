@@ -1,4 +1,4 @@
-![example branch parameter](https://github.com/ArcadeData/arcadedb/actions/workflows/mvn-deploy.yml/badge.svg?branch=main)
+[![Java CI - deploy](https://github.com/ArcadeData/arcadedb/actions/workflows/mvn-deploy.yml/badge.svg)](https://github.com/ArcadeData/arcadedb/actions/workflows/mvn-deploy.yml)
 [![Codacy Badge](https://api.codacy.com/project/badge/Grade/d40cc721f39b49eb81408307960f145b)](https://app.codacy.com/gh/ArcadeData/arcadedb?utm_source=github.com&utm_medium=referral&utm_content=ArcadeData/arcadedb&utm_campaign=Badge_Grade_Settings)
 [![Codacy Badge](https://app.codacy.com/project/badge/Coverage/1f971260db1e46638bd3fd91e3ebf668)](https://www.codacy.com/gh/ArcadeData/arcadedb/dashboard?utm_source=github.com&utm_medium=referral&utm_content=ArcadeData/arcadedb&utm_campaign=Badge_Coverage)
 [![security status](https://www.meterian.io/badge/gh/ArcadeData/arcadedb/security?branch=main)](https://www.meterian.io/report/gh/ArcadeData/arcadedb)
