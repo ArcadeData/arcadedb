@@ -36,7 +36,6 @@ import java.util.stream.Collectors;
  */
 public class ScriptExecutionPlan implements InternalExecutionPlan {
 
-  private       String                location;
   private final CommandContext        ctx;
   private       boolean               executed    = false;
   protected     List<ScriptLineStep>  steps       = new ArrayList<>();

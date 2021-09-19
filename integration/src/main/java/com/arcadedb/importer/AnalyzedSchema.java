@@ -21,21 +21,14 @@
 
 package com.arcadedb.importer;
 
-import java.util.Collection;
-import java.util.LinkedHashMap;
-import java.util.Map;
+import java.util.*;
 
 public class AnalyzedSchema {
-  private       String                      name;
   private final Map<String, AnalyzedEntity> entities = new LinkedHashMap<>();
   private final long                        maxValueSampling;
 
   public AnalyzedSchema(final long maxValueSampling) {
     this.maxValueSampling = maxValueSampling;
-  }
-
-  public void setName(final String name) {
-    this.name = name;
   }
 
   public AnalyzedEntity getOrCreateEntity(final String entityName, final AnalyzedEntity.ENTITY_TYPE entityType) {

@@ -33,8 +33,6 @@ import java.util.List;
  */
 public class IfExecutionPlan implements InternalExecutionPlan {
 
-  private String location;
-
   private final CommandContext ctx;
 
   protected IfStep step;

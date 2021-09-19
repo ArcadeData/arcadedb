@@ -90,7 +90,7 @@ public class OMatchExecutionPlanner {
 
     SelectExecutionPlan result = new SelectExecutionPlan(context);
     Map<String, Long> estimatedRootEntries = estimateRootEntries(aliasTypes, aliasBuckets, aliasRids, aliasFilters, context);
-    Set<String> aliasesToPrefetch = estimatedRootEntries.entrySet().stream().filter(x -> x.getValue() < this.threshold).map(x -> x.getKey())
+    Set<String> aliasesToPrefetch = estimatedRootEntries.entrySet().stream().filter(x -> x.getValue() < threshold).map(x -> x.getKey())
         .collect(Collectors.toSet());
     if (estimatedRootEntries.containsValue(0L)) {
       result.chain(new EmptyStep(context, enableProfiling));
@@ -747,7 +747,7 @@ public class OMatchExecutionPlanner {
         long upperBound;
         WhereClause filter = aliasFilters.get(alias);
         if (filter != null) {
-          upperBound = filter.estimate(oClass, this.threshold, ctx);
+          upperBound = filter.estimate(oClass, threshold, ctx);
         } else {
           upperBound = ctx.getDatabase().countType(oClass.getName(), true);
         }
@@ -763,7 +763,7 @@ public class OMatchExecutionPlanner {
           long upperBound;
           WhereClause filter = aliasFilters.get(alias);
           if (filter != null) {
-            upperBound = Math.min(db.countBucket(bucketName), filter.estimate(oClass, this.threshold, ctx));
+            upperBound = Math.min(db.countBucket(bucketName), filter.estimate(oClass, threshold, ctx));
           } else {
             upperBound = db.countBucket(bucketName);
           }

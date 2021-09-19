@@ -36,7 +36,7 @@ import java.util.*;
  */
 public class Identifier extends SimpleNode {
 
-  protected String value;
+  protected String  value;
   protected boolean quoted = false;
 
   /**
@@ -84,15 +84,6 @@ public class Identifier extends SimpleNode {
    */
   public String getValue() {
     return value;
-  }
-
-  /**
-   * accepts a plain value. Back-ticks have to be quoted.
-   *
-   * @param value
-   */
-  private void setValue(String value) {
-    this.value = value;
   }
 
   /**
@@ -147,10 +138,6 @@ public class Identifier extends SimpleNode {
     }
   }
 
-  private void setQuoted(boolean quoted) {
-    this.quoted = quoted;
-  }
-
   public Identifier copy() {
     return this;
 //    OIdentifier result = new OIdentifier(-1);
@@ -160,13 +147,13 @@ public class Identifier extends SimpleNode {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    Identifier that = (Identifier) o;
+    final Identifier that = (Identifier) o;
 
     if (quoted != that.quoted)
       return false;
@@ -184,7 +171,7 @@ public class Identifier extends SimpleNode {
   }
 
   public Result serialize() {
-    ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal();
     result.setProperty("value", value);
     result.setProperty("quoted", quoted);
     return result;

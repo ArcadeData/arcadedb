@@ -55,7 +55,6 @@ public class ServerSecurity implements ServerPlugin {
 
   private final        ArcadeDBServer                    server;
   private final        ServerSecurityFileRepository      securityRepository;
-  private final        String                            configPath;
   private final        ConcurrentMap<String, ServerUser> users                = new ConcurrentHashMap<>();
   private final        String                            algorithm;
   private final        SecretKeyFactory                  secretKeyFactory;
@@ -83,7 +82,6 @@ public class ServerSecurity implements ServerPlugin {
 
   public ServerSecurity(final ArcadeDBServer server, final ContextConfiguration configuration, final String configPath) {
     this.server = server;
-    this.configPath = configPath;
     this.algorithm = configuration.getValueAsString(SERVER_SECURITY_ALGORITHM);
 
     final int cacheSize = configuration.getValueAsInteger(SERVER_SECURITY_SALT_CACHE_SIZE);
@@ -165,17 +163,10 @@ public class ServerSecurity implements ServerPlugin {
 
   public String getEncodedHash(final String password, final String salt, final int iterations) {
     // Returns only the last part of whole encoded password
-    final SecretKeyFactory keyFactory;
-    try {
-      keyFactory = SecretKeyFactory.getInstance(algorithm);
-    } catch (NoSuchAlgorithmException e) {
-      throw new ServerSecurityException("Could NOT retrieve '" + algorithm + "' algorithm", e);
-    }
-
     final KeySpec keySpec = new PBEKeySpec(password.toCharArray(), salt.getBytes(StandardCharsets.UTF_8), iterations, 256);
     final SecretKey secret;
     try {
-      secret = keyFactory.generateSecret(keySpec);
+      secret = secretKeyFactory.generateSecret(keySpec);
     } catch (InvalidKeySpecException e) {
       throw new ServerSecurityException("Error on generating security key", e);
     }

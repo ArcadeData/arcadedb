@@ -39,35 +39,30 @@ import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.utility.FileUtils;
 
-import java.io.File;
-import java.io.FileFilter;
-import java.io.IOException;
+import java.io.*;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
-import java.util.logging.Level;
+import java.util.concurrent.*;
+import java.util.logging.*;
 
 public class ArcadeDBServer implements ServerLogger {
   public enum STATUS {OFFLINE, STARTING, ONLINE, SHUTTING_DOWN}
 
   public static final String                                  CONFIG_SERVER_CONFIGURATION_FILENAME = "config/server-configuration.json";
   private final       ContextConfiguration                    configuration;
-  private final       boolean                                 fileConfiguration;
   private final       String                                  serverName;
   private final       boolean                                 testEnabled;
   private final       Map<String, ServerPlugin>               plugins                              = new LinkedHashMap<>();
   private             String                                  serverRootPath;
   private             HAServer                                haServer;
   private             ServerSecurity                          security;
-  private       HttpServer                              httpServer;
-  private final ConcurrentMap<String, DatabaseInternal> databases          = new ConcurrentHashMap<>();
-  private final List<TestCallback>                      testEventListeners = new ArrayList<>();
-  private volatile STATUS                                  status             = STATUS.OFFLINE;
+  private             HttpServer                              httpServer;
+  private final       ConcurrentMap<String, DatabaseInternal> databases                            = new ConcurrentHashMap<>();
+  private final       List<TestCallback>                      testEventListeners                   = new ArrayList<>();
+  private volatile    STATUS                                  status                               = STATUS.OFFLINE;
   private             ServerMetrics                           serverMetrics                        = new NoServerMetrics();
 
   public ArcadeDBServer() {
     this.configuration = new ContextConfiguration();
-    this.fileConfiguration = true;
 
     serverRootPath = configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PATH);
     if (serverRootPath == null) {
@@ -82,7 +77,6 @@ public class ArcadeDBServer implements ServerLogger {
   }
 
   public ArcadeDBServer(final ContextConfiguration configuration) {
-    this.fileConfiguration = false;
     this.configuration = configuration;
     this.serverName = configuration.getValueAsString(GlobalConfiguration.SERVER_NAME);
     this.testEnabled = configuration.getValueAsBoolean(GlobalConfiguration.TEST);

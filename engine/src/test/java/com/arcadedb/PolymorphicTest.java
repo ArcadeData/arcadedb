@@ -24,18 +24,15 @@ package com.arcadedb;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.DocumentCallback;
-import com.arcadedb.database.RID;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.*;
 
 public class PolymorphicTest extends TestHelper {
-
-  private static RID root;
 
   @Override
   protected void beginTest() {
@@ -115,8 +112,6 @@ public class PolymorphicTest extends TestHelper {
     luca.newEdge("Drives", ferrari, true, "since", "2018");
 
     db.commit();
-
-    root = luca.getIdentity();
   }
 
   @Test

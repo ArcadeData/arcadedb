@@ -41,9 +41,8 @@ import java.util.stream.*;
 
 public class MatchStatement extends Statement {
 
-  static final         String   DEFAULT_ALIAS_PREFIX = "$ARCADEDB_DEFAULT_ALIAS_";
-  private static final int      limitFromProtocol    = -1;
-  private              Database database;
+  static final String   DEFAULT_ALIAS_PREFIX = "$ARCADEDB_DEFAULT_ALIAS_";
+  private      Database database;
 
   public List<NestedProjection> getReturnNestedProjections() {
     return returnNestedProjections;
@@ -113,8 +112,8 @@ public class MatchStatement extends Statement {
   // post-parsing generated data
   protected Pattern pattern;
 
-  private Map<String, WhereClause> aliasFilters;
-  private Map<String, String>      aliasUserTypes;
+//  private Map<String, WhereClause> aliasFilters;
+//  private Map<String, String>      aliasUserTypes;
 
   // execution data
   private CommandContext context;
@@ -191,8 +190,8 @@ public class MatchStatement extends Statement {
       addAliases(database, expr, aliasFilters, aliasUserTypes, context);
     }
 
-    this.aliasFilters = aliasFilters;
-    this.aliasUserTypes = aliasUserTypes;
+//    this.aliasFilters = aliasFilters;
+//    this.aliasUserTypes = aliasUserTypes;
 
     rebindFilters(aliasFilters);
   }

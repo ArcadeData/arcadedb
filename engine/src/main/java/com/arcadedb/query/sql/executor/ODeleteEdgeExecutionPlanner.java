@@ -143,13 +143,13 @@ public class ODeleteEdgeExecutionPlanner {
     }
   }
 
-  private boolean handleIndexAsTarget(DeleteExecutionPlan result, IndexIdentifier indexIdentifier, WhereClause whereClause,
-      CommandContext ctx, boolean profilingEnabled) {
-    if (indexIdentifier == null) {
-      return false;
-    }
-    throw new CommandExecutionException("DELETE VERTEX FROM INDEX is not supported");
-  }
+//  private boolean handleIndexAsTarget(DeleteExecutionPlan result, IndexIdentifier indexIdentifier, WhereClause whereClause,
+//      CommandContext ctx, boolean profilingEnabled) {
+//    if (indexIdentifier == null) {
+//      return false;
+//    }
+//    throw new CommandExecutionException("DELETE VERTEX FROM INDEX is not supported");
+//  }
 
   private void handleDelete(DeleteExecutionPlan result, CommandContext ctx, boolean profilingEnabled) {
     result.chain(new DeleteStep(ctx, profilingEnabled));

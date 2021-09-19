@@ -98,7 +98,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
 
             MutableEdge edge = currentFrom.newEdge(targetClass.getStringValue(), currentTo, true);
 
-            UpdatableResult result = new UpdatableResult((MutableDocument) edge);
+            UpdatableResult result = new UpdatableResult(edge);
             result.setElement(edge);
             currentBatch++;
             return result;

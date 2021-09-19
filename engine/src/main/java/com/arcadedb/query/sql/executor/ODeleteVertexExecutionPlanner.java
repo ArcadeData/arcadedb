@@ -74,11 +74,11 @@ public class ODeleteVertexExecutionPlanner {
     result.chain(new DeleteStep(ctx, profilingEnabled));
   }
 
-  private void handleUnsafe(DeleteExecutionPlan result, CommandContext ctx, boolean unsafe, boolean profilingEnabled) {
-    if (!unsafe) {
-      result.chain(new CheckSafeDeleteStep(ctx, profilingEnabled));
-    }
-  }
+//  private void handleUnsafe(DeleteExecutionPlan result, CommandContext ctx, boolean unsafe, boolean profilingEnabled) {
+//    if (!unsafe) {
+//      result.chain(new CheckSafeDeleteStep(ctx, profilingEnabled));
+//    }
+//  }
 
   private void handleReturn(DeleteExecutionPlan result, CommandContext ctx, boolean returnBefore, boolean profilingEnabled) {
     if (!returnBefore) {

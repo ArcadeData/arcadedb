@@ -8,7 +8,7 @@ import org.junit.jupiter.api.Test;
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdb.com)
  */
 public class OWhileBlockExecutionTest extends TestHelper {
-  public OWhileBlockExecutionTest(){
+  public OWhileBlockExecutionTest() {
     autoStartTx = true;
   }
 

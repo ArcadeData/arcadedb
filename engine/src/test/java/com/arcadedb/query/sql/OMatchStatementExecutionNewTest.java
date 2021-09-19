@@ -21,9 +21,11 @@
 
 package com.arcadedb.query.sql;
 
-import com.arcadedb.Profiler;
 import com.arcadedb.TestHelper;
-import com.arcadedb.database.*;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.Document;
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.MutableDocument;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.MatchPrefetchStep;
@@ -32,9 +34,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.HashSet;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
 
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -233,13 +233,13 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
   }
 
   @Test
-  public void testSimple() throws Exception {
+  public void testSimple() {
     ResultSet qResult = database.query("sql", "match {type:Person, as: person} return person");
     printExecutionPlan(qResult);
 
     for (int i = 0; i < 6; i++) {
       Result item = qResult.next();
-      Assertions.assertTrue(item.getPropertyNames().size() == 1);
+      Assertions.assertEquals(1, item.getPropertyNames().size());
       Document person = database.lookupByRID(item.getProperty("person"), true).asVertex();
 
       String name = person.getString("name");
@@ -249,7 +249,7 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
   }
 
   @Test
-  public void testSimpleWhere() throws Exception {
+  public void testSimpleWhere() {
     ResultSet qResult = database.query("sql", "match {type:Person, as: person, where: (name = 'n1' or name = 'n2')} return person");
 
     for (int i = 0; i < 2; i++) {
@@ -265,7 +265,7 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
   }
 
   @Test
-  public void testSimpleLimit() throws Exception {
+  public void testSimpleLimit() {
     ResultSet qResult = database.query("sql", "match {type:Person, as: person, where: (name = 'n1' or name = 'n2')} return person limit 1");
     Assertions.assertTrue(qResult.hasNext());
     qResult.next();
@@ -274,7 +274,7 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
   }
 
   @Test
-  public void testSimpleLimit2() throws Exception {
+  public void testSimpleLimit2() {
     ResultSet qResult = database.query("sql", "match {type:Person, as: person, where: (name = 'n1' or name = 'n2')} return person limit -1");
     for (int i = 0; i < 2; i++) {
       Assertions.assertTrue(qResult.hasNext());
@@ -284,7 +284,7 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
   }
 
   @Test
-  public void testSimpleLimit3() throws Exception {
+  public void testSimpleLimit3() {
 
     ResultSet qResult = database.query("sql", "match {type:Person, as: person, where: (name = 'n1' or name = 'n2')} return person limit 3");
     for (int i = 0; i < 2; i++) {
@@ -295,14 +295,14 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
   }
 
   @Test
-  public void testSimpleUnnamedParams() throws Exception {
+  public void testSimpleUnnamedParams() {
     ResultSet qResult = database.query("sql", "match {type:Person, as: person, where: (name = ? or name = ?)} return person", "n1", "n2");
 
     printExecutionPlan(qResult);
     for (int i = 0; i < 2; i++) {
 
       Result item = qResult.next();
-      Assertions.assertTrue(item.getPropertyNames().size() == 1);
+      Assertions.assertEquals(1, item.getPropertyNames().size());
       Document person = database.lookupByRID(item.getProperty("person"), true).asVertex();
 
       String name = person.getString("name");
@@ -312,7 +312,7 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
   }
 
   @Test
-  public void testCommonFriends() throws Exception {
+  public void testCommonFriends() {
 
     ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}.both('Friend'){as:friend}.both('Friend'){type: Person, where:(name = 'n4')} return friend)");
@@ -325,7 +325,7 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
   }
 
   @Test
-  public void testCommonFriendsPatterns() throws Exception {
+  public void testCommonFriendsPatterns() {
 
     ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}.both('Friend'){as:friend}.both('Friend'){type: Person, where:(name = 'n4')} return $patterns)");
@@ -338,7 +338,7 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
   }
 
   @Test
-  public void testPattens() throws Exception {
+  public void testPattens() {
     ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}.both('Friend'){as:friend}.both('Friend'){type: Person, where:(name = 'n4')} return $patterns");
     printExecutionPlan(qResult);
@@ -351,7 +351,7 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
   }
 
   @Test
-  public void testPaths() throws Exception {
+  public void testPaths() {
     ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}.both('Friend'){as:friend}.both('Friend'){type: Person, where:(name = 'n4')} return $paths");
     printExecutionPlan(qResult);
@@ -363,7 +363,7 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
   }
 
   @Test
-  public void testElements() throws Exception {
+  public void testElements() {
     ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}.both('Friend'){as:friend}.both('Friend'){type: Person, where:(name = 'n4')} return $elements");
     printExecutionPlan(qResult);
@@ -375,7 +375,7 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
   }
 
   @Test
-  public void testPathElements() throws Exception {
+  public void testPathElements() {
     ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}.both('Friend'){as:friend}.both('Friend'){type: Person, where:(name = 'n4')} return $pathElements");
     printExecutionPlan(qResult);
@@ -394,7 +394,7 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
   }
 
   @Test
-  public void testCommonFriendsMatches() throws Exception {
+  public void testCommonFriendsMatches() {
 
     ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}.both('Friend'){as:friend}.both('Friend'){type: Person, where:(name = 'n4')} return $matches)");
@@ -407,7 +407,7 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
   }
 
   @Test
-  public void testCommonFriendsArrows() throws Exception {
+  public void testCommonFriendsArrows() {
 
     ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}-Friend-{as:friend}-Friend-{type: Person, where:(name = 'n4')} return friend)");
@@ -420,7 +420,7 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
   }
 
   @Test
-  public void testCommonFriendsArrowsPatterns() throws Exception {
+  public void testCommonFriendsArrowsPatterns() {
 
     ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}-Friend-{as:friend}-Friend-{type: Person, where:(name = 'n4')} return $patterns)");
@@ -433,7 +433,7 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
   }
 
   @Test
-  public void testCommonFriends2() throws Exception {
+  public void testCommonFriends2() {
 
     ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}.both('Friend'){as:friend}.both('Friend'){type: Person, where:(name = 'n4')} return friend.name as name");
@@ -446,7 +446,7 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
   }
 
   @Test
-  public void testCommonFriends2Arrows() throws Exception {
+  public void testCommonFriends2Arrows() {
 
     ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}-Friend-{as:friend}-Friend-{type: Person, where:(name = 'n4')} return friend.name as name");
@@ -459,7 +459,7 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
   }
 
   @Test
-  public void testReturnMethod() throws Exception {
+  public void testReturnMethod() {
     ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}.both('Friend'){as:friend}.both('Friend'){type: Person, where:(name = 'n4')} return friend.name.toUpperCase(Locale.ENGLISH) as name");
     Assertions.assertTrue(qResult.hasNext());
@@ -470,7 +470,7 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
   }
 
   @Test
-  public void testReturnMethodArrows() throws Exception {
+  public void testReturnMethodArrows() {
     ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}-Friend-{as:friend}-Friend-{type: Person, where:(name = 'n4')} return friend.name.toUpperCase(Locale.ENGLISH) as name");
     Assertions.assertTrue(qResult.hasNext());
@@ -481,7 +481,7 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
   }
 
   @Test
-  public void testReturnExpression() throws Exception {
+  public void testReturnExpression() {
     ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}.both('Friend'){as:friend}.both('Friend'){type: Person, where:(name = 'n4')} return friend.name + ' ' +friend.name as name");
 
@@ -493,7 +493,7 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
   }
 
   @Test
-  public void testReturnExpressionArrows() throws Exception {
+  public void testReturnExpressionArrows() {
     ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}-Friend-{as:friend}-Friend-{type: Person, where:(name = 'n4')} return friend.name + ' ' +friend.name as name");
 
@@ -505,7 +505,7 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
   }
 
   @Test
-  public void testReturnDefaultAlias() throws Exception {
+  public void testReturnDefaultAlias() {
     ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}.both('Friend'){as:friend}.both('Friend'){type: Person, where:(name = 'n4')} return friend.name");
 
@@ -517,7 +517,7 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
   }
 
   @Test
-  public void testReturnDefaultAliasArrows() throws Exception {
+  public void testReturnDefaultAliasArrows() {
     ResultSet qResult = database.query("sql",
         "match {type:Person, where:(name = 'n1')}-Friend-{as:friend}-Friend-{type: Person, where:(name = 'n4')} return friend.name");
 
@@ -529,7 +529,7 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
   }
 
   @Test
-  public void testFriendsOfFriends() throws Exception {
+  public void testFriendsOfFriends() {
     ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}.out('Friend').out('Friend'){as:friend} return $matches)");
 
@@ -542,7 +542,7 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
   }
 
   @Test
-  public void testFriendsOfFriendsArrows() throws Exception {
+  public void testFriendsOfFriendsArrows() {
     ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}-Friend->{}-Friend->{as:friend} return $matches)");
 
@@ -554,7 +554,7 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
   }
 
   @Test
-  public void testFriendsOfFriends2() throws Exception {
+  public void testFriendsOfFriends2() {
     ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1'), as: me}.both('Friend').both('Friend'){as:friend, where: ($matched.me != $currentMatch)} return $matches)");
 
@@ -568,7 +568,7 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
   }
 
   @Test
-  public void testFriendsOfFriends2Arrows() throws Exception {
+  public void testFriendsOfFriends2Arrows() {
     ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1'), as: me}-Friend-{}-Friend-{as:friend, where: ($matched.me != $currentMatch)} return $matches)");
 
@@ -580,7 +580,7 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
   }
 
   @Test
-  public void testFriendsWithName() throws Exception {
+  public void testFriendsWithName() {
     ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1' and 1 + 1 = 2)}.out('Friend'){as:friend, where:(name = 'n2' and 1 + 1 = 2)} return friend)");
 
@@ -591,7 +591,7 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
   }
 
   @Test
-  public void testFriendsWithNameArrows() throws Exception {
+  public void testFriendsWithNameArrows() {
     ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1' and 1 + 1 = 2)}-Friend->{as:friend, where:(name = 'n2' and 1 + 1 = 2)} return friend)");
     Assertions.assertTrue(qResult.hasNext());
@@ -601,7 +601,7 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
   }
 
   @Test
-  public void testWhile() throws Exception {
+  public void testWhile() {
 
     ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}.out('Friend'){as:friend, while: ($depth < 1)} return friend)");
@@ -644,7 +644,7 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
   }
 
   @Test
-  public void testWhileArrows() throws Exception {
+  public void testWhileArrows() {
     ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}-Friend->{as:friend, while: ($depth < 1)} return friend)");
     Assertions.assertEquals(3, size(qResult));
@@ -667,7 +667,7 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
   }
 
   @Test
-  public void testMaxDepth() throws Exception {
+  public void testMaxDepth() {
     ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}.out('Friend'){as:friend, maxDepth: 1, where: ($depth=1) } return friend)");
     Assertions.assertEquals(2, size(qResult));
@@ -690,7 +690,7 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
   }
 
   @Test
-  public void testMaxDepthArrow() throws Exception {
+  public void testMaxDepthArrow() {
     ResultSet qResult = database.query("sql",
         "select friend.name as name from (match {type:Person, where:(name = 'n1')}-Friend->{as:friend, maxDepth: 1, where: ($depth=1) } return friend)");
     Assertions.assertEquals(2, size(qResult));
@@ -1568,7 +1568,7 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
   }
 
   @Test
-  public void testOptional() throws Exception {
+  public void testOptional() {
     ResultSet qResult = database.query("sql", "match {type:Person, as: person} -NonExistingEdge-> {as:b, optional:true} return person, b.name");
 
     printExecutionPlan(qResult);
@@ -1584,7 +1584,7 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
   }
 
   @Test
-  public void testOptional2() throws Exception {
+  public void testOptional2() {
     ResultSet qResult = database.query("sql", "match {type:Person, as: person} --> {as:b, optional:true, where:(nonExisting = 12)} return person, b.name");
 
     for (int i = 0; i < 6; i++) {
@@ -1599,7 +1599,7 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
   }
 
   @Test
-  public void testOptional3() throws Exception {
+  public void testOptional3() {
     ResultSet qResult = database.query("sql", "select friend.name as name, b from ("
         + "match {type:Person, as:a, where:(name = 'n1' and 1 + 1 = 2)}.out('Friend'){as:friend, where:(name = 'n2' and 1 + 1 = 2)},"
         + "{as:a}.out(){as:b, where:(nonExisting = 12), optional:true}," + "{as:friend}.out(){as:b, optional:true}" + " return friend, b)");
@@ -1685,7 +1685,7 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
 
     database.command("sql", "CREATE VERTEX " + clazz + " SET name = 'bbb', surname = 'ccc'");
 
-    if(database.isTransactionActive()){
+    if (database.isTransactionActive()) {
       database.commit();
       database.begin();
     }
@@ -1711,7 +1711,7 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
 
     database.command("sql", "CREATE VERTEX " + clazz + " SET name = 'bbb', surname = 'ccc'");
 
-    if(database.isTransactionActive()){
+    if (database.isTransactionActive()) {
       database.commit();
       database.begin();
     }
@@ -2164,10 +2164,6 @@ public class OMatchStatementExecutionNewTest extends TestHelper {
     try (ResultSet rs = database.query("SQL", query)) {
       Assertions.assertEquals(1L, rs.stream().count());
     }
-  }
-
-  private static Profiler getProfilerInstance() throws Exception {
-    return Profiler.INSTANCE;
   }
 
   private void printExecutionPlan(ResultSet result) {

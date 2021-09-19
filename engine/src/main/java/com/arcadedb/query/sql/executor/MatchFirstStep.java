@@ -21,14 +21,10 @@
 
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.database.Document;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.LocalResultSet;
 
-import java.util.Collections;
-import java.util.Iterator;
-import java.util.Map;
-import java.util.Optional;
+import java.util.*;
 
 /**
  * Created by luigidellaquila on 20/09/16.
@@ -112,11 +108,11 @@ public class MatchFirstStep extends AbstractExecutionStep {
     };
   }
 
-  private Object toResult(Document nextElement) {
-    ResultInternal result = new ResultInternal();
-    result.setElement(nextElement);
-    return result;
-  }
+//  private Object toResult(Document nextElement) {
+//    ResultInternal result = new ResultInternal();
+//    result.setElement(nextElement);
+//    return result;
+//  }
 
   private void init(CommandContext ctx) {
     if (iterator == null && subResultSet == null) {

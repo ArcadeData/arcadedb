@@ -318,23 +318,23 @@ public class OSelectExecutionPlanner {
 
   }
 
-  /**
-   * @param clusterMap    the bucket map for current sharding configuration
-   * @param queryClusters the clusters that are target of the query
-   *
-   * @return
-   */
-  private Set<String> getServersThatHasAllClusters(Map<String, Set<String>> clusterMap, Set<String> queryClusters) {
-    Set<String> remainingServers = clusterMap.keySet();
-    for (String bucket : queryClusters) {
-      for (Map.Entry<String, Set<String>> serverConfig : clusterMap.entrySet()) {
-        if (!serverConfig.getValue().contains(bucket)) {
-          remainingServers.remove(serverConfig.getKey());
-        }
-      }
-    }
-    return remainingServers;
-  }
+//  /**
+//   * @param clusterMap    the bucket map for current sharding configuration
+//   * @param queryClusters the clusters that are target of the query
+//   *
+//   * @return
+//   */
+//  private Set<String> getServersThatHasAllClusters(Map<String, Set<String>> clusterMap, Set<String> queryClusters) {
+//    Set<String> remainingServers = clusterMap.keySet();
+//    for (String bucket : queryClusters) {
+//      for (Map.Entry<String, Set<String>> serverConfig : clusterMap.entrySet()) {
+//        if (!serverConfig.getValue().contains(bucket)) {
+//          remainingServers.remove(serverConfig.getKey());
+//        }
+//      }
+//    }
+//    return remainingServers;
+//  }
 
   /**
    * tries to calculate which clusters will be impacted by this query

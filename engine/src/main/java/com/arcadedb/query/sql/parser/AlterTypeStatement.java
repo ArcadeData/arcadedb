@@ -24,13 +24,11 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.exception.CommandExecutionException;
-import com.arcadedb.index.Index;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EdgeType;
 
 import java.util.*;
 import java.util.stream.*;
@@ -201,20 +199,20 @@ public class AlterTypeStatement extends ODDLStatement {
     return resultSet;
   }
 
-  private void checkNotIndexed(DocumentType oClass) {
-    List<Index> indexes = oClass.getAllIndexes(true);
-    if (indexes != null && indexes.size() > 0) {
-      throw new CommandExecutionException(
-          "Cannot rename type '" + oClass.getName() + "' because it has indexes defined on it. Drop indexes before or use UNSAFE (at your won risk)");
-    }
-  }
+//  private void checkNotIndexed(DocumentType oClass) {
+//    List<Index> indexes = oClass.getAllIndexes(true);
+//    if (indexes != null && indexes.size() > 0) {
+//      throw new CommandExecutionException(
+//          "Cannot rename type '" + oClass.getName() + "' because it has indexes defined on it. Drop indexes before or use UNSAFE (at your won risk)");
+//    }
+//  }
 
-  private void checkNotEdge(DocumentType oClass) {
-    if (oClass instanceof EdgeType) {
-      throw new CommandExecutionException(
-          "Cannot alter type '" + oClass + "' because is an Edge class and could break vertices. Use UNSAFE if you want to force it");
-    }
-  }
+//  private void checkNotEdge(DocumentType oClass) {
+//    if (oClass instanceof EdgeType) {
+//      throw new CommandExecutionException(
+//          "Cannot alter type '" + oClass + "' because is an Edge class and could break vertices. Use UNSAFE if you want to force it");
+//    }
+//  }
 
   private void doSetSuperclass(CommandContext ctx, DocumentType oClass, Identifier superclassName) {
     if (superclassName == null) {
@@ -231,27 +229,27 @@ public class AlterTypeStatement extends ODDLStatement {
     }
   }
 
-  private void doSetSuperclasses(CommandContext ctx, DocumentType oClass, List<Identifier> superclassNames) {
-    if (superclassNames == null) {
-      throw new CommandExecutionException("Invalid parent type name: " + this);
-    }
-    List<DocumentType> superclasses = new ArrayList<>();
-    for (Identifier superclassName : superclassNames) {
-      DocumentType superclass = ctx.getDatabase().getSchema().getType(superclassName.getStringValue());
-      if (superclass == null) {
-        throw new CommandExecutionException("parent type not found: " + this);
-      }
-      superclasses.add(superclass);
-    }
-    if (Boolean.TRUE.equals(add)) {
-      for (DocumentType superclass : superclasses) {
-        oClass.addParentType(superclass);
-      }
-    } else if (Boolean.TRUE.equals(remove)) {
-      for (DocumentType superclass : superclasses) {
-        oClass.removeParentType(superclass);
-      }
-    }
-  }
+//  private void doSetSuperclasses(CommandContext ctx, DocumentType oClass, List<Identifier> superclassNames) {
+//    if (superclassNames == null) {
+//      throw new CommandExecutionException("Invalid parent type name: " + this);
+//    }
+//    List<DocumentType> superclasses = new ArrayList<>();
+//    for (Identifier superclassName : superclassNames) {
+//      DocumentType superclass = ctx.getDatabase().getSchema().getType(superclassName.getStringValue());
+//      if (superclass == null) {
+//        throw new CommandExecutionException("parent type not found: " + this);
+//      }
+//      superclasses.add(superclass);
+//    }
+//    if (Boolean.TRUE.equals(add)) {
+//      for (DocumentType superclass : superclasses) {
+//        oClass.addParentType(superclass);
+//      }
+//    } else if (Boolean.TRUE.equals(remove)) {
+//      for (DocumentType superclass : superclasses) {
+//        oClass.removeParentType(superclass);
+//      }
+//    }
+//  }
 }
 /* JavaCC - OriginalChecksum=4668bb1cd336844052df941f39bdb634 (do not edit this line) */

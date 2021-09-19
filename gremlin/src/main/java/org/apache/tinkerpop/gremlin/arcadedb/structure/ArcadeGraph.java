@@ -57,7 +57,7 @@ import java.util.*;
 @Graph.OptIn("org.apache.tinkerpop.gremlin.arcadedb.suite.ArcadeDebugSuite")
 public class ArcadeGraph implements Graph {
 
-  private final   ArcadeVariableFeatures graphVariables = new ArcadeVariableFeatures();
+  //private final   ArcadeVariableFeatures graphVariables = new ArcadeVariableFeatures();
   private final   ArcadeGraphTransaction transaction;
   protected final Database               database;
   protected final BaseConfiguration      configuration  = new BaseConfiguration();

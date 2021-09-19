@@ -2,8 +2,7 @@ package com.arcadedb.query.sql.parser;
 
 import org.junit.jupiter.api.Test;
 
-import java.io.ByteArrayInputStream;
-import java.io.InputStream;
+import java.io.*;
 
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -47,16 +46,6 @@ public class TraverseStatementTest {
   public void testDepthFirst() {
     checkRightSyntax("traverse out() from #9:0 while $depth <= 2 strategy DEPTH_FIRST");
     checkRightSyntax("traverse out() from #9:0 while $depth <= 2 strategy depth_first");
-  }
-
-  private void printTree(String s) {
-    SqlParser osql = getParserFor(s);
-    try {
-      SimpleNode n = osql.parse();
-
-    } catch (ParseException e) {
-      e.printStackTrace();
-    }
   }
 
   protected SqlParser getParserFor(String string) {

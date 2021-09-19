@@ -32,7 +32,6 @@ import java.util.*;
 import java.util.logging.*;
 
 public class RedisNetworkExecutor extends Thread {
-  private static final byte[]              LF       = new byte[] { '\r', '\n' };
   private final        ArcadeDBServer      server;
   private final        Database            database;
   private final        ChannelBinaryServer channel;

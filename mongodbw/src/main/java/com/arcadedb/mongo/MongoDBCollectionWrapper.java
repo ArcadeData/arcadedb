@@ -23,7 +23,6 @@ package com.arcadedb.mongo;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.MutableDocument;
-import com.arcadedb.database.RID;
 import de.bwaldvogel.mongo.MongoCollection;
 import de.bwaldvogel.mongo.MongoDatabase;
 import de.bwaldvogel.mongo.backend.ArrayFilters;
@@ -34,57 +33,53 @@ import de.bwaldvogel.mongo.bson.Document;
 import de.bwaldvogel.mongo.bson.ObjectId;
 import de.bwaldvogel.mongo.oplog.Oplog;
 
-import java.util.ArrayList;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 public class MongoDBCollectionWrapper implements MongoCollection<Long> {
-  private final Database          database;
-  private final int               collectionId;
-  private final String            collectionName;
-  private final List<Index<Long>> indexes = new ArrayList<>();
+  private final Database database;
+  private final int      collectionId;
+  private final String   collectionName;
 
-  private static class ProjectingIterable implements Iterable<Document> {
-    private final Iterable<Document> iterable;
-    private final Document           fieldSelector;
-    private final String             idField;
-
-    ProjectingIterable(Iterable<Document> iterable, Document fieldSelector, String idField) {
-      this.iterable = iterable;
-      this.fieldSelector = fieldSelector;
-      this.idField = idField;
-    }
-
-    public Iterator<Document> iterator() {
-      return new ProjectingIterator(this.iterable.iterator(), this.fieldSelector, this.idField);
-    }
-  }
-
-  private static class ProjectingIterator implements Iterator<Document> {
-    private final Iterator<Document> iterator;
-    private final Document           fieldSelector;
-    private final String             idField;
-
-    ProjectingIterator(Iterator<Document> iterator, Document fieldSelector, String idField) {
-      this.iterator = iterator;
-      this.fieldSelector = fieldSelector;
-      this.idField = idField;
-    }
-
-    public boolean hasNext() {
-      return this.iterator.hasNext();
-    }
-
-    public Document next() {
-      Document document = this.iterator.next();
-      return MongoDBToSqlTranslator.projectDocument(document, this.fieldSelector, this.idField);
-    }
-
-    public void remove() {
-      this.iterator.remove();
-    }
-  }
+//  private static class ProjectingIterable implements Iterable<Document> {
+//    private final Iterable<Document> iterable;
+//    private final Document           fieldSelector;
+//    private final String             idField;
+//
+//    ProjectingIterable(Iterable<Document> iterable, Document fieldSelector, String idField) {
+//      this.iterable = iterable;
+//      this.fieldSelector = fieldSelector;
+//      this.idField = idField;
+//    }
+//
+//    public Iterator<Document> iterator() {
+//      return new ProjectingIterator(this.iterable.iterator(), this.fieldSelector, this.idField);
+//    }
+//  }
+//
+//  private static class ProjectingIterator implements Iterator<Document> {
+//    private final Iterator<Document> iterator;
+//    private final Document           fieldSelector;
+//    private final String             idField;
+//
+//    ProjectingIterator(Iterator<Document> iterator, Document fieldSelector, String idField) {
+//      this.iterator = iterator;
+//      this.fieldSelector = fieldSelector;
+//      this.idField = idField;
+//    }
+//
+//    public boolean hasNext() {
+//      return this.iterator.hasNext();
+//    }
+//
+//    public Document next() {
+//      Document document = this.iterator.next();
+//      return MongoDBToSqlTranslator.projectDocument(document, this.fieldSelector, this.idField);
+//    }
+//
+//    public void remove() {
+//      this.iterator.remove();
+//    }
+//  }
 
   protected MongoDBCollectionWrapper(final Database database, final String collectionName) {
     this.database = database;
@@ -92,16 +87,16 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
     this.collectionId = database.getSchema().getType(collectionName).getBuckets(false).get(0).getId();
   }
 
-  protected Document getDocument(final Long aLong) {
-    final com.arcadedb.database.Document record = (com.arcadedb.database.Document) database.lookupByRID(new RID(database, collectionId, aLong), true);
-
-    final Document result = new Document();
-
-    for (String p : record.getPropertyNames())
-      result.put(p, record.get(p));
-
-    return result;
-  }
+//  protected Document getDocument(final Long aLong) {
+//    final com.arcadedb.database.Document record = (com.arcadedb.database.Document) database.lookupByRID(new RID(database, collectionId, aLong), true);
+//
+//    final Document result = new Document();
+//
+//    for (String p : record.getPropertyNames())
+//      result.put(p, record.get(p));
+//
+//    return result;
+//  }
 
   @Override
   public MongoDatabase getDatabase() {
@@ -190,13 +185,13 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
           final byte[] var2 = ((ObjectId) value).toByteArray();
           int var3 = var2.length;
 
-          String s = "";
+          final StringBuilder s = new StringBuilder();
           for (int var4 = 0; var4 < var3; ++var4) {
             byte b = var2[var4];
-            s = s + String.format("%02x", b);
+            s.append(String.format("%02x", b));
           }
 
-          record.set(p.getKey(), s);
+          record.set(p.getKey(), s.toString());
         } else
           record.set(p.getKey(), value);
       }

@@ -35,4 +35,12 @@ public class ConnectionException extends RuntimeException {
     this.url = url;
     this.reason = reason;
   }
+
+  public String getUrl() {
+    return url;
+  }
+
+  public String getReason() {
+    return reason;
+  }
 }

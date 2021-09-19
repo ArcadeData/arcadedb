@@ -137,6 +137,17 @@ public class RID implements Identifiable, Comparable<Identifiable>, Serializable
 
   @Override
   public int compareTo(final Identifiable o) {
+    final Database otherDb = o.getIdentity().getDatabase();
+    if (database != null) {
+      if (otherDb != null) {
+        final int res = database.getName().compareTo(otherDb.getName());
+        if (res != 0)
+          return res;
+      } else
+        return -1;
+    } else if (otherDb != null)
+      return 1;
+
     final RID other = o.getIdentity();
     if (bucketId > other.bucketId)
       return 1;
