@@ -97,49 +97,43 @@ public class ReplicatedDatabase implements DatabaseInternal {
 
     final boolean isLeader = server.getHA().isLeader();
 
-    proxied.executeInReadLock(new Callable<Object>() {
-      @Override
-      public Object call() {
-        proxied.checkTransactionIsActive(false);
+    proxied.executeInReadLock(() -> {
+      proxied.checkTransactionIsActive(false);
 
-        final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());
-        final TransactionContext tx = current.getLastTransaction();
+      final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());
+      final TransactionContext tx = current.getLastTransaction();
+      try {
+
+        final Pair<Binary, List<MutablePage>> changes = tx.commit1stPhase(isLeader);
+
         try {
+          if (changes != null) {
+            final Binary bufferChanges = changes.getFirst();
 
-          final Pair<Binary, List<MutablePage>> changes = tx.commit1stPhase(isLeader);
-
-          try {
-            if (changes != null) {
-              final Binary bufferChanges = changes.getFirst();
-
-              if (isLeader)
-                replicateTx(tx, changes, bufferChanges);
-              else {
-                // USE A BIGGER TIMEOUT CONSIDERING THE DOUBLE LATENCY
-                final TxForwardRequest command = new TxForwardRequest(ReplicatedDatabase.this, bufferChanges, tx.getIndexChanges().toMap());
-                server.getHA().forwardCommandToLeader(command, timeout * 2);
-                tx.reset();
-              }
-            } else {
+            if (isLeader)
+              replicateTx(tx, changes, bufferChanges);
+            else {
+              // USE A BIGGER TIMEOUT CONSIDERING THE DOUBLE LATENCY
+              final TxForwardRequest command = new TxForwardRequest(ReplicatedDatabase.this, bufferChanges, tx.getIndexChanges().toMap());
+              server.getHA().forwardCommandToLeader(command, timeout * 2);
               tx.reset();
             }
-          } catch (NeedRetryException e) {
-            rollback();
-            throw e;
-          } catch (TransactionException e) {
-            rollback();
-            throw e;
-          } catch (Exception e) {
-            rollback();
-            throw new TransactionException("Error on commit distributed transaction", e);
+          } else {
+            tx.reset();
           }
-
-        } finally {
-          current.popIfNotLastTransaction();
+        } catch (NeedRetryException | TransactionException e) {
+          rollback();
+          throw e;
+        } catch (Exception e) {
+          rollback();
+          throw new TransactionException("Error on commit distributed transaction", e);
         }
 
-        return null;
+      } finally {
+        current.popIfNotLastTransaction();
       }
+
+      return null;
     });
   }
 
@@ -508,13 +502,10 @@ public class ReplicatedDatabase implements DatabaseInternal {
     if (!server.getHA().isLeader()) {
       // USE A BIGGER TIMEOUT CONSIDERING THE DOUBLE LATENCY
       final CommandForwardRequest command = new CommandForwardRequest(ReplicatedDatabase.this, language, query, null, args);
-      ResultSet result = (ResultSet) server.getHA().forwardCommandToLeader(command, timeout * 2);
-      return result;
+      return (ResultSet) server.getHA().forwardCommandToLeader(command, timeout * 2);
     }
 
-    return (ResultSet) recordFileChanges(() -> {
-      return proxied.command(language, query, args);
-    });
+    return (ResultSet) recordFileChanges(() -> proxied.command(language, query, args));
   }
 
   @Override
@@ -522,13 +513,10 @@ public class ReplicatedDatabase implements DatabaseInternal {
     if (!server.getHA().isLeader()) {
       // USE A BIGGER TIMEOUT CONSIDERING THE DOUBLE LATENCY
       final CommandForwardRequest command = new CommandForwardRequest(ReplicatedDatabase.this, language, query, args, null);
-      ResultSet result = (ResultSet) server.getHA().forwardCommandToLeader(command, timeout * 2);
-      return result;
+      return (ResultSet) server.getHA().forwardCommandToLeader(command, timeout * 2);
     }
 
-    return (ResultSet) recordFileChanges(() -> {
-      return proxied.command(language, query, args);
-    });
+    return (ResultSet) recordFileChanges(() -> proxied.command(language, query, args));
   }
 
   @Override
@@ -552,12 +540,12 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
-  public <RET extends Object> RET executeInReadLock(final Callable<RET> callable) {
+  public <RET> RET executeInReadLock(final Callable<RET> callable) {
     return proxied.executeInReadLock(callable);
   }
 
   @Override
-  public <RET extends Object> RET executeInWriteLock(final Callable<RET> callable) {
+  public <RET> RET executeInWriteLock(final Callable<RET> callable) {
     return proxied.executeInWriteLock(callable);
   }
 
@@ -586,10 +574,10 @@ public class ReplicatedDatabase implements DatabaseInternal {
     return proxied.toString();
   }
 
-  protected Object recordFileChanges(final Callable callback) {
+  protected Object recordFileChanges(final Callable<Object> callback) {
     final HAServer ha = server.getHA();
 
-    final AtomicReference result = new AtomicReference();
+    final AtomicReference<Object> result = new AtomicReference<>();
 
     // ACQUIRE A DATABASE WRITE LOCK. THE LOCK IS REENTRANT, SO THE ACQUISITION DOWN THE LINE IS GOING TO PASS BECAUSE ALREADY ACQUIRED HERE
     final DatabaseChangeStructureRequest command = (DatabaseChangeStructureRequest) proxied.executeInWriteLock(() -> {
@@ -625,7 +613,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
 
     // SEND THE COMMAND OUTSIDE THE EXCLUSIVE LOCK
     final int quorum = ha.getConfiguredServers();
-    ha.sendCommandToReplicasWithQuorum(command, 0, timeout);
+    ha.sendCommandToReplicasWithQuorum(command, quorum, timeout);
 
     return result.get();
   }

@@ -24,7 +24,12 @@ package com.arcadedb.server;
 import com.arcadedb.Constants;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.database.*;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseComparator;
+import com.arcadedb.database.DatabaseContext;
+import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.log.LogManager;
@@ -37,13 +42,11 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 
 import java.io.*;
-import java.net.HttpURLConnection;
-import java.net.InetAddress;
-import java.net.UnknownHostException;
-import java.nio.charset.StandardCharsets;
+import java.net.*;
+import java.nio.charset.*;
 import java.util.*;
-import java.util.concurrent.Callable;
-import java.util.logging.Level;
+import java.util.concurrent.*;
+import java.util.logging.*;
 
 /**
  * This class has been copied under Console project to avoid complex dependencies.
@@ -56,8 +59,8 @@ public abstract class BaseGraphServerTest {
   protected static final String EDGE2_TYPE_NAME            = "E2";
 
   protected static RID              root;
-  private ArcadeDBServer[] servers;
-  private Database[]       databases;
+  private          ArcadeDBServer[] servers;
+  private   Database[]       databases;
 
   protected interface Callback {
     void call(int serverIndex) throws Exception;

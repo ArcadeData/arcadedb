@@ -87,6 +87,7 @@ public class LeaderNetworkListener extends Thread {
         if (serverSocket != null && !serverSocket.isClosed())
           serverSocket.close();
       } catch (IOException ioe) {
+        // IGNORE EXCEPTION FROM CLOSE
       }
     }
   }
@@ -121,9 +122,6 @@ public class LeaderNetworkListener extends Thread {
 
   /**
    * Initialize a server socket for communicating with the client.
-   *
-   * @param hostPortRange
-   * @param hostName
    */
   private void listen(final String hostName, final String hostPortRange) {
 
@@ -234,7 +232,7 @@ public class LeaderNetworkListener extends Thread {
       if (leader == null)
         ha.startElection();
 
-    } else if (lastReplicationMessage >= localServerLastMessageNumber && (ha.lastElectionVote == null || ha.lastElectionVote.getFirst() < voteTurn)) {
+    } else if (ha.lastElectionVote == null || ha.lastElectionVote.getFirst() < voteTurn) {
       ha.getServer().log(this, Level.INFO, "Server '%s' asked for election (lastReplicationMessage=%d my=%d) on turn %d, giving my vote", remoteServerName,
           lastReplicationMessage, localServerLastMessageNumber, voteTurn);
       channel.writeByte((byte) 0);
@@ -244,7 +242,7 @@ public class LeaderNetworkListener extends Thread {
       ha.getServer().log(this, Level.INFO,
           "Server '%s' asked for election (lastReplicationMessage=%d my=%d) on turn %d, but cannot give my vote (votedFor='%s' on turn %d)", remoteServerName,
           lastReplicationMessage, localServerLastMessageNumber, voteTurn, ha.lastElectionVote != null ? ha.lastElectionVote.getSecond() : "-",
-          ha.lastElectionVote.getFirst());
+          ha.lastElectionVote != null ? ha.lastElectionVote.getFirst() : "-");
       channel.writeByte((byte) 1);
       final Replica2LeaderNetworkExecutor leader = ha.getLeader();
       channel.writeString(leader != null ? leader.getRemoteAddress() : ha.getServerAddress());

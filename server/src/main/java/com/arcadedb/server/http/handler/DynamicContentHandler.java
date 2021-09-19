@@ -30,14 +30,14 @@ public class DynamicContentHandler extends AbstractHandler {
   public void execute(final HttpServerExchange exchange, ServerSecurity.ServerUser user) throws Exception {
     String uri = exchange.getRequestURI();
 
-    if (uri.indexOf("..") > -1) {
+    if (uri.contains("..")) {
       // UNAUTHORIZED ACCESS TO RELATIVE PATH
       exchange.setStatusCode(404);
       exchange.getResponseSender().send("Not Found");
       return;
     }
 
-    if (uri == null || uri.isEmpty() || uri.equals("/"))
+    if (uri.isEmpty() || uri.equals("/"))
       uri = "/index.html";
 
     if (!uri.contains("."))

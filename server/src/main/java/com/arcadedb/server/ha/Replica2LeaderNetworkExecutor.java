@@ -38,18 +38,21 @@ import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.TestCallback;
-import com.arcadedb.server.ha.message.*;
+import com.arcadedb.server.ha.message.DatabaseStructureRequest;
+import com.arcadedb.server.ha.message.DatabaseStructureResponse;
+import com.arcadedb.server.ha.message.FileContentRequest;
+import com.arcadedb.server.ha.message.FileContentResponse;
+import com.arcadedb.server.ha.message.HACommand;
+import com.arcadedb.server.ha.message.ReplicaConnectFullResyncResponse;
+import com.arcadedb.server.ha.message.ReplicaConnectRequest;
+import com.arcadedb.server.ha.message.ReplicaReadyRequest;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
 
-import java.io.FileWriter;
-import java.io.IOException;
-import java.net.SocketTimeoutException;
-import java.util.Arrays;
-import java.util.HashSet;
-import java.util.Map;
-import java.util.Set;
-import java.util.logging.Level;
+import java.io.*;
+import java.net.*;
+import java.util.*;
+import java.util.logging.*;
 
 public class Replica2LeaderNetworkExecutor extends Thread {
   private final    HAServer            server;
@@ -59,9 +62,9 @@ public class Replica2LeaderNetworkExecutor extends Thread {
   private          String              leaderServerHTTPAddress;
   private final    boolean             testOn;
   private          ChannelBinaryClient channel;
-  private volatile boolean shutdown          = false;
-  private final    Object  channelOutputLock = new Object();
-  private final    Object  channelInputLock  = new Object();
+  private volatile boolean             shutdown          = false;
+  private final    Object              channelOutputLock = new Object();
+  private final    Object              channelInputLock  = new Object();
 
   public Replica2LeaderNetworkExecutor(final HAServer ha, final String host, final int port) {
     this.server = ha;
@@ -335,6 +338,9 @@ public class Replica2LeaderNetworkExecutor extends Thread {
             server.getServer()
                 .log(this, Level.INFO, "Cannot accept incoming connections: remote server has the same name as the local server '%s'", server.getServerName());
             break;
+
+          default:
+            server.getServer().log(this, Level.INFO, "Cannot accept incoming connections: unknown reason code '%s'", reasonCode);
           }
 
           channel.close();
@@ -421,7 +427,8 @@ public class Replica2LeaderNetworkExecutor extends Thread {
       throws IOException {
 
     // WRITE THE SCHEMA
-    try(final FileWriter schemaFile = new FileWriter(database.getDatabasePath() + "/" + EmbeddedSchema.SCHEMA_FILE_NAME, DatabaseFactory.getDefaultCharset())) {
+    try (final FileWriter schemaFile = new FileWriter(database.getDatabasePath() + "/" + EmbeddedSchema.SCHEMA_FILE_NAME,
+        DatabaseFactory.getDefaultCharset())) {
       schemaFile.write(dbStructure.getSchemaJson());
     }
 
@@ -459,7 +466,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
 
       if (fileChunk.getPagesContent().size() != fileChunk.getPages() * pageSize) {
         server.getServer().log(this, Level.SEVERE, "Error on received chunk for file '%s': size=%s, expected=%s (pages=%d)", fileName,
-            FileUtils.getSizeAsString(fileChunk.getPagesContent().size()), FileUtils.getSizeAsString(fileChunk.getPages() * pageSize), pages);
+            FileUtils.getSizeAsString(fileChunk.getPagesContent().size()), FileUtils.getSizeAsString((long) fileChunk.getPages() * pageSize), pages);
         throw new ReplicationException("Invalid file chunk");
       }
 

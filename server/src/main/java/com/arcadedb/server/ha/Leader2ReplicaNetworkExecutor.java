@@ -35,11 +35,9 @@ import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
 import com.conversantmedia.util.concurrent.PushPullBlockingQueue;
 
-import java.io.IOException;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.TimeUnit;
-import java.util.logging.Level;
+import java.io.*;
+import java.util.concurrent.*;
+import java.util.logging.*;
 
 /**
  * This executor has an intermediate level of buffering managed with a queue. This avoids the Leader to be blocked in case the
@@ -63,10 +61,10 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
   private          long                                               leftOn                = 0;
   private          ChannelBinaryServer                                channel;
   private          STATUS                                             status                = STATUS.JOINING;
-  private       Object lock              = new Object();
-  private final Object channelOutputLock = new Object();
-  private final Object channelInputLock  = new Object();
-  private volatile boolean shutdownCommunication = false;
+  private          Object                                             lock                  = new Object(); // NOT FINAL BECAUSE IT CAN BE MERGED FROM ANOTHER CONNECTION
+  private final    Object                                             channelOutputLock     = new Object();
+  private final    Object                                             channelInputLock      = new Object();
+  private volatile boolean                                            shutdownCommunication = false;
 
   // STATS
   private long totalMessages;
@@ -176,7 +174,6 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
             default:
               server.getServer().log(this, Level.FINE, "Replica '%s' is not online, waiting and retry (buffered=%d)...", remoteServerName, senderQueue.size());
               Thread.sleep(500);
-              continue;
             }
 
           } catch (IOException e) {
@@ -247,7 +244,7 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
 
         if (request.getSecond() instanceof TxForwardRequest)
           // EXECUTE IT AS ASYNC
-          forwarderQueue.offer(request);
+          forwarderQueue.put(request);
         else
           executeMessage(buffer, request);
 
@@ -337,7 +334,7 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
     if (status == STATUS.OFFLINE)
       return false;
 
-    return (boolean) executeInLock(new Callable() {
+    return (boolean) executeInLock(new Callable<>() {
       @Override
       public Object call(Object iArgument) {
         // WRITE DIRECTLY TO THE MESSAGE QUEUE
@@ -388,7 +385,7 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
       // NO STATUS CHANGE
       return;
 
-    executeInLock(new Callable() {
+    executeInLock(new Callable<>() {
       @Override
       public Object call(Object iArgument) {
         Leader2ReplicaNetworkExecutor.this.status = status;
@@ -456,8 +453,8 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
   public String getThroughputStats() {
     if (totalBytes == 0)
       return "";
-    return FileUtils.getSizeAsString(totalBytes) + " (" + FileUtils
-        .getSizeAsString((int) (((double) totalBytes / (System.currentTimeMillis() - joinedOn)) * 1000)) + "/s)";
+    return FileUtils.getSizeAsString(totalBytes) + " (" + FileUtils.getSizeAsString(
+        (int) (((double) totalBytes / (System.currentTimeMillis() - joinedOn)) * 1000)) + "/s)";
   }
 
   public void sendMessage(final Binary msg) throws IOException {
@@ -479,7 +476,7 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
   }
 
   // DO I NEED THIS?
-  protected Object executeInLock(final Callable callback) {
+  protected Object executeInLock(final Callable<Object,Object> callback) {
     synchronized (lock) {
       return callback.call(null);
     }

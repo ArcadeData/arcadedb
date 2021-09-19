@@ -29,11 +29,14 @@ import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
-import com.arcadedb.schema.*;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.EmbeddedSchema;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.VertexType;
 
-import java.io.IOException;
-import java.util.Collection;
-import java.util.TimeZone;
+import java.io.*;
+import java.util.*;
 
 public class ReplicatedSchema implements Schema {
   private final EmbeddedSchema     proxied;
@@ -256,31 +259,28 @@ public class ReplicatedSchema implements Schema {
   }
 
   @Override
-  public void dropType(String typeName) {
+  public void dropType(final String typeName) {
     proxied.dropType(typeName);
   }
 
   @Override
-  public void dropBucket(String bucketName) {
+  public void dropBucket(final String bucketName) {
     proxied.dropBucket(bucketName);
   }
 
   @Override
-  public DocumentType createDocumentType(String typeName) {
+  public DocumentType createDocumentType(final String typeName) {
     return proxied.createDocumentType(typeName);
   }
 
   @Override
-  public DocumentType createDocumentType(String typeName, int buckets) {
+  public DocumentType createDocumentType(final String typeName, final int buckets) {
     return proxied.createDocumentType(typeName, buckets);
   }
 
   @Override
-  public DocumentType createDocumentType(String typeName, int buckets, int pageSize) {
-    return (DocumentType) replicatedDatabase.recordFileChanges(() -> {
-      final Object result = proxied.createDocumentType(typeName, buckets, pageSize);
-      return result;
-    });
+  public DocumentType createDocumentType(final String typeName, final int buckets, final int pageSize) {
+    return (DocumentType) replicatedDatabase.recordFileChanges(() -> proxied.createDocumentType(typeName, buckets, pageSize));
   }
 
   @Override
@@ -289,72 +289,72 @@ public class ReplicatedSchema implements Schema {
   }
 
   @Override
-  public DocumentType getOrCreateDocumentType(String typeName, int buckets) {
+  public DocumentType getOrCreateDocumentType(String typeName, final int buckets) {
     return proxied.getOrCreateDocumentType(typeName, buckets);
   }
 
   @Override
-  public DocumentType getOrCreateDocumentType(String typeName, int buckets, int pageSize) {
+  public DocumentType getOrCreateDocumentType(String typeName, final int buckets, final int pageSize) {
     return proxied.getOrCreateDocumentType(typeName, buckets, pageSize);
   }
 
   @Override
-  public VertexType createVertexType(String typeName) {
+  public VertexType createVertexType(final String typeName) {
     return proxied.createVertexType(typeName);
   }
 
   @Override
-  public VertexType createVertexType(String typeName, int buckets) {
+  public VertexType createVertexType(final String typeName, final int buckets) {
     return proxied.createVertexType(typeName, buckets);
   }
 
   @Override
-  public VertexType createVertexType(String typeName, int buckets, int pageSize) {
+  public VertexType createVertexType(final String typeName, final int buckets, final int pageSize) {
     return proxied.createVertexType(typeName, buckets, pageSize);
   }
 
   @Override
-  public VertexType getOrCreateVertexType(String typeName) {
+  public VertexType getOrCreateVertexType(final String typeName) {
     return proxied.getOrCreateVertexType(typeName);
   }
 
   @Override
-  public VertexType getOrCreateVertexType(String typeName, int buckets) {
+  public VertexType getOrCreateVertexType(final String typeName, final int buckets) {
     return proxied.getOrCreateVertexType(typeName, buckets);
   }
 
   @Override
-  public VertexType getOrCreateVertexType(String typeName, int buckets, int pageSize) {
+  public VertexType getOrCreateVertexType(final String typeName, final int buckets, final int pageSize) {
     return proxied.getOrCreateVertexType(typeName, buckets, pageSize);
   }
 
   @Override
-  public EdgeType createEdgeType(String typeName) {
+  public EdgeType createEdgeType(final String typeName) {
     return proxied.createEdgeType(typeName);
   }
 
   @Override
-  public EdgeType createEdgeType(String typeName, int buckets) {
+  public EdgeType createEdgeType(final String typeName, final int buckets) {
     return proxied.createEdgeType(typeName, buckets);
   }
 
   @Override
-  public EdgeType createEdgeType(String typeName, int buckets, int pageSize) {
+  public EdgeType createEdgeType(final String typeName, final int buckets, final int pageSize) {
     return proxied.createEdgeType(typeName, buckets, pageSize);
   }
 
   @Override
-  public EdgeType getOrCreateEdgeType(String typeName) {
+  public EdgeType getOrCreateEdgeType(final String typeName) {
     return proxied.getOrCreateEdgeType(typeName);
   }
 
   @Override
-  public EdgeType getOrCreateEdgeType(String typeName, int buckets) {
+  public EdgeType getOrCreateEdgeType(final String typeName, int buckets) {
     return proxied.getOrCreateEdgeType(typeName, buckets);
   }
 
   @Override
-  public EdgeType getOrCreateEdgeType(String typeName, int buckets, int pageSize) {
+  public EdgeType getOrCreateEdgeType(final String typeName, int buckets, int pageSize) {
     return proxied.getOrCreateEdgeType(typeName, buckets, pageSize);
   }
 
@@ -362,7 +362,7 @@ public class ReplicatedSchema implements Schema {
     proxied.saveConfiguration();
   }
 
-  public void registerFile(PaginatedComponent file) {
+  public void registerFile(final PaginatedComponent file) {
     proxied.registerFile(file);
   }
 

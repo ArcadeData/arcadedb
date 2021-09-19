@@ -34,19 +34,13 @@ public class NoServerMetrics implements ServerMetrics {
 
   @Override
   public MetricTimer timer(String s) {
-    return new MetricTimer() {
-      @Override
-      public void stop() {
-      }
+    return () -> {
     };
   }
 
   @Override
   public MetricMeter meter(String name) {
-    return new MetricMeter() {
-      @Override
-      public void mark() {
-      }
+    return () -> {
     };
   }
 }

@@ -109,17 +109,17 @@ public class HAServer implements ServerPlugin {
     }
   }
 
-  private static class RemovedServerInfo {
-    String serverName;
-    long   joinedOn;
-    long   leftOn;
-
-    public RemovedServerInfo(final String remoteServerName, final long joinedOn) {
-      this.serverName = remoteServerName;
-      this.joinedOn = joinedOn;
-      this.leftOn = System.currentTimeMillis();
-    }
-  }
+//  private static class RemovedServerInfo {
+//    String serverName;
+//    long   joinedOn;
+//    long   leftOn;
+//
+//    public RemovedServerInfo(final String remoteServerName, final long joinedOn) {
+//      this.serverName = remoteServerName;
+//      this.joinedOn = joinedOn;
+//      this.leftOn = System.currentTimeMillis();
+//    }
+//  }
 
   public HAServer(final ArcadeDBServer server, final ContextConfiguration configuration) {
     if (!configuration.getValueAsBoolean(GlobalConfiguration.TX_WAL))
@@ -193,8 +193,7 @@ public class HAServer implements ServerPlugin {
       server.log(this, Level.FINE, "Connecting to servers %s (cluster=%s configuredServers=%d)", cfgServerList, bucketName, configuredServers);
 
       serverAddressList.clear();
-      for (String serverEntry : serverEntries)
-        serverAddressList.add(serverEntry);
+      serverAddressList.addAll(Arrays.asList(serverEntries));
 
       for (String serverEntry : serverEntries) {
         if (!isCurrentServer(serverEntry) && connectToLeader(serverEntry)) {
@@ -209,12 +208,7 @@ public class HAServer implements ServerPlugin {
           configuredServers, majorityOfVotes);
 
       // START ELECTION IN BACKGROUND
-      new Thread(new Runnable() {
-        @Override
-        public void run() {
-          startElection();
-        }
-      }).start();
+      new Thread(this::startElection).start();
     }
   }
 
@@ -238,6 +232,7 @@ public class HAServer implements ServerPlugin {
         return true;
 
     } catch (UnknownHostException e) {
+      // IGNORE THIS EXCEPTION AND RETURN FALSE
     }
     return false;
   }
@@ -554,8 +549,7 @@ public class HAServer implements ServerPlugin {
       serverAddressList.clear();
 
       final String[] servers = serverAddress.split(",");
-      for (String s : servers)
-        serverAddressList.add(s);
+      serverAddressList.addAll(Arrays.asList(servers));
 
       this.configuredServers = serverAddressList.size();
     } else
@@ -752,13 +746,13 @@ public class HAServer implements ServerPlugin {
 
   public String getReplicaServersHTTPAddressesList() {
     if (isLeader()) {
-      String list = "";
+      final StringBuilder list = new StringBuilder();
       for (Leader2ReplicaNetworkExecutor r : replicaConnections.values()) {
-        if (!list.isEmpty())
-          list += ",";
-        list += r.getRemoteServerHTTPAddress();
+        if (list.length() > 0)
+          list.append(",");
+        list.append(r.getRemoteServerHTTPAddress());
       }
-      return list;
+      return list.toString();
     }
 
     return replicasHTTPAddresses;
@@ -808,12 +802,7 @@ public class HAServer implements ServerPlugin {
 
   public void printClusterConfiguration() {
     final StringBuilder buffer = new StringBuilder("NEW CLUSTER CONFIGURATION\n");
-    final TableFormatter table = new TableFormatter(new TableFormatter.TableOutput() {
-      @Override
-      public void onMessage(final String text, final Object... args) {
-        buffer.append(String.format(text, args));
-      }
-    });
+    final TableFormatter table = new TableFormatter((text, args) -> buffer.append(String.format(text, args)));
 
     final List<RecordTableFormatter.TableRecordRow> list = new ArrayList<>();
 

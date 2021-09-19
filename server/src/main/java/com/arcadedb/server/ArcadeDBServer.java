@@ -411,13 +411,7 @@ public class ArcadeDBServer implements ServerLogger {
       if (!databaseDir.isDirectory())
         throw new ConfigurationException("Configured database directory '" + databaseDir + "' is not a directory on file system");
 
-      final File[] databaseDirectories = databaseDir.listFiles(new FileFilter() {
-        @Override
-        public boolean accept(File pathname) {
-          return pathname.isDirectory();
-        }
-      });
-
+      final File[] databaseDirectories = databaseDir.listFiles(File::isDirectory);
       for (File f : databaseDirectories)
         getDatabase(f.getName());
     }
@@ -446,7 +440,6 @@ public class ArcadeDBServer implements ServerLogger {
             if (!security.existsUser(credential)) {
               LogManager.instance()
                   .log(this, Level.WARNING, "Cannot create user '%s' to access database '%s' because the user does not exist", null, credential, dbName);
-              continue;
             }
             //FIXME: else if user exists, should we give him access to the dbName?
           } else {
@@ -464,7 +457,6 @@ public class ArcadeDBServer implements ServerLogger {
                     security.saveConfiguration();
                   } catch (IOException e) {
                     LogManager.instance().log(this, Level.SEVERE, "Cannot create database '%s' because security configuration cannot be saved", e, dbName);
-                    continue;
                   }
                 }
 
@@ -472,7 +464,6 @@ public class ArcadeDBServer implements ServerLogger {
                 LogManager.instance()
                     .log(this, Level.WARNING, "Cannot create database '%s' because the user '%s' already exists with a different password", null, dbName,
                         userName);
-                continue;
               }
             } else {
               // CREATE A NEW USER
@@ -481,7 +472,6 @@ public class ArcadeDBServer implements ServerLogger {
 
               } catch (IOException e) {
                 LogManager.instance().log(this, Level.SEVERE, "Cannot create database '%s' because the new user '%s' cannot be saved", e, dbName, userName);
-                continue;
               }
             }
           }
@@ -514,6 +504,9 @@ public class ArcadeDBServer implements ServerLogger {
             case "import":
               database.command("sql", "import database " + commandParams);
               break;
+
+            default:
+              LogManager.instance().log(this, Level.SEVERE, "Unsupported command %s in startup command: '%s'", null, commandType);
             }
           }
         }
@@ -534,13 +527,13 @@ public class ArcadeDBServer implements ServerLogger {
       }
     }
   }
-
-  private void saveConfiguration() {
-    final File file = new File(CONFIG_SERVER_CONFIGURATION_FILENAME);
-    try {
-      FileUtils.writeFile(file, configuration.toJSON());
-    } catch (IOException e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error on saving configuration to file '%s'", e, file);
-    }
-  }
+//
+//  private void saveConfiguration() {
+//    final File file = new File(CONFIG_SERVER_CONFIGURATION_FILENAME);
+//    try {
+//      FileUtils.writeFile(file, configuration.toJSON());
+//    } catch (IOException e) {
+//      LogManager.instance().log(this, Level.SEVERE, "Error on saving configuration to file '%s'", e, file);
+//    }
+//  }
 }
