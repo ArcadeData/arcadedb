@@ -22,17 +22,14 @@
 package com.arcadedb.server;
 
 import com.arcadedb.log.LogManager;
+import org.json.JSONObject;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
-import java.io.OutputStreamWriter;
-import java.io.PrintWriter;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.util.Base64;
-import java.util.HashMap;
-import java.util.logging.Level;
+import java.io.*;
+import java.net.*;
+import java.util.*;
+import java.util.logging.*;
 
 public class HTTPGraphIT extends BaseGraphServerTest {
   @Test
@@ -170,8 +167,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
   public void checkRecordLoading() throws Exception {
     testEachServer((serverIndex) -> {
       HttpURLConnection connection = (HttpURLConnection) new URL(
-          "http://127.0.0.1:248" + serverIndex + "/api/v1/document/graph/" + BaseGraphServerTest.root.getIdentity().toString()
-              .substring(1)).openConnection();
+          "http://127.0.0.1:248" + serverIndex + "/api/v1/document/graph/" + BaseGraphServerTest.root.getIdentity().toString().substring(1)).openConnection();
 
       connection.setRequestMethod("GET");
       connection.setRequestProperty("Authorization",
@@ -204,7 +200,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
       connection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
 
-      final String payload = "{\"@type\":\"Person\",\"name\":\"Jay\",\"surname\":\"Miner\",\"age\":69}";
+      final JSONObject payload = new JSONObject("{\"@type\":\"Person\",\"name\":\"Jay\",\"surname\":\"Miner\",\"age\":69}");
 
       connection.setRequestMethod("POST");
       connection.setDoOutput(true);
@@ -212,9 +208,10 @@ public class HTTPGraphIT extends BaseGraphServerTest {
       connection.connect();
 
       PrintWriter pw = new PrintWriter(new OutputStreamWriter(connection.getOutputStream()));
-      pw.write(payload);
+      pw.write(payload.toString());
       pw.close();
 
+      final String rid;
       try {
         final String response = readResponse(connection);
 
@@ -223,10 +220,44 @@ public class HTTPGraphIT extends BaseGraphServerTest {
 
         LogManager.instance().log(this, Level.INFO, "Response: ", null, response);
 
-        Assertions.assertTrue(response.contains("#"));
+        final JSONObject responseAsJson = new JSONObject(response);
+        Assertions.assertTrue(responseAsJson.has("result"));
 
+        rid = responseAsJson.getString("result");
+        Assertions.assertTrue(rid.contains("#"));
       } finally {
         connection.disconnect();
+      }
+
+      HttpURLConnection connection2 = (HttpURLConnection) new URL(
+          "http://127.0.0.1:248" + serverIndex + "/api/v1/document/graph/" + rid.substring(1)).openConnection();
+
+      connection2.setRequestMethod("GET");
+      connection2.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      connection2.connect();
+
+      try {
+        final String response = readResponse(connection2);
+
+        LogManager.instance().log(this, Level.INFO, "Response: ", null, response);
+
+        final JSONObject responseAsJson = new JSONObject(response);
+        Assertions.assertTrue(responseAsJson.has("result"));
+
+        final JSONObject object = responseAsJson.getJSONObject("result");
+
+        Assertions.assertEquals(200, connection2.getResponseCode());
+
+        Assertions.assertEquals("OK", connection2.getResponseMessage());
+
+        Assertions.assertEquals(rid, object.remove("@rid").toString());
+        Assertions.assertEquals("d", object.remove("@cat"));
+
+        Assertions.assertEquals(payload.toMap(), object.toMap());
+
+      } finally {
+        connection2.disconnect();
       }
     });
   }

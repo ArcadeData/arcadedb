@@ -28,7 +28,7 @@ import com.arcadedb.server.security.ServerSecurity;
 import io.undertow.server.HttpServerExchange;
 import org.json.JSONObject;
 
-import java.io.IOException;
+import java.io.*;
 
 public class CreateDocumentHandler extends DatabaseAbstractHandler {
   public CreateDocumentHandler(final HttpServer httpServer) {
@@ -41,7 +41,7 @@ public class CreateDocumentHandler extends DatabaseAbstractHandler {
 
     final JSONObject json = new JSONObject(payload);
 
-    final String type = json.getString("@type");
+    final String type = (String) json.remove("@type");
     if (type == null) {
       exchange.setStatusCode(400);
       exchange.getResponseSender().send("{ \"error\" : \"@type attribute not found in the record payload\"}");
@@ -53,6 +53,7 @@ public class CreateDocumentHandler extends DatabaseAbstractHandler {
     database.begin();
     try {
       final MutableDocument document = database.newDocument(type);
+      document.fromJSON(json);
       document.save();
       database.commit();
 
