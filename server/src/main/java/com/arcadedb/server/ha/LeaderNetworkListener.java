@@ -33,21 +33,19 @@ import java.net.*;
 import java.util.logging.*;
 
 public class LeaderNetworkListener extends Thread {
-
-  public interface ClientConnected {
-    void connected();
-  }
-
   private final        HAServer            ha;
   private final        ServerSocketFactory socketFactory;
   private              ServerSocket        serverSocket;
-  private              InetSocketAddress   inboundAddr;
   private volatile     boolean             active           = true;
   private final static int                 socketBufferSize = 0;
   private final static int                 protocolVersion  = -1;
   private final        String              hostName;
   private              int                 port;
   private              ClientConnected     callback;
+
+  public interface ClientConnected {
+    void connected();
+  }
 
   public LeaderNetworkListener(final HAServer ha, final ServerSocketFactory iSocketFactory, final String iHostName, final String iHostPortRange) {
     super(ha.getServerName() + " replication listen at " + iHostName + ":" + iHostPortRange);
@@ -130,7 +128,7 @@ public class LeaderNetworkListener extends Thread {
   private void listen(final String hostName, final String hostPortRange) {
 
     for (int tryPort : getPorts(hostPortRange)) {
-      inboundAddr = new InetSocketAddress(hostName, tryPort);
+      final InetSocketAddress inboundAddr = new InetSocketAddress(hostName, tryPort);
       try {
         serverSocket = socketFactory.createServerSocket(tryPort, 0, InetAddress.getByName(hostName));
 
@@ -174,24 +172,8 @@ public class LeaderNetworkListener extends Thread {
       throw new ConnectionException(socket.getInetAddress().toString(), "Bad protocol");
     }
 
-    final short remoteProtocolVersion = channel.readShort();
-    if (remoteProtocolVersion != ReplicationProtocol.PROTOCOL_VERSION) {
-      channel.writeBoolean(false);
-      channel.writeByte(ReplicationProtocol.ERROR_CONNECT_UNSUPPORTEDPROTOCOL);
-      channel.writeString("Network protocol version " + remoteProtocolVersion + " is different than local server " + ReplicationProtocol.PROTOCOL_VERSION);
-      channel.flush();
-      throw new ConnectionException(socket.getInetAddress().toString(),
-          "Network protocol version " + remoteProtocolVersion + " is different than local server " + ReplicationProtocol.PROTOCOL_VERSION);
-    }
-
-    final String remoteClusterName = channel.readString();
-    if (!remoteClusterName.equals(ha.getClusterName())) {
-      channel.writeBoolean(false);
-      channel.writeByte(ReplicationProtocol.ERROR_CONNECT_WRONGCLUSTERNAME);
-      channel.writeString("Cluster name '" + remoteClusterName + "' does not match");
-      channel.flush();
-      throw new ConnectionException(socket.getInetAddress().toString(), "Cluster name '" + remoteClusterName + "' does not match");
-    }
+    readProtocolVersion(socket, channel);
+    readClusterName(socket, channel);
 
     final String remoteServerName = channel.readString();
     final String remoteServerAddress = channel.readString();
@@ -200,83 +182,117 @@ public class LeaderNetworkListener extends Thread {
     final short command = channel.readShort();
 
     switch (command) {
-    case ReplicationProtocol.COMMAND_CONNECT: {
-
-      if (remoteServerName.equals(ha.getServerName())) {
-        channel.writeBoolean(false);
-        channel.writeByte(ReplicationProtocol.ERROR_CONNECT_SAME_SERVERNAME);
-        channel.writeString("Remote server is attempting to connect with the same server name '" + ha.getServerName() + "'");
-        throw new ConnectionException(channel.socket.getInetAddress().toString(),
-            "Remote server is attempting to connect with the same server name '" + ha.getServerName() + "'");
-      }
-
-      // CREATE A NEW PROTOCOL INSTANCE
-      final Leader2ReplicaNetworkExecutor connection = new Leader2ReplicaNetworkExecutor(ha, channel, remoteServerName, remoteServerAddress,
-          remoteServerHTTPAddress);
-
-      ha.registerIncomingConnection(connection.getRemoteServerName(), connection);
-
-      connection.start();
-
-      if (callback != null)
-        callback.connected();
+    case ReplicationProtocol.COMMAND_CONNECT:
+      connect(channel, remoteServerName, remoteServerAddress, remoteServerHTTPAddress);
       break;
-    }
 
-    case ReplicationProtocol.COMMAND_VOTE_FOR_ME: {
-      final long voteTurn = channel.readLong();
-      final long lastReplicationMessage = channel.readLong();
-
-      final long localServerLastMessageNumber = ha.getReplicationLogFile().getLastMessageNumber();
-
-      if (localServerLastMessageNumber > lastReplicationMessage) {
-        // LOCAL SERVER HAS A HIGHER LSN, START ELECTION PROCESS IF NOT THE LEADER
-        ha.getServer().log(this, Level.INFO,
-            "Server '%s' asked for election (lastReplicationMessage=%d my=%d) on turn %d, but cannot give my vote because my LSN is higher", remoteServerName,
-            lastReplicationMessage, localServerLastMessageNumber, voteTurn);
-        channel.writeByte((byte) 2);
-        ha.lastElectionVote = new Pair<>(voteTurn, "-");
-        final Replica2LeaderNetworkExecutor leader = ha.getLeader();
-        channel.writeString(leader != null ? leader.getRemoteAddress() : ha.getServerAddress());
-
-        if (leader == null)
-          ha.startElection();
-
-      } else if (lastReplicationMessage >= localServerLastMessageNumber && (ha.lastElectionVote == null || ha.lastElectionVote.getFirst() < voteTurn)) {
-        ha.getServer().log(this, Level.INFO, "Server '%s' asked for election (lastReplicationMessage=%d my=%d) on turn %d, giving my vote", remoteServerName,
-            lastReplicationMessage, localServerLastMessageNumber, voteTurn);
-        channel.writeByte((byte) 0);
-        ha.lastElectionVote = new Pair<>(voteTurn, remoteServerName);
-        ha.setElectionStatus(HAServer.ELECTION_STATUS.VOTING_FOR_OTHERS);
-      } else {
-        ha.getServer().log(this, Level.INFO,
-            "Server '%s' asked for election (lastReplicationMessage=%d my=%d) on turn %d, but cannot give my vote (votedFor='%s' on turn %d)", remoteServerName,
-            lastReplicationMessage, localServerLastMessageNumber, voteTurn, ha.lastElectionVote != null ? ha.lastElectionVote.getSecond() : "-",
-            ha.lastElectionVote.getFirst());
-        channel.writeByte((byte) 1);
-        final Replica2LeaderNetworkExecutor leader = ha.getLeader();
-        channel.writeString(leader != null ? leader.getRemoteAddress() : ha.getServerAddress());
-      }
-      channel.flush();
+    case ReplicationProtocol.COMMAND_VOTE_FOR_ME:
+      voteForMe(channel, remoteServerName);
       break;
+
+    case ReplicationProtocol.COMMAND_ELECTION_COMPLETED:
+      electionComplete(channel, remoteServerName, remoteServerAddress);
+      break;
+
+    default:
+      throw new ConnectionException(channel.socket.getInetAddress().toString(), "Replication command '" + command + "' not supported");
     }
+  }
 
-    case ReplicationProtocol.COMMAND_ELECTION_COMPLETED: {
-      final long voteTurn = channel.readLong();
+  private void electionComplete(ChannelBinaryServer channel, String remoteServerName, String remoteServerAddress) throws IOException {
+    final long voteTurn = channel.readLong();
 
-      ha.lastElectionVote = new Pair<>(voteTurn, remoteServerName);
-      channel.close();
+    ha.lastElectionVote = new Pair<>(voteTurn, remoteServerName);
+    channel.close();
 
-      ha.getServer().log(this, Level.INFO, "Received new leadership from server '%s' (turn=%d)", remoteServerName, voteTurn);
+    ha.getServer().log(this, Level.INFO, "Received new leadership from server '%s' (turn=%d)", remoteServerName, voteTurn);
 
-      if (ha.connectToLeader(remoteServerAddress))
-        // ELECTION FINISHED, THE SERVER IS A REPLICA
-        ha.setElectionStatus(HAServer.ELECTION_STATUS.DONE);
-      else
-        // CANNOT CONTACT THE ELECTED LEADER, START ELECTION AGAIN
+    if (ha.connectToLeader(remoteServerAddress))
+      // ELECTION FINISHED, THE SERVER IS A REPLICA
+      ha.setElectionStatus(HAServer.ELECTION_STATUS.DONE);
+    else
+      // CANNOT CONTACT THE ELECTED LEADER, START ELECTION AGAIN
+      ha.startElection();
+  }
+
+  private void voteForMe(ChannelBinaryServer channel, String remoteServerName) throws IOException {
+    final long voteTurn = channel.readLong();
+    final long lastReplicationMessage = channel.readLong();
+
+    final long localServerLastMessageNumber = ha.getReplicationLogFile().getLastMessageNumber();
+
+    if (localServerLastMessageNumber > lastReplicationMessage) {
+      // LOCAL SERVER HAS A HIGHER LSN, START ELECTION PROCESS IF NOT THE LEADER
+      ha.getServer().log(this, Level.INFO,
+          "Server '%s' asked for election (lastReplicationMessage=%d my=%d) on turn %d, but cannot give my vote because my LSN is higher", remoteServerName,
+          lastReplicationMessage, localServerLastMessageNumber, voteTurn);
+      channel.writeByte((byte) 2);
+      ha.lastElectionVote = new Pair<>(voteTurn, "-");
+      final Replica2LeaderNetworkExecutor leader = ha.getLeader();
+      channel.writeString(leader != null ? leader.getRemoteAddress() : ha.getServerAddress());
+
+      if (leader == null)
         ha.startElection();
-      break;
+
+    } else if (lastReplicationMessage >= localServerLastMessageNumber && (ha.lastElectionVote == null || ha.lastElectionVote.getFirst() < voteTurn)) {
+      ha.getServer().log(this, Level.INFO, "Server '%s' asked for election (lastReplicationMessage=%d my=%d) on turn %d, giving my vote", remoteServerName,
+          lastReplicationMessage, localServerLastMessageNumber, voteTurn);
+      channel.writeByte((byte) 0);
+      ha.lastElectionVote = new Pair<>(voteTurn, remoteServerName);
+      ha.setElectionStatus(HAServer.ELECTION_STATUS.VOTING_FOR_OTHERS);
+    } else {
+      ha.getServer().log(this, Level.INFO,
+          "Server '%s' asked for election (lastReplicationMessage=%d my=%d) on turn %d, but cannot give my vote (votedFor='%s' on turn %d)", remoteServerName,
+          lastReplicationMessage, localServerLastMessageNumber, voteTurn, ha.lastElectionVote != null ? ha.lastElectionVote.getSecond() : "-",
+          ha.lastElectionVote.getFirst());
+      channel.writeByte((byte) 1);
+      final Replica2LeaderNetworkExecutor leader = ha.getLeader();
+      channel.writeString(leader != null ? leader.getRemoteAddress() : ha.getServerAddress());
     }
+    channel.flush();
+  }
+
+  private void connect(ChannelBinaryServer channel, String remoteServerName, String remoteServerAddress, String remoteServerHTTPAddress) throws IOException {
+    if (remoteServerName.equals(ha.getServerName())) {
+      channel.writeBoolean(false);
+      channel.writeByte(ReplicationProtocol.ERROR_CONNECT_SAME_SERVERNAME);
+      channel.writeString("Remote server is attempting to connect with the same server name '" + ha.getServerName() + "'");
+      throw new ConnectionException(channel.socket.getInetAddress().toString(),
+          "Remote server is attempting to connect with the same server name '" + ha.getServerName() + "'");
+    }
+
+    // CREATE A NEW PROTOCOL INSTANCE
+    final Leader2ReplicaNetworkExecutor connection = new Leader2ReplicaNetworkExecutor(ha, channel, remoteServerName, remoteServerAddress,
+        remoteServerHTTPAddress);
+
+    ha.registerIncomingConnection(connection.getRemoteServerName(), connection);
+
+    connection.start();
+
+    if (callback != null)
+      callback.connected();
+  }
+
+  private void readClusterName(Socket socket, ChannelBinaryServer channel) throws IOException {
+    final String remoteClusterName = channel.readString();
+    if (!remoteClusterName.equals(ha.getClusterName())) {
+      channel.writeBoolean(false);
+      channel.writeByte(ReplicationProtocol.ERROR_CONNECT_WRONGCLUSTERNAME);
+      channel.writeString("Cluster name '" + remoteClusterName + "' does not match");
+      channel.flush();
+      throw new ConnectionException(socket.getInetAddress().toString(), "Cluster name '" + remoteClusterName + "' does not match");
+    }
+  }
+
+  private void readProtocolVersion(Socket socket, ChannelBinaryServer channel) throws IOException {
+    final short remoteProtocolVersion = channel.readShort();
+    if (remoteProtocolVersion != ReplicationProtocol.PROTOCOL_VERSION) {
+      channel.writeBoolean(false);
+      channel.writeByte(ReplicationProtocol.ERROR_CONNECT_UNSUPPORTEDPROTOCOL);
+      channel.writeString("Network protocol version " + remoteProtocolVersion + " is different than local server " + ReplicationProtocol.PROTOCOL_VERSION);
+      channel.flush();
+      throw new ConnectionException(socket.getInetAddress().toString(),
+          "Network protocol version " + remoteProtocolVersion + " is different than local server " + ReplicationProtocol.PROTOCOL_VERSION);
     }
   }
 
