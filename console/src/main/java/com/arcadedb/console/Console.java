@@ -55,7 +55,7 @@ import java.io.*;
 import java.util.*;
 
 public class Console {
-  private static final String           PROMPT               = "\n%s> ";
+  private static final String           PROMPT               = "%n%s> ";
   private final        boolean          system               = System.console() != null;
   private final        Terminal         terminal;
   private final        LineReader       lineReader;
@@ -83,7 +83,7 @@ public class Console {
     lineReader = LineReaderBuilder.builder().terminal(terminal).parser(parser).variable("history-file", ".history").history(new DefaultHistory())
         .completer(completer).build();
 
-    output("%s Console v.%s - %s (%s)\n", Constants.PRODUCT, Constants.getRawVersion(), Constants.COPYRIGHT, Constants.URL);
+    output("%s Console v.%s - %s (%s)%n", Constants.PRODUCT, Constants.getRawVersion(), Constants.COPYRIGHT, Constants.URL);
 
     if (!interactive)
       return;
@@ -108,7 +108,7 @@ public class Console {
         } catch (EndOfFileException e) {
           return;
         } catch (Exception e) {
-          terminal.writer().print("\nError: " + e.getMessage() + "\n");
+          terminal.writer().print("\nError: " + e.getMessage() + "%n");
         }
       }
     } finally {
@@ -184,7 +184,7 @@ public class Console {
       }
     }
 
-    output("\n");
+    output("%n");
 
     return true;
   }
@@ -233,7 +233,7 @@ public class Console {
       printRecord(row);
 
     } else
-      output("\nTransaction is not Active");
+      output("%nTransaction is not Active");
   }
 
   private void executeBegin() {
@@ -296,7 +296,7 @@ public class Console {
       if (urlParts[0].startsWith("remote:")) {
         connectToRemoteServer(url);
 
-        terminal.writer().printf("\nConnected\n");
+        terminal.writer().printf("%nConnected%n");
         terminal.writer().flush();
 
       } else {
@@ -321,7 +321,7 @@ public class Console {
         connectToRemoteServer(url);
         remoteDatabase.create();
 
-        terminal.writer().printf("\nDatabase created\n");
+        terminal.writer().printf("%nDatabase created%n");
         terminal.writer().flush();
 
       } else {
@@ -341,7 +341,7 @@ public class Console {
         connectToRemoteServer(url);
         remoteDatabase.drop();
 
-        terminal.writer().printf("\nDatabase dropped\n");
+        terminal.writer().printf("%nDatabase dropped%n");
         terminal.writer().flush();
 
       } else {
@@ -363,11 +363,11 @@ public class Console {
     final Document rec = currentRecord.getElement().orElse(null);
 
     if (rec instanceof Vertex)
-      output("\nVERTEX @type:%s @rid:%s", rec.getTypeName(), rec.getIdentity());
+      output("%nVERTEX @type:%s @rid:%s", rec.getTypeName(), rec.getIdentity());
     else if (rec instanceof Edge)
-      output("\nEDGE @type:%s @rid:%s", rec.getTypeName(), rec.getIdentity());
+      output("%nEDGE @type:%s @rid:%s", rec.getTypeName(), rec.getIdentity());
     else if (rec != null)
-      output("\nDOCUMENT @type:%s @rid:%s", rec.getTypeName(), rec.getIdentity());
+      output("%nDOCUMENT @type:%s @rid:%s", rec.getTypeName(), rec.getIdentity());
 
     final List<TableFormatter.TableRow> resultSet = new ArrayList<>();
 
@@ -400,7 +400,7 @@ public class Console {
     });
     formatter.writeRows(resultSet, -1);
 
-    output("\n");
+    output("%n");
   }
 
   private void executeSQL(final String line) {
@@ -471,7 +471,7 @@ public class Console {
       table.writeRows(list, limit);
     }
 
-    terminal.writer().printf("\nCommand executed in %dms\n", elapsed);
+    terminal.writer().printf("%nCommand executed in %dms%n", elapsed);
   }
 
   private void executeLoad(final String fileName) throws IOException {
@@ -482,11 +482,10 @@ public class Console {
     if (!file.exists())
       throw new ArcadeDBException("File name '" + fileName + "' not found");
 
-    final FileReader fr = new FileReader(file);
-    BufferedReader bufferedReader = new BufferedReader(fr);
-
-    while (bufferedReader.ready())
-      parse(bufferedReader.readLine(), true);
+    try (final BufferedReader bufferedReader = new BufferedReader(new FileReader(file, DatabaseFactory.getDefaultCharset()))) {
+      while (bufferedReader.ready())
+        parse(bufferedReader.readLine(), true);
+    }
   }
 
   public boolean parse(final String line, final boolean printCommand) throws IOException {
@@ -516,7 +515,7 @@ public class Console {
     checkDatabaseIsOpen();
 
     if (subject.equalsIgnoreCase("types")) {
-      output("\nAVAILABLE TYPES");
+      output("%nAVAILABLE TYPES");
 
       final TableFormatter table = new TableFormatter(new TableFormatter.TableOutput() {
         @Override
@@ -559,24 +558,24 @@ public class Console {
   }
 
   private void executeHelp() {
-    output("\nHELP");
-    output("\nbegin                               -> begins a new transaction");
-    output("\ncheck database                      -> check database integrity");
-    output("\nclose                               -> closes the database");
-    output("\ncreate database <path>|remote:<url> -> creates a new database");
-    output("\ncommit                              -> commits current transaction");
-    output("\nconnect <path>|remote:<url>         -> connects to a database stored on <path>");
-    output("\nhelp|?                              -> ask for this help");
-    output("\ninfo types                          -> print available types");
-    output("\ninfo transaction                    -> print current transaction");
-    output("\nrollback                            -> rollbacks current transaction");
-    output("\nquit or exit                        -> exits from the console");
-    output("\n");
+    output("%nHELP");
+    output("%nbegin                               -> begins a new transaction");
+    output("%ncheck database                      -> check database integrity");
+    output("%nclose                               -> closes the database");
+    output("%ncreate database <path>|remote:<url> -> creates a new database");
+    output("%ncommit                              -> commits current transaction");
+    output("%nconnect <path>|remote:<url>         -> connects to a database stored on <path>");
+    output("%nhelp|?                              -> ask for this help");
+    output("%ninfo types                          -> print available types");
+    output("%ninfo transaction                    -> print current transaction");
+    output("%nrollback                            -> rollbacks current transaction");
+    output("%nquit or exit                        -> exits from the console");
+    output("%n");
   }
 
   private void checkDatabaseIsOpen() {
     if (localDatabase == null && remoteDatabase == null)
-      throw new ArcadeDBException("No active database. Open a database first\n");
+      throw new ArcadeDBException("No active database. Open a database first");
   }
 
   private void connectToRemoteServer(final String url) {

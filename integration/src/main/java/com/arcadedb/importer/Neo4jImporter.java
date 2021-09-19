@@ -60,13 +60,13 @@ public class Neo4jImporter {
   private              String                         inputFile;
   private              boolean                        overwriteDatabase     = false;
   private              Type                           typeForDecimals       = Type.DECIMAL;
-  private final        Map<String, Long>              totalVerticesByType   = new HashMap<>();
-  private final        long                           totalVerticesParsed   = 0L;
-  private final        Map<String, Long>              totalEdgesByType      = new HashMap<>();
-  private final        long                           totalEdgesParsed      = 0L;
+  private              Map<String, Long>              totalVerticesByType   = new HashMap<>();
+  private              long                           totalVerticesParsed   = 0L;
+  private              Map<String, Long>              totalEdgesByType      = new HashMap<>();
+  private              long                           totalEdgesParsed      = 0L;
   private              long                           totalAttributesParsed = 0L;
-  private final        long                           errors                = 0L;
-  private final        long                           warnings              = 0L;
+  private              long                           errors                = 0L;
+  private              long                           warnings              = 0L;
   private              DatabaseFactory                factory;
   private              Database                       database;
   private              int                            batchSize             = 10_000;
@@ -294,6 +294,7 @@ public class Neo4jImporter {
       switch (json.getString("type")) {
       case "node":
         ++processedItems;
+        ++totalVerticesParsed;
         if (processedItems > 0 && processedItems % 1_000_000 == 0) {
           final long elapsed = System.currentTimeMillis() - beginTimeVerticesCreation;
           log("- Status update: created %,d vertices, skipped %,d edges (%,d vertices/sec)", savedVertices, skippedEdges, (savedVertices / elapsed * 1000));
@@ -302,6 +303,7 @@ public class Neo4jImporter {
         final Pair<String, List<String>> type = typeNameFromLabels(json);
         if (type == null) {
           log("- found vertex in line %d without labels. Skip it.", lineNumber.get());
+          ++warnings;
           return null;
         }
 
@@ -354,6 +356,7 @@ public class Neo4jImporter {
 
       case "relationship":
         ++processedItems;
+        ++totalEdgesParsed;
         if (processedItems > 0 && processedItems % 1_000_000 == 0) {
           final long elapsed = System.currentTimeMillis() - beginTimeEdgesCreation;
           log("- Status update: created %,d edges %s (%,d edges/sec)", savedEdges, totalEdgesByType, (savedEdges / elapsed * 1000));
@@ -362,6 +365,7 @@ public class Neo4jImporter {
         final String type = json.getString("label");
         if (type == null) {
           log("- found edge in line %d without labels. Skip it.", lineNumber.get());
+          ++warnings;
           return null;
         }
 
@@ -372,6 +376,7 @@ public class Neo4jImporter {
         final IndexCursor beginCursor = database.lookupByKey(startType.getFirst(), "id", startId);
         if (!beginCursor.hasNext()) {
           log("- cannot create relationship with id '%s'. Vertex id '%s' not found for labels. Skip it.", json.getString("id"), startId, startType.getSecond());
+          ++warnings;
           return null;
         }
 
@@ -384,6 +389,7 @@ public class Neo4jImporter {
         final IndexCursor endCursor = database.lookupByKey(endType.getFirst(), "id", endId);
         if (!endCursor.hasNext()) {
           log("- cannot create relationship with id '%s'. Vertex id '%s' not found for labels. Skip it.", json.getString("id"), endId, endType.getSecond());
+          ++warnings;
           return null;
         }
 
@@ -431,6 +437,7 @@ public class Neo4jImporter {
           propValue = dateTimeISO8601Format.parse((String) propValue).getTime();
         } catch (ParseException e) {
           log("Invalid date '%s', ignoring conversion to timestamp and leaving it as string", propValue);
+          ++errors;
         }
       } else if (propValue instanceof BigDecimal) {
         propValue = typeForDecimals.newInstance(propValue);
@@ -464,10 +471,12 @@ public class Neo4jImporter {
 
             default:
               log("Invalid 'type' content on line %d of the input JSONL file. The line will be ignored. JSON: %s", lineNumber, line);
+              ++errors;
             }
 
           } catch (JSONException e) {
             log("Error on parsing json on line %d of the input JSONL file. The line will be ignored. JSON: %s", lineNumber, line);
+            ++errors;
           }
         }
       } finally {

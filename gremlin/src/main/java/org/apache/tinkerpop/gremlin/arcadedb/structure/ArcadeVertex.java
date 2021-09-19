@@ -54,7 +54,7 @@ public class ArcadeVertex extends ArcadeElement<MutableVertex> implements Vertex
     this.graph.tx().readWrite();
     ArcadeVertex vertex = (ArcadeVertex) inVertex;
 
-    ElementHelper.getLabelValue(keyValues).orElse(Vertex.DEFAULT_LABEL);
+    //ElementHelper.getLabelValue(keyValues).orElse(Vertex.DEFAULT_LABEL);
 
     if (!this.graph.getDatabase().getSchema().existsType(label)) {
       this.graph.getDatabase().getSchema().createEdgeType(label);

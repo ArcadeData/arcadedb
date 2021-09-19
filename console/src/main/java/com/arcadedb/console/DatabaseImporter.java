@@ -22,6 +22,7 @@
 package com.arcadedb.console;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
@@ -30,9 +31,8 @@ import com.arcadedb.schema.DocumentType;
 import org.json.JSONObject;
 
 import java.io.*;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.zip.GZIPInputStream;
+import java.util.*;
+import java.util.zip.*;
 
 public class DatabaseImporter {
   public static void export(final String fileName, Database database, final PrintWriter writer) throws IOException {
@@ -45,11 +45,11 @@ public class DatabaseImporter {
 
     final FileInputStream fis = new FileInputStream(outputFile);
     final InputStream is = fileName.endsWith(".tgz") ? new GZIPInputStream(fis) : fis;
-    final BufferedReader reader = new BufferedReader(new InputStreamReader(is), 8192 * 16);
+    final BufferedReader reader = new BufferedReader(new InputStreamReader(is, DatabaseFactory.getDefaultCharset()), 8192 * 16);
 
     try {
 
-      writer.printf("Importing database from file %s...\n", fileName);
+      writer.printf("Importing database from file %s...%n", fileName);
 
       long totalRecords = 0;
       Bucket currentBucket;
@@ -62,7 +62,7 @@ public class DatabaseImporter {
 
         if (line.startsWith("#ARCADEDB EXPORT ")) {
           final String version = line.substring("#ARCADEDB EXPORT ".length());
-          writer.printf("- Found version %s\n", version);
+          writer.printf("- Found version %s%n", version);
         } else if (line.startsWith("#BUCKET ")) {
           final String bucketName = line.substring("#BUCKET ".length());
           if (database.getSchema().existsBucket(bucketName))
@@ -72,12 +72,12 @@ public class DatabaseImporter {
 
           currentType = database.getSchema().getType(database.getSchema().getTypeNameByBucketId(currentBucket.getId()));
 
-          writer.printf("- Importing bucket %s...\n", bucketName);
+          writer.printf("- Importing bucket %s...%n", bucketName);
         } else {
           // RECORD
           final int posSep = line.indexOf("=");
           if (posSep < 0) {
-            writer.printf("-- Error on importing record %s\n", line);
+            writer.printf("-- Error on importing record %s%n", line);
             continue;
           }
 
@@ -99,7 +99,7 @@ public class DatabaseImporter {
               writer.flush();
             }
           } catch (Exception e) {
-            writer.printf("-- Error on importing record %s\n", line);
+            writer.printf("-- Error on importing record %s%n", line);
             writer.flush();
           }
         }
@@ -109,7 +109,7 @@ public class DatabaseImporter {
 
       final long elapsedInSecs = (System.currentTimeMillis() - beginTime) / 1000;
 
-      writer.printf("Import completed in %d seconds. Created %d new records\n", elapsedInSecs, totalRecords);
+      writer.printf("Import completed in %d seconds. Created %d new records%n", elapsedInSecs, totalRecords);
       writer.flush();
 
     } finally {

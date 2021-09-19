@@ -24,8 +24,7 @@ package com.arcadedb.console;
 import org.jline.reader.ParsedLine;
 import org.jline.reader.impl.DefaultParser;
 
-import java.util.LinkedList;
-import java.util.List;
+import java.util.*;
 
 public class TerminalParser extends DefaultParser {
 
@@ -36,6 +35,9 @@ public class TerminalParser extends DefaultParser {
 
   @Override
   public ParsedLine parse(String line, int cursor, ParseContext context) {
+    if (line == null)
+      return null;
+
     List<String> words = new LinkedList();
     StringBuilder current = new StringBuilder();
     int wordCursor = -1;
@@ -45,7 +47,7 @@ public class TerminalParser extends DefaultParser {
     int rawWordLength = -1;
     int rawWordStart = 0;
 
-    for (int i = 0; line != null && i < line.length(); ++i) {
+    for (int i = 0; i < line.length(); ++i) {
       if (i == cursor) {
         wordIndex = words.size();
         wordCursor = current.length();

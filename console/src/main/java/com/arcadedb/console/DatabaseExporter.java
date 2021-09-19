@@ -22,16 +22,15 @@
 package com.arcadedb.console;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.utility.FileUtils;
 
 import java.io.*;
-import java.util.ArrayList;
-import java.util.Iterator;
-import java.util.List;
-import java.util.zip.GZIPOutputStream;
+import java.util.*;
+import java.util.zip.*;
 
 public class DatabaseExporter {
   public static void export(final String fileName, Database database, final PrintWriter writer) throws IOException {
@@ -49,7 +48,7 @@ public class DatabaseExporter {
 
       writer.printf("Exporting database to file %s...\n", fileName);
 
-      os.write(("#ARCADEDB EXPORT v1.0\n").getBytes());
+      os.write(("#ARCADEDB EXPORT v1.0\n").getBytes(DatabaseFactory.getDefaultCharset()));
       writer.flush();
 
       long written = 0;
@@ -70,31 +69,31 @@ public class DatabaseExporter {
         writer.printf("- Exporting bucket %s...", bucket.getName());
         writer.flush();
 
-        os.write(("#BUCKET " + bucket.getName() + "\n").getBytes());
+        os.write(("#BUCKET " + bucket.getName() + "\n").getBytes(DatabaseFactory.getDefaultCharset()));
 
-        final byte[] sep1 = "=".getBytes();
-        final byte[] sep2 = ":".getBytes();
-        final byte[] lf = "\n".getBytes();
+        final byte[] sep1 = "=".getBytes(DatabaseFactory.getDefaultCharset());
+        final byte[] sep2 = ":".getBytes(DatabaseFactory.getDefaultCharset());
+        final byte[] lf = "\n".getBytes(DatabaseFactory.getDefaultCharset());
 
         try {
           int i = 0;
           for (Iterator<Record> it = bucket.iterator(); it.hasNext(); ) {
             final Record rec = it.next();
 
-            byte[] buffer = rec.getIdentity().toString().getBytes();
+            byte[] buffer = rec.getIdentity().toString().getBytes(DatabaseFactory.getDefaultCharset());
             os.write(buffer);
             written += buffer.length;
 
             os.write(sep1);
             written += sep1.length;
 
-            os.write(("" + rec.getRecordType()).getBytes());
+            os.write(("" + rec.getRecordType()).getBytes(DatabaseFactory.getDefaultCharset()));
             written += 1;
 
             os.write(sep2);
             written += sep2.length;
 
-            buffer = rec.toJSON().toString().getBytes();
+            buffer = rec.toJSON().toString().getBytes(DatabaseFactory.getDefaultCharset());
             os.write(buffer);
             written += buffer.length;
 

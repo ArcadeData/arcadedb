@@ -40,10 +40,10 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 
 import java.io.*;
-import java.net.HttpURLConnection;
+import java.net.*;
 import java.util.*;
-import java.util.concurrent.Callable;
-import java.util.logging.Level;
+import java.util.concurrent.*;
+import java.util.logging.*;
 
 /**
  * This class has been copied under Console project to avoid complex dependencies.
@@ -57,8 +57,8 @@ public abstract class BaseGraphServerTest {
   protected static final String DB_PATH                    = "./target/databases";
 
   protected static RID              root;
-  private ArcadeDBServer[] servers;
-  private Database[]       databases;
+  private          ArcadeDBServer[] servers;
+  private          Database[]       databases;
 
   protected Database getDatabase(final int serverId) {
     return databases[serverId];
@@ -180,10 +180,10 @@ public abstract class BaseGraphServerTest {
 
   protected void checkArcadeIsTotallyDown() {
     final ByteArrayOutputStream os = new ByteArrayOutputStream();
-    final PrintWriter output = new PrintWriter(new BufferedOutputStream(os));
+    final PrintWriter output = new PrintWriter(new BufferedOutputStream(os), false, DatabaseFactory.getDefaultCharset());
     new Exception().printStackTrace(output);
     output.flush();
-    final String out = os.toString();
+    final String out = os.toString(DatabaseFactory.getDefaultCharset());
     Assertions.assertFalse(out.contains("ArcadeDB"), "Some thread is still up & running: \n" + out);
   }
 
@@ -260,7 +260,7 @@ public abstract class BaseGraphServerTest {
 
   protected String readResponse(final HttpURLConnection connection) throws IOException {
     InputStream in = connection.getInputStream();
-    Scanner scanner = new Scanner(in);
+    Scanner scanner = new Scanner(in, DatabaseFactory.getDefaultCharset());
 
     final StringBuilder buffer = new StringBuilder();
 

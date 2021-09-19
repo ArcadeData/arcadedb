@@ -53,7 +53,7 @@ public class ArcadeGraphFeatures implements Graph.Features {
     return StringFactory.featureString(this);
   }
 
-  public class ArcadeGraphGraphFeatures implements GraphFeatures {
+  public static class ArcadeGraphGraphFeatures implements GraphFeatures {
 
     private final VariableFeatures variableFeatures = new ArcadeVariableFeatures();
 

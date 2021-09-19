@@ -68,7 +68,7 @@ public class OrientDBImporter {
   private final Map<String, Long>          totalRecordByType               = new HashMap<>();
   private       long                       totalRecordParsed               = 0L;
   private       long                       totalAttributesParsed           = 0L;
-  private final long                       errors                          = 0L;
+  private       long                       errors                          = 0L;
   private       long                       warnings                        = 0L;
   private final Set<String>                excludeClasses                  = new HashSet<>(
       Arrays.asList("OUser", "ORole", "OSchedule", "OSequence", "OTriggered", "OSecurityPolicy", "ORestricted", "OIdentity", "OFunction", "_studio"));
@@ -239,6 +239,7 @@ public class OrientDBImporter {
       if (factory.exists()) {
         if (!overwriteDatabase) {
           logger.error("Database already exists on path '%s'", databasePath);
+          ++errors;
           return false;
         } else {
           database = factory.open();
@@ -375,6 +376,7 @@ public class OrientDBImporter {
           elapsedInSecs > 0 ? (context.createdEdges.get() / elapsedInSecs) : 0, elapsedInSecs);
       break;
     default:
+      ++errors;
       error = true;
       throw new IllegalArgumentException("Invalid phase " + phase);
     }
@@ -496,6 +498,7 @@ public class OrientDBImporter {
         }
         break;
       default:
+        ++errors;
         logger.error("- Unsupported record type '%s'", recordType);
       }
     }
@@ -535,6 +538,7 @@ public class OrientDBImporter {
     final RID newOut = vertexRidMap.get(out);
     if (newOut == null) {
       ++skippedEdgeBecauseMissingVertex;
+      ++warnings;
 
       if (settings.verboseLevel < 3 && skippedEdgeBecauseMissingVertex == 100)
         logger.log(2, "- Skipped 100 edges because one vertex is not in the database. Not reporting further case to reduce the output");
@@ -548,6 +552,7 @@ public class OrientDBImporter {
     final RID newIn = vertexRidMap.get(in);
     if (newIn == null) {
       ++skippedEdgeBecauseMissingVertex;
+      ++warnings;
 
       if (settings.verboseLevel < 3 && skippedEdgeBecauseMissingVertex == 100)
         logger.log(2, "- Skipped 100 edges because one vertex is not in the database. Not reporting further case to reduce the output");
@@ -604,6 +609,7 @@ public class OrientDBImporter {
         break;
       default:
         logger.log(2, "Skipping property '%s' of type '%s'", attributeName, propertyType);
+        ++errors;
         continue;
       }
 
@@ -645,6 +651,7 @@ public class OrientDBImporter {
         entryValue = parseArray(reader, ignore);
         break;
       default:
+        ++errors;
         logger.log(2, "Skipping entry of type '%s'", entryType);
         continue;
       }
@@ -766,6 +773,7 @@ public class OrientDBImporter {
         if (keyType == null) {
           logger.log(2, "- Skipped %s index creation on %s%s because the property is not defined and the key type is unknown", unique ? "UNIQUE" : "NOT UNIQUE",
               className, Arrays.toString(properties));
+          ++warnings;
           continue;
         }
 
@@ -845,6 +853,7 @@ public class OrientDBImporter {
         break;
       default:
         logger.log(1, "- Unknown type '%s', ignoring creation of property in the schema for '%s.%s'", orientdbType, t.getName(), entry.getKey());
+        ++warnings;
         continue;
       }
 
@@ -978,6 +987,7 @@ public class OrientDBImporter {
         final Object value = properties.get(indexedPropName);
         if (value == null) {
           ++skippedRecordBecauseNullKey;
+          ++errors;
 
           if (settings.verboseLevel < 3 && skippedRecordBecauseNullKey == 100)
             logger.log(2,
