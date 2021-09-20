@@ -40,6 +40,7 @@
 
         <skipIntegration>true</skipIntegration>
 
+        <itCoverageAgent></itCoverageAgent>
     </properties>
 
     <developers>
@@ -75,11 +76,11 @@
 
     <modules>
         <module>engine</module>
-        <module>gremlin</module>
         <module>network</module>
-        <module>integration</module>
         <module>server</module>
+        <module>integration</module>
         <module>console</module>
+        <module>gremlin</module>
         <module>mongodbw</module>
         <module>redisw</module>
         <module>postgresw</module>
@@ -123,41 +124,38 @@
                     </execution>
                 </executions>
             </plugin>
+            <plugin>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>${maven-surefire-plugin.version}</version>
+                <configuration>
+                    <forkedProcessExitTimeoutInSeconds>60</forkedProcessExitTimeoutInSeconds>
+                    <forkCount>1</forkCount>
+                        <forkCount>1</forkCount>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <version>${maven-failsafe-plugin.version}</version>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>integration-test</goal>
+                            <goal>verify</goal>
+                        </goals>
+                    </execution>
+                </executions>
+                <configuration>
+                    <skipITs>${skipIntegration}</skipITs>
+                    <argLine>${itCoverageAgent}</argLine>
+                    <reuseForks>true</reuseForks>
+                </configuration>
+            </plugin>
+
         </plugins>
 
         <pluginManagement>
             <plugins>
-                <plugin>
-                    <artifactId>maven-surefire-plugin</artifactId>
-                    <version>${maven-surefire-plugin.version}</version>
-                    <configuration>
-                        <forkedProcessExitTimeoutInSeconds>60</forkedProcessExitTimeoutInSeconds>
-                        <forkCount>1</forkCount>
-                        <includes>
-                            <include>**/Test*.java</include>
-                            <include>**/*Test.java</include>
-                            <include>**/*Tests.java</include>
-                            <include>**/*TestCase.java</include>
-                        </includes>
-                        <properties>
-                            <!-- <includeTags>fast</includeTags> -->
-                            <excludeTags>slow</excludeTags>
-                            <!--
-                            <configurationParameters>
-                                junit.jupiter.conditions.deactivate = *
-                            </configurationParameters>
-                            -->
-                        </properties>
-                    </configuration>
-                </plugin>
-                <plugin>
-                    <groupId>org.apache.maven.plugins</groupId>
-                    <artifactId>maven-failsafe-plugin</artifactId>
-                    <version>${maven-failsafe-plugin.version}</version>
-                    <configuration>
-                        <skipITs>${skipIntegration}</skipITs>
-                    </configuration>
-                </plugin>
                 <plugin>
                     <artifactId>maven-assembly-plugin</artifactId>
                     <version>${maven-assembly-plugin.version}</version>
@@ -310,9 +308,21 @@
                         </configuration>
                         <executions>
                             <execution>
+                                <id>prepare-unit</id>
                                 <goals>
                                     <goal>prepare-agent</goal>
                                 </goals>
+                            </execution>
+                            <!-- prepare agent before integration tests -->
+                            <execution>
+                                <id>prepare-it</id>
+                                <goals>
+                                    <goal>prepare-agent</goal>
+                                </goals>
+                                <phase>pre-integration-test</phase>
+                                <configuration>
+                                    <propertyName>itCoverageAgent</propertyName>
+                                </configuration>
                             </execution>
                             <execution>
                                 <id>report</id>
