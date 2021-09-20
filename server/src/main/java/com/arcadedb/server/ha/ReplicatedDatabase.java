@@ -612,7 +612,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
     });
 
     // SEND THE COMMAND OUTSIDE THE EXCLUSIVE LOCK
-    final int quorum = ha.getConfiguredServers();
+    final int quorum = ha.getConfiguredServers() - 1;
     ha.sendCommandToReplicasWithQuorum(command, quorum, timeout);
 
     return result.get();

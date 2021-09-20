@@ -42,7 +42,7 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
   public void propagationOfSchema() throws Exception {
     // CREATE THE SCHEMA ON BOTH SERVER, ONE TYPE PER SERVER
     testEachServer((serverIndex) -> {
-      final HttpURLConnection initialConnection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/command/graph").openConnection();
+      final HttpURLConnection initialConnection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").openConnection();
       try {
 
         initialConnection.setRequestMethod("POST");
@@ -68,7 +68,7 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
 
     // CHECK THE SCHEMA HAS BEEN PROPAGATED
     testEachServer((serverIndex) -> {
-      final HttpURLConnection connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/command/graph").openConnection();
+      final HttpURLConnection connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").openConnection();
 
       try {
         connection.setRequestMethod("POST");
