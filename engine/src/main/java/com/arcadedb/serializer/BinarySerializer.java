@@ -162,7 +162,7 @@ public class BinarySerializer {
 
     for (int i = 0; i < properties; ++i) {
       final int nameId = (int) buffer.getUnsignedNumber();
-      final long contentPosition = buffer.getUnsignedNumber();
+      buffer.getUnsignedNumber(); //contentPosition
       final String name = database.getSchema().getDictionary().getNameById(nameId);
       result.add(name);
     }

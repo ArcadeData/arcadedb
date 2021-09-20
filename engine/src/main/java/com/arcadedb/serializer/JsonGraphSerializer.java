@@ -27,9 +27,7 @@ import com.arcadedb.graph.Vertex;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.List;
+import java.util.*;
 
 public class JsonGraphSerializer extends JsonSerializer {
 
@@ -52,7 +50,7 @@ public class JsonGraphSerializer extends JsonSerializer {
     } else
       properties = new JSONObject();
 
-    sharedJson.clear();
+    object.clear();
     object.put("p", properties);
 
     object.put("r", document.getIdentity().toString());

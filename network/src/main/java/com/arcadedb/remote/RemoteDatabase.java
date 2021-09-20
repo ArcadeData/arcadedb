@@ -232,6 +232,7 @@ public class RemoteDatabase extends RWLockContext {
             final JSONObject jsonRequest = new JSONObject();
             jsonRequest.put("language", language);
             jsonRequest.put("command", payloadCommand);
+            jsonRequest.put("serializer", "record");
 
             if (params != null) {
               final JSONObject jsonParams = new JSONObject(params);

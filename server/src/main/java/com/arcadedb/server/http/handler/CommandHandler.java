@@ -69,7 +69,7 @@ public class CommandHandler extends DatabaseAbstractHandler {
     final String language = (String) requestMap.get("language");
     final String command = decode((String) requestMap.get("command"));
     final int limit = (int) requestMap.getOrDefault("limit", DEFAULT_LIMIT);
-    final String serializer = (String) requestMap.getOrDefault("serializer", "graph");
+    final String serializer = (String) requestMap.getOrDefault("serializer", "record");
 
     if (command == null || command.isEmpty()) {
       exchange.setStatusCode(400);
@@ -172,6 +172,14 @@ public class CommandHandler extends DatabaseAbstractHandler {
         response.put("result", new JSONObject().put("vertices", vertices).put("edges", edges).put("records", records));
         break;
       }
+
+      case "record": {
+        final JsonSerializer serializerImpl = new JsonSerializer().setIncludeVertexEdges(false).setUseCollectionSize(false);
+        final JSONArray result = new JSONArray(qResult.stream().limit(limit + 1).map(r -> serializerImpl.serializeResult(r)).collect(Collectors.toList()));
+        response.put("result", result);
+        break;
+      }
+
       default: {
         final JsonSerializer serializerImpl = new JsonSerializer().setIncludeVertexEdges(true).setUseCollectionSize(false);
         final JSONArray result = new JSONArray(qResult.stream().limit(limit + 1).map(r -> serializerImpl.serializeResult(r)).collect(Collectors.toList()));
