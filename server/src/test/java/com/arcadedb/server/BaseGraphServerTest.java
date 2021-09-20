@@ -60,7 +60,7 @@ public abstract class BaseGraphServerTest {
 
   protected static RID              root;
   private          ArcadeDBServer[] servers;
-  private   Database[]       databases;
+  private          Database[]       databases;
 
   protected interface Callback {
     void call(int serverIndex) throws Exception;
@@ -172,40 +172,45 @@ public abstract class BaseGraphServerTest {
   @AfterEach
   public void endTest() {
     boolean anyServerRestarted = false;
-    if (servers != null) {
-      // RESTART ANY SERVER IS DOWN TO CHECK INTEGRITY AFTER THE REALIGNMENT
-      for (int i = servers.length - 1; i > -1; --i) {
-        if (servers[i] != null && !servers[i].isStarted()) {
-          testLog(" Restarting server %d to force re-alignment", i);
-          servers[i].start();
-          anyServerRestarted = true;
+    try {
+      if (servers != null) {
+        // RESTART ANY SERVER IS DOWN TO CHECK INTEGRITY AFTER THE REALIGNMENT
+        for (int i = servers.length - 1; i > -1; --i) {
+          if (servers[i] != null && !servers[i].isStarted()) {
+            testLog(" Restarting server %d to force re-alignment", i);
+            servers[i].start();
+            anyServerRestarted = true;
+          }
         }
       }
-    }
 
-    if (anyServerRestarted) {
-      // WAIT A BIT FOR THE SERVER TO BE SYNCHRONIZED
-      testLog("Wait a bit until realignment is completed");
-      try {
-        Thread.sleep(5000);
-      } catch (InterruptedException e) {
-        e.printStackTrace();
+      if (anyServerRestarted) {
+        // WAIT A BIT FOR THE SERVER TO BE SYNCHRONIZED
+        testLog("Wait a bit until realignment is completed");
+        try {
+          Thread.sleep(5000);
+        } catch (InterruptedException e) {
+          e.printStackTrace();
+        }
       }
-    }
-
-    LogManager.instance().log(this, Level.INFO, "TEST: Stopping servers...");
-    stopServers();
-
-    try {
-      checkDatabasesAreIdentical();
     } finally {
-      LogManager.instance().log(this, Level.INFO, "END OF THE TEST: Cleaning test %s...", null, getClass().getName());
-      if (dropDatabasesAtTheEnd())
-        deleteDatabaseFolders();
 
-      checkArcadeIsTotallyDown();
+      try {
+        LogManager.instance().log(this, Level.INFO, "END OF THE TEST: Check DBS are identical...");
+        checkDatabasesAreIdentical();
+      } finally {
 
-      GlobalConfiguration.TEST.setValue(false);
+        LogManager.instance().log(this, Level.INFO, "TEST: Stopping servers...");
+        stopServers();
+
+        LogManager.instance().log(this, Level.INFO, "END OF THE TEST: Cleaning test %s...", null, getClass().getName());
+        if (dropDatabasesAtTheEnd())
+          deleteDatabaseFolders();
+
+        checkArcadeIsTotallyDown();
+
+        GlobalConfiguration.TEST.setValue(false);
+      }
     }
   }
 
