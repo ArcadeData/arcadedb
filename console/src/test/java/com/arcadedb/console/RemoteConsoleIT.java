@@ -49,6 +49,8 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
 
   @BeforeEach
   public void beginTest() {
+    super.beginTest();
+
     deleteDatabaseFolders();
     startServers();
 
