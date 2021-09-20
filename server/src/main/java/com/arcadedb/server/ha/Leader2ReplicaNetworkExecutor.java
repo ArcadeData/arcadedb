@@ -61,7 +61,7 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
   private          long                                               leftOn                = 0;
   private          ChannelBinaryServer                                channel;
   private          STATUS                                             status                = STATUS.JOINING;
-  private          Object                                             lock                  = new Object(); // NOT FINAL BECAUSE IT CAN BE MERGED FROM ANOTHER CONNECTION
+  private final    Object                                             lock                  = new Object(); // NOT FINAL BECAUSE IT CAN BE MERGED FROM ANOTHER CONNECTION
   private final    Object                                             channelOutputLock     = new Object();
   private final    Object                                             channelInputLock      = new Object();
   private volatile boolean                                            shutdownCommunication = false;
@@ -138,9 +138,10 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
   }
 
   public void mergeFrom(final Leader2ReplicaNetworkExecutor previousConnection) {
-    lock = previousConnection.lock;
-    senderQueue.addAll(previousConnection.senderQueue);
-    previousConnection.close();
+    synchronized (previousConnection.lock) {
+      senderQueue.addAll(previousConnection.senderQueue);
+      previousConnection.close();
+    }
   }
 
   @Override
@@ -298,36 +299,39 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
   }
 
   public void close() {
-    shutdownCommunication = true;
+    executeInLock((ignore) -> {
+      shutdownCommunication = true;
 
-    try {
-      final Thread qt = senderThread;
-      if (qt != null) {
-        try {
-          qt.join(5000);
-          senderThread = null;
-        } catch (InterruptedException e) {
-          Thread.currentThread().interrupt();
-          // IGNORE IT
+      try {
+        final Thread qt = senderThread;
+        if (qt != null) {
+          try {
+            qt.join(5000);
+            senderThread = null;
+          } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            // IGNORE IT
+          }
         }
-      }
 
-      final Thread ft = forwarderThread;
-      if (ft != null) {
-        try {
-          ft.join(5000);
-          forwarderThread = null;
-        } catch (InterruptedException e) {
-          Thread.currentThread().interrupt();
-          // IGNORE IT
+        final Thread ft = forwarderThread;
+        if (ft != null) {
+          try {
+            ft.join(5000);
+            forwarderThread = null;
+          } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            // IGNORE IT
+          }
         }
+
+        closeChannel();
+
+      } catch (Exception e) {
+        // IGNORE IT
       }
-
-      closeChannel();
-
-    } catch (Exception e) {
-      // IGNORE IT
-    }
+      return null;
+    });
   }
 
   public boolean enqueueMessage(final Binary message) {
@@ -476,7 +480,7 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
   }
 
   // DO I NEED THIS?
-  protected Object executeInLock(final Callable<Object,Object> callback) {
+  protected Object executeInLock(final Callable<Object, Object> callback) {
     synchronized (lock) {
       return callback.call(null);
     }
