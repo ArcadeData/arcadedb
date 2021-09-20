@@ -32,9 +32,21 @@ ArcadeDB can be used as:
 
 ArcadeDB is Free for any usage and licensed under the liberal [Open Source Apache 2 license](LICENSE). To contribute to the project check [CONTRIBUTING](CONTRIBUTING.md). If you need commercial support or you need to have an issue fixed ASAP, check our [GitHub Sponsor page](https://github.com/sponsors/ArcadeData) on both Recurrent and One-Time tiers. All the sponsorship received will be distributed to the active contributors of this project.
 
+
+## Getting started in 5 minuted
+
+Start ArcadeDB Server with Docker:
+```
+docker run --rm -p 2480:2480 -p 2424:2424 --env arcadedb.server.rootPassword=playwithdata
+           --env "arcadedb.server.defaultDatabases=Imported[root]{import:https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz}"
+           arcadedata/arcadedb:latest
+```
+
+Now open your browser on http://localhost:2480 and play with [ArcadeDB Studio](https://docs.arcadedb.com/#_studio) and the imported OpenBeer database to find your favorite beer.
+
+![ArcadeDB Studio](https://arcadedb.com/assets/images/openbeer-demo-graph.png)
+
+
 Have fun with data!
 
 The ArcadeDB Team
-
-
-[![Java CI - deploy](https://github.com/ArcadeData/arcadedb/actions/workflows/mvn-deploy.yml/badge.svg)](https://github.com/ArcadeData/arcadedb/actions/workflows/mvn-deploy.yml)
