@@ -126,13 +126,7 @@ public class UpdateStatement extends Statement {
 
   @Override
   public UpdateStatement copy() {
-    UpdateStatement result = null;
-    try {
-      result = getClass().getConstructor(Integer.TYPE).newInstance(-1);
-    } catch (Exception e) {
-      throw new ArcadeDBException(e);
-    }
-
+    UpdateStatement result = new UpdateStatement(-1);
     result.target = target == null ? null : target.copy();
     result.operations = operations == null ? null : operations.stream().map(x -> x.copy()).collect(Collectors.toList());
     result.upsert = upsert;
