@@ -23,10 +23,10 @@ package com.arcadedb.engine;
 
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.exception.ArcadeDBException;
 
-import java.nio.ByteBuffer;
-import java.util.Arrays;
-import java.util.Objects;
+import java.nio.*;
+import java.util.*;
 
 /**
  * Low level base page implementation of (default) 65536 bytes (2 exp 16 = 65Kb). The first 4 bytes (the header) are reserved to
@@ -54,7 +54,19 @@ public abstract class BasePage {
     this.version = version;
   }
 
-  public abstract ImmutablePage createImmutableView();
+  /**
+   * Creates an immutable copy. The content is not copied (the same byte[] is used), because after invoking this method the original page is never modified.
+   */
+  public ImmutablePage createImmutableView() {
+    try {
+      return (ImmutablePage) content.executeInLock(
+          () -> new ImmutablePage(manager, pageId, getPhysicalSize(), content.getByteBuffer().array(), version, content.size()));
+    } catch (RuntimeException e) {
+      throw e;
+    } catch (Exception e) {
+      throw new ArcadeDBException("Cannot create an immutable copy of page " + this, e);
+    }
+  }
 
   public MutablePage modify() {
     final byte[] array = this.content.getByteBuffer().array();
@@ -153,7 +165,7 @@ public abstract class BasePage {
   }
 
   public String readString(final int index) {
-    return new String(readBytes(PAGE_HEADER_SIZE + index),DatabaseFactory.getDefaultCharset());
+    return new String(readBytes(PAGE_HEADER_SIZE + index), DatabaseFactory.getDefaultCharset());
   }
 
   /**

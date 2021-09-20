@@ -33,9 +33,4 @@ public class ImmutablePage extends BasePage {
   public ImmutablePage(final PageManager manager, final PageId pageId, final int size, final byte[] content, final int version, final int contentSize) {
     super(manager, pageId, size, content, version, contentSize);
   }
-
-  @Override
-  public ImmutablePage createImmutableView() {
-    return this;
-  }
 }

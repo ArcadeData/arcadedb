@@ -24,7 +24,6 @@ package com.arcadedb.engine;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.TrackableBinary;
-import com.arcadedb.exception.ArcadeDBException;
 
 /**
  * Mutable page that accepts updates. It keeps track of the modified bytes.
@@ -41,21 +40,6 @@ public class MutablePage extends BasePage implements TrackableContent {
 
   public MutablePage(final PageManager manager, final PageId pageId, final int size, final byte[] array, final int version, final int contentSize) {
     super(manager, pageId, size, array, version, contentSize);
-  }
-
-  /**
-   * Creates an immutable copy. The content is not copied (the same byte[] is used), because after invoking this method the original page is never modified.
-   */
-  @Override
-  public ImmutablePage createImmutableView() {
-    try {
-      return (ImmutablePage) content.executeInLock(
-          () -> new ImmutablePage(manager, pageId, getPhysicalSize(), content.getByteBuffer().array(), version, content.size()));
-    } catch (RuntimeException e) {
-      throw e;
-    } catch (Exception e) {
-      throw new ArcadeDBException("Cannot create an immutable copy of page " + this, e);
-    }
   }
 
   public TrackableBinary getTrackable() {
