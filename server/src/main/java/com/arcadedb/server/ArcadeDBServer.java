@@ -37,6 +37,7 @@ import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.log.ServerLogger;
 import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityException;
+import com.arcadedb.utility.CallableNoReturn;
 import com.arcadedb.utility.FileUtils;
 
 import java.io.*;
@@ -210,29 +211,29 @@ public class ArcadeDBServer implements ServerLogger {
 
     for (Map.Entry<String, ServerPlugin> pEntry : plugins.entrySet()) {
       log(this, Level.INFO, "- Stop %s plugin", pEntry.getKey());
-      try {
+      execIgnoreExceptions(() -> {
         pEntry.getValue().stopService();
-      } catch (Exception e) {
-        log(this, Level.SEVERE, "Error on halting %s plugin (error=%s)", pEntry.getKey(), e);
-      }
+      }, "Error on halting '" + pEntry.getKey() + "' plugin");
     }
 
     if (haServer != null)
-      haServer.stopService();
+      execIgnoreExceptions(haServer::stopService, "Error on stopping HA service");
 
     if (httpServer != null)
-      httpServer.stopService();
+      execIgnoreExceptions(httpServer::stopService, "Error on stopping HTTP service");
 
     if (security != null)
-      security.stopService();
+      execIgnoreExceptions(security::stopService, "Error on stopping Security service");
 
     for (Database db : databases.values())
-      db.close();
+      execIgnoreExceptions(db::close, "Error closing database '" + db.getName() + "'");
     databases.clear();
 
-    log(this, Level.INFO, "- Stop JMX Metrics");
-    serverMetrics.stop();
-    serverMetrics = new NoServerMetrics();
+    execIgnoreExceptions(() -> {
+      log(this, Level.INFO, "- Stop JMX Metrics");
+      serverMetrics.stop();
+      serverMetrics = new NoServerMetrics();
+    }, "Error on stopping JMX Metrics");
 
     log(this, Level.INFO, "ArcadeDB Server is down");
 
@@ -527,6 +528,15 @@ public class ArcadeDBServer implements ServerLogger {
       }
     }
   }
+
+  private void execIgnoreExceptions(final CallableNoReturn callback, final String errorMessage) {
+    try {
+      callback.call();
+    } catch (Throwable e) {
+      LogManager.instance().log(this, Level.SEVERE, errorMessage);
+    }
+  }
+
 //
 //  private void saveConfiguration() {
 //    final File file = new File(CONFIG_SERVER_CONFIGURATION_FILENAME);
