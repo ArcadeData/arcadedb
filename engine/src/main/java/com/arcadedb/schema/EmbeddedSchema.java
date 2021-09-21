@@ -62,6 +62,7 @@ public class EmbeddedSchema implements Schema {
 
   public static final  String                     SCHEMA_FILE_NAME          = "schema.json";
   public static final  String                     SCHEMA_PREV_FILE_NAME     = "schema.prev.json";
+  private static final String                     ENCODING                  = DEFAULT_ENCODING;
   private static final int                        EDGE_DEF_PAGE_SIZE        = Bucket.DEF_PAGE_SIZE / 3;
   private static final int                        DEFAULT_CLUSTERS_PER_TYPE = 8;
   private final        DatabaseInternal           database;
@@ -70,13 +71,13 @@ public class EmbeddedSchema implements Schema {
   private final        Map<String, Bucket>        bucketMap                 = new HashMap<>();
   protected final      Map<String, IndexInternal> indexMap                  = new HashMap<>();
   private final        String                     databasePath;
+  private final        File                       configurationFile;
+  private final        PaginatedComponentFactory  paginatedComponentFactory;
+  private final        IndexFactory               indexFactory              = new IndexFactory();
   private              Dictionary                 dictionary;
   private              String                     dateFormat                = DEFAULT_DATE_FORMAT;
   private              String                     dateTimeFormat            = DEFAULT_DATETIME_FORMAT;
-  private static final String                     encoding                  = DEFAULT_ENCODING;
   private              TimeZone                   timeZone                  = TimeZone.getDefault();
-  private final        PaginatedComponentFactory  paginatedComponentFactory;
-  private final        IndexFactory               indexFactory              = new IndexFactory();
   private              boolean                    readingFromFile           = false;
   private              boolean                    dirtyConfiguration        = false;
   private              boolean                    loadInRamCompleted        = false;
@@ -96,6 +97,7 @@ public class EmbeddedSchema implements Schema {
 
     indexFactory.register(INDEX_TYPE.LSM_TREE.name(), new LSMTreeIndex.IndexFactoryHandler());
     indexFactory.register(INDEX_TYPE.FULL_TEXT.name(), new LSMTreeFullTextIndex.IndexFactoryHandler());
+    configurationFile = new File(databasePath + "/" + SCHEMA_FILE_NAME);
   }
 
   @Override
@@ -308,7 +310,7 @@ public class EmbeddedSchema implements Schema {
   }
 
   public String getEncoding() {
-    return encoding;
+    return ENCODING;
   }
 
   @Override
@@ -574,7 +576,7 @@ public class EmbeddedSchema implements Schema {
     if (bucket == null)
       throw new IllegalArgumentException("bucket is null");
 
-    final String indexName = FileUtils.encode(bucket.getName(), encoding) + "_" + System.nanoTime();
+    final String indexName = FileUtils.encode(bucket.getName(), ENCODING) + "_" + System.nanoTime();
 
     if (indexMap.containsKey(indexName))
       throw new DatabaseMetadataException("Cannot create index '" + indexName + "' on type '" + typeName + "' because it already exists");
@@ -601,7 +603,7 @@ public class EmbeddedSchema implements Schema {
           throw new SchemaException("Cannot create index '" + indexName + "' because already exists");
 
         try {
-          final IndexInternal index = indexFactory.createIndex(indexType.name(), database, FileUtils.encode(indexName, encoding), unique,
+          final IndexInternal index = indexFactory.createIndex(indexType.name(), database, FileUtils.encode(indexName, ENCODING), unique,
               databasePath + "/" + indexName, PaginatedFile.MODE.READ_WRITE, keyTypes, pageSize, nullStrategy, null);
 
           if (index instanceof PaginatedComponent)
@@ -782,7 +784,7 @@ public class EmbeddedSchema implements Schema {
         types.put(typeName, c);
 
         for (int i = 0; i < buckets; ++i) {
-          final String bucketName = FileUtils.encode(typeName, encoding) + "_" + i;
+          final String bucketName = FileUtils.encode(typeName, ENCODING) + "_" + i;
           if (existsBucket(bucketName)) {
             LogManager.instance().log(this, Level.WARNING, "Reusing found bucket '%s' for type '%s'", null, bucketName, typeName);
             c.addBucket(getBucketByName(bucketName));
@@ -853,7 +855,7 @@ public class EmbeddedSchema implements Schema {
         types.put(typeName, c);
 
         for (int i = 0; i < buckets; ++i) {
-          final String bucketName = FileUtils.encode(typeName, encoding) + "_" + i;
+          final String bucketName = FileUtils.encode(typeName, ENCODING) + "_" + i;
           if (existsBucket(bucketName)) {
             LogManager.instance().log(this, Level.WARNING, "Reusing found bucket '%s' for type '%s'", null, bucketName, typeName);
             c.addBucket(getBucketByName(bucketName));
@@ -925,7 +927,7 @@ public class EmbeddedSchema implements Schema {
         types.put(typeName, c);
 
         for (int i = 0; i < buckets; ++i) {
-          final String bucketName = FileUtils.encode(typeName, encoding) + "_" + i;
+          final String bucketName = FileUtils.encode(typeName, ENCODING) + "_" + i;
           if (existsBucket(bucketName)) {
             LogManager.instance().log(this, Level.WARNING, "Reusing found bucket '%s' for type '%s'", null, bucketName, typeName);
             c.addBucket(getBucketByName(bucketName));
@@ -979,7 +981,7 @@ public class EmbeddedSchema implements Schema {
         LogManager.instance().log(this, Level.WARNING, "Could not find schema file, loading the previous version saved");
       }
 
-      final String fileContent = FileUtils.readStreamAsString(new FileInputStream(file), encoding);
+      final String fileContent = FileUtils.readStreamAsString(new FileInputStream(file), ENCODING);
 
       final JSONObject root = new JSONObject(fileContent);
 
@@ -1055,7 +1057,11 @@ public class EmbeddedSchema implements Schema {
 
         final JSONObject schemaIndexes = schemaType.getJSONObject("indexes");
         if (schemaIndexes != null) {
-          for (String indexName : schemaIndexes.keySet()) {
+
+          final List<String> orderedIndexes = new ArrayList<>(schemaIndexes.keySet());
+          orderedIndexes.sort(Comparator.naturalOrder());
+
+          for (String indexName : orderedIndexes) {
             final JSONObject index = schemaIndexes.getJSONObject(indexName);
 
             final JSONArray schemaIndexProperties = index.getJSONArray("properties");
@@ -1159,14 +1165,13 @@ public class EmbeddedSchema implements Schema {
     try {
       final JSONObject root = serializeConfiguration();
 
-      final File prevFile = new File(databasePath + "/" + SCHEMA_FILE_NAME);
-      if (prevFile.exists()) {
+      if (configurationFile.exists()) {
         final File copy = new File(databasePath + "/" + SCHEMA_PREV_FILE_NAME);
         if (copy.exists())
           if (!copy.delete())
             LogManager.instance().log(this, Level.WARNING, "Error on deleting previous schema file '%s'", null, copy);
 
-        if (!prevFile.renameTo(copy))
+        if (!configurationFile.renameTo(copy))
           LogManager.instance().log(this, Level.WARNING, "Error on renaming previous schema file '%s'", null, copy);
       }
 
@@ -1263,5 +1268,9 @@ public class EmbeddedSchema implements Schema {
 
   public boolean isDirty() {
     return dirtyConfiguration;
+  }
+
+  public File getConfigurationFile() {
+    return configurationFile;
   }
 }

@@ -1,0 +1,111 @@
+/*
+ * Copyright 2021 Arcade Data Ltd
+ *
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+package com.arcadedb.integration.restore.format;
+
+import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.integration.importer.ConsoleLogger;
+import com.arcadedb.integration.restore.RestoreSettings;
+import com.arcadedb.log.LogManager;
+import com.arcadedb.utility.FileUtils;
+
+import java.io.*;
+import java.util.logging.*;
+import java.util.zip.*;
+
+public class FullRestoreFormat extends AbstractRestoreFormat {
+  private final byte[] BUFFER = new byte[8192];
+
+  public FullRestoreFormat(final DatabaseInternal database, final RestoreSettings settings, final ConsoleLogger logger) {
+    super(database, settings, logger);
+  }
+
+  @Override
+  public void restoreDatabase() throws Exception {
+    final File file = new File(settings.file);
+    if (!file.exists()) {
+      LogManager.instance().log(this, Level.SEVERE, "Error on restoring database: the file '%s' not exist", null, settings.file);
+      return;
+    }
+
+    final File databaseDirectory = new File(settings.databaseURL);
+    if (databaseDirectory.exists()) {
+      if (!settings.overwriteDestination) {
+        LogManager.instance().log(this, Level.SEVERE, "Error on restoring database: the database directory '%s' already exist and '-o' setting is false", null,
+            settings.databaseURL);
+        return;
+      }
+
+      FileUtils.deleteRecursively(databaseDirectory);
+    }
+
+    if (!databaseDirectory.mkdirs()) {
+      LogManager.instance().log(this, Level.SEVERE, "Error on restoring database: the database directory '%s' cannot be created", null, settings.databaseURL);
+      return;
+    }
+
+    logger.logLine(0, "Executing full restore of database from file '%s' to '%s'...", settings.file, settings.databaseURL);
+
+    final File backupFile = new File(settings.file);
+    final long databaseCompressedSize = backupFile.length();
+
+    try (ZipInputStream zipFile = new ZipInputStream(new FileInputStream(backupFile), DatabaseFactory.getDefaultCharset())) {
+      final long beginTime = System.currentTimeMillis();
+
+      long databaseOrigSize = 0L;
+
+      ZipEntry compressedFile = zipFile.getNextEntry();
+      while (compressedFile != null) {
+        databaseOrigSize += uncompressFile(zipFile, compressedFile, databaseDirectory);
+        compressedFile = zipFile.getNextEntry();
+      }
+
+      zipFile.close();
+
+      final long elapsedInSecs = (System.currentTimeMillis() - beginTime) / 1000;
+
+      logger.logLine(0, "Full restore completed in %d seconds %s -> %s (%,d%% compression)", elapsedInSecs, FileUtils.getSizeAsString(databaseOrigSize),
+          FileUtils.getSizeAsString((databaseCompressedSize)), databaseOrigSize > 0 ? (databaseOrigSize - databaseCompressedSize) * 100 / databaseOrigSize : 0);
+    }
+  }
+
+  private long uncompressFile(final ZipInputStream inputFile, ZipEntry compressedFile, final File databaseDirectory) throws IOException {
+    logger.log(2, "- File '%s'...", compressedFile.getName());
+
+    final File uncompressedFile = new File(databaseDirectory, compressedFile.getName());
+
+    try (final FileOutputStream fileOut = new FileOutputStream(uncompressedFile)) {
+      int len;
+      while ((len = inputFile.read(BUFFER)) > 0) {
+        fileOut.write(BUFFER, 0, len);
+      }
+    }
+
+    final long origSize = uncompressedFile.length();
+    final long compressedSize = compressedFile.getCompressedSize();
+
+    logger.logLine(2, " %s -> %s (%,d%% compressed)", FileUtils.getSizeAsString(origSize), FileUtils.getSizeAsString(compressedSize),
+        origSize > 0 ? (origSize - compressedSize) * 100 / origSize : 0);
+
+    return origSize;
+  }
+}

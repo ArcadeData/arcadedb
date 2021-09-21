@@ -34,9 +34,9 @@ import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.utility.FileUtils;
 
-import java.io.IOException;
+import java.io.*;
 import java.util.*;
-import java.util.logging.Level;
+import java.util.logging.*;
 
 public class LSMTreeIndexCompactor {
   public LSMTreeIndexCompactor() {
@@ -217,8 +217,8 @@ public class LSMTreeIndexCompactor {
           final RID[] ridsArray = new RID[rids.size()];
           rids.toArray(ridsArray);
 
-          final MutablePage newPage = compactedIndex
-              .appendDuringCompaction(keyValueContent, lastPage, currentPageBuffer, compactedPageNumberInSeries, minorKey, ridsArray);
+          final MutablePage newPage = compactedIndex.appendDuringCompaction(keyValueContent, lastPage, currentPageBuffer, compactedPageNumberInSeries, minorKey,
+              ridsArray);
 
           if (newPage != lastPage) {
             ++compactedPageNumberInSeries;
@@ -227,9 +227,8 @@ public class LSMTreeIndexCompactor {
               // NEW PAGE: STORE THE MIN KEY IN THE ROOT PAGE
               final int newPageNum = newPage.getPageId().getPageNumber();
 
-              final MutablePage newRootPage = compactedIndex
-                  .appendDuringCompaction(keyValueContent, rootPage, rootPageBuffer, compactedPageNumberInSeries, minorKey,
-                      new RID[] { new RID(database, 0, newPageNum) });
+              final MutablePage newRootPage = compactedIndex.appendDuringCompaction(keyValueContent, rootPage, rootPageBuffer, compactedPageNumberInSeries,
+                  minorKey, new RID[] { new RID(database, 0, newPageNum) });
 
               LogManager.instance().log(mainIndex, Level.FINE, "- Creating a new entry in index '%s' root page %s->%d (entry in page=%d)", null, index,
                   Arrays.toString(minorKey), newPageNum, index.getCount(rootPage) - 1);
@@ -275,10 +274,14 @@ public class LSMTreeIndexCompactor {
                 compactedIndex.getCount(rootPage));
       }
 
+      final List<MutablePage> modifiedPages = new ArrayList<>(1);
+
       if (lastPage != null)
-        database.getPageManager().updatePage(lastPage, true, false);
+        modifiedPages.add(database.getPageManager().updatePage(lastPage, true));
       if (rootPage != null)
-        database.getPageManager().updatePage(rootPage, true, false);
+        modifiedPages.add(database.getPageManager().updatePage(rootPage, true));
+
+      database.getPageManager().flushPages(modifiedPages, false);
 
       compactedPages += pagesToCompact;
 

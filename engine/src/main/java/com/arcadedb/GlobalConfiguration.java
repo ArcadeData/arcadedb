@@ -160,7 +160,7 @@ public enum GlobalConfiguration {
 
   ASYNC_TX_BATCH_SIZE("arcadedb.asyncTxBatchSize", "Maximum number of operations to commit in batch by async thread", Integer.class, 1024 * 10),
 
-  PAGE_FLUSH_QUEUE("arcadedb.pageFlushQueue", "Size of the asynchronous page flush queue", Integer.class, 128),
+  PAGE_FLUSH_QUEUE("arcadedb.pageFlushQueue", "Size of the asynchronous page flush queue", Integer.class, 512),
 
   COMMIT_LOCK_TIMEOUT("arcadedb.commitLockTimeout", "Timeout in ms to lock resources during commit", Long.class, 5000),
 

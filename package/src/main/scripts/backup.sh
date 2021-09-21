@@ -66,4 +66,4 @@ exec "$JAVA" $JAVA_OPTS \
     $JAVA_OPTS_SCRIPT \
     $ARCADEDB_SETTINGS \
     -cp "$ARCADEDB_HOME/lib/*" \
-    $ARGS com.arcadedb.integration.importer.Importer $*
+    $ARGS com.arcadedb.integration.backup.Backup $*

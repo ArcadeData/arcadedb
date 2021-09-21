@@ -29,9 +29,27 @@ import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.database.async.OkCallback;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.Dictionary;
-import com.arcadedb.engine.*;
-import com.arcadedb.exception.*;
-import com.arcadedb.graph.*;
+import com.arcadedb.engine.FileManager;
+import com.arcadedb.engine.PageManager;
+import com.arcadedb.engine.PaginatedFile;
+import com.arcadedb.engine.TransactionManager;
+import com.arcadedb.engine.WALFileFactory;
+import com.arcadedb.engine.WALFileFactoryEmbedded;
+import com.arcadedb.exception.ArcadeDBException;
+import com.arcadedb.exception.DatabaseIsClosedException;
+import com.arcadedb.exception.DatabaseIsReadOnlyException;
+import com.arcadedb.exception.DatabaseMetadataException;
+import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.InvalidDatabaseInstanceException;
+import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.SchemaException;
+import com.arcadedb.exception.TransactionException;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GraphEngine;
+import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
@@ -39,8 +57,19 @@ import com.arcadedb.index.lsm.LSMTreeIndexCompacted;
 import com.arcadedb.index.lsm.LSMTreeIndexMutable;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngineManager;
-import com.arcadedb.query.sql.executor.*;
-import com.arcadedb.query.sql.parser.*;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.InternalExecutionPlan;
+import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.SQLEngine;
+import com.arcadedb.query.sql.executor.ScriptExecutionPlan;
+import com.arcadedb.query.sql.parser.BeginStatement;
+import com.arcadedb.query.sql.parser.CommitStatement;
+import com.arcadedb.query.sql.parser.ExecutionPlanCache;
+import com.arcadedb.query.sql.parser.LocalResultSet;
+import com.arcadedb.query.sql.parser.LocalResultSetLifecycleDecorator;
+import com.arcadedb.query.sql.parser.Statement;
+import com.arcadedb.query.sql.parser.StatementCache;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.schema.Schema;
@@ -51,18 +80,13 @@ import com.arcadedb.utility.LockException;
 import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.RWLockContext;
 
-import java.io.File;
-import java.io.IOException;
-import java.io.RandomAccessFile;
-import java.nio.channels.ClosedChannelException;
-import java.nio.channels.FileLock;
+import java.io.*;
+import java.nio.channels.*;
 import java.util.*;
-import java.util.concurrent.Callable;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.locks.Lock;
-import java.util.concurrent.locks.ReentrantLock;
-import java.util.logging.Level;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+import java.util.concurrent.locks.*;
+import java.util.logging.*;
 
 public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal {
   public static final int EDGE_LIST_INITIAL_CHUNK_SIZE         = 64;
@@ -97,6 +121,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   private final        Map<CALLBACK_EVENT, List<Callable<Void>>> callbacks;
   private final        StatementCache                            statementCache;
   private final        ExecutionPlanCache                        executionPlanCache;
+  private final        File                                      configurationFile;
   private              DatabaseInternal                          wrappedDatabaseInstance = this;
   private              int                                       edgeListSize            = EDGE_LIST_INITIAL_CHUNK_SIZE;
 
@@ -114,6 +139,8 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
         databasePath = path.substring(0, path.length() - 1);
       else
         databasePath = path;
+
+      configurationFile = new File(databasePath + "/configuration.json");
 
       final int lastSeparatorPos = path.lastIndexOf("/");
       if (lastSeparatorPos > -1)
@@ -136,14 +163,13 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     if (!new File(databasePath).exists())
       throw new DatabaseOperationException("Database '" + databasePath + "' not exists");
 
-    final File file = new File(databasePath + "/configuration.json");
-    if (file.exists()) {
+    if (configurationFile.exists()) {
       try {
-        final String content = FileUtils.readFileAsString(file, "UTF8");
+        final String content = FileUtils.readFileAsString(configurationFile, "UTF8");
         configuration.reset();
         configuration.fromJSON(content);
       } catch (IOException e) {
-        LogManager.instance().log(this, Level.SEVERE, "Error on loading configuration from file '%s'", e, file);
+        LogManager.instance().log(this, Level.SEVERE, "Error on loading configuration from file '%s'", e, configurationFile);
       }
     }
 
@@ -1287,6 +1313,10 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
         }
       }
     }
+  }
+
+  public File getConfigurationFile() {
+    return configurationFile;
   }
 
   @Override

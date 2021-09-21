@@ -303,7 +303,7 @@ public class TransactionManager {
         modifiedPage.writeByteArray(txPage.changesFrom - BasePage.PAGE_HEADER_SIZE, txPage.currentContent.getContent());
         modifiedPage.version = txPage.currentPageVersion;
         modifiedPage.setContentSize(txPage.currentPageSize);
-        modifiedPage.flushMetadata();
+        modifiedPage.updateMetadata();
         file.write(modifiedPage);
 
         database.getPageManager().removePageFromCache(modifiedPage.pageId);

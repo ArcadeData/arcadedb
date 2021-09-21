@@ -23,7 +23,7 @@ package com.arcadedb.server.http.handler;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
-import com.arcadedb.importer.Importer;
+import com.arcadedb.integration.importer.Importer;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurity;
 import io.undertow.server.HttpServerExchange;

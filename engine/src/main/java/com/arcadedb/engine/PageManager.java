@@ -30,14 +30,11 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.LockContext;
 
-import java.io.IOException;
-import java.util.Iterator;
-import java.util.Map;
-import java.util.TreeSet;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.logging.Level;
+import java.io.*;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+import java.util.logging.*;
 
 /**
  * Manages pages from disk to RAM. Each page can have different size.
@@ -62,10 +59,10 @@ public class PageManager extends LockContext {
   private final AtomicLong                           totalConcurrentModificationExceptions = new AtomicLong();
   private final AtomicLong                           evictionRuns                          = new AtomicLong();
   private final AtomicLong                           pagesEvicted                          = new AtomicLong();
-
-  private       long                   lastCheckForRAM = 0;
-  private final PageManagerFlushThread flushThread;
-  private final int                    freePageRAM;
+  private       long                                 lastCheckForRAM                       = 0;
+  private final PageManagerFlushThread               flushThread;
+  private final int                                  freePageRAM;
+  private final AtomicBoolean                        flushPagesToDisk                      = new AtomicBoolean(true);
 
   public interface ConcurrentPageAccessCallback {
     void access() throws IOException;
@@ -133,6 +130,10 @@ public class PageManager extends LockContext {
     totalWriteCacheRAM.set(0);
 
     flushOnlyAtClose = flushOnlyAtCloseOld;
+  }
+
+  public void suspendPageFlushing(final boolean value) {
+    flushThread.setSuspended(value);
   }
 
   /**
@@ -212,14 +213,15 @@ public class PageManager extends LockContext {
       throw new ConcurrentModificationException("Concurrent modification on page " + pageId + " file with id " + pageId.getFileId()
           + " does not exists anymore. Please retry the operation (threadId=" + Thread.currentThread().getId() + ")");
 
-    final BasePage p = getPage(pageId, page.getPhysicalSize(), isNew, false);
+    final BasePage mostRecentPage = getPage(pageId, page.getPhysicalSize(), isNew, false);
 
-    if (p != null && p.getVersion() != page.getVersion()) {
+    if (mostRecentPage != null && mostRecentPage.getVersion() != page.getVersion()) {
       totalConcurrentModificationExceptions.incrementAndGet();
 
       throw new ConcurrentModificationException(
           "Concurrent modification on page " + pageId + " in file '" + fileManager.getFile(pageId.getFileId()).getFileName() + "' (current v."
-              + page.getVersion() + " <> database v." + p.getVersion() + "). Please retry the operation (threadId=" + Thread.currentThread().getId() + ")");
+              + page.getVersion() + " <> database v." + mostRecentPage.getVersion() + "). Please retry the operation (threadId=" + Thread.currentThread()
+              .getId() + ")");
     }
   }
 
@@ -227,46 +229,59 @@ public class PageManager extends LockContext {
       throws IOException, InterruptedException {
     lock();
     try {
+      final List<MutablePage> pagesToFlush = new ArrayList<>(newPages.size() + modifiedPages.size());
+
       if (newPages != null)
         for (MutablePage p : newPages.values())
-          updatePage(p, true, asyncFlush);
+          pagesToFlush.add(updatePage(p, true));
 
       for (MutablePage p : modifiedPages.values())
-        updatePage(p, false, asyncFlush);
+        pagesToFlush.add(updatePage(p, false));
+
+      flushPages(pagesToFlush, asyncFlush);
+
     } finally {
       unlock();
     }
   }
 
-  public void updatePage(final MutablePage page, final boolean isNew, final boolean asyncFlush) throws IOException, InterruptedException {
-    final BasePage p = getPage(page.getPageId(), page.getPhysicalSize(), isNew, true);
-    if (p != null) {
+  public MutablePage updatePage(final MutablePage page, final boolean isNew) throws IOException, InterruptedException {
+    final PageId pageId = page.getPageId();
 
-      if (p.getVersion() != page.getVersion()) {
+    final BasePage mostRecentPage = getPage(pageId, page.getPhysicalSize(), isNew, true);
+    if (mostRecentPage != null) {
+      if (mostRecentPage.getVersion() != page.getVersion()) {
         totalConcurrentModificationExceptions.incrementAndGet();
         throw new ConcurrentModificationException(
-            "Concurrent modification on page " + page.getPageId() + " in file '" + fileManager.getFile(page.pageId.getFileId()).getFileName() + "' (current v."
-                + page.getVersion() + " <> database v." + p.getVersion() + "). Please retry the operation (threadId=" + Thread.currentThread().getId() + ")");
+            "Concurrent modification on page " + pageId + " in file '" + fileManager.getFile(pageId.getFileId()).getFileName() + "' (current v."
+                + page.getVersion() + " <> database v." + mostRecentPage.getVersion() + "). Please retry the operation (threadId=" + Thread.currentThread()
+                .getId() + ")");
       }
 
       page.incrementVersion();
-      page.flushMetadata();
+      page.updateMetadata();
 
+      LogManager.instance().log(this, Level.FINE, "Updated page %s (size=%d threadId=%d)", null, page, page.getPhysicalSize(), Thread.currentThread().getId());
+    }
+    return page;
+  }
+
+  public void flushPages(final List<MutablePage> updatedPages, final boolean asyncFlush) throws IOException, InterruptedException {
+    for (MutablePage page : updatedPages) {
       // ADD THE PAGE IN TO WRITE CACHE. FROM THIS POINT THE PAGE IS NEVER MODIFIED DIRECTLY, SO IT CAN BE SHARED
       if (writeCache.put(page.pageId, page) == null)
         totalWriteCacheRAM.addAndGet(page.getPhysicalSize());
+    }
 
-      if (asyncFlush) {
-        // ASYNCHRONOUS FLUSH
-        if (!flushOnlyAtClose)
-          // ONLY IF NOT ALREADY IN THE QUEUE, ENQUEUE THE PAGE TO BE FLUSHED BY A SEPARATE THREAD
-          flushThread.asyncFlush(page);
-      } else {
-        // SYNCHRONOUS FLUSH
+    if (asyncFlush) {
+      // ASYNCHRONOUS FLUSH
+      if (!flushOnlyAtClose)
+        // ONLY IF NOT ALREADY IN THE QUEUE, ENQUEUE THE PAGE TO BE FLUSHED BY A SEPARATE THREAD
+        flushThread.scheduleFlushOfPages(updatedPages);
+    } else {
+      // SYNCHRONOUS FLUSH
+      for (MutablePage page : updatedPages)
         flushPage(page);
-      }
-
-      LogManager.instance().log(this, Level.FINE, "Updated page %s (size=%d threadId=%d)", null, page, page.getPhysicalSize(), Thread.currentThread().getId());
     }
   }
 

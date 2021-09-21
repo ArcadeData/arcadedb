@@ -32,7 +32,7 @@ public class ImportDatabaseStatement extends SimpleExecStatement {
     result.setProperty("fromUrl", targetUrl);
 
     try {
-      final Class<?> clazz = Class.forName("com.arcadedb.importer.Importer");
+      final Class<?> clazz = Class.forName("com.arcadedb.integration.importer.Importer");
       final Object importer = clazz.getConstructor(DatabaseInternal.class, String.class).newInstance(ctx.getDatabase(), url.getUrlString());
 
       clazz.getMethod("load").invoke(importer);

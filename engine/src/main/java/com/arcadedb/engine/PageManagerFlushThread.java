@@ -25,19 +25,21 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 
-import java.io.IOException;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.TimeUnit;
-import java.util.logging.Level;
+import java.io.*;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+import java.util.logging.*;
 
 /**
  * Flushes pages to disk asynchronously.
  */
 public class PageManagerFlushThread extends Thread {
-  private final    PageManager                     pageManager;
-  public final     ArrayBlockingQueue<MutablePage> queue;
-  private final    String                          logContext;
-  private volatile boolean                         running = true;
+  private final    PageManager                           pageManager;
+  public final     ArrayBlockingQueue<List<MutablePage>> queue;
+  private final    String                                logContext;
+  private volatile boolean                               running   = true;
+  private final    AtomicBoolean                         suspended = new AtomicBoolean(false); // USED DURING BACKUP
 
   public PageManagerFlushThread(final PageManager pageManager, final ContextConfiguration configuration) {
     super("ArcadeDB AsyncFlush");
@@ -47,16 +49,16 @@ public class PageManagerFlushThread extends Thread {
     this.queue = new ArrayBlockingQueue<>(configuration.getValueAsInteger(GlobalConfiguration.PAGE_FLUSH_QUEUE));
   }
 
-  public void asyncFlush(final MutablePage page) throws InterruptedException {
-    LogManager.instance().log(this, Level.FINE, "Enqueuing flushing page %s in background...", null, page);
+  public void scheduleFlushOfPages(final List<MutablePage> pages) throws InterruptedException {
+    LogManager.instance().log(this, Level.FINE, "Enqueuing flushing of %d pages in background", null, pages.size());
 
     // TRY TO INSERT THE PAGE IN THE QUEUE UNTIL THE THREAD IS STILL RUNNING
     while (running) {
-      if (queue.offer(page, 1, TimeUnit.SECONDS))
+      if (queue.offer(pages, 1, TimeUnit.SECONDS))
         return;
     }
 
-    LogManager.instance().log(this, Level.SEVERE, "Error on flushing page %s during shutdown of the database", null, page);
+    LogManager.instance().log(this, Level.SEVERE, "Error on flushing pages %s during shutdown of the database", null, pages);
   }
 
   @Override
@@ -66,7 +68,13 @@ public class PageManagerFlushThread extends Thread {
 
     while (running || !queue.isEmpty()) {
       try {
-        flushStream();
+        if (suspended.get()) {
+          // FLUSH SUSPENDED (BACKUP IN PROGRESS?)
+          Thread.sleep(100);
+          continue;
+        }
+
+        flushPagesFromQueueToDisk();
 
       } catch (InterruptedException e) {
         Thread.currentThread().interrupt();
@@ -78,15 +86,17 @@ public class PageManagerFlushThread extends Thread {
     }
   }
 
-  private void flushStream() throws InterruptedException, IOException {
-    final MutablePage page = queue.poll(300L, TimeUnit.MILLISECONDS);
+  private void flushPagesFromQueueToDisk() throws InterruptedException, IOException {
+    final List<MutablePage> pages = queue.poll(300L, TimeUnit.MILLISECONDS);
 
-    if (page != null) {
-      if (LogManager.instance().isDebugEnabled())
-        LogManager.instance().log(this, Level.FINE, "Flushing page %s in bg...", null, page);
-
-      pageManager.flushPage(page);
+    if (pages != null) {
+      for (MutablePage page : pages)
+        pageManager.flushPage(page);
     }
+  }
+
+  public void setSuspended(final boolean value) {
+    suspended.set(value);
   }
 
   public void close() {

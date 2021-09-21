@@ -79,7 +79,7 @@ public abstract class BasePage {
     content.size(content.getInt(PAGE_CONTENTSIZE_OFFSET));
   }
 
-  public void flushMetadata() {
+  public void updateMetadata() {
     content.putInt(PAGE_VERSION_OFFSET, version);
     content.putInt(PAGE_CONTENTSIZE_OFFSET, content.size());
   }
