@@ -21,6 +21,7 @@
 
 package com.arcadedb.integration.exporter;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.integration.exporter.format.AbstractExporter;
@@ -43,8 +44,8 @@ public class Exporter {
     settings.parseParameters(args);
   }
 
-  public Exporter(final DatabaseInternal database, final String file) {
-    this.database = database;
+  public Exporter(final Database database, final String file) {
+    this.database = (DatabaseInternal) database;
     settings.file = file;
   }
 

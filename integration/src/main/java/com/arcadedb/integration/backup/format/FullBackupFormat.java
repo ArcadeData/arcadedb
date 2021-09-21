@@ -51,7 +51,11 @@ public class FullBackupFormat extends AbstractBackupFormat {
 
     logger.logLine(0, "Executing full backup of database to '%s'...", settings.file);
 
-    final File backupFile = new File(settings.file);
+    final File backupFile;
+    if (settings.file.startsWith("file://"))
+      backupFile = new File(settings.file.substring("file://".length()));
+    else
+      backupFile = new File(settings.file);
 
     try (ZipOutputStream zipFile = new ZipOutputStream(new FileOutputStream(backupFile), DatabaseFactory.getDefaultCharset())) {
       zipFile.setLevel(9);

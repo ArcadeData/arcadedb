@@ -21,19 +21,20 @@
 
 package com.arcadedb.integration.importer;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.log.LogManager;
 
-import java.io.IOException;
-import java.util.logging.Level;
+import java.io.*;
+import java.util.logging.*;
 
 public class Importer extends AbstractImporter {
   public Importer(final String[] args) {
     super(args);
   }
 
-  public Importer(final DatabaseInternal database, final String url) {
-    super(database);
+  public Importer(final Database database, final String url) {
+    super((DatabaseInternal) database);
     settings.url = url;
   }
 

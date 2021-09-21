@@ -57,39 +57,39 @@ import static com.google.gson.stream.JsonToken.NULL;
  */
 public class OrientDBImporter {
   private final File                       file;
+  private final Map<String, Integer>       clustersNameToId                = new LinkedHashMap<>();
+  private final Map<Integer, String>       clustersIdToName                = new LinkedHashMap<>();
+  private final Map<String, OrientDBClass> classes                         = new LinkedHashMap<>();
+  private final Map<String, Long>          totalRecordByType               = new HashMap<>();
+  private final Set<String>                excludeClasses                  = new HashSet<>(
+      Arrays.asList("OUser", "ORole", "OSchedule", "OSequence", "OTriggered", "OSecurityPolicy", "ORestricted", "OIdentity", "OFunction", "_studio"));
+  private final Set<String>                edgeClasses                     = new HashSet<>();
+  private final List<Map<String, Object>>  parsedUsers                     = new ArrayList<>();
+  private final Map<RID, RID>              vertexRidMap                    = new HashMap<>();
+  private final Map<String, Long>          totalEdgesByVertexType          = new HashMap<>();
+  private final ImporterSettings           settings                        = new ImporterSettings();
+  private final ConsoleLogger              logger;
   private       String                     databasePath;
   private       String                     inputFile;
   private       String                     securityFileName;
   private       String                     databaseName;
   private       boolean                    overwriteDatabase               = false;
-  private final Map<String, Integer>       clustersNameToId                = new LinkedHashMap<>();
-  private final Map<Integer, String>       clustersIdToName                = new LinkedHashMap<>();
-  private final Map<String, OrientDBClass> classes                         = new LinkedHashMap<>();
-  private final Map<String, Long>          totalRecordByType               = new HashMap<>();
   private       long                       totalRecordParsed               = 0L;
   private       long                       totalAttributesParsed           = 0L;
   private       long                       errors                          = 0L;
   private       long                       warnings                        = 0L;
-  private final Set<String>                excludeClasses                  = new HashSet<>(
-      Arrays.asList("OUser", "ORole", "OSchedule", "OSequence", "OTriggered", "OSecurityPolicy", "ORestricted", "OIdentity", "OFunction", "_studio"));
   private       DatabaseFactory            factory;
   private       Database                   database;
-  private final Set<String>                edgeClasses                     = new HashSet<>();
-  private final List<Map<String, Object>>  parsedUsers                     = new ArrayList<>();
-  private final Map<RID, RID>              vertexRidMap                    = new HashMap<>();
   private       int                        batchSize                       = 10_000;
   private       PHASE                      phase                           = PHASE.OFF; // phase1 = create DB and cache edges in RAM, phase2 = create vertices and edges
   private       long                       skippedRecordBecauseNullKey     = 0L;
   private       long                       skippedEdgeBecauseMissingVertex = 0l;
-  private final Map<String, Long>          totalEdgesByVertexType          = new HashMap<>();
   private       long                       beginTime;
   private       long                       beginTimeRecordsCreation;
   private       long                       beginTimeEdgeCreation;
   private       JsonReader                 reader;
   private       boolean                    error                           = false;
   private       ImporterContext            context                         = new ImporterContext();
-  private final ImporterSettings           settings                        = new ImporterSettings();
-  private final ConsoleLogger              logger;
 
   private enum PHASE {OFF, CREATE_SCHEMA, CREATE_RECORDS, CREATE_EDGES}
 
@@ -372,8 +372,8 @@ public class OrientDBImporter {
           elapsedInSecs > 0 ? ((context.createdDocuments.get() + context.createdVertices.get()) / elapsedInSecs) : 0, elapsedInSecs);
       break;
     case CREATE_EDGES:
-      logger.logLine(1, "- Creation of edges completed: created %,d edges %s (%,d edges/sec elapsed=%,d secs)", context.createdEdges.get(), totalEdgesByVertexType,
-          elapsedInSecs > 0 ? (context.createdEdges.get() / elapsedInSecs) : 0, elapsedInSecs);
+      logger.logLine(1, "- Creation of edges completed: created %,d edges %s (%,d edges/sec elapsed=%,d secs)", context.createdEdges.get(),
+          totalEdgesByVertexType, elapsedInSecs > 0 ? (context.createdEdges.get() / elapsedInSecs) : 0, elapsedInSecs);
       break;
     default:
       ++errors;
@@ -771,8 +771,8 @@ public class OrientDBImporter {
       final DocumentType type = database.getSchema().getType(className);
       if (!type.existsProperty(fieldName)) {
         if (keyType == null) {
-          logger.logLine(2, "- Skipped %s index creation on %s%s because the property is not defined and the key type is unknown", unique ? "UNIQUE" : "NOT UNIQUE",
-              className, Arrays.toString(properties));
+          logger.logLine(2, "- Skipped %s index creation on %s%s because the property is not defined and the key type is unknown",
+              unique ? "UNIQUE" : "NOT UNIQUE", className, Arrays.toString(properties));
           ++warnings;
           continue;
         }

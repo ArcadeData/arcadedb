@@ -232,6 +232,8 @@ TOKEN:
 	|
 	< EXTENDS: ( "e" | "E" ) ( "x" | "X" ) ( "t" | "T" ) ( "e" | "E" ) ( "n" | "N" ) ( "d" | "D" ) ( "s" | "S" ) >
 	|
+  < BACKUP: ( "B" | "b") ( "A" | "a")  ( "C" | "c") ( "K" | "k") ( "U" | "u") ( "P" | "p") >
+  |
 	< BUCKETS: ( "B" | "b" ) ( "U" | "u" ) ( "C" | "c" ) ( "K" | "k" ) ( "E" | "e" ) ( "T" | "t" ) ( "S" | "s" ) >
 	|
 	< ABSTRACT: ( "a" | "A" ) ( "b" | "B" ) ( "s" | "S" ) ( "T" | "t" ) ( "R" | "r" ) ( "a" | "A" ) ( "C" | "c" ) ( "T" | "t" ) >
@@ -1087,6 +1089,8 @@ Statement StatementInternal():
                 result = IfStatement()
                 |
                 result = ImportDatabaseStatement()
+                |
+                result = BackupDatabaseStatement()
             )
         )
         |
@@ -4527,29 +4531,39 @@ WhileBlock WhileBlock():
 
 }
 
-  ImportDatabaseStatement ImportDatabaseStatement():
-  { }
-  {
-      (
-          <IMPORT> <DATABASE>
-          jjtThis.url = Url()
-      )
-      {return jjtThis; }
-  }
+ImportDatabaseStatement ImportDatabaseStatement():
+{ }
+{
+    (
+        <IMPORT> <DATABASE>
+        jjtThis.url = Url()
+    )
+    {return jjtThis; }
+}
 
-   Url Url():
-   {
-     Token token;
-   }
-   {
-      (
-        token = <HTTP_URL> { jjtThis.urlString = token.image;}
-        |
-        token = <HTTPS_URL> { jjtThis.urlString = token.image;}
-        |
-        token = <FILE_URL> { jjtThis.urlString = token.image;}
-        |
-        token = <CLASSPATH_URL> { jjtThis.urlString = token.image;}
-      )
-      { return jjtThis; }
-   }
+Url Url():
+{
+ Token token;
+}
+{
+  (
+    token = <HTTP_URL> { jjtThis.urlString = token.image;}
+    |
+    token = <HTTPS_URL> { jjtThis.urlString = token.image;}
+    |
+    token = <FILE_URL> { jjtThis.urlString = token.image;}
+    |
+    token = <CLASSPATH_URL> { jjtThis.urlString = token.image;}
+  )
+  { return jjtThis; }
+}
+
+BackupDatabaseStatement BackupDatabaseStatement():
+{ }
+{
+    (
+        <BACKUP> <DATABASE>
+        jjtThis.url = Url()
+    )
+    {return jjtThis; }
+}
