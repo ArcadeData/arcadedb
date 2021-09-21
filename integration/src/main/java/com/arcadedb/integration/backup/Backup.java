@@ -86,7 +86,6 @@ public class Backup {
 
     logger.logLine(0, "Opening database '%s'...", settings.databaseURL);
     database = (DatabaseInternal) factory.open();
-    database.begin();
     closeDatabaseAtEnd = true;
   }
 
