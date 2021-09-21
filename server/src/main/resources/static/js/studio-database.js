@@ -312,6 +312,8 @@ function executeCommandGraph(){
 
 function displaySchema(){
   let database = escapeHtml( $("#inputDatabase").val() );
+  if( database == null || database == "" )
+    return;
 
   jQuery.ajax({
     type: "POST",
