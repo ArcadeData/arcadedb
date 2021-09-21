@@ -87,7 +87,6 @@ public class HttpServer implements ServerPlugin {
             .post("/document/{database}", new CreateDocumentHandler(this))//
             .post("/drop/{database}", new DropDatabaseHandler(this))//
             .post("/exists/{database}", new ExistsDatabaseHandler(this))//
-            .post("/import", new ImportDatabaseHandler(this))//
             .get("/query/{database}/{language}/{command}", new GetQueryHandler(this))//
             .post("/query/{database}", new PostQueryHandler(this))//
             .post("/server", new ServersHandler(this))//

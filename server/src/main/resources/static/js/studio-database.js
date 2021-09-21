@@ -114,8 +114,14 @@ function importDatabase(){
 
       jQuery.ajax({
         type: "POST",
-        url: "/api/v1/import",
-        data: JSON.stringify( { name: database, url: url, limit: 20000 } ),
+        url: "/api/v1/command/" + database,
+        data: JSON.stringify(
+          {
+            language: "sql",
+            command: "import database " + url,
+            serializer: "record"
+          }
+        ),
         beforeSend: function (xhr){
           xhr.setRequestHeader('Authorization', globalCredentials);
         }
