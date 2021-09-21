@@ -335,17 +335,6 @@ public class PageManager extends LockContext {
       totalWriteCacheRAM.addAndGet(-1 * page2.getPhysicalSize());
   }
 
-  public void flushPagesOfFile(final int fileId) {
-    for (MutablePage p : writeCache.values()) {
-      if (p.getPageId().getFileId() == fileId)
-        try {
-          flushPage(p);
-        } catch (Exception e) {
-          LogManager.instance().log(this, Level.SEVERE, "Error on flushing page %s (threadId=%d)", e, p, Thread.currentThread().getId());
-        }
-    }
-  }
-
   public void preloadFile(final int fileId) {
     LogManager.instance().log(this, Level.FINE, "Pre-loading file %d (threadId=%d)...", null, fileId, Thread.currentThread().getId());
 
