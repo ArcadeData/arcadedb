@@ -360,7 +360,7 @@ public class PageManager extends LockContext {
       if (fileManager.existsFile(page.pageId.getFileId())) {
         final PaginatedFile file = fileManager.getFile(page.pageId.getFileId());
         if (!file.isOpen())
-          throw new DatabaseMetadataException("Cannot flush pages on disk because file is closed");
+          throw new DatabaseMetadataException("Cannot flush pages on disk because file '" + file.getFileName() + "' is closed");
 
         LogManager.instance().log(this, Level.FINE, "Flushing page %s (threadId=%d)...", null, page, Thread.currentThread().getId());
 

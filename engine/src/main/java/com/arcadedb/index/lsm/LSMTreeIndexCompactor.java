@@ -281,7 +281,7 @@ public class LSMTreeIndexCompactor {
       if (rootPage != null)
         modifiedPages.add(database.getPageManager().updatePage(rootPage, true));
 
-      database.getPageManager().flushPages(modifiedPages, true);
+      database.getPageManager().flushPages(modifiedPages, false);
 
       compactedPages += pagesToCompact;
 
