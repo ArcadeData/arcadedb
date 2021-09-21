@@ -52,15 +52,20 @@ public class Backup {
     System.exit(0);
   }
 
-  public void backupDatabase() {
+  public String backupDatabase() {
     try {
+      openDatabase();
+
+      settings.databaseName = database.getName();
+      settings.validateSettings();
+
       if (logger == null)
         logger = new ConsoleLogger(settings.verboseLevel);
 
-      openDatabase();
-
       formatImplementation = createFormatImplementation();
       formatImplementation.backupDatabase();
+
+      return settings.file;
 
     } catch (Exception e) {
       throw new BackupException(
@@ -68,6 +73,11 @@ public class Backup {
     } finally {
       closeDatabase();
     }
+  }
+
+  public Backup setDirectory(final String directory) {
+    settings.directory = directory;
+    return this;
   }
 
   public Backup setVerboseLevel(final int verboseLevel) {

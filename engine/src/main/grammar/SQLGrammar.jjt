@@ -4562,8 +4562,7 @@ BackupDatabaseStatement BackupDatabaseStatement():
 { }
 {
     (
-        <BACKUP> <DATABASE>
-        jjtThis.url = Url()
+        <BACKUP> <DATABASE> [ jjtThis.url = Url() ]
     )
     {return jjtThis; }
 }

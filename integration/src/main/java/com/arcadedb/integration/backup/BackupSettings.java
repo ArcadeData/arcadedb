@@ -27,10 +27,12 @@ import java.util.*;
 public class BackupSettings {
   public       String              format        = "full";
   public       String              databaseURL;
+  public       String              directory;
   public       String              file;
   public       boolean             overwriteFile = false;
   public       int                 verboseLevel  = 2;
   public final Map<String, String> options       = new HashMap<>();
+  public       String              databaseName;
 
   public BackupSettings() {
   }
@@ -40,26 +42,34 @@ public class BackupSettings {
       for (int i = 0; i < args.length; )
         i += parseParameter(args[i].substring(1), i < args.length - 1 ? args[i + 1] : null);
 
+    validateSettings();
+  }
+
+  public void validateSettings() {
     if (format == null)
       throw new IllegalArgumentException("Missing backup format");
+
+    if (directory != null && file != null && (file.contains("..") || file.contains("/")))
+      throw new IllegalArgumentException("Backup file cannot contain path change because the directory is specified");
 
     if (file == null)
       // ASSIGN DEFAULT FILENAME
       switch (format) {
       case "full":
-        file = "arcadedb-backup-%s.zip";
+        final DateFormat dateFormat = new SimpleDateFormat("yyyyMMdd-HHmmssSSS");
+        file = String.format("%s-backup-%s.zip", databaseName, dateFormat.format(System.currentTimeMillis()));
+
+        if (directory != null)
+          file = directory + "/" + file;
         break;
       }
-
-    if (file == null) {
-      final DateFormat dateFormat = new SimpleDateFormat("yyyyMMdd-HHmmssSSS");
-      file = String.format(file, dateFormat.format(System.currentTimeMillis()));
-    }
   }
 
   public int parseParameter(final String name, final String value) {
     if ("format".equals(name))
       format = value.toLowerCase();
+    else if ("dir".equals(name))
+      directory = value.endsWith("/") ? value : value + "/";
     else if ("f".equals(name))
       file = value;
     else if ("d".equals(name))

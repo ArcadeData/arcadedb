@@ -25,28 +25,36 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
 
   @Override
   public ResultSet executeSimple(CommandContext ctx) {
-    String targetUrl = this.url.getUrlString();
+    String targetUrl = this.url != null ? this.url.getUrlString() : null;
     ResultInternal result = new ResultInternal();
     result.setProperty("operation", "backup database");
-    result.setProperty("fromUrl", targetUrl);
+    if (targetUrl != null)
+      result.setProperty("target", targetUrl);
+
+    if (ctx.getDatabase().isTransactionActive())
+      ctx.getDatabase().rollback();
 
     try {
       final Class<?> clazz = Class.forName("com.arcadedb.integration.backup.Backup");
-      final Object backup = clazz.getConstructor(Database.class, String.class).newInstance(ctx.getDatabase(), url.getUrlString());
+      final Object backup = clazz.getConstructor(Database.class, String.class).newInstance(ctx.getDatabase(), targetUrl);
 
-      clazz.getMethod("backupDatabase").invoke(backup);
+      // ASSURE THE DIRECTORY CANNOT BE CHANGED
+      clazz.getMethod("setDirectory", String.class).invoke(backup, "backups/" + ctx.getDatabase().getName());
+      clazz.getMethod("setVerboseLevel", Integer.TYPE).invoke(backup, 1);
+      final String backupFile = (String) clazz.getMethod("backupDatabase").invoke(backup);
+
+      result.setProperty("result", "OK");
+      result.setProperty("backupFile", backupFile);
+
+      InternalResultSet rs = new InternalResultSet();
+      rs.add(result);
+      return rs;
 
     } catch (ClassNotFoundException | NoSuchMethodException | IllegalAccessException | InstantiationException e) {
       throw new CommandExecutionException("Error on backing up database, backup libs not found in classpath", e);
     } catch (InvocationTargetException e) {
       throw new CommandExecutionException("Error on backing up database", e.getTargetException());
     }
-
-    result.setProperty("result", "OK");
-
-    InternalResultSet rs = new InternalResultSet();
-    rs.add(result);
-    return rs;
   }
 
   /**
@@ -58,8 +66,11 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
 
   @Override
   public void toString(Map<Object, Object> params, StringBuilder builder) {
-    builder.append("BACKUP DATABASE ");
-    url.toString(params, builder);
+    builder.append("BACKUP DATABASE");
+    if (url != null) {
+      builder.append(' ');
+      url.toString(params, builder);
+    }
   }
 
   @Override

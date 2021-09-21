@@ -200,6 +200,38 @@ function dropDatabase(){
   });
 }
 
+
+function backupDatabase(){
+  let database = escapeHtml( $("#inputDatabase").val().trim() );
+  if( database == "" ){
+    globalNotify( "Error", "Database not selected", "danger");
+    return;
+  }
+
+  globalConfirm("Backup database", "Are you sure you want to backup the database '"+database+"'?<br>The database archive will be created under the 'backup' directory of the server.", "info", function(){
+    jQuery.ajax({
+      type: "POST",
+      url: "/api/v1/command/" + database,
+      data: JSON.stringify(
+        {
+          language: "sql",
+          command: "backup database",
+          serializer: "record"
+        }
+      ),
+      beforeSend: function (xhr){
+        xhr.setRequestHeader('Authorization', globalCredentials);
+      }
+    })
+    .done(function(data){
+      globalNotify( "Backup completed", "File: " + escapeHtml( data.result[0].backupFile ), "success");
+    })
+    .fail(function( jqXHR, textStatus, errorThrown ){
+      globalNotify( "Error", escapeHtml( jqXHR.responseText ), "danger");
+    });
+  });
+}
+
 function executeCommand(language, query){
   globalResultset = null;
 
