@@ -24,12 +24,11 @@ package com.arcadedb.integration.restore.format;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.integration.importer.ConsoleLogger;
+import com.arcadedb.integration.restore.RestoreException;
 import com.arcadedb.integration.restore.RestoreSettings;
-import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.FileUtils;
 
 import java.io.*;
-import java.util.logging.*;
 import java.util.zip.*;
 
 public class FullRestoreFormat extends AbstractRestoreFormat {
@@ -42,26 +41,19 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
   @Override
   public void restoreDatabase() throws Exception {
     final File file = new File(settings.file);
-    if (!file.exists()) {
-      LogManager.instance().log(this, Level.SEVERE, "Error on restoring database: the file '%s' not exist", null, settings.file);
-      return;
-    }
+    if (!file.exists())
+      throw new RestoreException(String.format("The backup file '%s' not exist", settings.file));
 
     final File databaseDirectory = new File(settings.databaseURL);
     if (databaseDirectory.exists()) {
-      if (!settings.overwriteDestination) {
-        LogManager.instance().log(this, Level.SEVERE, "Error on restoring database: the database directory '%s' already exist and '-o' setting is false", null,
-            settings.databaseURL);
-        return;
-      }
+      if (!settings.overwriteDestination)
+        throw new RestoreException(String.format("The database directory '%s' already exist and '-o' setting is false", settings.databaseURL));
 
       FileUtils.deleteRecursively(databaseDirectory);
     }
 
-    if (!databaseDirectory.mkdirs()) {
-      LogManager.instance().log(this, Level.SEVERE, "Error on restoring database: the database directory '%s' cannot be created", null, settings.databaseURL);
-      return;
-    }
+    if (!databaseDirectory.mkdirs())
+      throw new RestoreException(String.format("Error on restoring database: the database directory '%s' cannot be created", settings.databaseURL));
 
     logger.logLine(0, "Executing full restore of database from file '%s' to '%s'...", settings.file, settings.databaseURL);
 

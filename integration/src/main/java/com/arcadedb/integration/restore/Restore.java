@@ -25,10 +25,8 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.integration.importer.ConsoleLogger;
 import com.arcadedb.integration.restore.format.AbstractRestoreFormat;
 import com.arcadedb.integration.restore.format.FullRestoreFormat;
-import com.arcadedb.log.LogManager;
 
 import java.util.*;
-import java.util.logging.*;
 
 public class Restore {
   protected RestoreSettings       settings = new RestoreSettings();
@@ -60,9 +58,13 @@ public class Restore {
       formatImplementation.restoreDatabase();
 
     } catch (Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error on writing to %s", e, settings.file);
-    } finally {
+      throw new RestoreException("Error during restore of database from file '" + settings.file + "'", e);
     }
+  }
+
+  public Restore setVerboseLevel(final int verboseLevel) {
+    settings.verboseLevel = verboseLevel;
+    return this;
   }
 
   protected AbstractRestoreFormat createFormatImplementation() {
@@ -71,7 +73,7 @@ public class Restore {
       return new FullRestoreFormat(database, settings, logger);
 
     default:
-      throw new IllegalArgumentException("Format '" + settings.format + "' not supported");
+      throw new RestoreException("Format '" + settings.format + "' not supported");
     }
   }
 }

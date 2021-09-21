@@ -24,16 +24,24 @@ package com.arcadedb.integration.backup;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseComparator;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.Document;
+import com.arcadedb.database.bucketselectionstrategy.ThreadBucketSelectionStrategy;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.PaginatedFile;
+import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.integration.importer.OrientDBImporter;
 import com.arcadedb.integration.importer.OrientDBImporterIT;
 import com.arcadedb.integration.restore.Restore;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
+import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
 import java.net.*;
+import java.util.concurrent.atomic.*;
 
 public class FullBackupIT {
   private final static String DATABASE_PATH = "target/databases/performance";
@@ -46,14 +54,8 @@ public class FullBackupIT {
     final File file = new File(FILE);
 
     try {
-      final URL inputFile = OrientDBImporterIT.class.getClassLoader().getResource("orientdb-export-small.gz");
-
-      final OrientDBImporter importer = new OrientDBImporter(("-i " + inputFile.getFile() + " -d " + DATABASE_PATH + " -o").split(" "));
-      final Database importedDatabase = importer.run();
+      final Database importedDatabase = importDatabase();
       importedDatabase.close();
-
-      Assertions.assertFalse(importer.isError());
-      Assertions.assertTrue(databaseDirectory.exists());
 
       new Backup(("-f " + FILE + " -d " + DATABASE_PATH + " -o").split(" ")).backupDatabase();
 
@@ -86,13 +88,7 @@ public class FullBackupIT {
     file.delete();
 
     try {
-      final URL inputFile = OrientDBImporterIT.class.getClassLoader().getResource("orientdb-export-small.gz");
-
-      final OrientDBImporter importer = new OrientDBImporter(("-i " + inputFile.getFile() + " -d " + DATABASE_PATH + " -o").split(" "));
-      final Database importedDatabase = importer.run();
-
-      Assertions.assertFalse(importer.isError());
-      Assertions.assertTrue(databaseDirectory.exists());
+      final Database importedDatabase = importDatabase();
 
       new Backup(importedDatabase, FILE).backupDatabase();
 
@@ -109,5 +105,113 @@ public class FullBackupIT {
       FileUtils.deleteRecursively(restoredDirectory);
       file.delete();
     }
+  }
+
+  /**
+   * This test allocates 8 parallel threads which insert 500 transactions each with 500 vertices per transaction. Vertices are indexed on thread+id properties.
+   * A not unique index has been selected to speed up the insertion avoiding concurrency on buckets/indexes.
+   * During the parallel insertion, 8 full backups are scheduled with 1 second pause between each other. When the insertion is completed (2M vertices in total),
+   * each backup file is restored and tested the number of vertices is mod (%) 500, so no inconsistent backup has been taken (each transaction is 500 vertices).
+   */
+  @Test
+  public void testFullBackupConcurrency() throws IOException, InterruptedException {
+    final int CONCURRENT_THREADS = 8;
+
+    final File databaseDirectory = new File(DATABASE_PATH);
+    FileUtils.deleteRecursively(databaseDirectory);
+
+    for (int i = 0; i < CONCURRENT_THREADS; i++) {
+      new File(FILE + "_" + i).delete();
+      FileUtils.deleteRecursively(new File(DATABASE_PATH + "_restored_" + i));
+    }
+
+    final Thread[] threads = new Thread[CONCURRENT_THREADS];
+    try {
+      final Database importedDatabase = importDatabase();
+
+      final VertexType type = importedDatabase.getSchema().createVertexType("BackupTest", CONCURRENT_THREADS);
+
+      importedDatabase.transaction((tx) -> {
+        type.createProperty("thread", Type.INTEGER);
+        type.createProperty("id", Type.INTEGER);
+        type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, new String[] { "thread", "id" });
+        type.setBucketSelectionStrategy(new ThreadBucketSelectionStrategy() {
+          @Override
+          public int getBucketIdByRecord(Document record, boolean async) {
+            return record.getInteger("thread");
+          }
+        });
+      });
+
+      for (int i = 0; i < CONCURRENT_THREADS; i++) {
+        final int threadId = i;
+        final Bucket threadBucket = type.getBuckets(false).get(i);
+
+        threads[i] = new Thread("Inserter-" + i) {
+          public void run() {
+            final AtomicInteger totalPerThread = new AtomicInteger();
+            for (int j = 0; j < 500; j++) {
+              importedDatabase.transaction((tx) -> {
+                for (int k = 0; k < 500; k++) {
+                  MutableVertex v = importedDatabase.newVertex("BackupTest").set("thread", threadId).set("id", totalPerThread.getAndIncrement()).save();
+                  Assertions.assertEquals(threadBucket.getId(), v.getIdentity().getBucketId());
+                }
+              });
+            }
+
+          }
+        };
+      }
+
+      // START THREADS 300MS DISTANCE FROM EACH OTHER
+      for (int i = 0; i < CONCURRENT_THREADS; i++) {
+        threads[i].start();
+        Thread.sleep(300);
+      }
+
+      // EXECUTE 10 BACKUPS EVERY SECOND
+      for (int i = 0; i < CONCURRENT_THREADS; i++) {
+        Assertions.assertFalse(importedDatabase.isTransactionActive());
+        final long totalVertices = importedDatabase.countType("BackupTest", true);
+        new Backup(importedDatabase, FILE + "_" + i).setVerboseLevel(1).backupDatabase();
+        Thread.sleep(1000);
+      }
+
+      for (int i = 0; i < CONCURRENT_THREADS; i++)
+        threads[i].join();
+
+      for (int i = 0; i < CONCURRENT_THREADS; i++) {
+        final File file = new File(FILE + "_" + i);
+        Assertions.assertTrue(file.exists());
+        Assertions.assertTrue(file.length() > 0);
+
+        final String databasePath = DATABASE_PATH + "_restored_" + i;
+
+        new Restore(FILE + "_" + i, databasePath).setVerboseLevel(1).restoreDatabase();
+
+        try (Database restoredDatabase = new DatabaseFactory(databasePath).open(PaginatedFile.MODE.READ_ONLY)) {
+          // VERIFY ONLY WHOLE TRANSACTION ARE WRITTEN
+          Assertions.assertTrue(restoredDatabase.countType("BackupTest", true) % 500 == 0);
+        }
+      }
+
+    } finally {
+      FileUtils.deleteRecursively(databaseDirectory);
+      for (int i = 0; i < CONCURRENT_THREADS; i++) {
+        new File(FILE + "_" + i).delete();
+        FileUtils.deleteRecursively(new File(DATABASE_PATH + "_restored_" + i));
+      }
+    }
+  }
+
+  private Database importDatabase() throws IOException {
+    final URL inputFile = OrientDBImporterIT.class.getClassLoader().getResource("orientdb-export-small.gz");
+
+    final OrientDBImporter importer = new OrientDBImporter(("-i " + inputFile.getFile() + " -d " + DATABASE_PATH + " -o").split(" "));
+    final Database importedDatabase = importer.run();
+
+    Assertions.assertFalse(importer.isError());
+    Assertions.assertTrue(new File(DATABASE_PATH).exists());
+    return importedDatabase;
   }
 }

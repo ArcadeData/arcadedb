@@ -27,10 +27,8 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.integration.backup.format.AbstractBackupFormat;
 import com.arcadedb.integration.backup.format.FullBackupFormat;
 import com.arcadedb.integration.importer.ConsoleLogger;
-import com.arcadedb.log.LogManager;
 
 import java.util.*;
-import java.util.logging.*;
 
 public class Backup {
   protected BackupSettings       settings           = new BackupSettings();
@@ -65,10 +63,16 @@ public class Backup {
       formatImplementation.backupDatabase();
 
     } catch (Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error on writing to %s", e, settings.file);
+      throw new BackupException(
+          "Error during backup of database '" + (database != null ? database.getName() : settings.databaseURL) + "' to file '" + settings.file + "'", e);
     } finally {
       closeDatabase();
     }
+  }
+
+  public Backup setVerboseLevel(final int verboseLevel) {
+    settings.verboseLevel = verboseLevel;
+    return this;
   }
 
   protected void openDatabase() {
@@ -77,10 +81,8 @@ public class Backup {
 
     final DatabaseFactory factory = new DatabaseFactory(settings.databaseURL);
 
-    if (!factory.exists()) {
-      LogManager.instance().log(this, Level.SEVERE, "Database '%s' not found", null, settings.databaseURL);
-      return;
-    }
+    if (!factory.exists())
+      throw new BackupException(String.format("Database '%s' not found", settings.databaseURL));
 
     logger.logLine(0, "Opening database '%s'...", settings.databaseURL);
     database = (DatabaseInternal) factory.open();
@@ -102,7 +104,7 @@ public class Backup {
       return new FullBackupFormat(database, settings, logger);
 
     default:
-      throw new IllegalArgumentException("Format '" + settings.format + "' not supported");
+      throw new BackupException("Format '" + settings.format + "' not supported");
     }
   }
 }

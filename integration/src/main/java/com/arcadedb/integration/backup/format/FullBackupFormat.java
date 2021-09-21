@@ -25,15 +25,14 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.EmbeddedDatabase;
 import com.arcadedb.engine.PaginatedFile;
+import com.arcadedb.integration.backup.BackupException;
 import com.arcadedb.integration.backup.BackupSettings;
 import com.arcadedb.integration.importer.ConsoleLogger;
-import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.utility.FileUtils;
 
 import java.io.*;
 import java.util.*;
-import java.util.logging.*;
 import java.util.zip.*;
 
 public class FullBackupFormat extends AbstractBackupFormat {
@@ -44,10 +43,11 @@ public class FullBackupFormat extends AbstractBackupFormat {
   @Override
   public void backupDatabase() throws Exception {
     File file = new File(settings.file);
-    if (file.exists() && !settings.overwriteFile) {
-      LogManager.instance().log(this, Level.SEVERE, "Error on backing up database: the file '%s' already exist and '-o' setting is false", null, settings.file);
-      return;
-    }
+    if (file.exists() && !settings.overwriteFile)
+      throw new BackupException(String.format("The backup file '%s' already exist and '-o' setting is false", settings.file));
+
+    if (database.isTransactionActive())
+      throw new BackupException("Transaction in progress found");
 
     logger.logLine(0, "Executing full backup of database to '%s'...", settings.file);
 
