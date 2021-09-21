@@ -25,13 +25,11 @@ import com.arcadedb.database.Document;
 import com.arcadedb.schema.DocumentType;
 
 /**
- * Default round-robin implementation that uses all the available buckets. In async mode, it returns the bucket partitioned with the thread id. In this way
- * there is no conflict between documents created by concurrent threads.
+ * Default round-robin implementation that uses all the available buckets. For async execution, the thread selection strategy is used.
  *
  * @author Luca Garulli
  */
-public class DefaultBucketSelectionStrategy implements BucketSelectionStrategy {
-  protected        int total;
+public class RoundRobinBucketSelectionStrategy extends ThreadBucketSelectionStrategy {
   private volatile int current = -1;
 
   @Override
@@ -45,7 +43,7 @@ public class DefaultBucketSelectionStrategy implements BucketSelectionStrategy {
   @Override
   public int getBucketIdByRecord(final Document record, final boolean async) {
     if (async)
-      return (int) (Thread.currentThread().getId() % total);
+      return super.getBucketIdByRecord(record, async);
 
     // COPY THE VALUE ON THE HEAP FOR MULTI-THREAD ACCESS
     int bucketIndex = ++current;
@@ -57,18 +55,7 @@ public class DefaultBucketSelectionStrategy implements BucketSelectionStrategy {
   }
 
   @Override
-  public int getBucketIdByKeys(final Object[] keys, final boolean async) {
-    // UNSUPPORTED
-    return -1;
-  }
-
-  @Override
   public String getName() {
     return "round-robin";
-  }
-
-  @Override
-  public String toString() {
-    return getName();
   }
 }

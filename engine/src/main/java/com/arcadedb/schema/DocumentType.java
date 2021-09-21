@@ -23,7 +23,7 @@ package com.arcadedb.schema;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.database.bucketselectionstrategy.BucketSelectionStrategy;
-import com.arcadedb.database.bucketselectionstrategy.DefaultBucketSelectionStrategy;
+import com.arcadedb.database.bucketselectionstrategy.RoundRobinBucketSelectionStrategy;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
@@ -39,7 +39,7 @@ public class DocumentType {
   protected final List<DocumentType>                parentTypes             = new ArrayList<>();
   protected final List<DocumentType>                subTypes                = new ArrayList<>();
   protected final List<Bucket>                      buckets                 = new ArrayList<>();
-  protected       BucketSelectionStrategy           bucketSelectionStrategy = new DefaultBucketSelectionStrategy();
+  protected       BucketSelectionStrategy           bucketSelectionStrategy = new RoundRobinBucketSelectionStrategy();
   protected final Map<String, Property>             properties              = new HashMap<>();
   protected       Map<Integer, List<IndexInternal>> bucketIndexesByBucket   = new HashMap<>();
   protected       Map<List<String>, TypeIndex>      indexesByProperties     = new HashMap<>();
