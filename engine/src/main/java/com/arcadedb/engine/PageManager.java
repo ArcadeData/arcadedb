@@ -136,6 +136,10 @@ public class PageManager extends LockContext {
     flushThread.setSuspended(value);
   }
 
+  public boolean isPageFlushingSuspended() {
+    return flushThread.isSuspended();
+  }
+
   /**
    * Test only API.
    */

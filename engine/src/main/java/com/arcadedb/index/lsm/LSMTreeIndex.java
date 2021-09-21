@@ -118,6 +118,8 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   }
 
   public boolean scheduleCompaction() {
+    if (mutable.getDatabase().getPageManager().isPageFlushingSuspended())
+      return false;
     return compactingStatus.compareAndSet(LSMTreeIndexAbstract.COMPACTING_STATUS.NO, LSMTreeIndexAbstract.COMPACTING_STATUS.SCHEDULED);
   }
 
@@ -179,11 +181,13 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     if (mutable.getDatabase().getMode() == PaginatedFile.MODE.READ_ONLY)
       throw new DatabaseIsReadOnlyException("Cannot update the index '" + getName() + "'");
 
+    if (mutable.getDatabase().getPageManager().isPageFlushingSuspended())
+      // POSTPONE COMPACTING (DATABASE BACKUP IN PROGRESS?)
+      return false;
+
     if (!compactingStatus.compareAndSet(LSMTreeIndexAbstract.COMPACTING_STATUS.SCHEDULED, LSMTreeIndexAbstract.COMPACTING_STATUS.IN_PROGRESS))
       // ALREADY COMPACTING
       return false;
-
-//    return false;
 
     try {
       return LSMTreeIndexCompactor.compact(this);

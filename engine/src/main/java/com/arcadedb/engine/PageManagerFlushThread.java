@@ -23,6 +23,7 @@ package com.arcadedb.engine;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.exception.DatabaseMetadataException;
 import com.arcadedb.log.LogManager;
 
 import java.io.*;
@@ -91,12 +92,21 @@ public class PageManagerFlushThread extends Thread {
 
     if (pages != null) {
       for (MutablePage page : pages)
-        pageManager.flushPage(page);
+        try {
+          pageManager.flushPage(page);
+        } catch (DatabaseMetadataException e) {
+          // FILE DELETED, CONTINUE WITH THE NEXT PAGES
+          LogManager.instance().log(this, Level.WARNING, "Error on flushing page '%s' to disk", e, page);
+        }
     }
   }
 
   public void setSuspended(final boolean value) {
     suspended.set(value);
+  }
+
+  public boolean isSuspended() {
+    return suspended.get();
   }
 
   public void close() {

@@ -30,7 +30,7 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EmbeddedSchema;
 
-import java.io.IOException;
+import java.io.*;
 import java.util.*;
 
 /**
@@ -163,11 +163,11 @@ public class TypeIndex implements RangeIndex, IndexInternal {
 
   @Override
   public boolean scheduleCompaction() {
-    boolean result = false;
     for (Index index : indexesOnBuckets)
-      if (index.scheduleCompaction())
-        result = true;
-    return result;
+      if (!index.scheduleCompaction())
+        return false;
+
+    return true;
   }
 
   @Override

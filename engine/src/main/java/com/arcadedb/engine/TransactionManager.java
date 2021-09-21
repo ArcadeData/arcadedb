@@ -28,14 +28,12 @@ import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.LockManager;
 
-import java.io.File;
-import java.io.FileNotFoundException;
-import java.io.IOException;
-import java.nio.channels.ClosedByInterruptException;
+import java.io.*;
+import java.nio.channels.*;
 import java.util.*;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.logging.Level;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+import java.util.logging.*;
 
 public class TransactionManager {
   private static final long MAX_LOG_FILE_SIZE = 64 * 1024 * 1024;
@@ -369,7 +367,11 @@ public class TransactionManager {
     Collections.sort(orderedFilesIds);
 
     final List<Integer> lockedFiles = new ArrayList<>(orderedFilesIds.size());
+
+    Integer attemptFileId = null;
     for (Integer fileId : orderedFilesIds) {
+      attemptFileId = fileId;
+
       if (tryLockFile(fileId, timeout))
         lockedFiles.add(fileId);
       else
@@ -385,7 +387,12 @@ public class TransactionManager {
     // ERROR: UNLOCK LOCKED FILES
     unlockFilesInOrder(lockedFiles);
 
-    throw new TransactionException("Timeout on locking resource during commit (fileIds=" + fileIds + ")");
+    if (attemptFileId != null)
+      throw new TransactionException(
+          "Timeout on locking file " + attemptFileId + " (" + database.getFileManager().getFile(attemptFileId).getFileName() + ") during commit (fileIds="
+              + fileIds + ")");
+
+    throw new TransactionException("Timeout on locking files during commit (fileIds=" + fileIds + ")");
   }
 
   public void unlockFilesInOrder(final Collection<Integer> lockedFileIds) {

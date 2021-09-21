@@ -207,7 +207,7 @@ public class TransactionIndexContext {
     indexEntries.clear();
   }
 
-  public void addFilesToLock(Set<Integer> modifiedFiles) {
+  public void addFilesToLock(final Set<Integer> modifiedFiles) {
     final Schema schema = database.getSchema();
 
     final Set<Index> lockedIndexes = new HashSet<>();
