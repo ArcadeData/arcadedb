@@ -48,6 +48,7 @@
                         </goals>
                         <configuration>
                             <appendAssemblyId>false</appendAssemblyId>
+                            <finalName>arcadedb-${project.version}</finalName>
                             <descriptors>
                                 <descriptor>./src/main/assembly/archive.xml</descriptor>
                             </descriptors>
@@ -137,7 +138,7 @@
                                 <resource>
                                     <targetPath>/</targetPath>
                                     <directory>${project.build.directory}/</directory>
-                                    <include>${project.build.finalName}.tar.gz</include>
+                                    <include>arcadedb-*.tar.gz</include>
                                 </resource>
                             </resources>
                         </configuration>
