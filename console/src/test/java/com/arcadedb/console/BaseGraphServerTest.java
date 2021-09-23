@@ -75,7 +75,7 @@ public abstract class BaseGraphServerTest {
   }
 
   @BeforeEach
-  public void init() {
+  public void beginTest() {
     setTestConfiguration();
 
     checkArcadeIsTotallyDown();
