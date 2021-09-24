@@ -148,12 +148,21 @@
                 <configuration>
                     <excludes>
                         <exclude>**/*HASplitBrainIT.java</exclude>
-                        <exclude>**/*ReplicationServerReplicaHotResyncIT.java</exclude>
+                        <exclude>**/*HARandomCrashIT.java</exclude>
                         <exclude>**/*ReplicationServerLeaderChanges3TimesIT.java</exclude>
+                        <exclude>**/*ReplicationServerLeaderDownIT.java</exclude>
+                        <exclude>**/*ReplicationServerQuorumMajority2ServersOutIT.java</exclude>
+                        <exclude>**/*ReplicationServerQuorumAllIT.java</exclude>
+                        <exclude>**/*ReplicationServerQuorumMajorityIT.java</exclude>
+                        <exclude>**/*ReplicationServerQuorumNoneIT.java</exclude>
+                        <exclude>**/*ReplicationServerReplicaHotResyncIT.java</exclude>
                         <exclude>**/*ReplicationServerReplicaRestartForceDbInstallIT.java</exclude>
+                        <exclude>**/*ReplicationServerWriteAgainstReplicaIT.java</exclude>
+                        <exclude>**/*ServerBackupDatabaseIT.java</exclude>
                         <exclude>**/*HTTP2ServersIT.java</exclude>
                         <exclude>**/*TwoServersIT.java</exclude>
                         <exclude>**/*FullBackupIT.java</exclude>
+                        <exclude>**/*RemoteConsoleIT.java</exclude>
                     </excludes>
                     <skipITs>${skipIntegration}</skipITs>
                     <argLine>${itCoverageAgent}</argLine>
