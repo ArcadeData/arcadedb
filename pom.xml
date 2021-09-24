@@ -149,8 +149,11 @@
                     <excludes>
                         <exclude>**/*HASplitBrainIT.java</exclude>
                         <exclude>**/*ReplicationServerReplicaHotResyncIT.java</exclude>
+                        <exclude>**/*ReplicationServerLeaderChanges3TimesIT.java</exclude>
+                        <exclude>**/*ReplicationServerReplicaRestartForceDbInstallIT.java</exclude>
                         <exclude>**/*HTTP2ServersIT.java</exclude>
                         <exclude>**/*TwoServersIT.java</exclude>
+                        <exclude>**/*FullBackupIT.java</exclude>
                     </excludes>
                     <skipITs>${skipIntegration}</skipITs>
                     <argLine>${itCoverageAgent}</argLine>
