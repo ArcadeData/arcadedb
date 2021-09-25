@@ -18,7 +18,7 @@ package com.arcadedb.query.sql.function.text;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.method.misc.OAbstractSQLMethod;
+import com.arcadedb.query.sql.method.misc.AbstractSQLMethod;
 
 import java.io.UnsupportedEncodingException;
 import java.nio.charset.StandardCharsets;
@@ -30,7 +30,7 @@ import java.security.NoSuchAlgorithmException;
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLMethodHash extends OAbstractSQLMethod {
+public class SQLMethodHash extends AbstractSQLMethod {
 
   public static final String NAME = "hash";
 

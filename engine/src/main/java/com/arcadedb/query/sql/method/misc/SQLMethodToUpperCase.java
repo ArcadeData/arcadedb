@@ -24,7 +24,7 @@ import java.util.Locale;
  * @author Johann Sorel (Geomatys)
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLMethodToUpperCase extends OAbstractSQLMethod {
+public class SQLMethodToUpperCase extends AbstractSQLMethod {
 
   public static final String NAME = "touppercase";
 

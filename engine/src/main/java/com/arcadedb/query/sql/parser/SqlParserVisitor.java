@@ -21,7 +21,7 @@ public interface SqlParserVisitor
   Object visit(SimpleNode node, Object data);
   Object visit(Rid node, Object data);
   Object visit(parse node, Object data);
-  Object visit(parseScript node, Object data);
+  Object visit(ParseScript node, Object data);
   Object visit(PString node, Object data);
   Object visit(Identifier node, Object data);
   Object visit(PInteger node, Object data);

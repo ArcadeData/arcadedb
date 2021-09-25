@@ -28,7 +28,7 @@ import com.arcadedb.schema.VertexType;
 import java.util.*;
 import java.util.stream.*;
 
-public class CreateVertexTypeStatement extends ODDLStatement {
+public class CreateVertexTypeStatement extends DDLStatement {
   /**
    * Class name
    */

@@ -28,7 +28,7 @@ import com.arcadedb.schema.Schema;
 import java.util.*;
 import java.util.stream.*;
 
-public class CreateEdgeTypeStatement extends ODDLStatement {
+public class CreateEdgeTypeStatement extends DDLStatement {
   /**
    * Class name
    */

@@ -27,7 +27,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.*;
 
-public class DropIndexStatement extends ODDLStatement {
+public class DropIndexStatement extends DDLStatement {
 
   protected boolean   all      = false;
   protected IndexName name;

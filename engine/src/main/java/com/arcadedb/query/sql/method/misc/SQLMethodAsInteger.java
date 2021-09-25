@@ -22,7 +22,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
  * @author Johann Sorel (Geomatys)
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLMethodAsInteger extends OAbstractSQLMethod {
+public class SQLMethodAsInteger extends AbstractSQLMethod {
 
   public static final String NAME = "asinteger";
 

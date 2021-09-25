@@ -18,7 +18,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.OUpdateExecutionPlanner;
+import com.arcadedb.query.sql.executor.UpdateExecutionPlanner;
 import com.arcadedb.query.sql.executor.UpdateExecutionPlan;
 
 import java.util.stream.*;
@@ -37,7 +37,7 @@ public class UpdateEdgeStatement extends UpdateStatement {
   }
 
   @Override public UpdateExecutionPlan createExecutionPlan(CommandContext ctx, boolean enableProfiling) {
-    OUpdateExecutionPlanner planner = new OUpdateExecutionPlanner(this);
+    UpdateExecutionPlanner planner = new UpdateExecutionPlanner(this);
     return planner.createExecutionPlan(ctx, enableProfiling);
   }
 

@@ -17,7 +17,7 @@ package com.arcadedb.query.sql.function.conversion;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.method.misc.OAbstractSQLMethod;
+import com.arcadedb.query.sql.method.misc.AbstractSQLMethod;
 
 import java.math.BigDecimal;
 import java.util.Date;
@@ -28,7 +28,7 @@ import java.util.Date;
  * @author Johann Sorel (Geomatys)
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLMethodAsDecimal extends OAbstractSQLMethod {
+public class SQLMethodAsDecimal extends AbstractSQLMethod {
 
   public static final String NAME = "asdecimal";
 

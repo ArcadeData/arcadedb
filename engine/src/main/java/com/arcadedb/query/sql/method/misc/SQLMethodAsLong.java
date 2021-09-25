@@ -24,7 +24,7 @@ import java.util.Date;
  * @author Johann Sorel (Geomatys)
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLMethodAsLong extends OAbstractSQLMethod {
+public class SQLMethodAsLong extends AbstractSQLMethod {
 
   public static final String NAME = "aslong";
 

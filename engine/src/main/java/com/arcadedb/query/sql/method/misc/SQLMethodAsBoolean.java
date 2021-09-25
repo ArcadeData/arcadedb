@@ -22,7 +22,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
  * @author Johann Sorel (Geomatys)
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLMethodAsBoolean extends OAbstractSQLMethod {
+public class SQLMethodAsBoolean extends AbstractSQLMethod {
 
   public static final String NAME = "asboolean";
 

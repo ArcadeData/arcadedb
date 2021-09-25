@@ -29,7 +29,7 @@ import com.arcadedb.schema.Schema;
 
 import java.util.*;
 
-public class DropTypeStatement extends ODDLStatement {
+public class DropTypeStatement extends DDLStatement {
 
   public Identifier     name;
   public InputParameter nameParam;

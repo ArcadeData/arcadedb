@@ -23,7 +23,7 @@ import com.arcadedb.query.sql.executor.MultiValue;
  * @author Johann Sorel (Geomatys)
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLMethodSize extends OAbstractSQLMethod {
+public class SQLMethodSize extends AbstractSQLMethod {
 
   public static final String NAME = "size";
 

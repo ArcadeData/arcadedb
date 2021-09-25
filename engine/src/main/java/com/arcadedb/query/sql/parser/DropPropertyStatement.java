@@ -22,7 +22,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.*;
 
-public class DropPropertyStatement extends ODDLStatement {
+public class DropPropertyStatement extends DDLStatement {
 
   protected Identifier typeName;
   protected Identifier propertyName;

@@ -26,7 +26,7 @@ import com.arcadedb.schema.DocumentType;
 
 import java.util.*;
 
-public class DropBucketStatement extends ODDLStatement {
+public class DropBucketStatement extends DDLStatement {
   protected Identifier name;
   protected PInteger    id;
   protected boolean ifExists = false;

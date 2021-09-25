@@ -26,7 +26,7 @@ import com.arcadedb.utility.Callable;
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  * @see SQLMethodRemove
  */
-public class SQLMethodRemoveAll extends OAbstractSQLMethod {
+public class SQLMethodRemoveAll extends AbstractSQLMethod {
 
   public static final String NAME = "removeall";
 

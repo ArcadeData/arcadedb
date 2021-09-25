@@ -23,7 +23,7 @@ import com.arcadedb.utility.FileUtils;
  * @author Johann Sorel (Geomatys)
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLMethodIndexOf extends OAbstractSQLMethod {
+public class SQLMethodIndexOf extends AbstractSQLMethod {
 
   public static final String NAME = "indexof";
 

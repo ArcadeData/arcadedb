@@ -26,7 +26,7 @@ import java.text.Normalizer;
  * @author Johann Sorel (Geomatys)
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLMethodNormalize extends OAbstractSQLMethod {
+public class SQLMethodNormalize extends AbstractSQLMethod {
 
   public static final String NAME = "normalize";
 

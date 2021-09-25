@@ -44,8 +44,8 @@ public class ScriptLineStep extends AbstractExecutionStep {
                 ((DeleteExecutionPlan) plan).executeInternal();
             } else if (plan instanceof UpdateExecutionPlan) {
                 ((UpdateExecutionPlan) plan).executeInternal();
-            } else if (plan instanceof ODDLExecutionPlan) {
-                ((ODDLExecutionPlan) plan).executeInternal((BasicCommandContext) ctx);
+            } else if (plan instanceof DDLExecutionPlan) {
+                ((DDLExecutionPlan) plan).executeInternal((BasicCommandContext) ctx);
             } else if (plan instanceof SingleOpExecutionPlan) {
                 ((SingleOpExecutionPlan) plan).executeInternal((BasicCommandContext) ctx);
             }

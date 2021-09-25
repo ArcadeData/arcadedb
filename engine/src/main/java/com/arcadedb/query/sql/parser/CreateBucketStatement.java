@@ -26,7 +26,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.*;
 
-public class CreateBucketStatement extends ODDLStatement {
+public class CreateBucketStatement extends DDLStatement {
   protected Identifier name;
   protected boolean    ifNotExists = false;
   protected PInteger   id;

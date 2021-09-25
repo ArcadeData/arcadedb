@@ -61,7 +61,7 @@ public class ReturnMatchPatternsStep extends AbstractExecutionStep {
   }
 
   private Result filter(Result next) {
-    next.getPropertyNames().stream().filter(s -> s.startsWith(OMatchExecutionPlanner.DEFAULT_ALIAS_PREFIX))
+    next.getPropertyNames().stream().filter(s -> s.startsWith(MatchExecutionPlanner.DEFAULT_ALIAS_PREFIX))
         .forEach(((ResultInternal) next)::removeProperty);
     return next;
   }

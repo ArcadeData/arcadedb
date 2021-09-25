@@ -34,7 +34,7 @@ public class ReturnMatchElementsStep extends AbstractUnrollStep {
   protected Collection<Result> unroll(Result doc, CommandContext iContext) {
     List<Result> result = new ArrayList<>();
     for (String s : doc.getPropertyNames()) {
-      if (!s.startsWith(OMatchExecutionPlanner.DEFAULT_ALIAS_PREFIX)) {
+      if (!s.startsWith(MatchExecutionPlanner.DEFAULT_ALIAS_PREFIX)) {
         Object elem = doc.getProperty(s);
         if (elem instanceof Identifiable) {
           ResultInternal newelem = new ResultInternal();

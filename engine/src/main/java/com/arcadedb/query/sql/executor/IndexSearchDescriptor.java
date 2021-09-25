@@ -43,7 +43,7 @@ public class IndexSearchDescriptor {
   }
 
   public int cost(final CommandContext ctx) {
-    final OQueryStats stats = OQueryStats.get(ctx.getDatabase());
+    final QueryStats stats = QueryStats.get(ctx.getDatabase());
 
     final String indexName = idx.getName();
     final int size = keyCondition.getSubBlocks().size();

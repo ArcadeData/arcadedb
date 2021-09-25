@@ -30,7 +30,7 @@ import com.arcadedb.schema.Type;
 import java.util.*;
 import java.util.stream.*;
 
-public class CreatePropertyStatement extends ODDLStatement {
+public class CreatePropertyStatement extends DDLStatement {
     public Identifier typeName;
     public Identifier propertyName;
     public Identifier propertyType;

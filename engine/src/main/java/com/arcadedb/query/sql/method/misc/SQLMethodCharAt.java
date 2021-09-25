@@ -24,7 +24,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
  * @author Johann Sorel (Geomatys)
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLMethodCharAt extends OAbstractSQLMethod {
+public class SQLMethodCharAt extends AbstractSQLMethod {
 
   public static final String NAME = "charat";
 
