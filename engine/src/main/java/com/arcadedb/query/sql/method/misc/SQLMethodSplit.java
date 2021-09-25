@@ -23,7 +23,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLMethodSplit extends OAbstractSQLMethod {
+public class SQLMethodSplit extends AbstractSQLMethod {
 
   public static final String NAME = "split";
 

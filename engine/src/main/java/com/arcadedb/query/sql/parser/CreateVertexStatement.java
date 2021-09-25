@@ -23,7 +23,7 @@ import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InsertExecutionPlan;
 import com.arcadedb.query.sql.executor.InternalExecutionPlan;
-import com.arcadedb.query.sql.executor.OCreateVertexExecutionPlanner;
+import com.arcadedb.query.sql.executor.CreateVertexExecutionPlanner;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.*;
@@ -75,7 +75,7 @@ public class CreateVertexStatement extends Statement {
   }
 
   @Override public InternalExecutionPlan createExecutionPlan(CommandContext ctx, boolean enableProfiling) {
-    OCreateVertexExecutionPlanner planner = new OCreateVertexExecutionPlanner(this);
+    CreateVertexExecutionPlanner planner = new CreateVertexExecutionPlanner(this);
     return planner.createExecutionPlan(ctx, enableProfiling);
   }
 

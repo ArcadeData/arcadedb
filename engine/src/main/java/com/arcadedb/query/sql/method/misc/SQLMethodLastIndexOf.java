@@ -22,7 +22,7 @@ import com.arcadedb.utility.FileUtils;
 /**
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLMethodLastIndexOf extends OAbstractSQLMethod {
+public class SQLMethodLastIndexOf extends AbstractSQLMethod {
 
   public static final String NAME = "lastindexof";
 

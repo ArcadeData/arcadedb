@@ -23,7 +23,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.*;
 
-public class AlterPropertyStatement extends ODDLStatement {
+public class AlterPropertyStatement extends DDLStatement {
 
   public Expression settingValue;
 

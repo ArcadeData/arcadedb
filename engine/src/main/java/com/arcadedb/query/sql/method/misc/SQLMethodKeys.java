@@ -26,7 +26,7 @@ import java.util.*;
  * @author Johann Sorel (Geomatys)
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLMethodKeys extends OAbstractSQLMethod {
+public class SQLMethodKeys extends AbstractSQLMethod {
 
   public static final String NAME = "keys";
 

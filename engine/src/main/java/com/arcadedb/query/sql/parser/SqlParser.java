@@ -20,7 +20,7 @@ package com.arcadedb.query.sql.parser;
 import java.io.InputStream;
 import java.util.List;
 import java.util.ArrayList;
-import com.arcadedb.exception.CommandSQLParsingException;
+
 import com.arcadedb.exception.QueryParsingException;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 
@@ -149,7 +149,7 @@ if (jjtc000) {
 }
 
   final public List<Statement> parseScript() throws ParseException {/*@bgen(jjtree) parseScript */
-  parseScript jjtn000 = new parseScript(JJTPARSESCRIPT);
+  ParseScript jjtn000 = new ParseScript(JJTPARSESCRIPT);
   boolean jjtc000 = true;
   jjtree.openNodeScope(jjtn000);
   jjtn000.jjtSetFirstToken(getToken(1));List<Statement> result = new ArrayList<Statement>();

@@ -27,7 +27,7 @@ import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalExecutionPlan;
-import com.arcadedb.query.sql.executor.OSelectExecutionPlanner;
+import com.arcadedb.query.sql.executor.SelectExecutionPlanner;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -269,7 +269,7 @@ public class SelectStatement extends Statement {
   }
 
   public InternalExecutionPlan createExecutionPlan(CommandContext ctx, boolean enableProfiling) {
-    OSelectExecutionPlanner planner = new OSelectExecutionPlanner(this);
+    SelectExecutionPlanner planner = new SelectExecutionPlanner(this);
     return planner.createExecutionPlan(ctx, enableProfiling);
   }
 

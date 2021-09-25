@@ -22,7 +22,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.*;
 
-public class AlterBucketStatement extends ODDLStatement {
+public class AlterBucketStatement extends DDLStatement {
 
   protected Identifier name;
   protected boolean    starred = false;

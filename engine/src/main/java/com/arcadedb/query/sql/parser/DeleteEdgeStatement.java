@@ -22,7 +22,7 @@ import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.DeleteExecutionPlan;
-import com.arcadedb.query.sql.executor.ODeleteEdgeExecutionPlanner;
+import com.arcadedb.query.sql.executor.DeleteEdgeExecutionPlanner;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.*;
@@ -84,7 +84,7 @@ public class DeleteEdgeStatement extends Statement {
   }
 
   public DeleteExecutionPlan createExecutionPlan(CommandContext ctx, boolean enableProfiling) {
-    ODeleteEdgeExecutionPlanner planner = new ODeleteEdgeExecutionPlanner(this);
+    DeleteEdgeExecutionPlanner planner = new DeleteEdgeExecutionPlanner(this);
     return planner.createExecutionPlan(ctx, enableProfiling);
   }
 

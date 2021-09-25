@@ -28,7 +28,7 @@ import com.arcadedb.schema.Schema;
 
 import java.util.*;
 
-public class TruncateTypeStatement extends ODDLStatement {
+public class TruncateTypeStatement extends DDLStatement {
 
   protected Identifier typeName;
   protected boolean    polymorphic = false;

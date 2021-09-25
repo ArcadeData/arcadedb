@@ -22,7 +22,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.*;
 
-public class TruncateBucketStatement extends ODDLStatement {
+public class TruncateBucketStatement extends DDLStatement {
 
   public Identifier bucketName;
   public PInteger   bucketNumber;

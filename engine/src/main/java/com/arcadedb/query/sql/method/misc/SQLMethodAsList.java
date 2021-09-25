@@ -25,7 +25,7 @@ import java.util.*;
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLMethodAsList extends OAbstractSQLMethod {
+public class SQLMethodAsList extends AbstractSQLMethod {
 
   public static final String NAME = "aslist";
 
