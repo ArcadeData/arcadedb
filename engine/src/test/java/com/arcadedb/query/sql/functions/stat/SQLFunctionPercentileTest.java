@@ -22,6 +22,9 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+
 
 public class SQLFunctionPercentileTest {
 
@@ -36,19 +39,19 @@ public class SQLFunctionPercentileTest {
   @Test
   public void testEmpty() {
     Object result = percentile.getResult();
-    Assertions.assertNull(result);
+    assertNull(result);
   }
 
   @Test
   public void testSingleValueLower() {
     percentile.execute(null, null, null, new Object[] {10, .25}, null);
-    Assertions.assertEquals(10, percentile.getResult());
+    assertEquals(10, percentile.getResult());
   }
 
   @Test
   public void testSingleValueUpper() {
     percentile.execute(null, null, null, new Object[] {10, .75}, null);
-    Assertions.assertEquals(10, percentile.getResult());
+    assertEquals(10, percentile.getResult());
   }
 
   @Test
@@ -60,7 +63,7 @@ public class SQLFunctionPercentileTest {
     }
 
     Object result = percentile.getResult();
-    Assertions.assertEquals(3.0, result);
+    assertEquals(3.0, result);
   }
 
   @Test
@@ -72,7 +75,7 @@ public class SQLFunctionPercentileTest {
     }
 
     Object result = percentile.getResult();
-    Assertions.assertEquals(3.0, result);
+    assertEquals(3.0, result);
   }
 
   @Test
@@ -84,7 +87,7 @@ public class SQLFunctionPercentileTest {
     }
 
     Object result = percentile.getResult();
-    Assertions.assertEquals(3.0, result);
+    assertEquals(3.0, result);
   }
 
   @Test
@@ -96,7 +99,7 @@ public class SQLFunctionPercentileTest {
     }
 
     Object result = percentile.getResult();
-    Assertions.assertEquals(1.5, result);
+    assertEquals(1.5, result);
   }
 
   @Test
@@ -108,7 +111,7 @@ public class SQLFunctionPercentileTest {
     }
 
     Object result = percentile.getResult();
-    Assertions.assertEquals(4.5, result);
+    assertEquals(4.5, result);
   }
 
   @Test
@@ -120,7 +123,7 @@ public class SQLFunctionPercentileTest {
     }
 
     List<Number> result = (List<Number>) percentile.getResult();
-    Assertions.assertEquals(1.5, result.get(0).doubleValue(), 0);
-    Assertions.assertEquals(4.5, result.get(1).doubleValue(), 0);
+    assertEquals(1.5, result.get(0).doubleValue(), 0);
+    assertEquals(4.5, result.get(1).doubleValue(), 0);
   }
 }
