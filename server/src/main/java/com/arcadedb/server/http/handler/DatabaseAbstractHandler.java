@@ -16,22 +16,24 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseContext;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.server.http.HttpServer;
-import com.arcadedb.server.security.ServerSecurity;
+import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
-import java.util.Deque;
+import java.util.*;
 
 public abstract class DatabaseAbstractHandler extends AbstractHandler {
   public DatabaseAbstractHandler(final HttpServer httpServer) {
     super(httpServer);
   }
 
-  protected abstract void execute(HttpServerExchange exchange, ServerSecurity.ServerUser user, Database database) throws Exception;
+  protected abstract void execute(HttpServerExchange exchange, ServerSecurityUser user, Database database) throws Exception;
 
   @Override
-  public void execute(final HttpServerExchange exchange, ServerSecurity.ServerUser user) throws Exception {
-    final Database db;
+  public void execute(final HttpServerExchange exchange, ServerSecurityUser user) throws Exception {
+    final Database database;
     if (openDatabase()) {
       final Deque<String> databaseName = exchange.getQueryParameters().get("database");
       if (databaseName.isEmpty()) {
@@ -40,18 +42,20 @@ public abstract class DatabaseAbstractHandler extends AbstractHandler {
         return;
       }
 
-      db = httpServer.getServer().getDatabase(databaseName.getFirst());
-      db.rollbackAllNested();
+      database = httpServer.getServer().getDatabase(databaseName.getFirst());
+
+      DatabaseContext.INSTANCE.init((DatabaseInternal) database).setCurrentUser(user.getDatabaseUser(database));
+
     } else
-      db = null;
+      database = null;
 
     try {
 
-      execute(exchange, user, db);
+      execute(exchange, user, database);
 
     } finally {
-      if (db != null)
-        db.rollbackAllNested();
+      if (database != null)
+        database.rollbackAllNested();
     }
   }
 

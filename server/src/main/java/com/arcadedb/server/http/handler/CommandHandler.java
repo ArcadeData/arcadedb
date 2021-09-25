@@ -29,14 +29,14 @@ import com.arcadedb.serializer.JsonGraphSerializer;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.server.ServerMetrics;
 import com.arcadedb.server.http.HttpServer;
-import com.arcadedb.server.security.ServerSecurity;
+import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.IOException;
+import java.io.*;
 import java.util.*;
-import java.util.stream.Collectors;
+import java.util.stream.*;
 
 public class CommandHandler extends DatabaseAbstractHandler {
 
@@ -47,7 +47,7 @@ public class CommandHandler extends DatabaseAbstractHandler {
   }
 
   @Override
-  public void execute(final HttpServerExchange exchange, final ServerSecurity.ServerUser user, final Database database) throws IOException {
+  public void execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database) throws IOException {
 
     final String payload = parseRequestPayload(exchange);
     if (payload == null || payload.isEmpty()) {

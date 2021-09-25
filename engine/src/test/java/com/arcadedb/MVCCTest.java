@@ -16,6 +16,7 @@
 package com.arcadedb;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.TransactionContext;
@@ -31,12 +32,10 @@ import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.math.BigDecimal;
-import java.util.Date;
-import java.util.Random;
-import java.util.UUID;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.logging.Level;
+import java.math.*;
+import java.util.*;
+import java.util.concurrent.atomic.*;
+import java.util.logging.*;
 
 public class MVCCTest extends TestHelper {
   private static final int CYCLES      = 3;
@@ -79,7 +78,7 @@ public class MVCCTest extends TestHelper {
           database.async().transaction(new Database.TransactionScope() {
             @Override
             public void execute(Database database) {
-              final TransactionContext tx = (TransactionContext) database.getTransaction();
+              final TransactionContext tx = ((DatabaseInternal) database).getTransaction();
 
               Assertions.assertTrue(tx.getModifiedPages() == 0);
               Assertions.assertNull(tx.getPageCounter(1));

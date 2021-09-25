@@ -17,10 +17,10 @@ package com.arcadedb.server.http.handler;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.server.http.HttpServer;
-import com.arcadedb.server.security.ServerSecurity;
+import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
-import java.util.Deque;
+import java.util.*;
 
 public class CreateDatabaseHandler extends DatabaseAbstractHandler {
   public CreateDatabaseHandler(final HttpServer httpServer) {
@@ -33,7 +33,7 @@ public class CreateDatabaseHandler extends DatabaseAbstractHandler {
   }
 
   @Override
-  public void execute(final HttpServerExchange exchange, ServerSecurity.ServerUser user, final Database database) {
+  public void execute(final HttpServerExchange exchange, ServerSecurityUser user, final Database database) {
     final Deque<String> databaseName = exchange.getQueryParameters().get("database");
     if (databaseName.isEmpty()) {
       exchange.setStatusCode(400);

@@ -17,15 +17,15 @@ package com.arcadedb;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 
-import java.io.File;
-import java.util.Random;
-import java.util.UUID;
+import java.io.*;
+import java.util.*;
 
 public abstract class TestHelper {
   protected final DatabaseFactory factory;
@@ -71,15 +71,15 @@ public abstract class TestHelper {
   }
 
   public static DocumentType createRandomType(final Database database) {
-    return database.getSchema().createDocumentType("RandomeType" + new Random().nextInt(100_000));
+    return database.getSchema().createDocumentType("RandomType" + new Random().nextInt(100_000));
   }
 
-  public static void executeInNewDatabase(final String testName, final DatabaseTest<Database> callback) throws Exception {
+  public static void executeInNewDatabase(final String testName, final DatabaseTest<DatabaseInternal> callback) throws Exception {
     try (final DatabaseFactory factory = new DatabaseFactory(testName)) {
       if (factory.exists())
         factory.open().drop();
 
-      final Database database = factory.create();
+      final DatabaseInternal database = (DatabaseInternal) factory.create();
       try {
         callback.call(database);
       } finally {

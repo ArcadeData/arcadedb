@@ -31,8 +31,11 @@ import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.log.ServerLogger;
 import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityException;
+import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.CallableNoReturn;
 import com.arcadedb.utility.FileUtils;
+import org.json.JSONArray;
+import org.json.JSONObject;
 
 import java.io.*;
 import java.util.*;
@@ -118,6 +121,10 @@ public class ArcadeDBServer implements ServerLogger {
     security.startService();
 
     loadDatabases();
+
+    security.loadUsers();
+
+    loadDefaultDatabases();
 
     httpServer = new HttpServer(this);
 
@@ -384,6 +391,8 @@ public class ArcadeDBServer implements ServerLogger {
       final DatabaseFactory factory = new DatabaseFactory(
           configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + "/" + databaseName).setAutoTransaction(true);
 
+      factory.setSecurity(getSecurity());
+
       if (createIfNotExists)
         db = (DatabaseInternal) (factory.exists() ? factory.open() : factory.create());
       else
@@ -410,7 +419,9 @@ public class ArcadeDBServer implements ServerLogger {
       for (File f : databaseDirectories)
         getDatabase(f.getName());
     }
+  }
 
+  private void loadDefaultDatabases() {
     final String defaultDatabases = configuration.getValueAsString(GlobalConfiguration.SERVER_DEFAULT_DATABASES);
     if (defaultDatabases != null && !defaultDatabases.isEmpty()) {
       // CREATE DEFAULT DATABASES
@@ -444,15 +455,11 @@ public class ArcadeDBServer implements ServerLogger {
             if (security.existsUser(userName)) {
               // EXISTING USER: CHECK CREDENTIALS
               try {
-                final ServerSecurity.ServerUser user = security.authenticate(userName, userPassword);
-                if (!user.databaseBlackList && !user.databases.contains(dbName)) {
+                final ServerSecurityUser user = security.authenticate(userName, userPassword, dbName);
+                if (!user.getDatabases().contains(dbName)) {
                   // UPDATE DB LIST
-                  user.databases.add(dbName);
-                  try {
-                    security.saveConfiguration();
-                  } catch (IOException e) {
-                    LogManager.instance().log(this, Level.SEVERE, "Cannot create database '%s' because security configuration cannot be saved", e, dbName);
-                  }
+                  user.addDatabase(dbName, new String[] {});
+                  security.saveUsers();
                 }
 
               } catch (ServerSecurityException e) {
@@ -462,21 +469,18 @@ public class ArcadeDBServer implements ServerLogger {
               }
             } else {
               // CREATE A NEW USER
-              try {
-                security.createUser(userName, userPassword, false, Collections.singletonList(dbName));
-
-              } catch (IOException e) {
-                LogManager.instance().log(this, Level.SEVERE, "Cannot create database '%s' because the new user '%s' cannot be saved", e, dbName, userName);
-              }
+              security.createUser(new JSONObject().put("name", userName)//
+                  .put("password", security.encodePassword(userPassword))//
+                  .put("databases", new JSONObject().put(dbName, new JSONArray())));
             }
           }
         }
 
-        // CREATE THE DATABASE
         Database database;
         if (existsDatabase(dbName)) {
           database = getDatabase(dbName);
         } else {
+          // CREATE THE DATABASE
           LogManager.instance().log(this, Level.INFO, "Creating default database '%s'...", null, dbName);
           database = createDatabase(dbName);
         }
@@ -531,13 +535,4 @@ public class ArcadeDBServer implements ServerLogger {
     }
   }
 
-//
-//  private void saveConfiguration() {
-//    final File file = new File(CONFIG_SERVER_CONFIGURATION_FILENAME);
-//    try {
-//      FileUtils.writeFile(file, configuration.toJSON());
-//    } catch (IOException e) {
-//      LogManager.instance().log(this, Level.SEVERE, "Error on saving configuration to file '%s'", e, file);
-//    }
-//  }
 }

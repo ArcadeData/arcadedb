@@ -16,15 +16,15 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.server.ServerMetrics;
 import com.arcadedb.server.http.HttpServer;
-import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.server.security.ServerSecurity;
+import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
-import java.io.UnsupportedEncodingException;
-import java.net.URLDecoder;
-import java.util.Deque;
+import java.io.*;
+import java.net.*;
+import java.util.*;
 
 public class GetQueryHandler extends DatabaseAbstractHandler {
   public GetQueryHandler(final HttpServer httpServer) {
@@ -32,7 +32,7 @@ public class GetQueryHandler extends DatabaseAbstractHandler {
   }
 
   @Override
-  public void execute(final HttpServerExchange exchange, ServerSecurity.ServerUser user, final Database database) throws UnsupportedEncodingException {
+  public void execute(final HttpServerExchange exchange, ServerSecurityUser user, final Database database) throws UnsupportedEncodingException {
     final Deque<String> text = exchange.getQueryParameters().get("command");
     if (text == null || text.isEmpty()) {
       exchange.setStatusCode(400);

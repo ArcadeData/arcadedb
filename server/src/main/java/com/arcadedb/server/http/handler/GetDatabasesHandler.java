@@ -16,10 +16,12 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.server.http.HttpServer;
-import com.arcadedb.server.security.ServerSecurity;
+import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 import org.json.JSONArray;
 import org.json.JSONObject;
+
+import java.util.*;
 
 public class GetDatabasesHandler extends AbstractHandler {
   public GetDatabasesHandler(final HttpServer httpServer) {
@@ -27,8 +29,14 @@ public class GetDatabasesHandler extends AbstractHandler {
   }
 
   @Override
-  protected void execute(final HttpServerExchange exchange, final ServerSecurity.ServerUser user) throws Exception {
-    final JSONObject result = createResult(user).put("result", new JSONArray(httpServer.getServer().getSecurity().userDatabases(user)));
+  protected void execute(final HttpServerExchange exchange, final ServerSecurityUser user) throws Exception {
+    final Set<String> installedDatabases = new HashSet<>(httpServer.getServer().getDatabaseNames());
+    final Set<String> allowedDatabases = user.getDatabases();
+
+    if (!allowedDatabases.contains("*"))
+      installedDatabases.retainAll(allowedDatabases);
+
+    final JSONObject result = createResult(user).put("result", new JSONArray(installedDatabases));
 
     exchange.setStatusCode(200);
     exchange.getResponseSender().send(result.toString());

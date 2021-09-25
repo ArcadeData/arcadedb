@@ -20,13 +20,15 @@ import com.arcadedb.engine.PageManager;
 import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.WALFileFactory;
 import com.arcadedb.graph.GraphEngine;
-import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.query.sql.parser.ExecutionPlanCache;
 import com.arcadedb.query.sql.parser.StatementCache;
+import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityManager;
+import com.arcadedb.serializer.BinarySerializer;
 
-import java.io.IOException;
-import java.util.Map;
-import java.util.concurrent.Callable;
+import java.io.*;
+import java.util.*;
+import java.util.concurrent.*;
 
 /**
  * Internal API, do not use as an end user.
@@ -36,7 +38,6 @@ public interface DatabaseInternal extends Database {
     TX_AFTER_WAL_WRITE, DB_NOT_CLOSED
   }
 
-  @Override
   TransactionContext getTransaction();
 
   MutableEmbeddedDocument newEmbeddedDocument(EmbeddedModifier modifier, String typeName);
@@ -56,6 +57,10 @@ public interface DatabaseInternal extends Database {
   PageManager getPageManager();
 
   DatabaseInternal getWrappedDatabaseInstance();
+
+  void checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS access);
+
+  void checkPermissionsOnFile(int fileId, SecurityDatabaseUser.ACCESS access);
 
   void registerCallback(CALLBACK_EVENT event, Callable<Void> callback);
 
@@ -88,4 +93,8 @@ public interface DatabaseInternal extends Database {
   ExecutionPlanCache getExecutionPlanCache();
 
   int getEdgeListSize(int previousSize);
+
+  SecurityManager getSecurity();
+
+  void setSecurity(SecurityManager security);
 }

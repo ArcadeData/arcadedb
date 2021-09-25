@@ -16,11 +16,9 @@
 package com.arcadedb.database;
 
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.security.SecurityDatabaseUser;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 /**
  * Thread local to store transaction data.
@@ -48,7 +46,11 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
           // ROLLBACK PREVIOUS TXS
           while (!current.transactions.isEmpty()) {
             final Transaction tx = current.transactions.remove(current.transactions.size() - 1);
-            tx.rollback();
+            try {
+              tx.rollback();
+            } catch (Exception e) {
+              // IGNORE ANY ERROR DURING ROLLBACK
+            }
           }
         }
       }
@@ -73,11 +75,20 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
   }
 
   public static class DatabaseContextTL {
-    public final List<TransactionContext> transactions = new ArrayList<>(1);
+    public final List<TransactionContext> transactions = new ArrayList<>(3);
     public       boolean                  asyncMode    = false;
     private      Binary                   temporaryBuffer1;
     private      Binary                   temporaryBuffer2;
     private      int                      maxNested    = 3;
+    private      SecurityDatabaseUser     currentUser  = null;
+
+    public SecurityDatabaseUser getCurrentUser() {
+      return currentUser;
+    }
+
+    public void setCurrentUser(final SecurityDatabaseUser currentUser) {
+      this.currentUser = currentUser;
+    }
 
     public Binary getTemporaryBuffer1() {
       if (temporaryBuffer1 == null) {

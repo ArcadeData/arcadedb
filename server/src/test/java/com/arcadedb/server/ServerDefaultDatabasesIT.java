@@ -17,10 +17,11 @@ package com.arcadedb.server;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.server.security.ServerSecurityException;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
+import java.io.*;
 
 public class ServerDefaultDatabasesIT extends BaseGraphServerTest {
 
@@ -40,10 +41,35 @@ public class ServerDefaultDatabasesIT extends BaseGraphServerTest {
 
   @Test
   public void checkDefaultDatabases() throws IOException {
-    getServer(0).getSecurity().authenticate("elon", "musk");
-    getServer(0).getSecurity().authenticate("Jay", "Miner");
-    getServer(0).getSecurity().authenticate("Jack", "Tramiel");
-    getServer(0).getSecurity().authenticate("root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+    getServer(0).getSecurity().authenticate("elon", "musk", null);
+    getServer(0).getSecurity().authenticate("elon", "musk", "Universe");
+    getServer(0).getSecurity().authenticate("Jay", "Miner", null);
+    getServer(0).getSecurity().authenticate("Jay", "Miner", "Amiga");
+    getServer(0).getSecurity().authenticate("Jack", "Tramiel", null);
+    getServer(0).getSecurity().authenticate("Jack", "Tramiel", "Amiga");
+    getServer(0).getSecurity().authenticate("root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS, null);
+    getServer(0).getSecurity().authenticate("root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS, "Amiga");
+
+    try {
+      getServer(0).getSecurity().authenticate("elon", "musk", "Amiga");
+      Assertions.fail();
+    } catch (ServerSecurityException e) {
+      // EXPECTED
+    }
+
+    try {
+      getServer(0).getSecurity().authenticate("Jack", "Tramiel", "Universe");
+      Assertions.fail();
+    } catch (ServerSecurityException e) {
+      // EXPECTED
+    }
+
+    try {
+      getServer(0).getSecurity().authenticate("Jack", "Tramiel", "RandomName");
+      Assertions.fail();
+    } catch (ServerSecurityException e) {
+      // EXPECTED
+    }
 
     Assertions.assertTrue(getServer(0).existsDatabase("Universe"));
     Assertions.assertTrue(getServer(0).existsDatabase("Amiga"));

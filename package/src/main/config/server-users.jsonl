@@ -1,0 +1,12 @@
+{
+  "root": {
+    "access": [
+      "updateSecurity"
+    ],
+    "databases": {
+      "*": [
+        "admin"
+      ]
+    }
+  }
+}

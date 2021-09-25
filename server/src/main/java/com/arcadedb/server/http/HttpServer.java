@@ -21,14 +21,24 @@ import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ServerPlugin;
-import com.arcadedb.server.http.handler.*;
+import com.arcadedb.server.http.handler.CommandHandler;
+import com.arcadedb.server.http.handler.CreateDatabaseHandler;
+import com.arcadedb.server.http.handler.CreateDocumentHandler;
+import com.arcadedb.server.http.handler.DropDatabaseHandler;
+import com.arcadedb.server.http.handler.DynamicContentHandler;
+import com.arcadedb.server.http.handler.ExistsDatabaseHandler;
+import com.arcadedb.server.http.handler.GetDatabasesHandler;
+import com.arcadedb.server.http.handler.GetDocumentHandler;
+import com.arcadedb.server.http.handler.GetQueryHandler;
+import com.arcadedb.server.http.handler.PostQueryHandler;
+import com.arcadedb.server.http.handler.ServersHandler;
 import io.undertow.Handlers;
 import io.undertow.Undertow;
 import io.undertow.server.RoutingHandler;
 import io.undertow.server.handlers.PathHandler;
 
-import java.net.BindException;
-import java.util.logging.Level;
+import java.net.*;
+import java.util.logging.*;
 
 import static io.undertow.UndertowOptions.SHUTDOWN_TIMEOUT;
 

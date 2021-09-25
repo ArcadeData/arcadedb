@@ -21,7 +21,7 @@ import com.arcadedb.database.Database;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
+import java.io.*;
 
 public class ServerImportDatabaseIT extends BaseGraphServerTest {
 
@@ -42,7 +42,7 @@ public class ServerImportDatabaseIT extends BaseGraphServerTest {
   @Test
   public void checkDefaultDatabases() throws IOException {
     deleteAllDatabases();
-    getServer(0).getSecurity().authenticate("elon", "musk");
+    getServer(0).getSecurity().authenticate("elon", "musk", "Movies");
     Database database = getServer(0).getDatabase("Movies");
     Assertions.assertEquals(500, database.countType("Person", true));
     deleteAllDatabases();

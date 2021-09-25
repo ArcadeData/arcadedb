@@ -20,6 +20,7 @@ import com.arcadedb.database.async.DatabaseAsyncExecutor;
 import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.database.async.OkCallback;
 import com.arcadedb.engine.PaginatedFile;
+import com.arcadedb.engine.WALFile;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
@@ -27,9 +28,8 @@ import com.arcadedb.index.IndexCursor;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 
-import java.util.Iterator;
-import java.util.Map;
-import java.util.concurrent.Callable;
+import java.util.*;
+import java.util.concurrent.*;
 
 public interface Database extends AutoCloseable {
   ContextConfiguration getConfiguration();
@@ -49,7 +49,11 @@ public interface Database extends AutoCloseable {
 
   String getDatabasePath();
 
-  Transaction getTransaction();
+  /**
+   * Return the current username if the database supports security. If used embedded, ArcadeDB does not provide a security model. If you want to use database
+   * security, use ArcadeDB server.
+   */
+  String getCurrentUserName();
 
   boolean isTransactionActive();
 
@@ -182,6 +186,14 @@ public interface Database extends AutoCloseable {
   void setReadYourWrites(boolean value);
 
   void setEdgeListSize(int size);
+
+  Database setUseWAL(boolean useWAL);
+
+  Database setWALFlush(WALFile.FLUSH_TYPE flush);
+
+  boolean isAsyncFlush();
+
+  Database setAsyncFlush(boolean value);
 
   interface TransactionScope {
     void execute(Database db);

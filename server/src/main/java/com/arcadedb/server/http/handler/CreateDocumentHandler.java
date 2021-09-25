@@ -18,7 +18,7 @@ package com.arcadedb.server.http.handler;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.server.http.HttpServer;
-import com.arcadedb.server.security.ServerSecurity;
+import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 import org.json.JSONObject;
 
@@ -30,7 +30,7 @@ public class CreateDocumentHandler extends DatabaseAbstractHandler {
   }
 
   @Override
-  public void execute(final HttpServerExchange exchange, ServerSecurity.ServerUser user, final Database database) throws IOException {
+  public void execute(final HttpServerExchange exchange, ServerSecurityUser user, final Database database) throws IOException {
     final String payload = parseRequestPayload(exchange);
 
     final JSONObject json = new JSONObject(payload);

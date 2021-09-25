@@ -18,6 +18,7 @@ package com.arcadedb.server.ha;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
+import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.DocumentCallback;
@@ -39,6 +40,7 @@ import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.engine.TransactionManager;
+import com.arcadedb.engine.WALFile;
 import com.arcadedb.engine.WALFileFactory;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.NeedRetryException;
@@ -52,6 +54,8 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.ExecutionPlanCache;
 import com.arcadedb.query.sql.parser.StatementCache;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.message.CommandForwardRequest;
@@ -178,6 +182,16 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
+  public void checkPermissionsOnDatabase(final SecurityDatabaseUser.DATABASE_ACCESS access) {
+    proxied.checkPermissionsOnDatabase(access);
+  }
+
+  @Override
+  public void checkPermissionsOnFile(final int fileId, final SecurityDatabaseUser.ACCESS access) {
+    proxied.checkPermissionsOnFile(fileId, access);
+  }
+
+  @Override
   public Map<String, Object> getStats() {
     return proxied.getStats();
   }
@@ -283,6 +297,16 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
+  public SecurityManager getSecurity() {
+    return proxied.getSecurity();
+  }
+
+  @Override
+  public void setSecurity(final SecurityManager security) {
+    proxied.setSecurity(security);
+  }
+
+  @Override
   public String getName() {
     return proxied.getName();
   }
@@ -300,6 +324,11 @@ public class ReplicatedDatabase implements DatabaseInternal {
   @Override
   public String getDatabasePath() {
     return proxied.getDatabasePath();
+  }
+
+  @Override
+  public String getCurrentUserName() {
+    return proxied.getCurrentUserName();
   }
 
   @Override
@@ -556,6 +585,26 @@ public class ReplicatedDatabase implements DatabaseInternal {
   @Override
   public void setEdgeListSize(final int size) {
     proxied.setEdgeListSize(size);
+  }
+
+  @Override
+  public Database setUseWAL(final boolean useWAL) {
+    return proxied.setUseWAL(useWAL);
+  }
+
+  @Override
+  public Database setWALFlush(final WALFile.FLUSH_TYPE flush) {
+    return proxied.setWALFlush(flush);
+  }
+
+  @Override
+  public boolean isAsyncFlush() {
+    return proxied.isAsyncFlush();
+  }
+
+  @Override
+  public Database setAsyncFlush(final boolean value) {
+    return proxied.setAsyncFlush(value);
   }
 
   @Override
