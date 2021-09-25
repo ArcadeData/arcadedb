@@ -4,6 +4,8 @@ import com.arcadedb.query.sql.executor.SQLMethod;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.Date;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 class SQLMethodAsLongTest {
@@ -39,6 +41,14 @@ class SQLMethodAsLongTest {
         Object result = method.execute(null, null, null, 10, null);
         assertThat(result).isInstanceOf(Long.class);
         assertThat(result).isEqualTo(10l);
+    }
+
+    @Test
+    void testDateToLong() {
+        Date now = new Date();
+        Object result = method.execute(null, null, null, now, null);
+        assertThat(result).isInstanceOf(Long.class);
+        assertThat(result).isEqualTo(now.getTime());
     }
 
 }
