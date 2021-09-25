@@ -331,10 +331,18 @@ function executeCommandGraph(){
     globalResultset = data.result;
     globalCy = null;
 
+    let activeTab = $("#tabs-command .active").attr("id");
+
     if( data.result.vertices.length == 0 && data.result.records.length > 0 ){
-      globalActivateTab("tab-table");
+      if( activeTab == "tab-table-sel" )
+        renderTable();
+      else
+        globalActivateTab("tab-table");
     } else {
-      globalActivateTab("tab-graph");
+      if( activeTab == "tab-graph-sel" )
+        renderGraph();
+      else
+        globalActivateTab("tab-graph");
     }
 
     // FORCE RESET OF THE SEARCH FIELD
