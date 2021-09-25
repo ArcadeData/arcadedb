@@ -34,7 +34,7 @@ import java.util.*;
 import java.util.concurrent.atomic.*;
 import java.util.stream.*;
 
-public class CreateIndexStatement extends ODDLStatement {
+public class CreateIndexStatement extends DDLStatement {
 
   protected IndexName                          name;
   protected Identifier                         typeName;

@@ -17,7 +17,7 @@ package com.arcadedb.query.sql.function.text;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.method.misc.OAbstractSQLMethod;
+import com.arcadedb.query.sql.method.misc.AbstractSQLMethod;
 
 /**
  * Returns the first characters from the end of the string.
@@ -25,7 +25,7 @@ import com.arcadedb.query.sql.method.misc.OAbstractSQLMethod;
  * @author Johann Sorel (Geomatys)
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLMethodRight extends OAbstractSQLMethod {
+public class SQLMethodRight extends AbstractSQLMethod {
 
   public static final String NAME = "right";
 

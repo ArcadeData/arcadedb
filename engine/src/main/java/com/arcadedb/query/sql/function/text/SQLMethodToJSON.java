@@ -19,7 +19,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
-import com.arcadedb.query.sql.method.misc.OAbstractSQLMethod;
+import com.arcadedb.query.sql.method.misc.AbstractSQLMethod;
 import org.json.JSONObject;
 
 import java.util.Map;
@@ -30,7 +30,7 @@ import java.util.Map;
  * @author Johann Sorel (Geomatys)
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLMethodToJSON extends OAbstractSQLMethod {
+public class SQLMethodToJSON extends AbstractSQLMethod {
 
   public static final String NAME = "tojson";
 

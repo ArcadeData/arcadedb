@@ -26,7 +26,7 @@ import java.util.*;
  * @author Johann Sorel (Geomatys)
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLMethodFormat extends OAbstractSQLMethod {
+public class SQLMethodFormat extends AbstractSQLMethod {
 
   public static final String NAME = "format";
 

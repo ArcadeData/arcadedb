@@ -30,7 +30,7 @@ public class SqlParserDefaultVisitor implements SqlParserVisitor{
   public Object visit(parse node, Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(parseScript node, Object data){
+  public Object visit(ParseScript node, Object data){
     return defaultVisit(node, data);
   }
   public Object visit(PString node, Object data){

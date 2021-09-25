@@ -153,7 +153,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
   private void updateIndexStats() {
     //stats
-    OQueryStats stats = OQueryStats.get(ctx.getDatabase());
+    QueryStats stats = QueryStats.get(ctx.getDatabase());
     if (index == null) {
       return;//this could happen, if not inited yet
     }

@@ -24,7 +24,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLMethodType extends OAbstractSQLMethod {
+public class SQLMethodType extends AbstractSQLMethod {
 
   public static final String NAME = "type";
 

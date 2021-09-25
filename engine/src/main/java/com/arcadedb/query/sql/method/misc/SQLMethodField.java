@@ -23,7 +23,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
  * @author Johann Sorel (Geomatys)
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLMethodField extends OAbstractSQLMethod {
+public class SQLMethodField extends AbstractSQLMethod {
 
   public static final String NAME = "field";
 

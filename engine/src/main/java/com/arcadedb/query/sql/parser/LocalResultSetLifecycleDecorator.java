@@ -17,7 +17,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.InternalResultSet;
-import com.arcadedb.query.sql.executor.OQueryLifecycleListener;
+import com.arcadedb.query.sql.executor.QueryLifecycleListener;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
@@ -32,7 +32,7 @@ public class LocalResultSetLifecycleDecorator implements ResultSet {
   private static final AtomicLong counter = new AtomicLong(0);
 
   private final ResultSet                     entity;
-  private final List<OQueryLifecycleListener> lifecycleListeners = new ArrayList<>();
+  private final List<QueryLifecycleListener> lifecycleListeners = new ArrayList<>();
   private final String                        queryId;
 
   private boolean hasNextPage;
@@ -47,7 +47,7 @@ public class LocalResultSetLifecycleDecorator implements ResultSet {
     this.queryId = queryId;
   }
 
-  public void addLifecycleListener(OQueryLifecycleListener db) {
+  public void addLifecycleListener(QueryLifecycleListener db) {
     this.lifecycleListeners.add(db);
   }
 

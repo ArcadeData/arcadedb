@@ -19,7 +19,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Type;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.method.misc.OAbstractSQLMethod;
+import com.arcadedb.query.sql.method.misc.AbstractSQLMethod;
 
 import java.util.Locale;
 import java.util.logging.Level;
@@ -29,7 +29,7 @@ import java.util.logging.Level;
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLMethodConvert extends OAbstractSQLMethod {
+public class SQLMethodConvert extends AbstractSQLMethod {
 
   public static final String NAME = "convert";
 

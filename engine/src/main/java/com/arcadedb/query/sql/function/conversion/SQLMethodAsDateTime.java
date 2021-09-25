@@ -18,7 +18,7 @@ package com.arcadedb.query.sql.function.conversion;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.method.misc.OAbstractSQLMethod;
+import com.arcadedb.query.sql.method.misc.AbstractSQLMethod;
 
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
@@ -31,7 +31,7 @@ import java.util.logging.Level;
  * @author Johann Sorel (Geomatys)
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLMethodAsDateTime extends OAbstractSQLMethod {
+public class SQLMethodAsDateTime extends AbstractSQLMethod {
 
   public static final String NAME = "asdatetime";
 

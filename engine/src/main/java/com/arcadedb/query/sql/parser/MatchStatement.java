@@ -24,7 +24,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalExecutionPlan;
-import com.arcadedb.query.sql.executor.OMatchExecutionPlanner;
+import com.arcadedb.query.sql.executor.MatchExecutionPlanner;
 import com.arcadedb.query.sql.executor.PatternEdge;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
@@ -160,7 +160,7 @@ public class MatchStatement extends Statement {
   }
 
   public InternalExecutionPlan createExecutionPlan(CommandContext ctx, boolean enableProfiling) {
-    OMatchExecutionPlanner planner = new OMatchExecutionPlanner(this);
+    MatchExecutionPlanner planner = new MatchExecutionPlanner(this);
     return planner.createExecutionPlan(ctx, enableProfiling);
   }
 

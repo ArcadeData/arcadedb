@@ -29,7 +29,7 @@ import java.util.Map;
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLMethodAsMap extends OAbstractSQLMethod {
+public class SQLMethodAsMap extends AbstractSQLMethod {
 
   public static final String NAME = "asmap";
 

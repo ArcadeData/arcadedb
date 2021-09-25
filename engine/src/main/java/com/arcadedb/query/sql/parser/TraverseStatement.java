@@ -22,7 +22,7 @@ import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalExecutionPlan;
-import com.arcadedb.query.sql.executor.OTraverseExecutionPlanner;
+import com.arcadedb.query.sql.executor.TraverseExecutionPlanner;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.*;
@@ -103,7 +103,7 @@ public class TraverseStatement extends Statement {
   }
 
   public InternalExecutionPlan createExecutionPlan(CommandContext ctx, boolean enableProfiling) {
-    OTraverseExecutionPlanner planner = new OTraverseExecutionPlanner(this);
+    TraverseExecutionPlanner planner = new TraverseExecutionPlanner(this);
     return planner.createExecutionPlan(ctx, enableProfiling);
   }
 

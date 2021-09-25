@@ -18,10 +18,9 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.OUpdateExecutionPlanner;
+import com.arcadedb.query.sql.executor.UpdateExecutionPlanner;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.UpdateExecutionPlan;
 
@@ -167,7 +166,7 @@ public class UpdateStatement extends Statement {
   }
 
   public UpdateExecutionPlan createExecutionPlan(CommandContext ctx, boolean enableProfiling) {
-    OUpdateExecutionPlanner planner = new OUpdateExecutionPlanner(this);
+    UpdateExecutionPlanner planner = new UpdateExecutionPlanner(this);
     return planner.createExecutionPlan(ctx, enableProfiling);
   }
 

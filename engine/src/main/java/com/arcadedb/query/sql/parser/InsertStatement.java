@@ -21,7 +21,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InsertExecutionPlan;
-import com.arcadedb.query.sql.executor.OInsertExecutionPlanner;
+import com.arcadedb.query.sql.executor.InsertExecutionPlanner;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.*;
@@ -138,7 +138,7 @@ public class InsertStatement extends Statement {
   }
 
   public InsertExecutionPlan createExecutionPlan(CommandContext ctx, boolean enableProfiling) {
-    OInsertExecutionPlanner planner = new OInsertExecutionPlanner(this);
+    InsertExecutionPlanner planner = new InsertExecutionPlanner(this);
     return planner.createExecutionPlan(ctx, enableProfiling);
   }
 

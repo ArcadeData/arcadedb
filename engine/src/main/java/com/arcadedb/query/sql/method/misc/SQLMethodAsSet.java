@@ -25,7 +25,7 @@ import java.util.*;
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLMethodAsSet extends OAbstractSQLMethod {
+public class SQLMethodAsSet extends AbstractSQLMethod {
 
   public static final String NAME = "asset";
 

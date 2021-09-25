@@ -27,7 +27,7 @@ import com.arcadedb.schema.DocumentType;
 import java.util.*;
 import java.util.stream.*;
 
-public class AlterTypeStatement extends ODDLStatement {
+public class AlterTypeStatement extends DDLStatement {
 
   /**
    * the name of the class

@@ -24,7 +24,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.AggregationContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.FunctionAggregationContext;
-import com.arcadedb.query.sql.executor.OIndexableSQLFunction;
+import com.arcadedb.query.sql.executor.IndexableSQLFunction;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.SQLEngine;
@@ -156,7 +156,7 @@ public class FunctionCall extends SimpleNode {
 
   public boolean isIndexedFunctionCall() {
     SQLFunction function = SQLEngine.getInstance().getFunction(name.getStringValue());
-    return (function instanceof OIndexableSQLFunction);
+    return (function instanceof IndexableSQLFunction);
   }
 
   /**
@@ -172,8 +172,8 @@ public class FunctionCall extends SimpleNode {
   public Iterable<Record> executeIndexedFunction(FromClause target, CommandContext ctx, BinaryCompareOperator operator,
       Object rightValue) {
     SQLFunction function = SQLEngine.getInstance().getFunction(name.getStringValue());
-    if (function instanceof OIndexableSQLFunction) {
-      return ((OIndexableSQLFunction) function)
+    if (function instanceof IndexableSQLFunction) {
+      return ((IndexableSQLFunction) function)
           .searchFromTarget(target, operator, rightValue, ctx, this.getParams().toArray(new Expression[] {}));
     }
     return null;
@@ -189,8 +189,8 @@ public class FunctionCall extends SimpleNode {
    */
   public long estimateIndexedFunction(FromClause target, CommandContext ctx, BinaryCompareOperator operator, Object rightValue) {
     SQLFunction function = SQLEngine.getInstance().getFunction(name.getStringValue());
-    if (function instanceof OIndexableSQLFunction) {
-      return ((OIndexableSQLFunction) function)
+    if (function instanceof IndexableSQLFunction) {
+      return ((IndexableSQLFunction) function)
           .estimate(target, operator, rightValue, ctx, this.getParams().toArray(new Expression[] {}));
     }
     return -1;
@@ -210,8 +210,8 @@ public class FunctionCall extends SimpleNode {
   public boolean canExecuteIndexedFunctionWithoutIndex(FromClause target, CommandContext context, BinaryCompareOperator operator,
       Object right) {
     SQLFunction function = SQLEngine.getInstance().getFunction(name.getStringValue());
-    if (function instanceof OIndexableSQLFunction) {
-      return ((OIndexableSQLFunction) function)
+    if (function instanceof IndexableSQLFunction) {
+      return ((IndexableSQLFunction) function)
           .canExecuteInline(target, operator, right, context, this.getParams().toArray(new Expression[] {}));
     }
     return false;
@@ -230,8 +230,8 @@ public class FunctionCall extends SimpleNode {
   public boolean allowsIndexedFunctionExecutionOnTarget(FromClause target, CommandContext context,
       BinaryCompareOperator operator, Object right) {
     SQLFunction function = SQLEngine.getInstance().getFunction(name.getStringValue());
-    if (function instanceof OIndexableSQLFunction) {
-      return ((OIndexableSQLFunction) function)
+    if (function instanceof IndexableSQLFunction) {
+      return ((IndexableSQLFunction) function)
           .allowsIndexedExecution(target, operator, right, context, this.getParams().toArray(new Expression[] {}));
     }
     return false;
@@ -250,8 +250,8 @@ public class FunctionCall extends SimpleNode {
   public boolean executeIndexedFunctionAfterIndexSearch(FromClause target, CommandContext context,
       BinaryCompareOperator operator, Object right) {
     SQLFunction function = SQLEngine.getInstance().getFunction(name.getStringValue());
-    if (function instanceof OIndexableSQLFunction) {
-      return ((OIndexableSQLFunction) function)
+    if (function instanceof IndexableSQLFunction) {
+      return ((IndexableSQLFunction) function)
           .shouldExecuteAfterSearch(target, operator, right, context, this.getParams().toArray(new Expression[] {}));
     }
     return false;
