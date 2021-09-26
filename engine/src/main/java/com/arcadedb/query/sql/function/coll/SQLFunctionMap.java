@@ -39,7 +39,7 @@ public class SQLFunctionMap extends SQLFunctionMultiValueAbstract<Map<Object, Ob
 
     if (iParams.length > 2)
       // IN LINE MODE
-      context = new HashMap<Object, Object>();
+      context = new HashMap<>();
 
     if (iParams.length == 1) {
       if (iParams[0] == null)
@@ -47,8 +47,8 @@ public class SQLFunctionMap extends SQLFunctionMultiValueAbstract<Map<Object, Ob
 
       if (iParams[0] instanceof Map<?, ?>) {
         if (context == null)
-          // AGGREGATION MODE (STATEFULL)
-          context = new HashMap<Object, Object>();
+          // AGGREGATION MODE (STATEFUL)
+          context = new HashMap<>();
 
         // INSERT EVERY SINGLE COLLECTION ITEM
         context.putAll((Map<Object, Object>) iParams[0]);
@@ -63,8 +63,8 @@ public class SQLFunctionMap extends SQLFunctionMultiValueAbstract<Map<Object, Ob
 
         if (value != null) {
           if (iParams.length <= 2 && context == null)
-            // AGGREGATION MODE (STATEFULL)
-            context = new HashMap<Object, Object>();
+            // AGGREGATION MODE (STATEFUL)
+            context = new HashMap<>();
 
           context.put(key, value);
         }

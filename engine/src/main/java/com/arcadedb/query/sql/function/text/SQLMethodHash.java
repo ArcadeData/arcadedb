@@ -62,12 +62,12 @@ public class SQLMethodHash extends AbstractSQLMethod {
     }
   }
 
-  public static String createHash(final String iInput, String iAlgorithm)
+  public static String createHash(final String iInput, String algorithm)
       throws NoSuchAlgorithmException, UnsupportedEncodingException {
-    if (iAlgorithm == null)
-      iAlgorithm = HASH_ALGORITHM;
+    if (algorithm == null)
+      algorithm = HASH_ALGORITHM;
 
-    final MessageDigest msgDigest = MessageDigest.getInstance(iAlgorithm);
+    final MessageDigest msgDigest = MessageDigest.getInstance(algorithm);
 
     return byteArrayToHexStr(msgDigest.digest(iInput.getBytes(StandardCharsets.UTF_8)));
   }

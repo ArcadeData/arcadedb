@@ -16,10 +16,10 @@
 package com.arcadedb.query.sql.function.math;
 
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.schema.Type;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.schema.Type;
 
-import java.util.Collection;
+import java.util.*;
 
 /**
  * Compute the maximum value for a field. Uses the context to save the last maximum number. When different Number class are used,
@@ -37,8 +37,7 @@ public class SQLFunctionMax extends SQLFunctionMathAbstract {
   }
 
   @SuppressWarnings({ "unchecked", "rawtypes" })
-  public Object execute( Object iThis, final Identifiable iCurrentRecord, Object iCurrentResult,
-      final Object[] iParams, CommandContext iContext) {
+  public Object execute(Object iThis, final Identifiable iCurrentRecord, Object iCurrentResult, final Object[] iParams, CommandContext iContext) {
 
     // calculate max value for current record
     // consider both collection of parameters and collection in each parameter
@@ -86,7 +85,7 @@ public class SQLFunctionMax extends SQLFunctionMathAbstract {
 
   public boolean aggregateResults() {
     // LET definitions (contain $current) does not require results aggregation
-    return ((configuredParameters.length == 1) && !configuredParameters[0].toString().contains("$current"));
+    return  configuredParameters != null && ((configuredParameters.length == 1) && !configuredParameters[0].toString().contains("$current"));
   }
 
   public String getSyntax() {

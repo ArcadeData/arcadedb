@@ -18,10 +18,7 @@ package com.arcadedb.query.sql.function;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.SQLFunction;
 
-import java.util.HashMap;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 
 /**
  * Created by frank on 25/05/2017.
@@ -36,6 +33,10 @@ public abstract class SQLFunctionFactoryTemplate implements SQLFunctionFactory {
 
   public void register(final SQLFunction function) {
     functions.put(function.getName().toLowerCase(Locale.ENGLISH), function);
+  }
+
+  public void unregister(final String name) {
+    functions.remove(name);
   }
 
   public void register(String name, Object function) {
