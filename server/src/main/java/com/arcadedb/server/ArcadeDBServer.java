@@ -440,17 +440,18 @@ public class ArcadeDBServer implements ServerLogger {
         final String[] credentialPairs = credentials.split(",");
         for (String credential : credentialPairs) {
 
-          final int passwordSeparator = credential.indexOf(":");
+          final String[] credentialParts = credential.split(":");
 
-          if (passwordSeparator < 0) {
+          if (credentialParts.length < 2) {
             if (!security.existsUser(credential)) {
               LogManager.instance()
                   .log(this, Level.WARNING, "Cannot create user '%s' to access database '%s' because the user does not exist", null, credential, dbName);
             }
             //FIXME: else if user exists, should we give him access to the dbName?
           } else {
-            final String userName = credential.substring(0, passwordSeparator);
-            final String userPassword = credential.substring(passwordSeparator + 1);
+            final String userName = credentialParts[0];
+            final String userPassword = credentialParts[1];
+            final String userRole = credentialParts.length > 2 ? credentialParts[2] : null;
 
             if (security.existsUser(userName)) {
               // EXISTING USER: CHECK CREDENTIALS
@@ -458,7 +459,7 @@ public class ArcadeDBServer implements ServerLogger {
                 final ServerSecurityUser user = security.authenticate(userName, userPassword, dbName);
                 if (!user.getDatabases().contains(dbName)) {
                   // UPDATE DB LIST
-                  user.addDatabase(dbName, new String[] {});
+                  user.addDatabase(dbName, new String[] { userRole });
                   security.saveUsers();
                 }
 

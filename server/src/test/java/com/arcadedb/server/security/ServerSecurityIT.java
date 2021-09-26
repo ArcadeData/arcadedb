@@ -17,8 +17,11 @@ package com.arcadedb.server.security;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.utility.FileUtils;
 import org.json.JSONObject;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
@@ -31,16 +34,13 @@ public class ServerSecurityIT {
 
   @Test
   void shouldCreateDefaultRootUserAndPersistsSecurityConfigurationFromSetting() throws IOException {
-    //cleanup
-    final Path securityConfPath = Paths.get("./target", SecurityUserFileRepository.FILE_NAME);
-    Files.deleteIfExists(securityConfPath);
-
     GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(PASSWORD);
     try {
       final ServerSecurity security = new ServerSecurity(null, new ContextConfiguration(), "./target");
       security.startService();
       security.loadUsers();
 
+      final Path securityConfPath = Paths.get("./target", SecurityUserFileRepository.FILE_NAME);
       File securityConf = securityConfPath.toFile();
 
       Assertions.assertTrue(securityConf.exists());
@@ -60,7 +60,6 @@ public class ServerSecurityIT {
 
   @Test
   void shouldCreateDefaultRootUserAndPersistsSecurityConfigurationFromUserInput() throws IOException {
-    //cleanup
     final Path securityConfPath = Paths.get("./target", SecurityUserFileRepository.FILE_NAME);
     Files.deleteIfExists(securityConfPath);
 
@@ -90,9 +89,6 @@ public class ServerSecurityIT {
 
   @Test
   void shouldLoadProvidedSecurityConfiguration() throws IOException {
-    final Path securityConfPath = Paths.get("./target", SecurityUserFileRepository.FILE_NAME);
-    Files.deleteIfExists(securityConfPath);
-
     GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(PASSWORD);
     try {
       SecurityUserFileRepository repository = new SecurityUserFileRepository("./target");
@@ -135,5 +131,21 @@ public class ServerSecurityIT {
 
   private void passwordShouldMatch(final ServerSecurity security, String password, String expectedHash) {
     Assertions.assertTrue(security.passwordMatch(password, expectedHash));
+  }
+
+  @BeforeEach
+  public void beforeAll() {
+    FileUtils.deleteRecursively(new File("./target/config"));
+    FileUtils.deleteRecursively(new File("./target/databases"));
+    GlobalConfiguration.SERVER_DATABASE_DIRECTORY.setValue("./target/databases");
+    GlobalConfiguration.SERVER_ROOT_PATH.setValue("./target");
+  }
+
+  @AfterEach
+  public void afterAll() {
+    GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(null);
+
+    FileUtils.deleteRecursively(new File("./target/config"));
+    FileUtils.deleteRecursively(new File("./target/databases"));
   }
 }

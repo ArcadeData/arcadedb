@@ -412,7 +412,7 @@ public class ServerProfilingIT {
 
   @AfterAll
   public static void afterAll() throws IOException {
-    SERVER.start();
+    SERVER.stop();
     GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(null);
 
     FileUtils.deleteRecursively(new File("./target/config"));
