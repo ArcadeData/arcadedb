@@ -126,7 +126,7 @@ public class ServerSecurityUser implements SecurityUser {
   }
 
   @Override
-  public Set<String> getDatabases() {
+  public Set<String> getAuthorizedDatabases() {
     return databasesNames;
   }
 

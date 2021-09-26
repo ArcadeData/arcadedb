@@ -21,6 +21,11 @@
 
 package com.arcadedb.security;
 
+/**
+ * Security user for a database. It declares the authorized permissions against the database.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
 public interface SecurityDatabaseUser {
   enum ACCESS {
     CREATE_RECORD("createRecord", "create records"),//

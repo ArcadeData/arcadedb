@@ -23,6 +23,9 @@ package com.arcadedb.security;
 
 import java.util.*;
 
+/**
+ * Security user at global level. The user can have access to multiple databases.
+ */
 public interface SecurityUser {
   /**
    * Returns the user's name.
@@ -35,9 +38,13 @@ public interface SecurityUser {
   String getPassword();
 
   /**
-   * Returns the set of database the user has access to.
+   * Returns the set of databases the user has access to.
    */
-  Set<String> getDatabases();
+  Set<String> getAuthorizedDatabases();
 
+  /**
+   * Add a database to the user's authorized list. Groups is a list of group names the user belong to for the specific database or can be empty ot null
+   * (default group will be taken).
+   */
   SecurityUser addDatabase(String databaseName, String[] groups);
 }

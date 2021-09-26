@@ -133,8 +133,8 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
       throw new ServerSecurityException("User/Password not valid");
 
     if (databaseName != null) {
-      final Set<String> allowedDatabases = su.getDatabases();
-      if (!allowedDatabases.contains(SecurityManager.ANY) && !su.getDatabases().contains(databaseName))
+      final Set<String> allowedDatabases = su.getAuthorizedDatabases();
+      if (!allowedDatabases.contains(SecurityManager.ANY) && !su.getAuthorizedDatabases().contains(databaseName))
         throw new ServerSecurityException("User has not access to database '" + databaseName + "'");
     }
 

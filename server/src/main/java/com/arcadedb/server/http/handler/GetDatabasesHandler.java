@@ -31,7 +31,7 @@ public class GetDatabasesHandler extends AbstractHandler {
   @Override
   protected void execute(final HttpServerExchange exchange, final ServerSecurityUser user) throws Exception {
     final Set<String> installedDatabases = new HashSet<>(httpServer.getServer().getDatabaseNames());
-    final Set<String> allowedDatabases = user.getDatabases();
+    final Set<String> allowedDatabases = user.getAuthorizedDatabases();
 
     if (!allowedDatabases.contains("*"))
       installedDatabases.retainAll(allowedDatabases);

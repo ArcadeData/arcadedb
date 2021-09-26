@@ -29,7 +29,7 @@ import com.arcadedb.database.DatabaseInternal;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  **/
 public interface SecurityManager {
-  public final static String ANY = "*";
+  String ANY = "*";
 
   /**
    * Notifies the update of the schema.

@@ -457,7 +457,7 @@ public class ArcadeDBServer implements ServerLogger {
               // EXISTING USER: CHECK CREDENTIALS
               try {
                 final ServerSecurityUser user = security.authenticate(userName, userPassword, dbName);
-                if (!user.getDatabases().contains(dbName)) {
+                if (!user.getAuthorizedDatabases().contains(dbName)) {
                   // UPDATE DB LIST
                   user.addDatabase(dbName, new String[] { userRole });
                   security.saveUsers();
