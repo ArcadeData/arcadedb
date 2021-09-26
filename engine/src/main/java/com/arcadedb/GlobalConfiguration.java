@@ -22,12 +22,9 @@ import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.SystemVariableResolver;
 import org.json.JSONObject;
 
-import java.io.PrintStream;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Timer;
-import java.util.TimerTask;
-import java.util.logging.Level;
+import java.io.*;
+import java.util.*;
+import java.util.logging.*;
 
 /**
  * Keeps all configuration settings. At startup assigns the configuration values by reading system properties.
@@ -213,7 +210,8 @@ public enum GlobalConfiguration {
 
   SERVER_DEFAULT_DATABASES("arcadedb.server.defaultDatabases",
       "The default databases created when the server starts. The format is '(<database-name>[(<user-name>:<user-passwd>[:<user-group>])[,]*])[{import:<URL>}][;]*'. Pay attention on using ';'"
-          + " to separate databases and ',' to separate credentials. Example: 'Universe[elon:musk:admin];Amiga[Jay:Miner,Jack:Tramiel]{import:/tmp/movies.tgz}'", String.class, ""),
+          + " to separate databases and ',' to separate credentials. Example: 'Universe[elon:musk:admin];Amiga[Jay:Miner,Jack:Tramiel]{import:/tmp/movies.tgz}'",
+      String.class, ""),
 
   // SERVER HTTP
   SERVER_HTTP_INCOMING_HOST("arcadedb.server.httpIncomingHost", "TCP/IP host name used for incoming HTTP connections", String.class, "0.0.0.0"),
@@ -467,41 +465,42 @@ public enum GlobalConfiguration {
   }
 
   public void setValue(final Object iValue) {
-    if (iValue != null)
-      if (type == Boolean.class)
-        value = Boolean.parseBoolean(iValue.toString());
-      else if (type == Integer.class)
-        value = Integer.parseInt(iValue.toString());
-      else if (type == Long.class)
-        value = Long.parseLong(iValue.toString());
-      else if (type == Float.class)
-        value = Float.parseFloat(iValue.toString());
-      else if (type == String.class)
-        value = iValue.toString();
-      else if (type.isEnum()) {
-        boolean accepted = false;
+    if (iValue == null)
+      value = null;
+    else if (type == Boolean.class)
+      value = Boolean.parseBoolean(iValue.toString());
+    else if (type == Integer.class)
+      value = Integer.parseInt(iValue.toString());
+    else if (type == Long.class)
+      value = Long.parseLong(iValue.toString());
+    else if (type == Float.class)
+      value = Float.parseFloat(iValue.toString());
+    else if (type == String.class)
+      value = iValue.toString();
+    else if (type.isEnum()) {
+      boolean accepted = false;
 
-        if (type.isInstance(iValue)) {
-          value = iValue;
-          accepted = true;
-        } else if (iValue instanceof String) {
-          final String string = (String) iValue;
+      if (type.isInstance(iValue)) {
+        value = iValue;
+        accepted = true;
+      } else if (iValue instanceof String) {
+        final String string = (String) iValue;
 
-          for (Object constant : type.getEnumConstants()) {
-            final Enum<?> enumConstant = (Enum<?>) constant;
+        for (Object constant : type.getEnumConstants()) {
+          final Enum<?> enumConstant = (Enum<?>) constant;
 
-            if (enumConstant.name().equalsIgnoreCase(string)) {
-              value = enumConstant;
-              accepted = true;
-              break;
-            }
+          if (enumConstant.name().equalsIgnoreCase(string)) {
+            value = enumConstant;
+            accepted = true;
+            break;
           }
         }
+      }
 
-        if (!accepted)
-          throw new IllegalArgumentException("Invalid value of `" + key + "` option");
-      } else
-        value = iValue;
+      if (!accepted)
+        throw new IllegalArgumentException("Invalid value of `" + key + "` option");
+    } else
+      value = iValue;
 
     if (callback != null)
       try {

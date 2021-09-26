@@ -204,6 +204,7 @@ public abstract class BaseGraphServerTest {
         checkArcadeIsTotallyDown();
 
         GlobalConfiguration.TEST.setValue(false);
+        GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(null);
       }
     }
   }

@@ -43,8 +43,11 @@ public class BackupSettings {
     if (format == null)
       throw new IllegalArgumentException("Missing backup format");
 
-    if (directory != null && file != null && (file.contains("..") || file.contains("/")))
-      throw new IllegalArgumentException("Backup file cannot contain path change because the directory is specified");
+    if (directory != null && file != null) {
+      final String f = file.startsWith("file://") ? file.substring("file://".length()) : file;
+      if (f.contains("..") || f.contains("/"))
+        throw new IllegalArgumentException("Backup file cannot contain path change because the directory is specified");
+    }
 
     if (file == null)
       // ASSIGN DEFAULT FILENAME

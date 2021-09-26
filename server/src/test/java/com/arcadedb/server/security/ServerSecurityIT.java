@@ -35,27 +35,23 @@ public class ServerSecurityIT {
   @Test
   void shouldCreateDefaultRootUserAndPersistsSecurityConfigurationFromSetting() throws IOException {
     GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(PASSWORD);
-    try {
-      final ServerSecurity security = new ServerSecurity(null, new ContextConfiguration(), "./target");
-      security.startService();
-      security.loadUsers();
 
-      final Path securityConfPath = Paths.get("./target", SecurityUserFileRepository.FILE_NAME);
-      File securityConf = securityConfPath.toFile();
+    final ServerSecurity security = new ServerSecurity(null, new ContextConfiguration(), "./target");
+    security.startService();
+    security.loadUsers();
 
-      Assertions.assertTrue(securityConf.exists());
+    final Path securityConfPath = Paths.get("./target", SecurityUserFileRepository.FILE_NAME);
+    File securityConf = securityConfPath.toFile();
 
-      SecurityUserFileRepository repository = new SecurityUserFileRepository("./target");
+    Assertions.assertTrue(securityConf.exists());
 
-      final List<JSONObject> jsonl = repository.load();
+    SecurityUserFileRepository repository = new SecurityUserFileRepository("./target");
 
-      Assertions.assertEquals(1, jsonl.size());
-      Assertions.assertEquals("root", jsonl.get(0).getString("name"));
-      passwordShouldMatch(security, PASSWORD, jsonl.get(0).getString("password"));
+    final List<JSONObject> jsonl = repository.load();
 
-    } finally {
-      GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(null);
-    }
+    Assertions.assertEquals(1, jsonl.size());
+    Assertions.assertEquals("root", jsonl.get(0).getString("name"));
+    passwordShouldMatch(security, PASSWORD, jsonl.get(0).getString("password"));
   }
 
   @Test
@@ -63,10 +59,12 @@ public class ServerSecurityIT {
     final Path securityConfPath = Paths.get("./target", SecurityUserFileRepository.FILE_NAME);
     Files.deleteIfExists(securityConfPath);
 
+    GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(null);
+
     if (System.console() != null) {
-      System.console().writer().println("dD5ed08c\r\ndD5ed08c\n");
+      System.console().writer().println(PASSWORD + "\r\n" + PASSWORD + "\n");
     } else {
-      final InputStream is = new ByteArrayInputStream("dD5ed08c\r\ndD5ed08c\n".getBytes());
+      final InputStream is = new ByteArrayInputStream((PASSWORD + "\r\n" + PASSWORD + "\n").getBytes());
       System.setIn(is);
     }
 
@@ -90,26 +88,23 @@ public class ServerSecurityIT {
   @Test
   void shouldLoadProvidedSecurityConfiguration() throws IOException {
     GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(PASSWORD);
-    try {
-      SecurityUserFileRepository repository = new SecurityUserFileRepository("./target");
 
-      final ServerSecurity security = new ServerSecurity(null, new ContextConfiguration(), "./target");
+    SecurityUserFileRepository repository = new SecurityUserFileRepository("./target");
 
-      final JSONObject json = new JSONObject().put("name", "providedUser").put("password", security.encodePassword("MyPassword12345"))
-          .put("databases", new JSONObject());
+    final ServerSecurity security = new ServerSecurity(null, new ContextConfiguration(), "./target");
 
-      repository.save(Collections.singletonList(json));
+    final JSONObject json = new JSONObject().put("name", "providedUser").put("password", security.encodePassword("MyPassword12345"))
+        .put("databases", new JSONObject());
 
-      //when
-      security.startService();
-      security.loadUsers();
+    repository.save(Collections.singletonList(json));
 
-      Assertions.assertTrue(security.existsUser("providedUser"));
-      Assertions.assertFalse(security.existsUser("root"));
-      passwordShouldMatch(security, "MyPassword12345", security.getUser("providedUser").getPassword());
-    } finally {
-      GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(null);
-    }
+    //when
+    security.startService();
+    security.loadUsers();
+
+    Assertions.assertTrue(security.existsUser("providedUser"));
+    Assertions.assertFalse(security.existsUser("root"));
+    passwordShouldMatch(security, "MyPassword12345", security.getUser("providedUser").getPassword());
   }
 
   @Test
@@ -139,6 +134,7 @@ public class ServerSecurityIT {
     FileUtils.deleteRecursively(new File("./target/databases"));
     GlobalConfiguration.SERVER_DATABASE_DIRECTORY.setValue("./target/databases");
     GlobalConfiguration.SERVER_ROOT_PATH.setValue("./target");
+    GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(null);
   }
 
   @AfterEach
