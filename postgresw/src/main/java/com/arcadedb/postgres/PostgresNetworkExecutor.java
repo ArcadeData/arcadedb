@@ -17,6 +17,7 @@ package com.arcadedb.postgres;
 
 import com.arcadedb.Constants;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandSQLParsingException;
@@ -31,6 +32,7 @@ import com.arcadedb.query.sql.executor.SQLEngine;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.security.ServerSecurityException;
+import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
 
@@ -673,10 +675,14 @@ public class PostgresNetworkExecutor extends Thread {
     }
 
     try {
-      server.getSecurity().authenticate(userName, userPassword);
+      final ServerSecurityUser dbUser = server.getSecurity().authenticate(userName, userPassword, databaseName);
 
       database = server.getDatabase(databaseName);
+
+      DatabaseContext.INSTANCE.init((DatabaseInternal) database).setCurrentUser(dbUser.getDatabaseUser(database));
+
       database.setAutoTransaction(true);
+
     } catch (ServerSecurityException e) {
       writeError(ERROR_SEVERITY.FATAL, "Credentials not valid", "28P01");
       return false;

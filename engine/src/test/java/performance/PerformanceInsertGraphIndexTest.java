@@ -32,8 +32,8 @@ import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Assertions;
 
-import java.io.File;
-import java.util.logging.Level;
+import java.io.*;
+import java.util.logging.*;
 
 /**
  * Inserts a graph. Configurations:
@@ -104,8 +104,8 @@ public class PerformanceInsertGraphIndexTest extends TestHelper {
     database.begin();
 
     if (!USE_WAL) {
-      database.getTransaction().setUseWAL(false);
-      database.getTransaction().setWALFlush(WALFile.FLUSH_TYPE.NO);
+      database.setUseWAL(false);
+      database.setWALFlush(WALFile.FLUSH_TYPE.NO);
     }
 
     final long begin = System.currentTimeMillis();
@@ -140,8 +140,8 @@ public class PerformanceInsertGraphIndexTest extends TestHelper {
           database.commit();
           database.begin();
           if (!USE_WAL) {
-            database.getTransaction().setUseWAL(false);
-            database.getTransaction().setWALFlush(WALFile.FLUSH_TYPE.NO);
+            database.setUseWAL(false);
+            database.setWALFlush(WALFile.FLUSH_TYPE.NO);
           }
         }
       }

@@ -22,13 +22,13 @@ public interface Transaction {
 
   Binary commit();
 
-  void setUseWAL(boolean useWAL);
-
-  void setWALFlush(WALFile.FLUSH_TYPE flush);
-
   void rollback();
 
   boolean isActive();
+
+  void setUseWAL(boolean useWAL);
+
+  void setWALFlush(WALFile.FLUSH_TYPE flush);
 
   boolean isAsyncFlush();
 

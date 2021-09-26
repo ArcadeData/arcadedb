@@ -109,7 +109,7 @@ public class ReplicationSpeedQuorumMajorityIT extends BasePerformanceTest {
     Database db = getServerDatabase(0, getDatabaseName());
 
 //    db.begin();
-//    db.getTransaction().setWALFlush(WALFile.FLUSH_TYPE.YES_NO_METADATA);
+//    db.setWALFlush(WALFile.FLUSH_TYPE.YES_NO_METADATA);
 
     LogManager.instance()
         .log(this, Level.INFO, "TEST: Executing %s transactions with %d vertices each...", null, getTxs(), getVerticesPerTx());
@@ -169,7 +169,7 @@ public class ReplicationSpeedQuorumMajorityIT extends BasePerformanceTest {
 //      db.commit();
 //
 //      db.begin();
-//      db.getTransaction().setWALFlush(WALFile.FLUSH_TYPE.YES_NO_METADATA);
+//      db.setWALFlush(WALFile.FLUSH_TYPE.YES_NO_METADATA);
     }
 
     db.async().waitCompletion();

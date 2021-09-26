@@ -19,10 +19,10 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.server.http.HttpServer;
-import com.arcadedb.server.security.ServerSecurity;
+import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
-import java.util.Deque;
+import java.util.*;
 
 public class GetDocumentHandler extends DatabaseAbstractHandler {
   public GetDocumentHandler(final HttpServer httpServer) {
@@ -30,7 +30,7 @@ public class GetDocumentHandler extends DatabaseAbstractHandler {
   }
 
   @Override
-  public void execute(final HttpServerExchange exchange, ServerSecurity.ServerUser user, final Database database) {
+  public void execute(final HttpServerExchange exchange, ServerSecurityUser user, final Database database) {
     final Deque<String> rid = exchange.getQueryParameters().get("rid");
     if (rid == null || rid.isEmpty()) {
       exchange.setStatusCode(400);

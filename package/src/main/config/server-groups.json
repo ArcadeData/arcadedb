@@ -1,0 +1,33 @@
+{
+  "databases": {
+    "*": {
+      "groups": {
+        "admin": {
+          "access": [
+            "updateSecurity",
+            "updateSchema"
+          ],
+          "types": {
+            "*": {
+              "access": [
+                "createRecord",
+                "readRecord",
+                "updateRecord",
+                "deleteRecord"
+              ]
+            }
+          }
+        },
+        "*": {
+          "access": "",
+          "types": {
+            "*": {
+              "access": ""
+            }
+          }
+        }
+      }
+    }
+  },
+  "version": 1
+}

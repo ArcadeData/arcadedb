@@ -65,8 +65,8 @@ public class OrientDBImporter {
   private final ConsoleLogger              logger;
   private       String                     databasePath;
   private       String                     inputFile;
-  private       String                     securityFileName;
   private       String                     databaseName;
+  private       boolean                    createSecurityFiles             = false;
   private       boolean                    overwriteDatabase               = false;
   private       long                       totalRecordParsed               = 0L;
   private       long                       totalAttributesParsed           = 0L;
@@ -103,7 +103,7 @@ public class OrientDBImporter {
       else if (arg.equals("-i"))
         state = "inputFile";
       else if (arg.equals("-s"))
-        state = "securityFile";
+        createSecurityFiles = true;
       else if (arg.equals("-o"))
         overwriteDatabase = true;
       else if (arg.equals("-b"))
@@ -115,8 +115,6 @@ public class OrientDBImporter {
           databasePath = arg;
         else if (state.equals("inputFile"))
           inputFile = arg;
-        else if (state.equals("securityFile"))
-          securityFileName = arg;
         else if (state.equals("batchSize"))
           batchSize = Integer.parseInt(arg);
         else if (state.equals("verboseLevel"))
@@ -213,13 +211,13 @@ public class OrientDBImporter {
     logger.logLine(1, "");
     logger.logLine(1, "NOTES:");
 
-    if (securityFileName == null)
+    if (createSecurityFiles) {
+      writeSecurityFiles();
       logger.logLine(1,
-          "- users stored in OUser class will not be imported because ArcadeDB has users only at server level. If you want to import such users into ArcadeDB server configuration, please run the importer with the option -s <securityFile>");
-    else {
-      writeSecurityFile();
-      logger.logLine(1, "- you can find your security.json file to install in ArcadeDB server in '" + securityFileName + "'");
-    }
+          "- generated file server-users.jsonl to copy under ArcadeDB server 'config' directory. If the server already contains users, instead of replacing it, you can append the content");
+    } else
+      logger.logLine(1,
+          "- users stored in OUser class will not be imported because ArcadeDB has users only at server level. If you want to import such users into ArcadeDB server configuration, please run the importer with the option -s <securityFileDirectory>");
 
     if (database != null)
       logger.logLine(1, "- you can find your new ArcadeDB database in '" + database.getDatabasePath() + "'");
@@ -297,31 +295,22 @@ public class OrientDBImporter {
     reader.endObject();
   }
 
-  private void writeSecurityFile() throws IOException {
-    final File securityFile = new File(securityFileName);
+  private void writeSecurityFiles() throws IOException {
+    final File securityFile = new File("./server-users.jsonl");
 
-    final JSONObject securityFileContent = new JSONObject();
-
-    final JSONObject users = new JSONObject();
-    securityFileContent.put("users", users);
+    final StringBuilder buffer = new StringBuilder();
 
     for (Map<String, Object> u : parsedUsers) {
-      String userName = (String) u.get("name");
-      String password = (String) u.get("password");
-
       final JSONObject user = new JSONObject();
 
-      final JSONArray databases = new JSONArray();
-      databases.put(databaseName);
-      user.put("name", userName);
-      user.put("password", password);
-      user.put("databases", databases);
-      user.put("databaseBlackList", true);
+      user.put("name", u.get("name"));
+      user.put("password", u.get("password"));
+      user.put("databases", new JSONArray(new String[] { databaseName }));
 
-      users.put(userName, user);
+      buffer.append(user + "\n");
     }
 
-    FileUtils.writeFile(securityFile, securityFileContent.toString());
+    FileUtils.writeFile(securityFile, buffer.toString());
   }
 
   private void parseRecords() throws IOException {

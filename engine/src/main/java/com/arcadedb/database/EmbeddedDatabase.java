@@ -27,6 +27,7 @@ import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.engine.TransactionManager;
+import com.arcadedb.engine.WALFile;
 import com.arcadedb.engine.WALFileFactory;
 import com.arcadedb.engine.WALFileFactoryEmbedded;
 import com.arcadedb.exception.ArcadeDBException;
@@ -68,6 +69,8 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.LockException;
@@ -118,12 +121,14 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   private final        File                                      configurationFile;
   private              DatabaseInternal                          wrappedDatabaseInstance = this;
   private              int                                       edgeListSize            = EDGE_LIST_INITIAL_CHUNK_SIZE;
+  private              SecurityManager                           security;
 
-  protected EmbeddedDatabase(final String path, final PaginatedFile.MODE mode, final ContextConfiguration configuration,
+  protected EmbeddedDatabase(final String path, final PaginatedFile.MODE mode, final ContextConfiguration configuration, final SecurityManager security,
       final Map<CALLBACK_EVENT, List<Callable<Void>>> callbacks) {
     try {
       this.mode = mode;
       this.configuration = configuration;
+      this.security = security;
       this.callbacks = callbacks;
       this.walFactory = mode == PaginatedFile.MODE.READ_WRITE ? new WALFileFactoryEmbedded() : null;
       this.statementCache = new StatementCache(this, configuration.getValueAsInteger(GlobalConfiguration.SQL_STATEMENT_CACHE));
@@ -141,6 +146,8 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
         name = path.substring(lastSeparatorPos + 1);
       else
         name = path;
+
+      checkDatabaseName();
 
       indexer = new DocumentIndexer(this);
       queryEngineManager = new QueryEngineManager();
@@ -171,8 +178,12 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   }
 
   protected void create() {
-    if (new File(databasePath + "/" + EmbeddedSchema.SCHEMA_FILE_NAME).exists() || new File(databasePath + "/" + EmbeddedSchema.SCHEMA_PREV_FILE_NAME).exists())
+    final File databaseDirectory = new File(databasePath);
+    if (new File(databaseDirectory, EmbeddedSchema.SCHEMA_FILE_NAME).exists() || new File(databaseDirectory, EmbeddedSchema.SCHEMA_PREV_FILE_NAME).exists())
       throw new DatabaseOperationException("Database '" + databasePath + "' already exists");
+
+    if (!databaseDirectory.exists() && !databaseDirectory.mkdirs())
+      throw new DatabaseOperationException("Cannot create directory '" + databasePath + "'");
 
     openInternal();
 
@@ -197,7 +208,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
       open = true;
 
       try {
-        schema = new EmbeddedSchema(wrappedDatabaseInstance, databasePath, mode);
+        schema = new EmbeddedSchema(wrappedDatabaseInstance, databasePath, security);
 
         if (fileManager.getFiles().isEmpty())
           schema.create(mode);
@@ -206,6 +217,9 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
         if (mode == PaginatedFile.MODE.READ_WRITE)
           checkForRecovery();
+
+        if (security != null)
+          security.updateSchema(this);
 
         Profiler.INSTANCE.registerDatabase(this);
 
@@ -346,6 +360,15 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   @Override
   public String getDatabasePath() {
     return databasePath;
+  }
+
+  @Override
+  public String getCurrentUserName() {
+    final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContext(databasePath);
+    if (dbContext == null)
+      return null;
+    final SecurityDatabaseUser user = dbContext.getCurrentUser();
+    return user != null ? user.getName() : null;
   }
 
   public TransactionContext getTransaction() {
@@ -571,6 +594,46 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     }
   }
 
+  public void checkPermissionsOnDatabase(final SecurityDatabaseUser.DATABASE_ACCESS access) {
+    if (security == null)
+      return;
+
+    final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContext(databasePath);
+    if (dbContext == null)
+      return;
+    final SecurityDatabaseUser user = dbContext.getCurrentUser();
+    if (user == null)
+      return;
+
+    if (user.requestAccessOnDatabase(access))
+      return;
+
+    throw new SecurityException("User '" + user.getName() + "' is not allowed to " + access.fullName);
+  }
+
+  @Override
+  public void checkPermissionsOnFile(final int fileId, final SecurityDatabaseUser.ACCESS access) {
+    if (security == null)
+      return;
+
+    final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContext(databasePath);
+    if (dbContext == null)
+      return;
+    final SecurityDatabaseUser user = dbContext.getCurrentUser();
+    if (user == null)
+      return;
+
+    if (user.requestAccessOnFile(fileId, access))
+      return;
+
+    String resource = "file '" + schema.getFileById(fileId).getName() + "'";
+    final DocumentType type = schema.getTypeByBucketId(fileId);
+    if (type != null)
+      resource = "type '" + type + "'";
+
+    throw new SecurityException("User '" + user.getName() + "' is not allowed to " + access.fullName + " on " + resource);
+  }
+
   @Override
   public Record lookupByRID(final RID rid, final boolean loadContent) {
     if (rid == null)
@@ -658,6 +721,29 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   @Override
   public void setReadYourWrites(final boolean readYourWrites) {
     this.readYourWrites = readYourWrites;
+  }
+
+  @Override
+  public EmbeddedDatabase setUseWAL(final boolean useWAL) {
+    getTransaction().setUseWAL(useWAL);
+    return this;
+  }
+
+  @Override
+  public EmbeddedDatabase setWALFlush(final WALFile.FLUSH_TYPE flush) {
+    getTransaction().setWALFlush(flush);
+    return this;
+  }
+
+  @Override
+  public boolean isAsyncFlush() {
+    return getTransaction().isAsyncFlush();
+  }
+
+  @Override
+  public EmbeddedDatabase setAsyncFlush(final boolean value) {
+    getTransaction().setAsyncFlush(value);
+    return this;
   }
 
   @Override
@@ -1221,6 +1307,10 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     return DatabaseContext.INSTANCE.getContext(databasePath);
   }
 
+  public SecurityManager getSecurity() {
+    return security;
+  }
+
   /**
    * Executes a callback in a shared lock.
    */
@@ -1377,5 +1467,10 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
       // IGNORE HERE
       throw new LockException("Database '" + name + "' is locked by another process (path=" + new File(databasePath).getAbsolutePath() + ")", e);
     }
+  }
+
+  private void checkDatabaseName() {
+    if (name.contains("*") || name.contains(".."))
+      throw new IllegalArgumentException("Invalid characters used in database name");
   }
 }

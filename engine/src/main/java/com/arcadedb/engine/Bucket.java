@@ -23,6 +23,7 @@ import com.arcadedb.database.RecordInternal;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.utility.FileUtils;
 
 import java.io.*;
@@ -78,14 +79,20 @@ public class Bucket extends PaginatedComponent {
   }
 
   public RID createRecord(final Record record) {
+    database.checkPermissionsOnFile(id, SecurityDatabaseUser.ACCESS.CREATE_RECORD);
+
     return createRecordInternal(record, false);
   }
 
   public void updateRecord(final Record record) {
+    database.checkPermissionsOnFile(id, SecurityDatabaseUser.ACCESS.UPDATE_RECORD);
+
     updateRecordInternal(record, record.getIdentity(), false);
   }
 
   public Binary getRecord(final RID rid) {
+    database.checkPermissionsOnFile(id, SecurityDatabaseUser.ACCESS.READ_RECORD);
+
     final Binary rec = getRecordInternal(rid, false);
     if (rec == null)
       // DELETED
@@ -94,6 +101,8 @@ public class Bucket extends PaginatedComponent {
   }
 
   public boolean existsRecord(final RID rid) {
+    database.checkPermissionsOnFile(id, SecurityDatabaseUser.ACCESS.READ_RECORD);
+
     final int pageId = (int) (rid.getPosition() / maxRecordsInPage);
     final int positionInPage = (int) (rid.getPosition() % maxRecordsInPage);
 
@@ -121,10 +130,14 @@ public class Bucket extends PaginatedComponent {
   }
 
   public void deleteRecord(final RID rid) {
+    database.checkPermissionsOnFile(id, SecurityDatabaseUser.ACCESS.DELETE_RECORD);
+
     deleteRecordInternal(rid, false);
   }
 
   public void scan(final RawRecordCallback callback) {
+    database.checkPermissionsOnFile(id, SecurityDatabaseUser.ACCESS.READ_RECORD);
+
     final int txPageCount = getTotalPages();
 
     try {
@@ -169,7 +182,6 @@ public class Bucket extends PaginatedComponent {
     if (rid.getPosition() < 0L) {
       LogManager.instance().log(this, Level.WARNING, "Cannot load a page from a record with invalid RID (" + rid + ")");
       return;
-      //throw new IllegalArgumentException("Cannot load a page from a record with invalid RID (" + rid + ")");
     }
 
     final int pageId = (int) (rid.getPosition() / maxRecordsInPage);
@@ -178,7 +190,6 @@ public class Bucket extends PaginatedComponent {
       int txPageCount = getTotalPages();
       if (pageId >= txPageCount) {
         LogManager.instance().log(this, Level.WARNING, "Record " + rid + " not found");
-        //throw new RecordNotFoundException("Record " + rid + " not found", rid);
       }
     }
 
@@ -186,6 +197,7 @@ public class Bucket extends PaginatedComponent {
   }
 
   public Iterator<Record> iterator() {
+    database.checkPermissionsOnFile(id, SecurityDatabaseUser.ACCESS.READ_RECORD);
     return new BucketIterator(this, database);
   }
 
@@ -212,6 +224,8 @@ public class Bucket extends PaginatedComponent {
   }
 
   public long count() {
+    database.checkPermissionsOnFile(id, SecurityDatabaseUser.ACCESS.READ_RECORD);
+
     long total = 0;
 
     final int txPageCount = getTotalPages();
@@ -579,7 +593,6 @@ public class Bucket extends PaginatedComponent {
   }
 
   private void deleteRecordInternal(final RID rid, final boolean deletePlaceholder) {
-
     final int pageId = (int) (rid.getPosition() / maxRecordsInPage);
     final int positionInPage = (int) (rid.getPosition() % maxRecordsInPage);
 

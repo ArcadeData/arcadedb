@@ -46,6 +46,7 @@
             <outputDirectory>config</outputDirectory>
             <includes>
                 <include>*.yaml</include>
+                <include>*.json</include>
             </includes>
             <fileMode>755</fileMode>
             <filtered>true</filtered>

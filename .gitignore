@@ -391,3 +391,4 @@ databases
 .DS_Store
 doc/src/main/asciidoc/*/.asciidoctor/
 doc/src/main/asciidoc/*/var/
+server/backups/

@@ -40,6 +40,8 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.lsm.LSMTreeIndexCompacted;
 import com.arcadedb.index.lsm.LSMTreeIndexMutable;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.security.SecurityManager;
 import com.arcadedb.utility.FileUtils;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -60,6 +62,7 @@ public class EmbeddedSchema implements Schema {
   private static final int                        EDGE_DEF_PAGE_SIZE        = Bucket.DEF_PAGE_SIZE / 3;
   private static final int                        DEFAULT_CLUSTERS_PER_TYPE = 8;
   private final        DatabaseInternal           database;
+  private final        SecurityManager            security;
   private final        List<PaginatedComponent>   files                     = new ArrayList<>();
   private final        Map<String, DocumentType>  types                     = new HashMap<>();
   private final        Map<String, Bucket>        bucketMap                 = new HashMap<>();
@@ -77,9 +80,10 @@ public class EmbeddedSchema implements Schema {
   private              boolean                    loadInRamCompleted        = false;
   private              boolean                    multipleUpdate            = false;
 
-  public EmbeddedSchema(final DatabaseInternal database, final String databasePath, final PaginatedFile.MODE mode) {
+  public EmbeddedSchema(final DatabaseInternal database, final String databasePath, final SecurityManager security) {
     this.database = database;
     this.databasePath = databasePath;
+    this.security = security;
 
     paginatedComponentFactory = new PaginatedComponentFactory(database);
     paginatedComponentFactory.registerComponent(Dictionary.DICT_EXT, new Dictionary.PaginatedComponentFactoryHandler());
@@ -131,7 +135,7 @@ public class EmbeddedSchema implements Schema {
       throw new ConfigurationException("Dictionary file not found in database directory");
 
     for (PaginatedFile file : filesToOpen) {
-      if (!Dictionary.DICT_EXT.equals(file.getFileExtension())) {
+      if (file != null && !Dictionary.DICT_EXT.equals(file.getFileExtension())) {
         final PaginatedComponent pf = paginatedComponentFactory.createComponent(file, mode);
 
         if (pf != null) {
@@ -152,6 +156,7 @@ public class EmbeddedSchema implements Schema {
         f.onAfterLoad();
 
     readConfiguration();
+    updateSecurity();
   }
 
   public void loadChanges() throws IOException {
@@ -283,6 +288,8 @@ public class EmbeddedSchema implements Schema {
   }
 
   public Bucket createBucket(final String bucketName, final int pageSize) {
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+
     return (Bucket) database.executeInWriteLock(new Callable<Object>() {
       @Override
       public Object call() {
@@ -310,6 +317,8 @@ public class EmbeddedSchema implements Schema {
   @Override
   public DocumentType copyType(final String typeName, final String newTypeName, final Class<? extends DocumentType> newTypeClass, final int buckets,
       final int pageSize, final int transactionBatchSize) {
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+
     if (existsType(newTypeName))
       throw new IllegalArgumentException("Type '" + newTypeName + "' already exists");
 
@@ -402,6 +411,8 @@ public class EmbeddedSchema implements Schema {
 
   @Override
   public void dropIndex(final String indexName) {
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+
     final IndexInternal index = indexMap.remove(indexName);
     if (index == null)
       return;
@@ -438,6 +449,8 @@ public class EmbeddedSchema implements Schema {
   @Override
   public TypeIndex createTypeIndex(final INDEX_TYPE indexType, final boolean unique, final String typeName, final String[] propertyNames, final int pageSize,
       final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, final Index.BuildIndexCallback callback) {
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+
     if (propertyNames.length == 0)
       throw new DatabaseMetadataException("Cannot create index on type '" + typeName + "' because there are no property defined");
 
@@ -521,6 +534,8 @@ public class EmbeddedSchema implements Schema {
   @Override
   public Index createBucketIndex(final INDEX_TYPE indexType, final boolean unique, final String typeName, final String bucketName, final String[] propertyNames,
       final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, final Index.BuildIndexCallback callback) {
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+
     if (propertyNames.length == 0)
       throw new DatabaseMetadataException("Cannot create index on type '" + typeName + "' because there are no property defined");
 
@@ -567,6 +582,8 @@ public class EmbeddedSchema implements Schema {
   private Index createBucketIndex(final DocumentType type, final byte[] keyTypes, final Bucket bucket, final String typeName, final INDEX_TYPE indexType,
       final boolean unique, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, final Index.BuildIndexCallback callback,
       final String[] propertyNames) throws IOException {
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+
     if (bucket == null)
       throw new IllegalArgumentException("bucket is null");
 
@@ -590,6 +607,8 @@ public class EmbeddedSchema implements Schema {
 
   public Index createManualIndex(final INDEX_TYPE indexType, final boolean unique, final String indexName, final byte[] keyTypes, final int pageSize,
       final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy) {
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+
     return (Index) database.executeInWriteLock(new Callable<Object>() {
       @Override
       public Object call() {
@@ -673,6 +692,8 @@ public class EmbeddedSchema implements Schema {
   }
 
   public void dropType(final String typeName) {
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+
     database.executeInWriteLock(new Callable<Object>() {
       @Override
       public Object call() {
@@ -710,6 +731,7 @@ public class EmbeddedSchema implements Schema {
         } finally {
           multipleUpdate = false;
           saveConfiguration();
+          updateSecurity();
         }
         return null;
       }
@@ -718,6 +740,8 @@ public class EmbeddedSchema implements Schema {
 
   @Override
   public void dropBucket(final String bucketName) {
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+
     database.executeInWriteLock(new Callable<Object>() {
       @Override
       public Object call() {
@@ -753,6 +777,8 @@ public class EmbeddedSchema implements Schema {
   }
 
   public DocumentType createDocumentType(final String typeName, final int buckets, final int pageSize) {
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+
     if (typeName == null || typeName.isEmpty())
       throw new IllegalArgumentException("Missing type");
 
@@ -788,6 +814,7 @@ public class EmbeddedSchema implements Schema {
         }
 
         saveConfiguration();
+        updateSecurity();
 
         return c;
       }
@@ -827,6 +854,8 @@ public class EmbeddedSchema implements Schema {
 
   @Override
   public VertexType createVertexType(String typeName, int buckets, final int pageSize) {
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+
     if (typeName == null || typeName.isEmpty())
       throw new IllegalArgumentException("Missing type");
 
@@ -861,6 +890,7 @@ public class EmbeddedSchema implements Schema {
         database.getGraphEngine().createVertexType(database, c);
 
         saveConfiguration();
+        updateSecurity();
 
         return c;
       }
@@ -900,6 +930,8 @@ public class EmbeddedSchema implements Schema {
 
   @Override
   public EdgeType createEdgeType(final String typeName, final int buckets, final int pageSize) {
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+
     if (typeName == null || typeName.isEmpty())
       throw new IllegalArgumentException("Missing type");
 
@@ -931,6 +963,7 @@ public class EmbeddedSchema implements Schema {
         }
 
         saveConfiguration();
+        updateSecurity();
 
         return c;
       }
@@ -1266,5 +1299,10 @@ public class EmbeddedSchema implements Schema {
 
   public File getConfigurationFile() {
     return configurationFile;
+  }
+
+  private void updateSecurity() {
+    if (security != null)
+      security.updateSchema(database);
   }
 }

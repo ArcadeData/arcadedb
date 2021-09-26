@@ -18,21 +18,20 @@ package com.arcadedb.database;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.schema.EmbeddedSchema;
+import com.arcadedb.security.SecurityManager;
 
-import java.io.File;
+import java.io.*;
 import java.nio.charset.*;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.Callable;
+import java.util.*;
+import java.util.concurrent.*;
 
 public class DatabaseFactory implements AutoCloseable {
   private final        ContextConfiguration                                       contextConfiguration = new ContextConfiguration();
   private final        String                                                     databasePath;
-  private              boolean                                                    autoTransaction      = false;
   private final        Map<DatabaseInternal.CALLBACK_EVENT, List<Callable<Void>>> callbacks            = new HashMap<>();
   private final static Charset                                                    DEFAULT_CHARSET      = StandardCharsets.UTF_8;
+  private              SecurityManager                                            security;
+  private              boolean                                                    autoTransaction      = false;
 
   public DatabaseFactory(final String path) {
     if (path == null || path.isEmpty())
@@ -61,14 +60,14 @@ public class DatabaseFactory implements AutoCloseable {
   }
 
   public synchronized Database open(final PaginatedFile.MODE mode) {
-    final EmbeddedDatabase database = new EmbeddedDatabase(databasePath, mode, contextConfiguration, callbacks);
+    final EmbeddedDatabase database = new EmbeddedDatabase(databasePath, mode, contextConfiguration, security, callbacks);
     database.setAutoTransaction(autoTransaction);
     database.open();
     return database;
   }
 
   public synchronized Database create() {
-    final EmbeddedDatabase database = new EmbeddedDatabase(databasePath, PaginatedFile.MODE.READ_WRITE, contextConfiguration, callbacks);
+    final EmbeddedDatabase database = new EmbeddedDatabase(databasePath, PaginatedFile.MODE.READ_WRITE, contextConfiguration, security, callbacks);
     database.setAutoTransaction(autoTransaction);
     database.create();
     return database;
@@ -85,6 +84,15 @@ public class DatabaseFactory implements AutoCloseable {
 
   public static Charset getDefaultCharset() {
     return DEFAULT_CHARSET;
+  }
+
+  public SecurityManager getSecurity() {
+    return security;
+  }
+
+  public DatabaseFactory setSecurity(final SecurityManager security) {
+    this.security = security;
+    return this;
   }
 
   /**

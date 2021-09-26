@@ -17,106 +17,105 @@ package com.arcadedb.server.security;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.utility.FileUtils;
+import org.json.JSONObject;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.ByteArrayInputStream;
-import java.io.File;
-import java.io.IOException;
-import java.io.InputStream;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.Map;
+import java.io.*;
+import java.nio.file.*;
+import java.util.*;
 
 public class ServerSecurityIT {
 
+  private static final String PASSWORD = "dD5ed08c";
+
   @Test
   void shouldCreateDefaultRootUserAndPersistsSecurityConfigurationFromSetting() throws IOException {
-    //cleanup
-    final Path securityConfPath = Paths.get("./target", ServerSecurity.FILE_NAME);
-    Files.deleteIfExists(securityConfPath);
+    GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(PASSWORD);
 
-    GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue("dD5ed08c");
-    try {
-      final ServerSecurity security = new ServerSecurity(null, new ContextConfiguration(), "./target");
-      security.startService();
+    final ServerSecurity security = new ServerSecurity(null, new ContextConfiguration(), "./target");
+    security.startService();
+    security.loadUsers();
 
-      File securityConf = securityConfPath.toFile();
+    final Path securityConfPath = Paths.get("./target", SecurityUserFileRepository.FILE_NAME);
+    File securityConf = securityConfPath.toFile();
 
-      Assertions.assertTrue(securityConf.exists());
+    Assertions.assertTrue(securityConf.exists());
 
-      ServerSecurityFileRepository repository = new ServerSecurityFileRepository(securityConfPath.toString());
+    SecurityUserFileRepository repository = new SecurityUserFileRepository("./target");
 
-      final Map<String, ServerSecurity.ServerUser> users = repository.loadConfiguration();
+    final List<JSONObject> jsonl = repository.load();
 
-      Assertions.assertTrue(users.containsKey("root"));
-    } finally {
-      GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(null);
-    }
+    Assertions.assertEquals(1, jsonl.size());
+    Assertions.assertEquals("root", jsonl.get(0).getString("name"));
+    passwordShouldMatch(security, PASSWORD, jsonl.get(0).getString("password"));
   }
 
   @Test
   void shouldCreateDefaultRootUserAndPersistsSecurityConfigurationFromUserInput() throws IOException {
-    //cleanup
-    final Path securityConfPath = Paths.get("./target", ServerSecurity.FILE_NAME);
+    final Path securityConfPath = Paths.get("./target", SecurityUserFileRepository.FILE_NAME);
     Files.deleteIfExists(securityConfPath);
 
+    GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(null);
+
     if (System.console() != null) {
-      System.console().writer().println("dD5ed08c\r\ndD5ed08c\n");
+      System.console().writer().println(PASSWORD + "\r\n" + PASSWORD + "\n");
     } else {
-      final InputStream is = new ByteArrayInputStream("dD5ed08c\r\ndD5ed08c\n".getBytes());
+      final InputStream is = new ByteArrayInputStream((PASSWORD + "\r\n" + PASSWORD + "\n").getBytes());
       System.setIn(is);
     }
 
     final ServerSecurity security = new ServerSecurity(null, new ContextConfiguration(), "./target");
     security.startService();
+    security.loadUsers();
 
     File securityConf = securityConfPath.toFile();
 
     Assertions.assertTrue(securityConf.exists());
 
-    ServerSecurityFileRepository repository = new ServerSecurityFileRepository(securityConfPath.toString());
+    SecurityUserFileRepository repository = new SecurityUserFileRepository("./target");
 
-    final Map<String, ServerSecurity.ServerUser> users = repository.loadConfiguration();
+    final List<JSONObject> jsonl = repository.load();
 
-    Assertions.assertTrue(users.containsKey("root"));
+    Assertions.assertEquals(1, jsonl.size());
+    Assertions.assertEquals("root", jsonl.get(0).getString("name"));
+    passwordShouldMatch(security, PASSWORD, jsonl.get(0).getString("password"));
   }
 
   @Test
   void shouldLoadProvidedSecurityConfiguration() throws IOException {
-    //cleanup
-    final Path securityConfPath = Paths.get("./target", ServerSecurity.FILE_NAME);
-    Files.deleteIfExists(securityConfPath);
+    GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(PASSWORD);
 
-    //given
-    ServerSecurityFileRepository repository = new ServerSecurityFileRepository(securityConfPath.toString());
+    SecurityUserFileRepository repository = new SecurityUserFileRepository("./target");
 
-    final Map<String, ServerSecurity.ServerUser> users = new HashMap<>();
+    final ServerSecurity security = new ServerSecurity(null, new ContextConfiguration(), "./target");
 
-    users.put("providedUser", new ServerSecurity.ServerUser("providedUser", "password", false, Collections.singletonList("database")));
+    final JSONObject json = new JSONObject().put("name", "providedUser").put("password", security.encodePassword("MyPassword12345"))
+        .put("databases", new JSONObject());
 
-    repository.saveConfiguration(users);
+    repository.save(Collections.singletonList(json));
 
     //when
-    final ServerSecurity security = new ServerSecurity(null, new ContextConfiguration(), "./target");
     security.startService();
+    security.loadUsers();
 
     Assertions.assertTrue(security.existsUser("providedUser"));
     Assertions.assertFalse(security.existsUser("root"));
+    passwordShouldMatch(security, "MyPassword12345", security.getUser("providedUser").getPassword());
   }
 
   @Test
-  public void checkQuery() {
+  public void checkPasswordHash() {
     final ServerSecurity security = new ServerSecurity(null, new ContextConfiguration(), "./target");
     security.startService();
 
     Assertions.assertEquals("PBKDF2WithHmacSHA256$65536$ThisIsTheSalt$wIKUzWYH72cKJRnFZ0PTSevERtwZTNdN+W4/Fd7xBvw=",
-        security.encode("ThisIsATest", "ThisIsTheSalt"));
+        security.encodePassword("ThisIsATest", "ThisIsTheSalt"));
     Assertions.assertEquals("PBKDF2WithHmacSHA256$65536$ThisIsTheSalt$wIKUzWYH72cKJRnFZ0PTSevERtwZTNdN+W4/Fd7xBvw=",
-        security.encode("ThisIsATest", "ThisIsTheSalt"));
+        security.encodePassword("ThisIsATest", "ThisIsTheSalt"));
 
     for (int i = 0; i < 1000000; ++i) {
       Assertions.assertFalse(ServerSecurity.generateRandomSalt().contains("$"));
@@ -129,7 +128,20 @@ public class ServerSecurityIT {
     Assertions.assertTrue(security.passwordMatch(password, expectedHash));
   }
 
-  private void passwordShouldNotMatch(final ServerSecurity security, String password, String expectedHash) {
-    Assertions.assertFalse(security.passwordMatch(password, expectedHash));
+  @BeforeEach
+  public void beforeAll() {
+    FileUtils.deleteRecursively(new File("./target/config"));
+    FileUtils.deleteRecursively(new File("./target/databases"));
+    GlobalConfiguration.SERVER_DATABASE_DIRECTORY.setValue("./target/databases");
+    GlobalConfiguration.SERVER_ROOT_PATH.setValue("./target");
+    GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(null);
+  }
+
+  @AfterEach
+  public void afterAll() {
+    GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(null);
+
+    FileUtils.deleteRecursively(new File("./target/config"));
+    FileUtils.deleteRecursively(new File("./target/databases"));
   }
 }

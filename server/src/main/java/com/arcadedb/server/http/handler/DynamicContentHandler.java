@@ -20,7 +20,7 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.http.HttpServer;
-import com.arcadedb.server.security.ServerSecurity;
+import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.FileUtils;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.Headers;
@@ -38,7 +38,7 @@ public class DynamicContentHandler extends AbstractHandler {
   }
 
   @Override
-  public void execute(final HttpServerExchange exchange, ServerSecurity.ServerUser user) throws Exception {
+  public void execute(final HttpServerExchange exchange, final ServerSecurityUser user) throws Exception {
     String uri = exchange.getRequestURI();
 
     if (uri.contains("..")) {

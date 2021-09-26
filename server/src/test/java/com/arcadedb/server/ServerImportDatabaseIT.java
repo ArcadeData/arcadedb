@@ -18,12 +18,28 @@ package com.arcadedb.server;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.utility.FileUtils;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
+import java.io.*;
 
 public class ServerImportDatabaseIT extends BaseGraphServerTest {
+  public ServerImportDatabaseIT() {
+    FileUtils.deleteRecursively(new File("./target/config"));
+    FileUtils.deleteRecursively(new File("./target/databases"));
+    GlobalConfiguration.SERVER_DATABASE_DIRECTORY.setValue("./target/databases");
+    GlobalConfiguration.SERVER_ROOT_PATH.setValue("./target");
+  }
+
+  @AfterEach
+  @Override
+  public void endTest() {
+    super.endTest();
+    FileUtils.deleteRecursively(new File("./target/config"));
+    FileUtils.deleteRecursively(new File("./target/databases"));
+  }
 
   @Override
   protected boolean isCreateDatabases() {
@@ -36,13 +52,13 @@ public class ServerImportDatabaseIT extends BaseGraphServerTest {
   }
 
   protected void onServerConfiguration(final ContextConfiguration config) {
-    config.setValue(GlobalConfiguration.SERVER_DEFAULT_DATABASES, "Movies[elon:musk]{import:classpath://orientdb-export-small.gz}");
+    config.setValue(GlobalConfiguration.SERVER_DEFAULT_DATABASES, "Movies[elon:musk:admin]{import:classpath://orientdb-export-small.gz}");
   }
 
   @Test
-  public void checkDefaultDatabases() throws IOException {
+  public void checkDefaultDatabases() {
     deleteAllDatabases();
-    getServer(0).getSecurity().authenticate("elon", "musk");
+    getServer(0).getSecurity().authenticate("elon", "musk", "Movies");
     Database database = getServer(0).getDatabase("Movies");
     Assertions.assertEquals(500, database.countType("Person", true));
     deleteAllDatabases();

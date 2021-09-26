@@ -101,7 +101,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
       DatabaseContext.INSTANCE.getContext(database.getDatabasePath()).asyncMode = true;
       database.getTransaction().setUseWAL(transactionUseWAL);
-      database.getTransaction().setWALFlush(transactionSync);
+      database.setWALFlush(transactionSync);
       database.getTransaction().begin();
 
       while (!forceShutdown) {

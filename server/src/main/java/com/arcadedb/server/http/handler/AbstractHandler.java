@@ -22,19 +22,20 @@ import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
+import com.arcadedb.security.SecurityUser;
 import com.arcadedb.server.ServerMetrics;
 import com.arcadedb.server.http.HttpServer;
-import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityException;
+import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpHandler;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HeaderValues;
 import io.undertow.util.Headers;
 import org.json.JSONObject;
 
-import java.io.IOException;
-import java.util.Base64;
-import java.util.logging.Level;
+import java.io.*;
+import java.util.*;
+import java.util.logging.*;
 
 public abstract class AbstractHandler implements HttpHandler {
   private              boolean    requireAuthentication = true;
@@ -45,7 +46,7 @@ public abstract class AbstractHandler implements HttpHandler {
     this.httpServer = httpServer;
   }
 
-  protected abstract void execute(HttpServerExchange exchange, ServerSecurity.ServerUser user) throws Exception;
+  protected abstract void execute(HttpServerExchange exchange, ServerSecurityUser user) throws Exception;
 
   protected String parseRequestPayload(final HttpServerExchange e) throws IOException {
     final StringBuilder result = new StringBuilder();
@@ -53,7 +54,7 @@ public abstract class AbstractHandler implements HttpHandler {
     e.getRequestReceiver().receiveFullBytes(
         // OK
         (exchange, data) -> {
-          result.append(new String(data,DatabaseFactory.getDefaultCharset()));
+          result.append(new String(data, DatabaseFactory.getDefaultCharset()));
         },
         // ERROR
         (exchange, err) -> {
@@ -78,7 +79,7 @@ public abstract class AbstractHandler implements HttpHandler {
         return;
       }
 
-      ServerSecurity.ServerUser user = null;
+      ServerSecurityUser user = null;
       if (authorization != null) {
         final String auth = authorization.getFirst();
         if (!auth.startsWith(AUTHORIZATION_BASIC)) {
@@ -113,14 +114,13 @@ public abstract class AbstractHandler implements HttpHandler {
     } catch (ServerSecurityException e) {
       LogManager.instance().log(this, Level.FINE, "Security error on command execution (%s)", e, getClass().getSimpleName());
       exchange.setStatusCode(403);
-      exchange.getResponseSender()
-          .send("{ \"error\" : \"Security error\", \"detail\":\"" + e + "\", \"exception\": \"" + e.getClass().getName() + "\"}");
+      exchange.getResponseSender().send("{ \"error\" : \"Security error\", \"detail\":\"" + e + "\", \"exception\": \"" + e.getClass().getName() + "\"}");
     } catch (ServerIsNotTheLeaderException e) {
       LogManager.instance().log(this, Level.FINE, "Error on command execution (%s)", e, getClass().getSimpleName());
       exchange.setStatusCode(400);
       exchange.getResponseSender().send(
-          "{ \"error\" : \"Cannot execute command\", \"detail\":\"" + e + "\", \"exception\": \"" + e.getClass().getName()
-              + "\", \"exceptionArg\": \"" + e.getLeaderAddress() + "\"}");
+          "{ \"error\" : \"Cannot execute command\", \"detail\":\"" + e + "\", \"exception\": \"" + e.getClass().getName() + "\", \"exceptionArg\": \""
+              + e.getLeaderAddress() + "\"}");
     } catch (NeedRetryException e) {
       LogManager.instance().log(this, Level.FINE, "Error on command execution (%s)", e, getClass().getSimpleName());
       exchange.setStatusCode(503);
@@ -130,8 +130,8 @@ public abstract class AbstractHandler implements HttpHandler {
       LogManager.instance().log(this, Level.FINE, "Error on command execution (%s)", e, getClass().getSimpleName());
       exchange.setStatusCode(503);
       exchange.getResponseSender().send(
-          "{ \"error\" : \"Cannot execute command\", \"detail\":\"" + e + "\", \"exception\": \"" + e.getClass().getName()
-              + "\", \"exceptionArg\": \"" + e.getIndexName() + "|" + e.getKeys() + "|" + e.getCurrentIndexedRID() + "\" }");
+          "{ \"error\" : \"Cannot execute command\", \"detail\":\"" + e + "\", \"exception\": \"" + e.getClass().getName() + "\", \"exceptionArg\": \""
+              + e.getIndexName() + "|" + e.getKeys() + "|" + e.getCurrentIndexedRID() + "\" }");
     } catch (CommandExecutionException e) {
       Throwable realException = e;
       if (e.getCause() != null)
@@ -144,8 +144,7 @@ public abstract class AbstractHandler implements HttpHandler {
     } catch (Exception e) {
       LogManager.instance().log(this, Level.FINE, "Error on command execution (%s)", e, getClass().getSimpleName());
       exchange.setStatusCode(500);
-      exchange.getResponseSender()
-          .send("{ \"error\" : \"Internal error\", \"detail\":\"" + e + "\", \"exception\": \"" + e.getClass().getName() + "\"}");
+      exchange.getResponseSender().send("{ \"error\" : \"Internal error\", \"detail\":\"" + e + "\", \"exception\": \"" + e.getClass().getName() + "\"}");
     } finally {
       LogManager.instance().setContext(null);
     }
@@ -159,12 +158,12 @@ public abstract class AbstractHandler implements HttpHandler {
     this.requireAuthentication = requireAuthentication;
   }
 
-  protected ServerSecurity.ServerUser authenticate(final String userName, final String userPassword) {
-    return httpServer.getServer().getSecurity().authenticate(userName, userPassword);
+  protected ServerSecurityUser authenticate(final String userName, final String userPassword) {
+    return httpServer.getServer().getSecurity().authenticate(userName, userPassword, null);
   }
 
-  protected JSONObject createResult(final ServerSecurity.ServerUser user) {
-    return new JSONObject().put("user", user.name).put("version", Constants.getVersion());
+  protected JSONObject createResult(final SecurityUser user) {
+    return new JSONObject().put("user", user.getName()).put("version", Constants.getVersion());
   }
 
   protected String decode(final String command) {

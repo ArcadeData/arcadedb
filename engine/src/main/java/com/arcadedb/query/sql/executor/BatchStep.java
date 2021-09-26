@@ -15,12 +15,11 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.Batch;
 
-import java.util.Map;
-import java.util.Optional;
+import java.util.*;
 
 /**
  * Created by luigidellaquila on 14/02/17.
@@ -48,7 +47,7 @@ public class BatchStep extends AbstractExecutionStep {
       public Result next() {
         Result res = prevResult.next();
         if (count % batchSize == 0) {
-          Database db = ctx.getDatabase();
+          DatabaseInternal db = ctx.getDatabase();
           if (db.getTransaction().isActive()) {
             db.commit();
             db.begin();

@@ -25,13 +25,11 @@ import org.json.JSONObject;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.io.File;
-import java.io.IOException;
-import java.net.URL;
+import java.io.*;
+import java.net.*;
 
 public class OrientDBImporterIT {
   private final static String DATABASE_PATH = "target/databases/performance";
-  private final static String SECURITY_PATH = "target/databases/performance/security.json";
 
   @Test
   public void testImportOK() throws IOException {
@@ -40,8 +38,7 @@ public class OrientDBImporterIT {
     try {
       final URL inputFile = OrientDBImporterIT.class.getClassLoader().getResource("orientdb-export-small.gz");
 
-      final OrientDBImporter importer = new OrientDBImporter(
-          ("-i " + inputFile.getFile() + " -d " + DATABASE_PATH + " -s " + SECURITY_PATH + " -o").split(" "));
+      final OrientDBImporter importer = new OrientDBImporter(("-i " + inputFile.getFile() + " -d " + DATABASE_PATH + " -s -o").split(" "));
       importer.run().close();
 
       Assertions.assertFalse(importer.isError());
@@ -61,11 +58,11 @@ public class OrientDBImporterIT {
           Assertions.assertEquals(10_000, database.countType("Friend", true));
           Assertions.assertEquals(Schema.INDEX_TYPE.LSM_TREE, database.getSchema().getIndexByName("Friend[id]").getType());
 
-          final File securityFile = new File(SECURITY_PATH);
+          final File securityFile = new File("./server-users.jsonl");
           Assertions.assertTrue(securityFile.exists());
 
           final JSONObject security = new JSONObject(FileUtils.readFileAsString(securityFile, "UTF8"));
-          Assertions.assertNotNull(security.getJSONObject("users"));
+          Assertions.assertEquals("admin", security.getString("name"));
         }
       }
     } finally {
@@ -76,7 +73,7 @@ public class OrientDBImporterIT {
   @Test
   public void testImportNoFile() throws IOException {
     final URL inputFile = OrientDBImporterIT.class.getClassLoader().getResource("orientdb-export-small.gz");
-    final OrientDBImporter importer = new OrientDBImporter(("-i " + inputFile.getFile() + "2 -d " + DATABASE_PATH + " -s security.json -o").split(" "));
+    final OrientDBImporter importer = new OrientDBImporter(("-i " + inputFile.getFile() + "2 -d " + DATABASE_PATH + " -s -o").split(" "));
     try {
       importer.run();
       Assertions.fail("Expected File Not Found Exception");

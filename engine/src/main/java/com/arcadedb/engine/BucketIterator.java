@@ -15,12 +15,16 @@
  */
 package com.arcadedb.engine;
 
+import com.arcadedb.database.Binary;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
-import com.arcadedb.database.*;
 import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.security.SecurityDatabaseUser;
 
-import java.io.IOException;
-import java.util.Iterator;
+import java.io.*;
+import java.util.*;
 
 import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
 
@@ -36,8 +40,10 @@ public class BucketIterator implements Iterator<Record> {
   int      currentRecordInPage = 0;
 
   BucketIterator(Bucket bucket, Database db) {
-    this.bucket = bucket;
+    ((DatabaseInternal) db).checkPermissionsOnFile(bucket.id, SecurityDatabaseUser.ACCESS.READ_RECORD);
+
     this.database = (DatabaseInternal) db;
+    this.bucket = bucket;
     this.totalPages = bucket.pageCount.get();
 
     final Integer txPageCounter = database.getTransaction().getPageCounter(bucket.id);

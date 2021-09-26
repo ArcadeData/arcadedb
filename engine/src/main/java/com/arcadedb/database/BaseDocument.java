@@ -30,6 +30,16 @@ public abstract class BaseDocument extends BaseRecord implements Document {
     this.type = type;
   }
 
+  @Override
+  public Document asDocument() {
+    return this;
+  }
+
+  @Override
+  public Document asDocument(final boolean loadContent) {
+    return this;
+  }
+
   public DetachedDocument detach() {
     return new DetachedDocument(this);
   }
