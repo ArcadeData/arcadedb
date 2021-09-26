@@ -26,6 +26,8 @@ import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.integration.exporter.Exporter;
+import com.arcadedb.integration.importer.Importer;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -187,14 +189,14 @@ public class Console {
     checkDatabaseIsOpen();
     final String fileName = line.substring("import".length()).trim();
 
-    new DatabaseImporter().export(fileName, localDatabase, terminal.writer());
+    new Importer(localDatabase, fileName).load();
   }
 
   private void executeExportDatabase(final String line) throws IOException {
     checkDatabaseIsOpen();
     final String fileName = line.substring("export".length()).trim();
 
-    new DatabaseExporter().export(fileName, localDatabase, terminal.writer());
+    new Exporter(localDatabase, fileName).exportDatabase();
   }
 
   private void executeSet(final String line) {
