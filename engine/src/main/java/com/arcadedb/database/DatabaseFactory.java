@@ -60,17 +60,15 @@ public class DatabaseFactory implements AutoCloseable {
   }
 
   public synchronized Database open(final PaginatedFile.MODE mode) {
-    final EmbeddedDatabase database = new EmbeddedDatabase(databasePath, mode, contextConfiguration, callbacks);
+    final EmbeddedDatabase database = new EmbeddedDatabase(databasePath, mode, contextConfiguration, security, callbacks);
     database.setAutoTransaction(autoTransaction);
-    database.setSecurity(security);
     database.open();
     return database;
   }
 
   public synchronized Database create() {
-    final EmbeddedDatabase database = new EmbeddedDatabase(databasePath, PaginatedFile.MODE.READ_WRITE, contextConfiguration, callbacks);
+    final EmbeddedDatabase database = new EmbeddedDatabase(databasePath, PaginatedFile.MODE.READ_WRITE, contextConfiguration, security, callbacks);
     database.setAutoTransaction(autoTransaction);
-    database.setSecurity(security);
     database.create();
     return database;
   }

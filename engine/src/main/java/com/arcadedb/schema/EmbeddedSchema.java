@@ -62,6 +62,7 @@ public class EmbeddedSchema implements Schema {
   private static final int                        EDGE_DEF_PAGE_SIZE        = Bucket.DEF_PAGE_SIZE / 3;
   private static final int                        DEFAULT_CLUSTERS_PER_TYPE = 8;
   private final        DatabaseInternal           database;
+  private final        SecurityManager            security;
   private final        List<PaginatedComponent>   files                     = new ArrayList<>();
   private final        Map<String, DocumentType>  types                     = new HashMap<>();
   private final        Map<String, Bucket>        bucketMap                 = new HashMap<>();
@@ -79,9 +80,10 @@ public class EmbeddedSchema implements Schema {
   private              boolean                    loadInRamCompleted        = false;
   private              boolean                    multipleUpdate            = false;
 
-  public EmbeddedSchema(final DatabaseInternal database, final String databasePath, final PaginatedFile.MODE mode) {
+  public EmbeddedSchema(final DatabaseInternal database, final String databasePath, final SecurityManager security) {
     this.database = database;
     this.databasePath = databasePath;
+    this.security = security;
 
     paginatedComponentFactory = new PaginatedComponentFactory(database);
     paginatedComponentFactory.registerComponent(Dictionary.DICT_EXT, new Dictionary.PaginatedComponentFactoryHandler());
@@ -1211,12 +1213,6 @@ public class EmbeddedSchema implements Schema {
     }
   }
 
-  public void updateSecurity() {
-    final SecurityManager security = database.getSecurity();
-    if (security != null)
-      security.updateSchema(database);
-  }
-
   public JSONObject serializeConfiguration() {
     final JSONObject root = new JSONObject();
     root.put("version", Constants.getRawVersion());
@@ -1303,5 +1299,10 @@ public class EmbeddedSchema implements Schema {
 
   public File getConfigurationFile() {
     return configurationFile;
+  }
+
+  private void updateSecurity() {
+    if (security != null)
+      security.updateSchema(database);
   }
 }

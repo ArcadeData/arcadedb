@@ -55,7 +55,6 @@ import com.arcadedb.query.sql.parser.ExecutionPlanCache;
 import com.arcadedb.query.sql.parser.StatementCache;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.security.SecurityDatabaseUser;
-import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.message.CommandForwardRequest;
@@ -294,16 +293,6 @@ public class ReplicatedDatabase implements DatabaseInternal {
   @Override
   public int getEdgeListSize(int previousSize) {
     return proxied.getEdgeListSize(previousSize);
-  }
-
-  @Override
-  public SecurityManager getSecurity() {
-    return proxied.getSecurity();
-  }
-
-  @Override
-  public void setSecurity(final SecurityManager security) {
-    proxied.setSecurity(security);
   }
 
   @Override

@@ -34,5 +34,5 @@ public interface SecurityManager {
   /**
    * Notifies the update of the schema.
    */
-  void updateSchema(DatabaseInternal databaseName);
+  void updateSchema(DatabaseInternal database);
 }

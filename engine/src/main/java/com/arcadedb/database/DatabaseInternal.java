@@ -23,7 +23,6 @@ import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.query.sql.parser.ExecutionPlanCache;
 import com.arcadedb.query.sql.parser.StatementCache;
 import com.arcadedb.security.SecurityDatabaseUser;
-import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.BinarySerializer;
 
 import java.io.*;
@@ -93,8 +92,4 @@ public interface DatabaseInternal extends Database {
   ExecutionPlanCache getExecutionPlanCache();
 
   int getEdgeListSize(int previousSize);
-
-  SecurityManager getSecurity();
-
-  void setSecurity(SecurityManager security);
 }

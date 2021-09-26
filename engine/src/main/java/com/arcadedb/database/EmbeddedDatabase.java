@@ -123,11 +123,12 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   private              int                                       edgeListSize            = EDGE_LIST_INITIAL_CHUNK_SIZE;
   private              SecurityManager                           security;
 
-  protected EmbeddedDatabase(final String path, final PaginatedFile.MODE mode, final ContextConfiguration configuration,
+  protected EmbeddedDatabase(final String path, final PaginatedFile.MODE mode, final ContextConfiguration configuration, final SecurityManager security,
       final Map<CALLBACK_EVENT, List<Callable<Void>>> callbacks) {
     try {
       this.mode = mode;
       this.configuration = configuration;
+      this.security = security;
       this.callbacks = callbacks;
       this.walFactory = mode == PaginatedFile.MODE.READ_WRITE ? new WALFileFactoryEmbedded() : null;
       this.statementCache = new StatementCache(this, configuration.getValueAsInteger(GlobalConfiguration.SQL_STATEMENT_CACHE));
@@ -207,7 +208,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
       open = true;
 
       try {
-        schema = new EmbeddedSchema(wrappedDatabaseInstance, databasePath, mode);
+        schema = new EmbeddedSchema(wrappedDatabaseInstance, databasePath, security);
 
         if (fileManager.getFiles().isEmpty())
           schema.create(mode);
@@ -217,7 +218,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
         if (mode == PaginatedFile.MODE.READ_WRITE)
           checkForRecovery();
 
-        schema.updateSecurity();
+        security.updateSchema(this);
 
         Profiler.INSTANCE.registerDatabase(this);
 
@@ -593,6 +594,9 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   }
 
   public void checkPermissionsOnDatabase(final SecurityDatabaseUser.DATABASE_ACCESS access) {
+    if (security == null)
+      return;
+
     final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContext(databasePath);
     if (dbContext == null)
       return;
@@ -608,6 +612,9 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
   @Override
   public void checkPermissionsOnFile(final int fileId, final SecurityDatabaseUser.ACCESS access) {
+    if (security == null)
+      return;
+
     final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContext(databasePath);
     if (dbContext == null)
       return;
@@ -1301,12 +1308,6 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
   public SecurityManager getSecurity() {
     return security;
-  }
-
-  public void setSecurity(final SecurityManager security) {
-    this.security = security;
-    if (schema != null)
-      schema.updateSecurity();
   }
 
   /**
