@@ -40,7 +40,7 @@ public class CypherTest {
 
       graph.getDatabase().getSchema().createVertexType("Person");
 
-      graph.getDatabase().transaction((tx) -> {
+      graph.getDatabase().transaction(() -> {
         for (int i = 0; i < 50; i++)
           graph.getDatabase().newVertex("Person").set("name", "Jay").set("age", i).save();
       });
@@ -77,7 +77,7 @@ public class CypherTest {
 
       database.getSchema().createVertexType("Person");
 
-      database.transaction((tx) -> {
+      database.transaction(() -> {
         for (int i = 0; i < 50; i++)
           database.newVertex("Person").set("name", "Jay").set("age", i).save();
       });

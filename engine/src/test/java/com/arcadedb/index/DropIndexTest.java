@@ -39,7 +39,7 @@ public class DropIndexTest extends TestHelper {
   public void testDropAndRecreate() {
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
         Assertions.assertFalse(database.getSchema().existsType(TYPE_NAME));
 
         final DocumentType type = database.getSchema().createDocumentType(TYPE_NAME, 3);
@@ -122,7 +122,7 @@ public class DropIndexTest extends TestHelper {
   public void testDropAndRecreateTypeWithIndex() {
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
         Assertions.assertFalse(database.getSchema().existsType(TYPE_NAME));
 
         final DocumentType type = database.getSchema().createDocumentType(TYPE_NAME, 3);

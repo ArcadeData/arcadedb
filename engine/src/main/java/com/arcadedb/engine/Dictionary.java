@@ -87,7 +87,7 @@ public class Dictionary extends PaginatedComponent {
 
           final AtomicInteger newPos = new AtomicInteger();
 
-          database.transaction(tx -> {
+          database.transaction(() -> {
             newPos.set(dictionary.size());
             addItemToPage(name);
           }, false);

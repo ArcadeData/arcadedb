@@ -94,9 +94,10 @@ public abstract class BaseGraphServerTest {
       databases = new Database[0];
 
     if (isPopulateDatabase()) {
-      getDatabase(0).transaction(new Database.TransactionScope() {
+      final Database database = getDatabase(0);
+      database.transaction(new Database.TransactionScope() {
         @Override
-        public void execute(Database database) {
+        public void execute() {
           final Schema schema = database.getSchema();
           Assertions.assertFalse(schema.existsType(VERTEX1_TYPE_NAME));
 

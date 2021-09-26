@@ -40,7 +40,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   public void testGet() {
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
 
         int total = 0;
 
@@ -68,7 +68,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   public void testGetAsRange() {
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
 
         final List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
         for (int i = 0; i < TOT; ++i) {
@@ -110,7 +110,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   public void testRangeFromHead() {
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
 
         final List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
         for (int i = 0; i < TOT - 1; ++i) {
@@ -221,7 +221,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   public void testScanIndexAscending() {
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
 
         try {
           // WAIT FOR THE INDEX TO BE COMPACTED
@@ -271,7 +271,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   public void testScanIndexDescending() {
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
 
         try {
           // WAIT FOR THE INDEX TO BE COMPACTED
@@ -315,7 +315,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   public void testScanIndexAscendingPartialInclusive() {
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
 
         int total = 0;
 
@@ -351,7 +351,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   public void testScanIndexAscendingPartialExclusive() {
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
 
         int total = 0;
 
@@ -387,7 +387,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   public void testScanIndexDescendingPartialInclusive() {
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
 
         int total = 0;
 
@@ -422,7 +422,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   public void testScanIndexDescendingPartialExclusive() {
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
 
         int total = 0;
 
@@ -457,7 +457,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   public void testScanIndexRangeInclusive2Inclusive() {
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
 
         int total = 0;
 
@@ -497,7 +497,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   public void testScanIndexRangeInclusive2Exclusive() {
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
 
         int total = 0;
 
@@ -537,7 +537,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   public void testScanIndexRangeExclusive2Inclusive() {
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
 
         int total = 0;
 
@@ -577,7 +577,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   public void testScanIndexRangeExclusive2Exclusive() {
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
 
         int total = 0;
 
@@ -758,7 +758,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   protected void beginTest() {
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
         Assertions.assertFalse(database.getSchema().existsType(TYPE_NAME));
 
         final DocumentType type = database.getSchema().createDocumentType(TYPE_NAME, 3);

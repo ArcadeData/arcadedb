@@ -25,8 +25,8 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.Assertions;
 
-import java.util.UUID;
-import java.util.logging.Level;
+import java.util.*;
+import java.util.logging.*;
 
 public class ReplicationSpeedQuorumMajorityIT extends BasePerformanceTest {
   public static void main(final String[] args) {
@@ -64,9 +64,10 @@ public class ReplicationSpeedQuorumMajorityIT extends BasePerformanceTest {
       databases[i] = new DatabaseFactory(getDatabasePath(i)).create();
     }
 
-    getDatabase(0).transaction(new Database.TransactionScope() {
+    final Database database = getDatabase(0);
+    database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
         if (isPopulateDatabase()) {
           Assertions.assertFalse(database.getSchema().existsType("Device"));
 
@@ -91,8 +92,7 @@ public class ReplicationSpeedQuorumMajorityIT extends BasePerformanceTest {
 
           database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "id" }, 2 * 1024 * 1024);
           database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "number" }, 2 * 1024 * 1024);
-          database.getSchema()
-              .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "relativeName" }, 2 * 1024 * 1024);
+          database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "relativeName" }, 2 * 1024 * 1024);
         }
       }
     });
@@ -111,8 +111,7 @@ public class ReplicationSpeedQuorumMajorityIT extends BasePerformanceTest {
 //    db.begin();
 //    db.setWALFlush(WALFile.FLUSH_TYPE.YES_NO_METADATA);
 
-    LogManager.instance()
-        .log(this, Level.INFO, "TEST: Executing %s transactions with %d vertices each...", null, getTxs(), getVerticesPerTx());
+    LogManager.instance().log(this, Level.INFO, "TEST: Executing %s transactions with %d vertices each...", null, getTxs(), getVerticesPerTx());
 
     final int totalToInsert = getTxs() * getVerticesPerTx();
     long counter = 0;
@@ -158,8 +157,7 @@ public class ReplicationSpeedQuorumMajorityIT extends BasePerformanceTest {
 
         if (counter % 1000 == 0) {
           if (System.currentTimeMillis() - lastLap > 1000) {
-            LogManager.instance()
-                .log(this, Level.INFO, "TEST: - Progress %d/%d (%d records/sec)", null, counter, totalToInsert, counter - lastLapCounter);
+            LogManager.instance().log(this, Level.INFO, "TEST: - Progress %d/%d (%d records/sec)", null, counter, totalToInsert, counter - lastLapCounter);
             lastLap = System.currentTimeMillis();
             lastLapCounter = counter;
           }

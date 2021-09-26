@@ -156,7 +156,7 @@ public class TransactionBucketTest extends TestHelper {
 
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
         Assertions.assertEquals(TOT, database.countBucket("V_0"));
       }
     });
@@ -242,7 +242,7 @@ public class TransactionBucketTest extends TestHelper {
 
   @Test
   public void testScanOnEdgesAfterTx() {
-    database.transaction((tx) -> {
+    database.transaction(() -> {
       database.getSchema().createVertexType("testIteratorOnEdges_Vertex");
       database.getSchema().createEdgeType("testIteratorOnEdges_Edge");
 
@@ -252,7 +252,7 @@ public class TransactionBucketTest extends TestHelper {
     });
 
 
-    database.transaction((tx) -> {
+    database.transaction(() -> {
       final ResultSet result = database.query("sql", "select from testIteratorOnEdges_Edge");
 
       Assertions.assertTrue(result.hasNext());
@@ -271,7 +271,7 @@ public class TransactionBucketTest extends TestHelper {
   protected void beginTest() {
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
         if (!database.getSchema().existsType("V"))
           database.getSchema().createDocumentType("V");
 

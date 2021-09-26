@@ -40,7 +40,7 @@ public class MongoDBQueryTest {
 
     database.getSchema().createDocumentType("MongoDBCollection");
 
-    database.transaction((tx) -> {
+    database.transaction(() -> {
       for (int i = 0; i < 10; i++)
         database.newDocument("MongoDBCollection").set("name", "Jay").set("lastName", "Miner").set("id", i).save();
     });

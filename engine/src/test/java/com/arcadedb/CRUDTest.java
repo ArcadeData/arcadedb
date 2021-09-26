@@ -147,7 +147,7 @@ public class CRUDTest extends TestHelper {
 
         db.commit();
 
-        database.transaction((tx) -> {
+        database.transaction(() -> {
           Assertions.assertEquals(0, db.countType("V", true));
         });
 
@@ -155,7 +155,7 @@ public class CRUDTest extends TestHelper {
 
         createAll();
 
-        database.transaction((tx) -> {
+        database.transaction(() -> {
           Assertions.assertEquals(TOT, db.countType("V", true));
         });
       }
@@ -168,7 +168,7 @@ public class CRUDTest extends TestHelper {
   private void createAll() {
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
         if (!database.getSchema().existsType("V"))
           database.getSchema().createDocumentType("V");
 

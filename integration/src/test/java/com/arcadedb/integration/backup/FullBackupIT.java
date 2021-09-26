@@ -125,7 +125,7 @@ public class FullBackupIT {
 
       final VertexType type = importedDatabase.getSchema().createVertexType("BackupTest", CONCURRENT_THREADS);
 
-      importedDatabase.transaction((tx) -> {
+      importedDatabase.transaction(() -> {
         type.createProperty("thread", Type.INTEGER);
         type.createProperty("id", Type.INTEGER);
         type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, new String[] { "thread", "id" });
@@ -145,7 +145,7 @@ public class FullBackupIT {
           public void run() {
             final AtomicInteger totalPerThread = new AtomicInteger();
             for (int j = 0; j < 500; j++) {
-              importedDatabase.transaction((tx) -> {
+              importedDatabase.transaction(() -> {
                 for (int k = 0; k < 500; k++) {
                   MutableVertex v = importedDatabase.newVertex("BackupTest").set("thread", threadId).set("id", totalPerThread.getAndIncrement()).save();
                   Assertions.assertEquals(threadBucket.getId(), v.getIdentity().getBucketId());

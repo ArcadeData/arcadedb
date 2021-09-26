@@ -30,7 +30,7 @@ import java.util.Iterator;
 public class DictionaryTest extends TestHelper {
   @Test
   public void updateName() {
-    database.transaction((database) -> {
+    database.transaction(() -> {
       Assertions.assertFalse(database.getSchema().existsType("V"));
 
       final DocumentType type = database.getSchema().createDocumentType("V", 3);
@@ -48,7 +48,7 @@ public class DictionaryTest extends TestHelper {
 
     Assertions.assertEquals(4, database.getSchema().getDictionary().getDictionaryMap().size());
 
-    database.transaction((database) -> {
+    database.transaction(() -> {
       Assertions.assertTrue(database.getSchema().existsType("V"));
 
       final MutableDocument v = database.newDocument("V");
@@ -61,14 +61,14 @@ public class DictionaryTest extends TestHelper {
 
     Assertions.assertEquals(5, database.getSchema().getDictionary().getDictionaryMap().size());
 
-    database.transaction((database) -> {
+    database.transaction(() -> {
       Assertions.assertTrue(database.getSchema().existsType("V"));
       database.getSchema().getDictionary().updateName("name", "firstName");
     });
 
     Assertions.assertEquals(5, database.getSchema().getDictionary().getDictionaryMap().size());
 
-    database.transaction((database) -> {
+    database.transaction(() -> {
       final ResultSet iter = database.query("sql", "select from V order by id asc");
 
       int i = 0;
@@ -93,7 +93,7 @@ public class DictionaryTest extends TestHelper {
     });
 
     try {
-      database.transaction((database) -> {
+      database.transaction(() -> {
         Assertions.assertTrue(database.getSchema().existsType("V"));
         database.getSchema().getDictionary().updateName("V", "V2");
       });
@@ -108,7 +108,7 @@ public class DictionaryTest extends TestHelper {
 
     for (int i = 0; i < 10; i++) {
       int finalI = i;
-      database.transaction((database) -> {
+      database.transaction(() -> {
         final MutableVertex v = database.newVertex("Babylonia");
         for (int k = 0; k < 10; k++) {
           v.set("origin", finalI);
@@ -141,7 +141,7 @@ public class DictionaryTest extends TestHelper {
       for (int k = 1; k < 10; k++)
         babylonia.createProperty("p" + ((finalI * 10) + k), Type.INTEGER);
 
-      database.transaction((database) -> {
+      database.transaction(() -> {
         final MutableVertex v = database.newVertex("Babylonia");
         for (int k = 0; k < 10; k++) {
           v.set("origin", finalI);
@@ -171,7 +171,7 @@ public class DictionaryTest extends TestHelper {
     for (int i = 0; i < 10; i++) {
       int finalI = i;
 
-      database.transaction((database) -> {
+      database.transaction(() -> {
         for (int k = 1; k < 10; k++)
           babylonia.createProperty("p" + ((finalI * 10) + k), Type.INTEGER);
 
@@ -204,11 +204,11 @@ public class DictionaryTest extends TestHelper {
     for (int i = 0; i < 10; i++) {
       int finalI = i;
 
-      database.transaction((database) -> {
+      database.transaction(() -> {
         for (int k = 1; k < 10; k++)
           babylonia.createProperty("p" + ((finalI * 10) + k), Type.INTEGER);
 
-        database.transaction((database2) -> {
+        database.transaction(() -> {
           final MutableVertex v = database.newVertex("Babylonia");
           for (int k = 0; k < 10; k++) {
             v.set("origin", finalI);

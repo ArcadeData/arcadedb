@@ -56,7 +56,7 @@ public class RebuildIndexStatement extends SimpleExecStatement {
     final AtomicLong total = new AtomicLong();
 
     final Database database = ctx.getDatabase();
-    database.transaction(tx -> {
+    database.transaction(() -> {
       final Index.BuildIndexCallback callback = new Index.BuildIndexCallback() {
         @Override
         public void onDocumentIndexed(final Document document, final long totalIndexed) {

@@ -18,7 +18,11 @@ package com.arcadedb.mongo;
 import com.arcadedb.Constants;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.database.*;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseComparator;
+import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.log.LogManager;
@@ -31,12 +35,10 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 
 import java.io.*;
-import java.net.HttpURLConnection;
-import java.net.InetAddress;
-import java.net.UnknownHostException;
+import java.net.*;
 import java.util.*;
-import java.util.concurrent.Callable;
-import java.util.logging.Level;
+import java.util.concurrent.*;
+import java.util.logging.*;
 
 /**
  * This class has been copied under Console project to avoid complex dependencies.
@@ -49,8 +51,8 @@ public abstract class BaseGraphServerTest {
   protected static final String EDGE2_TYPE_NAME            = "E2";
 
   protected static RID              root;
-  private ArcadeDBServer[] servers;
-  private Database[]       databases;
+  private          ArcadeDBServer[] servers;
+  private          Database[]       databases;
 
   protected Database getDatabase(final int serverId) {
     return databases[serverId];
@@ -86,9 +88,10 @@ public abstract class BaseGraphServerTest {
       databases = new Database[0];
 
     if (isPopulateDatabase()) {
-      getDatabase(0).transaction(new Database.TransactionScope() {
+      final Database database = getDatabase(0);
+      database.transaction(new Database.TransactionScope() {
         @Override
-        public void execute(Database database) {
+        public void execute() {
           Assertions.assertFalse(database.getSchema().existsType(VERTEX1_TYPE_NAME));
 
           VertexType v = database.getSchema().createVertexType(VERTEX1_TYPE_NAME, 3);

@@ -118,7 +118,7 @@ public class InsertGraphIndexTest extends TestHelper {
     final Vertex[] cachedVertices = new Vertex[VERTICES];
 
     //System.out.println("Loading " + VERTICES + " in RAM...");
-    database.transaction((tx) -> {
+    database.transaction(() -> {
       final long begin = System.currentTimeMillis();
       try {
         int counter = 0;

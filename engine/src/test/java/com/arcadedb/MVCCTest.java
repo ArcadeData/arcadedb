@@ -77,7 +77,7 @@ public class MVCCTest extends TestHelper {
         for (long txId = 0; txId < TOT_TX; ++txId) {
           database.async().transaction(new Database.TransactionScope() {
             @Override
-            public void execute(Database database) {
+            public void execute() {
               final TransactionContext tx = ((DatabaseInternal) database).getTransaction();
 
               Assertions.assertTrue(tx.getModifiedPages() == 0);
@@ -127,7 +127,7 @@ public class MVCCTest extends TestHelper {
     try {
       database.transaction(new Database.TransactionScope() {
         @Override
-        public void execute(Database database) {
+        public void execute() {
           for (long row = 0; row < TOT_ACCOUNT; ++row) {
             final MutableDocument record = database.newVertex("Account");
             record.set("id", row);

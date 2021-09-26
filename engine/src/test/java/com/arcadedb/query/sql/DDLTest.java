@@ -19,95 +19,72 @@ import com.arcadedb.TestHelper;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.stream.IntStream;
+import java.util.stream.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 public class DDLTest extends TestHelper {
-    @Override
-    protected void beginTest() {
+  @Override
+  protected void beginTest() {
 
-        database.transaction(db -> {
-            db.command("sql", "CREATE VERTEX TYPE V");
-            db.command("sql", "CREATE EDGE TYPE E");
-        });
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE V");
+      database.command("sql", "CREATE EDGE TYPE E");
+    });
 
-    }
+  }
 
-    @Test
-    void testGraphWithSql() {
+  @Test
+  void testGraphWithSql() {
 
-        final int numOfElements = 10;
-        //create schema: sript
-        database.execute("sql",
-                "BEGIN;" +
-                        "CREATE VERTEX TYPE Person EXTENDS V; " +
-                        "CREATE PROPERTY Person.name STRING;" +
-                        "CREATE PROPERTY Person.id INTEGER;" +
-                        "CREATE INDEX Person.id ON Person (id) UNIQUE NULL_STRATEGY SKIP;" +
-                        "CREATE VERTEX TYPE Car EXTENDS V; " +
-                        "CREATE PROPERTY Car.id INTEGER;" +
-                        "CREATE PROPERTY Car.model STRING;" +
-                        "CREATE INDEX Car.id ON Car (id) UNIQUE;" +
-                        "CREATE EDGE TYPE Drives EXTENDS E;" +
-                        "COMMIT;  " +
-                        "");
+    final int numOfElements = 10;
+    //create schema: sript
+    database.execute("sql", "BEGIN;" + "CREATE VERTEX TYPE Person EXTENDS V; " + "CREATE PROPERTY Person.name STRING;" + "CREATE PROPERTY Person.id INTEGER;"
+        + "CREATE INDEX Person.id ON Person (id) UNIQUE NULL_STRATEGY SKIP;" + "CREATE VERTEX TYPE Car EXTENDS V; " + "CREATE PROPERTY Car.id INTEGER;"
+        + "CREATE PROPERTY Car.model STRING;" + "CREATE INDEX Car.id ON Car (id) UNIQUE;" + "CREATE EDGE TYPE Drives EXTENDS E;" + "COMMIT;  " + "");
 
-        //vertices
-        database.transaction(db -> {
+    //vertices
+    database.transaction(() -> {
 
-            IntStream.range(0, numOfElements)
-                    .forEach(i -> {
-                        db.command("sql", "INSERT INTO Person set id=?,  name=?, surname=?", i, "Jay", "Miner" + i);
-                        db.command("sql", "INSERT INTO Car set id=?,  brand=?, model=?", i, "Ferrari", "450" + i);
-                    });
+      IntStream.range(0, numOfElements).forEach(i -> {
+        database.command("sql", "INSERT INTO Person set id=?,  name=?, surname=?", i, "Jay", "Miner" + i);
+        database.command("sql", "INSERT INTO Car set id=?,  brand=?, model=?", i, "Ferrari", "450" + i);
+      });
 
+    });
+    //edges
+    database.transaction(() -> {
 
-        });
-        //edges
-        database.transaction(db -> {
+      IntStream.range(0, numOfElements).forEach(i -> {
+        database.command("sql", "CREATE EDGE Drives FROM (SELECT FROM Person WHERE id=?) TO (SELECT FROM Car WHERE id=?)", i, i);
+      });
 
-            IntStream.range(0, numOfElements)
-                    .forEach(i -> {
-                        db.command("sql", "CREATE EDGE Drives FROM (SELECT FROM Person WHERE id=?) TO (SELECT FROM Car WHERE id=?)", i, i);
-                    });
+    });
 
+    database.transaction(() -> {
 
-        });
+      database.query("sql", "SELECT FROM Drives").stream().map(r -> r.getEdge().get()).peek(e -> assertThat(e.getIn()).isNotNull())
+          .peek(e -> assertThat(e.getOut()).isNotNull()).forEach(e -> assertThat(e.getTypeName()).isEqualTo("Drives"));
+    });
 
-        database.transaction(db -> {
+    database.transaction(() -> {
 
-            db.query("sql", "SELECT FROM Drives")
-                    .stream()
-                    .map(r -> r.getEdge().get())
-                    .peek(e -> assertThat(e.getIn()).isNotNull())
-                    .peek(e -> assertThat(e.getOut()).isNotNull())
-                    .forEach(e -> assertThat(e.getTypeName()).isEqualTo("Drives"));
-        });
+      final Long persons = database.command("sql", "SELECT count(*) as persons FROM Person ").next().<Long>getProperty("persons");
 
-        database.transaction(db -> {
+      Assertions.assertEquals(numOfElements, persons);
 
-            final Long persons = db.command("sql", "SELECT count(*) as persons FROM Person ")
-                    .next().<Long>getProperty("persons");
+      final Long cars = database.command("sql", "SELECT count(*) as cars FROM Car").next().<Long>getProperty("cars");
 
-            Assertions.assertEquals(numOfElements, persons);
+      Assertions.assertEquals(numOfElements, cars);
 
-            final Long cars = db.command("sql", "SELECT count(*) as cars FROM Car")
-                    .next().<Long>getProperty("cars");
+      final Long vs = database.command("sql", "SELECT count(*) as vs FROM V").next().<Long>getProperty("vs");
 
-            Assertions.assertEquals(numOfElements, cars);
+      Assertions.assertEquals(numOfElements * 2, vs);
 
-            final Long vs = db.command("sql", "SELECT count(*) as vs FROM V")
-                    .next().<Long>getProperty("vs");
+      final Long edges = database.command("sql", "SELECT count(*) as edges FROM Drives").next().<Long>getProperty("edges");
 
-            Assertions.assertEquals(numOfElements * 2, vs);
+    });
 
-            final Long edges = db.command("sql", "SELECT count(*) as edges FROM Drives")
-                    .next().<Long>getProperty("edges");
-
-        });
-
-    }
-
+  }
 
 }

@@ -34,10 +34,10 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 
 import java.io.*;
-import java.net.HttpURLConnection;
+import java.net.*;
 import java.util.*;
-import java.util.concurrent.Callable;
-import java.util.logging.Level;
+import java.util.concurrent.*;
+import java.util.logging.*;
 
 /**
  * This class has been copied under Console project to avoid complex dependencies.
@@ -50,8 +50,8 @@ public abstract class BaseGraphServerTest {
   protected static final String EDGE2_TYPE_NAME            = "E2";
 
   protected static RID              root;
-  private ArcadeDBServer[] servers;
-  private Database[]       databases;
+  private          ArcadeDBServer[] servers;
+  private          Database[]       databases;
 
   protected Database getDatabase(final int serverId) {
     return databases[serverId];
@@ -83,9 +83,10 @@ public abstract class BaseGraphServerTest {
       databases[i] = new DatabaseFactory(getDatabasePath(i)).create();
     }
 
-    getDatabase(0).transaction(new Database.TransactionScope() {
+    final Database database = getDatabase(0);
+    database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
         if (isPopulateDatabase()) {
           Assertions.assertFalse(database.getSchema().existsType(VERTEX1_TYPE_NAME));
 

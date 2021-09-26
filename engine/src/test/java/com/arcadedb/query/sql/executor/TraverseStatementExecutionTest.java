@@ -27,7 +27,7 @@ import java.util.Collection;
 public class TraverseStatementExecutionTest extends TestHelper {
   @Test
   public void testPlainTraverse() {
-    database.transaction((db) -> {
+    database.transaction(() -> {
       String classPrefix = "testPlainTraverse_";
       database.getSchema().createVertexType(classPrefix + "V");
       database.getSchema().createEdgeType(classPrefix + "E");
@@ -60,7 +60,7 @@ public class TraverseStatementExecutionTest extends TestHelper {
 
   @Test
   public void testWithDepth() {
-    database.transaction((db) -> {
+    database.transaction(() -> {
       String classPrefix = "testWithDepth_";
       database.getSchema().createVertexType(classPrefix + "V");
       database.getSchema().createEdgeType(classPrefix + "E");
@@ -93,7 +93,7 @@ public class TraverseStatementExecutionTest extends TestHelper {
 
   @Test
   public void testMaxDepth() {
-    database.transaction((db) -> {
+    database.transaction(() -> {
       String classPrefix = "testMaxDepth";
       database.getSchema().createVertexType(classPrefix + "V");
       database.getSchema().createEdgeType(classPrefix + "E");
@@ -136,7 +136,7 @@ public class TraverseStatementExecutionTest extends TestHelper {
 
   @Test
   public void testBreadthFirst() {
-    database.transaction((db) -> {
+    database.transaction(() -> {
       String classPrefix = "testBreadthFirst_";
       database.getSchema().createVertexType(classPrefix + "V");
       database.getSchema().createEdgeType(classPrefix + "E");
@@ -169,7 +169,7 @@ public class TraverseStatementExecutionTest extends TestHelper {
 
   @Test
   public void testTraverseInBatchTx() {
-    database.transaction((db) -> {
+    database.transaction(() -> {
       String script = "";
       script += "";
 

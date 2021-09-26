@@ -933,7 +933,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
         else
           wrappedDatabaseInstance.begin();
 
-        txBlock.execute(wrappedDatabaseInstance);
+        txBlock.execute();
 
         if (createdNewTx)
           wrappedDatabaseInstance.commit();

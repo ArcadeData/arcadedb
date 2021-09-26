@@ -167,7 +167,7 @@ public class TransactionTypeTest extends TestHelper {
 
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
         Assertions.assertEquals(TOT, database.countType(TYPE_NAME, true));
       }
     });
@@ -285,9 +285,9 @@ public class TransactionTypeTest extends TestHelper {
 
   @Test
   public void testNestedTx() {
-    database.transaction((tx1) -> {
+    database.transaction(() -> {
       database.newDocument(TYPE_NAME).set("id", -1, "tx", 1).save();
-      database.transaction((tx2) -> {
+      database.transaction(() -> {
         database.newDocument(TYPE_NAME).set("id", -2, "tx", 2).save();
       });
     });
@@ -301,7 +301,7 @@ public class TransactionTypeTest extends TestHelper {
   protected void beginTest() {
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
         if (!database.getSchema().existsType(TYPE_NAME)) {
           final DocumentType type = database.getSchema().createDocumentType(TYPE_NAME, 3);
           type.createProperty("id", Integer.class);

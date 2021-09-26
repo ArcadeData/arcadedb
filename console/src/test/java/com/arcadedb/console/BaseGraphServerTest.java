@@ -84,25 +84,23 @@ public abstract class BaseGraphServerTest {
       databases[i] = new DatabaseFactory(getDatabasePath(i)).create();
     }
 
-    getDatabase(0).transaction(new Database.TransactionScope() {
-      @Override
-      public void execute(Database database) {
-        if (isPopulateDatabase()) {
-          Assertions.assertFalse(database.getSchema().existsType(VERTEX1_TYPE_NAME));
+    final Database database = getDatabase(0);
+    database.transaction(() -> {
+      if (isPopulateDatabase()) {
+        Assertions.assertFalse(database.getSchema().existsType(VERTEX1_TYPE_NAME));
 
-          VertexType v = database.getSchema().createVertexType(VERTEX1_TYPE_NAME, 3);
-          v.createProperty("id", Long.class);
+        VertexType v = database.getSchema().createVertexType(VERTEX1_TYPE_NAME, 3);
+        v.createProperty("id", Long.class);
 
-          database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, VERTEX1_TYPE_NAME, "id");
+        database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, VERTEX1_TYPE_NAME, "id");
 
-          Assertions.assertFalse(database.getSchema().existsType(VERTEX2_TYPE_NAME));
-          database.getSchema().createVertexType(VERTEX2_TYPE_NAME, 3);
+        Assertions.assertFalse(database.getSchema().existsType(VERTEX2_TYPE_NAME));
+        database.getSchema().createVertexType(VERTEX2_TYPE_NAME, 3);
 
-          database.getSchema().createEdgeType(EDGE1_TYPE_NAME);
-          database.getSchema().createEdgeType(EDGE2_TYPE_NAME);
+        database.getSchema().createEdgeType(EDGE1_TYPE_NAME);
+        database.getSchema().createEdgeType(EDGE2_TYPE_NAME);
 
-          database.getSchema().createDocumentType("Person");
-        }
+        database.getSchema().createDocumentType("Person");
       }
     });
 

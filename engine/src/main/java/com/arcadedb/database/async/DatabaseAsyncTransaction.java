@@ -47,7 +47,7 @@ public class DatabaseAsyncTransaction extends DatabaseAsyncAbstractTask {
     for (int retry = 0; retry < retries + 1; ++retry) {
       try {
         database.begin();
-        tx.execute(database);
+        tx.execute();
         database.commit();
 
         lastException = null;

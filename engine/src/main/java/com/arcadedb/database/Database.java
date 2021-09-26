@@ -196,6 +196,6 @@ public interface Database extends AutoCloseable {
   Database setAsyncFlush(boolean value);
 
   interface TransactionScope {
-    void execute(Database db);
+    void execute();
   }
 }

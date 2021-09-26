@@ -47,7 +47,7 @@ public class ACIDTransactionTest extends TestHelper {
   protected void beginTest() {
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
         if (!database.getSchema().existsType("V")) {
           final DocumentType v = database.getSchema().createDocumentType("V");
 
@@ -102,7 +102,7 @@ public class ACIDTransactionTest extends TestHelper {
 
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
         Assertions.assertEquals(TOT, database.countType("V", true));
       }
     });
@@ -127,7 +127,7 @@ public class ACIDTransactionTest extends TestHelper {
 
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
         Assertions.assertEquals(0, database.countType("V", true));
       }
     });
@@ -167,7 +167,7 @@ public class ACIDTransactionTest extends TestHelper {
 
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
         Assertions.assertEquals(1, database.countType("V", true));
       }
     });
@@ -237,7 +237,7 @@ public class ACIDTransactionTest extends TestHelper {
 
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
         Assertions.assertEquals(TOT, database.countType("V", true));
       }
     });
@@ -297,7 +297,7 @@ public class ACIDTransactionTest extends TestHelper {
 
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
         Assertions.assertEquals(TOT, database.countType("V", true));
       }
     });
@@ -305,7 +305,7 @@ public class ACIDTransactionTest extends TestHelper {
 
   @Test
   public void multiThreadConcurrentTransactions() {
-    database.transaction((tx) -> {
+    database.transaction(() -> {
       final DocumentType type = database.getSchema().createDocumentType("Stock");
       type.createProperty("symbol", Type.STRING);
       type.createProperty("date", Type.DATETIME);
@@ -329,7 +329,7 @@ public class ACIDTransactionTest extends TestHelper {
     for (int stockId = 0; stockId < TOT_STOCKS; ++stockId) {
       final int id = stockId;
 
-      database.async().transaction((tx) -> {
+      database.async().transaction(() -> {
         try {
           final Calendar now = Calendar.getInstance();
           now.setTimeInMillis(startingDay.getTimeInMillis());
@@ -367,7 +367,7 @@ public class ACIDTransactionTest extends TestHelper {
 
     Assertions.assertEquals(0, errors.get());
 
-    database.transaction((tx) -> {
+    database.transaction(() -> {
       Assertions.assertEquals(TOT_STOCKS * TOT_DAYS, database.countType("Stock", true));
       Assertions.assertEquals(0, database.countType("Aggregate", true));
 

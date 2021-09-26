@@ -126,7 +126,7 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
   private void insertData() {
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
         if (!database.getSchema().existsType(TYPE_NAME)) {
           DocumentType v = database.getSchema().createDocumentType(TYPE_NAME, PARALLEL);
 
@@ -166,7 +166,7 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
 
       database.async().transaction(new Database.TransactionScope() {
         @Override
-        public void execute(Database database) {
+        public void execute() {
           long lastLap = startTimer;
           long lastLapCounter = 0;
 
@@ -207,7 +207,7 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
   private void checkLookups(final int step, final int expectedItems) {
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
         Assertions.assertEquals(TOT * expectedItems, database.countType(TYPE_NAME, false));
       }
     });

@@ -215,7 +215,7 @@ public class Neo4jImporter {
             for (String parent : labels.getSecond())
               type.addParentType(parent);
 
-          database.transaction(tx -> {
+          database.transaction(() -> {
             final Property id = type.createProperty("id", Type.STRING);
             id.createIndex(Schema.INDEX_TYPE.LSM_TREE, true);
           });

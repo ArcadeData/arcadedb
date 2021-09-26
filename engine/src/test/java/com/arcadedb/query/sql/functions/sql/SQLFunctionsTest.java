@@ -114,7 +114,7 @@ public class SQLFunctionsTest {
     DocumentType indexed = database.getSchema().getOrCreateDocumentType("Indexed");
     indexed.createProperty("key", Type.STRING);
 
-    database.transaction((tx) -> {
+    database.transaction(() -> {
       indexed.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "key");
 
       database.newDocument("Indexed").set("key", "one").save();
@@ -330,7 +330,7 @@ public class SQLFunctionsTest {
     Assertions.assertTrue(result.hasNext());
     int tot = ((Number) result.next().getProperty("tot")).intValue();
 
-    database.transaction((tx) -> {
+    database.transaction(() -> {
       ResultSet result2 = database.command("sql", "update Account set created = date()");
       Assertions.assertEquals(tot, (Long) result2.next().getProperty("count"));
     });
@@ -426,12 +426,12 @@ public class SQLFunctionsTest {
   }
 
   @Test
-  public void testFirstFunction() throws UnsupportedEncodingException, NoSuchAlgorithmException {
+  public void testFirstFunction() {
     List<Long> sequence = new ArrayList<>(100);
     for (long i = 0; i < 100; ++i) {
       sequence.add(i);
     }
-    database.transaction((tx) -> {
+    database.transaction(() -> {
       database.newDocument("V").set("sequence", sequence).save();
       sequence.remove(0);
       database.newDocument("V").set("sequence", sequence).save();
@@ -446,13 +446,13 @@ public class SQLFunctionsTest {
   }
 
   @Test
-  public void testLastFunction() throws UnsupportedEncodingException, NoSuchAlgorithmException {
+  public void testLastFunction() {
     List<Long> sequence = new ArrayList<Long>(100);
     for (long i = 0; i < 100; ++i) {
       sequence.add(i);
     }
 
-    database.transaction((tx) -> {
+    database.transaction(() -> {
       database.newDocument("V").set("sequence2", sequence).save();
       sequence.remove(sequence.size() - 1);
       database.newDocument("V").set("sequence2", sequence).save();
@@ -493,7 +493,7 @@ public class SQLFunctionsTest {
     database = factory.create();
     database.getSchema().createDocumentType("V");
     database.getSchema().createDocumentType("Account");
-    database.transaction((tx) -> {
+    database.transaction(() -> {
       for (int i = 0; i < 100; i++) {
         database.newDocument("Account").set("id", i).save();
       }
@@ -501,7 +501,7 @@ public class SQLFunctionsTest {
 
     database.getSchema().createDocumentType("City");
     database.getSchema().createDocumentType("Country");
-    database.transaction((tx) -> {
+    database.transaction(() -> {
       MutableDocument italy = database.newDocument("Country").set("name", "Italy").save();
       MutableDocument usa = database.newDocument("Country").set("name", "USA").save();
 

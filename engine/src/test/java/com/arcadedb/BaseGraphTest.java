@@ -43,7 +43,7 @@ public abstract class BaseGraphTest extends TestHelper {
 
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
         Assertions.assertFalse(database.getSchema().existsType(VERTEX1_TYPE_NAME));
         database.getSchema().createVertexType(VERTEX1_TYPE_NAME, 3);
 

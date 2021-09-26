@@ -139,7 +139,7 @@ public class SerializerTest extends TestHelper {
 
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
         database.getSchema().createDocumentType("Test");
         database.commit();
 
@@ -192,7 +192,7 @@ public class SerializerTest extends TestHelper {
 
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
         database.getSchema().createDocumentType("Test");
         database.commit();
 
@@ -300,7 +300,7 @@ public class SerializerTest extends TestHelper {
 
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
         database.getSchema().createDocumentType("Test");
         database.commit();
 
@@ -378,7 +378,7 @@ public class SerializerTest extends TestHelper {
 
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
         final DocumentType test = database.getSchema().createDocumentType("Test");
         test.createProperty("embedded", Type.EMBEDDED);
 
@@ -418,7 +418,7 @@ public class SerializerTest extends TestHelper {
 
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
         final DocumentType test = database.getSchema().createDocumentType("Test");
         test.createProperty("list", Type.LIST);
 
@@ -468,7 +468,7 @@ public class SerializerTest extends TestHelper {
 
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
         final DocumentType test = database.getSchema().createDocumentType("Test");
         test.createProperty("list", Type.LIST);
 

@@ -49,7 +49,7 @@ public class SQLFunctionAstarTest {
   private SQLFunctionAstar functionAstar;
 
   private void setUpDatabase(final Database graph) {
-    graph.transaction((tx) -> {
+    graph.transaction(() -> {
       dbCounter++;
 
       graph.getSchema().createVertexType("node");

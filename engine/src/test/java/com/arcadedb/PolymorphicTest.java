@@ -32,7 +32,7 @@ public class PolymorphicTest extends TestHelper {
   protected void beginTest() {
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
         //------------
         // VEHICLES VERTICES
         //------------

@@ -145,10 +145,10 @@ public class ServerProfilingIT {
       expectedSecurityException(() -> database.newVertex("Vertex1").save());
       database.newDocument("Document1").save();
       database.iterateType("Document1", true);
-      database.transaction((tx) -> {
+      database.transaction(() -> {
         database.iterateType("Document1", true).next().asDocument().modify().set("modified", true).save();
       });
-      database.transaction((tx) -> {
+      database.transaction(() -> {
         database.iterateType("Document1", true).next().asDocument().delete();
       });
 
@@ -254,7 +254,7 @@ public class ServerProfilingIT {
       expectedSecurityException(() -> database.iterateType("Document1", true));
       expectedSecurityException(() -> database.lookupByRID(validRID, true));
 
-      database.transaction((tx) -> {
+      database.transaction(() -> {
         v.modify().set("justModified", true).save();
       });
 
@@ -293,7 +293,7 @@ public class ServerProfilingIT {
       expectedSecurityException(() -> database.iterateType("Document1", true));
       expectedSecurityException(() -> database.lookupByRID(doc.getIdentity(), true));
 
-      database.transaction((tx) -> {
+      database.transaction(() -> {
         database.deleteRecord(doc);
       });
 
@@ -352,7 +352,7 @@ public class ServerProfilingIT {
 
   private RID createSomeRecords(DatabaseInternal database, boolean createEdge) {
     final AtomicReference<RID> validRID = new AtomicReference<>();
-    database.transaction((tx) -> {
+    database.transaction(() -> {
       MutableVertex v1 = database.newVertex("Vertex1").save();
       MutableVertex v2 = database.newVertex("Vertex1").save();
       if (createEdge)

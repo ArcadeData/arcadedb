@@ -36,7 +36,7 @@ public class SQLFunctionDijkstraTest {
   private SQLFunctionDijkstra functionDijkstra;
 
   public void setUp(Database graph) throws Exception {
-    graph.transaction((db -> {
+    graph.transaction((() -> {
       graph.getSchema().createVertexType("node");
       graph.getSchema().createEdgeType("weight");
 

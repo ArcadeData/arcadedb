@@ -30,7 +30,7 @@ import java.util.*;
 public class DocumentTest extends TestHelper {
   @Override
   public void beginTest() {
-    database.transaction((tx) -> {
+    database.transaction(() -> {
       DocumentType type = database.getSchema().createDocumentType("ConversionTest");
 
       type.createProperty("string", Type.STRING);
@@ -46,7 +46,7 @@ public class DocumentTest extends TestHelper {
 
   @Test
   public void testNoConversion() {
-    database.transaction((tx) -> {
+    database.transaction(() -> {
       final MutableDocument doc = database.newDocument("ConversionTest");
 
       final Date now = new Date();
@@ -72,7 +72,7 @@ public class DocumentTest extends TestHelper {
 
   @Test
   public void testConversionDecimals() {
-    database.transaction((tx) -> {
+    database.transaction(() -> {
       final MutableDocument doc = database.newDocument("ConversionTest");
 
       final Date now = new Date();
@@ -90,7 +90,7 @@ public class DocumentTest extends TestHelper {
 
   @Test
   public void testConversionDates() {
-    database.transaction((tx) -> {
+    database.transaction(() -> {
       final MutableDocument doc = database.newDocument("ConversionTest");
 
       final Date now = new Date();
@@ -116,7 +116,7 @@ public class DocumentTest extends TestHelper {
 
   @Test
   public void testDetached() {
-    database.transaction((tx) -> {
+    database.transaction(() -> {
       final MutableDocument doc = database.newDocument("ConversionTest");
       doc.set("name", "Tim");
       final EmbeddedDocument embeddedObj = (EmbeddedDocument) doc.newEmbeddedDocument("ConversionTest", "embeddedObj").set("embeddedObj", true);

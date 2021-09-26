@@ -16,7 +16,8 @@
 package com.arcadedb.index;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.database.*;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.schema.DocumentType;
@@ -34,7 +35,7 @@ public class NullValuesIndexTest extends TestHelper {
     try {
       database.transaction(new Database.TransactionScope() {
         @Override
-        public void execute(Database database) {
+        public void execute() {
           Assertions.assertFalse(database.getSchema().existsType(TYPE_NAME));
 
           final DocumentType type = database.getSchema().createDocumentType(TYPE_NAME, 3);
@@ -42,8 +43,7 @@ public class NullValuesIndexTest extends TestHelper {
           type.createProperty("name", String.class);
           final Index indexes = database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
           final Index indexes2 = database.getSchema()
-              .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "name" }, PAGE_SIZE, LSMTreeIndexAbstract.NULL_STRATEGY.ERROR,
-                  null);
+              .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "name" }, PAGE_SIZE, LSMTreeIndexAbstract.NULL_STRATEGY.ERROR, null);
 
           for (int i = 0; i < TOT; ++i) {
             final MutableDocument v = database.newDocument(TYPE_NAME);
@@ -76,7 +76,7 @@ public class NullValuesIndexTest extends TestHelper {
   public void testNullStrategySkip() {
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
         Assertions.assertFalse(database.getSchema().existsType(TYPE_NAME));
 
         final DocumentType type = database.getSchema().createDocumentType(TYPE_NAME, 3);
@@ -84,8 +84,7 @@ public class NullValuesIndexTest extends TestHelper {
         type.createProperty("name", String.class);
         final Index indexes = database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
         final Index indexes2 = database.getSchema()
-            .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "name" }, PAGE_SIZE, LSMTreeIndexAbstract.NULL_STRATEGY.SKIP,
-                null);
+            .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "name" }, PAGE_SIZE, LSMTreeIndexAbstract.NULL_STRATEGY.SKIP, null);
 
         for (int i = 0; i < TOT; ++i) {
           final MutableDocument v = database.newDocument(TYPE_NAME);
@@ -104,8 +103,8 @@ public class NullValuesIndexTest extends TestHelper {
       }
     });
 
-    database.transaction((db) -> {
-      Assertions.assertEquals(db.countType(TYPE_NAME, true), TOT + 1);
+    database.transaction(() -> {
+      Assertions.assertEquals(database.countType(TYPE_NAME, true), TOT + 1);
     });
 
     database.close();
@@ -114,7 +113,7 @@ public class NullValuesIndexTest extends TestHelper {
     // TRY AGAIN WITH A RE-OPEN DATABASE
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
         Assertions.assertTrue(database.getSchema().existsType(TYPE_NAME));
 
         for (int i = TOT + 2; i < TOT + TOT; ++i) {
@@ -134,8 +133,8 @@ public class NullValuesIndexTest extends TestHelper {
       }
     });
 
-    database.transaction((db) -> {
-      Assertions.assertEquals(db.countType(TYPE_NAME, true), TOT + TOT);
+    database.transaction(() -> {
+      Assertions.assertEquals(database.countType(TYPE_NAME, true), TOT + TOT);
     });
   }
 

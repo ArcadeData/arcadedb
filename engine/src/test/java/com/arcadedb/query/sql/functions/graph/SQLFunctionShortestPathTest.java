@@ -176,7 +176,7 @@ public class SQLFunctionShortestPathTest {
   }
 
   private void setUpDatabase(final Database graph) {
-    graph.transaction((db) -> {
+    graph.transaction(() -> {
       graph.getSchema().createVertexType("Node");
       graph.getSchema().createEdgeType("Edge1");
       graph.getSchema().createEdgeType("Edge2");

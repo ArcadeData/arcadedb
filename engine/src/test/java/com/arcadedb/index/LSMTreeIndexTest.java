@@ -40,7 +40,7 @@ public class LSMTreeIndexTest extends TestHelper {
   public void testGet() {
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
 
         int total = 0;
 
@@ -71,7 +71,7 @@ public class LSMTreeIndexTest extends TestHelper {
   public void testGetAsRange() {
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
 
         final Index[] indexes = database.getSchema().getIndexes();
         for (int i = 0; i < TOT; ++i) {
@@ -116,7 +116,7 @@ public class LSMTreeIndexTest extends TestHelper {
   public void testRangeFromHead() {
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
 
         final Index[] indexes = database.getSchema().getIndexes();
         for (int i = 0; i < TOT - 1; ++i) {
@@ -197,7 +197,7 @@ public class LSMTreeIndexTest extends TestHelper {
   public void testRemoveKeys() {
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
         int total = 0;
 
         final Index[] indexes = database.getSchema().getIndexes();
@@ -250,7 +250,7 @@ public class LSMTreeIndexTest extends TestHelper {
     // CHECK ALSO AFTER THE TX HAS BEEN COMMITTED
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
         final Index[] indexes = database.getSchema().getIndexes();
         for (int i = 0; i < TOT; ++i) {
           for (Index index : indexes) {
@@ -279,7 +279,7 @@ public class LSMTreeIndexTest extends TestHelper {
 
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
 
         int total = 0;
 
@@ -335,7 +335,7 @@ public class LSMTreeIndexTest extends TestHelper {
     // CHECK ALSO AFTER THE TX HAS BEEN COMMITTED
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
         final Index[] indexes = database.getSchema().getIndexes();
         for (int i = 0; i < TOT; ++i) {
           for (Index index : indexes) {
@@ -364,7 +364,7 @@ public class LSMTreeIndexTest extends TestHelper {
   public void testRemoveEntriesMultipleTimes() {
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
         int total = 0;
 
         final Index[] indexes = database.getSchema().getIndexes();
@@ -411,7 +411,7 @@ public class LSMTreeIndexTest extends TestHelper {
   public void testRemoveAndPutEntries() {
     //database.getConfiguration().setValue(GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE, 0); // DISABLE COMPACTION
 
-    database.transaction((database) -> {
+    database.transaction(() -> {
       int total = 0;
 
       final Index[] indexes = database.getSchema().getIndexes();
@@ -453,7 +453,7 @@ public class LSMTreeIndexTest extends TestHelper {
       }
     });
 
-    database.transaction((database) -> {
+    database.transaction(() -> {
       // GET EACH ITEM TO CHECK IT HAS BEEN DELETED
       List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
 
@@ -472,7 +472,7 @@ public class LSMTreeIndexTest extends TestHelper {
   public void testUpdateKeys() {
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
 
         int total = 0;
 
@@ -556,7 +556,7 @@ public class LSMTreeIndexTest extends TestHelper {
   public void testPutDuplicates() {
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
 
         int total = 0;
 
@@ -598,7 +598,7 @@ public class LSMTreeIndexTest extends TestHelper {
   public void testScanIndexAscending() {
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
 
         try {
           // WAIT FOR THE INDEX TO BE COMPACTED
@@ -651,7 +651,7 @@ public class LSMTreeIndexTest extends TestHelper {
   public void testScanIndexDescending() {
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
 
         try {
           // WAIT FOR THE INDEX TO BE COMPACTED
@@ -698,7 +698,7 @@ public class LSMTreeIndexTest extends TestHelper {
   public void testScanIndexAscendingPartialInclusive() {
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
 
         int total = 0;
 
@@ -737,7 +737,7 @@ public class LSMTreeIndexTest extends TestHelper {
   public void testScanIndexAscendingPartialExclusive() {
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
 
         int total = 0;
 
@@ -776,7 +776,7 @@ public class LSMTreeIndexTest extends TestHelper {
   public void testScanIndexDescendingPartialInclusive() {
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
 
         int total = 0;
 
@@ -814,7 +814,7 @@ public class LSMTreeIndexTest extends TestHelper {
   public void testScanIndexDescendingPartialExclusive() {
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
 
         int total = 0;
 
@@ -852,7 +852,7 @@ public class LSMTreeIndexTest extends TestHelper {
   public void testScanIndexRangeInclusive2Inclusive() {
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
 
         int total = 0;
 
@@ -895,7 +895,7 @@ public class LSMTreeIndexTest extends TestHelper {
   public void testScanIndexRangeInclusive2Exclusive() {
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
 
         int total = 0;
 
@@ -938,7 +938,7 @@ public class LSMTreeIndexTest extends TestHelper {
   public void testScanIndexRangeExclusive2Inclusive() {
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
 
         int total = 0;
 
@@ -981,7 +981,7 @@ public class LSMTreeIndexTest extends TestHelper {
   public void testScanIndexRangeExclusive2Exclusive() {
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
 
         int total = 0;
 
@@ -1162,7 +1162,7 @@ public class LSMTreeIndexTest extends TestHelper {
   protected void beginTest() {
     database.transaction(new Database.TransactionScope() {
       @Override
-      public void execute(Database database) {
+      public void execute() {
         Assertions.assertFalse(database.getSchema().existsType(TYPE_NAME));
 
         final DocumentType type = database.getSchema().createDocumentType(TYPE_NAME, 3);

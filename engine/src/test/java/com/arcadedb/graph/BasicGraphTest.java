@@ -531,13 +531,13 @@ public class BasicGraphTest extends BaseGraphTest {
   public void rollbackEdge() {
     AtomicReference<RID> v1RID = new AtomicReference<>();
 
-    database.transaction((tx) -> {
+    database.transaction(() -> {
       final MutableVertex v1 = database.newVertex(VERTEX1_TYPE_NAME).save();
       v1RID.set(v1.getIdentity());
     });
 
     try {
-      database.transaction((tx) -> {
+      database.transaction(() -> {
         final Vertex v1a = v1RID.get().asVertex();
 
         final MutableVertex v2 = database.newVertex(VERTEX1_TYPE_NAME).save();
@@ -552,7 +552,7 @@ public class BasicGraphTest extends BaseGraphTest {
     } catch (RuntimeException e) {
     }
 
-    database.transaction((tx) -> {
+    database.transaction(() -> {
       final Vertex v1a = v1RID.get().asVertex();
 
       final MutableVertex v2 = database.newVertex(VERTEX1_TYPE_NAME);
@@ -567,7 +567,7 @@ public class BasicGraphTest extends BaseGraphTest {
   public void reuseRollbackedTx() {
     AtomicReference<RID> v1RID = new AtomicReference<>();
 
-    database.transaction((tx) -> {
+    database.transaction(() -> {
       final MutableVertex v1 = database.newVertex(VERTEX1_TYPE_NAME).save();
       v1.save();
       v1RID.set(v1.getIdentity());
