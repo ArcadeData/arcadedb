@@ -19,11 +19,8 @@ package com.arcadedb.query.sql.executor;
  * Created by luigidellaquila on 08/08/16.
  */
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
-import java.util.stream.Collectors;
+import java.util.*;
+import java.util.stream.*;
 
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
@@ -93,15 +90,17 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
       executeUntilReturn();
       executed = true;
       finalResult = new InternalResultSet();
-      ResultSet partial = lastStep.syncPull(ctx, n);
-      while (partial.hasNext()) {
+      if (lastStep != null) {
+        ResultSet partial = lastStep.syncPull(ctx, n);
         while (partial.hasNext()) {
-          ((InternalResultSet) finalResult).add(partial.next());
+          while (partial.hasNext()) {
+            ((InternalResultSet) finalResult).add(partial.next());
+          }
+          partial = lastStep.syncPull(ctx, n);
         }
-        partial = lastStep.syncPull(ctx, n);
-      }
-      if (lastStep instanceof ScriptLineStep) {
-        ((InternalResultSet) finalResult).setPlan(((ScriptLineStep) lastStep).plan);
+        if (lastStep instanceof ScriptLineStep) {
+          ((InternalResultSet) finalResult).setPlan(((ScriptLineStep) lastStep).plan);
+        }
       }
     }
   }
@@ -183,26 +182,26 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
   public ExecutionStepInternal executeUntilReturn() {
     if (steps.size() > 0) {
       lastStep = steps.get(steps.size() - 1);
-    }
-    for (int i = 0; i < steps.size() - 1; i++) {
-      ScriptLineStep step = steps.get(i);
-      if (step.containsReturn()) {
-        ExecutionStepInternal returnStep = step.executeUntilReturn(ctx);
-        if (returnStep != null) {
-          lastStep = returnStep;
-          return lastStep;
+      for (int i = 0; i < steps.size() - 1; i++) {
+        ScriptLineStep step = steps.get(i);
+        if (step.containsReturn()) {
+          ExecutionStepInternal returnStep = step.executeUntilReturn(ctx);
+          if (returnStep != null) {
+            lastStep = returnStep;
+            return lastStep;
+          }
         }
-      }
-      ResultSet lastResult = step.syncPull(ctx, 100);
+        ResultSet lastResult = step.syncPull(ctx, 100);
 
-      while (lastResult.hasNext()) {
         while (lastResult.hasNext()) {
-          lastResult.next();
+          while (lastResult.hasNext()) {
+            lastResult.next();
+          }
+          lastResult = step.syncPull(ctx, 100);
         }
-        lastResult = step.syncPull(ctx, 100);
       }
+      this.lastStep = steps.get(steps.size() - 1);
     }
-    this.lastStep = steps.get(steps.size() - 1);
     return lastStep;
   }
 
