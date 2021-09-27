@@ -50,7 +50,7 @@ public class Bucket extends SimpleNode {
     return super.toString(prefix);
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     if (bucketName != null) {
       builder.append("bucket:" + bucketName);
     } else {

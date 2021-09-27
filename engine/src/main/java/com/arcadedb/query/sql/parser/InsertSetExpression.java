@@ -25,7 +25,7 @@ public class InsertSetExpression {
   protected Identifier left;
   protected Expression right;
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     left.toString(params, builder);
     builder.append(" = ");
     right.toString(params, builder);

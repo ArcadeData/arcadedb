@@ -41,7 +41,7 @@ public class ProfileStatement extends Statement {
   }
 
   @Override
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     builder.append("EXPLAIN ");
     statement.toString(params, builder);
   }
@@ -53,13 +53,7 @@ public class ProfileStatement extends Statement {
       ctx.setParentWithoutOverridingChild(parentCtx);
     }
     ctx.setDatabase(db);
-    Map<Object, Object> params = new HashMap<>();
-    if (args != null) {
-      for (int i = 0; i < args.length; i++)
-        params.put(i, args[i]);
-    }
-    ctx.setInputParameters(params);
-
+    ctx.setInputParameters(args);
     ExecutionPlan executionPlan = statement.createExecutionPlan(ctx, true);
     if (executionPlan instanceof UpdateExecutionPlan) {
       ((UpdateExecutionPlan) executionPlan).executeInternal();

@@ -39,7 +39,7 @@ public class ArraySingleValuesSelector extends SimpleNode {
     super(p, id);
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     boolean first = true;
     for (ArraySelector item : items) {
       if (!first) {

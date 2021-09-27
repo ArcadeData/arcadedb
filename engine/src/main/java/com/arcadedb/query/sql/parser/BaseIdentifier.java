@@ -55,7 +55,7 @@ public class BaseIdentifier extends SimpleNode {
     return visitor.visit(this, data);
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     if (levelZero != null) {
       levelZero.toString(params, builder);
     } else if (suffix != null) {

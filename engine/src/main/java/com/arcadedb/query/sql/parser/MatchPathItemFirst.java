@@ -39,7 +39,7 @@ public class MatchPathItemFirst extends MatchPathItem {
     return false;
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
 
     function.toString(params, builder);
     if (filter != null) {

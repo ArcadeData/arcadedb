@@ -72,7 +72,7 @@ public class CreateBucketStatement extends DDLStatement {
   }
 
   @Override
-  public void toString(final Map<Object, Object> params, final StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("CREATE ");
     if (blob) {
       builder.append("BLOB ");

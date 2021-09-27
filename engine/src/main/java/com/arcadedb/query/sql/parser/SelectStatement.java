@@ -121,7 +121,7 @@ public class SelectStatement extends Statement {
     this.letClause = letClause;
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
 
     builder.append("SELECT");
     if (projection != null) {
@@ -226,12 +226,11 @@ public class SelectStatement extends Statement {
       ctx.setParentWithoutOverridingChild(parentCtx);
     }
     ctx.setDatabase(db);
-    final Map<Object, Object> params = new HashMap<>();
+    final Map<String, Object> params = new HashMap<>();
     if (args != null) {
       for (int i = 0; i < args.length; i++) {
-        params.put(i, args[i]);
+        params.put(String.valueOf(i), args[i]);
       }
-
     }
 
     setProfilingConstraints((DatabaseInternal) db);
@@ -243,7 +242,7 @@ public class SelectStatement extends Statement {
   }
 
   @Override
-  public ResultSet execute(final Database db, final Map params, final CommandContext parentCtx, boolean usePlanCache) {
+  public ResultSet execute(final Database db, final Map<String, Object> params, final CommandContext parentCtx, boolean usePlanCache) {
     final BasicCommandContext ctx = new BasicCommandContext();
     if (parentCtx != null) {
       ctx.setParentWithoutOverridingChild(parentCtx);

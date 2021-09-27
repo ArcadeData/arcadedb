@@ -106,7 +106,7 @@ public class InstanceofCondition extends BooleanExpression {
     return BaseExpression.decode(rightString.substring(1, rightString.length() - 1));
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     left.toString(params, builder);
     builder.append(" instanceof ");
     if (right != null) {

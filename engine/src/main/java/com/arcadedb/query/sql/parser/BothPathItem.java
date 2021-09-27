@@ -36,7 +36,7 @@ public class BothPathItem extends MatchPathItem {
   }
 
   @Override
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     builder.append("-");
     boolean first = true;
     if (this.method.params != null) {

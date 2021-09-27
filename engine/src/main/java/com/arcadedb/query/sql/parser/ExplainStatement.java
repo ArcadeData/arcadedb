@@ -38,7 +38,7 @@ public class ExplainStatement extends Statement {
     super(p, id);
   }
 
-  @Override public void toString(Map<Object, Object> params, StringBuilder builder) {
+  @Override public void toString(Map<String, Object> params, StringBuilder builder) {
     builder.append("EXPLAIN ");
     statement.toString(params, builder);
   }
@@ -49,12 +49,7 @@ public class ExplainStatement extends Statement {
       ctx.setParentWithoutOverridingChild(parentCtx);
     }
     ctx.setDatabase(db);
-    Map<Object, Object> params = new HashMap<>();
-    if (args != null) {
-      for (int i = 0; i < args.length; i++)
-        params.put(i, args[i]);
-    }
-    ctx.setInputParameters(params);
+    ctx.setInputParameters(args);
 
     ExecutionPlan executionPlan = statement.createExecutionPlan(ctx, false);
 

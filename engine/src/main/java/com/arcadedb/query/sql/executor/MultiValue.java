@@ -22,9 +22,9 @@ import com.arcadedb.utility.IterableObject;
 import com.arcadedb.utility.IterableObjectArray;
 import com.arcadedb.utility.MultiIterator;
 
-import java.lang.reflect.Array;
+import java.lang.reflect.*;
 import java.util.*;
-import java.util.logging.Level;
+import java.util.logging.*;
 
 /**
  * Handles Multi-value types such as Arrays, Collections and Maps. It recognizes special Orient collections.
@@ -502,7 +502,7 @@ public class MultiValue {
 
         } else if (iToRemove instanceof Map<?, ?>) {
           // MAP
-          for (Map.Entry<Object, Object> entry : ((Map<Object, Object>) iToRemove).entrySet())
+          for (Map.Entry<String, Object> entry : ((Map<String, Object>) iToRemove).entrySet())
             coll.remove(entry.getKey());
         } else if (iToRemove instanceof Iterator<?>) {
           // ITERATOR

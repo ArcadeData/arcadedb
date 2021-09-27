@@ -44,7 +44,7 @@ public class LetStatement extends SimpleExecStatement {
     if (expression != null) {
       result = expression.execute((Result) null, ctx);
     } else {
-      Map<Object, Object> params = ctx.getInputParameters();
+      Map<String, Object> params = ctx.getInputParameters();
       result = statement.execute(ctx.getDatabase(), params, ctx);
     }
     if (result instanceof ResultSet) {
@@ -67,7 +67,7 @@ public class LetStatement extends SimpleExecStatement {
   }
 
   @Override
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     builder.append("LET ");
     name.toString(params, builder);
     builder.append(" = ");

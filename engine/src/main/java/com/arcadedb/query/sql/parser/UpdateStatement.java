@@ -48,7 +48,7 @@ public class UpdateStatement extends Statement {
     super(p, id);
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     builder.append(getStatementType());
     if (target != null) {
       target.toString(params, builder);
@@ -134,13 +134,7 @@ public class UpdateStatement extends Statement {
       ctx.setParentWithoutOverridingChild(parentCtx);
     }
     ctx.setDatabase(db);
-    Map<Object, Object> params = new HashMap<>();
-    if (args != null) {
-      for (int i = 0; i < args.length; i++) {
-        params.put(i, args[i]);
-      }
-    }
-    ctx.setInputParameters(params);
+    ctx.setInputParameters(args);
     UpdateExecutionPlan executionPlan = createExecutionPlan(ctx, false);
     executionPlan.executeInternal();
     return new LocalResultSet(executionPlan);

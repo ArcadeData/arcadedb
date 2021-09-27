@@ -19,9 +19,8 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 
-import java.util.HashMap;
-import java.util.Map;
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.*;
+import java.util.concurrent.atomic.*;
 
 /**
  * Basic implementation of OCommandContext interface that stores variables in a map. Supports parent/child context to build a tree
@@ -35,7 +34,7 @@ public class BasicCommandContext implements CommandContext {
   protected CommandContext      parent;
   protected CommandContext      child;
   protected Map<String, Object> variables;
-  protected Map<Object, Object> inputParameters;
+  protected Map<String, Object> inputParameters;
 
   protected final AtomicLong resultsProcessed = new AtomicLong(0);
 
@@ -320,7 +319,7 @@ public class BasicCommandContext implements CommandContext {
       variables = new HashMap<>();
   }
 
-  public Map<Object, Object> getInputParameters() {
+  public Map<String, Object> getInputParameters() {
     if (inputParameters != null) {
       return inputParameters;
     }
@@ -328,9 +327,17 @@ public class BasicCommandContext implements CommandContext {
     return parent == null ? null : parent.getInputParameters();
   }
 
-  public void setInputParameters(Map<Object, Object> inputParameters) {
+  public void setInputParameters(Map<String, Object> inputParameters) {
     this.inputParameters = inputParameters;
+  }
 
+  public void setInputParameters(final Object[] args) {
+    this.inputParameters = new HashMap<>();
+    if (args != null) {
+      for (int i = 0; i < args.length; i++) {
+        this.inputParameters.put(String.valueOf(i), args[i]);
+      }
+    }
   }
 
   /**

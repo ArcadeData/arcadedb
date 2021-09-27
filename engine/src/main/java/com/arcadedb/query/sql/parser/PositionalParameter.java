@@ -46,7 +46,7 @@ public class PositionalParameter extends InputParameter {
     return "?";
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     Object finalValue = bindFromInputParams(params);
     if (finalValue == this) {
       builder.append("?");
@@ -61,17 +61,17 @@ public class PositionalParameter extends InputParameter {
     }
   }
 
-  public Object getValue(Map<Object, Object> params) {
+  public Object getValue(Map<String, Object> params) {
     Object result = null;
     if (params != null) {
-      result = params.get(paramNumber);
+      result = params.get(String.valueOf(paramNumber));
     }
     return result;
   }
 
-  public Object bindFromInputParams(Map<Object, Object> params) {
+  public Object bindFromInputParams(Map<String, Object> params) {
     if (params != null) {
-      Object value = params.get(paramNumber);
+      Object value = params.get(String.valueOf(paramNumber));
       Object result = toParsedTree(value);
       return result;
     }

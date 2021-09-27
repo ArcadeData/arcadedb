@@ -85,7 +85,7 @@ public class BaseExpression extends MathExpression {
     return super.toString();
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     if (number != null) {
       number.toString(params, builder);
     } else if (identifier != null) {
@@ -125,32 +125,35 @@ public class BaseExpression extends MathExpression {
     Object result = null;
     if (number != null) {
       result = number.getValue();
-    } else if (identifier != null) {
+    } else {
+      final Map<String, Object> params = ctx != null ? ctx.getInputParameters() : null;
 
-      // CHECK FOR SPECIAL CASE FOR POSTGRES DRIVER THAT TRANSLATES POSITIONAL PARAMETERS (?) WITH $N
-      // THIS IS DIFFERENT FROM ORIENTDB CODE BASE
-      // @author Luca Garulli
-      // @see Postgres Driver
-      if (ctx.getInputParameters() != null && //
-          identifier.getSuffix() != null && identifier.getSuffix().identifier != null) {
-        final String v = identifier.getSuffix().identifier.getValue();
-        if (v.startsWith("$") && v.length() > 1) {
-          final String toParse = v.substring(1);
+      if (identifier != null) {
+        // CHECK FOR SPECIAL CASE FOR POSTGRES DRIVER THAT TRANSLATES POSITIONAL PARAMETERS (?) WITH $N
+        // THIS IS DIFFERENT FROM ORIENTDB CODE BASE
+        // @author Luca Garulli
+        // @see Postgres Driver
+        if (params != null && //
+            identifier.getSuffix() != null && identifier.getSuffix().identifier != null) {
+          final String v = identifier.getSuffix().identifier.getValue();
+          if (v.startsWith("$") && v.length() > 1) {
+            final String toParse = v.substring(1);
 
-          final Integer pos = NumberUtils.parseInteger(toParse);
-          if (pos != null)
-            // POSTGRES PARAMETERS JDBC DRIVER START FROM 1
-            result = ctx.getInputParameters().get(pos - 1);
-          else
+            final Integer pos = NumberUtils.parseInteger(toParse);
+            if (pos != null)
+              // POSTGRES PARAMETERS JDBC DRIVER START FROM 1
+              result = params.get(String.valueOf(pos - 1));
+            else
+              result = identifier.execute(iCurrentRecord, ctx);
+          } else
             result = identifier.execute(iCurrentRecord, ctx);
         } else
           result = identifier.execute(iCurrentRecord, ctx);
-      } else
-        result = identifier.execute(iCurrentRecord, ctx);
-    } else if (string != null && string.length() > 1) {
-      result = decode(string.substring(1, string.length() - 1));
-    } else if (inputParam != null) {
-      result = inputParam.getValue(ctx.getInputParameters());
+      } else if (string != null && string.length() > 1) {
+        result = decode(string.substring(1, string.length() - 1));
+      } else if (inputParam != null) {
+        result = inputParam.getValue(params);
+      }
     }
     if (modifier != null) {
       result = modifier.execute(iCurrentRecord, result, ctx);

@@ -68,7 +68,7 @@ public class OrderByItem {
     this.rid = rid;
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
 
     if (alias != null) {
       builder.append(alias);

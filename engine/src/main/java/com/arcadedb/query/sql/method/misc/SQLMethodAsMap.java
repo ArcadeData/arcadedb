@@ -19,10 +19,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.Map;
+import java.util.*;
 
 /**
  * Transforms current value into a Map.
@@ -39,8 +36,7 @@ public class SQLMethodAsMap extends AbstractSQLMethod {
 
   @SuppressWarnings("unchecked")
   @Override
-  public Object execute( final Object iThis, Identifiable iCurrentRecord, CommandContext iContext,
-      Object ioResult, Object[] iParams) {
+  public Object execute(final Object iThis, Identifiable iCurrentRecord, CommandContext iContext, Object ioResult, Object[] iParams) {
     if (ioResult instanceof Map)
       // ALREADY A MAP
       return ioResult;
@@ -51,7 +47,7 @@ public class SQLMethodAsMap extends AbstractSQLMethod {
     }
 
     if (ioResult instanceof Document) {
-      // CONVERT ODOCUMENT TO MAP
+      // CONVERT DOCUMENT TO MAP
       return ((Document) ioResult).toMap();
     }
 
@@ -64,12 +60,12 @@ public class SQLMethodAsMap extends AbstractSQLMethod {
       return null;
     }
 
-    final HashMap<Object, Object> map = new HashMap<Object, Object>();
+    final HashMap<String, Object> map = new HashMap<String, Object>();
     while (iter.hasNext()) {
       final Object key = iter.next();
       if (iter.hasNext()) {
         final Object value = iter.next();
-        map.put(key, value);
+        map.put((String) key, value);
       }
     }
 

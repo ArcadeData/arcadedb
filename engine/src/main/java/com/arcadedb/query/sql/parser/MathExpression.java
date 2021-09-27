@@ -770,7 +770,7 @@ public class MathExpression extends SimpleNode {
     return operators;
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     for (int i = 0; i < childExpressions.size(); i++) {
       if (i > 0) {
         builder.append(" ");

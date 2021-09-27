@@ -52,7 +52,7 @@ public class IsDefinedCondition extends BooleanExpression implements SimpleBoole
     return expression.isDefinedFor(currentRecord);
   }
 
-  public void toString(final Map<Object, Object> params, final StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     expression.toString(params, builder);
     builder.append(" is defined");
   }

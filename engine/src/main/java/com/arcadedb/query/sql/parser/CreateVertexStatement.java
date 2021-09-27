@@ -21,9 +21,9 @@ import com.arcadedb.database.Database;
 import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.CreateVertexExecutionPlanner;
 import com.arcadedb.query.sql.executor.InsertExecutionPlan;
 import com.arcadedb.query.sql.executor.InternalExecutionPlan;
-import com.arcadedb.query.sql.executor.CreateVertexExecutionPlanner;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.*;
@@ -44,7 +44,8 @@ public class CreateVertexStatement extends Statement {
     super(p, id);
   }
 
-  @Override public ResultSet execute(Database db, Map params, CommandContext parentCtx, boolean usePlanCache) {
+  @Override
+  public ResultSet execute(Database db, Map params, CommandContext parentCtx, boolean usePlanCache) {
     BasicCommandContext ctx = new BasicCommandContext();
     if (parentCtx != null) {
       ctx.setParentWithoutOverridingChild(parentCtx);
@@ -56,30 +57,26 @@ public class CreateVertexStatement extends Statement {
     return new LocalResultSet(executionPlan);
   }
 
-  @Override public ResultSet execute(Database db, Object[] args, CommandContext parentCtx, boolean usePlanCache) {
+  @Override
+  public ResultSet execute(Database db, Object[] args, CommandContext parentCtx, boolean usePlanCache) {
     BasicCommandContext ctx = new BasicCommandContext();
     if (parentCtx != null) {
       ctx.setParentWithoutOverridingChild(parentCtx);
     }
     ctx.setDatabase(db);
-    Map<Object, Object> params = new HashMap<>();
-    if (args != null) {
-      for (int i = 0; i < args.length; i++) {
-        params.put(i, args[i]);
-      }
-    }
-    ctx.setInputParameters(params);
+    ctx.setInputParameters(args);
     InsertExecutionPlan executionPlan = (InsertExecutionPlan) createExecutionPlan(ctx, false);
     executionPlan.executeInternal();
     return new LocalResultSet(executionPlan);
   }
 
-  @Override public InternalExecutionPlan createExecutionPlan(CommandContext ctx, boolean enableProfiling) {
+  @Override
+  public InternalExecutionPlan createExecutionPlan(CommandContext ctx, boolean enableProfiling) {
     CreateVertexExecutionPlanner planner = new CreateVertexExecutionPlanner(this);
     return planner.createExecutionPlan(ctx, enableProfiling);
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
 
     builder.append("CREATE VERTEX ");
     if (targetType != null) {
@@ -104,7 +101,8 @@ public class CreateVertexStatement extends Statement {
     }
   }
 
-  @Override public CreateVertexStatement copy() {
+  @Override
+  public CreateVertexStatement copy() {
     CreateVertexStatement result = null;
     try {
       result = getClass().getConstructor(Integer.TYPE).newInstance(-1);
@@ -119,7 +117,8 @@ public class CreateVertexStatement extends Statement {
     return result;
   }
 
-  @Override public boolean equals(Object o) {
+  @Override
+  public boolean equals(Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
@@ -138,7 +137,8 @@ public class CreateVertexStatement extends Statement {
     return insertBody != null ? insertBody.equals(that.insertBody) : that.insertBody == null;
   }
 
-  @Override public int hashCode() {
+  @Override
+  public int hashCode() {
     int result = targetType != null ? targetType.hashCode() : 0;
     result = 31 * result + (targetBucketName != null ? targetBucketName.hashCode() : 0);
     result = 31 * result + (targetBucket != null ? targetBucket.hashCode() : 0);

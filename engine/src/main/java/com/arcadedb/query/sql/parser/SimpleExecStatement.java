@@ -48,18 +48,12 @@ public abstract class SimpleExecStatement extends Statement {
       ctx.setParentWithoutOverridingChild(parentContext);
     }
     ctx.setDatabase(db);
-    Map<Object, Object> params = new HashMap<>();
-    if (args != null) {
-      for (int i = 0; i < args.length; i++) {
-        params.put(i, args[i]);
-      }
-    }
-    ctx.setInputParameters(params);
+    ctx.setInputParameters(args);
     SingleOpExecutionPlan executionPlan = (SingleOpExecutionPlan) createExecutionPlan(ctx, false);
     return executionPlan.executeInternal(ctx);
   }
 
-  public ResultSet execute(Database db, Map params, CommandContext parentContext, boolean usePlanCache) {
+  public ResultSet execute(Database db, Map<String, Object> params, CommandContext parentContext, boolean usePlanCache) {
     BasicCommandContext ctx = new BasicCommandContext();
     if (parentContext != null) {
       ctx.setParentWithoutOverridingChild(parentContext);

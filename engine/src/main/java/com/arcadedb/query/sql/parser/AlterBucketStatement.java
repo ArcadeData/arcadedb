@@ -38,7 +38,7 @@ public class AlterBucketStatement extends DDLStatement {
   }
 
   @Override
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     builder.append("ALTER BUCKET ");
     name.toString(params, builder);
     if (starred) {

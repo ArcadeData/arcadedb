@@ -72,7 +72,7 @@ public class ReturnStatement extends SimpleExecStatement {
   }
 
   @Override
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     builder.append("RETURN");
     if (expression != null) {
       builder.append(" ");

@@ -70,37 +70,31 @@ public class TraverseStatement extends Statement {
       ctx.setParentWithoutOverridingChild(parentCtx);
     }
     ctx.setDatabase(db);
-    Map<Object, Object> params = new HashMap<>();
-    if (args != null) {
-      for (int i = 0; i < args.length; i++) {
-        params.put(i, args[i]);
-      }
-    }
-    ctx.setInputParameters(params);
+    ctx.setInputParameters(args);
     InternalExecutionPlan executionPlan = createExecutionPlan(ctx, false);
 
     return new LocalResultSet(executionPlan);
   }
 
   @Override
-  public ResultSet execute(Database db, Map params, CommandContext parentCtx, boolean usePlanCache) {
-    BasicCommandContext ctx = new BasicCommandContext();
+  public ResultSet execute(final Database db, final Map<String, Object> params, final CommandContext parentCtx, final boolean usePlanCache) {
+    final BasicCommandContext ctx = new BasicCommandContext();
     if (parentCtx != null) {
       ctx.setParentWithoutOverridingChild(parentCtx);
     }
     ctx.setDatabase(db);
     ctx.setInputParameters(params);
-    InternalExecutionPlan executionPlan = createExecutionPlan(ctx, false);
+    final InternalExecutionPlan executionPlan = createExecutionPlan(ctx, false);
 
     return new LocalResultSet(executionPlan);
   }
 
-  public InternalExecutionPlan createExecutionPlan(CommandContext ctx, boolean enableProfiling) {
-    TraverseExecutionPlanner planner = new TraverseExecutionPlanner(this);
+  public InternalExecutionPlan createExecutionPlan(final CommandContext ctx, final boolean enableProfiling) {
+    final TraverseExecutionPlanner planner = new TraverseExecutionPlanner(this);
     return planner.createExecutionPlan(ctx, enableProfiling);
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("TRAVERSE ");
     boolean first = true;
     for (TraverseProjectionItem item : projections) {

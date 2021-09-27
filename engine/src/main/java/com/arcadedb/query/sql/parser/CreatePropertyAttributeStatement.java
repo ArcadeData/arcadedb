@@ -41,7 +41,7 @@ public class CreatePropertyAttributeStatement extends SimpleNode {
     return visitor.visit(this, data);
   }
 
-  @Override public void toString(Map<Object, Object> params, StringBuilder builder) {
+  @Override public void toString(Map<String, Object> params, StringBuilder builder) {
     settingName.toString(params, builder);
     if (settingValue != null) {
       builder.append(" ");

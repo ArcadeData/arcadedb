@@ -127,30 +127,24 @@ public class MatchStatement extends Statement {
   @Override
   public ResultSet execute(Database db, Object[] args, CommandContext parentCtx, boolean usePlanCache) {
     this.database = db;
-    BasicCommandContext ctx = new BasicCommandContext();
+    final BasicCommandContext ctx = new BasicCommandContext();
     if (parentCtx != null) {
       ctx.setParentWithoutOverridingChild(parentCtx);
     }
     ctx.setDatabase(db);
-    Map<Object, Object> params = new HashMap<>();
-    if (args != null) {
-      for (int i = 0; i < args.length; i++) {
-        params.put(i, args[i]);
-      }
-    }
+    ctx.setInputParameters(args);
 
     setProfilingConstraints((DatabaseInternal) database);
 
-    ctx.setInputParameters(params);
-    InternalExecutionPlan executionPlan = createExecutionPlan(ctx, false);
+    final InternalExecutionPlan executionPlan = createExecutionPlan(ctx, false);
 
     return new LocalResultSet(executionPlan);
   }
 
   @Override
-  public ResultSet execute(Database db, Map params, CommandContext parentCtx, boolean usePlanCache) {
+  public ResultSet execute(final Database db, Map params, CommandContext parentCtx, boolean usePlanCache) {
     this.database = db;
-    BasicCommandContext ctx = new BasicCommandContext();
+    final BasicCommandContext ctx = new BasicCommandContext();
     if (parentCtx != null) {
       ctx.setParentWithoutOverridingChild(parentCtx);
     }
@@ -342,7 +336,7 @@ public class MatchStatement extends Statement {
     return true;
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     builder.append(KEYWORD_MATCH);
     builder.append(" ");
     boolean first = true;

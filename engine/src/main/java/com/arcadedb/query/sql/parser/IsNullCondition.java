@@ -60,7 +60,7 @@ public class IsNullCondition extends BooleanExpression {
     this.expression = expression;
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     expression.toString(params, builder);
     builder.append(" is null");
   }

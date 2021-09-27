@@ -72,7 +72,7 @@ public class AndBlock extends BooleanExpression {
     this.subBlocks = subBlocks;
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     if (subBlocks == null || subBlocks.size() == 0) {
       return;
     }

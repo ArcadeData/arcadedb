@@ -287,12 +287,12 @@ public class SelectStatementTest {
     String query = "select from bar where name not in :param1";
     SqlParser osql = getParserFor(query);
     try {
-      SimpleNode result = osql.parse();
-      SelectStatement stm = (SelectStatement) result;
-      Map<Object, Object> params = new HashMap<Object, Object>();
+      final SimpleNode result = osql.parse();
+      final SelectStatement stm = (SelectStatement) result;
+      final Map<String, Object> params = new HashMap<String, Object>();
       params.put("param1", new HashSet<Object>());
 
-      StringBuilder parsed = new StringBuilder();
+      final StringBuilder parsed = new StringBuilder();
       stm.toString(params, parsed);
       assertEquals(parsed.toString(), "SELECT FROM bar WHERE name NOT IN []");
     } catch (Exception e) {
@@ -303,7 +303,7 @@ public class SelectStatementTest {
   @Test
   public void testEscape2() {
     try {
-      SimpleNode result = checkWrongSyntax("select from bucket:internal where \"\\u005C\" = \"\\u005C\" ");
+      checkWrongSyntax("select from bucket:internal where \"\\u005C\" = \"\\u005C\" ");
       fail();
     } catch (Error e) {
 

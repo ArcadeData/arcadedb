@@ -52,7 +52,7 @@ public class Statement extends SimpleNode {
     return visitor.visit(this, data);
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     throw new UnsupportedOperationException("missing implementation in " + getClass().getSimpleName());
   }
 
@@ -74,11 +74,11 @@ public class Statement extends SimpleNode {
     return execute(db, args, parentContext, true);
   }
 
-  public ResultSet execute(final Database db, final Map args) {
+  public ResultSet execute(final Database db, final Map<String, Object> args) {
     return execute(db, args, true);
   }
 
-  public ResultSet execute(final Database db, final Map args, CommandContext parentContext) {
+  public ResultSet execute(final Database db, final Map<String, Object> args, CommandContext parentContext) {
     return execute(db, args, parentContext, true);
   }
 
@@ -90,11 +90,11 @@ public class Statement extends SimpleNode {
     throw new UnsupportedOperationException();
   }
 
-  public ResultSet execute(final Database db, final Map args, final boolean usePlanCache) {
+  public ResultSet execute(final Database db, final Map<String, Object> args, final boolean usePlanCache) {
     return execute(db, args, null, usePlanCache);
   }
 
-  public ResultSet execute(final Database db, final Map args, final CommandContext parentContext, final boolean usePlanCache) {
+  public ResultSet execute(final Database db, final Map<String, Object> args, final CommandContext parentContext, final boolean usePlanCache) {
     throw new UnsupportedOperationException();
   }
 

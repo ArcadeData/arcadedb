@@ -63,7 +63,7 @@ public class WhereClause extends SimpleNode {
     return baseExpression.evaluate(currentRecord, ctx);
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     if (baseExpression == null) {
       return;
     }

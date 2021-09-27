@@ -59,7 +59,7 @@ public class SuffixIdentifier extends SimpleNode {
     return visitor.visit(this, data);
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     if (identifier != null) {
       identifier.toString(params, builder);
     } else if (recordAttribute != null) {
@@ -131,7 +131,7 @@ public class SuffixIdentifier extends SimpleNode {
     if (star) {
       ResultInternal result = new ResultInternal();
       if (iCurrentRecord != null) {
-        for (Map.Entry<Object, Object> x : ((Map<Object, Object>) iCurrentRecord).entrySet()) {
+        for (Map.Entry<String, Object> x : ((Map<String, Object>) iCurrentRecord).entrySet()) {
           result.setProperty("" + x.getKey(), x.getValue());
         }
         return result;

@@ -47,7 +47,7 @@ public class InsertStatement extends Statement {
     super(p, id);
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     builder.append("INSERT INTO ");
     if (targetType != null) {
       targetType.toString(params, builder);
@@ -112,13 +112,7 @@ public class InsertStatement extends Statement {
       ctx.setParentWithoutOverridingChild(parentCtx);
     }
     ctx.setDatabase(db);
-    Map<Object, Object> params = new HashMap<>();
-    if (args != null) {
-      for (int i = 0; i < args.length; i++) {
-        params.put(i, args[i]);
-      }
-    }
-    ctx.setInputParameters(params);
+    ctx.setInputParameters(args);
     InsertExecutionPlan executionPlan = createExecutionPlan(ctx, false);
     executionPlan.executeInternal();
     return new LocalResultSet(executionPlan);

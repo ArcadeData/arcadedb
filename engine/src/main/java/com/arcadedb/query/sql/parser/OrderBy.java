@@ -54,7 +54,7 @@ public class OrderBy extends SimpleNode {
     this.items = items;
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     if (items != null && items.size() > 0) {
       builder.append("ORDER BY ");
       for (int i = 0; i < items.size(); i++) {

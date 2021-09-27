@@ -82,7 +82,7 @@ public class NestedProjectionItem extends SimpleNode {
   }
 
   @Override
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     if (exclude) {
       builder.append("!");
     }

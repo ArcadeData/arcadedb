@@ -92,7 +92,7 @@ public class ProjectionItem extends SimpleNode {
     this.expression = expression;
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     if (all) {
       builder.append("*");
     } else {

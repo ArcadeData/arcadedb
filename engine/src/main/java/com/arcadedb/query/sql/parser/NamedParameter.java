@@ -47,7 +47,7 @@ public class NamedParameter extends InputParameter {
     return ":" + paramName;
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     Object finalValue = bindFromInputParams(params);
     if (finalValue == this) {
       builder.append(":" + paramName);
@@ -62,7 +62,7 @@ public class NamedParameter extends InputParameter {
     }
   }
 
-  public Object getValue(Map<Object, Object> params) {
+  public Object getValue(Map<String, Object> params) {
     Object result = null;
     if (params != null) {
       String key = paramName;
@@ -71,19 +71,19 @@ public class NamedParameter extends InputParameter {
       } else if (params.containsKey(key)) {
         result = params.get(key);
       } else {
-        result = params.get(paramNumber);
+        result = params.get(String.valueOf(paramNumber));
       }
     }
     return result;
   }
 
-  public Object bindFromInputParams(Map<Object, Object> params) {
+  public Object bindFromInputParams(Map<String, Object> params) {
     if (params != null) {
       String key = paramName;
       if (params.containsKey(key)) {
         return toParsedTree(params.get(key));
       }
-      return toParsedTree(params.get(paramNumber));
+      return toParsedTree(params.get(String.valueOf(paramNumber)));
     }
     return this;
   }

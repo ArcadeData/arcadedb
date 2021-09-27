@@ -120,7 +120,7 @@ public class BetweenCondition extends BooleanExpression {
     this.third = third;
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     first.toString(params, builder);
     builder.append(" BETWEEN ");
     second.toString(params, builder);

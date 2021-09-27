@@ -1238,7 +1238,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   }
 
   @Override
-  public ResultSet execute(final String language, final String script, final Map<Object, Object> params) {
+  public ResultSet execute(final String language, final String script, final Map<String, Object> params) {
     checkDatabaseIsOpen();
 
     BasicCommandContext context = new BasicCommandContext();
@@ -1257,10 +1257,10 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(this);
 
-    Map<Object, Object> params = new HashMap<>();
+    Map<String, Object> params = new HashMap<>();
     if (args != null) {
       for (int i = 0; i < args.length; i++) {
-        params.put(i, args[i]);
+        params.put(String.valueOf(i), args[i]);
       }
     }
 

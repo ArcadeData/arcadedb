@@ -187,7 +187,7 @@ public class ContainsCondition extends BooleanExpression {
     }
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     left.toString(params, builder);
     builder.append(" CONTAINS ");
     if (right != null) {

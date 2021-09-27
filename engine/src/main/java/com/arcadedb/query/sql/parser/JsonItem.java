@@ -28,7 +28,7 @@ public class JsonItem {
   protected String     leftString;
   protected Expression right;
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     if (leftIdentifier != null) {
       builder.append("\"");
       leftIdentifier.toString(params, builder);

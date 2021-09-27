@@ -175,7 +175,7 @@ public interface Database extends AutoCloseable {
 
   ResultSet execute(String language, String script, Object... args);
 
-  ResultSet execute(String language, String script, Map<Object, Object> args);
+  ResultSet execute(String language, String script, Map<String, Object> args);
 
   <RET extends Object> RET executeInReadLock(Callable<RET> callable);
 

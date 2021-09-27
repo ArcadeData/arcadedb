@@ -149,7 +149,7 @@ public class SimpleNode implements Node {
     }
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     throw new UnsupportedOperationException("not implemented in " + getClass().getSimpleName());
   }
 

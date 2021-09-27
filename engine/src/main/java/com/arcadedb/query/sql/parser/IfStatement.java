@@ -66,14 +66,7 @@ public class IfStatement extends Statement {
       ctx.setParentWithoutOverridingChild(parentCtx);
     }
     ctx.setDatabase(db);
-    Map<Object, Object> params = new HashMap<>();
-    if (args != null) {
-      for (int i = 0; i < args.length; i++) {
-        params.put(i, args[i]);
-      }
-    }
-    ctx.setInputParameters(params);
-
+    ctx.setInputParameters(args);
     IfExecutionPlan executionPlan;
     if (usePlanCache) {
       executionPlan = createExecutionPlan(ctx, false);
@@ -144,7 +137,7 @@ public class IfStatement extends Statement {
   }
 
   @Override
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     builder.append("IF(");
     expression.toString(params, builder);
     builder.append("){\n");

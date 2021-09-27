@@ -173,7 +173,7 @@ public class MatchFilter extends SimpleNode {
     return null;
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     builder.append("{");
     boolean first = true;
     for (MatchFilterItem item : items) {

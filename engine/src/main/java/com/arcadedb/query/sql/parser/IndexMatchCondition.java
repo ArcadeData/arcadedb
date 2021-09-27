@@ -57,7 +57,7 @@ public class IndexMatchCondition extends BooleanExpression {
     throw new UnsupportedOperationException("TODO Implement IndexMatch!!!");//TODO
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     builder.append("KEY ");
     if (operator != null) {
       builder.append(operator);

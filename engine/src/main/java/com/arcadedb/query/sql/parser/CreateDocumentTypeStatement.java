@@ -114,7 +114,7 @@ public class CreateDocumentTypeStatement extends DDLStatement {
   }
 
   @Override
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     builder.append("CREATE DOCUMENT TYPE ");
     name.toString(params, builder);
     if (ifNotExists) {

@@ -95,7 +95,7 @@ public class TraverseProjectionItem extends SimpleNode {
     return visitor.visit(this, data);
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
 
     base.toString(params, builder);
     if (modifier != null) {
@@ -110,7 +110,8 @@ public class TraverseProjectionItem extends SimpleNode {
     return result;
   }
 
-  @Override public boolean equals(Object o) {
+  @Override
+  public boolean equals(Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
@@ -123,7 +124,8 @@ public class TraverseProjectionItem extends SimpleNode {
     return modifier != null ? modifier.equals(that.modifier) : that.modifier == null;
   }
 
-  @Override public int hashCode() {
+  @Override
+  public int hashCode() {
     int result = (base != null ? base.hashCode() : 0);
     result = 31 * result + (modifier != null ? modifier.hashCode() : 0);
     return result;

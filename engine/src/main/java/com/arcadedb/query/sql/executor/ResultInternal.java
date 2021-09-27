@@ -21,7 +21,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 
 import java.util.*;
-import java.util.stream.Collectors;
+import java.util.stream.*;
 
 /**
  * Created by luigidellaquila on 06/07/16.
@@ -136,7 +136,7 @@ public class ResultInternal implements Result {
       return ((Set) input).stream().map(this::wrap).collect(Collectors.toSet());
     } else if (isEmbeddedMap(input)) {
       Map result = new HashMap();
-      for (Map.Entry<Object, Object> o : ((Map<Object, Object>) input).entrySet()) {
+      for (Map.Entry<String, Object> o : ((Map<String, Object>) input).entrySet()) {
         result.put(o.getKey(), wrap(o.getValue()));
       }
       return result;

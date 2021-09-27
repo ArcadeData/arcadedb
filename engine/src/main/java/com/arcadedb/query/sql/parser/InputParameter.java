@@ -46,11 +46,11 @@ public class InputParameter extends SimpleNode {
     return visitor.visit(this, data);
   }
 
-  public Object bindFromInputParams(Map<Object, Object> params) {
+  public Object bindFromInputParams(Map<String, Object> params) {
     return null;
   }
 
-  public Object getValue(Map<Object, Object> params) {
+  public Object getValue(Map<String, Object> params) {
     return null;
   }
 

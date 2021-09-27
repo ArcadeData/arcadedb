@@ -57,7 +57,7 @@ public class UpdateItem extends SimpleNode {
     return visitor.visit(this, data);
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     left.toString(params, builder);
     if (leftModifier != null) {
       leftModifier.toString(params, builder);

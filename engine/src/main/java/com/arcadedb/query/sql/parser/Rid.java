@@ -54,7 +54,7 @@ public class Rid extends SimpleNode {
         return "#" + bucket.getValue() + ":" + position.getValue();
     }
 
-    public void toString(Map<Object, Object> params, StringBuilder builder) {
+    public void toString(Map<String, Object> params, StringBuilder builder) {
         if (legacy) {
             builder.append("#" + bucket.getValue() + ":" + position.getValue());
         } else {

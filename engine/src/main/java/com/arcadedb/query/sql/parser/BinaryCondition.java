@@ -60,7 +60,7 @@ public class BinaryCondition extends BooleanExpression {
     return operator.execute(ctx.getDatabase(), leftVal, rightVal);
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     left.toString(params, builder);
     builder.append(" ");
     builder.append(operator.toString());

@@ -102,7 +102,7 @@ public class MatchesCondition extends BooleanExpression {
     return matches(value, regex, ctx);
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     expression.toString(params, builder);
     builder.append(" MATCHES ");
     if (right != null) {

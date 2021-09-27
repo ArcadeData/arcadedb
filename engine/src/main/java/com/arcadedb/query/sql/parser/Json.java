@@ -46,7 +46,7 @@ public class Json extends SimpleNode {
     return visitor.visit(this, data);
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     builder.append("{");
     boolean first = true;
     for (JsonItem item : items) {

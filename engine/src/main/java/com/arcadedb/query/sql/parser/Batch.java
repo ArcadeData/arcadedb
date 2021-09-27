@@ -56,7 +56,7 @@ public class Batch extends SimpleNode {
     return -1;
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     if (num == null && inputParam == null) {
       return;
     }

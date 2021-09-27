@@ -52,7 +52,7 @@ public class ParenthesisBlock extends BooleanExpression {
     return subElement.evaluate(currentRecord, ctx);
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     builder.append("(");
     subElement.toString(params, builder);
     builder.append(" )");

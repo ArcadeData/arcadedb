@@ -47,14 +47,7 @@ public class WhileBlock extends Statement {
       ctx.setParentWithoutOverridingChild(parentCtx);
     }
     ctx.setDatabase(db);
-    Map<Object, Object> params = new HashMap<>();
-    if (args != null) {
-      for (int i = 0; i < args.length; i++) {
-        params.put(i, args[i]);
-      }
-    }
-    ctx.setInputParameters(params);
-
+    ctx.setInputParameters(args);
     UpdateExecutionPlan executionPlan;
     if (usePlanCache) {
       executionPlan = createExecutionPlan(ctx, false);
@@ -139,7 +132,7 @@ public class WhileBlock extends Statement {
     return result;
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     builder.append("WHILE (");
     condition.toString(params, builder);
     builder.append(") {\n");

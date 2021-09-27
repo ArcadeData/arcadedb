@@ -89,7 +89,7 @@ public class IsNotDefinedCondition extends BooleanExpression {
     return expression != null && expression.refersToParent();
   }
 
-  public void toString(final Map<Object, Object> params, final StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     expression.toString(params, builder);
     builder.append(" is not defined");
   }

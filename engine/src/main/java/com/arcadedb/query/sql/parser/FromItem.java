@@ -52,7 +52,7 @@ public class FromItem extends SimpleNode {
     return visitor.visit(this, data);
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     if (rids != null && rids.size() > 0) {
       if (rids.size() == 1) {
         rids.get(0).toString(params, builder);

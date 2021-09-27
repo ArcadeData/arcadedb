@@ -41,7 +41,7 @@ public class PNumber extends SimpleNode {
     return null;
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     builder.append(value);
   }
 

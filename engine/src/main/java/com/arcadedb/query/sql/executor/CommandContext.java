@@ -71,9 +71,9 @@ public interface CommandContext {
    */
   boolean checkTimeout();
 
-  Map<Object, Object> getInputParameters();
+  Map<String, Object> getInputParameters();
 
-  void setInputParameters(Map<Object, Object> inputParameters);
+  void setInputParameters(Map<String, Object> inputParameters);
 
   /**
    * Creates a copy of execution context.

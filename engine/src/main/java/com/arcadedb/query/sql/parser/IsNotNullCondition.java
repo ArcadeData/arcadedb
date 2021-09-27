@@ -51,7 +51,7 @@ public class IsNotNullCondition extends BooleanExpression {
     return expression.execute(currentRecord, ctx) != null;
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     expression.toString(params, builder);
     builder.append(" IS NOT NULL");
   }

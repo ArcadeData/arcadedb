@@ -103,7 +103,7 @@ public class AlterPropertyStatement extends DDLStatement {
   }
 
   @Override
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     builder.append("ALTER PROPERTY ");
     typeName.toString(params, builder);
     builder.append(".");

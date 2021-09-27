@@ -91,7 +91,7 @@ public class TruncateBucketStatement extends DDLStatement {
     return visitor.visit(this, data);
   }
 
-  @Override public void toString(Map<Object, Object> params, StringBuilder builder) {
+  @Override public void toString(Map<String, Object> params, StringBuilder builder) {
     builder.append("TRUNCATE BUCKET ");
     if (bucketName != null) {
       bucketName.toString(params, builder);

@@ -44,7 +44,7 @@ public class Timeout extends SimpleNode {
     return visitor.visit(this, data);
   }
 
-  public void toString(final Map<Object, Object> params, final StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append(" TIMEOUT " + val);
     if (failureStrategy != null) {
       builder.append(" ");

@@ -113,7 +113,7 @@ public class CreateVertexTypeStatement extends DDLStatement {
   }
 
   @Override
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     builder.append("CREATE VERTEX TYPE ");
     name.toString(params, builder);
     if (ifNotExists) {

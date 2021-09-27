@@ -392,3 +392,5 @@ databases
 doc/src/main/asciidoc/*/.asciidoctor/
 doc/src/main/asciidoc/*/var/
 server/backups/
+config/server-users.jsonl
+config/server-groups.json

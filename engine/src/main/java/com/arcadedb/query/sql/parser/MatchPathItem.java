@@ -51,7 +51,7 @@ public class MatchPathItem extends SimpleNode {
     return method.isBidirectional();
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     method.toString(params, builder);
     if (filter != null) {
       filter.toString(params, builder);

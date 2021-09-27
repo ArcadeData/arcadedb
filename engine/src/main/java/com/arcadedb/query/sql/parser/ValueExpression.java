@@ -58,7 +58,7 @@ public class ValueExpression extends Expression {
     return new Identifier(String.valueOf(value));
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     builder.append(value);
   }
 

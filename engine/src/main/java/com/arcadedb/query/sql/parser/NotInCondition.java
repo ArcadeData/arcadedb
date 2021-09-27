@@ -85,7 +85,7 @@ public class NotInCondition extends BooleanExpression {
     return !InCondition.evaluateExpression(leftVal, rightVal);
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
 
     left.toString(params, builder);
     builder.append(" NOT IN ");

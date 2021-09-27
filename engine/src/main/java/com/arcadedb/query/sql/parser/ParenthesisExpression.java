@@ -86,7 +86,7 @@ public class ParenthesisExpression extends MathExpression {
     return super.execute(iCurrentRecord, ctx);
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     builder.append("(");
     if (expression != null) {
       expression.toString(params, builder);

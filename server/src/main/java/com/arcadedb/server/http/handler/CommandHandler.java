@@ -199,7 +199,7 @@ public class CommandHandler extends DatabaseAbstractHandler {
     if (params instanceof Object[])
       return database.command(language, command, (Object[]) params);
 
-    return database.command(language, command, (Map<String, Object>) params);
+    return database.command(language, command, (Map<Object, Object>) params);
   }
 
   private Object mapParams(Map<String, Object> paramMap) {
@@ -212,7 +212,8 @@ public class CommandHandler extends DatabaseAbstractHandler {
         }
         return array;
       }
-    }
-    return Optional.ofNullable(paramMap).orElse(Collections.emptyMap());
+    } else
+      paramMap = Collections.EMPTY_MAP;
+    return paramMap;
   }
 }

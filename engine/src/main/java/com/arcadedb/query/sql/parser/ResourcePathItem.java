@@ -32,7 +32,7 @@ public class ResourcePathItem extends SimpleNode {
     super(p, id);
   }
 
-  @Override public void toString(Map<Object, Object> params, StringBuilder builder) {
+  @Override public void toString(Map<String, Object> params, StringBuilder builder) {
     if (star) {
       builder.append("*");
     } else if (identifier != null) {

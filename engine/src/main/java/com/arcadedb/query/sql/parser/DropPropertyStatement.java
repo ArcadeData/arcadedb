@@ -102,7 +102,7 @@ public class DropPropertyStatement extends DDLStatement {
 //    return result;
 //  }
 
-  @Override public void toString(Map<Object, Object> params, StringBuilder builder) {
+  @Override public void toString(Map<String, Object> params, StringBuilder builder) {
     builder.append("DROP PROPERTY ");
     typeName.toString(params, builder);
     builder.append(".");

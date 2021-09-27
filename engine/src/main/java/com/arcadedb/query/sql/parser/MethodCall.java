@@ -58,7 +58,7 @@ public class MethodCall extends SimpleNode {
     return visitor.visit(this, data);
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     builder.append(".");
     methodName.toString(params, builder);
     builder.append("(");

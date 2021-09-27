@@ -32,7 +32,7 @@ public class MatchExpression extends SimpleNode {
     super(p, id);
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     origin.toString(params, builder);
     for (MatchPathItem item : items) {
       item.toString(params, builder);

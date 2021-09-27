@@ -29,14 +29,14 @@ import java.util.*;
 import java.util.stream.*;
 
 public class DeleteEdgeStatement extends Statement {
-  protected            Identifier  typeName;
-  protected            Identifier  targetBucketName;
-  protected            Rid         rid;
-  protected            List<Rid>   rids;
-  protected            Expression  leftExpression;
-  protected            Expression  rightExpression;
-  protected            WhereClause whereClause;
-  protected            Batch       batch = null;
+  protected Identifier  typeName;
+  protected Identifier  targetBucketName;
+  protected Rid         rid;
+  protected List<Rid>   rids;
+  protected Expression  leftExpression;
+  protected Expression  rightExpression;
+  protected WhereClause whereClause;
+  protected Batch       batch = null;
 
   public DeleteEdgeStatement(int id) {
     super(id);
@@ -68,10 +68,10 @@ public class DeleteEdgeStatement extends Statement {
 
   @Override
   public ResultSet execute(Database db, Object[] args, CommandContext parentCtx, boolean usePlanCache) {
-    Map<Object, Object> params = new HashMap<>();
+    Map<String, Object> params = new HashMap<>();
     if (args != null) {
       for (int i = 0; i < args.length; i++) {
-        params.put(i, args[i]);
+        params.put(String.valueOf(i), args[i]);
       }
     }
     return execute(db, params, parentCtx);
@@ -82,7 +82,7 @@ public class DeleteEdgeStatement extends Statement {
     return planner.createExecutionPlan(ctx, enableProfiling);
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     builder.append("DELETE EDGE");
 
     if (typeName != null) {

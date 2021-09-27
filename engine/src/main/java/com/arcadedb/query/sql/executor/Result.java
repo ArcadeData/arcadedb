@@ -151,7 +151,7 @@ public interface Result {
       StringBuilder builder = new StringBuilder();
       builder.append("{");
       boolean first = true;
-      Map<Object, Object> map = (Map) val;
+      Map<String, Object> map = (Map) val;
       for (Map.Entry entry : map.entrySet()) {
         if (!first) {
           builder.append(", ");

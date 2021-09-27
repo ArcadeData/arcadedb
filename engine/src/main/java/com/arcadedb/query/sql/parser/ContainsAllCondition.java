@@ -155,7 +155,7 @@ public class ContainsAllCondition extends BooleanExpression {
 
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     left.toString(params, builder);
     builder.append(" CONTAINSALL ");
     if (right != null) {

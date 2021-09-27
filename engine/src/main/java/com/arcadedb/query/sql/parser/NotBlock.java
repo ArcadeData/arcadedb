@@ -78,7 +78,7 @@ public class NotBlock extends BooleanExpression {
     this.negate = negate;
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     if (negate) {
       builder.append("NOT ");
     }

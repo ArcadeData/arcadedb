@@ -557,7 +557,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
-  public ResultSet execute(String language, String script, Map<Object, Object> args) {
+  public ResultSet execute(String language, String script, Map<String, Object> args) {
     return proxied.execute(language, script, args);
   }
 

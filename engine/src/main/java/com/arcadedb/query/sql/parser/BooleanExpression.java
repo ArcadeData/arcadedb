@@ -86,7 +86,7 @@ public abstract class BooleanExpression extends SimpleNode {
       return "true";
     }
 
-    public void toString(Map<Object, Object> params, StringBuilder builder) {
+    public void toString(Map<String, Object> params, StringBuilder builder) {
       builder.append("true");
     }
 
@@ -163,7 +163,7 @@ public abstract class BooleanExpression extends SimpleNode {
       return "false";
     }
 
-    public void toString(Map<Object, Object> params, StringBuilder builder) {
+    public void toString(Map<String, Object> params, StringBuilder builder) {
       builder.append("false");
     }
 

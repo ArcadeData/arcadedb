@@ -42,7 +42,7 @@ public class GroupBy extends SimpleNode {
     return visitor.visit(this, data);
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     builder.append("GROUP BY ");
     for (int i = 0; i < items.size(); i++) {
       if (i > 0) {

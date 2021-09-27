@@ -86,7 +86,7 @@ public class DropTypeStatement extends DDLStatement {
   }
 
   @Override
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     builder.append("DROP TYPE ");
     if (name != null) {
       name.toString(params, builder);

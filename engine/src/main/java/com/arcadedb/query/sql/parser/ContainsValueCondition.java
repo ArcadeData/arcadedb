@@ -86,7 +86,7 @@ public class ContainsValueCondition extends BooleanExpression {
     return false;
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
 
     left.toString(params, builder);
     builder.append(" CONTAINSVALUE ");

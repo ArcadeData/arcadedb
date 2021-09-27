@@ -71,7 +71,7 @@ public class ContainsTextCondition extends BooleanExpression {
     return ((String) leftValue).indexOf((String) rightValue) > -1;
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     left.toString(params, builder);
     builder.append(" CONTAINSTEXT ");
     right.toString(params, builder);

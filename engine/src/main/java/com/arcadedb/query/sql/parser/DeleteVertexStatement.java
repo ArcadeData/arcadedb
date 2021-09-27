@@ -62,13 +62,7 @@ public class DeleteVertexStatement extends Statement {
       ctx.setParentWithoutOverridingChild(parentCtx);
     }
     ctx.setDatabase(db);
-    Map<Object, Object> params = new HashMap<>();
-    if (args != null) {
-      for (int i = 0; i < args.length; i++) {
-        params.put(i, args[i]);
-      }
-    }
-    ctx.setInputParameters(params);
+    ctx.setInputParameters(args);
     DeleteExecutionPlan executionPlan = createExecutionPlan(ctx, false);
     executionPlan.executeInternal();
     return new LocalResultSet(executionPlan);
@@ -79,7 +73,7 @@ public class DeleteVertexStatement extends Statement {
     return planner.createExecutionPlan(ctx, enableProfiling);
   }
 
-  public void toString(Map<Object, Object> params, StringBuilder builder) {
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     builder.append("DELETE VERTEX ");
     if (from) {
       builder.append("FROM ");

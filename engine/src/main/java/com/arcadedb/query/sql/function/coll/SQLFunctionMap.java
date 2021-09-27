@@ -18,15 +18,14 @@ package com.arcadedb.query.sql.function.coll;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.util.HashMap;
-import java.util.Map;
+import java.util.*;
 
 /**
  * This operator add an entry in a map. The entry is composed by a key and a value.
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLFunctionMap extends SQLFunctionMultiValueAbstract<Map<Object, Object>> {
+public class SQLFunctionMap extends SQLFunctionMultiValueAbstract<Map<String, Object>> {
   public static final String NAME = "map";
 
   public SQLFunctionMap() {
@@ -34,8 +33,7 @@ public class SQLFunctionMap extends SQLFunctionMultiValueAbstract<Map<Object, Ob
   }
 
   @SuppressWarnings("unchecked")
-  public Object execute( final Object iThis, final Identifiable iCurrentRecord, Object iCurrentResult,
-      final Object[] iParams, CommandContext iContext) {
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, Object iCurrentResult, final Object[] iParams, CommandContext iContext) {
 
     if (iParams.length > 2)
       // IN LINE MODE
@@ -51,14 +49,14 @@ public class SQLFunctionMap extends SQLFunctionMultiValueAbstract<Map<Object, Ob
           context = new HashMap<>();
 
         // INSERT EVERY SINGLE COLLECTION ITEM
-        context.putAll((Map<Object, Object>) iParams[0]);
+        context.putAll((Map<String, Object>) iParams[0]);
       } else
         throw new IllegalArgumentException("Map function: expected a map or pairs of parameters as key, value");
     } else if (iParams.length % 2 != 0)
       throw new IllegalArgumentException("Map function: expected a map or pairs of parameters as key, value");
     else
       for (int i = 0; i < iParams.length; i += 2) {
-        final Object key = iParams[i];
+        final String key = (String) iParams[i];
         final Object value = iParams[i + 1];
 
         if (value != null) {
@@ -82,13 +80,13 @@ public class SQLFunctionMap extends SQLFunctionMultiValueAbstract<Map<Object, Ob
   }
 
   @Override
-  public Map<Object, Object> getResult() {
-    final Map<Object, Object> res = context;
+  public Map<String, Object> getResult() {
+    final Map<String, Object> res = context;
     context = null;
     return prepareResult(res);
   }
 
-  protected Map<Object, Object> prepareResult(final Map<Object, Object> res) {
+  protected Map<String, Object> prepareResult(final Map<String, Object> res) {
     return res;
   }
 }
