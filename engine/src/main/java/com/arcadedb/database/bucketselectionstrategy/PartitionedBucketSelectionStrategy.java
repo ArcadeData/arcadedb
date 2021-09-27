@@ -84,6 +84,6 @@ public class PartitionedBucketSelectionStrategy extends RoundRobinBucketSelectio
 
   @Override
   public String getName() {
-    return "pk";
+    return "partitioned";
   }
 }
