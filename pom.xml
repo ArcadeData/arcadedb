@@ -367,6 +367,7 @@
                         <configuration>
                             <excludes>
                                 <exclude>**/static/*</exclude>
+                                <exclude>**/*.bat</exclude>
                                 <exclude>**/*.sh</exclude>
                                 <exclude>**/*.md</exclude>
                                 <exclude>**/*.yml</exclude>

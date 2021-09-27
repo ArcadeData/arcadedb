@@ -69,10 +69,9 @@ if [ -f "$ARCADEDB_PID" ]; then
 fi
 
 
-# ARCADEDB memory options, default to 2GB of heap.
-
+# ARCADEDB memory options, default uses the available RAM. To set it to a specific value, like 2GB of heap, use "-Xms2G -Xmx2G"
 if [ -z "$ARCADEDB_OPTS_MEMORY" ] ; then
-    ARCADEDB_OPTS_MEMORY="-Xms2G -Xmx2G"
+    ARCADEDB_OPTS_MEMORY=""
 fi
 
 if [ -z "$JAVA_OPTS_SCRIPT" ] ; then

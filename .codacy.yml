@@ -7,4 +7,5 @@ exclude_paths:
   - "**/*.zip"
   - "**/*.tgz"
   - "**/*.sh"
+  - "**/*.bat"
   - "**/*.md"
