@@ -59,7 +59,7 @@ public enum AnsiCode {
   }
 
   static {
-    final String ansiSupport = "true";
+    final String ansiSupport = "auto";
     if ("true".equalsIgnoreCase(ansiSupport))
       // FORCE ANSI SUPPORT
       supportsColors = true;

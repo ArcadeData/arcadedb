@@ -104,7 +104,7 @@ public class Console {
         } catch (EndOfFileException e) {
           return;
         } catch (Exception e) {
-          terminal.writer().print("\nError: " + e.getMessage() + "%n");
+          terminal.writer().print("\nError: " + e.getMessage() + "\n");
         }
       }
     } finally {
