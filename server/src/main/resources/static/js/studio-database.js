@@ -77,7 +77,7 @@ function updateDatabases( callback ){
       callback();
   })
   .fail(function( jqXHR, textStatus, errorThrown ){
-    globalNotify( "Error", escapeHtml( jqXHR.responseText ), "danger");
+    globalNotifyError( jqXHR.responseText );
   })
   .always(function(data) {
     $("#loginSpinner").hide();
@@ -130,7 +130,7 @@ function importDatabase(){
         updateDatabases();
       })
       .fail(function( jqXHR, textStatus, errorThrown ){
-        globalNotify( "Error", escapeHtml( jqXHR.responseText ), "danger");
+        globalNotifyError( jqXHR.responseText );
       });
     }
   });
@@ -169,7 +169,7 @@ function createDatabase(){
         updateDatabases();
       })
       .fail(function( jqXHR, textStatus, errorThrown ){
-        globalNotify( "Error", escapeHtml( jqXHR.responseText ), "danger");
+        globalNotifyError( jqXHR.responseText );
       });
     }
   });
@@ -195,7 +195,7 @@ function dropDatabase(){
       updateDatabases();
     })
     .fail(function( jqXHR, textStatus, errorThrown ){
-      globalNotify( "Error", escapeHtml( jqXHR.responseText ), "danger");
+      globalNotifyError( jqXHR.responseText );
     });
   });
 }
@@ -227,7 +227,7 @@ function backupDatabase(){
       globalNotify( "Backup completed", "File: " + escapeHtml( data.result[0].backupFile ), "success");
     })
     .fail(function( jqXHR, textStatus, errorThrown ){
-      globalNotify( "Error", escapeHtml( jqXHR.responseText ), "danger");
+      globalNotifyError( jqXHR.responseText );
     });
   });
 }
@@ -291,7 +291,7 @@ function executeCommandTable(){
     renderTable();
   })
   .fail(function( jqXHR, textStatus, errorThrown ){
-    globalNotify( "Error", escapeHtml( jqXHR.responseText ), "danger");
+    globalNotifyError( jqXHR.responseText );
   })
   .always(function(data) {
     $("#executeSpinner").hide();
@@ -349,7 +349,7 @@ function executeCommandGraph(){
     $("#inputGraphSearch").val("");
   })
   .fail(function( jqXHR, textStatus, errorThrown ){
-    globalNotify( "Error", escapeHtml( jqXHR.responseText ), "danger");
+    globalNotifyError( jqXHR.responseText );
   })
   .always(function(data) {
     $("#executeSpinner").hide();
@@ -448,7 +448,7 @@ function displaySchema(){
     $("#dTypesPanels").html(panelDHtml != "" ? panelDHtml : "Not defined." );
   })
   .fail(function( jqXHR, textStatus, errorThrown ){
-    globalNotify( "Error", escapeHtml( jqXHR.responseText ), "danger");
+    globalNotifyError( jqXHR.responseText );
   })
   .always(function(data) {
     $("#executeSpinner").hide();

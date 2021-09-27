@@ -18,6 +18,7 @@ package com.arcadedb.server.http.handler;
 import com.arcadedb.Constants;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.log.LogManager;
@@ -114,37 +115,32 @@ public abstract class AbstractHandler implements HttpHandler {
     } catch (ServerSecurityException e) {
       LogManager.instance().log(this, Level.FINE, "Security error on command execution (%s)", e, getClass().getSimpleName());
       exchange.setStatusCode(403);
-      exchange.getResponseSender().send("{ \"error\" : \"Security error\", \"detail\":\"" + e + "\", \"exception\": \"" + e.getClass().getName() + "\"}");
+      exchange.getResponseSender().send(error2json("Security error", e.getMessage(), e, null, null));
     } catch (ServerIsNotTheLeaderException e) {
       LogManager.instance().log(this, Level.FINE, "Error on command execution (%s)", e, getClass().getSimpleName());
       exchange.setStatusCode(400);
-      exchange.getResponseSender().send(
-          "{ \"error\" : \"Cannot execute command\", \"detail\":\"" + e + "\", \"exception\": \"" + e.getClass().getName() + "\", \"exceptionArg\": \""
-              + e.getLeaderAddress() + "\"}");
+      exchange.getResponseSender().send(error2json("Cannot execute command", e.getMessage(), e, e.getLeaderAddress(), null));
     } catch (NeedRetryException e) {
       LogManager.instance().log(this, Level.FINE, "Error on command execution (%s)", e, getClass().getSimpleName());
       exchange.setStatusCode(503);
-      exchange.getResponseSender()
-          .send("{ \"error\" : \"Cannot execute command\", \"detail\":\"" + e + "\", \"exception\": \"" + e.getClass().getName() + "\"}");
+      exchange.getResponseSender().send(error2json("Cannot execute command", e.getMessage(), e, null, null));
     } catch (DuplicatedKeyException e) {
       LogManager.instance().log(this, Level.FINE, "Error on command execution (%s)", e, getClass().getSimpleName());
       exchange.setStatusCode(503);
-      exchange.getResponseSender().send(
-          "{ \"error\" : \"Cannot execute command\", \"detail\":\"" + e + "\", \"exception\": \"" + e.getClass().getName() + "\", \"exceptionArg\": \""
-              + e.getIndexName() + "|" + e.getKeys() + "|" + e.getCurrentIndexedRID() + "\" }");
-    } catch (CommandExecutionException e) {
+      exchange.getResponseSender()
+          .send(error2json("Found duplicate key in index", e.getMessage(), e, e.getIndexName() + "|" + e.getKeys() + "|" + e.getCurrentIndexedRID(), null));
+    } catch (CommandExecutionException | CommandSQLParsingException e) {
       Throwable realException = e;
       if (e.getCause() != null)
         realException = e.getCause();
 
       LogManager.instance().log(this, Level.FINE, "Error on command execution (%s)", e, getClass().getSimpleName());
       exchange.setStatusCode(500);
-      exchange.getResponseSender().send(
-          "{ \"error\" : \"Internal error\", \"detail\":\"" + realException.toString() + "\", \"exception\": \"" + realException.getClass().getName() + "\"}");
+      exchange.getResponseSender().send(error2json("Cannot execute command", realException.getMessage(), realException, null, null));
     } catch (Exception e) {
       LogManager.instance().log(this, Level.FINE, "Error on command execution (%s)", e, getClass().getSimpleName());
       exchange.setStatusCode(500);
-      exchange.getResponseSender().send("{ \"error\" : \"Internal error\", \"detail\":\"" + e + "\", \"exception\": \"" + e.getClass().getName() + "\"}");
+      exchange.getResponseSender().send(error2json("Internal error", e.getMessage(), e, null, null));
     } finally {
       LogManager.instance().setContext(null);
     }
@@ -168,5 +164,23 @@ public abstract class AbstractHandler implements HttpHandler {
 
   protected String decode(final String command) {
     return command.replace("&amp;", " ").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#039;", "'");
+  }
+
+  protected String error2json(final String error, final String detail, final Throwable exception, final String exceptionArgs, final String help) {
+    final JSONObject json = new JSONObject();
+    json.put("error", error);
+    if (detail != null)
+      json.put("detail", encodeError(detail));
+    if (exception != null)
+      json.put("exception", exception.getClass().getName());
+    if (exceptionArgs != null)
+      json.put("exceptionArgs", exceptionArgs);
+    if (help != null)
+      json.put("help", help);
+    return json.toString();
+  }
+
+  protected String encodeError(final String message) {
+    return message.replaceAll("\\\\", " ").replaceAll("\n", " ");//.replaceAll("\"", "'");
   }
 }

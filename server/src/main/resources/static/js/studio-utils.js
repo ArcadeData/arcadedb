@@ -33,6 +33,20 @@ function globalConfirm(title, text, icon, yes, no ){
   });
 }
 
+function globalNotifyError(response){
+  try{
+    let json = JSON.parse( response );
+
+    let title = json.error ? json.error : "Error";
+    let message = json.detail ? json.detail : "Error on execution of the command";
+
+    globalNotify( title, escapeHtml( message ), "danger");
+
+  } catch( e ){
+    globalNotify( "Error", escapeHtml( response ), "danger");
+  }
+}
+
 function globalNotify(title, message, type){
   $.notify({
     title: "<strong>"+title+"</strong>",
