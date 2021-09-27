@@ -104,8 +104,8 @@ public abstract class BaseGraphServerTest {
       }
     });
 
+    final Database db = getDatabase(0);
     if (isPopulateDatabase()) {
-      final Database db = getDatabase(0);
       db.begin();
 
       final MutableVertex v1 = db.newVertex(VERTEX1_TYPE_NAME);
@@ -142,8 +142,10 @@ public abstract class BaseGraphServerTest {
 
       root = v1.getIdentity();
 
-      db.close();
     }
+
+    for (Database dbb : databases)
+      dbb.close();
 
     startServers();
   }

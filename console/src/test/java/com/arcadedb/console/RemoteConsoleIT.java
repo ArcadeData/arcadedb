@@ -21,49 +21,14 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
+import java.io.*;
 
 public class RemoteConsoleIT extends BaseGraphServerTest {
-  private static final String URL               = "remote:localhost:2480/console root root";
-  private static final String URL_SHORT         = "remote:localhost/console root root";
-  private static final String URL_NOCREDENTIALS = "remote:localhost/console";
-  private static final String URL_WRONGPASSWD   = "remote:localhost/console root wrong";
-
-  private static Console console;
-
-  @Override
-  protected boolean isPopulateDatabase() {
-    return false;
-  }
-
-  @Override
-  protected String getDatabaseName() {
-    return "console";
-  }
-
-  @BeforeEach
-  public void beginTest() {
-    super.beginTest();
-
-    deleteDatabaseFolders();
-    startServers();
-
-    try {
-      console = new Console(false);
-      Assertions.assertTrue(console.parse("create database " + URL, false));
-
-      console.parse("close", false);
-    } catch (IOException e) {
-      Assertions.fail(e);
-    }
-  }
-
-  @AfterEach
-  public void endTest() {
-    super.endTest();
-    if (console != null)
-      console.close();
-  }
+  private static final String  URL               = "remote:localhost:2480/console root " + DEFAULT_PASSWORD_FOR_TESTS;
+  private static final String  URL_SHORT         = "remote:localhost/console root " + DEFAULT_PASSWORD_FOR_TESTS;
+  private static final String  URL_NOCREDENTIALS = "remote:localhost/console";
+  private static final String  URL_WRONGPASSWD   = "remote:localhost/console root wrong";
+  private static       Console console;
 
   @Test
   public void testConnect() throws IOException {
@@ -158,5 +123,36 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
     });
     Assertions.assertTrue(console.parse("?", false));
     Assertions.assertTrue(buffer.toString().contains("quit"));
+  }
+
+  @Override
+  protected boolean isPopulateDatabase() {
+    return false;
+  }
+
+  @Override
+  protected String getDatabaseName() {
+    return "console";
+  }
+
+  @BeforeEach
+  public void beginTest() {
+    deleteDatabaseFolders();
+
+    super.beginTest();
+
+    try {
+      console = new Console(false);
+      console.parse("close", false);
+    } catch (IOException e) {
+      Assertions.fail(e);
+    }
+  }
+
+  @AfterEach
+  public void endTest() {
+    super.endTest();
+    if (console != null)
+      console.close();
   }
 }
