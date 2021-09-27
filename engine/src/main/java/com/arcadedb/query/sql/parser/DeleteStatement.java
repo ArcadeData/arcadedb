@@ -30,9 +30,8 @@ public class DeleteStatement extends Statement {
 
   public    FromClause  fromClause;
   protected WhereClause whereClause;
-  protected boolean returnBefore = false;
-  protected Limit   limit        = null;
-  protected boolean unsafe       = false;
+  protected boolean     returnBefore = false;
+  protected boolean     unsafe       = false;
 
   public DeleteStatement(int id) {
     super(id);
@@ -60,7 +59,8 @@ public class DeleteStatement extends Statement {
     }
   }
 
-  @Override public DeleteStatement copy() {
+  @Override
+  public DeleteStatement copy() {
     DeleteStatement result = new DeleteStatement(-1);
     result.fromClause = fromClause == null ? null : fromClause.copy();
     result.whereClause = whereClause == null ? null : whereClause.copy();
@@ -70,7 +70,8 @@ public class DeleteStatement extends Statement {
     return result;
   }
 
-  @Override public boolean equals(Object o) {
+  @Override
+  public boolean equals(Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
@@ -89,7 +90,8 @@ public class DeleteStatement extends Statement {
     return limit != null ? limit.equals(that.limit) : that.limit == null;
   }
 
-  @Override public int hashCode() {
+  @Override
+  public int hashCode() {
     int result = fromClause != null ? fromClause.hashCode() : 0;
     result = 31 * result + (whereClause != null ? whereClause.hashCode() : 0);
     result = 31 * result + (returnBefore ? 1 : 0);
@@ -98,7 +100,8 @@ public class DeleteStatement extends Statement {
     return result;
   }
 
-  @Override public ResultSet execute(Database db, Map params, CommandContext parentCtx, boolean usePlanCache) {
+  @Override
+  public ResultSet execute(Database db, Map params, CommandContext parentCtx, boolean usePlanCache) {
     BasicCommandContext ctx = new BasicCommandContext();
     if (parentCtx != null) {
       ctx.setParentWithoutOverridingChild(parentCtx);
@@ -110,7 +113,8 @@ public class DeleteStatement extends Statement {
     return new LocalResultSet(executionPlan);
   }
 
-  @Override public ResultSet execute(Database db, Object[] args, CommandContext parentCtx, boolean usePlanCache) {
+  @Override
+  public ResultSet execute(Database db, Object[] args, CommandContext parentCtx, boolean usePlanCache) {
     BasicCommandContext ctx = new BasicCommandContext();
     if (parentCtx != null) {
       ctx.setParentWithoutOverridingChild(parentCtx);
@@ -143,10 +147,6 @@ public class DeleteStatement extends Statement {
 
   public boolean isReturnBefore() {
     return returnBefore;
-  }
-
-  public Limit getLimit() {
-    return limit;
   }
 
   public boolean isUnsafe() {

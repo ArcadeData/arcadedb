@@ -22,8 +22,8 @@ import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalExecutionPlan;
-import com.arcadedb.query.sql.executor.TraverseExecutionPlanner;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.TraverseExecutionPlanner;
 
 import java.util.*;
 import java.util.stream.*;
@@ -35,18 +35,11 @@ public class TraverseStatement extends Statement {
   }
 
   protected List<TraverseProjectionItem> projections = new ArrayList<TraverseProjectionItem>();
-
-  protected FromClause target;
-
-  protected WhereClause whileClause;
-
-  protected Skip skip;
-
-  protected Limit limit;
-
-  protected Strategy strategy;
-
-  protected PInteger maxDepth;
+  protected FromClause                   target;
+  protected WhereClause                  whileClause;
+  protected Skip                         skip;
+  protected Strategy                     strategy;
+  protected PInteger                     maxDepth;
 
   public TraverseStatement(int id) {
     super(id);
@@ -224,14 +217,6 @@ public class TraverseStatement extends Statement {
 
   public void setWhileClause(WhereClause whileClause) {
     this.whileClause = whileClause;
-  }
-
-  public Limit getLimit() {
-    return limit;
-  }
-
-  public void setLimit(Limit limit) {
-    this.limit = limit;
   }
 
   public Strategy getStrategy() {

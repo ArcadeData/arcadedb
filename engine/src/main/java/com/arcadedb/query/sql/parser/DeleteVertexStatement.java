@@ -32,7 +32,6 @@ public class DeleteVertexStatement extends Statement {
   protected FromClause  fromClause;
   protected WhereClause whereClause;
   protected boolean     returnBefore = false;
-  protected Limit       limit        = null;
   protected Batch       batch        = null;
 
   public DeleteVertexStatement(int id) {
@@ -176,14 +175,6 @@ public class DeleteVertexStatement extends Statement {
 
   public void setReturnBefore(boolean returnBefore) {
     this.returnBefore = returnBefore;
-  }
-
-  public Limit getLimit() {
-    return limit;
-  }
-
-  public void setLimit(Limit limit) {
-    this.limit = limit;
   }
 
   public Batch getBatch() {

@@ -18,6 +18,7 @@ package com.arcadedb.engine;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.EmbeddedDatabase;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.DatabaseOperationException;
@@ -38,6 +39,8 @@ public class BucketIterator implements Iterator<Record> {
   int      totalPages;
   Record   next                = null;
   int      currentRecordInPage = 0;
+  long     browsed             = 0;
+  long     limit;
 
   BucketIterator(Bucket bucket, Database db) {
     ((DatabaseInternal) db).checkPermissionsOnFile(bucket.id, SecurityDatabaseUser.ACCESS.READ_RECORD);
@@ -50,6 +53,7 @@ public class BucketIterator implements Iterator<Record> {
     if (txPageCounter != null && txPageCounter > totalPages)
       this.totalPages = txPageCounter;
 
+    limit = ((EmbeddedDatabase) database).getResultSetLimit();
     fetchNext();
   }
 
@@ -120,6 +124,8 @@ public class BucketIterator implements Iterator<Record> {
 
   @Override
   public boolean hasNext() {
+    if (limit > -1 && browsed >= limit)
+      return false;
     return next != null;
   }
 
@@ -129,6 +135,7 @@ public class BucketIterator implements Iterator<Record> {
       throw new IllegalStateException();
     }
     try {
+      ++browsed;
       return next;
     } finally {
       try {

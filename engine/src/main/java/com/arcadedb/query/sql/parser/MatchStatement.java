@@ -18,6 +18,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
@@ -33,10 +34,32 @@ import com.arcadedb.schema.Schema;
 import java.util.*;
 import java.util.stream.*;
 
+import static com.arcadedb.query.sql.parser.SqlParserTreeConstants.JJTLIMIT;
+import static com.arcadedb.query.sql.parser.SqlParserTreeConstants.JJTTIMEOUT;
+
 public class MatchStatement extends Statement {
 
-  static final String   DEFAULT_ALIAS_PREFIX = "$ARCADEDB_DEFAULT_ALIAS_";
-  private      Database database;
+  static final        String                 DEFAULT_ALIAS_PREFIX    = "$ARCADEDB_DEFAULT_ALIAS_";
+  public static final String                 KEYWORD_MATCH           = "MATCH";
+  // parsed data
+  protected           List<MatchExpression>  matchExpressions        = new ArrayList<>();
+  protected           List<MatchExpression>  notMatchExpressions     = new ArrayList<>();
+  protected           List<Expression>       returnItems             = new ArrayList<>();
+  protected           List<Identifier>       returnAliases           = new ArrayList<>();
+  protected           List<NestedProjection> returnNestedProjections = new ArrayList<>();
+  protected           boolean                returnDistinct          = false;
+  protected           GroupBy                groupBy;
+  protected           OrderBy                orderBy;
+  protected           Unwind                 unwind;
+  protected           Skip                   skip;
+  // post-parsing generated data
+  protected           Pattern                pattern;
+  //  private Map<String, WhereClause> aliasFilters;
+//  private Map<String, String>      aliasUserTypes;
+  // execution data
+  private             CommandContext         context;
+  //  private OProgressListener progressListener;
+  private             Database               database;
 
   public List<NestedProjection> getReturnNestedProjections() {
     return returnNestedProjections;
@@ -89,30 +112,6 @@ public class MatchStatement extends Statement {
 //    public String              rootAlias;
   }
 
-  public static final String                 KEYWORD_MATCH           = "MATCH";
-  // parsed data
-  protected           List<MatchExpression>  matchExpressions        = new ArrayList<>();
-  protected           List<MatchExpression>  notMatchExpressions     = new ArrayList<>();
-  protected           List<Expression>       returnItems             = new ArrayList<>();
-  protected           List<Identifier>       returnAliases           = new ArrayList<>();
-  protected           List<NestedProjection> returnNestedProjections = new ArrayList<>();
-  protected           boolean                returnDistinct          = false;
-  protected           GroupBy                groupBy;
-  protected           OrderBy                orderBy;
-  protected           Unwind                 unwind;
-  protected           Skip                   skip;
-  protected           Limit                  limit;
-
-  // post-parsing generated data
-  protected Pattern pattern;
-
-//  private Map<String, WhereClause> aliasFilters;
-//  private Map<String, String>      aliasUserTypes;
-
-  // execution data
-  private CommandContext context;
-//  private OProgressListener progressListener;
-
   public MatchStatement() {
     super(-1);
   }
@@ -139,6 +138,9 @@ public class MatchStatement extends Statement {
         params.put(i, args[i]);
       }
     }
+
+    setProfilingConstraints((DatabaseInternal) database);
+
     ctx.setInputParameters(params);
     InternalExecutionPlan executionPlan = createExecutionPlan(ctx, false);
 
@@ -153,6 +155,9 @@ public class MatchStatement extends Statement {
       ctx.setParentWithoutOverridingChild(parentCtx);
     }
     ctx.setDatabase(db);
+
+    setProfilingConstraints((DatabaseInternal) database);
+
     ctx.setInputParameters(params);
     InternalExecutionPlan executionPlan = createExecutionPlan(ctx, false);
 
@@ -459,14 +464,6 @@ public class MatchStatement extends Statement {
     return result;
   }
 
-  public Limit getLimit() {
-    return limit;
-  }
-
-  public void setLimit(Limit limit) {
-    this.limit = limit;
-  }
-
   public List<Identifier> getReturnAliases() {
     return returnAliases;
   }
@@ -537,6 +534,16 @@ public class MatchStatement extends Statement {
 
   public void setSkip(Skip skip) {
     this.skip = skip;
+  }
+
+  private void setProfilingConstraints(final DatabaseInternal db) {
+    final long profiledLimit = db.getResultSetLimit();
+    if (profiledLimit > -1 && (limit == null || limit.num.value.longValue() > profiledLimit))
+      setLimit(new Limit(JJTLIMIT).setValue((int) profiledLimit));
+
+    final long profiledTimeout = db.getReadTimeout();
+    if (profiledTimeout > -1 && (timeout == null || timeout.val.longValue() > profiledTimeout))
+      setTimeout(new Timeout(JJTTIMEOUT).setValue((int) profiledTimeout));
   }
 }
 /* JavaCC - OriginalChecksum=6ff0afbe9d31f08b72159fcf24070c9f (do not edit this line) */

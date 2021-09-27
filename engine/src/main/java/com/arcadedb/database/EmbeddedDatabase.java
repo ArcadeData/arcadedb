@@ -559,13 +559,17 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   public Iterator<Record> iterateType(final String typeName, final boolean polymorphic) {
     stats.iterateType.incrementAndGet();
 
-    return (Iterator<Record>) executeInReadLock((Callable<Object>) () -> {
+    return (Iterator<Record>) executeInReadLock(() -> {
 
       checkDatabaseIsOpen();
 
       final DocumentType type = schema.getType(typeName);
 
       final MultiIterator iter = new MultiIterator();
+
+      // SET THE PROFILED LIMITS IF ANY
+      iter.setLimit(getResultSetLimit());
+      iter.setTimeout(getReadTimeout());
 
       for (Bucket b : type.getBuckets(polymorphic))
         iter.addIterator(b.iterator());
@@ -632,6 +636,36 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
       resource = "type '" + type + "'";
 
     throw new SecurityException("User '" + user.getName() + "' is not allowed to " + access.fullName + " on " + resource);
+  }
+
+  @Override
+  public long getResultSetLimit() {
+    if (security == null)
+      return -1L;
+
+    final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContext(databasePath);
+    if (dbContext == null)
+      return -1L;
+    final SecurityDatabaseUser user = dbContext.getCurrentUser();
+    if (user == null)
+      return -1L;
+
+    return user.getResultSetLimit();
+  }
+
+  @Override
+  public long getReadTimeout() {
+    if (security == null)
+      return -1L;
+
+    final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContext(databasePath);
+    if (dbContext == null)
+      return -1L;
+    final SecurityDatabaseUser user = dbContext.getCurrentUser();
+    if (user == null)
+      return -1L;
+
+    return user.getReadTimeout();
   }
 
   @Override

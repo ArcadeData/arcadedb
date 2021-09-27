@@ -381,7 +381,7 @@ public class FromItem extends SimpleNode {
       return false;
     }
     if (statement != null) {
-      return statement.executinPlanCanBeCached();
+      return statement.executionPlanCanBeCached();
     }
     if (functionCall != null) {
       return functionCall.isCacheable();

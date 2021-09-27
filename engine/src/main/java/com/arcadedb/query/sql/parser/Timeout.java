@@ -100,8 +100,9 @@ public class Timeout extends SimpleNode {
     failureStrategy = fromResult.getProperty("failureStrategy");
   }
 
-  public void setVal(final Number val) {
+  public Timeout setValue(final Number val) {
     this.val = val;
+    return this;
   }
 
 }

@@ -249,7 +249,7 @@ public class ParenthesisExpression extends MathExpression {
       return expression.isCacheable();
     }
     if (statement != null) {
-      return statement.executinPlanCanBeCached();
+      return statement.executionPlanCanBeCached();
     }
     return true;
   }

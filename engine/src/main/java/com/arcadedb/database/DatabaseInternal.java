@@ -61,6 +61,10 @@ public interface DatabaseInternal extends Database {
 
   void checkPermissionsOnFile(int fileId, SecurityDatabaseUser.ACCESS access);
 
+  long getResultSetLimit();
+
+  long getReadTimeout();
+
   void registerCallback(CALLBACK_EVENT event, Callable<Void> callback);
 
   void unregisterCallback(CALLBACK_EVENT event, Callable<Void> callback);

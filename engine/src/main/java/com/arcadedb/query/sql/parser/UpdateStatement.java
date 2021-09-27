@@ -20,9 +20,9 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Database;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.UpdateExecutionPlanner;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.UpdateExecutionPlan;
+import com.arcadedb.query.sql.executor.UpdateExecutionPlanner;
 
 import java.util.*;
 import java.util.stream.*;
@@ -32,19 +32,13 @@ public class UpdateStatement extends Statement {
 
   protected List<UpdateOperations> operations = new ArrayList<UpdateOperations>();
 
-  protected boolean upsert = false;
-
-  protected boolean    returnBefore = false;
-  protected boolean    returnAfter  = false;
-  protected boolean    returnCount  = false;
-  protected Projection returnProjection;
-
-  public WhereClause whereClause;
-
-  public Object lockRecord = null;
-
-  public Limit   limit;
-  public Timeout timeout;
+  protected boolean     upsert       = false;
+  protected boolean     returnBefore = false;
+  protected boolean     returnAfter  = false;
+  protected boolean     returnCount  = false;
+  protected Projection  returnProjection;
+  public    WhereClause whereClause;
+  public    Object      lockRecord   = null;
 
   public UpdateStatement(int id) {
     super(id);
@@ -249,14 +243,6 @@ public class UpdateStatement extends Statement {
 
   public Object getLockRecord() {
     return lockRecord;
-  }
-
-  public Limit getLimit() {
-    return limit;
-  }
-
-  public Timeout getTimeout() {
-    return timeout;
   }
 }
 /* JavaCC - OriginalChecksum=093091d7273f1073ad49f2a2bf709a53 (do not edit this line) */

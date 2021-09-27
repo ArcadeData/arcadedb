@@ -72,6 +72,11 @@ public class Limit extends SimpleNode {
     throw new CommandExecutionException("No value for LIMIT");
   }
 
+  public Limit setValue(final int value) {
+    num = new PInteger(-1).setValue(value);
+    return this;
+  }
+
   public Limit copy() {
     Limit result = new Limit(-1);
     result.num = num == null ? null : num.copy();

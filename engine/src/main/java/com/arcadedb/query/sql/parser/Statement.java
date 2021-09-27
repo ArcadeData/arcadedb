@@ -31,7 +31,9 @@ import java.util.*;
 public class Statement extends SimpleNode {
 
   //only for internal use!!! (caching)
-  protected String originalStatement;
+  protected String  originalStatement;
+  protected Limit   limit   = null;
+  protected Timeout timeout = null;
 
   public static final String CUSTOM_STRICT_SQL = "strictSql";
 
@@ -55,7 +57,6 @@ public class Statement extends SimpleNode {
   }
 
   public void validate() throws CommandSQLParsingException {
-
   }
 
   @Override
@@ -156,7 +157,7 @@ public class Statement extends SimpleNode {
     throw new UnsupportedOperationException();
   }
 
-  public boolean executinPlanCanBeCached() {
+  public boolean executionPlanCanBeCached() {
     return false;
   }
 
@@ -164,5 +165,22 @@ public class Statement extends SimpleNode {
     return originalStatement;
   }
 
+  public Limit getLimit() {
+    return limit;
+  }
+
+  public void setLimit(final Limit limit) {
+    if (limit.num.value.longValue() > -1)
+      this.limit = limit;
+  }
+
+  public Timeout getTimeout() {
+    return timeout;
+  }
+
+  public void setTimeout(final Timeout timeout) {
+    if (timeout.val.longValue() > -1)
+      this.timeout = timeout;
+  }
 }
 /* JavaCC - OriginalChecksum=589c4dcc8287f430e46d8eb12b0412c5 (do not edit this line) */

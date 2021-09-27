@@ -19,9 +19,12 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.SQLEngine;
+import com.arcadedb.query.sql.parser.Limit;
 import com.arcadedb.query.sql.parser.Statement;
 
-import java.util.Map;
+import java.util.*;
+
+import static com.arcadedb.query.sql.parser.SqlParserTreeConstants.JJTLIMIT;
 
 public class SQLQueryEngine implements QueryEngine {
   private final DatabaseInternal database;
@@ -53,6 +56,8 @@ public class SQLQueryEngine implements QueryEngine {
     if (!statement.isIdempotent())
       throw new IllegalArgumentException("Query '" + query + "' is not idempotent");
 
+    statement.setLimit(new Limit(JJTLIMIT).setValue((int) database.getResultSetLimit()));
+
     return statement.execute(database, parameters);
   }
 
@@ -62,18 +67,26 @@ public class SQLQueryEngine implements QueryEngine {
     if (!statement.isIdempotent())
       throw new IllegalArgumentException("Query '" + query + "' is not idempotent");
 
+    statement.setLimit(new Limit(JJTLIMIT).setValue((int) database.getResultSetLimit()));
+
     return statement.execute(database, parameters);
   }
 
   @Override
   public ResultSet command(String query, Map<String, Object> parameters) {
     final Statement statement = SQLEngine.parse(query, database);
+
+    statement.setLimit(new Limit(JJTLIMIT).setValue((int) database.getResultSetLimit()));
+
     return statement.execute(database, parameters);
   }
 
   @Override
   public ResultSet command(String query, Object... parameters) {
     final Statement statement = SQLEngine.parse(query, database);
+
+    statement.setLimit(new Limit(JJTLIMIT).setValue((int) database.getResultSetLimit()));
+
     return statement.execute(database, parameters);
   }
 }

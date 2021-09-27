@@ -15,7 +15,9 @@
  */
 package com.arcadedb.utility;
 
-import java.lang.reflect.Array;
+import com.arcadedb.exception.TimeoutException;
+
+import java.lang.reflect.*;
 import java.util.*;
 
 /**
@@ -26,12 +28,13 @@ public class MultiIterator<T> implements Iterator<T>, Iterable<T> {
   private Iterator<?>  sourcesIterator;
   private Iterator<T>  partialIterator;
 
-  private int     browsed  = 0;
-  private int     skip     = -1;
-  private int     limit    = -1;
-  private boolean embedded = false;
-
-  private int skipped = 0;
+  private long    browsed   = 0L;
+  private long    skip      = -1L;
+  private long    limit     = -1L;
+  private long    timeout   = -1L;
+  private boolean embedded  = false;
+  private int     skipped   = 0;
+  private long    beginTime = System.currentTimeMillis();
 
   public MultiIterator() {
     sources = new ArrayList<>();
@@ -44,6 +47,9 @@ public class MultiIterator<T> implements Iterator<T>, Iterable<T> {
 
   @Override
   public boolean hasNext() {
+    if (timeout > -1L && System.currentTimeMillis() - beginTime > timeout)
+      throw new TimeoutException("Timeout on iteration");
+
     while (skipped < skip) {
       if (!hasNextInternal()) {
         return false;
@@ -55,6 +61,9 @@ public class MultiIterator<T> implements Iterator<T>, Iterable<T> {
   }
 
   private boolean hasNextInternal() {
+    if (timeout > -1L && System.currentTimeMillis() - beginTime > timeout)
+      throw new TimeoutException("Timeout on iteration");
+
     if (sourcesIterator == null) {
       if (sources == null || sources.isEmpty())
         return false;
@@ -114,6 +123,9 @@ public class MultiIterator<T> implements Iterator<T>, Iterable<T> {
     int size = 0;
     final int totSources = sources.size();
     for (int i = 0; i < totSources; ++i) {
+      if (timeout > -1L && System.currentTimeMillis() - beginTime > timeout)
+        throw new TimeoutException("Timeout on iteration");
+
       final Object o = sources.get(i);
 
       if (o != null)
@@ -134,19 +146,23 @@ public class MultiIterator<T> implements Iterator<T>, Iterable<T> {
     throw new UnsupportedOperationException("PMultiIterator.remove()");
   }
 
-  public int getLimit() {
+  public long getLimit() {
     return limit;
   }
 
-  public void setLimit(final int limit) {
+  public void setLimit(final long limit) {
     this.limit = limit;
   }
 
-  public int getSkip() {
+  public void setTimeout(long readTimeout) {
+    this.timeout = readTimeout;
+  }
+
+  public long getSkip() {
     return skip;
   }
 
-  public void setSkip(final int skip) {
+  public void setSkip(final long skip) {
     this.skip = skip;
   }
 
@@ -168,6 +184,9 @@ public class MultiIterator<T> implements Iterator<T>, Iterable<T> {
 
   @SuppressWarnings("unchecked")
   protected boolean getNextPartial() {
+    if (timeout > -1L && System.currentTimeMillis() - beginTime > timeout)
+      throw new TimeoutException("Timeout on iteration");
+
     if (sourcesIterator != null)
       while (sourcesIterator.hasNext()) {
         Object next = sourcesIterator.next();

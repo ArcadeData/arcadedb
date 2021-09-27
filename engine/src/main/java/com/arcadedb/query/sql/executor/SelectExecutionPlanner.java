@@ -66,13 +66,13 @@ public class SelectExecutionPlanner {
     info.timeout = this.statement.getTimeout() == null ? null : this.statement.getTimeout().copy();
     if (info.timeout == null && ctx.getDatabase().getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_TIMEOUT) > 0) {
       info.timeout = new Timeout(-1);
-      info.timeout.setVal(ctx.getDatabase().getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_TIMEOUT));
+      info.timeout.setValue(ctx.getDatabase().getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_TIMEOUT));
     }
   }
 
   public InternalExecutionPlan createExecutionPlan(CommandContext ctx, boolean enableProfiling) {
     DatabaseInternal db = ctx.getDatabase();
-    if (!enableProfiling && statement.executinPlanCanBeCached()) {
+    if (!enableProfiling && statement.executionPlanCanBeCached()) {
       ExecutionPlan plan = db.getExecutionPlanCache().get(statement.getOriginalStatement(), ctx);
       if (plan != null) {
         return (InternalExecutionPlan) plan;
@@ -118,7 +118,7 @@ public class SelectExecutionPlanner {
       result.chain(new AccumulatingTimeoutStep(info.timeout, ctx, enableProfiling));
     }
 
-    if (!enableProfiling && statement.executinPlanCanBeCached() && result.canBeCached() && db.getExecutionPlanCache().getLastInvalidation() < planningStart) {
+    if (!enableProfiling && statement.executionPlanCanBeCached() && result.canBeCached() && db.getExecutionPlanCache().getLastInvalidation() < planningStart) {
       db.getExecutionPlanCache().put(statement.getOriginalStatement(), result);
     }
     return result;

@@ -21,29 +21,22 @@ import com.arcadedb.database.Database;
 import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.DeleteExecutionPlan;
 import com.arcadedb.query.sql.executor.DeleteEdgeExecutionPlanner;
+import com.arcadedb.query.sql.executor.DeleteExecutionPlan;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.*;
 import java.util.stream.*;
 
 public class DeleteEdgeStatement extends Statement {
-  private static final Object unset = new Object();
-
-  protected Identifier typeName;
-  protected Identifier targetBucketName;
-
-  protected Rid       rid;
-  protected List<Rid> rids;
-
-  protected Expression leftExpression;
-  protected Expression rightExpression;
-
-  protected WhereClause whereClause;
-
-  protected Limit limit;
-  protected Batch batch = null;
+  protected            Identifier  typeName;
+  protected            Identifier  targetBucketName;
+  protected            Rid         rid;
+  protected            List<Rid>   rids;
+  protected            Expression  leftExpression;
+  protected            Expression  rightExpression;
+  protected            WhereClause whereClause;
+  protected            Batch       batch = null;
 
   public DeleteEdgeStatement(int id) {
     super(id);
@@ -60,8 +53,8 @@ public class DeleteEdgeStatement extends Statement {
     return visitor.visit(this, data);
   }
 
-
-  @Override public ResultSet execute(Database db, Map params, CommandContext parentCtx, boolean usePlanCache) {
+  @Override
+  public ResultSet execute(Database db, Map params, CommandContext parentCtx, boolean usePlanCache) {
     BasicCommandContext ctx = new BasicCommandContext();
     if (parentCtx != null) {
       ctx.setParentWithoutOverridingChild(parentCtx);
@@ -73,7 +66,8 @@ public class DeleteEdgeStatement extends Statement {
     return new LocalResultSet(executionPlan);
   }
 
-  @Override public ResultSet execute(Database db, Object[] args, CommandContext parentCtx, boolean usePlanCache) {
+  @Override
+  public ResultSet execute(Database db, Object[] args, CommandContext parentCtx, boolean usePlanCache) {
     Map<Object, Object> params = new HashMap<>();
     if (args != null) {
       for (int i = 0; i < args.length; i++) {
@@ -87,7 +81,6 @@ public class DeleteEdgeStatement extends Statement {
     DeleteEdgeExecutionPlanner planner = new DeleteEdgeExecutionPlanner(this);
     return planner.createExecutionPlan(ctx, enableProfiling);
   }
-
 
   public void toString(Map<Object, Object> params, StringBuilder builder) {
     builder.append("DELETE EDGE");
@@ -117,11 +110,11 @@ public class DeleteEdgeStatement extends Statement {
       }
       builder.append("]");
     }
-    if(leftExpression!=null){
+    if (leftExpression != null) {
       builder.append(" FROM ");
       leftExpression.toString(params, builder);
     }
-    if(rightExpression!=null){
+    if (rightExpression != null) {
       builder.append(" TO ");
       rightExpression.toString(params, builder);
     }
@@ -139,7 +132,8 @@ public class DeleteEdgeStatement extends Statement {
     }
   }
 
-  @Override public DeleteEdgeStatement copy() {
+  @Override
+  public DeleteEdgeStatement copy() {
     DeleteEdgeStatement result = null;
     try {
       result = getClass().getConstructor(Integer.TYPE).newInstance(-1);
@@ -150,15 +144,16 @@ public class DeleteEdgeStatement extends Statement {
     result.targetBucketName = targetBucketName == null ? null : targetBucketName.copy();
     result.rid = rid == null ? null : rid.copy();
     result.rids = rids == null ? null : rids.stream().map(x -> x.copy()).collect(Collectors.toList());
-    result.leftExpression = leftExpression==null?null:leftExpression.copy();
-    result.rightExpression = rightExpression==null?null:rightExpression.copy();
+    result.leftExpression = leftExpression == null ? null : leftExpression.copy();
+    result.rightExpression = rightExpression == null ? null : rightExpression.copy();
     result.whereClause = whereClause == null ? null : whereClause.copy();
     result.limit = limit == null ? null : limit.copy();
     result.batch = batch == null ? null : batch.copy();
     return result;
   }
 
-  @Override public boolean equals(Object o) {
+  @Override
+  public boolean equals(Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
@@ -185,13 +180,14 @@ public class DeleteEdgeStatement extends Statement {
     return batch != null ? batch.equals(that.batch) : that.batch == null;
   }
 
-  @Override public int hashCode() {
+  @Override
+  public int hashCode() {
     int result = typeName != null ? typeName.hashCode() : 0;
     result = 31 * result + (targetBucketName != null ? targetBucketName.hashCode() : 0);
     result = 31 * result + (rid != null ? rid.hashCode() : 0);
     result = 31 * result + (rids != null ? rids.hashCode() : 0);
     result = 31 * result + (leftExpression != null ? leftExpression.hashCode() : 0);
-    result = 31 * result + (rightExpression!= null ? rightExpression.hashCode() : 0);
+    result = 31 * result + (rightExpression != null ? rightExpression.hashCode() : 0);
     result = 31 * result + (whereClause != null ? whereClause.hashCode() : 0);
     result = 31 * result + (limit != null ? limit.hashCode() : 0);
     result = 31 * result + (batch != null ? batch.hashCode() : 0);
@@ -236,14 +232,6 @@ public class DeleteEdgeStatement extends Statement {
 
   public void setWhereClause(WhereClause whereClause) {
     this.whereClause = whereClause;
-  }
-
-  public Limit getLimit() {
-    return limit;
-  }
-
-  public void setLimit(Limit limit) {
-    this.limit = limit;
   }
 
   public Batch getBatch() {

@@ -36,6 +36,8 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
   private final String      userName;
   private       String[]    groups;
   private       boolean[][] fileAccessMap     = null;
+  private       long        resultSetLimit    = -1;
+  private       long        readTimeout       = -1;
   private       boolean[]   databaseAccessMap = new boolean[DATABASE_ACCESS.values().length];
 
   public ServerSecurityDatabaseUser(final String databaseName, final String userName, final String[] groups) {
@@ -59,6 +61,16 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
   }
 
   @Override
+  public long getResultSetLimit() {
+    return resultSetLimit;
+  }
+
+  @Override
+  public long getReadTimeout() {
+    return readTimeout;
+  }
+
+  @Override
   public boolean requestAccessOnDatabase(final DATABASE_ACCESS access) {
     return databaseAccessMap[access.ordinal()];
   }
@@ -69,7 +81,7 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
     return permissions == null || permissions[access.ordinal()];
   }
 
-  public void updateDatabaseAccess(final JSONObject configuredGroups) {
+  public void updateDatabaseConfiguration(final JSONObject configuredGroups) {
     // RESET THE ARRAY
     for (int i = 0; i < DATABASE_ACCESS.values().length; i++)
       databaseAccessMap[i] = false;
@@ -84,10 +96,22 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
         continue;
 
       final JSONObject group = configuredGroups.getJSONObject(groupName);
-      if (!group.has("access"))
-        continue;
+      if (group.has("access"))
+        access = group.getJSONArray("access");
 
-      access = group.getJSONArray("access");
+      if (group.has("resultSetLimit")) {
+        long value = group.getLong("resultSetLimit");
+        if (value > -1 && (resultSetLimit == -1 || value < resultSetLimit))
+          // SET THE MOST RESTRICTIVE TIMEOUT IN CASE OF MULTIPLE GROUP SETTINGS
+          resultSetLimit = value;
+      }
+
+      if (group.has("readTimeout")) {
+        long value = group.getLong("readTimeout");
+        if (value > -1 && (readTimeout == -1 || value < readTimeout))
+          // SET THE MOST RESTRICTIVE TIMEOUT IN CASE OF MULTIPLE GROUP SETTINGS
+          readTimeout = value;
+      }
     }
 
     if (access == null) {
@@ -95,6 +119,20 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
       final JSONObject defaultGroup = configuredGroups.getJSONObject(SecurityManager.ANY);
       if (defaultGroup.has("access"))
         access = defaultGroup.getJSONArray("access");
+
+      if (defaultGroup.has("resultSetLimit")) {
+        long value = defaultGroup.getLong("resultSetLimit");
+        if (value > -1 && (resultSetLimit == -1 || value < resultSetLimit))
+          // SET THE MOST RESTRICTIVE TIMEOUT IN CASE OF MULTIPLE GROUP SETTINGS
+          resultSetLimit = value;
+      }
+
+      if (defaultGroup.has("readTimeout")) {
+        long value = defaultGroup.getLong("readTimeout");
+        if (value > -1 && (readTimeout == -1 || value < readTimeout))
+          // SET THE MOST RESTRICTIVE TIMEOUT IN CASE OF MULTIPLE GROUP SETTINGS
+          readTimeout = value;
+      }
     }
 
     // UPDATE THE ARRAY WITH LATEST CONFIGURATION
@@ -152,13 +190,15 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
         // NO GROUP+TYPE FOUND, APPLY SETTINGS FROM DEFAULT GROUP/TYPE
         fileAccessMap[i] = new boolean[] { false, false, false, false };
 
+        final JSONObject t;
         if (defaultGroup.has(typeName)) {
           // APPLY THE FOUND TYPE FROM DEFAULT GROUP
-          final JSONObject defaultGroupType = defaultGroup.getJSONObject(typeName);
-          updateAccessArray(fileAccessMap[i], defaultGroupType.getJSONArray("access"));
+          t = defaultGroup.getJSONObject(typeName);
         } else
           // APPLY DEFAULT TYPE FROM DEFAULT GROUP
-          updateAccessArray(fileAccessMap[i], defaultType.getJSONArray("access"));
+          t = defaultType;
+
+        updateAccessArray(fileAccessMap[i], t.getJSONArray("access"));
       }
     }
   }

@@ -319,7 +319,7 @@ public class InCondition extends BooleanExpression {
         if (left != null && !left.isCacheable()) {
             return false;
         }
-        if (rightStatement != null && !rightStatement.executinPlanCanBeCached()) {
+        if (rightStatement != null && !rightStatement.executionPlanCanBeCached()) {
             return false;
         }
         return rightMathExpression == null || rightMathExpression.isCacheable();

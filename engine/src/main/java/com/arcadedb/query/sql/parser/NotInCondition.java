@@ -254,7 +254,7 @@ public class NotInCondition extends BooleanExpression {
       return false;
     }
 
-    if (rightStatement != null && !rightStatement.executinPlanCanBeCached()) {
+    if (rightStatement != null && !rightStatement.executionPlanCanBeCached()) {
       return false;
     }
 

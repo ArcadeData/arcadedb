@@ -26,9 +26,12 @@ import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
+import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.server.ArcadeDBServer;
@@ -42,6 +45,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
+import java.util.*;
 import java.util.concurrent.atomic.*;
 
 public class ServerProfilingIT {
@@ -306,6 +310,111 @@ public class ServerProfilingIT {
     }
   }
 
+  @Test
+  void testResultSetLimit() throws Throwable {
+    SECURITY.createUser(new JSONObject().put("name", "elon").put("password", SECURITY.encodePassword("musk"))
+        .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "readerOfDocumentsCapped" }))));
+
+    try (DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME)) {
+      checkElonUser(setCurrentUser("elon", database));
+
+      createSchemaNotAllowed(database);
+
+      // SWITCH TO ROOT TO CREATE SOME TYPES FOR FURTHER TESTS
+      setCurrentUser("root", database);
+
+      createSchema(database);
+
+      createSomeRecords(database, true);
+      for (int i = 0; i < 14; i++) {
+        createSomeRecords(database, true);
+      }
+
+      // SWITCH BACK TO ELON
+      checkElonUser(setCurrentUser("elon", database));
+
+      expectedSecurityException(() -> database.newVertex("Vertex1").save());
+      expectedSecurityException(() -> database.newDocument("Document1").save());
+
+      int count = 0;
+      for (final Iterator<Record> iter = database.iterateType("Document1", true); iter.hasNext(); ) {
+        iter.next();
+        ++count;
+      }
+
+      Assertions.assertEquals(10, count);
+
+      count = 0;
+      for (final ResultSet iter = database.query("sql", "select from Document1"); iter.hasNext(); ) {
+        iter.next();
+        ++count;
+      }
+
+      Assertions.assertEquals(10, count);
+
+      // SWITCH TO ROOT TO DROP THE SCHEMA
+      setCurrentUser("root", database);
+      dropSchema(database);
+
+    } finally {
+      SECURITY.dropUser("elon");
+    }
+  }
+
+  @Test
+  void testReadTimeout() throws Throwable {
+    SECURITY.createUser(new JSONObject().put("name", "elon").put("password", SECURITY.encodePassword("musk"))
+        .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "readerOfDocumentsShortTimeout" }))));
+
+    try (DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME)) {
+      checkElonUser(setCurrentUser("elon", database));
+
+      createSchemaNotAllowed(database);
+
+      // SWITCH TO ROOT TO CREATE SOME TYPES FOR FURTHER TESTS
+      setCurrentUser("root", database);
+
+      createSchema(database);
+
+      database.transaction(() -> {
+        for (int i = 0; i < 10000; i++) {
+          database.newDocument("Document1").save();
+        }
+      });
+
+      // SWITCH BACK TO ELON
+      checkElonUser(setCurrentUser("elon", database));
+
+      expectedSecurityException(() -> database.newVertex("Vertex1").save());
+      expectedSecurityException(() -> database.newDocument("Document1").save());
+
+      try {
+        for (final Iterator<Record> iter = database.iterateType("Document1", true); iter.hasNext(); ) {
+          iter.next();
+        }
+        Assertions.fail();
+      } catch (TimeoutException e) {
+        // EXPECTED
+      }
+
+      try {
+        for (final ResultSet iter = database.query("sql", "select from Document1"); iter.hasNext(); ) {
+          iter.next();
+        }
+        Assertions.fail();
+      } catch (TimeoutException e) {
+        // EXPECTED
+      }
+
+      // SWITCH TO ROOT TO DROP THE SCHEMA
+      setCurrentUser("root", database);
+      dropSchema(database);
+
+    } finally {
+      SECURITY.dropUser("elon");
+    }
+  }
+
   private void createSchemaNotAllowed(DatabaseInternal database) throws Throwable {
     expectedSecurityException(() -> database.getSchema().createBucket("Bucket1"));
     expectedSecurityException(() -> database.getSchema().createVertexType("Vertex1"));
@@ -389,8 +498,8 @@ public class ServerProfilingIT {
     SERVER = new ArcadeDBServer();
     SERVER.start();
     SECURITY = SERVER.getSecurity();
-    SECURITY.getDatabaseGroupsConfiguration(DATABASE_NAME)
-        .put("reader", new JSONObject().put("types", new JSONObject().put("*", new JSONObject().put("access", new JSONArray(new String[] { "readRecord" })))));
+    SECURITY.getDatabaseGroupsConfiguration(DATABASE_NAME).put("reader",//
+        new JSONObject().put("types", new JSONObject().put("*", new JSONObject().put("access", new JSONArray(new String[] { "readRecord" })))));
     SECURITY.getDatabaseGroupsConfiguration(DATABASE_NAME).put("creator",
         new JSONObject().put("types", new JSONObject().put("*", new JSONObject().put("access", new JSONArray(new String[] { "createRecord" })))));
     SECURITY.getDatabaseGroupsConfiguration(DATABASE_NAME).put("updater",
@@ -406,6 +515,14 @@ public class ServerProfilingIT {
         new JSONObject().put("types", new JSONObject().put("Document1", new JSONObject().put("access", new JSONArray(new String[] { "updateRecord" })))));
     SECURITY.getDatabaseGroupsConfiguration(DATABASE_NAME).put("deleterOfDocuments",
         new JSONObject().put("types", new JSONObject().put("Document1", new JSONObject().put("access", new JSONArray(new String[] { "deleteRecord" })))));
+
+    SECURITY.getDatabaseGroupsConfiguration(DATABASE_NAME).put("readerOfDocumentsCapped",//
+        new JSONObject().put("resultSetLimit", 10)//
+            .put("types", new JSONObject().put("Document1", new JSONObject().put("access", new JSONArray(new String[] { "readRecord" })))));
+
+    SECURITY.getDatabaseGroupsConfiguration(DATABASE_NAME).put("readerOfDocumentsShortTimeout",//
+        new JSONObject().put("readTimeout", 1)
+            .put("types", new JSONObject().put("Document1", new JSONObject().put("access", new JSONArray(new String[] { "readRecord" })))));
 
     SERVER.getOrCreateDatabase(DATABASE_NAME);
   }

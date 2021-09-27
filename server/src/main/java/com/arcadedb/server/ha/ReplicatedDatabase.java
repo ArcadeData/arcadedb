@@ -191,6 +191,16 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
+  public long getResultSetLimit() {
+    return proxied.getResultSetLimit();
+  }
+
+  @Override
+  public long getReadTimeout() {
+    return proxied.getReadTimeout();
+  }
+
+  @Override
   public Map<String, Object> getStats() {
     return proxied.getStats();
   }

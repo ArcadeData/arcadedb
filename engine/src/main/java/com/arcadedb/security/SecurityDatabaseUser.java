@@ -67,4 +67,8 @@ public interface SecurityDatabaseUser {
   boolean requestAccessOnFile(int fileId, ACCESS access);
 
   String getName();
+
+  long getResultSetLimit();
+
+  long getReadTimeout();
 }

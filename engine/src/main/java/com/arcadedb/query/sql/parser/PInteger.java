@@ -78,8 +78,9 @@ public class PInteger extends PNumber {
     return 10;
   }
 
-  public void setValue(java.lang.Number value) {
+  public PInteger setValue(final Number value) {
     this.value = value;
+    return this;
   }
 
   public void toString(Map<Object, Object> params, StringBuilder builder) {

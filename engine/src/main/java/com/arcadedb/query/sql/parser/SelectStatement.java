@@ -22,41 +22,32 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalExecutionPlan;
-import com.arcadedb.query.sql.executor.SelectExecutionPlanner;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.SelectExecutionPlanner;
 
 import java.util.*;
 
+import static com.arcadedb.query.sql.parser.SqlParserTreeConstants.JJTLIMIT;
+import static com.arcadedb.query.sql.parser.SqlParserTreeConstants.JJTTIMEOUT;
+
 public class SelectStatement extends Statement {
-
-  protected FromClause target;
-
-  protected Projection projection;
-
+  protected FromClause  target;
+  protected Projection  projection;
   protected WhereClause whereClause;
-
-  protected GroupBy groupBy;
-
-  protected OrderBy orderBy;
-
-  protected Unwind unwind;
-
-  protected Skip skip;
-
-  protected Limit limit;
-
-  protected Object lockRecord = null;
-
-  protected LetClause letClause;
-
-  protected Timeout timeout;
+  protected GroupBy     groupBy;
+  protected OrderBy     orderBy;
+  protected Unwind      unwind;
+  protected Skip        skip;
+  protected Object      lockRecord = null;
+  protected LetClause   letClause;
 
   public SelectStatement(int id) {
     super(id);
@@ -112,14 +103,6 @@ public class SelectStatement extends Statement {
 
   public void setSkip(Skip skip) {
     this.skip = skip;
-  }
-
-  public Limit getLimit() {
-    return limit;
-  }
-
-  public void setLimit(Limit limit) {
-    this.limit = limit;
   }
 
   public Object getLockRecord() {
@@ -217,7 +200,7 @@ public class SelectStatement extends Statement {
   }
 
   @Override
-  public boolean executinPlanCanBeCached() {
+  public boolean executionPlanCanBeCached() {
     if (originalStatement == null) {
       return false;
     }
@@ -248,7 +231,11 @@ public class SelectStatement extends Statement {
       for (int i = 0; i < args.length; i++) {
         params.put(i, args[i]);
       }
+
     }
+
+    setProfilingConstraints((DatabaseInternal) db);
+
     ctx.setInputParameters(params);
     final InternalExecutionPlan executionPlan = createExecutionPlan(ctx, false);
     final LocalResultSet result = new LocalResultSet(executionPlan);
@@ -262,6 +249,9 @@ public class SelectStatement extends Statement {
       ctx.setParentWithoutOverridingChild(parentCtx);
     }
     ctx.setDatabase(db);
+
+    setProfilingConstraints((DatabaseInternal) db);
+
     ctx.setInputParameters(params);
     final InternalExecutionPlan executionPlan = createExecutionPlan(ctx, false);
     final LocalResultSet result = new LocalResultSet(executionPlan);
@@ -377,14 +367,6 @@ public class SelectStatement extends Statement {
     this.unwind = unwind;
   }
 
-  public Timeout getTimeout() {
-    return timeout;
-  }
-
-  public void setTimeout(Timeout timeout) {
-    this.timeout = timeout;
-  }
-
   public Result serialize() {
     ResultInternal result = (ResultInternal) super.serialize();
     if (target != null) {
@@ -467,6 +449,16 @@ public class SelectStatement extends Statement {
       timeout = new Timeout(-1);
       timeout.deserialize(fromResult.getProperty("timeout"));
     }
+  }
+
+  private void setProfilingConstraints(final DatabaseInternal db) {
+    final long profiledLimit = db.getResultSetLimit();
+    if (profiledLimit > -1 && (limit == null || limit.num.value.longValue() > profiledLimit))
+      setLimit(new Limit(JJTLIMIT).setValue((int) profiledLimit));
+
+    final long profiledTimeout = db.getReadTimeout();
+    if (profiledTimeout > -1 && (timeout == null || timeout.val.longValue() > profiledTimeout))
+      setTimeout(new Timeout(JJTTIMEOUT).setValue((int) profiledTimeout));
   }
 }
 /* JavaCC - OriginalChecksum=b26959b9726a8cf35d6283eca931da6b (do not edit this line) */
