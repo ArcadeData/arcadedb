@@ -56,11 +56,13 @@ public class MultiValue {
      * @return true if it's an array, a collection or a map, otherwise false
      */
     public static boolean isMultiValue(final Object iObject) {
-        return iObject != null && isMultiValue(iObject.getClass());
+        return iObject != null &&
+                isMultiValue(iObject.getClass());
     }
 
     public static boolean isIterable(final Object iObject) {
-        return (iObject instanceof Iterable<?> || iObject instanceof Iterator<?>);
+        return iObject instanceof Iterable<?> ||
+                iObject instanceof Iterator<?>;
     }
 
     /**

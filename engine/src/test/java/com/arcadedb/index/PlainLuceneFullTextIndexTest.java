@@ -32,6 +32,7 @@ import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.Sort;
 import org.apache.lucene.store.FSDirectory;
 import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.nio.file.Path;
@@ -40,7 +41,7 @@ import java.util.stream.IntStream;
 
 public class PlainLuceneFullTextIndexTest {
 
-  //@Test
+  @Test
   void rename_me() throws IOException, ParseException {
 
     final Path path = Paths.get("./target/databases/testIndex");

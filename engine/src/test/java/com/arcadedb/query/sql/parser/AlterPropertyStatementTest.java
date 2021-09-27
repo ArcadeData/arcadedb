@@ -15,9 +15,11 @@
  */
 package com.arcadedb.query.sql.parser;
 
+import org.junit.jupiter.api.Test;
+
 public class AlterPropertyStatementTest extends ParserTestAbstract {
 
-  //@Test
+  @Test
   public void testPlain() {
     checkRightSyntax("ALTER PROPERTY Foo.foo NAME Bar");
     checkRightSyntax("alter property Foo.foo NAME Bar");

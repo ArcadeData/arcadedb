@@ -2598,7 +2598,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     result.close();
   }
 
-  //    @Test
+  @Test
   public void testIndexPlusSort5() {
     String className = "testIndexPlusSort5";
     DocumentType clazz = database.getSchema().createDocumentType(className);
@@ -2612,6 +2612,7 @@ public class SelectStatementExecutionTest extends TestHelper {
       MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i % 3);
       doc.set("surname", "surname" + i);
+      doc.set("address", "address" + i);
       doc.save();
     }
     database.commit();
@@ -2637,7 +2638,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     result.close();
   }
 
-  //@Test
+  @Test
   public void testIndexPlusSort6() {
     String className = "testIndexPlusSort6";
     DocumentType clazz = database.getSchema().createDocumentType(className);
@@ -2651,6 +2652,7 @@ public class SelectStatementExecutionTest extends TestHelper {
       MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i % 3);
       doc.set("surname", "surname" + i);
+      doc.set("address", "address" + i);
       doc.save();
     }
     database.commit();
@@ -2676,7 +2678,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     result.close();
   }
 
-  //    @Test  TODO
+  @Test
   public void testIndexPlusSort7() {
     String className = "testIndexPlusSort7";
     DocumentType clazz = database.getSchema().createDocumentType(className);
@@ -2690,6 +2692,7 @@ public class SelectStatementExecutionTest extends TestHelper {
       MutableDocument doc = database.newDocument(className);
       doc.set("name", "name" + i % 3);
       doc.set("surname", "surname" + i);
+      doc.set("address", "address" + i);
       doc.save();
     }
     database.commit();

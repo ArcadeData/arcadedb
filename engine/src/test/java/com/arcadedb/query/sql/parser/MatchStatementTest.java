@@ -225,7 +225,7 @@ public class MatchStatementTest {
     checkWrongSyntax("MATCH {bucket: 12.1, as: foo} RETURN $elements");
   }
 
-  //@Test
+  @Test
   public void testNot() {
     checkRightSyntax("MATCH {bucket:v, as: foo}, NOT {as:foo}-->{as:bar} RETURN $elements");
   }
@@ -236,7 +236,7 @@ public class MatchStatementTest {
         "MATCH {type: 'V', as: foo}-->{as:bar} RETURN foo.name, bar.name skip 10 limit 10");
   }
 
-  //@Test
+  @Test
   public void testFieldTraversal() {
     checkRightSyntax(
         "MATCH {type: 'V', as: foo}.toBar{as:bar} RETURN foo.name, bar.name skip 10 limit 10");
