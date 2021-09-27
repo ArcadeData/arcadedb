@@ -193,13 +193,16 @@ public class CommandHandler extends DatabaseAbstractHandler {
     }
   }
 
-  private ResultSet command(Database database, String language, String command, Map<String, Object> paramMap) {
-    Object params = mapParams(paramMap);
+  private ResultSet command(final Database database, final String language, String command, final Map<String, Object> paramMap) {
+    final Object params = mapParams(paramMap);
+
+    if (!command.endsWith(";"))
+      command += ";";
 
     if (params instanceof Object[])
-      return database.command(language, command, (Object[]) params);
+      return database.execute(language, command, (Object[]) params);
 
-    return database.command(language, command, (Map<Object, Object>) params);
+    return database.execute(language, command, (Map<String, Object>) params);
   }
 
   private Object mapParams(Map<String, Object> paramMap) {

@@ -1243,7 +1243,6 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
     BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(this);
-
     context.setInputParameters(params);
 
     final List<Statement> statements = SQLEngine.parseScript(script, wrappedDatabaseInstance);
@@ -1256,15 +1255,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
     BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(this);
-
-    Map<String, Object> params = new HashMap<>();
-    if (args != null) {
-      for (int i = 0; i < args.length; i++) {
-        params.put(String.valueOf(i), args[i]);
-      }
-    }
-
-    context.setInputParameters(params);
+    context.setInputParameters(args);
 
     final List<Statement> statements = SQLEngine.parseScript(script, wrappedDatabaseInstance);
     return new LocalResultSetLifecycleDecorator(executeInternal(statements, context));
