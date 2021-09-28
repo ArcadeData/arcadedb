@@ -53,7 +53,13 @@ public class JsonlExporter extends AbstractExporter {
 
     logger.logLine(0, "Exporting database to '%s'...", settings.file);
 
-    try (OutputStreamWriter fileWriter = new OutputStreamWriter(new GZIPOutputStream(new FileOutputStream(settings.file)),
+    final File exportFile;
+    if (settings.file.startsWith("file://"))
+      exportFile = new File(settings.file.substring("file://".length()));
+    else
+      exportFile = new File(settings.file);
+
+    try (OutputStreamWriter fileWriter = new OutputStreamWriter(new GZIPOutputStream(new FileOutputStream(exportFile)),
         DatabaseFactory.getDefaultCharset())) {
       writer = fileWriter;
 

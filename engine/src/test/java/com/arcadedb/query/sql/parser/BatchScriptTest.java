@@ -92,7 +92,7 @@ public class BatchScriptTest {
   protected List<Statement> checkSyntax(String query, boolean isCorrect) {
     SqlParser osql = getParserFor(query);
     try {
-      List<Statement> result = osql.parseScript();
+      List<Statement> result = osql.ParseScript();
       //      for(Statement stm:result){
       //        System.out.println(stm.toString()+";");
       //      }

@@ -264,21 +264,23 @@ TOKEN:
   |
   < ID: ( "I" | "i") ( "D" | "d") >
   |
-  < IMPORT: ( "I" | "i") ( "M" | "m")  ( "P" | "p") ( "O" | "o") ( "R" | "r") ( "T" | "t") >
+  < EXPORT: ( "E" | "e") ( "X" | "x") ( "P" | "p") ( "O" | "o") ( "R" | "r") ( "T" | "t") >
   |
-  < DATABASE: ( "D" | "d") ( "A" | "a")  ( "T" | "t") ( "A" | "a") ( "B" | "b") ( "A" | "a") ( "S" | "s") ( "E" | "e") >
+  < IMPORT: ( "I" | "i") ( "M" | "m") ( "P" | "p") ( "O" | "o") ( "R" | "r") ( "T" | "t") >
   |
-  < OPTIMIZE: ( "O" | "o") ( "P" | "p")  ( "T" | "t") ( "I" | "i") ( "M" | "m") ( "I" | "i") ( "Z" | "z") ( "E" | "e") >
+  < DATABASE: ( "D" | "d") ( "A" | "a") ( "T" | "t") ( "A" | "a") ( "B" | "b") ( "A" | "a") ( "S" | "s") ( "E" | "e") >
   |
-  < LINK: ( "L" | "l") ( "I" | "i")  ( "N" | "n") ( "K" | "k") >
+  < OPTIMIZE: ( "O" | "o") ( "P" | "p") ( "T" | "t") ( "I" | "i") ( "M" | "m") ( "I" | "i") ( "Z" | "z") ( "E" | "e") >
   |
-  < INVERSE: ( "I" | "i") ( "N" | "n")  ( "V" | "v") ( "E" | "e") ( "R" | "r")  ( "S" | "s") ( "E" | "e") >
+  < LINK: ( "L" | "l") ( "I" | "i") ( "N" | "n") ( "K" | "k") >
   |
-  < EXPLAIN: ( "E" | "e") ( "X" | "x")  ( "P" | "p") ( "L" | "l") ( "A" | "a")  ( "I" | "i") ( "N" | "n") >
+  < INVERSE: ( "I" | "i") ( "N" | "n") ( "V" | "v") ( "E" | "e") ( "R" | "r")  ( "S" | "s") ( "E" | "e") >
   |
-  < GRANT: ( "G" | "g") ( "R" | "r")  ( "A" | "a") ( "N" | "n") ( "T" | "t") >
+  < EXPLAIN: ( "E" | "e") ( "X" | "x") ( "P" | "p") ( "L" | "l") ( "A" | "a")  ( "I" | "i") ( "N" | "n") >
   |
-  < REVOKE: ( "R" | "r") ( "E" | "e")  ( "V" | "v") ( "O" | "o") ( "K" | "k")  ( "E" | "e") >
+  < GRANT: ( "G" | "g") ( "R" | "r") ( "A" | "a") ( "N" | "n") ( "T" | "t") >
+  |
+  < REVOKE: ( "R" | "r") ( "E" | "e") ( "V" | "v") ( "O" | "o") ( "K" | "k")  ( "E" | "e") >
   |
   < READ: ( "R" | "r") ( "E" | "e")  ( "A" | "a") ( "D" | "d")>
   |
@@ -669,7 +671,7 @@ Statement parse() :
   { return result; }
 }
 
-List<Statement> parseScript() :
+List<Statement> ParseScript() :
 {
   List<Statement> result = new ArrayList<Statement>();
   Statement last;
@@ -806,6 +808,8 @@ Identifier Identifier():
     token = <REBUILD>
     |
     token = <ID>
+    |
+    token = <EXPORT>
     |
     token = <IMPORT>
     |
@@ -1089,6 +1093,8 @@ Statement StatementInternal():
                 result = IfStatement()
                 |
                 result = ImportDatabaseStatement()
+                |
+                result = ExportDatabaseStatement()
                 |
                 result = BackupDatabaseStatement()
             )
@@ -4504,7 +4510,6 @@ ForEachBlock ForEachBlock():
     { return jjtThis; }
 }
 
-
 WhileBlock WhileBlock():
 {
     Statement last;
@@ -4536,6 +4541,16 @@ ImportDatabaseStatement ImportDatabaseStatement():
 {
     (
         <IMPORT> <DATABASE>
+        jjtThis.url = Url()
+    )
+    {return jjtThis; }
+}
+
+ExportDatabaseStatement ExportDatabaseStatement():
+{ }
+{
+    (
+        <EXPORT> <DATABASE>
         jjtThis.url = Url()
     )
     {return jjtThis; }

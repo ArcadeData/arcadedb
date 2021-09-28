@@ -54,6 +54,9 @@ public class Importer extends AbstractImporter {
       loadFromSource(settings.vertices, AnalyzedEntity.ENTITY_TYPE.VERTEX, analyzedSchema);
       loadFromSource(settings.edges, AnalyzedEntity.ENTITY_TYPE.EDGE, analyzedSchema);
 
+      if (database.isTransactionActive())
+        database.commit();
+
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on parsing source %s", e, source);
     } finally {

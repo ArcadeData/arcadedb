@@ -48,6 +48,11 @@ public class Exporter {
     System.exit(0);
   }
 
+  public Exporter setFormat(final String format) {
+    settings.format = format;
+    return this;
+  }
+
   public void exportDatabase() {
     try {
       startExporting();

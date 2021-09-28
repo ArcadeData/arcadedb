@@ -13,22 +13,23 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.arcadedb.integration.importer;
+package com.arcadedb.integration.exporter;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.integration.importer.OrientDBImporterIT;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.io.File;
-import java.net.URL;
+import java.io.*;
+import java.net.*;
 
-public class SQLLocalImporterTest {
+public class SQLLocalExporterTest {
   @Test
-  public void importOrientDB() {
+  public void importAndExportDatabase() {
     final URL inputFile = OrientDBImporterIT.class.getClassLoader().getResource("orientdb-export-small.gz");
 
     FileUtils.deleteRecursively(new File("databases/importedFromOrientDB"));
@@ -36,12 +37,18 @@ public class SQLLocalImporterTest {
     final Database database = new DatabaseFactory("databases/importedFromOrientDB").create();
     database.getConfiguration().setValue(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE, Bucket.DEF_PAGE_SIZE * 10);
 
-    //database.command("sql", "import database " + "file:///Users/luca/Downloads/Reactome.gz");
     database.command("sql", "import database file://" + inputFile.getFile());
 
     Assertions.assertEquals(500, database.countType("Person", false));
     Assertions.assertEquals(10000, database.countType("Friend", false));
 
+    database.command("sql", "export database file://target/export.jsonl.tgz");
+
+    final File exportFile = new File("./target/export.jsonl.tgz");
+    Assertions.assertTrue(exportFile.exists());
+    Assertions.assertTrue(exportFile.length() > 50_000);
+
+    exportFile.delete();
     FileUtils.deleteRecursively(new File("databases/importedFromOrientDB"));
   }
 }

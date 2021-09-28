@@ -26,8 +26,6 @@ import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
-import com.arcadedb.integration.exporter.Exporter;
-import com.arcadedb.integration.importer.Importer;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -156,10 +154,6 @@ public class Console {
         executeCreateDatabase(line);
       else if (line.startsWith("drop database"))
         executeDropDatabase(line);
-      else if (line.startsWith("export"))
-        executeExportDatabase(line);
-      else if (line.startsWith("import"))
-        executeImportDatabase(line);
       else if (line.equalsIgnoreCase("help") || line.equals("?"))
         executeHelp();
       else if (line.startsWith("info"))
@@ -183,20 +177,6 @@ public class Console {
     output("%n");
 
     return true;
-  }
-
-  private void executeImportDatabase(final String line) throws IOException {
-    checkDatabaseIsOpen();
-    final String fileName = line.substring("import".length()).trim();
-
-    new Importer(localDatabase, fileName).load();
-  }
-
-  private void executeExportDatabase(final String line) throws IOException {
-    checkDatabaseIsOpen();
-    final String fileName = line.substring("export".length()).trim();
-
-    new Exporter(localDatabase, fileName).exportDatabase();
   }
 
   private void executeSet(final String line) {

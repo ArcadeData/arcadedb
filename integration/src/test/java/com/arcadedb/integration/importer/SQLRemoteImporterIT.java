@@ -26,9 +26,9 @@ import java.io.File;
 public class SQLRemoteImporterIT {
   @Test
   public void importOrientDB() {
-    FileUtils.deleteRecursively(new File("databases/importedFromOrientDB"));
+    FileUtils.deleteRecursively(new File("./target/databases/importedFromOrientDB"));
 
-    final Database database = new DatabaseFactory("databases/importedFromOrientDB").create();
+    final Database database = new DatabaseFactory("./target/databases/importedFromOrientDB").create();
 
     //database.command("sql", "import database https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/MovieRatings.gz");
     database.command("sql", "import database https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/GratefulDeadConcerts.gz");
@@ -37,5 +37,8 @@ public class SQLRemoteImporterIT {
     Assertions.assertEquals(7047, database.countType("followed_by", false));
     Assertions.assertEquals(501, database.countType("sung_by", false));
     Assertions.assertEquals(501, database.countType("written_by", false));
+
+    database.drop();
+    FileUtils.deleteRecursively(new File("./target/databases/importedFromOrientDB"));
   }
 }
