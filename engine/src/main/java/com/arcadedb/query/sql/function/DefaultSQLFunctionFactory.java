@@ -40,7 +40,6 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
     register(SQLFunctionDifference.NAME, SQLFunctionDifference.class);
     register(SQLFunctionSymmetricDifference.NAME, SQLFunctionSymmetricDifference.class);
     register(SQLFunctionDistance.NAME, new SQLFunctionDistance());
-    register(SQLFunctionDistinct.NAME, SQLFunctionDistinct.class);
     register(SQLFunctionEncode.NAME, new SQLFunctionEncode());
     register(SQLFunctionFirst.NAME, new SQLFunctionFirst());
     register(SQLFunctionFormat.NAME, new SQLFunctionFormat());
