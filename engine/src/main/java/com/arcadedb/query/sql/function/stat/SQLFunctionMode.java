@@ -20,10 +20,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.function.SQLFunctionAbstract;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 /**
  * Compute the mode (or multimodal) value for a field. The scores in the field's distribution that occurs more frequently. Nulls are
@@ -35,17 +32,16 @@ public class SQLFunctionMode extends SQLFunctionAbstract {
 
   public static final String NAME = "mode";
 
-  private final Map<Object, Integer> seen = new HashMap<Object, Integer>();
-  private       int                  max  = 0;
-  private final List<Object> maxElems = new ArrayList<Object>();
+  private final Map<Object, Integer> seen     = new HashMap<Object, Integer>();
+  private       int                  max      = 0;
+  private final List<Object>         maxElems = new ArrayList<Object>();
 
   public SQLFunctionMode() {
     super(NAME);
   }
 
   @Override
-  public Object execute( Object iThis, Identifiable iCurrentRecord, Object iCurrentResult,
-      Object[] iParams, CommandContext iContext) {
+  public Object execute(Object iThis, Identifiable iCurrentRecord, Object iCurrentResult, Object[] iParams, CommandContext iContext) {
 
     if (MultiValue.isMultiValue(iParams[0])) {
       for (Object o : MultiValue.getMultiValueIterable(iParams[0])) {
