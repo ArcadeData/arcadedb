@@ -59,8 +59,10 @@ public class JsonlExporter extends AbstractExporter {
     else
       exportFile = new File(settings.file);
 
-    try (OutputStreamWriter fileWriter = new OutputStreamWriter(new GZIPOutputStream(new FileOutputStream(exportFile)),
-        DatabaseFactory.getDefaultCharset())) {
+    if (!exportFile.getParentFile().exists())
+      exportFile.getParentFile().mkdirs();
+
+    try (OutputStreamWriter fileWriter = new OutputStreamWriter(new GZIPOutputStream(new FileOutputStream(exportFile)), DatabaseFactory.getDefaultCharset())) {
       writer = fileWriter;
 
       writeJsonLine("info", new JSONObject().put("description", "ArcadeDB Database Export").put("exporterVersion", VERSION)//

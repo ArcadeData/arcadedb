@@ -42,9 +42,9 @@ public class SQLLocalExporterTest {
     Assertions.assertEquals(500, database.countType("Person", false));
     Assertions.assertEquals(10000, database.countType("Friend", false));
 
-    database.command("sql", "export database file://target/export.jsonl.tgz");
+    database.command("sql", "export database file://export.jsonl.tgz");
 
-    final File exportFile = new File("./target/export.jsonl.tgz");
+    final File exportFile = new File("./exports/export.jsonl.tgz");
     Assertions.assertTrue(exportFile.exists());
     Assertions.assertTrue(exportFile.length() > 50_000);
 

@@ -31,13 +31,15 @@ public class ExportDatabaseStatement extends SimpleExecStatement {
     result.setProperty("operation", "export database");
     result.setProperty("toUrl", targetUrl);
 
-    final String f = targetUrl.startsWith("file://") ? targetUrl.substring("file://".length()) : targetUrl;
-    if (f.contains("..") || f.contains("/"))
+    String fileName = targetUrl.startsWith("file://") ? targetUrl.substring("file://".length()) : targetUrl;
+    if (fileName.contains("..") || fileName.contains("/"))
       throw new IllegalArgumentException("Export file cannot contain path change because the directory is specified");
+
+    fileName = "exports/" + fileName;
 
     try {
       final Class<?> clazz = Class.forName("com.arcadedb.integration.exporter.Exporter");
-      final Object exporter = clazz.getConstructor(Database.class, String.class).newInstance(ctx.getDatabase(), url.getUrlString());
+      final Object exporter = clazz.getConstructor(Database.class, String.class).newInstance(ctx.getDatabase(), fileName);
 
       clazz.getMethod("setFormat", String.class).invoke(exporter, "jsonl");
       clazz.getMethod("exportDatabase").invoke(exporter);
