@@ -64,6 +64,7 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
     register(SQLFunctionUUID.NAME, SQLFunctionUUID.class);
     register(SQLFunctionConcat.NAME, SQLFunctionConcat.class);
     register(SQLFunctionAbsoluteValue.NAME, SQLFunctionAbsoluteValue.class);
+    register(SQLFunctionStrcmpci.NAME, SQLFunctionStrcmpci.class);
     //graph
     register(SQLFunctionOut.NAME, SQLFunctionOut.class);
     register(SQLFunctionIn.NAME, SQLFunctionIn.class);
