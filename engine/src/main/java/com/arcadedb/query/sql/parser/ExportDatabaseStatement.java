@@ -12,8 +12,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import java.lang.reflect.*;
 import java.util.*;
 
-public
-class ExportDatabaseStatement extends SimpleExecStatement {
+public class ExportDatabaseStatement extends SimpleExecStatement {
 
   protected Url url;
 
@@ -31,6 +30,10 @@ class ExportDatabaseStatement extends SimpleExecStatement {
     ResultInternal result = new ResultInternal();
     result.setProperty("operation", "export database");
     result.setProperty("toUrl", targetUrl);
+
+    final String f = targetUrl.startsWith("file://") ? targetUrl.substring("file://".length()) : targetUrl;
+    if (f.contains("..") || f.contains("/"))
+      throw new IllegalArgumentException("Export file cannot contain path change because the directory is specified");
 
     try {
       final Class<?> clazz = Class.forName("com.arcadedb.integration.exporter.Exporter");

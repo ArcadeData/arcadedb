@@ -52,10 +52,6 @@ public class ExporterSettings {
       final DateFormat dateFormat = new SimpleDateFormat("yyyyMMdd-HHmmssSSS");
       file = String.format(file, dateFormat.format(System.currentTimeMillis()));
     }
-
-    final String f = file.startsWith("file://") ? file.substring("file://".length()) : file;
-    if (f.contains("..") || f.contains("/"))
-      throw new IllegalArgumentException("Export file cannot contain path change because the directory is specified");
   }
 
   public int parseParameter(final String name, final String value) {
