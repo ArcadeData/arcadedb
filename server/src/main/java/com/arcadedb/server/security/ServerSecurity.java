@@ -77,7 +77,12 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
     saltIteration = configuration.getValueAsInteger(SERVER_SECURITY_SALT_ITERATIONS);
 
     usersRepository = new SecurityUserFileRepository(configPath);
-    groupRepository = new SecurityGroupFileRepository(configPath);
+    groupRepository = new SecurityGroupFileRepository(configPath).onReload((latestConfiguration) -> {
+      for (String databaseName : server.getDatabaseNames()) {
+        updateSchema((DatabaseInternal) server.getDatabase(databaseName));
+      }
+      return null;
+    });
 
     try {
       secretKeyFactory = SecretKeyFactory.getInstance(algorithm);
@@ -121,6 +126,8 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
   @Override
   public void stopService() {
     users.clear();
+    if (groupRepository != null)
+      groupRepository.stop();
   }
 
   public ServerSecurityUser authenticate(final String userName, final String userPassword, final String databaseName) {

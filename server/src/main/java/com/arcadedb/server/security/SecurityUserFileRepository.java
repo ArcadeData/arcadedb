@@ -80,6 +80,7 @@ public class SecurityUserFileRepository {
 
   public List<JSONObject> createDefault() {
     // ROOT USER
-    return Collections.singletonList(new JSONObject().put("name", "root").put("databases", new JSONObject().put(SecurityManager.ANY, new JSONArray(new String[] { "admin" }))));
+    return Collections.singletonList(
+        new JSONObject().put("name", "root").put("databases", new JSONObject().put(SecurityManager.ANY, new JSONArray(new String[] { "admin" }))));
   }
 }

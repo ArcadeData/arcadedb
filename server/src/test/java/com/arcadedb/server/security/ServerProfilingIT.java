@@ -415,6 +415,21 @@ public class ServerProfilingIT {
     }
   }
 
+  @Test
+  void testGroupsReload() throws IOException, InterruptedException {
+    final File file = new File("./target/config/server-groups.json");
+    Assertions.assertTrue(file.exists());
+
+    final JSONObject json = new JSONObject(FileUtils.readFileAsString(file, "UTF8"));
+    json.getJSONObject("databases").getJSONObject("*").getJSONObject("groups").put("reloaded", true);
+
+    FileUtils.writeContentToStream(file, json.toString().getBytes());
+
+    Thread.sleep(6_000);
+
+    Assertions.assertTrue(SECURITY.getDatabaseGroupsConfiguration("*").getBoolean("reloaded"));
+  }
+
   private void createSchemaNotAllowed(DatabaseInternal database) throws Throwable {
     expectedSecurityException(() -> database.getSchema().createBucket("Bucket1"));
     expectedSecurityException(() -> database.getSchema().createVertexType("Vertex1"));

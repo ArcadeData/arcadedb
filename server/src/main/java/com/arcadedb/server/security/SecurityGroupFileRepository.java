@@ -24,26 +24,38 @@ package com.arcadedb.server.security;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.security.SecurityManager;
+import com.arcadedb.utility.Callable;
 import com.arcadedb.utility.FileUtils;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.*;
+import java.util.*;
 import java.util.logging.*;
 
 public class SecurityGroupFileRepository {
-  public static final String     FILE_NAME = "server-groups.json";
-  private final       String     securityConfPath;
-  private             JSONObject latestGroupConfiguration;
+  public static final  String                     FILE_NAME               = "server-groups.json";
+  private final        String                     securityConfPath;
+  private              JSONObject                 latestGroupConfiguration;
+  private final static int                        CHECK_FOR_UPDATES_EVERY = 5;
+  private              long                       fileLastUpdated         = 0L;
+  private              Timer                      checkFileUpdatedTimer;
+  private final        File                       file;
+  private              Callable<Void, JSONObject> reloadCallback          = null;
 
   public SecurityGroupFileRepository(String securityConfPath) {
     if (!securityConfPath.endsWith("/"))
       securityConfPath += "/";
     this.securityConfPath = securityConfPath;
+    file = new File(securityConfPath + FILE_NAME);
   }
 
-  public void save(final JSONObject configuration) throws IOException {
-    final File file = new File(securityConfPath + FILE_NAME);
+  public void stop() {
+    if (checkFileUpdatedTimer != null)
+      checkFileUpdatedTimer.cancel();
+  }
+
+  public synchronized void save(final JSONObject configuration) throws IOException {
     if (!file.exists())
       file.getParentFile().mkdirs();
 
@@ -53,7 +65,7 @@ public class SecurityGroupFileRepository {
     }
   }
 
-  public void saveInError(final Exception e) {
+  public synchronized void saveInError(final Exception e) {
     if (latestGroupConfiguration == null)
       return;
 
@@ -81,7 +93,7 @@ public class SecurityGroupFileRepository {
   public JSONObject getGroups() {
     if (latestGroupConfiguration == null) {
       try {
-        latestGroupConfiguration = load();
+        load();
       } catch (Exception e) {
         LogManager.instance().log(this, Level.SEVERE, "Error on loading file '%s', using default configuration", e, FILE_NAME);
         saveInError(e);
@@ -91,11 +103,31 @@ public class SecurityGroupFileRepository {
     return latestGroupConfiguration;
   }
 
-  protected JSONObject load() throws IOException {
-    final File file = new File(securityConfPath + FILE_NAME);
+  protected synchronized JSONObject load() throws IOException {
+    if (checkFileUpdatedTimer == null) {
+      checkFileUpdatedTimer = new Timer();
+      checkFileUpdatedTimer.schedule(new TimerTask() {
+        @Override
+        public void run() {
+          try {
+            if (file.exists() && file.lastModified() > fileLastUpdated) {
+              LogManager.instance().log(this, Level.INFO, "Server groups configuration changed, reloading it...");
+              load();
+
+              if (reloadCallback != null)
+                reloadCallback.call(latestGroupConfiguration);
+            }
+          } catch (Throwable e) {
+            LogManager.instance().log(this, Level.SEVERE, "Error on reloading file '%s' after was changed", e, FILE_NAME);
+          }
+        }
+      }, CHECK_FOR_UPDATES_EVERY * 1_000, CHECK_FOR_UPDATES_EVERY * 1_000);
+    }
 
     JSONObject json = null;
     if (file.exists()) {
+      fileLastUpdated = file.lastModified();
+
       json = new JSONObject(FileUtils.readStreamAsString(new FileInputStream(file), "UTF-8"));
       if (!json.has("version"))
         json = null;
@@ -103,6 +135,9 @@ public class SecurityGroupFileRepository {
 
     if (json == null)
       json = createDefault();
+
+    if (json != null)
+      latestGroupConfiguration = json;
 
     return json;
   }
@@ -131,4 +166,10 @@ public class SecurityGroupFileRepository {
 
     return json;
   }
+
+  public SecurityGroupFileRepository onReload(final Callable<Void, JSONObject> callback) {
+    reloadCallback = callback;
+    return this;
+  }
+
 }
