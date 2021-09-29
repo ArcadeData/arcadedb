@@ -22,10 +22,11 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.function.graph.SQLFunctionDijkstra;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 public class SQLFunctionDijkstraTest {
 
@@ -76,11 +77,11 @@ public class SQLFunctionDijkstraTest {
       setUp(graph);
       final List<Vertex> result = functionDijkstra.execute(null, null, null, new Object[] { v1, v4, "'weight'" }, new BasicCommandContext());
 
-      Assertions.assertEquals(4, result.size());
-      Assertions.assertEquals(v1, result.get(0));
-      Assertions.assertEquals(v2, result.get(1));
-      Assertions.assertEquals(v3, result.get(2));
-      Assertions.assertEquals(v4, result.get(3));
+      assertEquals(4, result.size());
+      assertEquals(v1, result.get(0));
+      assertEquals(v2, result.get(1));
+      assertEquals(v3, result.get(2));
+      assertEquals(v4, result.get(3));
     });
   }
 }

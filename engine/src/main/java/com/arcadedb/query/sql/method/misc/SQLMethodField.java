@@ -25,30 +25,33 @@ import com.arcadedb.query.sql.executor.CommandContext;
  */
 public class SQLMethodField extends AbstractSQLMethod {
 
-  public static final String NAME = "field";
+    public static final String NAME = "field";
 
-  public SQLMethodField() {
-    super(NAME, 1, 1);
-  }
-
-  @Override
-  public Object execute( Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, Object ioResult,
-      final Object[] iParams) {
-    if (iParams[0] == null)
-      return null;
-
-    final String paramAsString = iParams[0].toString();
-
-    if (ioResult instanceof Identifiable) {
-      final Document doc = (Document) ((Identifiable) ioResult).getRecord();
-      return doc.get(paramAsString);
+    public SQLMethodField() {
+        super(NAME, 1, 1);
     }
 
-    return null;
-  }
+    @Override
+    public Object execute(final Object iThis,
+                          final Identifiable iCurrentRecord,
+                          final CommandContext iContext,
+                          final Object ioResult,
+                          final Object[] iParams) {
+        if (iParams[0] == null)
+            return null;
 
-  @Override
-  public boolean evaluateParameters() {
-    return false;
-  }
+        final String field = iParams[0].toString();
+
+        if (ioResult instanceof Identifiable) {
+            final Document doc = (Document) ((Identifiable) ioResult).getRecord();
+            return doc.get(field);
+        }
+
+        return null;
+    }
+
+    @Override
+    public boolean evaluateParameters() {
+        return false;
+    }
 }

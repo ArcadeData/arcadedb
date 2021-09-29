@@ -15,9 +15,11 @@
  */
 package com.arcadedb.query.sql.parser;
 
+import org.junit.jupiter.api.Test;
+
 public class AlterDatabaseStatementTest extends ParserTestAbstract {
 
-  //@Test
+  @Test
   public void testPlain() {
     checkRightSyntax("ALTER DATABASE BUCKETSELECTION 'default'");
     checkRightSyntax("alter database BUCKETSELECTION 'default'");

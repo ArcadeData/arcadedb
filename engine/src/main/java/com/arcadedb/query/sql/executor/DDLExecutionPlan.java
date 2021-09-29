@@ -26,72 +26,72 @@ import java.util.List;
  */
 public class DDLExecutionPlan implements InternalExecutionPlan {
 
-  private final DDLStatement statement;
-  final         CommandContext ctx;
+    private final DDLStatement statement;
+    private final CommandContext ctx;
 
-  boolean executed = false;
+    boolean executed = false;
 
-  public DDLExecutionPlan(CommandContext ctx, DDLStatement stm) {
-    this.ctx = ctx;
-    this.statement = stm;
-  }
-
-  @Override
-  public void close() {
-
-  }
-
-  @Override
-  public ResultSet fetchNext(int n) {
-    return new InternalResultSet();
-  }
-
-  public void reset(CommandContext ctx) {
-    executed = false;
-  }
-
-  @Override
-  public long getCost() {
-    return 0;
-  }
-
-  @Override
-  public boolean canBeCached() {
-    return false;
-  }
-
-  public ResultSet executeInternal(BasicCommandContext ctx) throws CommandExecutionException {
-    if (executed) {
-      throw new CommandExecutionException("Trying to execute a result-set twice. Please use reset()");
+    public DDLExecutionPlan(CommandContext ctx, DDLStatement stm) {
+        this.ctx = ctx;
+        this.statement = stm;
     }
-    executed = true;
-    ResultSet result = statement.executeDDL(this.ctx);
-    if (result instanceof InternalResultSet) {
-      ((InternalResultSet) result).plan = this;
+
+    @Override
+    public void close() {
+
     }
-    return result;
-  }
 
-  @Override
-  public List<ExecutionStep> getSteps() {
-    return Collections.emptyList();
-  }
+    @Override
+    public ResultSet fetchNext(int n) {
+        return new InternalResultSet();
+    }
 
-  @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    String result = spaces + "+ DDL\n" + "  " + statement.toString();
-    return result;
-  }
+    public void reset(CommandContext ctx) {
+        executed = false;
+    }
 
-  @Override
-  public Result toResult() {
-    ResultInternal result = new ResultInternal();
-    result.setProperty("type", "DDLExecutionPlan");
-    result.setProperty(JAVA_TYPE, getClass().getName());
-    result.setProperty("stmText", statement.toString());
-    result.setProperty("cost", getCost());
-    result.setProperty("prettyPrint", prettyPrint(0, 2));
-    return result;
-  }
+    @Override
+    public long getCost() {
+        return 0;
+    }
+
+    @Override
+    public boolean canBeCached() {
+        return false;
+    }
+
+    public ResultSet executeInternal(BasicCommandContext ctx) throws CommandExecutionException {
+        if (executed) {
+            throw new CommandExecutionException("Trying to execute a result-set twice. Please use reset()");
+        }
+        executed = true;
+        ResultSet result = statement.executeDDL(this.ctx);
+        if (result instanceof InternalResultSet) {
+            ((InternalResultSet) result).plan = this;
+        }
+        return result;
+    }
+
+    @Override
+    public List<ExecutionStep> getSteps() {
+        return Collections.emptyList();
+    }
+
+    @Override
+    public String prettyPrint(int depth, int indent) {
+        String spaces = ExecutionStepInternal.getIndent(depth, indent);
+        String result = spaces + "+ DDL\n" + "  " + statement.toString();
+        return result;
+    }
+
+    @Override
+    public Result toResult() {
+        ResultInternal result = new ResultInternal();
+        result.setProperty("type", "DDLExecutionPlan");
+        result.setProperty(JAVA_TYPE, getClass().getName());
+        result.setProperty("stmText", statement.toString());
+        result.setProperty("cost", getCost());
+        result.setProperty("prettyPrint", prettyPrint(0, 2));
+        return result;
+    }
 }

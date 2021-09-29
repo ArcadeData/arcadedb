@@ -19,10 +19,13 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.schema.*;
 import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Test;
 
 public class ExecutionPlanCacheTest {
 
-  //@Test
+  @Test
+  @Disabled
   public void testCacheInvalidation1() throws InterruptedException {
     String testName = "testCacheInvalidation1";
 
