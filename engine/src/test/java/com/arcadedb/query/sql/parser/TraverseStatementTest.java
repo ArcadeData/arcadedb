@@ -56,7 +56,6 @@ public class TraverseStatementTest {
     return null;
   }
 
-  // issue #4031
   @Test
   public void testDepthFirst() {
     checkRightSyntax("traverse out() from #9:0 while $depth <= 2 strategy DEPTH_FIRST");

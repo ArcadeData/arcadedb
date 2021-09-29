@@ -13,15 +13,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.arcadedb.query.sql.parser;
+package com.arcadedb.query.sql.function.text;
 
-import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.*;
 
-public class AlterPropertyStatementTest extends ParserTestAbstract {
+class SQLMethodRightTest {
 
-  @Test
-  public void testPlain() {
-    checkRightSyntax("ALTER PROPERTY Foo.foo NAME Bar");
-    checkRightSyntax("alter property Foo.foo NAME Bar");
-  }
 }

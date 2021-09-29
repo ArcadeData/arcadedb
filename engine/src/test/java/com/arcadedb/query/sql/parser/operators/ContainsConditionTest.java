@@ -16,7 +16,6 @@
 package com.arcadedb.query.sql.parser.operators;
 
 import com.arcadedb.query.sql.parser.ContainsCondition;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -24,53 +23,56 @@ import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class ContainsConditionTest {
-  @Test
-  public void test() {
-    ContainsCondition op = new ContainsCondition(-1);
+    @Test
+    public void test() {
+        ContainsCondition op = new ContainsCondition(-1);
 
-    Assertions.assertFalse(op.execute(null, null));
-    Assertions.assertFalse(op.execute(null, "foo"));
+        assertFalse(op.execute(null, null));
+        assertFalse(op.execute(null, "foo"));
 
-    List<Object> left = new ArrayList<Object>();
-    Assertions.assertFalse(op.execute(left, "foo"));
-    Assertions.assertFalse(op.execute(left, null));
+        List<Object> left = new ArrayList<Object>();
+        assertFalse(op.execute(left, "foo"));
+        assertFalse(op.execute(left, null));
 
-    left.add("foo");
-    left.add("bar");
+        left.add("foo");
+        left.add("bar");
 
-    Assertions.assertTrue(op.execute(left, "foo"));
-    Assertions.assertTrue(op.execute(left, "bar"));
-    Assertions.assertFalse(op.execute(left, "fooz"));
+        assertTrue(op.execute(left, "foo"));
+        assertTrue(op.execute(left, "bar"));
+        assertFalse(op.execute(left, "fooz"));
 
-    left.add(null);
-    Assertions.assertTrue(op.execute(left, null));
-  }
+        left.add(null);
+        assertTrue(op.execute(left, null));
+    }
 
-  @Test
-  public void testIterable() {
-    Iterable left = new Iterable() {
-      private final List<Integer> ls = Arrays.asList(3, 1, 2);
+    @Test
+    public void testIterable() {
+        Iterable left = new Iterable() {
+            private final List<Integer> ls = Arrays.asList(3, 1, 2);
 
-      @Override
-      public Iterator iterator() {
-        return ls.iterator();
-      }
-    };
+            @Override
+            public Iterator iterator() {
+                return ls.iterator();
+            }
+        };
 
-    Iterable right = new Iterable() {
-      private final List<Integer> ls = Arrays.asList(2, 3);
+        Iterable right = new Iterable() {
+            private final List<Integer> ls = Arrays.asList(2, 3);
 
-      @Override
-      public Iterator iterator() {
-        return ls.iterator();
-      }
-    };
+            @Override
+            public Iterator iterator() {
+                return ls.iterator();
+            }
+        };
 
-    ContainsCondition op = new ContainsCondition(-1);
-    Assertions.assertTrue(op.execute(left, right));
-  }
+        ContainsCondition op = new ContainsCondition(-1);
+        assertTrue(op.execute(left, right));
+    }
 }

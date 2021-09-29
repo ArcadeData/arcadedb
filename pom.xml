@@ -66,6 +66,7 @@
 
         <itCoverageAgent></itCoverageAgent>
         <license-maven-plugin.version>4.1</license-maven-plugin.version>
+        <mockito-core.version>3.12.4</mockito-core.version>
     </properties>
 
     <developers>
@@ -275,6 +276,12 @@
             <version>${assertj-core.version}</version>
             <scope>test</scope>
         </dependency>
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-core</artifactId>
+            <version>${mockito-core.version}</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <profiles>
@@ -368,6 +375,7 @@
                         <version>${jacoco-maven-plugin.version}</version>
                         <configuration>
                             <excludes>
+                                <exclude>com/arcadedb/query/sql/parser/SqlParserTokenManager.class</exclude>
                                 <exclude>**/static/*</exclude>
                                 <exclude>**/*.bat</exclude>
                                 <exclude>**/*.sh</exclude>

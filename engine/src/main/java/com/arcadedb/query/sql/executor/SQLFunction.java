@@ -73,7 +73,7 @@ public interface SQLFunction {
    * <p>
    * Example of such function : sum, count, max, min ...
    * <p>
-   * The final result of the aggregation is obtain by calling {@link #getResult() }
+   * The final result of the aggregation is obtained by calling {@link #getResult() }
    *
    * @return true if function aggregate results
    */

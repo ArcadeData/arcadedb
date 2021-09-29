@@ -16,6 +16,7 @@
 package com.arcadedb.query.sql.parser;
 
 import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
@@ -382,7 +383,7 @@ public class SelectStatementTest {
     checkRightSyntax("select from foo where name like  'aaa'+ :param1 + 'a'");
   }
 
-  //@Test
+  @Test
   public void testSlashInQuery() {
     checkRightSyntax("insert into test content {\"node_id\": \"MFmqvmht//sYYWB8=\"}");
     checkRightSyntax("insert into test content { \"node_id\": \"MFmqvmht\\/\\/GYsYYWB8=\"}");
@@ -410,7 +411,8 @@ public class SelectStatementTest {
     checkRightSyntax("select from test order by (something asc),(somethingElse desc)");
   }
 
-  //@Test
+  @Test
+  @Disabled
   public void testMultipleLucene() {
     checkRightSyntax("select from Foo where a lucene 'a'");
     checkWrongSyntax("select from Foo where a lucene 'a' and b lucene 'a'");

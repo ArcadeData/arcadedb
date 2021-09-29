@@ -16,31 +16,35 @@
 package com.arcadedb.query.sql.parser.operators;
 
 import com.arcadedb.query.sql.parser.ContainsKeyOperator;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
 import java.util.Map;
 
-/** @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com) */
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/**
+ * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
+ */
 public class ContainsKeyOperatorTest {
 
-  @Test
-  public void test() {
-    ContainsKeyOperator op = new ContainsKeyOperator(-1);
+    @Test
+    public void test() {
+        ContainsKeyOperator op = new ContainsKeyOperator(-1);
 
-    Assertions.assertFalse(op.execute(null,null, null));
-    Assertions.assertFalse(op.execute(null,null, "foo"));
+        assertFalse(op.execute(null, null, null));
+        assertFalse(op.execute(null, null, "foo"));
 
-    Map<Object, Object> originMap = new HashMap<Object, Object>();
-    Assertions.assertFalse(op.execute(null,originMap, "foo"));
-    Assertions.assertFalse(op.execute(null,originMap, null));
+        Map<Object, Object> originMap = new HashMap<Object, Object>();
+        assertFalse(op.execute(null, originMap, "foo"));
+        assertFalse(op.execute(null, originMap, null));
 
-    originMap.put("foo", "bar");
-    originMap.put(1, "baz");
+        originMap.put("foo", "bar");
+        originMap.put(1, "baz");
 
-    Assertions.assertTrue(op.execute(null,originMap, "foo"));
-    Assertions.assertTrue(op.execute(null,originMap, 1));
-    Assertions.assertFalse(op.execute(null,originMap, "fooz"));
-  }
+        assertTrue(op.execute(null, originMap, "foo"));
+        assertTrue(op.execute(null, originMap, 1));
+        assertFalse(op.execute(null, originMap, "fooz"));
+    }
 }

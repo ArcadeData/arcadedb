@@ -13,20 +13,26 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.arcadedb.query.sql.method;
+package com.arcadedb.query.sql.method.misc;
 
-import java.util.Iterator;
-import java.util.List;
+import com.arcadedb.query.sql.executor.SQLMethod;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
-class TestIterable<T> implements Iterable<T> {
-  private final List<T> values;
+import static org.assertj.core.api.Assertions.assertThat;
 
-  TestIterable(List<T> values) {
-    this.values = values;
-  }
+class SQLMethodAsIntegerTest {
+    private SQLMethod method;
 
-  @Override
-  public Iterator<T> iterator() {
-    return values.iterator();
-  }
+    @BeforeEach
+    void setUp() {
+        method = new SQLMethodAsInteger();
+    }
+
+    @Test
+    void testNulIsReturnedAsNull() {
+        Object result = method.execute(null, null, null, null, null);
+        assertThat(result).isNull();
+    }
+
 }

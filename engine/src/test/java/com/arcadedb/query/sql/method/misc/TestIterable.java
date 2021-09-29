@@ -13,18 +13,20 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.arcadedb.query.sql.parser.operators;
+package com.arcadedb.query.sql.method.misc;
 
-import com.arcadedb.query.sql.parser.LuceneOperator;
-import org.junit.jupiter.api.Test;
+import java.util.Iterator;
+import java.util.List;
 
-/**
- * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
- */
-public class NearOperatorTest {
-  @Test
-  public void test() {
-    LuceneOperator op = new LuceneOperator(-1);
-    // TODO
+class TestIterable<T> implements Iterable<T> {
+  private final List<T> values;
+
+  TestIterable(List<T> values) {
+    this.values = values;
+  }
+
+  @Override
+  public Iterator<T> iterator() {
+    return values.iterator();
   }
 }

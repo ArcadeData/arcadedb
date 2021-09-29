@@ -13,10 +13,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.arcadedb.query.sql.method;
+package com.arcadedb.query.sql.method.misc;
 
 import com.arcadedb.query.sql.executor.ResultInternal;
-import com.arcadedb.query.sql.method.misc.SQLMethodKeys;
+import com.arcadedb.query.sql.executor.SQLMethod;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -27,21 +27,21 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 
 public class SQLMethodKeysTest {
 
-  private SQLMethodKeys function;
+    private SQLMethod function;
 
-  @BeforeEach
-  public void setup() {
-    function = new SQLMethodKeys();
-  }
+    @BeforeEach
+    public void setup() {
+        function = new SQLMethodKeys();
+    }
 
-  @Test
-  public void testWithOResult() {
+    @Test
+    public void testWithResult() {
 
-    ResultInternal resultInternal = new ResultInternal();
-    resultInternal.setProperty("name", "Foo");
-    resultInternal.setProperty("surname", "Bar");
+        ResultInternal resultInternal = new ResultInternal();
+        resultInternal.setProperty("name", "Foo");
+        resultInternal.setProperty("surname", "Bar");
 
-    Object result = function.execute(null, null, null, resultInternal, null);
-    assertEquals(new LinkedHashSet(Arrays.asList("name", "surname")), result);
-  }
+        Object result = function.execute(null, null, null, resultInternal, null);
+        assertEquals(new LinkedHashSet(Arrays.asList("name", "surname")), result);
+    }
 }
