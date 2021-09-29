@@ -23,8 +23,8 @@ import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.io.File;
-import java.net.URL;
+import java.io.*;
+import java.net.*;
 
 public class SQLLocalImporterTest {
   @Test
@@ -41,6 +41,8 @@ public class SQLLocalImporterTest {
 
     Assertions.assertEquals(500, database.countType("Person", false));
     Assertions.assertEquals(10000, database.countType("Friend", false));
+
+    database.close();
 
     FileUtils.deleteRecursively(new File("databases/importedFromOrientDB"));
   }

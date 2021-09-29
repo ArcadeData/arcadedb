@@ -48,12 +48,15 @@ public class Backup {
 
   public String backupDatabase() {
     try {
+      if (logger == null)
+        logger = new ConsoleLogger(settings.verboseLevel);
+
       openDatabase();
 
       settings.databaseName = database.getName();
       settings.validateSettings();
 
-      if (logger == null)
+      if (logger.getVerboseLevel() != settings.verboseLevel)
         logger = new ConsoleLogger(settings.verboseLevel);
 
       formatImplementation = createFormatImplementation();

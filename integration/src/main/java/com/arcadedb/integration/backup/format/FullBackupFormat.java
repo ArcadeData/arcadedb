@@ -73,7 +73,8 @@ public class FullBackupFormat extends AbstractBackupFormat {
           final Collection<PaginatedFile> files = database.getFileManager().getFiles();
 
           for (PaginatedFile paginatedFile : files)
-            databaseOrigSize += compressFile(zipFile, paginatedFile.getOSFile());
+            if (paginatedFile != null)
+              databaseOrigSize += compressFile(zipFile, paginatedFile.getOSFile());
 
           zipFile.close();
 

@@ -53,4 +53,8 @@ public class ConsoleLogger {
     else
       System.out.println(String.format(text, args));
   }
+
+  public int getVerboseLevel() {
+    return verboseLevel;
+  }
 }

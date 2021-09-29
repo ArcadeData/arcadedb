@@ -30,7 +30,9 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.FileUtils;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
@@ -38,67 +40,47 @@ import java.net.*;
 import java.util.concurrent.atomic.*;
 
 public class FullBackupIT {
-  private final static String DATABASE_PATH = "target/databases/performance";
-  private final static String FILE          = "target/arcadedb-backup.zip";
+  private final static String DATABASE_PATH     = "target/databases/performance";
+  private final static String FILE              = "target/arcadedb-backup.zip";
+  private              File   databaseDirectory = new File(DATABASE_PATH);
+  private              File   restoredDirectory = new File(DATABASE_PATH + "_restored");
+  final                File   file              = new File(FILE);
 
   @Test
   public void testFullBackupCommandLineOK() throws IOException {
-    final File databaseDirectory = new File(DATABASE_PATH);
-    final File restoredDirectory = new File(DATABASE_PATH + "_restored");
-    final File file = new File(FILE);
+    final Database importedDatabase = importDatabase();
+    importedDatabase.close();
 
-    try {
-      final Database importedDatabase = importDatabase();
-      importedDatabase.close();
+    new Backup(("-f " + FILE + " -d " + DATABASE_PATH + " -o").split(" ")).backupDatabase();
 
-      new Backup(("-f " + FILE + " -d " + DATABASE_PATH + " -o").split(" ")).backupDatabase();
+    Assertions.assertTrue(file.exists());
+    Assertions.assertTrue(file.length() > 0);
 
-      Assertions.assertTrue(file.exists());
-      Assertions.assertTrue(file.length() > 0);
+    new Restore(("-f " + FILE + " -d " + restoredDirectory + " -o").split(" ")).restoreDatabase();
 
-      new Restore(("-f " + FILE + " -d " + restoredDirectory + " -o").split(" ")).restoreDatabase();
-
-      try (Database originalDatabase = new DatabaseFactory(DATABASE_PATH).open(PaginatedFile.MODE.READ_ONLY)) {
-        try (Database restoredDatabase = new DatabaseFactory(restoredDirectory.getAbsolutePath()).open(PaginatedFile.MODE.READ_ONLY)) {
-          new DatabaseComparator().compare(originalDatabase, restoredDatabase);
-        }
+    try (Database originalDatabase = new DatabaseFactory(DATABASE_PATH).open(PaginatedFile.MODE.READ_ONLY)) {
+      try (Database restoredDatabase = new DatabaseFactory(restoredDirectory.getAbsolutePath()).open(PaginatedFile.MODE.READ_ONLY)) {
+        new DatabaseComparator().compare(originalDatabase, restoredDatabase);
       }
-    } finally {
-      FileUtils.deleteRecursively(databaseDirectory);
-      FileUtils.deleteRecursively(restoredDirectory);
-      file.delete();
     }
   }
 
   @Test
   public void testFullBackupAPIOK() throws IOException {
-    final File databaseDirectory = new File(DATABASE_PATH);
-    FileUtils.deleteRecursively(databaseDirectory);
+    final Database importedDatabase = importDatabase();
 
-    final File restoredDirectory = new File(DATABASE_PATH + "_restored");
-    FileUtils.deleteRecursively(restoredDirectory);
+    new Backup(importedDatabase, FILE).backupDatabase();
 
-    final File file = new File(FILE);
-    file.delete();
+    Assertions.assertTrue(file.exists());
+    Assertions.assertTrue(file.length() > 0);
 
-    try {
-      final Database importedDatabase = importDatabase();
+    new Restore(FILE, restoredDirectory.getAbsolutePath()).restoreDatabase();
 
-      new Backup(importedDatabase, FILE).backupDatabase();
-
-      Assertions.assertTrue(file.exists());
-      Assertions.assertTrue(file.length() > 0);
-
-      new Restore(FILE, restoredDirectory.getAbsolutePath()).restoreDatabase();
-
-      try (Database restoredDatabase = new DatabaseFactory(restoredDirectory.getAbsolutePath()).open(PaginatedFile.MODE.READ_ONLY)) {
-        new DatabaseComparator().compare(importedDatabase, restoredDatabase);
-      }
-    } finally {
-      FileUtils.deleteRecursively(databaseDirectory);
-      FileUtils.deleteRecursively(restoredDirectory);
-      file.delete();
+    try (Database restoredDatabase = new DatabaseFactory(restoredDirectory.getAbsolutePath()).open(PaginatedFile.MODE.READ_ONLY)) {
+      new DatabaseComparator().compare(importedDatabase, restoredDatabase);
     }
+
+    importedDatabase.close();
   }
 
   /**
@@ -110,9 +92,6 @@ public class FullBackupIT {
   @Test
   public void testFullBackupConcurrency() throws IOException, InterruptedException {
     final int CONCURRENT_THREADS = 8;
-
-    final File databaseDirectory = new File(DATABASE_PATH);
-    FileUtils.deleteRecursively(databaseDirectory);
 
     for (int i = 0; i < CONCURRENT_THREADS; i++) {
       new File(FILE + "_" + i).delete();
@@ -190,7 +169,6 @@ public class FullBackupIT {
       }
 
     } finally {
-      FileUtils.deleteRecursively(databaseDirectory);
       for (int i = 0; i < CONCURRENT_THREADS; i++) {
         new File(FILE + "_" + i).delete();
         FileUtils.deleteRecursively(new File(DATABASE_PATH + "_restored_" + i));
@@ -207,5 +185,14 @@ public class FullBackupIT {
     Assertions.assertFalse(importer.isError());
     Assertions.assertTrue(new File(DATABASE_PATH).exists());
     return importedDatabase;
+  }
+
+  @BeforeEach
+  @AfterEach
+  public void beforeTests() {
+    FileUtils.deleteRecursively(new File(DATABASE_PATH));
+    FileUtils.deleteRecursively(new File(DATABASE_PATH + "_restored"));
+    if (file.exists())
+      file.delete();
   }
 }
