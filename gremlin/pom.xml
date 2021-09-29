@@ -34,6 +34,7 @@
 
     <properties>
         <gremlin.version>3.4.12</gremlin.version>
+        <junit5.version>5.8.1</junit5.version>
     </properties>
 
     <dependencies>
@@ -69,6 +70,12 @@
             <scope>test</scope>
         </dependency>
 
+        <dependency>
+            <groupId>org.junit.vintage</groupId>
+            <artifactId>junit-vintage-engine</artifactId>
+            <version>${junit5.version}</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
 </project>

@@ -30,17 +30,27 @@ import java.util.*;
  */
 public class RID implements Identifiable, Comparable<Identifiable>, Serializable {
   private transient final Database database;
-  private final           int      bucketId;
-  private final           long     offset;
+  protected final         int      bucketId;
+  protected final         long     offset;
 
   public RID(final Database database, final int bucketId, final long offset) {
-    this.database = database;
+    if (database == null)
+      // RETRIEVE THE DATABASE FROM THE THREAD LOCAL
+      this.database = DatabaseContext.INSTANCE.getActiveDatabase();
+    else
+      this.database = database;
+
     this.bucketId = bucketId;
     this.offset = offset;
   }
 
   public RID(final Database database, String value) {
-    this.database = database;
+    if (database == null)
+      // RETRIEVE THE DATABASE FROM THE THREAD LOCAL
+      this.database = DatabaseContext.INSTANCE.getActiveDatabase();
+    else
+      this.database = database;
+
     if (!value.startsWith("#"))
       throw new IllegalArgumentException("The RID '" + value + "' is not valid");
 

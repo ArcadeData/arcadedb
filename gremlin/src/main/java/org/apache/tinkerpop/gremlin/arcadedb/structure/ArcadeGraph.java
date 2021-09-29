@@ -32,12 +32,17 @@ import org.apache.commons.configuration.BaseConfiguration;
 import org.apache.commons.configuration.Configuration;
 import org.apache.tinkerpop.gremlin.arcadedb.structure.io.ArcadeIoRegistry;
 import org.apache.tinkerpop.gremlin.process.computer.GraphComputer;
-import org.apache.tinkerpop.gremlin.structure.*;
+import org.apache.tinkerpop.gremlin.process.traversal.TraversalStrategies;
+import org.apache.tinkerpop.gremlin.structure.Direction;
+import org.apache.tinkerpop.gremlin.structure.Edge;
+import org.apache.tinkerpop.gremlin.structure.Graph;
+import org.apache.tinkerpop.gremlin.structure.Transaction;
+import org.apache.tinkerpop.gremlin.structure.Vertex;
 import org.apache.tinkerpop.gremlin.structure.io.Io;
 import org.apache.tinkerpop.gremlin.structure.util.ElementHelper;
 import org.apache.tinkerpop.gremlin.structure.util.StringFactory;
 
-import java.io.File;
+import java.io.*;
 import java.util.*;
 
 /**
@@ -48,16 +53,23 @@ import java.util.*;
 @Graph.OptIn(Graph.OptIn.SUITE_STRUCTURE_INTEGRATE)
 @Graph.OptIn(Graph.OptIn.SUITE_PROCESS_STANDARD)
 @Graph.OptIn(Graph.OptIn.SUITE_PROCESS_COMPUTER)
-@Graph.OptIn("org.apache.tinkerpop.gremlin.arcadedb.suite.ArcadeDebugSuite")
+@Graph.OptIn("org.apache.tinkerpop.gremlin.arcadedb.process.DebugProcessSuite")
+@Graph.OptIn("org.apache.tinkerpop.gremlin.arcadedb.structure.DebugStructureSuite")
 public class ArcadeGraph implements Graph {
 
   //private final   ArcadeVariableFeatures graphVariables = new ArcadeVariableFeatures();
   private final   ArcadeGraphTransaction transaction;
   protected final Database               database;
-  protected final BaseConfiguration      configuration  = new BaseConfiguration();
+  protected final BaseConfiguration      configuration = new BaseConfiguration();
 
   private final static Iterator<Vertex> EMPTY_VERTICES = Collections.emptyIterator();
   private final static Iterator<Edge>   EMPTY_EDGES    = Collections.emptyIterator();
+
+  static {
+    TraversalStrategies.GlobalCache.registerStrategies(ArcadeGraph.class,
+        TraversalStrategies.GlobalCache.getStrategies(Graph.class).clone().addStrategies(ArcadeIoRegistrationStrategy.instance())//
+    );
+  }
 
   protected Features features = new ArcadeGraphFeatures();
 

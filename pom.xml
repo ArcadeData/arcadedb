@@ -188,6 +188,8 @@
                         <exclude>**/*TwoServersIT.java</exclude>
                         <exclude>**/*FullBackupIT.java</exclude>
                         <exclude>**/*RemoteConsoleIT.java</exclude>
+                        <exclude>**/ArcadeGraphProcessDebugTest.java</exclude>
+                        <exclude>**/ArcadeGraphStructureDebugTest.java</exclude>
                     </excludes>
                     <skipITs>${skipIntegration}</skipITs>
                     <argLine>${itCoverageAgent}</argLine>

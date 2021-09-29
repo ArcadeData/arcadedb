@@ -21,8 +21,7 @@ import org.apache.tinkerpop.gremlin.structure.Property;
 import org.apache.tinkerpop.gremlin.structure.util.ElementHelper;
 import org.apache.tinkerpop.gremlin.structure.util.StringFactory;
 
-import java.util.NoSuchElementException;
-import java.util.Objects;
+import java.util.*;
 
 /**
  * Created by Enrico Risa on 30/07/2018.
@@ -79,7 +78,7 @@ public class ArcadeProperty<T> implements Property<T> {
 
   @Override
   public int hashCode() {
-    return Objects.hash(graph, element, key);
+    return ElementHelper.hashCode(this);
   }
 
   @Override

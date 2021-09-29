@@ -23,15 +23,21 @@ import org.apache.tinkerpop.gremlin.structure.io.AbstractIoRegistry;
 import org.apache.tinkerpop.gremlin.structure.io.graphson.GraphSONIo;
 import org.apache.tinkerpop.gremlin.structure.io.gryo.GryoIo;
 
-import java.util.Map;
+import java.util.*;
 
 @SuppressWarnings("serial")
 public class ArcadeIoRegistry extends AbstractIoRegistry {
-
-  public static final String BUCKET_ID       = "bucketId";
-  public static final String BUCKET_POSITION = "bucketPosition";
+  public static final  String           BUCKET_ID       = "bucketId";
+  public static final  String           BUCKET_POSITION = "bucketPosition";
+  private static final ArcadeIoRegistry INSTANCE        = new ArcadeIoRegistry();
 
   private final Database database;
+
+  public ArcadeIoRegistry() {
+    database = null;
+    register(GryoIo.class, RID.class, new RIDGyroSerializer());
+    register(GraphSONIo.class, RID.class, new ArcadeGraphSONV3(null));
+  }
 
   public ArcadeIoRegistry(final Database database) {
     this.database = database;
@@ -70,6 +76,10 @@ public class ArcadeIoRegistry extends AbstractIoRegistry {
     @SuppressWarnings("unchecked")
     final Map<String, Number> map = (Map<String, Number>) result;
     return map.containsKey(BUCKET_ID) && map.containsKey(BUCKET_POSITION);
+  }
+
+  public static ArcadeIoRegistry instance() {
+    return INSTANCE;
   }
 
 }

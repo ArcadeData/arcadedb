@@ -74,6 +74,22 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
     return null;
   }
 
+  /**
+   * This method is used by Gremlin for IO only. Using the TL to retrieve the current database is not recommended.
+   */
+  public Database getActiveDatabase() {
+    final Map<String, DatabaseContextTL> map = get();
+    if (map != null && map.size() == 1) {
+      final DatabaseContextTL tl = map.values().iterator().next();
+      if (tl != null) {
+        final TransactionContext tx = tl.getLastTransaction();
+        if (tx != null)
+          return tx.getDatabase();
+      }
+    }
+    return null;
+  }
+
   public static class DatabaseContextTL {
     public final List<TransactionContext> transactions = new ArrayList<>(3);
     public       boolean                  asyncMode    = false;
