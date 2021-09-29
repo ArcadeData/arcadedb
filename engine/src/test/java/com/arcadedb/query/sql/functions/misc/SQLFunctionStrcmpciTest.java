@@ -57,6 +57,18 @@ public class SQLFunctionStrcmpciTest {
       Assertions.assertTrue(result.hasNext());
       Assertions.assertEquals(0, (Integer) result.next().getProperty("strcmpci"));
 
+      result = db.query("sql", "select strcmpci(null, null) as strcmpci");
+      Assertions.assertTrue(result.hasNext());
+      Assertions.assertEquals(0, (Integer) result.next().getProperty("strcmpci"));
+
+      result = db.query("sql", "select strcmpci('ThisIsATest', null) as strcmpci");
+      Assertions.assertTrue(result.hasNext());
+      Assertions.assertEquals(1, (Integer) result.next().getProperty("strcmpci"));
+
+      result = db.query("sql", "select strcmpci(null, 'ThisIsATest') as strcmpci");
+      Assertions.assertTrue(result.hasNext());
+      Assertions.assertEquals(-1, (Integer) result.next().getProperty("strcmpci"));
+
       result = db.query("sql", "select strcmpci('ThisIsATest', 'THISISATESTO') as strcmpci");
       Assertions.assertTrue(result.hasNext());
       Assertions.assertEquals(-1, (Integer) result.next().getProperty("strcmpci"));

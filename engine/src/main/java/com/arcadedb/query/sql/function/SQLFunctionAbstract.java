@@ -18,9 +18,7 @@ package com.arcadedb.query.sql.function;
 import com.arcadedb.query.sql.executor.SQLFunction;
 
 /**
- * Abstract class to extend to build Custom SQL Functions. Extend it and register it with:
- * {@literal OSQLParser.getInstance().registerStatelessFunction()} or
- * {@literal OSQLParser.getInstance().registerStatefullFunction()} to being used by the SQL engine.
+ * Abstract class to extend to build Custom SQL Functions.
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
@@ -38,7 +36,7 @@ public abstract class SQLFunctionAbstract implements SQLFunction {
 
   @Override
   public String toString() {
-    return name + "()";
+    return getSyntax();
   }
 
   @Override
