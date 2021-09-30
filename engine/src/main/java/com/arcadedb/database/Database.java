@@ -99,13 +99,13 @@ public interface Database extends AutoCloseable {
    *
    * @param txBlock       Transaction lambda to execute
    * @param joinCurrentTx if active joins the current transaction, otherwise always create a new one
-   * @param retries       number of retries in case the NeedRetryException exception is thrown
+   * @param attempts      number of attempts in case the NeedRetryException exception is thrown
    * @param ok            callback invoked if the transaction completes the commit
    * @param error         callback invoked if the transaction cannot complete the commit, after the rollback
    *
    * @return true if a new transaction has been created or false if an existent transaction has been joined
    */
-  boolean transaction(TransactionScope txBlock, boolean joinCurrentTx, int retries, final OkCallback ok, final ErrorCallback error);
+  boolean transaction(TransactionScope txBlock, boolean joinCurrentTx, int attempts, final OkCallback ok, final ErrorCallback error);
 
   boolean isAutoTransaction();
 

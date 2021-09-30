@@ -49,6 +49,7 @@ import org.json.JSONObject;
 import java.io.*;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
 public class EmbeddedSchema implements Schema {
@@ -457,42 +458,52 @@ public class EmbeddedSchema implements Schema {
     return (TypeIndex) database.executeInWriteLock(new Callable<Object>() {
       @Override
       public Object call() {
-        try {
-          final DocumentType type = getType(typeName);
+        final DocumentType type = getType(typeName);
 
-          final TypeIndex index = type.getPolymorphicIndexByProperties(propertyNames);
-          if (index != null)
-            throw new IllegalArgumentException(
-                "Found the existent index '" + index.getName() + "' defined on the properties '" + Arrays.asList(propertyNames) + "' for type '" + typeName
-                    + "'");
+        final TypeIndex index = type.getPolymorphicIndexByProperties(propertyNames);
+        if (index != null)
+          throw new IllegalArgumentException(
+              "Found the existent index '" + index.getName() + "' defined on the properties '" + Arrays.asList(propertyNames) + "' for type '" + typeName
+                  + "'");
 
-          // CHECK ALL THE PROPERTIES EXIST
-          final byte[] keyTypes = new byte[propertyNames.length];
-          int i = 0;
+        // CHECK ALL THE PROPERTIES EXIST
+        final byte[] keyTypes = new byte[propertyNames.length];
+        int i = 0;
 
-          for (String propertyName : propertyNames) {
-            final Property property = type.getPolymorphicPropertyIfExists(propertyName);
-            if (property == null)
-              throw new SchemaException("Cannot create the index on type '" + typeName + "." + propertyName + "' because the property does not exist");
+        for (String propertyName : propertyNames) {
+          final Property property = type.getPolymorphicPropertyIfExists(propertyName);
+          if (property == null)
+            throw new SchemaException("Cannot create the index on type '" + typeName + "." + propertyName + "' because the property does not exist");
 
-            keyTypes[i++] = property.getType().getBinaryType();
-          }
-
-          final List<Bucket> buckets = type.getBuckets(true);
-
-          final Index[] indexes = new Index[buckets.size()];
-          for (int idx = 0; idx < buckets.size(); ++idx) {
-            final Bucket bucket = buckets.get(idx);
-            indexes[idx] = createBucketIndex(type, keyTypes, bucket, typeName, indexType, unique, pageSize, nullStrategy, callback, propertyNames);
-          }
-
-          saveConfiguration();
-
-          return type.getPolymorphicIndexByProperties(propertyNames);
-
-        } catch (IOException e) {
-          throw new SchemaException("Cannot create index on type '" + typeName + "' (error=" + e + ")", e);
+          keyTypes[i++] = property.getType().getBinaryType();
         }
+
+        final List<Bucket> buckets = type.getBuckets(true);
+        final Index[] indexes = new Index[buckets.size()];
+
+        database.transaction(() -> {
+
+          try {
+            for (int idx = 0; idx < buckets.size(); ++idx) {
+              final Bucket bucket = buckets.get(idx);
+              indexes[idx] = createBucketIndex(type, keyTypes, bucket, typeName, indexType, unique, pageSize, nullStrategy, callback, propertyNames);
+            }
+
+            saveConfiguration();
+
+          } catch (IOException e) {
+            throw new SchemaException("Cannot create index on type '" + typeName + "' (error=" + e + ")", e);
+          }
+
+        }, false, 1, null, (error) -> {
+          for (int j = 0; j < indexes.length; j++) {
+            final IndexInternal indexToRemove = (IndexInternal) indexes[j];
+            if (indexToRemove != null)
+              indexToRemove.drop();
+          }
+        });
+
+        return type.getPolymorphicIndexByProperties(propertyNames);
       }
     });
   }
@@ -542,20 +553,23 @@ public class EmbeddedSchema implements Schema {
     return (Index) database.executeInWriteLock(new Callable<Object>() {
       @Override
       public Object call() {
-        try {
-          final DocumentType type = getType(typeName);
 
-          // CHECK ALL THE PROPERTIES EXIST
-          final byte[] keyTypes = new byte[propertyNames.length];
-          int i = 0;
+        final DocumentType type = getType(typeName);
 
-          for (String propertyName : propertyNames) {
-            final Property property = type.getPolymorphicPropertyIfExists(propertyName);
-            if (property == null)
-              throw new SchemaException("Cannot create the index on type '" + typeName + "." + propertyName + "' because the property does not exist");
+        // CHECK ALL THE PROPERTIES EXIST
+        final byte[] keyTypes = new byte[propertyNames.length];
+        int i = 0;
 
-            keyTypes[i++] = property.getType().getBinaryType();
-          }
+        for (String propertyName : propertyNames) {
+          final Property property = type.getPolymorphicPropertyIfExists(propertyName);
+          if (property == null)
+            throw new SchemaException("Cannot create the index on type '" + typeName + "." + propertyName + "' because the property does not exist");
+
+          keyTypes[i++] = property.getType().getBinaryType();
+        }
+
+        final AtomicReference<Index> result = new AtomicReference<>();
+        database.transaction(() -> {
 
           Bucket bucket = null;
           final List<Bucket> buckets = type.getBuckets(false);
@@ -566,15 +580,23 @@ public class EmbeddedSchema implements Schema {
             }
           }
 
-          final Index index = createBucketIndex(type, keyTypes, bucket, typeName, indexType, unique, pageSize, nullStrategy, callback, propertyNames);
+          try {
+            final Index index = createBucketIndex(type, keyTypes, bucket, typeName, indexType, unique, pageSize, nullStrategy, callback, propertyNames);
+            result.set(index);
 
-          saveConfiguration();
+            saveConfiguration();
 
-          return index;
+          } catch (IOException e) {
+            throw new SchemaException("Cannot create index on type '" + typeName + "' (error=" + e + ")", e);
+          }
+        }, false, 1, null, (error) -> {
+          final Index indexToRemove = result.get();
+          if (indexToRemove != null) {
+            ((IndexInternal) indexToRemove).drop();
+          }
+        });
 
-        } catch (IOException e) {
-          throw new SchemaException("Cannot create index on type '" + typeName + "' (error=" + e + ")", e);
-        }
+        return result.get();
       }
     });
   }
@@ -615,20 +637,31 @@ public class EmbeddedSchema implements Schema {
         if (indexMap.containsKey(indexName))
           throw new SchemaException("Cannot create index '" + indexName + "' because already exists");
 
-        try {
-          final IndexInternal index = indexFactory.createIndex(indexType.name(), database, FileUtils.encode(indexName, ENCODING), unique,
-              databasePath + "/" + indexName, PaginatedFile.MODE.READ_WRITE, keyTypes, pageSize, nullStrategy, null);
+        final AtomicReference<IndexInternal> result = new AtomicReference<>();
+        database.transaction(() -> {
 
-          if (index instanceof PaginatedComponent)
-            registerFile((PaginatedComponent) index);
+          try {
+            final IndexInternal index = indexFactory.createIndex(indexType.name(), database, FileUtils.encode(indexName, ENCODING), unique,
+                databasePath + "/" + indexName, PaginatedFile.MODE.READ_WRITE, keyTypes, pageSize, nullStrategy, null);
 
-          indexMap.put(indexName, index);
+            result.set(index);
 
-          return index;
+            if (index instanceof PaginatedComponent)
+              registerFile((PaginatedComponent) index);
 
-        } catch (IOException e) {
-          throw new SchemaException("Cannot create index '" + indexName + "' (error=" + e + ")", e);
-        }
+            indexMap.put(indexName, index);
+
+          } catch (IOException e) {
+            throw new SchemaException("Cannot create index '" + indexName + "' (error=" + e + ")", e);
+          }
+        }, false, 1, null, (error) -> {
+          final IndexInternal indexToRemove = result.get();
+          if (indexToRemove != null) {
+            indexToRemove.drop();
+          }
+        });
+
+        return result.get();
       }
     });
   }

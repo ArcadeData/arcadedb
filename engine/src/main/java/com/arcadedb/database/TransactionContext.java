@@ -159,8 +159,6 @@ public class TransactionContext implements Transaction {
         throw new IllegalArgumentException("Cannot remove record in TX cache because it is not persistent: " + record);
       modifiedRecordsCache.remove(rid);
       immutableRecordsCache.remove(rid);
-      if (updatedRecords != null)
-        updatedRecords.remove(record);
     }
 
     removeImmutableRecordsOfSamePage(record.getIdentity());
@@ -427,7 +425,7 @@ public class TransactionContext implements Transaction {
         try {
           database.updateRecordNoLock(rec);
         } catch (RecordNotFoundException e) {
-          // DELETED IN TRANSACTION, IGNORE IT
+          // DELETED IN TRANSACTION, RARE CASE BECAUSE THE DELETE ALREADY TAKES CARE OF REMOVING IT. THIS HAPPENED IN 2 TESTS WITH GREMLIN
         }
       updatedRecords = null;
     }

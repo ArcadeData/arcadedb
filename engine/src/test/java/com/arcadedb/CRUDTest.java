@@ -19,13 +19,17 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.DocumentCallback;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.DatabaseChecker;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.logging.Level;
+import java.util.concurrent.atomic.*;
+import java.util.logging.*;
 
 public class CRUDTest extends TestHelper {
   private static final int TOT = Bucket.DEF_PAGE_SIZE * 2;
@@ -105,6 +109,42 @@ public class CRUDTest extends TestHelper {
       });
 
     } finally {
+      new DatabaseChecker().check(database, 0);
+    }
+  }
+
+  @Test
+  public void testUpdateAndDelete() {
+    final Database db = database;
+
+    try {
+      db.getSchema().getType("V").createProperty("id", Type.STRING);
+      db.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "V", "id");
+
+      // ALL IN THE SAME TX
+      db.transaction(() -> {
+        final MutableDocument doc = database.newDocument("V").set("id", "0").save();
+        doc.set("id", "is an update").save();
+        doc.delete();
+      });
+
+      // SEPARATE TXs
+      final AtomicReference<RID> rid = new AtomicReference<>();
+      db.transaction(() -> {
+        final MutableDocument doc = database.newDocument("V").set("id", "is a test").save();
+        doc.set("id", "is an update").save();
+        rid.set(doc.getIdentity());
+      });
+
+      db.transaction(() -> {
+        MutableDocument doc = rid.get().getRecord(true).asDocument().modify().set("id", "this is an update");
+        doc.save();
+
+        database.deleteRecord(doc);
+      });
+
+    } finally {
+      db.getSchema().dropIndex("V[id]");
       new DatabaseChecker().check(database, 0);
     }
   }

@@ -949,16 +949,16 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   }
 
   @Override
-  public boolean transaction(final TransactionScope txBlock, final boolean joinCurrentTx, int retries, final OkCallback ok, final ErrorCallback error) {
+  public boolean transaction(final TransactionScope txBlock, final boolean joinCurrentTx, int attempts, final OkCallback ok, final ErrorCallback error) {
     if (txBlock == null)
       throw new IllegalArgumentException("Transaction block is null");
 
     ArcadeDBException lastException = null;
 
-    if (retries < 1)
-      retries = 1;
+    if (attempts < 1)
+      attempts = 1;
 
-    for (int retry = 0; retry < retries; ++retry) {
+    for (int retry = 0; retry < attempts; ++retry) {
       boolean createdNewTx = true;
 
       try {
