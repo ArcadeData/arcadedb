@@ -1242,7 +1242,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     checkDatabaseIsOpen();
 
     BasicCommandContext context = new BasicCommandContext();
-    context.setDatabase(this);
+    context.setDatabase(getWrappedDatabaseInstance());
     context.setInputParameters(params);
 
     final List<Statement> statements = SQLEngine.parseScript(script, wrappedDatabaseInstance);
@@ -1254,7 +1254,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     checkDatabaseIsOpen();
 
     BasicCommandContext context = new BasicCommandContext();
-    context.setDatabase(this);
+    context.setDatabase(getWrappedDatabaseInstance());
     context.setInputParameters(args);
 
     final List<Statement> statements = SQLEngine.parseScript(script, wrappedDatabaseInstance);

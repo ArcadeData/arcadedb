@@ -357,7 +357,7 @@ public class BasicCommandContext implements CommandContext {
     return null;
   }
 
-  public void setDatabase(Database database) {
+  public void setDatabase(final Database database) {
     this.database = (DatabaseInternal) database;
   }
 

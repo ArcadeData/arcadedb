@@ -95,7 +95,10 @@ public class ReplicatedSchema implements Schema {
   }
 
   public void removeFile(int fileId) {
-    proxied.removeFile(fileId);
+    replicatedDatabase.recordFileChanges(() -> {
+      proxied.removeFile(fileId);
+      return null;
+    });
   }
 
   @Override
@@ -120,11 +123,11 @@ public class ReplicatedSchema implements Schema {
 
   @Override
   public Bucket createBucket(String bucketName) {
-    return proxied.createBucket(bucketName);
+    return (Bucket) replicatedDatabase.recordFileChanges(() -> proxied.createBucket(bucketName));
   }
 
   public Bucket createBucket(String bucketName, int pageSize) {
-    return proxied.createBucket(bucketName, pageSize);
+    return (Bucket) replicatedDatabase.recordFileChanges(() -> proxied.createBucket(bucketName, pageSize));
   }
 
   @Override
@@ -150,7 +153,10 @@ public class ReplicatedSchema implements Schema {
 
   @Override
   public void dropIndex(String indexName) {
-    proxied.dropIndex(indexName);
+    replicatedDatabase.recordFileChanges(() -> {
+      proxied.dropIndex(indexName);
+      return null;
+    });
   }
 
   @Override
@@ -160,58 +166,62 @@ public class ReplicatedSchema implements Schema {
 
   @Override
   public TypeIndex createTypeIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String typeName, String... propertyNames) {
-    return proxied.createTypeIndex(indexType, unique, typeName, propertyNames);
+    return (TypeIndex) replicatedDatabase.recordFileChanges(() -> proxied.createTypeIndex(indexType, unique, typeName, propertyNames));
   }
 
   @Override
   public TypeIndex createTypeIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String typeName, String[] propertyNames, int pageSize) {
-    return proxied.createTypeIndex(indexType, unique, typeName, propertyNames, pageSize);
+    return (TypeIndex) replicatedDatabase.recordFileChanges(() -> proxied.createTypeIndex(indexType, unique, typeName, propertyNames, pageSize));
   }
 
   @Override
   public TypeIndex createTypeIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String typeName, String[] propertyNames, int pageSize,
       Index.BuildIndexCallback callback) {
-    return proxied.createTypeIndex(indexType, unique, typeName, propertyNames, pageSize, callback);
+    return (TypeIndex) replicatedDatabase.recordFileChanges(() -> proxied.createTypeIndex(indexType, unique, typeName, propertyNames, pageSize, callback));
   }
 
   @Override
   public TypeIndex createTypeIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String typeName, String[] propertyNames, int pageSize,
       LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, Index.BuildIndexCallback callback) {
-    return proxied.createTypeIndex(indexType, unique, typeName, propertyNames, pageSize, nullStrategy, callback);
+    return (TypeIndex) replicatedDatabase.recordFileChanges(
+        () -> proxied.createTypeIndex(indexType, unique, typeName, propertyNames, pageSize, nullStrategy, callback));
   }
 
   @Override
   public TypeIndex getOrCreateTypeIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String typeName, String... propertyNames) {
-    return proxied.getOrCreateTypeIndex(indexType, unique, typeName, propertyNames);
+    return (TypeIndex) replicatedDatabase.recordFileChanges(() -> proxied.getOrCreateTypeIndex(indexType, unique, typeName, propertyNames));
   }
 
   @Override
   public TypeIndex getOrCreateTypeIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String typeName, String[] propertyNames, int pageSize) {
-    return proxied.getOrCreateTypeIndex(indexType, unique, typeName, propertyNames, pageSize);
+    return (TypeIndex) replicatedDatabase.recordFileChanges(() -> proxied.getOrCreateTypeIndex(indexType, unique, typeName, propertyNames, pageSize));
   }
 
   @Override
   public TypeIndex getOrCreateTypeIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String typeName, String[] propertyNames, int pageSize,
       Index.BuildIndexCallback callback) {
-    return proxied.getOrCreateTypeIndex(indexType, unique, typeName, propertyNames, pageSize, callback);
+    return (TypeIndex) replicatedDatabase.recordFileChanges(() -> proxied.getOrCreateTypeIndex(indexType, unique, typeName, propertyNames, pageSize, callback));
   }
 
   @Override
   public TypeIndex getOrCreateTypeIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String typeName, String[] propertyNames, int pageSize,
       LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, Index.BuildIndexCallback callback) {
-    return proxied.getOrCreateTypeIndex(indexType, unique, typeName, propertyNames, pageSize, nullStrategy, callback);
+    return (TypeIndex) replicatedDatabase.recordFileChanges(
+        () -> proxied.getOrCreateTypeIndex(indexType, unique, typeName, propertyNames, pageSize, nullStrategy, callback));
   }
 
   @Override
   public Index createBucketIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String typeName, String bucketName, String[] propertyNames, int pageSize,
       LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, Index.BuildIndexCallback callback) {
-    return proxied.createBucketIndex(indexType, unique, typeName, bucketName, propertyNames, pageSize, nullStrategy, callback);
+
+    return (Index) replicatedDatabase.recordFileChanges(
+        () -> proxied.createBucketIndex(indexType, unique, typeName, bucketName, propertyNames, pageSize, nullStrategy, callback));
   }
 
   @Override
   public Index createManualIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String indexName, byte[] keyTypes, int pageSize,
       LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy) {
-    return proxied.createManualIndex(indexType, unique, indexName, keyTypes, pageSize, nullStrategy);
+    return (Index) replicatedDatabase.recordFileChanges(() -> proxied.createManualIndex(indexType, unique, indexName, keyTypes, pageSize, nullStrategy));
   }
 
   public void close() {
@@ -254,22 +264,28 @@ public class ReplicatedSchema implements Schema {
 
   @Override
   public void dropType(final String typeName) {
-    proxied.dropType(typeName);
+    replicatedDatabase.recordFileChanges(() -> {
+      proxied.dropType(typeName);
+      return null;
+    });
   }
 
   @Override
   public void dropBucket(final String bucketName) {
-    proxied.dropBucket(bucketName);
+    replicatedDatabase.recordFileChanges(() -> {
+      proxied.dropBucket(bucketName);
+      return null;
+    });
   }
 
   @Override
   public DocumentType createDocumentType(final String typeName) {
-    return proxied.createDocumentType(typeName);
+    return (DocumentType) replicatedDatabase.recordFileChanges(() -> proxied.createDocumentType(typeName));
   }
 
   @Override
   public DocumentType createDocumentType(final String typeName, final int buckets) {
-    return proxied.createDocumentType(typeName, buckets);
+    return (DocumentType) replicatedDatabase.recordFileChanges(() -> proxied.createDocumentType(typeName, buckets));
   }
 
   @Override
@@ -279,81 +295,84 @@ public class ReplicatedSchema implements Schema {
 
   @Override
   public DocumentType getOrCreateDocumentType(String typeName) {
-    return proxied.getOrCreateDocumentType(typeName);
+    return (DocumentType) replicatedDatabase.recordFileChanges(() -> proxied.getOrCreateDocumentType(typeName));
   }
 
   @Override
   public DocumentType getOrCreateDocumentType(String typeName, final int buckets) {
-    return proxied.getOrCreateDocumentType(typeName, buckets);
+    return (DocumentType) replicatedDatabase.recordFileChanges(() -> proxied.getOrCreateDocumentType(typeName, buckets));
   }
 
   @Override
   public DocumentType getOrCreateDocumentType(String typeName, final int buckets, final int pageSize) {
-    return proxied.getOrCreateDocumentType(typeName, buckets, pageSize);
+    return (DocumentType) replicatedDatabase.recordFileChanges(() -> proxied.getOrCreateDocumentType(typeName, buckets, pageSize));
   }
 
   @Override
   public VertexType createVertexType(final String typeName) {
-    return proxied.createVertexType(typeName);
+    return (VertexType) replicatedDatabase.recordFileChanges(() -> proxied.createVertexType(typeName));
   }
 
   @Override
   public VertexType createVertexType(final String typeName, final int buckets) {
-    return proxied.createVertexType(typeName, buckets);
+    return (VertexType) replicatedDatabase.recordFileChanges(() -> proxied.createVertexType(typeName, buckets));
   }
 
   @Override
   public VertexType createVertexType(final String typeName, final int buckets, final int pageSize) {
-    return proxied.createVertexType(typeName, buckets, pageSize);
+    return (VertexType) replicatedDatabase.recordFileChanges(() -> proxied.createVertexType(typeName, buckets, pageSize));
   }
 
   @Override
   public VertexType getOrCreateVertexType(final String typeName) {
-    return proxied.getOrCreateVertexType(typeName);
+    return (VertexType) replicatedDatabase.recordFileChanges(() -> proxied.getOrCreateVertexType(typeName));
   }
 
   @Override
   public VertexType getOrCreateVertexType(final String typeName, final int buckets) {
-    return proxied.getOrCreateVertexType(typeName, buckets);
+    return (VertexType) replicatedDatabase.recordFileChanges(() -> proxied.getOrCreateVertexType(typeName, buckets));
   }
 
   @Override
   public VertexType getOrCreateVertexType(final String typeName, final int buckets, final int pageSize) {
-    return proxied.getOrCreateVertexType(typeName, buckets, pageSize);
+    return (VertexType) replicatedDatabase.recordFileChanges(() -> proxied.getOrCreateVertexType(typeName, buckets, pageSize));
   }
 
   @Override
   public EdgeType createEdgeType(final String typeName) {
-    return proxied.createEdgeType(typeName);
+    return (EdgeType) replicatedDatabase.recordFileChanges(() -> proxied.createEdgeType(typeName));
   }
 
   @Override
   public EdgeType createEdgeType(final String typeName, final int buckets) {
-    return proxied.createEdgeType(typeName, buckets);
+    return (EdgeType) replicatedDatabase.recordFileChanges(() -> proxied.createEdgeType(typeName, buckets));
   }
 
   @Override
   public EdgeType createEdgeType(final String typeName, final int buckets, final int pageSize) {
-    return proxied.createEdgeType(typeName, buckets, pageSize);
+    return (EdgeType) replicatedDatabase.recordFileChanges(() -> proxied.createEdgeType(typeName, buckets, pageSize));
   }
 
   @Override
   public EdgeType getOrCreateEdgeType(final String typeName) {
-    return proxied.getOrCreateEdgeType(typeName);
+    return (EdgeType) replicatedDatabase.recordFileChanges(() -> proxied.getOrCreateEdgeType(typeName));
   }
 
   @Override
   public EdgeType getOrCreateEdgeType(final String typeName, int buckets) {
-    return proxied.getOrCreateEdgeType(typeName, buckets);
+    return (EdgeType) replicatedDatabase.recordFileChanges(() -> proxied.getOrCreateEdgeType(typeName, buckets));
   }
 
   @Override
   public EdgeType getOrCreateEdgeType(final String typeName, int buckets, int pageSize) {
-    return proxied.getOrCreateEdgeType(typeName, buckets, pageSize);
+    return (EdgeType) replicatedDatabase.recordFileChanges(() -> proxied.getOrCreateEdgeType(typeName, buckets, pageSize));
   }
 
   public void saveConfiguration() {
-    proxied.saveConfiguration();
+    replicatedDatabase.recordFileChanges(() -> {
+      proxied.saveConfiguration();
+      return null;
+    });
   }
 
   public void registerFile(final PaginatedComponent file) {

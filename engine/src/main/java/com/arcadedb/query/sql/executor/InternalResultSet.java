@@ -21,9 +21,16 @@ import java.util.*;
  * Created by luigidellaquila on 07/07/16.
  */
 public class InternalResultSet implements ResultSet {
-  private final List<Result> content = new ArrayList<>();
-  private       int          next    = 0;
-  protected ExecutionPlan plan;
+  private final List<Result>  content = new ArrayList<>();
+  private       int           next    = 0;
+  protected     ExecutionPlan plan;
+
+  public InternalResultSet() {
+  }
+
+  public InternalResultSet(final ResultInternal result) {
+    add(result);
+  }
 
   @Override
   public boolean hasNext() {

@@ -78,8 +78,8 @@ public class CreateVertexTypeStatement extends DDLStatement {
     result.setProperty("operation", "create vertex type");
     result.setProperty("typeName", name.getStringValue());
 
-    VertexType type = null;
-    VertexType[] superclasses = getSuperTypes(schema);
+    VertexType type;
+    final VertexType[] superclasses = getSuperTypes(schema);
 
     if (totalBucketNo != null) {
       type = schema.createVertexType(name.getStringValue(), totalBucketNo.getValue().intValue());
@@ -90,9 +90,7 @@ public class CreateVertexTypeStatement extends DDLStatement {
     for (VertexType c : superclasses)
       type.addParentType(c);
 
-    InternalResultSet rs = new InternalResultSet();
-    rs.add(result);
-    return rs;
+    return new InternalResultSet(result);
   }
 
   private VertexType[] getSuperTypes(Schema schema) {

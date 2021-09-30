@@ -20,11 +20,9 @@ import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.util.Base64;
-import java.util.HashMap;
-import java.util.logging.Level;
+import java.net.*;
+import java.util.*;
+import java.util.logging.*;
 
 public class HTTP2ServersIT extends BaseGraphServerTest {
   @Override
@@ -51,7 +49,7 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
 
         Assertions.assertEquals(200, initialConnection.getResponseCode());
         Assertions.assertEquals("OK", initialConnection.getResponseMessage());
-        Assertions.assertTrue(response.contains("VertexType" + serverIndex));
+        Assertions.assertTrue(response.contains("VertexType" + serverIndex), "Type " + (("VertexType" + serverIndex) + " not found on server " + serverIndex));
 
       } finally {
         initialConnection.disconnect();
