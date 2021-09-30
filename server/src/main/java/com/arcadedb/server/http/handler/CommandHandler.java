@@ -78,7 +78,9 @@ public class CommandHandler extends DatabaseAbstractHandler {
     database.begin();
     try {
 
-      final ResultSet qResult = command(database, language, command, paramMap);
+      final ResultSet qResult = language.equalsIgnoreCase("sqlScript") ?
+          executeScript(database, language, command, paramMap) :
+          executeCommand(database, language, command, paramMap);
 
       final JSONObject response = createResult(user);
 
@@ -193,7 +195,7 @@ public class CommandHandler extends DatabaseAbstractHandler {
     }
   }
 
-  private ResultSet command(final Database database, final String language, String command, final Map<String, Object> paramMap) {
+  private ResultSet executeScript(final Database database, final String language, String command, final Map<String, Object> paramMap) {
     final Object params = mapParams(paramMap);
 
     if (!command.endsWith(";"))
@@ -203,6 +205,15 @@ public class CommandHandler extends DatabaseAbstractHandler {
       return database.execute(language, command, (Object[]) params);
 
     return database.execute(language, command, (Map<String, Object>) params);
+  }
+
+  private ResultSet executeCommand(final Database database, final String language, String command, final Map<String, Object> paramMap) {
+    final Object params = mapParams(paramMap);
+
+    if (params instanceof Object[])
+      return database.command(language, command, (Object[]) params);
+
+    return database.command(language, command, (Map<String, Object>) params);
   }
 
   private Object mapParams(Map<String, Object> paramMap) {
