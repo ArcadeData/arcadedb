@@ -38,4 +38,6 @@ public abstract class AbstractExporter {
   }
 
   public abstract void exportDatabase() throws Exception;
+
+  public abstract String getName();
 }

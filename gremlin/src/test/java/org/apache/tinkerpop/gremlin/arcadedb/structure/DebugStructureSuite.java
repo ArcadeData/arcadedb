@@ -22,7 +22,7 @@ package org.apache.tinkerpop.gremlin.arcadedb.structure;
 
 import org.apache.tinkerpop.gremlin.AbstractGremlinSuite;
 import org.apache.tinkerpop.gremlin.process.traversal.TraversalEngine;
-import org.apache.tinkerpop.gremlin.structure.TransactionTest;
+import org.apache.tinkerpop.gremlin.structure.io.IoTest;
 import org.junit.runners.model.InitializationError;
 import org.junit.runners.model.RunnerBuilder;
 
@@ -33,7 +33,7 @@ public class DebugStructureSuite extends AbstractGremlinSuite {
    * as needed to enforce tests upon implementations.
    */
   private static final Class<?>[] allTests = new Class<?>[]{
-      TransactionTest.class,
+      IoTest.class,
   };
 
   public DebugStructureSuite(final Class<?> klass, final RunnerBuilder builder) throws InitializationError {

@@ -36,6 +36,7 @@ import java.util.logging.*;
 import java.util.zip.*;
 
 public class JsonlExporter extends AbstractExporter {
+  public static final  String             NAME       = "jsonl";
   protected final      JSONObject         sharedJson = new JSONObject();
   private              OutputStreamWriter writer;
   private final static int                VERSION    = 1;
@@ -95,6 +96,11 @@ public class JsonlExporter extends AbstractExporter {
       exportEdges(edgeTypes, graphSerializer);
       exportDocuments(documentTypes, graphSerializer);
     }
+  }
+
+  @Override
+  public String getName() {
+    return NAME;
   }
 
   private void exportVertices(List<String> vertexTypes, JsonGraphSerializer graphSerializer) throws IOException {

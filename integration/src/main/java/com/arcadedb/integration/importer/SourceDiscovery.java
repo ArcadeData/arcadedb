@@ -17,6 +17,7 @@ package com.arcadedb.integration.importer;
 
 import com.arcadedb.integration.importer.format.CSVImporterFormat;
 import com.arcadedb.integration.importer.format.FormatImporter;
+import com.arcadedb.integration.importer.format.GraphMLImporterFormat;
 import com.arcadedb.integration.importer.format.JSONImporterFormat;
 import com.arcadedb.integration.importer.format.OrientDBImporterFormat;
 import com.arcadedb.integration.importer.format.RDFImporterFormat;
@@ -62,7 +63,7 @@ public class SourceDiscovery {
     else {
       LogManager.instance().log(this, Level.INFO, "Recognized format %s (parsingLimitBytes=%s parsingLimitEntries=%d)", null, formatImporter.getFormat(),
           FileUtils.getSizeAsString(limitBytes), limitEntries);
-      if (!sourceSchema.getOptions().isEmpty()) {
+      if (sourceSchema != null && !sourceSchema.getOptions().isEmpty()) {
         for (Map.Entry<String, String> o : sourceSchema.getOptions().entrySet())
           LogManager.instance().log(this, Level.INFO, "- %s = %s", null, o.getKey(), o.getValue());
       }
@@ -189,6 +190,27 @@ public class SourceDiscovery {
 
     case DATABASE:
       // NO SPECIAL SETTINGS
+      String fileExtensionForFormat = settings.url;
+      if (fileExtensionForFormat.lastIndexOf('/') > -1)
+        fileExtensionForFormat = fileExtensionForFormat.substring(fileExtensionForFormat.lastIndexOf('/') + 1);
+
+      if (fileExtensionForFormat.endsWith(".tgz"))
+        fileExtensionForFormat = fileExtensionForFormat.substring(0, fileExtensionForFormat.length() - ".tgz".length());
+      else if (fileExtensionForFormat.endsWith(".zip"))
+        fileExtensionForFormat = fileExtensionForFormat.substring(0, fileExtensionForFormat.length() - ".zip".length());
+
+      if (fileExtensionForFormat.lastIndexOf('.') > -1)
+        fileExtensionForFormat = fileExtensionForFormat.substring(fileExtensionForFormat.lastIndexOf('.') + 1);
+
+      switch (fileExtensionForFormat) {
+      case "csv":
+        knownFileType = "csv";
+        break;
+      case "graphml":
+        knownFileType = "graphml";
+        break;
+      }
+
       break;
 
     default:
@@ -203,6 +225,8 @@ public class SourceDiscovery {
         return new JSONImporterFormat();
       else if (knownFileType.equalsIgnoreCase("xml"))
         return new XMLImporterFormat();
+      else if (knownFileType.equalsIgnoreCase("graphml"))
+        return new GraphMLImporterFormat();
       else
         LogManager.instance().log(this, Level.WARNING, "File type '%s' is not supported. Trying to understand file type...", null, knownFileType);
     }

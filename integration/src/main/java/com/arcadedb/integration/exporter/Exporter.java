@@ -20,6 +20,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.integration.exporter.format.AbstractExporter;
 import com.arcadedb.integration.exporter.format.JsonlExporter;
+import com.arcadedb.integration.exporter.format.GraphMLExporter;
 import com.arcadedb.integration.importer.ConsoleLogger;
 import com.arcadedb.log.LogManager;
 
@@ -154,8 +155,11 @@ public class Exporter {
 
   protected AbstractExporter createFormatImplementation() {
     switch (settings.format.toLowerCase()) {
-    case "jsonl":
+    case JsonlExporter.NAME:
       return new JsonlExporter(database, settings, context, logger);
+
+    case GraphMLExporter.NAME:
+      return new GraphMLExporter(database, settings, context, logger);
 
     default:
       throw new IllegalArgumentException("Format '" + settings.format + "' not supported");
