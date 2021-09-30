@@ -88,6 +88,26 @@ public class GraphMLImporterIT {
     }
   }
 
+  @Test
+  public void testImportFromSQL() {
+    final URL inputFile = GraphMLImporterIT.class.getClassLoader().getResource(FILE);
+
+    try (Database database = new DatabaseFactory(DATABASE_PATH).create()) {
+
+      database.command("sql", "import database file://" + inputFile.getFile());
+
+      Assertions.assertTrue(databaseDirectory.exists());
+
+      Assertions.assertEquals(//
+          new HashSet<>(Arrays.asList("Friend", "Person")),//
+          database.getSchema().getTypes().stream().map(x -> x.getName()).collect(Collectors.toSet()));
+
+      for (DocumentType type : database.getSchema().getTypes()) {
+        Assertions.assertTrue(database.countType(type.getName(), true) > 0);
+      }
+    }
+  }
+
   @BeforeEach
   @AfterEach
   public void clean() {
