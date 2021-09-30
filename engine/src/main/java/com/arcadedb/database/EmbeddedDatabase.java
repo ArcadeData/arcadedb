@@ -911,8 +911,6 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
         } else
           bucket.deleteRecord(record.getIdentity());
 
-        getTransaction().removeRecordFromCache(record);
-
         success = true;
 
       } finally {

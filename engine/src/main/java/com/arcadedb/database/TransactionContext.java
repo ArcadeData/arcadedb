@@ -149,19 +149,18 @@ public class TransactionContext implements Transaction {
         .removeIf(r -> r.getIdentity().getBucketId() == bucketId && r.getIdentity().getPosition() / bucket.getMaxRecordsInPage() == pageNum);
   }
 
-  public void removeRecordFromCache(final Record record) {
+  public void removeRecordFromCache(final RID rid) {
     if (updatedRecords != null)
-      updatedRecords.remove(record);
+      updatedRecords.remove(rid);
 
     if (database.isReadYourWrites()) {
-      final RID rid = record.getIdentity();
       if (rid == null)
-        throw new IllegalArgumentException("Cannot remove record in TX cache because it is not persistent: " + record);
+        throw new IllegalArgumentException("Cannot remove record in TX cache because it is not persistent: " + rid);
       modifiedRecordsCache.remove(rid);
       immutableRecordsCache.remove(rid);
     }
 
-    removeImmutableRecordsOfSamePage(record.getIdentity());
+    removeImmutableRecordsOfSamePage(rid);
   }
 
   public DatabaseInternal getDatabase() {
@@ -425,7 +424,8 @@ public class TransactionContext implements Transaction {
         try {
           database.updateRecordNoLock(rec);
         } catch (RecordNotFoundException e) {
-          // DELETED IN TRANSACTION, RARE CASE BECAUSE THE DELETE ALREADY TAKES CARE OF REMOVING IT. THIS HAPPENED IN 2 TESTS WITH GREMLIN
+          // DELETED IN TRANSACTION, THIS IS FULLY MANAGED TO NEVER HAPPEN, BUT IF IT DOES DUE TO THE INTRODUCTION OF A BUG, JUST LOG SOMETHING AND MOVE ON
+          LogManager.instance().log(this, Level.WARNING, "Attempt to update the delete record %s in transaction", null, rec.getIdentity());
         }
       updatedRecords = null;
     }

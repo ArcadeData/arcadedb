@@ -596,6 +596,8 @@ public class Bucket extends PaginatedComponent {
     final int pageId = (int) (rid.getPosition() / maxRecordsInPage);
     final int positionInPage = (int) (rid.getPosition() % maxRecordsInPage);
 
+    database.getTransaction().removeRecordFromCache(rid);
+
     if (pageId >= pageCount.get()) {
       int txPageCount = getTotalPages();
       if (pageId >= txPageCount)
