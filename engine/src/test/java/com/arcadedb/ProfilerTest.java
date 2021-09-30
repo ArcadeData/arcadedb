@@ -13,36 +13,19 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.arcadedb.server;
+package com.arcadedb;
 
-import com.arcadedb.database.Database;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
 
-public class ServerBackupDatabaseIT extends BaseGraphServerTest {
-
-  @Override
-  protected boolean isCreateDatabases() {
-    return true;
-  }
-
-  @Override
-  protected boolean isPopulateDatabase() {
-    return true;
-  }
+public class ProfilerTest {
 
   @Test
-  public void backupDatabase() throws IOException {
-    final File backupFile = new File("backup-test.tgz");
-    if (backupFile.exists())
-      backupFile.delete();
-
-    Database database = getServer(0).getDatabase(getDatabaseName());
-    database.command("sql", "backup database file://" + backupFile.getName());
-
-    Assertions.assertTrue(backupFile.exists());
-    backupFile.delete();
+  public void testDumpProfileMetrics() {
+    final ByteArrayOutputStream out = new ByteArrayOutputStream();
+    Profiler.INSTANCE.dumpMetrics(new PrintStream(out));
+    Assertions.assertTrue(out.size() > 0);
   }
 }

@@ -18,6 +18,8 @@ package com.arcadedb;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
+import java.io.*;
+
 import static com.arcadedb.GlobalConfiguration.TEST;
 
 public class ConfigurationTest {
@@ -54,4 +56,13 @@ public class ConfigurationTest {
 
     Assertions.assertFalse(cfg.getValueAsBoolean(TEST));
   }
+
+  @Test
+  public void testDump() {
+    final ByteArrayOutputStream out = new ByteArrayOutputStream();
+    GlobalConfiguration.dumpConfiguration(new PrintStream(out));
+
+    Assertions.assertTrue(out.size() > 0);
+  }
+
 }
