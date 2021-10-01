@@ -23,10 +23,9 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.lang.reflect.InvocationTargetException;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.logging.Level;
+import java.lang.reflect.*;
+import java.util.*;
+import java.util.logging.*;
 
 public class CypherQueryEngine implements QueryEngine {
   private final Object arcadeGraph;
@@ -89,8 +88,7 @@ public class CypherQueryEngine implements QueryEngine {
     } catch (InvocationTargetException e) {
       throw new CommandExecutionException("Error on executing cypher command", e.getTargetException());
     } catch (Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error on initializing Cypher query engine", e);
-      throw new QueryParsingException("Error on initializing Cypher query engine", e);
+      throw new QueryParsingException("Error on executing Cypher query", e);
     }
   }
 

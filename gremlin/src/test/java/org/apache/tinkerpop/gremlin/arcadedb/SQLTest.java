@@ -19,11 +19,13 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
 import org.apache.tinkerpop.gremlin.arcadedb.structure.ArcadeGraph;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.File;
-import java.util.concurrent.ExecutionException;
+import java.io.*;
+import java.util.concurrent.*;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -31,9 +33,7 @@ import java.util.concurrent.ExecutionException;
 public class SQLTest {
   @Test
   public void testSQL() throws ExecutionException, InterruptedException {
-    FileUtils.deleteRecursively(new File("./target/testcypher"));
-
-    final ArcadeGraph graph = ArcadeGraph.open("./target/testcypher");
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testsql");
     try {
 
       graph.getDatabase().getSchema().createVertexType("Person");
@@ -64,5 +64,11 @@ public class SQLTest {
     } finally {
       graph.drop();
     }
+  }
+
+  @BeforeEach
+  @AfterEach
+  public void clean() {
+    FileUtils.deleteRecursively(new File("./target/testsql"));
   }
 }

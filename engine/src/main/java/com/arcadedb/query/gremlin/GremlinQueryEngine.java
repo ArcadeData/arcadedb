@@ -22,9 +22,8 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.HashMap;
-import java.util.Map;
-import java.util.logging.Level;
+import java.util.*;
+import java.util.logging.*;
 
 public class GremlinQueryEngine implements QueryEngine {
   private final Object arcadeGraph;
@@ -85,8 +84,7 @@ public class GremlinQueryEngine implements QueryEngine {
       GremlinQueryEngineFactory.arcadeGremlinClass.getMethod("setParameters", Map.class).invoke(arcadeGremlin, parameters);
       return (ResultSet) GremlinQueryEngineFactory.arcadeGremlinClass.getMethod("execute").invoke(arcadeGremlin);
     } catch (Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error on initializing Gremlin query engine", e);
-      throw new QueryParsingException("Error on initializing Gremlin query engine", e);
+      throw new QueryParsingException("Error on executing Gremlin query", e);
     }
   }
 

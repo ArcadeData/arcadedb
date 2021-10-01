@@ -20,6 +20,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.exception.QueryParsingException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
@@ -41,6 +42,7 @@ import org.apache.tinkerpop.gremlin.structure.Vertex;
 import org.apache.tinkerpop.gremlin.structure.io.Io;
 import org.apache.tinkerpop.gremlin.structure.util.ElementHelper;
 import org.apache.tinkerpop.gremlin.structure.util.StringFactory;
+import org.opencypher.v9_0.util.SyntaxException;
 
 import java.io.*;
 import java.util.*;
@@ -117,7 +119,11 @@ public class ArcadeGraph implements Graph {
   }
 
   public ArcadeCypher cypher(final String query) {
-    return new ArcadeCypher(this, query);
+    try {
+      return new ArcadeCypher(this, query);
+    } catch (SyntaxException e) {
+      throw new QueryParsingException(e);
+    }
   }
 
   public ArcadeGremlin gremlin(final String query) {

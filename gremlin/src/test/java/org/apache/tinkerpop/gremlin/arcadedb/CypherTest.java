@@ -17,15 +17,18 @@ package org.apache.tinkerpop.gremlin.arcadedb;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.exception.QueryParsingException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
 import org.apache.tinkerpop.gremlin.arcadedb.structure.ArcadeGraph;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.File;
-import java.util.concurrent.ExecutionException;
+import java.io.*;
+import java.util.concurrent.*;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -33,8 +36,6 @@ import java.util.concurrent.ExecutionException;
 public class CypherTest {
   @Test
   public void testCypher() throws ExecutionException, InterruptedException {
-    FileUtils.deleteRecursively(new File("./target/testcypher"));
-
     final ArcadeGraph graph = ArcadeGraph.open("./target/testcypher");
     try {
 
@@ -69,9 +70,27 @@ public class CypherTest {
   }
 
   @Test
-  public void testCypherFromDatabase() throws ExecutionException, InterruptedException {
-    FileUtils.deleteRecursively(new File("./target/testcypher"));
+  public void testCypherSyntaxError() throws ExecutionException, InterruptedException {
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testcypher");
+    try {
 
+      graph.getDatabase().getSchema().createVertexType("Person");
+
+      try {
+        graph.cypher("MATCH (p::Person) WHERE p.age >= $p1 RETURN p.name, p.age ORDER BY p.age")//
+            .setParameter("p1", 25).execute();
+        Assertions.fail();
+      } catch (QueryParsingException e) {
+        // EXPECTED
+      }
+
+    } finally {
+      graph.drop();
+    }
+  }
+
+  @Test
+  public void testCypherFromDatabase() throws ExecutionException, InterruptedException {
     final Database database = new DatabaseFactory("./target/testcypher").create();
     try {
 
@@ -104,5 +123,11 @@ public class CypherTest {
     } finally {
       database.drop();
     }
+  }
+
+  @BeforeEach
+  @AfterEach
+  public void clean() {
+    FileUtils.deleteRecursively(new File("./target/testcypher"));
   }
 }
