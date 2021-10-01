@@ -21,18 +21,13 @@ import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.LockContext;
 
-import java.io.File;
-import java.io.FileNotFoundException;
-import java.io.IOException;
-import java.io.RandomAccessFile;
-import java.nio.ByteBuffer;
-import java.nio.channels.FileChannel;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.Callable;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.logging.Level;
+import java.io.*;
+import java.nio.*;
+import java.nio.channels.*;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+import java.util.logging.*;
 
 public class WALFile extends LockContext {
   public enum FLUSH_TYPE {
@@ -130,10 +125,6 @@ public class WALFile extends LockContext {
     }
 
     return true;
-  }
-
-  public boolean isActive() {
-    return active;
   }
 
   public synchronized void setActive(final boolean active) {
@@ -308,10 +299,6 @@ public class WALFile extends LockContext {
 
   public long getSize() throws IOException {
     return channel.size();
-  }
-
-  public boolean isOpen() {
-    return open;
   }
 
   public String getFilePath() {

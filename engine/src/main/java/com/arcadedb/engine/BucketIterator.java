@@ -18,7 +18,6 @@ package com.arcadedb.engine;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.database.EmbeddedDatabase;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.DatabaseOperationException;
@@ -53,7 +52,7 @@ public class BucketIterator implements Iterator<Record> {
     if (txPageCounter != null && txPageCounter > totalPages)
       this.totalPages = txPageCounter;
 
-    limit = ((EmbeddedDatabase) database).getResultSetLimit();
+    limit = database.getResultSetLimit();
     fetchNext();
   }
 

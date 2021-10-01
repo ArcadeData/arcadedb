@@ -333,21 +333,21 @@ public class PageManager extends LockContext {
       totalWriteCacheRAM.addAndGet(-1 * page2.getPhysicalSize());
   }
 
-  public void preloadFile(final int fileId) {
-    LogManager.instance().log(this, Level.FINE, "Pre-loading file %d (threadId=%d)...", null, fileId, Thread.currentThread().getId());
-
-    try {
-      final PaginatedFile file = fileManager.getFile(fileId);
-      final int pageSize = file.getPageSize();
-      final int pages = (int) (file.getSize() / pageSize);
-
-      for (int pageNumber = 0; pageNumber < pages; ++pageNumber)
-        loadPage(new PageId(fileId, pageNumber), pageSize, false);
-
-    } catch (IOException e) {
-      throw new DatabaseMetadataException("Cannot load file in RAM", e);
-    }
-  }
+//  public void preloadFile(final int fileId) {
+//    LogManager.instance().log(this, Level.FINE, "Pre-loading file %d (threadId=%d)...", null, fileId, Thread.currentThread().getId());
+//
+//    try {
+//      final PaginatedFile file = fileManager.getFile(fileId);
+//      final int pageSize = file.getPageSize();
+//      final int pages = (int) (file.getSize() / pageSize);
+//
+//      for (int pageNumber = 0; pageNumber < pages; ++pageNumber)
+//        loadPage(new PageId(fileId, pageNumber), pageSize, false);
+//
+//    } catch (IOException e) {
+//      throw new DatabaseMetadataException("Cannot load file in RAM", e);
+//    }
+//  }
 
   protected void flushPage(final MutablePage page) throws IOException {
     try {

@@ -18,13 +18,10 @@ package com.arcadedb.query.sql.function;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.function.misc.SQLStaticReflectiveFunction;
 
-import java.lang.reflect.Method;
-import java.lang.reflect.Modifier;
-import java.util.Arrays;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.stream.Collectors;
+import java.lang.reflect.*;
+import java.util.*;
+import java.util.logging.*;
+import java.util.stream.*;
 
 /**
  * Factory for custom SQL functions.
@@ -46,7 +43,7 @@ public class SQLFunctionReflectionFactory {
     for (Map.Entry<String, List<Method>> entry : methodsMap.entrySet()) {
       final String name = prefix + entry.getKey();
       if (factory.getFunctionNames().contains(name)) {
-        LogManager.instance().warn(null, "Unable to register reflective function with name " + name);
+        LogManager.instance().log(this, Level.WARNING, "Unable to register reflective function with name '%s'", null, name);
       } else {
         List<Method> methodsList = methodsMap.get(entry.getKey());
         Method[] methods = new Method[methodsList.size()];

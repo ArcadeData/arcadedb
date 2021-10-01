@@ -24,10 +24,8 @@ import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.utility.Pair;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.NoSuchElementException;
-import java.util.logging.Level;
+import java.util.*;
+import java.util.logging.*;
 
 /**
  * Map like optimized to avoid stressing the GC by using mechanical sympathy technique + compression of key and values.

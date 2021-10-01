@@ -15,8 +15,7 @@
  */
 package com.arcadedb.log;
 
-import java.util.logging.Handler;
-import java.util.logging.Level;
+import java.util.logging.*;
 
 /**
  * Centralized Log Manager.
@@ -51,27 +50,8 @@ public class LogManager {
     CONTEXT_INSTANCE.set(context);
   }
 
-  public Logger getLogger() {
-    return logger;
-  }
-
   public void setLogger(final Logger logger) {
     this.logger = logger;
-  }
-
-  public void warn(final Object iRequester, String iMessage) {
-    logger.log(iRequester, Level.WARNING, iMessage, null, CONTEXT_INSTANCE.get(), null, null, null, null, null, null, null, null, null, null, null, null, null,
-        null, null, null, null);
-  }
-
-  public void error(final Object iRequester, String iMessage) {
-    logger.log(iRequester, Level.SEVERE, iMessage, null, CONTEXT_INSTANCE.get(), null, null, null, null, null, null, null, null, null, null, null, null, null,
-        null, null, null, null);
-  }
-
-  public void error(final Object iRequester, String iMessage, Exception e) {
-    logger.log(iRequester, Level.SEVERE, iMessage, e, CONTEXT_INSTANCE.get(), null, null, null, null, null, null, null, null, null, null, null, null, null,
-        null, null, null, null);
   }
 
   public void log(final Object iRequester, final Level iLevel, String iMessage) {
