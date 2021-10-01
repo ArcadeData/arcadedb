@@ -19,8 +19,4 @@ public class InvalidDatabaseInstanceException extends ArcadeDBException {
   public InvalidDatabaseInstanceException(final String s) {
     super(s);
   }
-
-  public InvalidDatabaseInstanceException(String s, Throwable e) {
-    super(s, e);
-  }
 }

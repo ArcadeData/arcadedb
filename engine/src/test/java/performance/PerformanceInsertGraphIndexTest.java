@@ -258,7 +258,7 @@ public class PerformanceInsertGraphIndexTest extends TestHelper {
       for (; j < expectedTotalEdges; j++) {
         IndexCursor edgeCursor = index.get(new Object[] { j });
         Assertions.assertTrue(edgeCursor.hasNext());
-        final Edge e = (Edge) edgeCursor.next().getRecord(true);
+        final Edge e = edgeCursor.next().asEdge(true);
         Assertions.assertNotNull(e);
         Assertions.assertEquals(j, e.get("id"));
 
