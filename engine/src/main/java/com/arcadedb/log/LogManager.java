@@ -108,18 +108,6 @@ public class LogManager {
     logger.log(iRequester, iLevel, iMessage, iException, CONTEXT_INSTANCE.get(), args);
   }
 
-  public boolean isLevelEnabled(final Level level) {
-    if (level.equals(Level.FINER) || level.equals(Level.FINE) || level.equals(Level.FINEST))
-      return debug;
-    else if (level.equals(Level.INFO))
-      return info;
-    else if (level.equals(Level.WARNING))
-      return warn;
-    else if (level.equals(Level.SEVERE))
-      return error;
-    return false;
-  }
-
   public boolean isDebugEnabled() {
     return debug;
   }
