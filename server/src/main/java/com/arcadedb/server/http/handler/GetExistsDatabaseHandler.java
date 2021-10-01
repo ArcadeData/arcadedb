@@ -16,14 +16,15 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
 import java.util.*;
 
-public class CreateDatabaseHandler extends DatabaseAbstractHandler {
-  public CreateDatabaseHandler(final HttpServer httpServer) {
+public class GetExistsDatabaseHandler extends DatabaseAbstractHandler {
+  public GetExistsDatabaseHandler(final HttpServer httpServer) {
     super(httpServer);
   }
 
@@ -41,11 +42,12 @@ public class CreateDatabaseHandler extends DatabaseAbstractHandler {
       return;
     }
 
-    httpServer.getServer().getServerMetrics().meter("http.create-database").mark();
+    final ArcadeDBServer server = httpServer.getServer();
+    server.getServerMetrics().meter("http.exists-database").mark();
 
-    httpServer.getServer().createDatabase(databaseName.getFirst());
+    final boolean existsDatabase = server.existsDatabase(databaseName.getFirst());
 
     exchange.setStatusCode(200);
-    exchange.getResponseSender().send("{ \"result\" : \"ok\"}");
+    exchange.getResponseSender().send("{ \"result\" : \"" + existsDatabase + "\"}");
   }
 }

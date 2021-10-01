@@ -22,8 +22,8 @@ import io.undertow.server.HttpServerExchange;
 
 import java.util.logging.*;
 
-public class ServersHandler extends AbstractHandler {
-  public ServersHandler(final HttpServer httpServer) {
+public class PostServersHandler extends AbstractHandler {
+  public PostServersHandler(final HttpServer httpServer) {
     super(httpServer);
   }
 

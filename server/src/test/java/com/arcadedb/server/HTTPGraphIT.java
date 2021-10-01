@@ -16,6 +16,7 @@
 package com.arcadedb.server;
 
 import com.arcadedb.log.LogManager;
+import org.json.JSONArray;
 import org.json.JSONObject;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -74,6 +75,27 @@ public class HTTPGraphIT extends BaseGraphServerTest {
   }
 
   @Test
+  public void checkContent() throws Exception {
+    testEachServer((serverIndex) -> {
+      HttpURLConnection connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/").openConnection();
+      connection.setRequestMethod("GET");
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+
+      try {
+        final String response = readResponse(connection);
+        LogManager.instance().log(this, Level.INFO, "Response: ", null, response);
+        Assertions.assertEquals(200, connection.getResponseCode());
+        Assertions.assertEquals("OK", connection.getResponseMessage());
+        Assertions.assertTrue(response.length() > 1000);
+
+      } finally {
+        connection.disconnect();
+      }
+    });
+  }
+
+  @Test
   public void checkQueryInGet() throws Exception {
     testEachServer((serverIndex) -> {
       HttpURLConnection connection = (HttpURLConnection) new URL(
@@ -86,13 +108,9 @@ public class HTTPGraphIT extends BaseGraphServerTest {
 
       try {
         final String response = readResponse(connection);
-
         LogManager.instance().log(this, Level.INFO, "Response: ", null, response);
-
         Assertions.assertEquals(200, connection.getResponseCode());
-
         Assertions.assertEquals("OK", connection.getResponseMessage());
-
         Assertions.assertTrue(response.contains("V1"));
 
       } finally {
@@ -252,6 +270,138 @@ public class HTTPGraphIT extends BaseGraphServerTest {
 
       } finally {
         connection2.disconnect();
+      }
+    });
+  }
+
+  @Test
+  public void checkDatabaseExists() throws Exception {
+    testEachServer((serverIndex) -> {
+      HttpURLConnection connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/exists/graph/").openConnection();
+
+      connection.setRequestMethod("GET");
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      connection.connect();
+
+      try {
+        final String response = readResponse(connection);
+
+        LogManager.instance().log(this, Level.INFO, "Response: ", null, response);
+
+        Assertions.assertEquals(200, connection.getResponseCode());
+
+        Assertions.assertEquals("OK", connection.getResponseMessage());
+
+        Assertions.assertTrue(new JSONObject(response).getBoolean("result"));
+
+      } finally {
+        connection.disconnect();
+      }
+    });
+  }
+
+  @Test
+  public void checkDatabaseList() throws Exception {
+    testEachServer((serverIndex) -> {
+      HttpURLConnection connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/databases").openConnection();
+
+      connection.setRequestMethod("GET");
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      connection.connect();
+
+      try {
+        final String response = readResponse(connection);
+
+        LogManager.instance().log(this, Level.INFO, "Response: ", null, response);
+
+        Assertions.assertEquals(200, connection.getResponseCode());
+
+        Assertions.assertEquals("OK", connection.getResponseMessage());
+
+        JSONArray databases = new JSONObject(response).getJSONArray("result");
+        Assertions.assertEquals(1, databases.length());
+
+      } finally {
+        connection.disconnect();
+      }
+    });
+  }
+
+  @Test
+  public void createAndDropDatabase() throws Exception {
+    testEachServer((serverIndex) -> {
+      // CREATE THE DATABASE 'JUSTFORFUN'
+      HttpURLConnection connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/create/justforfun").openConnection();
+      connection.setRequestMethod("POST");
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      connection.connect();
+
+      try {
+        final String response = readResponse(connection);
+        LogManager.instance().log(this, Level.INFO, "Response: ", null, response);
+        Assertions.assertEquals(200, connection.getResponseCode());
+        Assertions.assertEquals("OK", connection.getResponseMessage());
+        Assertions.assertEquals("ok", new JSONObject(response).getString("result"));
+
+      } finally {
+        connection.disconnect();
+      }
+
+      // CHECK EXISTENCE
+      connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/exists/justforfun").openConnection();
+      connection.setRequestMethod("GET");
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      connection.connect();
+
+      try {
+        final String response = readResponse(connection);
+        LogManager.instance().log(this, Level.INFO, "Response: ", null, response);
+        Assertions.assertEquals(200, connection.getResponseCode());
+        Assertions.assertEquals("OK", connection.getResponseMessage());
+        Assertions.assertTrue(new JSONObject(response).getBoolean("result"));
+
+      } finally {
+        connection.disconnect();
+      }
+
+      // DROP DATABASE
+      connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/drop/justforfun").openConnection();
+      connection.setRequestMethod("POST");
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      connection.connect();
+
+      try {
+        final String response = readResponse(connection);
+        LogManager.instance().log(this, Level.INFO, "Response: ", null, response);
+        Assertions.assertEquals(200, connection.getResponseCode());
+        Assertions.assertEquals("OK", connection.getResponseMessage());
+        Assertions.assertEquals("ok", new JSONObject(response).getString("result"));
+
+      } finally {
+        connection.disconnect();
+      }
+
+      // CHECK NOT EXISTENCE
+      connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/exists/justforfun").openConnection();
+      connection.setRequestMethod("GET");
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      connection.connect();
+
+      try {
+        final String response = readResponse(connection);
+        LogManager.instance().log(this, Level.INFO, "Response: ", null, response);
+        Assertions.assertEquals(200, connection.getResponseCode());
+        Assertions.assertEquals("OK", connection.getResponseMessage());
+        Assertions.assertFalse(new JSONObject(response).getBoolean("result"));
+
+      } finally {
+        connection.disconnect();
       }
     });
   }

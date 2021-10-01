@@ -20,8 +20,8 @@ import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
-public class DropDatabaseHandler extends DatabaseAbstractHandler {
-  public DropDatabaseHandler(final HttpServer httpServer) {
+public class PostDropDatabaseHandler extends DatabaseAbstractHandler {
+  public PostDropDatabaseHandler(final HttpServer httpServer) {
     super(httpServer);
   }
 

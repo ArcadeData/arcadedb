@@ -21,17 +21,17 @@ import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ServerPlugin;
-import com.arcadedb.server.http.handler.CommandHandler;
-import com.arcadedb.server.http.handler.CreateDatabaseHandler;
-import com.arcadedb.server.http.handler.CreateDocumentHandler;
-import com.arcadedb.server.http.handler.DropDatabaseHandler;
-import com.arcadedb.server.http.handler.DynamicContentHandler;
-import com.arcadedb.server.http.handler.ExistsDatabaseHandler;
+import com.arcadedb.server.http.handler.PostCommandHandler;
+import com.arcadedb.server.http.handler.PostCreateDatabaseHandler;
+import com.arcadedb.server.http.handler.PostCreateDocumentHandler;
+import com.arcadedb.server.http.handler.PostDropDatabaseHandler;
+import com.arcadedb.server.http.handler.GetDynamicContentHandler;
+import com.arcadedb.server.http.handler.GetExistsDatabaseHandler;
 import com.arcadedb.server.http.handler.GetDatabasesHandler;
 import com.arcadedb.server.http.handler.GetDocumentHandler;
 import com.arcadedb.server.http.handler.GetQueryHandler;
 import com.arcadedb.server.http.handler.PostQueryHandler;
-import com.arcadedb.server.http.handler.ServersHandler;
+import com.arcadedb.server.http.handler.PostServersHandler;
 import io.undertow.Handlers;
 import io.undertow.Undertow;
 import io.undertow.server.RoutingHandler;
@@ -84,20 +84,20 @@ public class HttpServer implements ServerPlugin {
     final RoutingHandler basicRoutes = Handlers.routing();
     routes.addPrefixPath("/api/v1",//
         basicRoutes//
-            .post("/command/{database}", new CommandHandler(this))//
-            .post("/create/{database}", new CreateDatabaseHandler(this))//
+            .post("/command/{database}", new PostCommandHandler(this))//
+            .post("/create/{database}", new PostCreateDatabaseHandler(this))//
             .get("/databases", new GetDatabasesHandler(this))//
             .get("/document/{database}/{rid}", new GetDocumentHandler(this))//
-            .post("/document/{database}", new CreateDocumentHandler(this))//
-            .post("/drop/{database}", new DropDatabaseHandler(this))//
-            .post("/exists/{database}", new ExistsDatabaseHandler(this))//
+            .post("/document/{database}", new PostCreateDocumentHandler(this))//
+            .post("/drop/{database}", new PostDropDatabaseHandler(this))//
+            .get("/exists/{database}", new GetExistsDatabaseHandler(this))//
             .get("/query/{database}/{language}/{command}", new GetQueryHandler(this))//
             .post("/query/{database}", new PostQueryHandler(this))//
-            .post("/server", new ServersHandler(this))//
+            .post("/server", new PostServersHandler(this))//
     );
 
     if (!"production".equals(GlobalConfiguration.SERVER_MODE.getValueAsString())) {
-      routes.addPrefixPath("/", Handlers.routing().setFallbackHandler(new DynamicContentHandler(this)));
+      routes.addPrefixPath("/", Handlers.routing().setFallbackHandler(new GetDynamicContentHandler(this)));
     }
 
     // REGISTER PLUGIN API

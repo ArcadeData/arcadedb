@@ -30,9 +30,9 @@ import java.nio.*;
 import java.util.*;
 import java.util.logging.*;
 
-public class DynamicContentHandler extends AbstractHandler {
+public class GetDynamicContentHandler extends AbstractHandler {
 
-  public DynamicContentHandler(final HttpServer httpServer) {
+  public GetDynamicContentHandler(final HttpServer httpServer) {
     super(httpServer);
     setRequireAuthentication(false);
   }

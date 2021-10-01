@@ -24,8 +24,8 @@ import org.json.JSONObject;
 
 import java.io.*;
 
-public class CreateDocumentHandler extends DatabaseAbstractHandler {
-  public CreateDocumentHandler(final HttpServer httpServer) {
+public class PostCreateDocumentHandler extends DatabaseAbstractHandler {
+  public PostCreateDocumentHandler(final HttpServer httpServer) {
     super(httpServer);
   }
 

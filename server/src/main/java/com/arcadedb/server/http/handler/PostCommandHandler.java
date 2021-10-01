@@ -38,11 +38,11 @@ import java.io.*;
 import java.util.*;
 import java.util.stream.*;
 
-public class CommandHandler extends DatabaseAbstractHandler {
+public class PostCommandHandler extends DatabaseAbstractHandler {
 
   private static final int DEFAULT_LIMIT = 20_000;
 
-  public CommandHandler(final HttpServer httpServer) {
+  public PostCommandHandler(final HttpServer httpServer) {
     super(httpServer);
   }
 
