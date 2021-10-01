@@ -19,12 +19,13 @@ import com.arcadedb.database.Document;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 
 import java.util.*;
-import java.util.stream.Collectors;
+import java.util.stream.*;
 
 /**
  * Returns an OResult containing metadata regarding the schema types.
@@ -51,7 +52,10 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
       try {
         final Schema schema = ctx.getDatabase().getSchema();
 
-        for (DocumentType type : schema.getTypes()) {
+        final List<String> orderedTypes = schema.getTypes().stream().map(x -> x.getName()).sorted(String::compareToIgnoreCase).collect(Collectors.toList());
+        for (String typeName : orderedTypes) {
+          final DocumentType type = schema.getType(typeName);
+
           final ResultInternal r = new ResultInternal();
           result.add(r);
 
@@ -71,16 +75,17 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
           List<String> parents = type.getParentTypes().stream().map(pt -> pt.getName()).collect(Collectors.toList());
           r.setProperty("parentTypes", parents);
 
-          final Set<ResultInternal> propertiesTypes = type.getPropertyNames().stream().map(name -> type.getProperty(name)).map(property -> {
-            final ResultInternal propRes = new ResultInternal();
-            propRes.setProperty("id", property.getId());
-            propRes.setProperty("name", property.getName());
-            propRes.setProperty("type", property.getType());
-            return propRes;
-          }).collect(Collectors.toSet());
+          final List<ResultInternal> propertiesTypes = type.getPropertyNames().stream().sorted(String::compareToIgnoreCase).map(name -> type.getProperty(name))
+              .map(property -> {
+                final ResultInternal propRes = new ResultInternal();
+                propRes.setProperty("id", property.getId());
+                propRes.setProperty("name", property.getName());
+                propRes.setProperty("type", property.getType());
+                return propRes;
+              }).collect(Collectors.toList());
           r.setProperty("properties", propertiesTypes);
 
-          final Set<ResultInternal> indexes = type.getAllIndexes(false).stream().map(typeIndex -> {
+          final List<ResultInternal> indexes = type.getAllIndexes(false).stream().sorted(Comparator.comparing(Index::getName)).map(typeIndex -> {
             final IndexInternal typeIndexInternal = (IndexInternal) typeIndex;
             final ResultInternal propRes = new ResultInternal();
             propRes.setProperty("name", typeIndexInternal.getName());
@@ -90,7 +95,7 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
             propRes.setProperty("automatic", typeIndexInternal.isAutomatic());
             propRes.setProperty("unique", typeIndexInternal.isUnique());
             return propRes;
-          }).collect(Collectors.toSet());
+          }).collect(Collectors.toList());
           r.setProperty("indexes", indexes);
         }
       } finally {

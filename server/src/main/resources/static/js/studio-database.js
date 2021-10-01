@@ -84,57 +84,6 @@ function updateDatabases( callback ){
   });
 }
 
-function importDatabase(){
-  let html = "<label for='inputImportDatabaseName'>Enter the database name:&nbsp;&nbsp;</label><input id='inputImportDatabaseName'>";
-  html += "<label for='inputImportDatabaseURL'>Enter the URL of the database:&nbsp;&nbsp;</label><input id='inputImportDatabaseURL'>";
-
-  Swal.fire({
-    title: 'Import a database database',
-    html: html,
-    inputAttributes: {
-      autocapitalize: 'off'
-    },
-    confirmButtonColor: '#3ac47d',
-    cancelButtonColor: 'red',
-    showCancelButton: true,
-    confirmButtonText: 'Send',
-  }).then((result) => {
-    if (result.value) {
-      let database = escapeHtml( $("#inputImportDatabaseName").val().trim() );
-      if( database == "" ){
-        globalNotify( "Error", "Database name empty", "danger");
-        return;
-      }
-
-      let url = escapeHtml( $("#inputImportDatabaseURL").val().trim() );
-      if( url == "" ){
-        globalNotify( "Error", "Database URL empty", "danger");
-        return;
-      }
-
-      jQuery.ajax({
-        type: "POST",
-        url: "/api/v1/command/" + database,
-        data: JSON.stringify(
-          {
-            language: "sql",
-            command: "import database " + url,
-            serializer: "record"
-          }
-        ),
-        beforeSend: function (xhr){
-          xhr.setRequestHeader('Authorization', globalCredentials);
-        }
-      })
-      .done(function(data){
-        updateDatabases();
-      })
-      .fail(function( jqXHR, textStatus, errorThrown ){
-        globalNotifyError( jqXHR.responseText );
-      });
-    }
-  });
-}
 
 function createDatabase(){
   let html = "<label for='inputCreateDatabaseName'>Enter the database name:&nbsp;&nbsp;</label><input id='inputCreateDatabaseName'>";
@@ -394,10 +343,10 @@ function displaySchema(){
 
       panelHtml += "<br>Type: <b>" + row.name + "</b>";
       if( row.parentTypes != "" )
-       ", Super Types: <b>" + row.parentTypes + "</b>";
+        panelHtml += ", Super Types: <b>" + row.parentTypes + "</b>";
       if( row.indexes != "" ){
-        panelHtml += ", Indexes: <b>";
-        panelHtml += row.indexes.map(i => i.name);
+        panelHtml += "<br>Indexes: <b>";
+        panelHtml += row.indexes.map(i => " " + i.name );
         panelHtml += "</b>";
       }
 
