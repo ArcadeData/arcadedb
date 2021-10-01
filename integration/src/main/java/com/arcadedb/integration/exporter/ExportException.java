@@ -13,16 +13,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.arcadedb.integration.importer;
+package com.arcadedb.integration.exporter;
 
 import com.arcadedb.exception.ArcadeDBException;
 
-public class ImportException extends ArcadeDBException {
-  public ImportException(String message) {
-    super(message);
+public class ExportException extends ArcadeDBException {
+  public ExportException(final String s) {
+    super(s);
   }
 
-  public ImportException(String message, Throwable cause) {
-    super(message, cause);
+  public ExportException(String s, Throwable e) {
+    super(s, e);
   }
 }

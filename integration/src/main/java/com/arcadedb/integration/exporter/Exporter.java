@@ -19,8 +19,8 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.integration.exporter.format.AbstractExporter;
-import com.arcadedb.integration.exporter.format.JsonlExporter;
 import com.arcadedb.integration.exporter.format.GraphMLExporter;
+import com.arcadedb.integration.exporter.format.JsonlExporter;
 import com.arcadedb.integration.importer.ConsoleLogger;
 import com.arcadedb.log.LogManager;
 
@@ -75,6 +75,7 @@ public class Exporter {
 
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on writing to %s", e, settings.file);
+      throw new ExportException("Error on writing to '" + settings.file + "'", e);
     } finally {
       if (database != null) {
         stopExporting();
@@ -162,7 +163,7 @@ public class Exporter {
       return new GraphMLExporter(database, settings, context, logger);
 
     default:
-      throw new IllegalArgumentException("Format '" + settings.format + "' not supported");
+      throw new ExportException("Format '" + settings.format + "' not supported");
     }
   }
 }

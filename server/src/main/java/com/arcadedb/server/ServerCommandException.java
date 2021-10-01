@@ -30,8 +30,4 @@ public class ServerCommandException extends RuntimeException {
   public ServerCommandException(Throwable cause) {
     super(cause);
   }
-
-  public ServerCommandException(String message, Throwable cause, boolean enableSuppression, boolean writableStackTrace) {
-    super(message, cause, enableSuppression, writableStackTrace);
-  }
 }

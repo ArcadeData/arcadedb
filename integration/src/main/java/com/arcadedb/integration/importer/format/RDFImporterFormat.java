@@ -74,7 +74,7 @@ public class RDFImporterFormat extends CSVImporterFormat {
       database.commit();
 
     } catch (IOException e) {
-      throw new ImportException("Error on importing CSV");
+      throw new ImportException("Error on importing CSV", e);
     }
   }
 

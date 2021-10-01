@@ -30,8 +30,4 @@ public class ArcadeDBException extends RuntimeException {
   public ArcadeDBException(Throwable cause) {
     super(cause);
   }
-
-  public ArcadeDBException(String message, Throwable cause, boolean enableSuppression, boolean writableStackTrace) {
-    super(message, cause, enableSuppression, writableStackTrace);
-  }
 }

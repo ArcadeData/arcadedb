@@ -15,11 +15,15 @@
  */
 package com.arcadedb.integration.exporter;
 
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.integration.importer.OrientDBImporter;
 import com.arcadedb.integration.importer.OrientDBImporterIT;
 import com.arcadedb.utility.FileUtils;
 import org.json.JSONObject;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
@@ -54,7 +58,7 @@ public class JsonlExporterIT {
       try (BufferedReader in = new BufferedReader(new InputStreamReader(new GZIPInputStream(new FileInputStream(file))))) {
         while (in.ready()) {
           final String line = in.readLine();
-          final JSONObject json = new JSONObject(line);
+          new JSONObject(line);
           ++lines;
         }
       }
@@ -65,5 +69,38 @@ public class JsonlExporterIT {
       FileUtils.deleteRecursively(databaseDirectory);
       file.delete();
     }
+  }
+
+  @Test
+  public void testFormatError() {
+    try {
+      emptyDatabase().close();
+      new Exporter(("-f " + FILE + " -d " + DATABASE_PATH + " -o -format unknown").split(" ")).exportDatabase();
+      Assertions.fail();
+    } catch (ExportException e) {
+      // EXPECTED
+    }
+  }
+
+  @Test
+  public void testFileCannotBeOverwrittenError() throws IOException {
+    try {
+      emptyDatabase().close();
+      new File(FILE).createNewFile();
+      new Exporter(("-f " + FILE + " -d " + DATABASE_PATH + " -format jsonl").split(" ")).exportDatabase();
+      Assertions.fail();
+    } catch (ExportException e) {
+      // EXPECTED
+    }
+  }
+
+  private Database emptyDatabase() {
+    return new DatabaseFactory(DATABASE_PATH).create();
+  }
+
+  @BeforeEach
+  @AfterEach
+  public void beforeTests() {
+    FileUtils.deleteRecursively(new File(DATABASE_PATH));
   }
 }

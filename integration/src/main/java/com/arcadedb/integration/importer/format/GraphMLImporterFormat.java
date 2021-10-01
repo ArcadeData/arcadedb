@@ -40,7 +40,7 @@ public class GraphMLImporterFormat extends CSVImporterFormat {
     try (InputStream is = parser.getInputStream()) {
       graph.io(IoCore.graphml()).reader().create().readGraph(is, graph);
     } catch (IOException e) {
-      throw new ImportException("Error on importing GraphML");
+      throw new ImportException("Error on importing GraphML", e);
     }
   }
 

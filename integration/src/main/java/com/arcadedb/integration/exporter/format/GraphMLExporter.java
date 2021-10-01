@@ -16,6 +16,7 @@
 package com.arcadedb.integration.exporter.format;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.integration.exporter.ExportException;
 import com.arcadedb.integration.exporter.ExporterContext;
 import com.arcadedb.integration.exporter.ExporterSettings;
 import com.arcadedb.integration.importer.ConsoleLogger;
@@ -38,10 +39,18 @@ public class GraphMLExporter extends AbstractExporter {
 
   @Override
   public void exportDatabase() throws Exception {
-    File file = new File(settings.file);
+    final File file = new File(settings.file);
     if (file.exists() && !settings.overwriteFile) {
       LogManager.instance().log(this, Level.SEVERE, "Error on exporting database: the file '%s' already exist and '-o' setting is false.", null, settings.file);
     }
+
+    if (file.getParentFile() != null && !file.getParentFile().exists()) {
+      if (!file.getParentFile().mkdirs())
+        throw new ExportException(String.format("The export file '%s' cannot be created", settings.file));
+    }
+
+    if (database.isTransactionActive())
+      throw new ExportException("Transaction in progress found");
 
     logger.logLine(0, "Exporting database to '%s'...", settings.file);
 

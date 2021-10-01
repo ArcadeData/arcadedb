@@ -19,6 +19,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.index.CompressedAny2RIDIndex;
 import com.arcadedb.integration.importer.AnalyzedEntity;
 import com.arcadedb.integration.importer.AnalyzedProperty;
 import com.arcadedb.integration.importer.AnalyzedSchema;
@@ -29,7 +30,6 @@ import com.arcadedb.integration.importer.Parser;
 import com.arcadedb.integration.importer.SourceSchema;
 import com.arcadedb.integration.importer.graph.EdgeLinkedCallback;
 import com.arcadedb.integration.importer.graph.GraphImporter;
-import com.arcadedb.index.CompressedAny2RIDIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
@@ -143,7 +143,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       database.async().waitCompletion();
 
     } catch (IOException e) {
-      throw new ImportException("Error on importing CSV");
+      throw new ImportException("Error on importing CSV", e);
     } finally {
       final long elapsedInSecs = (System.currentTimeMillis() - beginTime) / 1000;
       LogManager.instance().log(this, Level.INFO, "Importing of documents from CSV source completed in %d seconds (%d/sec)", null, elapsedInSecs,
@@ -264,7 +264,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       database.async().waitCompletion();
 
     } catch (IOException e) {
-      throw new ImportException("Error on importing CSV");
+      throw new ImportException("Error on importing CSV", e);
     } finally {
       final long elapsedInSecs = (System.currentTimeMillis() - beginTime) / 1000;
       LogManager.instance().log(this, Level.INFO, "Importing of vertices from CSV source completed in %d seconds (%d/sec)", null, elapsedInSecs,
@@ -366,7 +366,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       });
 
     } catch (IOException e) {
-      throw new ImportException("Error on importing CSV");
+      throw new ImportException("Error on importing CSV", e);
     } finally {
       final long elapsedInSecs = (System.currentTimeMillis() - beginTime) / 1000;
       try {
@@ -527,7 +527,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     } catch (EOFException e) {
       // REACHED THE LIMIT
     } catch (IOException e) {
-      throw new ImportException("Error on importing CSV");
+      throw new ImportException("Error on importing CSV", e);
     }
 
     // END OF PARSING. THIS DETERMINES THE TYPE

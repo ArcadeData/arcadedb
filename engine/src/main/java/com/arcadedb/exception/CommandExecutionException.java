@@ -16,9 +16,6 @@
 package com.arcadedb.exception;
 
 public class CommandExecutionException extends ArcadeDBException {
-  public CommandExecutionException() {
-  }
-
   public CommandExecutionException(String message) {
     super(message);
   }
@@ -29,9 +26,5 @@ public class CommandExecutionException extends ArcadeDBException {
 
   public CommandExecutionException(Throwable cause) {
     super(cause);
-  }
-
-  public CommandExecutionException(String message, Throwable cause, boolean enableSuppression, boolean writableStackTrace) {
-    super(message, cause, enableSuppression, writableStackTrace);
   }
 }

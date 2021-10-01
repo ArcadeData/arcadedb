@@ -176,6 +176,29 @@ public class FullBackupIT {
     }
   }
 
+  @Test
+  public void testFormatError() {
+    try {
+      emptyDatabase().close();
+      new Backup(("-f " + FILE + " -d " + DATABASE_PATH + " -o -format unknown").split(" ")).backupDatabase();
+      Assertions.fail();
+    } catch (BackupException e) {
+      // EXPECTED
+    }
+  }
+
+  @Test
+  public void testFileCannotBeOverwrittenError() throws IOException {
+    try {
+      emptyDatabase().close();
+      new File(FILE).createNewFile();
+      new Backup(("-f " + FILE + " -d " + DATABASE_PATH).split(" ")).backupDatabase();
+      Assertions.fail();
+    } catch (BackupException e) {
+      // EXPECTED
+    }
+  }
+
   private Database importDatabase() throws IOException {
     final URL inputFile = OrientDBImporterIT.class.getClassLoader().getResource("orientdb-export-small.gz");
 
@@ -185,6 +208,10 @@ public class FullBackupIT {
     Assertions.assertFalse(importer.isError());
     Assertions.assertTrue(new File(DATABASE_PATH).exists());
     return importedDatabase;
+  }
+
+  private Database emptyDatabase() {
+    return new DatabaseFactory(DATABASE_PATH).create();
   }
 
   @BeforeEach

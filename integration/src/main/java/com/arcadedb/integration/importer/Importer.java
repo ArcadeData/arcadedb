@@ -59,6 +59,7 @@ public class Importer extends AbstractImporter {
 
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on parsing source %s", e, source);
+      throw new ImportException("Error on parsing source '" + source + "'", e);
     } finally {
       if (database != null) {
         stopImporting();

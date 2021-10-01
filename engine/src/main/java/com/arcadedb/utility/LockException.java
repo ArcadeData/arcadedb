@@ -19,10 +19,6 @@ import com.arcadedb.exception.ArcadeDBException;
 
 public class LockException extends ArcadeDBException {
 
-  public LockException(final Exception exception) {
-    super(exception);
-  }
-
   public LockException(final String iMessage) {
     super(iMessage);
   }
