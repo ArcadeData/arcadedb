@@ -145,6 +145,10 @@ public abstract class BaseRecord implements Record {
 
   @Override
   public Edge asEdge(boolean loadContent) {
-    throw new UnsupportedOperationException();
+    if (this instanceof Vertex)
+      throw new ClassCastException("Cannot cast a vertex to an edge");
+    if (this instanceof Document)
+      throw new ClassCastException("Cannot cast a document to an edge");
+    throw new ClassCastException("Current record is not a edge");
   }
 }

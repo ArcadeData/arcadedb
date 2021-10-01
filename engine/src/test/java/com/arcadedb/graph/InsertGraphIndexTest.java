@@ -17,6 +17,7 @@ package com.arcadedb.graph;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.async.ErrorCallback;
+import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.log.LogManager;
@@ -26,7 +27,7 @@ import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.logging.Level;
+import java.util.logging.*;
 
 public class InsertGraphIndexTest extends TestHelper {
   private static final int    VERTICES         = 1_000;
@@ -184,16 +185,12 @@ public class InsertGraphIndexTest extends TestHelper {
   }
 
   private void createSchema() {
-    database.begin();
-
-    final VertexType type = database.getSchema().createVertexType(VERTEX_TYPE_NAME, PARALLEL);
-    type.createProperty("id", Long.class);
+    final VertexType vertex = database.getSchema().createVertexType(VERTEX_TYPE_NAME, PARALLEL);
+    vertex.createProperty("id", Integer.class);
+    database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, VERTEX_TYPE_NAME, "id");
+    vertex.setBucketSelectionStrategy(new PartitionedBucketSelectionStrategy(new String[] { "id" }));
 
     database.getSchema().createEdgeType(EDGE_TYPE_NAME, PARALLEL);
-
-    database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, VERTEX_TYPE_NAME, new String[] { "id" }, 5000000);
-
-    database.commit();
   }
 
   private void checkGraph(Vertex[] cachedVertices) {

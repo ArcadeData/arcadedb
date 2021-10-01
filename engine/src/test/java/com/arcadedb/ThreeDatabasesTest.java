@@ -37,7 +37,7 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
-public class ACIDTransactionTest extends TestHelper {
+public class ThreeDatabasesTest extends TestHelper {
   @Override
   protected void beginTest() {
     database.transaction(new Database.TransactionScope() {

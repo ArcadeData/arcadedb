@@ -26,34 +26,22 @@ public class ConfigurationTest {
   @Test
   public void testGlobalExport2Json() {
     Assertions.assertFalse(TEST.getValueAsBoolean());
-
     final String json = GlobalConfiguration.toJSON();
-
     TEST.setValue(true);
-
     Assertions.assertTrue(TEST.getValueAsBoolean());
-
     GlobalConfiguration.fromJSON(json);
-
     Assertions.assertFalse(TEST.getValueAsBoolean());
   }
 
   @Test
   public void testContextExport2Json() {
     final ContextConfiguration cfg = new ContextConfiguration();
-
     cfg.setValue(TEST, false);
-
     Assertions.assertFalse(cfg.getValueAsBoolean(TEST));
-
     final String json = cfg.toJSON();
-
     cfg.setValue(TEST, true);
-
     Assertions.assertTrue(cfg.getValueAsBoolean(TEST));
-
     cfg.fromJSON(json);
-
     Assertions.assertFalse(cfg.getValueAsBoolean(TEST));
   }
 
@@ -61,7 +49,6 @@ public class ConfigurationTest {
   public void testDump() {
     final ByteArrayOutputStream out = new ByteArrayOutputStream();
     GlobalConfiguration.dumpConfiguration(new PrintStream(out));
-
     Assertions.assertTrue(out.size() > 0);
   }
 

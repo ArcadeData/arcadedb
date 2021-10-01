@@ -560,11 +560,8 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     stats.iterateType.incrementAndGet();
 
     return (Iterator<Record>) executeInReadLock(() -> {
-
       checkDatabaseIsOpen();
-
       final DocumentType type = schema.getType(typeName);
-
       final MultiIterator iter = new MultiIterator();
 
       // SET THE PROFILED LIMITS IF ANY
@@ -573,7 +570,6 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
       for (Bucket b : type.getBuckets(polymorphic))
         iter.addIterator(b.iterator());
-
       return iter;
     });
   }

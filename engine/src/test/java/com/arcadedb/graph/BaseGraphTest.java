@@ -1,31 +1,34 @@
 /*
- * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * Copyright 2021 Arcade Data Ltd
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
+ *   http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
  */
-package com.arcadedb;
+package com.arcadedb.graph;
 
+import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
-import com.arcadedb.graph.ImmutableLightEdge;
-import com.arcadedb.graph.MutableEdge;
-import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Assertions;
 
-import java.io.File;
-import java.util.HashMap;
-import java.util.Map;
+import java.io.*;
+import java.util.*;
 
 public abstract class BaseGraphTest extends TestHelper {
   protected static final String VERTEX1_TYPE_NAME = "V1";
@@ -75,6 +78,21 @@ public abstract class BaseGraphTest extends TestHelper {
     v3.set("name", "V3");
     v3.save();
 
+    Assertions.assertEquals(v3, v3.asVertex());
+    Assertions.assertEquals(v3, v3.asVertex(true));
+    try {
+      Assertions.assertNotNull(v3.asEdge());
+      Assertions.fail();
+    } catch (ClassCastException e) {
+      // EXPECTED
+    }
+    try {
+      Assertions.assertNotNull(v3.asEdge(true));
+      Assertions.fail();
+    } catch (ClassCastException e) {
+      // EXPECTED
+    }
+
     Map<String, Object> params = new HashMap<>();
     params.put("name", "E2");
 
@@ -82,6 +100,22 @@ public abstract class BaseGraphTest extends TestHelper {
     MutableEdge e2 = v2.newEdge(EDGE2_TYPE_NAME, v3, true, params);
     Assertions.assertEquals(e2.getOut(), v2);
     Assertions.assertEquals(e2.getIn(), v3);
+
+    Assertions.assertEquals(e2, e2.asEdge());
+    Assertions.assertEquals(e2, e2.asEdge(true));
+
+    try {
+      Assertions.assertNotNull(e2.asVertex());
+      Assertions.fail();
+    } catch (ClassCastException e) {
+      // EXPECTED
+    }
+    try {
+      Assertions.assertNotNull(e2.asVertex(true));
+      Assertions.fail();
+    } catch (ClassCastException e) {
+      // EXPECTED
+    }
 
     ImmutableLightEdge e3 = v1.newLightEdge(EDGE2_TYPE_NAME, v3, true);
     Assertions.assertEquals(e3.getOut(), v1);

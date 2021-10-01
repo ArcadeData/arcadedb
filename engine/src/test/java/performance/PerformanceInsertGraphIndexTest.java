@@ -228,8 +228,6 @@ public class PerformanceInsertGraphIndexTest extends TestHelper {
   }
 
   private void createSchema() {
-    database.begin();
-
     final VertexType vertex = database.getSchema().createVertexType(VERTEX_TYPE_NAME, PARALLEL);
     vertex.createProperty("id", Integer.class);
     database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, VERTEX_TYPE_NAME, "id");
@@ -241,8 +239,6 @@ public class PerformanceInsertGraphIndexTest extends TestHelper {
       database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, EDGE_TYPE_NAME, "id");
       edge.setBucketSelectionStrategy(new PartitionedBucketSelectionStrategy(new String[] { "id" }));
     }
-
-    database.commit();
   }
 
   private void checkEdgeIds() {

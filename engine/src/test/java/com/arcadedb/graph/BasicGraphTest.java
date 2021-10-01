@@ -15,7 +15,6 @@
  */
 package com.arcadedb.graph;
 
-import com.arcadedb.BaseGraphTest;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
