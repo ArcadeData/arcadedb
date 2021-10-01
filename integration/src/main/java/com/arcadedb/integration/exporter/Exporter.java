@@ -74,7 +74,6 @@ public class Exporter {
           totalRecords, elapsedInSecs, (totalRecords / elapsedInSecs), context.documents.get(), context.vertices.get(), context.edges.get());
 
     } catch (Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error on writing to %s", e, settings.file);
       throw new ExportException("Error on writing to '" + settings.file + "'", e);
     } finally {
       if (database != null) {
@@ -117,7 +116,6 @@ public class Exporter {
 
     logger.logLine(0, "Opening database '%s'...", settings.databaseURL);
     database = (DatabaseInternal) factory.open();
-    database.begin();
   }
 
   protected void printProgress() {

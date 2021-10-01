@@ -17,10 +17,8 @@ package com.arcadedb.integration.importer;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.log.LogManager;
 
 import java.io.*;
-import java.util.logging.*;
 
 public class Importer extends AbstractImporter {
   public Importer(final String[] args) {
@@ -58,7 +56,6 @@ public class Importer extends AbstractImporter {
         database.commit();
 
     } catch (Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error on parsing source %s", e, source);
       throw new ImportException("Error on parsing source '" + source + "'", e);
     } finally {
       if (database != null) {
