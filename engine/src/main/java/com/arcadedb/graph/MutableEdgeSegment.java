@@ -45,8 +45,10 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
     super(database, rid, buffer);
     NULL_RID = new RID(database, -1, -1);
     this.buffer = buffer;
-    this.buffer.setAutoResizable(false);
-    this.bufferSize = buffer.size();
+    if (buffer != null) {
+      this.buffer.setAutoResizable(false);
+      this.bufferSize = buffer.size();
+    }
   }
 
   public MutableEdgeSegment(final DatabaseInternal database, final int bufferSize) {

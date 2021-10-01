@@ -16,7 +16,14 @@
 package com.arcadedb.database;
 
 import com.arcadedb.exception.DatabaseMetadataException;
-import com.arcadedb.graph.*;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.EdgeSegment;
+import com.arcadedb.graph.ImmutableEdge;
+import com.arcadedb.graph.ImmutableVertex;
+import com.arcadedb.graph.MutableEdge;
+import com.arcadedb.graph.MutableEdgeSegment;
+import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.DocumentType;
 
 public class RecordFactory {
@@ -55,7 +62,9 @@ public class RecordFactory {
   }
 
   public Record newModifiableRecord(final Database database, final DocumentType type, final RID rid, final Binary content, final EmbeddedModifier modifier) {
+    final int pos = content.position();
     final byte recordType = content.getByte();
+    content.position(pos);
 
     switch (recordType) {
     case Document.RECORD_TYPE:
