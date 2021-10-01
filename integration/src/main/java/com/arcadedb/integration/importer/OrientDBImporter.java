@@ -749,7 +749,7 @@ public class OrientDBImporter {
 
       final String fieldName = (String) indexDefinition.get("field");
       final String[] properties = new String[] { fieldName };
-      final boolean nullValuesIgnored = (boolean) indexDefinition.get("nullValuesIgnored");
+      boolean nullValuesIgnored = (boolean) indexDefinition.get("nullValuesIgnored");
 
       final DocumentType type = database.getSchema().getType(className);
       if (!type.existsProperty(fieldName)) {
@@ -763,8 +763,13 @@ public class OrientDBImporter {
         type.createProperty(fieldName, Type.valueOf(keyType));
       }
 
-      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, unique, className, properties, LSMTreeIndexAbstract.DEF_PAGE_SIZE,
-          nullValuesIgnored ? LSMTreeIndexAbstract.NULL_STRATEGY.SKIP : LSMTreeIndexAbstract.NULL_STRATEGY.ERROR, null);
+      // PATCH TO ALWAYS USE SKIP BECAUSE IN ORIENTDB AN INDEX WITHOUT THE IGNORE SETTINGS CAN STILL HAVE NULL PROPERTIES INDEXES.
+      nullValuesIgnored = true;
+
+      final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy = nullValuesIgnored ? LSMTreeIndexAbstract.NULL_STRATEGY.SKIP : LSMTreeIndexAbstract.NULL_STRATEGY.ERROR;
+
+      database.getSchema()
+          .getOrCreateTypeIndex(Schema.INDEX_TYPE.LSM_TREE, unique, className, properties, LSMTreeIndexAbstract.DEF_PAGE_SIZE, nullStrategy, null);
 
       logger.logLine(2, "- Created index %s on %s%s", unique ? "UNIQUE" : "NOT UNIQUE", className, Arrays.toString(properties));
     }

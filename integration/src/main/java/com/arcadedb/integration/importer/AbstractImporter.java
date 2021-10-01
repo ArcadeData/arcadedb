@@ -20,13 +20,17 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.schema.*;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.Property;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
+import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.FileUtils;
 
-import java.io.File;
-import java.util.Timer;
-import java.util.TimerTask;
-import java.util.logging.Level;
+import java.io.*;
+import java.util.*;
+import java.util.logging.*;
 
 public abstract class AbstractImporter {
   protected Parser           parser;
@@ -219,9 +223,6 @@ public abstract class AbstractImporter {
     if (schema == null)
       return;
 
-    if (!database.isTransactionActive())
-      database.begin();
-
     final Dictionary dictionary = database.getSchema().getDictionary();
 
     LogManager.instance().log(this, Level.INFO, "Checking schema...");
@@ -266,9 +267,6 @@ public abstract class AbstractImporter {
     }
 
     database.getSchema().getEmbedded().saveConfiguration();
-
-    database.commit();
-    database.begin();
   }
 
   protected void dumpSchema(final AnalyzedSchema schema, final long parsedObjects) {

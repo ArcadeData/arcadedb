@@ -61,7 +61,6 @@ public class Importer extends AbstractImporter {
       LogManager.instance().log(this, Level.SEVERE, "Error on parsing source %s", e, source);
     } finally {
       if (database != null) {
-        database.async().waitCompletion();
         stopImporting();
         closeDatabase();
       }
