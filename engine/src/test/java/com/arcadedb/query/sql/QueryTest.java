@@ -91,10 +91,6 @@ public class QueryTest extends TestHelper {
         Result record = rs.next();
         Assertions.assertNotNull(record);
 
-        Set<String> prop = new HashSet<>();
-        for (String p : record.getPropertyNames())
-          prop.add(p);
-
         Assertions.assertEquals(3, record.getPropertyNames().size(), 9);
         Assertions.assertEquals(123, (int) record.getProperty("id"));
         Assertions.assertEquals("Jay", record.getProperty("name"));
@@ -121,10 +117,6 @@ public class QueryTest extends TestHelper {
         Result record = rs.next();
         Assertions.assertNotNull(record);
 
-        Set<String> prop = new HashSet<>();
-        for (String p : record.getPropertyNames())
-          prop.add(p);
-
         Assertions.assertEquals(3, record.getPropertyNames().size(), 9);
         Assertions.assertEquals(123, (int) record.getProperty("id"));
         Assertions.assertEquals("Jay", record.getProperty("name"));
@@ -148,10 +140,6 @@ public class QueryTest extends TestHelper {
       while (rs.hasNext()) {
         Result record = rs.next();
         Assertions.assertNotNull(record);
-
-        Set<String> prop = new HashSet<>();
-        for (String p : record.getPropertyNames())
-          prop.add(p);
 
         Assertions.assertEquals(3, record.getPropertyNames().size(), 9);
         Assertions.assertEquals(123, (int) record.getProperty("id"));

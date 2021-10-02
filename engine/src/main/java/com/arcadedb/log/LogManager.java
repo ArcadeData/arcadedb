@@ -25,9 +25,6 @@ import java.util.logging.*;
 public class LogManager {
   private static final LogManager instance = new LogManager();
   private              boolean    debug    = false;
-  private              boolean    info     = true;
-  private              boolean    warn     = true;
-  private              boolean    error    = true;
   private              Logger     logger   = new DefaultLogger();
 
   static class LogContext extends ThreadLocal<String> {

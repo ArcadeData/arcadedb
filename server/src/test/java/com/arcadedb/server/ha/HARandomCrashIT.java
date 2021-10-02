@@ -28,16 +28,12 @@ import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.Random;
-import java.util.Set;
-import java.util.Timer;
-import java.util.TimerTask;
-import java.util.logging.Level;
+import java.util.*;
+import java.util.logging.*;
 
 public class HARandomCrashIT extends ReplicationServerIT {
-  private          int   restarts = 0;
-  private          Timer timer;
-  private volatile long  delay    = 0;
+  private          int  restarts = 0;
+  private volatile long delay    = 0;
 
   @Override
   public void setTestConfiguration() {
@@ -49,7 +45,7 @@ public class HARandomCrashIT extends ReplicationServerIT {
   public void testReplication() {
     checkDatabases();
 
-    timer = new Timer();
+    Timer timer = new Timer();
     timer.schedule(new TimerTask() {
       @Override
       public void run() {

@@ -15,13 +15,53 @@
  */
 package com.arcadedb;
 
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 class ConstantsTest {
 
   @Test
-  void name() {
-    final String number = Constants.getBuildNumber();
-    //System.out.println("Constants.getBuildNumber() = " + number);
+  void getVersionMajor() {
+    Assertions.assertNotNull(Constants.getVersionMajor());
+  }
+
+  @Test
+  void getVersionMinor() {
+    Assertions.assertNotNull(Constants.getVersionMinor());
+  }
+
+  @Test
+  void getVersionHotfix() {
+    Assertions.assertNotNull(Constants.getVersionHotfix());
+  }
+
+  @Test
+  void getVersion() {
+    Assertions.assertNotNull(Constants.getVersion());
+  }
+
+  @Test
+  void getRawVersion() {
+    Assertions.assertNotNull(Constants.getRawVersion());
+  }
+
+  @Test
+  void getBranch() {
+    Assertions.assertNotNull(Constants.getBranch());
+  }
+
+  @Test
+  void getBuildNumber() {
+    Assertions.assertNotNull(Constants.getBuildNumber());
+  }
+
+  @Test
+  void getTimestamp() {
+    Assertions.assertNotNull(Constants.getTimestamp());
+  }
+
+  @Test
+  void isSnapshot() {
+    Assertions.assertNotNull(Constants.isSnapshot());
   }
 }
