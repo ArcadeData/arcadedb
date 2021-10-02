@@ -21,6 +21,9 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.QueryParsingException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngine;
+import com.arcadedb.query.sql.executor.InternalResultSet;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.lang.reflect.*;
@@ -84,12 +87,69 @@ public class CypherQueryEngine implements QueryEngine {
     try {
       final Object arcadeGremlin = CypherQueryEngineFactory.arcadeGraphClass.getMethod("cypher", String.class).invoke(arcadeGraph, query);
       CypherQueryEngineFactory.arcadeCypherClass.getMethod("setParameters", Map.class).invoke(arcadeGremlin, parameters);
-      return (ResultSet) CypherQueryEngineFactory.arcadeCypherClass.getMethod("execute").invoke(arcadeGremlin);
+      final ResultSet resultSet = (ResultSet) CypherQueryEngineFactory.arcadeCypherClass.getMethod("execute").invoke(arcadeGremlin);
+
+      final InternalResultSet result = new InternalResultSet();
+
+      while (resultSet.hasNext()) {
+        final Result next = resultSet.next();
+        if (next.isElement())
+          result.add(next);
+        else {
+          Result row;
+
+          final Set<String> properties = next.getPropertyNames();
+
+          if (properties.size() == 1 && next.getProperty(properties.iterator().next()) instanceof Map) {
+            // ONLY ONE ELEMENT THAT IS A MAP: EXPAND THE MAP INTO A RECORD
+            row = mapToResult(next.getProperty(properties.iterator().next()));
+          } else {
+            final Map<String, Object> mapStringObject = new HashMap<>(properties.size());
+            for (String propertyName : properties) {
+              Object propertyValue = next.getProperty(propertyName);
+              if (propertyValue instanceof Map)
+                propertyValue = mapToResult((Map<Object, Object>) propertyValue);
+              mapStringObject.put(propertyName, propertyValue);
+            }
+            row = new ResultInternal(mapStringObject);
+          }
+
+          result.add(row);
+        }
+      }
+
+      return result;
+
     } catch (InvocationTargetException e) {
       throw new CommandExecutionException("Error on executing cypher command", e.getTargetException());
     } catch (Exception e) {
       throw new QueryParsingException("Error on executing Cypher query", e);
     }
+  }
+
+  private Result mapToResult(final Map<Object, Object> map) {
+    final Map<String, Object> mapStringObject = new HashMap<>(map.size());
+    for (Map.Entry<Object, Object> entry : map.entrySet()) {
+      Object mapKey = entry.getKey();
+      Object mapValue = entry.getValue();
+
+      if (mapKey.getClass().getName().startsWith("org.apache.tinkerpop.gremlin.structure.T$")) {
+        switch (mapKey.toString()) {
+        case "id":
+          mapKey = "@rid";
+          break;
+        case "label":
+          mapKey = "@type";
+          break;
+        }
+      } else if (mapValue instanceof List && ((List<?>) mapValue).size() == 1) {
+        mapValue = ((List<?>) mapValue).get(0);
+      }
+
+      mapStringObject.put(mapKey.toString(), mapValue);
+    }
+
+    return new ResultInternal(mapStringObject);
   }
 
   @Override

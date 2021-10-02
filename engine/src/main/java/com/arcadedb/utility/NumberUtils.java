@@ -17,7 +17,7 @@ package com.arcadedb.utility;
 
 public class NumberUtils {
 
-  public static Integer parseInteger(final String s) {
+  public static Integer parsePositiveInteger(final String s) {
     for (int i = 0; i < s.length(); i++) {
       if (!Character.isDigit(s.charAt(i)))
         return null;
@@ -25,4 +25,12 @@ public class NumberUtils {
     return Integer.parseInt(s);
   }
 
+  public static boolean isIntegerNumber(final String s) {
+    for (int i = 0; i < s.length(); i++) {
+      final char c = s.charAt(i);
+      if (!Character.isDigit(c) && c != '+' && s.charAt(i) != '-')
+        return false;
+    }
+    return true;
+  }
 }

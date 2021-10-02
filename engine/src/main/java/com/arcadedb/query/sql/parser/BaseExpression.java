@@ -139,7 +139,7 @@ public class BaseExpression extends MathExpression {
           if (v.startsWith("$") && v.length() > 1) {
             final String toParse = v.substring(1);
 
-            final Integer pos = NumberUtils.parseInteger(toParse);
+            final Integer pos = NumberUtils.parsePositiveInteger(toParse);
             if (pos != null)
               // POSTGRES PARAMETERS JDBC DRIVER START FROM 1
               result = params.get(String.valueOf(pos - 1));

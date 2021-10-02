@@ -18,6 +18,7 @@ package com.arcadedb.database;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.utility.NumberUtils;
 
 import java.io.*;
 import java.util.*;
@@ -59,6 +60,23 @@ public class RID implements Identifiable, Comparable<Identifiable>, Serializable
     final String[] parts = value.split(":", 2);
     this.bucketId = Integer.parseInt(parts[0]);
     this.offset = Long.parseLong(parts[1]);
+  }
+
+  public static boolean is(final Object value) {
+    if (value instanceof RID)
+      return true;
+
+    if (value instanceof String) {
+      final String valueAsString = value.toString();
+      if (valueAsString.length() > 3 && valueAsString.charAt(0) == '#') {
+        final String[] parts = valueAsString.split(":");
+        if (parts.length == 2 && NumberUtils.isIntegerNumber(parts[0]) && NumberUtils.isIntegerNumber(parts[1])) {
+          return true;
+        }
+      }
+    }
+
+    return false;
   }
 
   public int getBucketId() {
