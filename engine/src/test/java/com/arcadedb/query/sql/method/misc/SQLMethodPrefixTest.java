@@ -15,47 +15,36 @@
  */
 package com.arcadedb.query.sql.method.misc;
 
-import com.arcadedb.database.Database;
-import com.arcadedb.database.MutableDocument;
-import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.executor.SQLMethod;
-import com.arcadedb.schema.DocumentType;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.Mockito;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.*;
 
-class SQLMethodFieldTest {
-
+class SQLMethodPrefixTest {
     private SQLMethod method;
 
     @BeforeEach
     void setUp() {
-        method = new SQLMethodField();
-
+        method = new SQLMethodPrefix();
     }
 
     @Test
-    void testNulIParamsReturnedAsNull() {
-        Object result = method.execute(null, null, null, null, new Object[]{null});
+    void testNull() {
+        //null ithis
+        Object result = method.execute(null, null, null, null, new Object[]{"prefix"});
         assertThat(result).isNull();
+
+        //null prefix
+        result = method.execute("suffix", null, null, null, null);
+        assertThat(result).isEqualTo("suffix");
     }
 
     @Test
-    void testFieldValue() {
-
-        Database database = Mockito.mock(Database.class);
-
-        DocumentType type = Mockito.mock(DocumentType.class);
-
-//        MutableDocument doc = new MutableDocument(database, type, null);
-//        doc.set("name", "Foo");
-//        doc.set("surname", "Bar");
-
-//        Object result = method.execute(null, doc, null, null, new Object[]{"name"});
-//        assertThat(result).isNotNull();
-//        assertThat(result).isEqualTo("Foo");
+    void testPrefix() {
+        Object result = method.execute("suffix", null, null, null, new Object[]{"prefix"});
+        assertThat(result).isEqualTo("prefixsuffix");
 
     }
 }

@@ -15,47 +15,32 @@
  */
 package com.arcadedb.query.sql.method.misc;
 
-import com.arcadedb.database.Database;
-import com.arcadedb.database.MutableDocument;
-import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.executor.SQLMethod;
-import com.arcadedb.schema.DocumentType;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.Mockito;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-class SQLMethodFieldTest {
+class SQLMethodToUpperCaseTest {
 
     private SQLMethod method;
 
     @BeforeEach
     void setUp() {
-        method = new SQLMethodField();
-
+        method = new SQLMethodToUpperCase();
     }
 
     @Test
-    void testNulIParamsReturnedAsNull() {
-        Object result = method.execute(null, null, null, null, new Object[]{null});
+    void testNulIReturnedAsNull() {
+        Object result = method.execute(null, null, null, null, null);
         assertThat(result).isNull();
     }
 
+
     @Test
-    void testFieldValue() {
-
-        Database database = Mockito.mock(Database.class);
-
-        DocumentType type = Mockito.mock(DocumentType.class);
-
-//        MutableDocument doc = new MutableDocument(database, type, null);
-//        doc.set("name", "Foo");
-//        doc.set("surname", "Bar");
-
-//        Object result = method.execute(null, doc, null, null, new Object[]{"name"});
-//        assertThat(result).isNotNull();
-//        assertThat(result).isEqualTo("Foo");
+    void testToUpperCase() {
+        Object result = method.execute(null, null, null, "lower case", null);
+        assertThat(result).isEqualTo("LOWER CASE");
 
     }
 }
