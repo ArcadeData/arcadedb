@@ -53,7 +53,7 @@ public class ArcadeGraphFeatures implements Graph.Features {
 
     @Override
     public boolean supportsConcurrentAccess() {
-      return false;
+      return true;
     }
 
     @Override
