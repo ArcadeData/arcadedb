@@ -802,7 +802,6 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
     boolean success = false;
     final boolean implicitTransaction = checkTransactionIsActive(autoTransaction);
-
     try {
       final Bucket bucket;
 
@@ -860,26 +859,41 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
   @Override
   public void updateRecordNoLock(final Record record) {
-    final List<Index> indexes = record instanceof Document ? indexer.getInvolvedIndexes((Document) record) : Collections.emptyList();
+    boolean success = false;
+    final boolean implicitTransaction = checkTransactionIsActive(autoTransaction);
 
-    if (!indexes.isEmpty()) {
-      // UPDATE THE INDEXES TOO
-      final Binary originalBuffer = ((RecordInternal) record).getBuffer();
-      if (originalBuffer == null)
-        throw new IllegalStateException("Cannot read original buffer for indexing");
-      originalBuffer.rewind();
-      final Document originalRecord = (Document) recordFactory.newImmutableRecord(this, ((Document) record).getType(), record.getIdentity(), originalBuffer,
-          null);
+    try {
+      final List<Index> indexes = record instanceof Document ? indexer.getInvolvedIndexes((Document) record) : Collections.emptyList();
 
-      schema.getBucketById(record.getIdentity().getBucketId()).updateRecord(record);
+      if (!indexes.isEmpty()) {
+        // UPDATE THE INDEXES TOO
+        final Binary originalBuffer = ((RecordInternal) record).getBuffer();
+        if (originalBuffer == null)
+          throw new IllegalStateException("Cannot read original buffer for indexing");
+        originalBuffer.rewind();
+        final Document originalRecord = (Document) recordFactory.newImmutableRecord(this, ((Document) record).getType(), record.getIdentity(), originalBuffer,
+            null);
 
-      indexer.updateDocument(originalRecord, (Document) record, indexes);
-    } else
-      // NO INDEXES
-      schema.getBucketById(record.getIdentity().getBucketId()).updateRecord(record);
+        schema.getBucketById(record.getIdentity().getBucketId()).updateRecord(record);
 
-    getTransaction().updateRecordInCache(record);
-    getTransaction().removeImmutableRecordsOfSamePage(record.getIdentity());
+        indexer.updateDocument(originalRecord, (Document) record, indexes);
+      } else
+        // NO INDEXES
+        schema.getBucketById(record.getIdentity().getBucketId()).updateRecord(record);
+
+      getTransaction().updateRecordInCache(record);
+      getTransaction().removeImmutableRecordsOfSamePage(record.getIdentity());
+
+      success = true;
+
+    } finally {
+      if (implicitTransaction) {
+        if (success)
+          wrappedDatabaseInstance.commit();
+        else
+          wrappedDatabaseInstance.rollback();
+      }
+    }
   }
 
   @Override
