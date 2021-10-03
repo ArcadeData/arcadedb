@@ -299,6 +299,8 @@ public class ArcadeGraph implements Graph {
         this.database.commit();
 
       this.database.close();
+
+      ArcadeCypher.closeDatabase(this);
     }
   }
 

@@ -75,4 +75,10 @@ public class ArcadeCypher extends ArcadeGremlin {
 
     return gremlin;
   }
+
+  public static void closeDatabase(final ArcadeGraph graph) {
+    synchronized (STATEMENT_CACHE) {
+      STATEMENT_CACHE.remove(graph.getDatabase().getDatabasePath());
+    }
+  }
 }
