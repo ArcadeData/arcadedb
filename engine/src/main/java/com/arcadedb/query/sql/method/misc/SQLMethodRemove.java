@@ -18,47 +18,47 @@ package com.arcadedb.query.sql.method.misc;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
-import com.arcadedb.utility.Callable;
 
 /**
  * Remove the first occurrence of elements from a collection.
  *
- * @see SQLMethodRemoveAll
- *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
+ * @see SQLMethodRemoveAll
  */
 public class SQLMethodRemove extends AbstractSQLMethod {
 
-  public static final String NAME = "remove";
+    public static final String NAME = "remove";
 
-  public SQLMethodRemove() {
-    super(NAME, 1, -1);
-  }
-
-  @Override
-  public Object execute( Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, Object ioResult,
-      Object[] iParams) {
-    if (iParams != null && iParams.length > 0 && iParams[0] != null) {
-      iParams = MultiValue.array(iParams, Object.class, new Callable<Object, Object>() {
-
-        @Override
-        public Object call(final Object iArgument) {
-          if (iArgument instanceof String && ((String) iArgument).startsWith("$")) {
-            return iContext.getVariable((String) iArgument);
-          }
-          return iArgument;
-        }
-      });
-      for (Object o : iParams) {
-        ioResult = MultiValue.remove(ioResult, o, false);
-      }
+    public SQLMethodRemove() {
+        super(NAME, 1, -1);
     }
 
-    return ioResult;
-  }
+    @Override
+    public Object execute(final Object iThis,
+                          final Identifiable iCurrentRecord,
+                          final CommandContext iContext,
+                          final Object ioResult,
+                          final Object[] iParams) {
+        if (iParams != null && iParams.length > 0 && iParams[0] != null) {
+            Object[] arguments = MultiValue.array(iParams, Object.class, iArgument -> {
+                if (iArgument instanceof String &&
+                        ((String) iArgument).startsWith("$")) {
+                    return iContext.getVariable((String) iArgument);
+                }
+                return iArgument;
+            });
+            Object cleaned = null;
+            for (Object o : arguments) {
+                cleaned = MultiValue.remove(ioResult, o, false);
+            }
+            return cleaned;
+        }
 
-  @Override
-  public String getSyntax() {
-    return "remove(<item>*)";
-  }
+        return ioResult;
+    }
+
+    @Override
+    public String getSyntax() {
+        return "remove(<item>*)";
+    }
 }

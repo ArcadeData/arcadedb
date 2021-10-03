@@ -24,16 +24,19 @@ import com.arcadedb.query.sql.executor.CommandContext;
  */
 public class SQLMethodToLowerCase extends AbstractSQLMethod {
 
-  public static final String NAME = "tolowercase";
+    public static final String NAME = "tolowercase";
 
-  public SQLMethodToLowerCase() {
-    super(NAME);
-  }
+    public SQLMethodToLowerCase() {
+        super(NAME);
+    }
 
-  @Override
-  public Object execute( Object iThis, Identifiable iCurrentRecord, CommandContext iContext,
-      Object ioResult, Object[] iParams) {
-    ioResult = ioResult != null ? ioResult.toString().toLowerCase() : null;
-    return ioResult;
-  }
+    @Override
+    public Object execute(Object iThis,
+                          Identifiable iCurrentRecord,
+                          CommandContext iContext,
+                          Object ioResult,
+                          Object[] iParams) {
+        ioResult = ioResult != null ? ioResult.toString().toLowerCase() : null;
+        return ioResult;
+    }
 }
