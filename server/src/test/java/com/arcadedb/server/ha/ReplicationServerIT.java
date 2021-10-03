@@ -31,11 +31,8 @@ import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Map;
-import java.util.Set;
-import java.util.logging.Level;
+import java.util.*;
+import java.util.logging.*;
 
 public abstract class ReplicationServerIT extends BaseGraphServerTest {
   private static final int DEFAULT_MAX_RETRIES = 30;
@@ -171,6 +168,7 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
       final TypeIndex index = db.getSchema().getType(VERTEX1_TYPE_NAME).getPolymorphicIndexByProperties("id");
       long total = 0;
       for (IndexCursor it = index.iterator(true); it.hasNext(); ) {
+        it.dumpStats();
         it.next();
         ++total;
       }

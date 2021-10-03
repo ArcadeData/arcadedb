@@ -21,8 +21,7 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.File;
-import java.io.IOException;
+import java.io.*;
 
 public class ConsoleTest {
   private static final String  DB_PATH = "target/databases/console";
@@ -109,4 +108,42 @@ public class ConsoleTest {
     Assertions.assertTrue(console.parse("?", false));
     Assertions.assertTrue(buffer.toString().contains("quit"));
   }
+
+  @Test
+  public void testInfoError() throws IOException {
+    Assertions.assertTrue(console.parse("connect " + DB_PATH, false));
+    try {
+      Assertions.assertTrue(console.parse("info blablabla", false));
+      Assertions.fail();
+    } catch (ConsoleException e) {
+      // EXPECTED
+    }
+  }
+  @Test
+  public void testAllRecordTypes() throws IOException {
+    Assertions.assertTrue(console.parse("connect " + DB_PATH, false));
+    Assertions.assertTrue(console.parse("create document type D", false));
+    Assertions.assertTrue(console.parse("create vertex type V", false));
+    Assertions.assertTrue(console.parse("create edge type E", false));
+
+    Assertions.assertTrue(console.parse("insert into D set name = 'Jay', lastname='Miner'", false));
+    Assertions.assertTrue(console.parse("insert into V set name = 'Jay', lastname='Miner'", false));
+    Assertions.assertTrue(console.parse("insert into V set name = 'Elon', lastname='Musk'", false));
+    Assertions.assertTrue(console.parse("create edge E from (select from V where name ='Jay') to (select from V where name ='Elon')", false));
+
+    final StringBuilder buffer = new StringBuilder();
+    console.setOutput(new ConsoleOutput() {
+      @Override
+      public void onOutput(final String output) {
+        buffer.append(output);
+      }
+    });
+    Assertions.assertTrue(console.parse("select from D", false));
+    Assertions.assertTrue(buffer.toString().contains("Jay"));
+
+    Assertions.assertTrue(console.parse("select from V", false));
+    Assertions.assertTrue(console.parse("select from E", false));
+    Assertions.assertTrue(buffer.toString().contains("Elon"));
+  }
+
 }
