@@ -22,10 +22,7 @@ import com.arcadedb.query.sql.executor.Result;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 public class JsonSerializer {
   private boolean useCollectionSize  = false;
@@ -54,6 +51,21 @@ public class JsonSerializer {
             list.add(o);
           }
           value = list;
+        }
+      } else if (value instanceof Map) {
+        if (useCollectionSize) {
+          value = ((Map) value).size();
+        } else {
+          final JSONObject map = new JSONObject();
+          for (Map.Entry<Object, Object> entry : ((Map<Object, Object>) value).entrySet()) {
+            Object o = entry.getValue();
+            if (entry.getValue() instanceof Document)
+              o = serializeDocument((Document) o);
+            else if (entry.getValue() instanceof Result)
+              o = serializeResult((Result) o);
+            map.put(entry.getKey().toString(), o);
+          }
+          value = map;
         }
       }
       object.put(p, value);
@@ -101,13 +113,13 @@ public class JsonSerializer {
           value = ((Map) value).size();
         } else {
           final JSONObject map = new JSONObject();
-          for (Map.Entry<String, Object> entry : ((Map<String, Object>) value).entrySet()) {
+          for (Map.Entry<Object, Object> entry : ((Map<Object, Object>) value).entrySet()) {
             Object o = entry.getValue();
             if (entry.getValue() instanceof Document)
               o = serializeDocument((Document) o);
             else if (entry.getValue() instanceof Result)
               o = serializeResult((Result) o);
-            map.put(entry.getKey(), o);
+            map.put(entry.getKey().toString(), o);
           }
           value = map;
         }

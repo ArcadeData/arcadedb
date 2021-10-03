@@ -127,8 +127,15 @@ public class CypherQueryEngine implements QueryEngine {
     }
   }
 
-  private Result mapToResult(final Map<Object, Object> map) {
+  private Result mapToResult(Map<Object, Object> map) {
     final Map<String, Object> mapStringObject = new HashMap<>(map.size());
+
+    if (map.containsKey("  cypher.element")) {
+      mapStringObject.put("@in", map.get("  cypher.inv"));
+      mapStringObject.put("@out", map.get("  cypher.outv"));
+      map = (Map<Object, Object>) map.get("  cypher.element");
+    }
+
     for (Map.Entry<Object, Object> entry : map.entrySet()) {
       Object mapKey = entry.getKey();
       Object mapValue = entry.getValue();
@@ -142,6 +149,7 @@ public class CypherQueryEngine implements QueryEngine {
           mapKey = "@type";
           break;
         }
+      } else if (mapKey.equals("  cypher.element")) {
       } else if (mapValue instanceof List && ((List<?>) mapValue).size() == 1) {
         mapValue = ((List<?>) mapValue).get(0);
       }

@@ -15,6 +15,7 @@
  */
 package org.apache.tinkerpop.gremlin.arcadedb.structure;
 
+import com.arcadedb.database.Document;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -24,11 +25,8 @@ import org.apache.tinkerpop.gremlin.process.traversal.AnonymousTraversalSource;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversal;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
 
-import java.util.Iterator;
-import java.util.Map;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
+import java.util.*;
+import java.util.concurrent.*;
 
 /**
  * Gremlin Expression builder.
@@ -73,7 +71,15 @@ public class ArcadeGremlin extends ArcadeQuery {
 
       @Override
       public Object next() {
-        return new ResultInternal((Map<String, Object>) resultSet.next());
+        final Object next = resultSet.next();
+        if (next instanceof Document)
+          return new ResultInternal((Document) next);
+        else if (next instanceof ArcadeElement)
+          return new ResultInternal(((ArcadeElement) next).getBaseElement());
+        else if (next instanceof Map)
+          return new ResultInternal((Map<String, Object>) next);
+
+        throw new IllegalArgumentException("Result of type '" + next.getClass() + "' is not supported");
       }
     });
   }

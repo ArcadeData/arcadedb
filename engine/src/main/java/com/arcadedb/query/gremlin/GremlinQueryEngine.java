@@ -17,11 +17,13 @@ package com.arcadedb.query.gremlin;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.QueryParsingException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ResultSet;
 
+import java.lang.reflect.*;
 import java.util.*;
 import java.util.logging.*;
 
@@ -83,6 +85,8 @@ public class GremlinQueryEngine implements QueryEngine {
       final Object arcadeGremlin = GremlinQueryEngineFactory.arcadeGraphClass.getMethod("gremlin", String.class).invoke(arcadeGraph, query);
       GremlinQueryEngineFactory.arcadeGremlinClass.getMethod("setParameters", Map.class).invoke(arcadeGremlin, parameters);
       return (ResultSet) GremlinQueryEngineFactory.arcadeGremlinClass.getMethod("execute").invoke(arcadeGremlin);
+    } catch (InvocationTargetException e) {
+      throw new CommandExecutionException("Error on executing gremlin command", e.getTargetException());
     } catch (Exception e) {
       throw new QueryParsingException("Error on executing Gremlin query", e);
     }
