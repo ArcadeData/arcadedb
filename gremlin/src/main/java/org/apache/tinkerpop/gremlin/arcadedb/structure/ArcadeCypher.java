@@ -17,6 +17,8 @@ package org.apache.tinkerpop.gremlin.arcadedb.structure;
 
 import org.opencypher.gremlin.translation.TranslationFacade;
 
+import java.util.*;
+
 /**
  * Cypher Expression builder. Transform a cypher expression into Gremlin.
  *
@@ -24,7 +26,53 @@ import org.opencypher.gremlin.translation.TranslationFacade;
  */
 
 public class ArcadeCypher extends ArcadeGremlin {
-  protected ArcadeCypher(final ArcadeGraph graph, final String query) {
-    super(graph, new TranslationFacade().toGremlinGroovy(query));
+  private static final HashMap<String, DatabaseCache> STATEMENT_CACHE = new HashMap<>();
+
+  private static class DatabaseCache {
+    public final HashMap<String, CachedStatement> CACHE = new HashMap<>();
+  }
+
+  // TODO: ADD SQL IF THE GREMLIN QUERY IS CONVERTIBLE TO SQL
+  private static class CachedStatement {
+    public final String cypher;
+    public final String gremlin;
+    public       int    used = 0;
+
+    private CachedStatement(final String cypher, final String gremlin) {
+      this.cypher = cypher;
+      this.gremlin = gremlin;
+    }
+  }
+
+  protected ArcadeCypher(final ArcadeGraph graph, final String cypherQuery) {
+    super(graph, compileToGremlin(graph, cypherQuery));
+  }
+
+  public static String compileToGremlin(final ArcadeGraph graph, final String cypher) {
+    String gremlin = null;
+
+    synchronized (STATEMENT_CACHE) {
+      final String db = graph.getDatabase().getDatabasePath();
+      DatabaseCache databaseCache = STATEMENT_CACHE.get(db);
+      if (databaseCache == null) {
+        databaseCache = new DatabaseCache();
+        STATEMENT_CACHE.put(db, databaseCache);
+      }
+
+      final CachedStatement cached = databaseCache.CACHE.get(cypher);
+      if (cached != null) {
+        // FOUND: USE THE CACHED GREMLIN STATEMENT
+        ++cached.used;
+        gremlin = cached.gremlin;
+      }
+
+      if (gremlin == null) {
+        // TRANSLATE TO GREMLIN AND CACHE THE STATEMENT FOR FURTHER USAGE
+        gremlin = new TranslationFacade().toGremlinGroovy(cypher);
+        databaseCache.CACHE.put(cypher, new CachedStatement(cypher, gremlin));
+      }
+    }
+
+    return gremlin;
   }
 }
