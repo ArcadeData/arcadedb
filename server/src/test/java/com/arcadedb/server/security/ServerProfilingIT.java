@@ -409,8 +409,8 @@ public class ServerProfilingIT {
     }
   }
 
-  //@Test
-  void testGroupsReload() throws IOException, InterruptedException {
+  @Test
+  void testGroupsReload() throws Throwable {
     final File file = new File("./target/config/server-groups.json");
     Assertions.assertTrue(file.exists());
 
@@ -430,6 +430,7 @@ public class ServerProfilingIT {
       // RESTORE THE ORIGINAL FILE AND WAIT FOR THE RELOAD
       FileUtils.writeContentToStream(file, original);
       Thread.sleep(6_000);
+      createSecurity();
     }
   }
 
@@ -515,6 +516,12 @@ public class ServerProfilingIT {
 
     SERVER = new ArcadeDBServer();
     SERVER.start();
+    createSecurity();
+
+    SERVER.getOrCreateDatabase(DATABASE_NAME);
+  }
+
+  private static void createSecurity() {
     SECURITY = SERVER.getSecurity();
     SECURITY.getDatabaseGroupsConfiguration(DATABASE_NAME).put("reader",//
         new JSONObject().put("types", new JSONObject().put("*", new JSONObject().put("access", new JSONArray(new String[] { "readRecord" })))));
@@ -541,8 +548,6 @@ public class ServerProfilingIT {
     SECURITY.getDatabaseGroupsConfiguration(DATABASE_NAME).put("readerOfDocumentsShortTimeout",//
         new JSONObject().put("readTimeout", 1)
             .put("types", new JSONObject().put("Document1", new JSONObject().put("access", new JSONArray(new String[] { "readRecord" })))));
-
-    SERVER.getOrCreateDatabase(DATABASE_NAME);
   }
 
   @AfterAll
