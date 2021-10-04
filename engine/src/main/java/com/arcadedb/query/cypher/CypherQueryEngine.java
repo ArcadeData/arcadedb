@@ -31,7 +31,8 @@ import java.util.*;
 import java.util.logging.*;
 
 public class CypherQueryEngine implements QueryEngine {
-  private final Object arcadeGraph;
+  private static final String ENGINE_NAME = "cypher-engine";
+  private final        Object arcadeGraph;
 
   public static class CypherQueryEngineFactory implements QueryEngineFactory {
     private static Boolean available = null;
@@ -58,9 +59,16 @@ public class CypherQueryEngine implements QueryEngine {
     }
 
     @Override
-    public QueryEngine create(final DatabaseInternal database) {
+    public QueryEngine getInstance(final DatabaseInternal database) {
+      Object engine = database.getWrappers().get(ENGINE_NAME);
+      if (engine != null)
+        return (CypherQueryEngine) engine;
+
       try {
-        return new CypherQueryEngine(arcadeGraphClass.getMethod("open", Database.class).invoke(null, database));
+        engine = new CypherQueryEngine(arcadeGraphClass.getMethod("open", Database.class).invoke(null, database));
+        database.setWrapper(ENGINE_NAME, engine);
+        return (CypherQueryEngine) engine;
+
       } catch (Exception e) {
         LogManager.instance().log(this, Level.SEVERE, "Error on initializing Cypher query engine", e);
         throw new QueryParsingException("Error on initializing Cypher query engine", e);

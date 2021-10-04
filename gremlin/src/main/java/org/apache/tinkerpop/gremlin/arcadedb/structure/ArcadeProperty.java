@@ -15,6 +15,7 @@
  */
 package org.apache.tinkerpop.gremlin.arcadedb.structure;
 
+import com.arcadedb.database.MutableDocument;
 import com.arcadedb.schema.Type;
 import org.apache.tinkerpop.gremlin.structure.Element;
 import org.apache.tinkerpop.gremlin.structure.Property;
@@ -66,8 +67,14 @@ public class ArcadeProperty<T> implements Property<T> {
     if (this.removed)
       return;
     this.graph.tx().readWrite();
-    element.baseElement.remove(key);
-    element.baseElement.save();
+
+    final MutableDocument mutableElement = element.baseElement.modify();
+    mutableElement.remove(key);
+    mutableElement.save();
+    if (mutableElement != element.baseElement)
+      // REPLACE WITH MUTABLE ELEMENT
+      element.baseElement = mutableElement;
+
     this.removed = true;
   }
 

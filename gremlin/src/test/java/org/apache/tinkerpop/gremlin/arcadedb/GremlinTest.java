@@ -28,6 +28,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
+import java.util.*;
 import java.util.concurrent.*;
 
 /**
@@ -41,9 +42,13 @@ public class GremlinTest {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
     try {
 
+      graph.getDatabase().getSchema().createVertexType("Movie");
       graph.getDatabase().getSchema().createVertexType("Person");
 
       graph.getDatabase().transaction(() -> {
+        for (int i = 0; i < 50; i++)
+          graph.getDatabase().newVertex("Movie").set("name", UUID.randomUUID().toString()).save();
+
         for (int i = 0; i < 50; i++)
           graph.getDatabase().newVertex("Person").set("name", "Jay").set("age", i).save();
       });
@@ -94,6 +99,7 @@ public class GremlinTest {
         final Result row = result.next();
         //System.out.println(row);
 
+        Assertions.assertFalse(row.isElement());
         Assertions.assertEquals("Jay", row.getProperty("p.name"));
         Assertions.assertTrue(row.getProperty("p.age") instanceof Number);
         Assertions.assertTrue((int) row.getProperty("p.age") > lastAge);
@@ -103,9 +109,9 @@ public class GremlinTest {
 
       Assertions.assertEquals(25, i);
 
-      database.commit();
-
     } finally {
+      if (database.isTransactionActive())
+        database.rollback();
       database.drop();
     }
   }

@@ -22,7 +22,6 @@ import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.QueryParsingException;
 import com.arcadedb.exception.RecordNotFoundException;
-import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
@@ -32,6 +31,8 @@ import com.arcadedb.utility.FileUtils;
 import org.apache.commons.configuration.BaseConfiguration;
 import org.apache.commons.configuration.Configuration;
 import org.apache.tinkerpop.gremlin.arcadedb.structure.io.ArcadeIoRegistry;
+import org.apache.tinkerpop.gremlin.groovy.engine.GremlinExecutor;
+import org.apache.tinkerpop.gremlin.jsr223.ConcurrentBindings;
 import org.apache.tinkerpop.gremlin.process.computer.GraphComputer;
 import org.apache.tinkerpop.gremlin.process.traversal.TraversalStrategies;
 import org.apache.tinkerpop.gremlin.structure.Direction;
@@ -68,12 +69,15 @@ public class ArcadeGraph implements Graph {
   private final static Iterator<Edge>   EMPTY_EDGES    = Collections.emptyIterator();
 
   static {
-    TraversalStrategies.GlobalCache.registerStrategies(ArcadeGraph.class,
-        TraversalStrategies.GlobalCache.getStrategies(Graph.class).clone().addStrategies(ArcadeIoRegistrationStrategy.instance())//
+    TraversalStrategies.GlobalCache.registerStrategies(ArcadeGraph.class, TraversalStrategies.GlobalCache.getStrategies(Graph.class).clone()//
+        .addStrategies(//
+            ArcadeIoRegistrationStrategy.instance(),//
+            new ArcadeTraversalStrategy())//
     );
   }
 
-  protected Features features = new ArcadeGraphFeatures();
+  protected Features        features = new ArcadeGraphFeatures();
+  private   GremlinExecutor gremlinExecutor;
 
   protected ArcadeGraph(final Configuration configuration) {
     this.configuration.copy(configuration);
@@ -86,11 +90,13 @@ public class ArcadeGraph implements Graph {
       this.database = factory.open();
 
     this.transaction = new ArcadeGraphTransaction(this);
+    init();
   }
 
   protected ArcadeGraph(final Database database) {
     this.database = database;
     this.transaction = new ArcadeGraphTransaction(this);
+    init();
   }
 
   public static final String CONFIG_DIRECTORY = "gremlin.arcadedb.directory";
@@ -191,8 +197,7 @@ public class ArcadeGraph implements Graph {
       query.append("]");
 
       final ResultSet resultset = this.database.query("sql", query.toString());
-      return resultset.stream().map(result -> (Vertex) new ArcadeVertex(this, (MutableVertex) (result.toElement()).modify())).iterator();
-
+      return resultset.stream().map(result -> (Vertex) new ArcadeVertex(this, (com.arcadedb.graph.Vertex) (result.toElement()))).iterator();
     }
 
     ElementHelper.validateMixedElementIds(Vertex.class, vertexIds);
@@ -213,7 +218,7 @@ public class ArcadeGraph implements Graph {
       try {
         final Record r = database.lookupByRID(rid, true);
         if (r instanceof com.arcadedb.graph.Vertex)
-          resultset.add(new ArcadeVertex(this, ((com.arcadedb.graph.Vertex) r).modify()));
+          resultset.add(new ArcadeVertex(this, ((com.arcadedb.graph.Vertex) r)));
       } catch (RecordNotFoundException e) {
         // NP, IGNORE IT
       }
@@ -251,7 +256,7 @@ public class ArcadeGraph implements Graph {
       query.append("]");
 
       final ResultSet resultset = this.database.query("sql", query.toString());
-      return resultset.stream().map(result -> (Edge) new ArcadeEdge(this, (MutableEdge) (result.toElement()).modify())).iterator();
+      return resultset.stream().map(result -> (Edge) new ArcadeEdge(this, (com.arcadedb.graph.Edge) result.toElement())).iterator();
 
     }
 
@@ -273,7 +278,7 @@ public class ArcadeGraph implements Graph {
       try {
         final Record r = database.lookupByRID(rid, true);
         if (r instanceof com.arcadedb.graph.Edge)
-          resultset.add(new ArcadeEdge(this, ((com.arcadedb.graph.Edge) r).modify()));
+          resultset.add(new ArcadeEdge(this, (com.arcadedb.graph.Edge) r));
       } catch (RecordNotFoundException e) {
         // NP, IGNORE IT
       }
@@ -334,6 +339,10 @@ public class ArcadeGraph implements Graph {
     return database;
   }
 
+  public GremlinExecutor getGremlinExecutor() {
+    return gremlinExecutor;
+  }
+
   @Override
   public boolean equals(final Object o) {
     if (this == o)
@@ -364,5 +373,14 @@ public class ArcadeGraph implements Graph {
       return com.arcadedb.graph.Vertex.DIRECTION.BOTH;
     }
     throw new IllegalArgumentException(String.format("Cannot get direction for argument %s", direction));
+  }
+
+  private void init() {
+    final ConcurrentBindings globalBindings = new ConcurrentBindings();
+    globalBindings.putIfAbsent("g", traversal());
+
+    final GremlinExecutor.Builder builder = GremlinExecutor.build();
+    builder.globalBindings(globalBindings);
+    gremlinExecutor = builder.create();
   }
 }

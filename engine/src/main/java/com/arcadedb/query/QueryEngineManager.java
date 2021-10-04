@@ -41,11 +41,11 @@ public class QueryEngineManager {
       implementations.put(impl.getLanguage().toLowerCase(), impl);
   }
 
-  public QueryEngine create(final String language, DatabaseInternal database) {
+  public QueryEngine getInstance(final String language, DatabaseInternal database) {
     final QueryEngine.QueryEngineFactory impl = implementations.get(language.toLowerCase());
     if (impl == null)
       throw new IllegalArgumentException("Query engine '" + language + "' was not found");
-    return impl.create(database);
+    return impl.getInstance(database);
   }
 
   public List<String> getAvailableLanguages() {

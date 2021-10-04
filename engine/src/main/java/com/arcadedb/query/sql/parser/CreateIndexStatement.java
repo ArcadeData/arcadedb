@@ -41,7 +41,7 @@ public class CreateIndexStatement extends DDLStatement {
   protected List<Property>                     propertyList = new ArrayList<Property>();
   protected Identifier                         type;
   protected Identifier                         engine;
-  protected LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy = LSMTreeIndexAbstract.NULL_STRATEGY.ERROR;
+  protected LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy = LSMTreeIndexAbstract.NULL_STRATEGY.SKIP;
   protected List<Identifier>                   keyTypes     = new ArrayList<Identifier>();
   protected Json                               schema;
   protected boolean                            ifNotExists  = false;

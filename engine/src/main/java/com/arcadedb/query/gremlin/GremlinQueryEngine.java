@@ -28,7 +28,8 @@ import java.util.*;
 import java.util.logging.*;
 
 public class GremlinQueryEngine implements QueryEngine {
-  private final Object arcadeGraph;
+  private static final String ENGINE_NAME = "gremlin-engine";
+  private final        Object arcadeGraph;
 
   public static class GremlinQueryEngineFactory implements QueryEngineFactory {
     private static Boolean available = null;
@@ -55,9 +56,16 @@ public class GremlinQueryEngine implements QueryEngine {
     }
 
     @Override
-    public QueryEngine create(final DatabaseInternal database) {
+    public QueryEngine getInstance(final DatabaseInternal database) {
+      Object engine = database.getWrappers().get(ENGINE_NAME);
+      if (engine != null)
+        return (GremlinQueryEngine) engine;
+
       try {
-        return new GremlinQueryEngine(arcadeGraphClass.getMethod("open", Database.class).invoke(null, database));
+        engine = new GremlinQueryEngine(arcadeGraphClass.getMethod("open", Database.class).invoke(null, database));
+        database.setWrapper(ENGINE_NAME, engine);
+        return (GremlinQueryEngine) engine;
+
       } catch (Exception e) {
         LogManager.instance().log(this, Level.SEVERE, "Error on initializing Gremlin query engine", e);
         throw new QueryParsingException("Error on initializing Gremlin query engine", e);

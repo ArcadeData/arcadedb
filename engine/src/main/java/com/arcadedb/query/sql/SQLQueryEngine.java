@@ -41,7 +41,7 @@ public class SQLQueryEngine implements QueryEngine {
     }
 
     @Override
-    public QueryEngine create(final DatabaseInternal database) {
+    public QueryEngine getInstance(final DatabaseInternal database) {
       return new SQLQueryEngine(database);
     }
   }

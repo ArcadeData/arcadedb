@@ -118,9 +118,10 @@ public class CypherTest {
 
       Assertions.assertEquals(25, i);
 
-      database.commit();
-
     } finally {
+      if (database.isTransactionActive())
+        database.commit();
+
       database.drop();
     }
   }

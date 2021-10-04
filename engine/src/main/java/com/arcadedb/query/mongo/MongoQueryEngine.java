@@ -22,11 +22,12 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.Map;
-import java.util.logging.Level;
+import java.util.*;
+import java.util.logging.*;
 
 public class MongoQueryEngine implements QueryEngine {
-  private final Object mongoDBWrapper;
+  private static final String ENGINE_NAME = "mongo-engine";
+  private final        Object mongoDBWrapper;
 
   public static class MongoQueryEngineFactory implements QueryEngineFactory {
     private static Boolean available = null;
@@ -51,9 +52,16 @@ public class MongoQueryEngine implements QueryEngine {
     }
 
     @Override
-    public QueryEngine create(final DatabaseInternal database) {
+    public QueryEngine getInstance(final DatabaseInternal database) {
+      Object engine = database.getWrappers().get(ENGINE_NAME);
+      if (engine != null)
+        return (MongoQueryEngine) engine;
+
       try {
-        return new MongoQueryEngine(arcadeDatabaseClass.getMethod("open", Database.class).invoke(null, database));
+        engine = new MongoQueryEngine(arcadeDatabaseClass.getMethod("open", Database.class).invoke(null, database));
+        database.setWrapper(ENGINE_NAME, engine);
+        return (MongoQueryEngine) engine;
+
       } catch (Exception e) {
         LogManager.instance().log(this, Level.SEVERE, "Error on initializing Mongo query engine", e);
         throw new QueryParsingException("Error on initializing Mongo query engine", e);

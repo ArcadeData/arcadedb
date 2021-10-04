@@ -21,6 +21,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.security.SecurityUser;
@@ -137,6 +138,14 @@ public abstract class AbstractHandler implements HttpHandler {
       LogManager.instance().log(this, Level.FINE, "Error on command execution (%s)", e, getClass().getSimpleName());
       exchange.setStatusCode(500);
       exchange.getResponseSender().send(error2json("Cannot execute command", realException.getMessage(), realException, null, null));
+    } catch (TransactionException e) {
+      Throwable realException = e;
+      if (e.getCause() != null)
+        realException = e.getCause();
+
+      LogManager.instance().log(this, Level.FINE, "Error on transaction execution (%s)", e, getClass().getSimpleName());
+      exchange.setStatusCode(500);
+      exchange.getResponseSender().send(error2json("Error on transaction commit", realException.getMessage(), realException, null, null));
     } catch (Exception e) {
       LogManager.instance().log(this, Level.FINE, "Error on command execution (%s)", e, getClass().getSimpleName());
       exchange.setStatusCode(500);

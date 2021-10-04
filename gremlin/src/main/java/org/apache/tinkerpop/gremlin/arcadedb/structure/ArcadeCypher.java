@@ -15,9 +15,11 @@
  */
 package org.apache.tinkerpop.gremlin.arcadedb.structure;
 
+import com.arcadedb.GlobalConfiguration;
 import org.opencypher.gremlin.translation.TranslationFacade;
 
 import java.util.*;
+import java.util.concurrent.atomic.*;
 
 /**
  * Cypher Expression builder. Transform a cypher expression into Gremlin.
@@ -26,13 +28,10 @@ import java.util.*;
  */
 
 public class ArcadeCypher extends ArcadeGremlin {
-  private static final HashMap<String, DatabaseCache> STATEMENT_CACHE = new HashMap<>();
+  private static final HashMap<String, CachedStatement> STATEMENT_CACHE       = new HashMap<>();
+  private static final int                              CACHE_SIZE            = GlobalConfiguration.CYPHER_STATEMENT_CACHE.getValueAsInteger();
+  private static       AtomicInteger                    totalCachedStatements = new AtomicInteger(0);
 
-  private static class DatabaseCache {
-    public final HashMap<String, CachedStatement> CACHE = new HashMap<>();
-  }
-
-  // TODO: ADD SQL IF THE GREMLIN QUERY IS CONVERTIBLE TO SQL
   private static class CachedStatement {
     public final String cypher;
     public final String gremlin;
@@ -49,36 +48,53 @@ public class ArcadeCypher extends ArcadeGremlin {
   }
 
   public static String compileToGremlin(final ArcadeGraph graph, final String cypher) {
-    String gremlin = null;
+    if (CACHE_SIZE == 0)
+      // NO CACHE
+      return new TranslationFacade().toGremlinGroovy(cypher);
 
     synchronized (STATEMENT_CACHE) {
       final String db = graph.getDatabase().getDatabasePath();
-      DatabaseCache databaseCache = STATEMENT_CACHE.get(db);
-      if (databaseCache == null) {
-        databaseCache = new DatabaseCache();
-        STATEMENT_CACHE.put(db, databaseCache);
-      }
 
-      final CachedStatement cached = databaseCache.CACHE.get(cypher);
+      final String mapKey = db + ":" + cypher;
+
+      CachedStatement cached = STATEMENT_CACHE.get(mapKey);
+      // FOUND
       if (cached != null) {
-        // FOUND: USE THE CACHED GREMLIN STATEMENT
         ++cached.used;
-        gremlin = cached.gremlin;
+        return cached.gremlin;
       }
 
-      if (gremlin == null) {
-        // TRANSLATE TO GREMLIN AND CACHE THE STATEMENT FOR FURTHER USAGE
-        gremlin = new TranslationFacade().toGremlinGroovy(cypher);
-        databaseCache.CACHE.put(cypher, new CachedStatement(cypher, gremlin));
+      // TRANSLATE TO GREMLIN AND CACHE THE STATEMENT FOR FURTHER USAGE
+      final String gremlin = new TranslationFacade().toGremlinGroovy(cypher);
+
+      while (totalCachedStatements.get() >= CACHE_SIZE) {
+        int leastUsedValue = 0;
+        String leastUsedKey = null;
+
+        for (Map.Entry<String, CachedStatement> entry : STATEMENT_CACHE.entrySet()) {
+          if (leastUsedKey == null || entry.getValue().used < leastUsedValue) {
+            leastUsedKey = entry.getKey();
+            leastUsedValue = entry.getValue().used;
+          }
+        }
+
+        STATEMENT_CACHE.remove(leastUsedKey);
+        STATEMENT_CACHE.put(cypher, new CachedStatement(cypher, gremlin));
       }
+
+      return gremlin;
     }
-
-    return gremlin;
   }
 
   public static void closeDatabase(final ArcadeGraph graph) {
     synchronized (STATEMENT_CACHE) {
-      STATEMENT_CACHE.remove(graph.getDatabase().getDatabasePath());
+      final String mapKey = graph.getDatabase().getDatabasePath() + ":";
+
+      // REMOVE ALL THE ENTRIES RELATIVE TO THE CLOSED DATABASE
+      for (Iterator<Map.Entry<String, CachedStatement>> it = STATEMENT_CACHE.entrySet().iterator(); it.hasNext(); ) {
+        if (it.next().getKey().startsWith(mapKey))
+          it.remove();
+      }
     }
   }
 }

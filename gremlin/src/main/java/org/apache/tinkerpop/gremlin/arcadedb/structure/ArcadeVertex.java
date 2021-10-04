@@ -17,21 +17,22 @@ package org.apache.tinkerpop.gremlin.arcadedb.structure;
 
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
-import org.apache.tinkerpop.gremlin.structure.*;
+import org.apache.tinkerpop.gremlin.structure.Direction;
+import org.apache.tinkerpop.gremlin.structure.Edge;
+import org.apache.tinkerpop.gremlin.structure.Graph;
+import org.apache.tinkerpop.gremlin.structure.Vertex;
+import org.apache.tinkerpop.gremlin.structure.VertexProperty;
 import org.apache.tinkerpop.gremlin.structure.util.ElementHelper;
 import org.apache.tinkerpop.gremlin.structure.util.StringFactory;
 
-import java.util.ArrayList;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
 
 /**
  * Created by Enrico Risa on 30/07/2018.
  */
-public class ArcadeVertex extends ArcadeElement<MutableVertex> implements Vertex {
+public class ArcadeVertex extends ArcadeElement<com.arcadedb.graph.Vertex> implements Vertex {
 
-  protected ArcadeVertex(final ArcadeGraph graph, final MutableVertex baseElement) {
+  protected ArcadeVertex(final ArcadeGraph graph, final com.arcadedb.graph.Vertex baseElement) {
     super(graph, baseElement);
   }
 
@@ -54,7 +55,7 @@ public class ArcadeVertex extends ArcadeElement<MutableVertex> implements Vertex
       this.graph.getDatabase().getSchema().createEdgeType(label);
     }
 
-    MutableVertex baseElement = getBaseElement();
+    com.arcadedb.graph.Vertex baseElement = getBaseElement();
 
     MutableEdge edge = baseElement.newEdge(label, vertex.getBaseElement(), true);
     ArcadeEdge arcadeEdge = new ArcadeEdge(graph, edge);
@@ -77,8 +78,15 @@ public class ArcadeVertex extends ArcadeElement<MutableVertex> implements Vertex
 
     this.graph.tx().readWrite();
 
-    baseElement.set(key, value);
-    baseElement.save();
+    final MutableVertex mutableElement = baseElement.modify();
+
+    mutableElement.set(key, value);
+    mutableElement.save();
+
+    if (mutableElement != baseElement)
+      // REPLACE WITH MUTABLE ELEMENT
+      baseElement = mutableElement;
+
     return new ArcadeVertexProperty<>(this, key, value);
   }
 
@@ -87,8 +95,15 @@ public class ArcadeVertex extends ArcadeElement<MutableVertex> implements Vertex
     ElementHelper.validateProperty(key, value);
     ArcadeProperty.validateValue(value);
     this.graph.tx().readWrite();
-    baseElement.set(key, value);
-    baseElement.save();
+
+    final MutableVertex mutableElement = baseElement.modify();
+    mutableElement.set(key, value);
+    mutableElement.save();
+
+    if (mutableElement != baseElement)
+      // REPLACE WITH MUTABLE ELEMENT
+      baseElement = mutableElement;
+
     return new ArcadeVertexProperty<>(this, key, value);
   }
 
@@ -133,10 +148,10 @@ public class ArcadeVertex extends ArcadeElement<MutableVertex> implements Vertex
 
     if (edgeLabels.length == 0)
       for (com.arcadedb.graph.Edge edge : this.baseElement.getEdges(ArcadeGraph.mapDirection(direction)))
-        result.add(new ArcadeEdge(this.graph, edge.modify()));
+        result.add(new ArcadeEdge(this.graph, edge));
     else
       for (com.arcadedb.graph.Edge edge : this.baseElement.getEdges(ArcadeGraph.mapDirection(direction), edgeLabels))
-        result.add(new ArcadeEdge(this.graph, edge.modify()));
+        result.add(new ArcadeEdge(this.graph, edge));
 
     return result.iterator();
   }
@@ -147,10 +162,10 @@ public class ArcadeVertex extends ArcadeElement<MutableVertex> implements Vertex
 
     if (edgeLabels.length == 0)
       for (com.arcadedb.graph.Vertex vertex : this.baseElement.getVertices(ArcadeGraph.mapDirection(direction)))
-        result.add(new ArcadeVertex(this.graph, vertex.modify()));
+        result.add(new ArcadeVertex(this.graph, vertex));
     else
       for (com.arcadedb.graph.Vertex vertex : this.baseElement.getVertices(ArcadeGraph.mapDirection(direction), edgeLabels))
-        result.add(new ArcadeVertex(this.graph, vertex.modify()));
+        result.add(new ArcadeVertex(this.graph, vertex));
 
     return result.iterator();
   }

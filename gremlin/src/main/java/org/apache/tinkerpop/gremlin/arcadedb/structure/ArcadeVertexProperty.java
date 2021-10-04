@@ -15,6 +15,7 @@
  */
 package org.apache.tinkerpop.gremlin.arcadedb.structure;
 
+import com.arcadedb.graph.MutableVertex;
 import org.apache.tinkerpop.gremlin.structure.Element;
 import org.apache.tinkerpop.gremlin.structure.Property;
 import org.apache.tinkerpop.gremlin.structure.Vertex;
@@ -22,8 +23,7 @@ import org.apache.tinkerpop.gremlin.structure.VertexProperty;
 import org.apache.tinkerpop.gremlin.structure.util.ElementHelper;
 import org.apache.tinkerpop.gremlin.structure.util.StringFactory;
 
-import java.util.Iterator;
-import java.util.NoSuchElementException;
+import java.util.*;
 
 /**
  * Created by Enrico Risa on 30/07/2018.
@@ -63,8 +63,15 @@ public class ArcadeVertexProperty<T> implements VertexProperty<T> {
   @Override
   public void remove() {
     graph().tx().readWrite();
-    vertex.getBaseElement().remove(key);
-    vertex.getBaseElement().save();
+
+    final MutableVertex mutableElement = vertex.baseElement.modify();
+    mutableElement.remove(key);
+    mutableElement.save();
+
+    if (mutableElement != vertex.baseElement)
+      // REPLACE WITH MUTABLE ELEMENT
+      vertex.baseElement = mutableElement;
+
   }
 
   @Override

@@ -57,6 +57,10 @@ public interface DatabaseInternal extends Database {
 
   DatabaseInternal getWrappedDatabaseInstance();
 
+  Map<String, Object> getWrappers();
+
+  void setWrapper(final String name, final Object instance);
+
   void checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS access);
 
   void checkPermissionsOnFile(int fileId, SecurityDatabaseUser.ACCESS access);

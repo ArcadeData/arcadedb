@@ -181,6 +181,16 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
+  public Map<String, Object> getWrappers() {
+    return proxied.getWrappers();
+  }
+
+  @Override
+  public void setWrapper(String name, Object instance) {
+    proxied.setWrapper(name, instance);
+  }
+
+  @Override
   public void checkPermissionsOnDatabase(final SecurityDatabaseUser.DATABASE_ACCESS access) {
     proxied.checkPermissionsOnDatabase(access);
   }

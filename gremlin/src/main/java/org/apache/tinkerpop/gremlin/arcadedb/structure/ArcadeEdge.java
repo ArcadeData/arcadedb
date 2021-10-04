@@ -25,40 +25,36 @@ import org.apache.tinkerpop.gremlin.structure.Vertex;
 import org.apache.tinkerpop.gremlin.structure.util.ElementHelper;
 import org.apache.tinkerpop.gremlin.structure.util.StringFactory;
 
-import java.util.ArrayList;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
 
 /**
  * Created by Enrico Risa on 30/07/2018.
  */
-public class ArcadeEdge extends ArcadeElement<MutableEdge> implements Edge {
+public class ArcadeEdge extends ArcadeElement<com.arcadedb.graph.Edge> implements Edge {
 
-  protected ArcadeEdge(final ArcadeGraph graph, final MutableEdge baseElement) {
+  protected ArcadeEdge(final ArcadeGraph graph, final com.arcadedb.graph.Edge baseElement) {
     super(graph, baseElement);
   }
 
   @Override
   public Vertex outVertex() {
-    return new ArcadeVertex(graph, baseElement.getOutVertex().modify());
+    return new ArcadeVertex(graph, baseElement.getOutVertex());
   }
 
   @Override
   public Vertex inVertex() {
-    return new ArcadeVertex(graph, baseElement.getInVertex().modify());
+    return new ArcadeVertex(graph, baseElement.getInVertex());
   }
 
   @Override
   public Iterator<Vertex> vertices(final Direction direction) {
     switch (direction) {
     case IN:
-      return new SingletonIterator(new ArcadeVertex(graph, baseElement.getInVertex().modify()));
+      return new SingletonIterator(new ArcadeVertex(graph, baseElement.getInVertex()));
     case OUT:
-      return new SingletonIterator(new ArcadeVertex(graph, baseElement.getOutVertex().modify()));
+      return new SingletonIterator(new ArcadeVertex(graph, baseElement.getOutVertex()));
     case BOTH:
-      return new ArrayIterator(
-          new Vertex[] { new ArcadeVertex(graph, baseElement.getOutVertex().modify()), new ArcadeVertex(graph, baseElement.getInVertex().modify()) });
+      return new ArrayIterator(new Vertex[] { new ArcadeVertex(graph, baseElement.getOutVertex()), new ArcadeVertex(graph, baseElement.getInVertex()) });
     default:
       throw new IllegalArgumentException("Direction " + direction + " not supported");
     }
@@ -69,8 +65,15 @@ public class ArcadeEdge extends ArcadeElement<MutableEdge> implements Edge {
     ElementHelper.validateProperty(key, value);
     ArcadeProperty.validateValue(value);
     this.graph.tx().readWrite();
-    baseElement.set(key, value);
-    baseElement.save();
+
+    final MutableEdge mutableElement = baseElement.modify();
+    mutableElement.set(key, value);
+    mutableElement.save();
+
+    if (mutableElement != baseElement)
+      // REPLACE WITH MUTABLE ELEMENT
+      baseElement = mutableElement;
+
     return new ArcadeProperty<>(this, key, value);
   }
 

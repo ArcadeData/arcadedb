@@ -18,7 +18,7 @@ package com.arcadedb.query;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.Map;
+import java.util.*;
 
 public interface QueryEngine {
   interface QueryEngineFactory {
@@ -26,7 +26,7 @@ public interface QueryEngine {
 
     String getLanguage();
 
-    QueryEngine create(DatabaseInternal database);
+    QueryEngine getInstance(DatabaseInternal database);
   }
 
   ResultSet query(String query, Map<String, Object> parameters);

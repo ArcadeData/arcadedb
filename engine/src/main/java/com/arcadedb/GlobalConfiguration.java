@@ -262,6 +262,13 @@ public enum GlobalConfiguration {
 
   HA_SERVER_LIST("arcadedb.ha.serverList", "List of <hostname/ip-address:port> items separated by comma. Example: localhost:2424,192.168.0.1:2424",
       String.class, ""),
+
+  // CYPHER
+  CYPHER_STATEMENT_CACHE("arcadedb.cypher.statementCache",
+      "Max number of entries in the cypher statement cache. Use 0 to disable. Caching statements speeds up execution of the same cypher queries", Integer.class,
+      1000),
+
+  // GREMLIN
   ;
 
   /**

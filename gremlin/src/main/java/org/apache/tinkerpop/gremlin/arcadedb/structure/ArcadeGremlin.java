@@ -20,10 +20,7 @@ import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.apache.tinkerpop.gremlin.groovy.engine.GremlinExecutor;
-import org.apache.tinkerpop.gremlin.jsr223.ConcurrentBindings;
-import org.apache.tinkerpop.gremlin.process.traversal.AnonymousTraversalSource;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversal;
-import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
 
 import java.util.*;
 import java.util.concurrent.*;
@@ -35,7 +32,7 @@ import java.util.concurrent.*;
  */
 
 public class ArcadeGremlin extends ArcadeQuery {
-  protected Long timeout;
+  private static Long  timeout;
 
   protected ArcadeGremlin(final ArcadeGraph graph, final String query) {
     super(graph, query);
@@ -43,23 +40,9 @@ public class ArcadeGremlin extends ArcadeQuery {
 
   @Override
   public ResultSet execute() throws ExecutionException, InterruptedException {
-    final GraphTraversalSource g = AnonymousTraversalSource.traversal().withEmbedded(graph);
+    final GremlinExecutor ge = graph.getGremlinExecutor();
 
-    final ConcurrentBindings b = new ConcurrentBindings();
-    b.putIfAbsent("g", g);
-
-    if (parameters != null)
-      // BIND THE PARAMETERS
-      for (Map.Entry<String, Object> entry : parameters.entrySet())
-        b.put(entry.getKey(), entry.getValue());
-
-    final GremlinExecutor.Builder builder = GremlinExecutor.build();
-    builder.globalBindings(b);
-    if (timeout != null)
-      builder.evaluationTimeout(timeout);
-    final GremlinExecutor ge = builder.create();
-
-    final CompletableFuture<Object> evalResult = ge.eval(query);
+    final CompletableFuture<Object> evalResult = parameters != null ? ge.eval(query, parameters) : ge.eval(query);
 
     final GraphTraversal resultSet = (GraphTraversal) evalResult.get();
 

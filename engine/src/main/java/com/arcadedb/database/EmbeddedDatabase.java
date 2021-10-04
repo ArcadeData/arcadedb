@@ -122,6 +122,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   private              DatabaseInternal                          wrappedDatabaseInstance = this;
   private              int                                       edgeListSize            = EDGE_LIST_INITIAL_CHUNK_SIZE;
   private              SecurityManager                           security;
+  private              Map<String, Object>                       wrappers                = new HashMap<>();
 
   protected EmbeddedDatabase(final String path, final PaginatedFile.MODE mode, final ContextConfiguration configuration, final SecurityManager security,
       final Map<CALLBACK_EVENT, List<Callable<Void>>> callbacks) {
@@ -1233,7 +1234,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
     stats.commands.incrementAndGet();
 
-    return queryEngineManager.create(language, this).command(query, parameters);
+    return queryEngineManager.getInstance(language, this).command(query, parameters);
   }
 
   @Override
@@ -1242,7 +1243,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
     stats.commands.incrementAndGet();
 
-    return queryEngineManager.create(language, this).command(query, parameters);
+    return queryEngineManager.getInstance(language, this).command(query, parameters);
   }
 
   @Override
@@ -1310,7 +1311,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
     stats.queries.incrementAndGet();
 
-    return queryEngineManager.create(language, this).query(query, parameters);
+    return queryEngineManager.getInstance(language, this).query(query, parameters);
   }
 
   @Override
@@ -1319,7 +1320,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
     stats.queries.incrementAndGet();
 
-    return queryEngineManager.create(language, this).query(query, parameters);
+    return queryEngineManager.getInstance(language, this).query(query, parameters);
   }
 
   /**
@@ -1487,6 +1488,17 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
     if (DatabaseContext.INSTANCE.getContext(databasePath) == null)
       DatabaseContext.INSTANCE.init(this);
+  }
+
+  public Map<String, Object> getWrappers() {
+    return wrappers;
+  }
+
+  public void setWrapper(final String name, final Object instance) {
+    if (instance == null)
+      this.wrappers.remove(name);
+    else
+      this.wrappers.put(name, instance);
   }
 
   private void lockDatabase() {
