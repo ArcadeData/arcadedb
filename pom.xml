@@ -384,6 +384,7 @@
                                 <exclude>**/*.yaml</exclude>
                                 <exclude>LICENCE</exclude>
                                 <exclude>Jenkinsfile</exclude>
+                                <exclude>**/SqlParserTokenManager.java</exclude>
                             </excludes>
                         </configuration>
                         <executions>
