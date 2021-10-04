@@ -75,7 +75,6 @@ public class PostCommandHandler extends DatabaseAbstractHandler {
 
     final ServerMetrics.MetricTimer timer = httpServer.getServer().getServerMetrics().timer("http.command");
 
-    database.begin();
     try {
 
       final ResultSet qResult = language.equalsIgnoreCase("sqlScript") ?

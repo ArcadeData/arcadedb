@@ -29,7 +29,9 @@ import java.util.*;
 
 public class ExportDatabaseStatement extends SimpleExecStatement {
 
-  protected Url url;
+  protected Url               url;
+  protected String            format    = "jsonl";
+  protected BooleanExpression overwrite = BooleanExpression.FALSE;
 
   public ExportDatabaseStatement(int id) {
     super(id);
@@ -56,7 +58,14 @@ public class ExportDatabaseStatement extends SimpleExecStatement {
       final Class<?> clazz = Class.forName("com.arcadedb.integration.exporter.Exporter");
       final Object exporter = clazz.getConstructor(Database.class, String.class).newInstance(ctx.getDatabase(), fileName);
 
-      clazz.getMethod("setFormat", String.class).invoke(exporter, "jsonl");
+      String formatExport = format;
+      if ((formatExport.startsWith("'") && formatExport.endsWith("'")) ||//
+          formatExport.startsWith("\"") && formatExport.endsWith("\"")) {
+        formatExport = formatExport.substring(1, formatExport.length() - 1);
+      }
+
+      clazz.getMethod("setOverwrite", Boolean.TYPE).invoke(exporter, overwrite == BooleanExpression.TRUE);
+      clazz.getMethod("setFormat", String.class).invoke(exporter, formatExport);
       clazz.getMethod("exportDatabase").invoke(exporter);
 
     } catch (ClassNotFoundException | NoSuchMethodException | IllegalAccessException | InstantiationException e) {

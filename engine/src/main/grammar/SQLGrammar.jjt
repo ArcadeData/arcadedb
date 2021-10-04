@@ -135,8 +135,8 @@ TOKEN:
 	< NULL: ( "N" | "n" ) ( "U" | "u" ) ( "L" | "l" ) ( "L" | "l" ) >
 	|
 	< DEFINED: ( "D" | "d" ) ( "E" | "e" ) ( "F" | "f" ) ( "I" | "i" ) ( "N" | "n" ) ( "E" | "e" ) ( "D" | "d" ) >
-    |
-    < ORDER: ( "o" | "O" ) ( "r" | "R" ) ( "d" | "D" ) ( "e" | "E" ) ( "r" | "R" ) >
+  |
+  < ORDER: ( "o" | "O" ) ( "r" | "R" ) ( "d" | "D" ) ( "e" | "E" ) ( "r" | "R" ) >
 	|
 	< GROUP: ( "g" | "G" ) ( "r" | "R" ) ( "o" | "O" ) ( "u" | "U" ) ( "p" | "P" ) >
 	|
@@ -263,6 +263,10 @@ TOKEN:
   < REBUILD: ( "R" | "r") ( "E" | "e")  ( "B" | "b") ( "U" | "u") ( "I" | "i") ( "L" | "l") ( "D" | "d") >
   |
   < ID: ( "I" | "i") ( "D" | "d") >
+  |
+  < FORMAT: ( "F" | "f") ( "O" | "o") ( "R" | "r") ( "M" | "m") ( "A" | "a") ( "T" | "t") >
+  |
+  < OVERWRITE: ( "O" | "o") ( "V" | "v") ( "E" | "e") ( "R" | "r") ( "W" | "w") ( "R" | "r") ( "I" | "i") ( "T" | "t") ( "E" | "e") >
   |
   < EXPORT: ( "E" | "e") ( "X" | "x") ( "P" | "p") ( "O" | "o") ( "R" | "r") ( "T" | "t") >
   |
@@ -808,6 +812,8 @@ Identifier Identifier():
     token = <REBUILD>
     |
     token = <ID>
+    |
+    token = <FORMAT>
     |
     token = <EXPORT>
     |
@@ -3352,7 +3358,6 @@ Timeout Timeout():
 { PInteger val; }
 {
     <TIMEOUT>
-
     (
 	    val = PInteger() { jjtThis.val = val.getValue(); }
 	    [
@@ -3369,8 +3374,8 @@ java.lang.Number Wait():
 { PInteger val; }
 {
     (
-	    <WAIT> val = PInteger()
-	)
+	      <WAIT> val = PInteger()
+	  )
 	{ return val.getValue(); }
 }
 
@@ -4552,6 +4557,8 @@ ExportDatabaseStatement ExportDatabaseStatement():
     (
         <EXPORT> <DATABASE>
         jjtThis.url = Url()
+        [ <FORMAT> jjtThis.format = PString() ]
+        [ <OVERWRITE> ( <TRUE> { jjtThis.overwrite = BooleanExpression.TRUE;} | <FALSE> { jjtThis.overwrite = BooleanExpression.FALSE;} ) ]
     )
     {return jjtThis; }
 }

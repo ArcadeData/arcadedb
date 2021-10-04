@@ -54,6 +54,11 @@ public class Exporter {
     return this;
   }
 
+  public Exporter setOverwrite(final boolean overwrite) {
+    settings.overwriteFile = overwrite;
+    return this;
+  }
+
   public void exportDatabase() {
     try {
       startExporting();
