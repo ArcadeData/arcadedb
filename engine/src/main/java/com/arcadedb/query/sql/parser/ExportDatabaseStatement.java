@@ -30,7 +30,7 @@ import java.util.*;
 public class ExportDatabaseStatement extends SimpleExecStatement {
 
   protected Url               url;
-  protected String            format    = "jsonl";
+  protected Identifier        format    = new Identifier("jsonl");
   protected BooleanExpression overwrite = BooleanExpression.FALSE;
 
   public ExportDatabaseStatement(int id) {
@@ -58,7 +58,7 @@ public class ExportDatabaseStatement extends SimpleExecStatement {
       final Class<?> clazz = Class.forName("com.arcadedb.integration.exporter.Exporter");
       final Object exporter = clazz.getConstructor(Database.class, String.class).newInstance(ctx.getDatabase(), fileName);
 
-      String formatExport = format;
+      String formatExport = format.getStringValue();
       if ((formatExport.startsWith("'") && formatExport.endsWith("'")) ||//
           formatExport.startsWith("\"") && formatExport.endsWith("\"")) {
         formatExport = formatExport.substring(1, formatExport.length() - 1);

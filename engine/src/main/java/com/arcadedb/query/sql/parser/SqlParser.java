@@ -17672,7 +17672,7 @@ if (jjtc000) {
       switch (jj_ntk == -1 ? jj_ntk_f() : jj_ntk) {
       case FORMAT:{
         jj_consume_token(FORMAT);
-        jjtn000.format = PString();
+        jjtn000.format = Identifier();
         break;
         }
       default:
@@ -21278,7 +21278,7 @@ if (jjtc000) {
   private boolean jj_3R_706()
  {
     if (jj_scan_token(FORMAT)) return true;
-    if (jj_3R_490()) return true;
+    if (jj_3R_128()) return true;
     return false;
   }
 

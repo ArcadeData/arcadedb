@@ -310,6 +310,21 @@ public class DocumentType {
     return result;
   }
 
+  public List<TypeIndex> getIndexesByProperty(final String property) {
+    final List<TypeIndex> result = new ArrayList<>();
+
+    for (Map.Entry<List<String>, TypeIndex> entry : indexesByProperties.entrySet()) {
+      for (String prop : entry.getKey()) {
+        if (property.equals(prop)) {
+          result.add(entry.getValue());
+          break;
+        }
+      }
+    }
+
+    return result;
+  }
+
   public TypeIndex getPolymorphicIndexByProperties(final String... properties) {
     return getPolymorphicIndexByProperties(Arrays.asList(properties));
   }
