@@ -91,7 +91,7 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
             propRes.setProperty("name", typeIndexInternal.getName());
             propRes.setProperty("typeName", typeIndexInternal.getTypeName());
             propRes.setProperty("type", typeIndexInternal.getType());
-            propRes.setProperty("properties", Arrays.asList(typeIndexInternal.getPropertyNames()));
+            propRes.setProperty("properties", typeIndexInternal.getPropertyNames());
             propRes.setProperty("automatic", typeIndexInternal.isAutomatic());
             propRes.setProperty("unique", typeIndexInternal.isUnique());
             return propRes;

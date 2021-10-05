@@ -17,8 +17,16 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.database.Database;
+import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexInternal;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.InternalResultSet;
+import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.DocumentType;
 
 import java.util.*;
 
@@ -27,7 +35,7 @@ public class DropPropertyStatement extends DDLStatement {
   protected Identifier typeName;
   protected Identifier propertyName;
   protected boolean    ifExists = false;
-  protected boolean    force = false;
+  protected boolean    force    = false;
 
   public DropPropertyStatement(int id) {
     super(id);
@@ -37,85 +45,75 @@ public class DropPropertyStatement extends DDLStatement {
     super(p, id);
   }
 
-  @Override public ResultSet executeDDL(CommandContext ctx) {
+  @Override
+  public ResultSet executeDDL(CommandContext ctx) {
+    InternalResultSet rs = new InternalResultSet();
+    final Database database = ctx.getDatabase();
+    final DocumentType sourceClass = database.getSchema().getType(typeName.getStringValue());
+    if (sourceClass == null)
+      throw new CommandExecutionException("Source class '" + typeName + "' not found");
 
-    throw new UnsupportedOperationException();
-//    InternalResultSet rs = new InternalResultSet();
-//    final Database database = ctx.getDatabase();
-//    final OClassImpl sourceClass = (OClassImpl) database.getMetadata().getSchema().getClass(className.getStringValue());
-//    if (sourceClass == null)
-//      throw new PCommandExecutionException("Source class '" + className + "' not found");
-//
-//    if (sourceClass.getProperty(propertyName.getStringValue()) == null) {
-//      if(ifExists){
-//        return rs;
-//      }
-//      throw new PCommandExecutionException("Property '" + propertyName + "' not found on class " + className);
-//    }
-//    final List<OIndex<?>> indexes = relatedIndexes(propertyName.getStringValue(), database);
-//    if (!indexes.isEmpty()) {
-//      if (force) {
-//        for (final OIndex<?> index : indexes) {
-//          index.delete();
-//          OResultInternal result = new OResultInternal();
-//          result.setProperty("operation", "cascade drop index");
-//          result.setProperty("indexName", index.getName());
-//          rs.add(result);
-//        }
-//      } else {
-//        final StringBuilder indexNames = new StringBuilder();
-//
-//        boolean first = true;
-//        for (final OIndex<?> index : sourceClass.getClassInvolvedIndexes(propertyName.getStringValue())) {
-//          if (!first) {
-//            indexNames.append(", ");
-//          } else {
-//            first = false;
-//          }
-//          indexNames.append(index.getName());
-//        }
-//
-//        throw new PCommandExecutionException("Property used in indexes (" + indexNames.toString()
-//            + "). Please drop these indexes before removing property or use FORCE parameter.");
-//      }
-//    }
-//
-//    // REMOVE THE PROPERTY
-//    sourceClass.dropProperty(propertyName.getStringValue());
-//
-//    OResultInternal result = new OResultInternal();
-//    result.setProperty("operation", "drop property");
-//    result.setProperty("typeName", className.getStringValue());
-//    result.setProperty("propertyname", propertyName.getStringValue());
-//    rs.add(result);
-//    return rs;
+    if (sourceClass.getProperty(propertyName.getStringValue()) == null) {
+      if (ifExists) {
+        return rs;
+      }
+      throw new CommandExecutionException("Property '" + propertyName + "' not found on class " + typeName);
+    }
+    final List<TypeIndex> indexes = sourceClass.getIndexesByProperty(propertyName.getStringValue());
+    if (!indexes.isEmpty()) {
+      if (force) {
+        for (final Index index : indexes) {
+          ((IndexInternal) index).drop();
+          ResultInternal result = new ResultInternal();
+          result.setProperty("operation", "cascade drop index");
+          result.setProperty("indexName", index.getName());
+          rs.add(result);
+        }
+      } else {
+        final StringBuilder indexNames = new StringBuilder();
+
+        boolean first = true;
+        for (final TypeIndex index : indexes) {
+          if (!first) {
+            indexNames.append(", ");
+          } else {
+            first = false;
+          }
+          indexNames.append(index.getName());
+        }
+
+        throw new CommandExecutionException(
+            "Property used in indexes (" + indexNames + "). Please drop these indexes before removing property or use FORCE parameter.");
+      }
+    }
+
+    // REMOVE THE PROPERTY
+    sourceClass.dropProperty(propertyName.getStringValue());
+
+    ResultInternal result = new ResultInternal();
+    result.setProperty("operation", "drop property");
+    result.setProperty("typeName", typeName.getStringValue());
+    result.setProperty("propertyName", propertyName.getStringValue());
+    rs.add(result);
+    return rs;
   }
 
-//  private List<OIndex<?>> relatedIndexes(final String fieldName, ODatabase database) {
-//    final List<OIndex<?>> result = new ArrayList<OIndex<?>>();
-//    for (final OIndex<?> oIndex : database.getMetadata().getIndexManager().getClassIndexes(className.getStringValue())) {
-//      if (OCollections.indexOf(oIndex.getDefinition().getFields(), fieldName, new OCaseInsentiveComparator()) > -1) {
-//        result.add(oIndex);
-//      }
-//    }
-//
-//    return result;
-//  }
-
-  @Override public void toString(Map<String, Object> params, StringBuilder builder) {
+  @Override
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     builder.append("DROP PROPERTY ");
     typeName.toString(params, builder);
     builder.append(".");
     propertyName.toString(params, builder);
-    if(ifExists){
+    if (ifExists) {
       builder.append(" IF EXISTS");
     }
-    if(force){
+    if (force) {
       builder.append(" FORCE");
     }
   }
 
-  @Override public DropPropertyStatement copy() {
+  @Override
+  public DropPropertyStatement copy() {
     DropPropertyStatement result = new DropPropertyStatement(-1);
     result.typeName = typeName == null ? null : typeName.copy();
     result.propertyName = propertyName == null ? null : propertyName.copy();
@@ -124,7 +122,8 @@ public class DropPropertyStatement extends DDLStatement {
     return result;
   }
 
-  @Override public boolean equals(Object o) {
+  @Override
+  public boolean equals(Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
@@ -134,7 +133,7 @@ public class DropPropertyStatement extends DDLStatement {
 
     if (force != that.force)
       return false;
-    if(ifExists!=that.ifExists){
+    if (ifExists != that.ifExists) {
       return false;
     }
     if (typeName != null ? !typeName.equals(that.typeName) : that.typeName != null)
@@ -142,7 +141,8 @@ public class DropPropertyStatement extends DDLStatement {
     return propertyName != null ? propertyName.equals(that.propertyName) : that.propertyName == null;
   }
 
-  @Override public int hashCode() {
+  @Override
+  public int hashCode() {
     int result = typeName != null ? typeName.hashCode() : 0;
     result = 31 * result + (propertyName != null ? propertyName.hashCode() : 0);
     result = 31 * result + (force ? 1 : 0);

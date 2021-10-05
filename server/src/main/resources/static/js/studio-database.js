@@ -41,6 +41,8 @@ function editorFocus(){
 }
 
 function updateDatabases( callback ){
+  let selected = $("#inputDatabase").val();
+
   jQuery.ajax({
     type: "GET",
     url: "/api/v1/databases",
@@ -55,6 +57,9 @@ function updateDatabases( callback ){
       databases += "<option value='"+dbName+"'>"+dbName+"</option>";
     }
     $("#inputDatabase").html(databases);
+
+    if( selected != null && selected != "" )
+      $("#inputDatabase").val(selected);
 
     $("#currentDatabase").html( $("#inputDatabase").val() );
 
@@ -149,7 +154,6 @@ function dropDatabase(){
   });
 }
 
-
 function backupDatabase(){
   let database = escapeHtml( $("#inputDatabase").val().trim() );
   if( database == "" ){
@@ -174,6 +178,69 @@ function backupDatabase(){
     })
     .done(function(data){
       globalNotify( "Backup completed", "File: " + escapeHtml( data.result[0].backupFile ), "success");
+    })
+    .fail(function( jqXHR, textStatus, errorThrown ){
+      globalNotifyError( jqXHR.responseText );
+    });
+  });
+}
+
+function dropProperty(type, property){
+  let database = escapeHtml( $("#inputDatabase").val().trim() );
+  if( database == "" ){
+    globalNotify( "Error", "Database not selected", "danger");
+    return;
+  }
+
+  globalConfirm("Drop property", "Are you sure you want to drop the property '"+property+"' on type '"+type+"'?<br>WARNING: The operation cannot be undone.", "warning", function(){
+    jQuery.ajax({
+      type: "POST",
+      url: "/api/v1/command/" + database,
+      data: JSON.stringify(
+        {
+          language: "sql",
+          command: "drop property `" + type + "`.`" + property + "`",
+          serializer: "record"
+        }
+      ),
+      beforeSend: function (xhr){
+        xhr.setRequestHeader('Authorization', globalCredentials);
+      }
+    })
+    .done(function(data){
+      updateDatabases();
+    })
+    .fail(function( jqXHR, textStatus, errorThrown ){
+      globalNotifyError( jqXHR.responseText );
+    });
+  });
+}
+
+
+function dropIndex(indexName){
+  let database = escapeHtml( $("#inputDatabase").val().trim() );
+  if( database == "" ){
+    globalNotify( "Error", "Database not selected", "danger");
+    return;
+  }
+
+  globalConfirm("Drop index", "Are you sure you want to drop the index '"+indexName+"'?<br>WARNING: The operation cannot be undone.", "warning", function(){
+    jQuery.ajax({
+      type: "POST",
+      url: "/api/v1/command/" + database,
+      data: JSON.stringify(
+        {
+          language: "sql",
+          command: "drop index `" + indexName + "`",
+          serializer: "record"
+        }
+      ),
+      beforeSend: function (xhr){
+        xhr.setRequestHeader('Authorization', globalCredentials);
+      }
+    })
+    .done(function(data){
+      updateDatabases();
     })
     .fail(function( jqXHR, textStatus, errorThrown ){
       globalNotifyError( jqXHR.responseText );
@@ -324,7 +391,6 @@ function displaySchema(){
     }
   })
   .done(function(data){
-
     let tabVHtml = "";
     let tabEHtml = "";
     let tabDHtml = "";
@@ -350,19 +416,25 @@ function displaySchema(){
         panelHtml += "</b>";
       }
 
-      panelHtml += "<br><br><h6>Properties</h6><table class='table table-striped table-sm' style='border: 0px; width: 100%'>";
-      panelHtml += "<thead><tr><th scope='col'>Name</th><th scope='col'>Type</th><th scope='col'>Indexed</th>";
+      panelHtml += "<br><br><h6>Properties</h6>";
+      //panelHtml += "<button class='btn btn-pill' onclick='createProperty()'><i class='fa fa-plus'></i> Create Property</button>";
+      panelHtml += "<table class='table table-striped table-sm' style='border: 0px; width: 100%'>";
+      panelHtml += "<thead><tr><th scope='col'>Name</th><th scope='col'>Type</th><th scope='col'>Indexed</th><th scope='col'>Actions</th>";
       panelHtml += "<tbody>";
 
       for( k in row.properties ) {
         let property = row.properties[k];
         panelHtml += "<tr><td>"+property.name+"</td><td>" + property.type + "</td>";
 
+        let actionHtml = "<button class='btn btn-pill' onclick='dropProperty(\""+row.name+"\", \""+property.name+"\")'><i class='fa fa-minus'></i> Drop Property</button>";
+
         let propIndexes = [];
         if( row.indexes != null && row.indexes.length > 0 ) {
-          propIndexes.push( row.indexes.filter(i => i.properties.includes( property.name )).map(i => (i.unique ? "" : "Not ") + "Unique, Type(" + i.type + ")" + ( i.properties.length > 1 ? ", on multi properties " + i.properties : "" )) );
+          propIndexes.push( row.indexes.filter(i => i.properties.includes( property.name )).map(i => (i.name + " " + i.unique ? "" : "Not ") + "Unique, Type(" + i.type + ")" + ( i.properties.length > 1 ? ", on multi properties " + i.properties : "" )) );
+          actionHtml += row.indexes.filter(i => i.properties.includes( property.name )).map(i => ( "<button class='btn btn-pill' onclick='dropIndex(\"" + i.name + "\")'><i class='fa fa-minus'></i> Drop Index</button>" ) );
         }
         panelHtml += "<td>" + ( propIndexes.length > 0 ? propIndexes : "" ) + "</td>";
+        panelHtml += "<td>" + actionHtml + "</td>";
       }
 
       panelHtml += "</tbody></table>";
