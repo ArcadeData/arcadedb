@@ -384,7 +384,7 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
 
       } while (rootPassword == null);
     } else
-      LogManager.instance().log(this, Level.INFO, "Creating root user with provided password");
+      LogManager.instance().log(this, Level.INFO, "Creating root user with the provided password");
 
     credentialsValidator.validateCredentials("root", rootPassword);
 
