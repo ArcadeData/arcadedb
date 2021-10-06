@@ -23,10 +23,21 @@ import com.arcadedb.integration.restore.RestoreSettings;
 import com.arcadedb.utility.FileUtils;
 
 import java.io.*;
+import java.net.*;
 import java.util.zip.*;
 
 public class FullRestoreFormat extends AbstractRestoreFormat {
   private final byte[] BUFFER = new byte[8192];
+
+  private static class RestoreInputSource {
+    public final InputStream inputStream;
+    public final long        fileSize;
+
+    public RestoreInputSource(final InputStream inputStream, final long fileSize) {
+      this.inputStream = inputStream;
+      this.fileSize = fileSize;
+    }
+  }
 
   public FullRestoreFormat(final DatabaseInternal database, final RestoreSettings settings, final ConsoleLogger logger) {
     super(database, settings, logger);
@@ -34,9 +45,7 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
 
   @Override
   public void restoreDatabase() throws Exception {
-    final File file = new File(settings.file);
-    if (!file.exists())
-      throw new RestoreException(String.format("The backup file '%s' not exist", settings.file));
+    final RestoreInputSource inputSource = openInputFile();
 
     final File databaseDirectory = new File(settings.databaseURL);
     if (databaseDirectory.exists()) {
@@ -49,12 +58,9 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
     if (!databaseDirectory.mkdirs())
       throw new RestoreException(String.format("Error on restoring database: the database directory '%s' cannot be created", settings.databaseURL));
 
-    logger.logLine(0, "Executing full restore of database from file '%s' to '%s'...", settings.file, settings.databaseURL);
+    logger.logLine(0, "Executing full restore of database from file '%s' to '%s'...", settings.url, settings.databaseURL);
 
-    final File backupFile = new File(settings.file);
-    final long databaseCompressedSize = backupFile.length();
-
-    try (ZipInputStream zipFile = new ZipInputStream(new FileInputStream(backupFile), DatabaseFactory.getDefaultCharset())) {
+    try (ZipInputStream zipFile = new ZipInputStream(inputSource.inputStream, DatabaseFactory.getDefaultCharset())) {
       final long beginTime = System.currentTimeMillis();
 
       long databaseOrigSize = 0L;
@@ -70,7 +76,7 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
       final long elapsedInSecs = (System.currentTimeMillis() - beginTime) / 1000;
 
       logger.logLine(0, "Full restore completed in %d seconds %s -> %s (%,d%% compression)", elapsedInSecs, FileUtils.getSizeAsString(databaseOrigSize),
-          FileUtils.getSizeAsString((databaseCompressedSize)), databaseOrigSize > 0 ? (databaseOrigSize - databaseCompressedSize) * 100 / databaseOrigSize : 0);
+          FileUtils.getSizeAsString((inputSource.fileSize)), databaseOrigSize > 0 ? (databaseOrigSize - inputSource.fileSize) * 100 / databaseOrigSize : 0);
     }
   }
 
@@ -93,5 +99,26 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
         origSize > 0 ? (origSize - compressedSize) * 100 / origSize : 0);
 
     return origSize;
+  }
+
+  private RestoreInputSource openInputFile() throws IOException {
+    if (settings.url.startsWith("http://") || settings.url.startsWith("https://")) {
+      final HttpURLConnection connection = (HttpURLConnection) new URL(settings.url).openConnection();
+      connection.setRequestMethod("GET");
+      connection.setDoOutput(true);
+      connection.connect();
+
+      return new RestoreInputSource(connection.getInputStream(), 0);
+    }
+
+    String path = settings.url;
+    if (path.startsWith("file://"))
+      path = path.substring("file://".length());
+
+    final File file = new File(path);
+    if (!file.exists())
+      throw new RestoreException(String.format("The backup file '%s' not exist", settings.url));
+
+    return new RestoreInputSource(new FileInputStream(file), file.length());
   }
 }

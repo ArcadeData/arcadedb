@@ -21,7 +21,7 @@ import java.util.*;
 public class RestoreSettings {
   public       String              format               = "full";
   public       String              databaseURL;
-  public       String              file;
+  public       String              url;
   public       boolean             overwriteDestination = false;
   public       int                 verboseLevel         = 2;
   public final Map<String, String> options              = new HashMap<>();
@@ -37,17 +37,17 @@ public class RestoreSettings {
     if (format == null)
       throw new IllegalArgumentException("Missing backup format");
 
-    if (file == null)
+    if (url == null)
       // ASSIGN DEFAULT FILENAME
       switch (format) {
       case "full":
-        file = "arcadedb-backup-%s.zip";
+        url = "arcadedb-backup-%s.zip";
         break;
       }
 
-    if (file == null) {
+    if (url == null) {
       final DateFormat dateFormat = new SimpleDateFormat("yyyyMMdd-HHmmssSSS");
-      file = String.format(file, dateFormat.format(System.currentTimeMillis()));
+      url = String.format(url, dateFormat.format(System.currentTimeMillis()));
     }
   }
 
@@ -55,7 +55,7 @@ public class RestoreSettings {
     if ("format".equals(name))
       format = value.toLowerCase();
     else if ("f".equals(name))
-      file = value;
+      url = value;
     else if ("d".equals(name))
       databaseURL = value;
     else if ("o".equals(name)) {
