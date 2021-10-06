@@ -114,6 +114,8 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
     String path = settings.url;
     if (path.startsWith("file://"))
       path = path.substring("file://".length());
+    else if (path.startsWith("classpath://"))
+      path = getClass().getClassLoader().getResource(path.substring("classpath://".length())).getFile();
 
     final File file = new File(path);
     if (!file.exists())
