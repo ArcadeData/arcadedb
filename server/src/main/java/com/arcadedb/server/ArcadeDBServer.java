@@ -441,7 +441,7 @@ public class ArcadeDBServer implements ServerLogger {
 
         parseCredentials(dbName, credentials);
 
-        Database database;
+        Database database = existsDatabase(dbName) ? getDatabase(dbName) : null;
 
         if (credentialEnd < db.length() - 1 && db.charAt(credentialEnd + 1) == '{') {
           // PARSE IMPORTS
@@ -456,8 +456,6 @@ public class ArcadeDBServer implements ServerLogger {
             }
             final String commandType = command.substring(0, commandSeparator).toLowerCase();
             final String commandParams = command.substring(commandSeparator + 1);
-
-            database = existsDatabase(dbName) ? getDatabase(dbName) : null;
 
             switch (commandType) {
             case "restore":
@@ -482,6 +480,12 @@ public class ArcadeDBServer implements ServerLogger {
             default:
               LogManager.instance().log(this, Level.SEVERE, "Unsupported command %s in startup command: '%s'", null, commandType);
             }
+          }
+        } else {
+          if (database == null) {
+            // CREATE THE DATABASE
+            LogManager.instance().log(this, Level.INFO, "Creating default database '%s'...", null, dbName);
+            createDatabase(dbName);
           }
         }
       }
