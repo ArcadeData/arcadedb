@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.EmbeddedDatabase;
 import com.arcadedb.exception.ConfigurationException;
+import com.arcadedb.integration.restore.Restore;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngineManager;
 import com.arcadedb.server.ha.HAServer;
@@ -388,8 +389,9 @@ public class ArcadeDBServer implements ServerLogger {
     DatabaseInternal db = databases.get(databaseName);
     if (db == null || !db.isOpen()) {
 
-      final DatabaseFactory factory = new DatabaseFactory(
-          configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + "/" + databaseName).setAutoTransaction(true);
+      final String path = configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + "/" + databaseName;
+
+      final DatabaseFactory factory = new DatabaseFactory(path).setAutoTransaction(true);
 
       factory.setSecurity(getSecurity());
 
@@ -437,54 +439,9 @@ public class ArcadeDBServer implements ServerLogger {
         final int credentialEnd = db.indexOf(']', credentialBegin);
         final String credentials = db.substring(credentialBegin + 1, credentialEnd);
 
-        final String[] credentialPairs = credentials.split(",");
-        for (String credential : credentialPairs) {
-
-          final String[] credentialParts = credential.split(":");
-
-          if (credentialParts.length < 2) {
-            if (!security.existsUser(credential)) {
-              LogManager.instance()
-                  .log(this, Level.WARNING, "Cannot create user '%s' to access database '%s' because the user does not exist", null, credential, dbName);
-            }
-            //FIXME: else if user exists, should we give him access to the dbName?
-          } else {
-            final String userName = credentialParts[0];
-            final String userPassword = credentialParts[1];
-            final String userRole = credentialParts.length > 2 ? credentialParts[2] : null;
-
-            if (security.existsUser(userName)) {
-              // EXISTING USER: CHECK CREDENTIALS
-              try {
-                final ServerSecurityUser user = security.authenticate(userName, userPassword, dbName);
-                if (!user.getAuthorizedDatabases().contains(dbName)) {
-                  // UPDATE DB LIST
-                  user.addDatabase(dbName, new String[] { userRole });
-                  security.saveUsers();
-                }
-
-              } catch (ServerSecurityException e) {
-                LogManager.instance()
-                    .log(this, Level.WARNING, "Cannot create database '%s' because the user '%s' already exists with a different password", null, dbName,
-                        userName);
-              }
-            } else {
-              // CREATE A NEW USER
-              security.createUser(new JSONObject().put("name", userName)//
-                  .put("password", security.encodePassword(userPassword))//
-                  .put("databases", new JSONObject().put(dbName, new JSONArray())));
-            }
-          }
-        }
+        parseCredentials(dbName, credentials);
 
         Database database;
-        if (existsDatabase(dbName)) {
-          database = getDatabase(dbName);
-        } else {
-          // CREATE THE DATABASE
-          LogManager.instance().log(this, Level.INFO, "Creating default database '%s'...", null, dbName);
-          database = createDatabase(dbName);
-        }
 
         if (credentialEnd < db.length() - 1 && db.charAt(credentialEnd + 1) == '{') {
           // PARSE IMPORTS
@@ -500,8 +457,25 @@ public class ArcadeDBServer implements ServerLogger {
             final String commandType = command.substring(0, commandSeparator).toLowerCase();
             final String commandParams = command.substring(commandSeparator + 1);
 
+            database = existsDatabase(dbName) ? getDatabase(dbName) : null;
+
             switch (commandType) {
+            case "restore":
+              // DROP THE DATABASE BECAUSE THE RESTORE OPERATION WILL TAKE CARE OF CREATING A NEW DATABASE
+              if (database != null) {
+                database.drop();
+                databases.remove(dbName);
+              }
+              new Restore(commandParams, configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + "/" + dbName).restoreDatabase();
+              getDatabase(dbName);
+              break;
+
             case "import":
+              if (database == null) {
+                // CREATE THE DATABASE
+                LogManager.instance().log(this, Level.INFO, "Creating default database '%s'...", null, dbName);
+                database = createDatabase(dbName);
+              }
               database.command("sql", "import database " + commandParams);
               break;
 
@@ -509,6 +483,47 @@ public class ArcadeDBServer implements ServerLogger {
               LogManager.instance().log(this, Level.SEVERE, "Unsupported command %s in startup command: '%s'", null, commandType);
             }
           }
+        }
+      }
+    }
+  }
+
+  private void parseCredentials(final String dbName, final String credentials) {
+    final String[] credentialPairs = credentials.split(",");
+    for (String credential : credentialPairs) {
+
+      final String[] credentialParts = credential.split(":");
+
+      if (credentialParts.length < 2) {
+        if (!security.existsUser(credential)) {
+          LogManager.instance()
+              .log(this, Level.WARNING, "Cannot create user '%s' to access database '%s' because the user does not exist", null, credential, dbName);
+        }
+        //FIXME: else if user exists, should we give him access to the dbName?
+      } else {
+        final String userName = credentialParts[0];
+        final String userPassword = credentialParts[1];
+        final String userRole = credentialParts.length > 2 ? credentialParts[2] : null;
+
+        if (security.existsUser(userName)) {
+          // EXISTING USER: CHECK CREDENTIALS
+          try {
+            final ServerSecurityUser user = security.authenticate(userName, userPassword, dbName);
+            if (!user.getAuthorizedDatabases().contains(dbName)) {
+              // UPDATE DB LIST
+              user.addDatabase(dbName, new String[] { userRole });
+              security.saveUsers();
+            }
+
+          } catch (ServerSecurityException e) {
+            LogManager.instance()
+                .log(this, Level.WARNING, "Cannot create database '%s' because the user '%s' already exists with a different password", null, dbName, userName);
+          }
+        } else {
+          // CREATE A NEW USER
+          security.createUser(new JSONObject().put("name", userName)//
+              .put("password", security.encodePassword(userPassword))//
+              .put("databases", new JSONObject().put(dbName, new JSONArray())));
         }
       }
     }
