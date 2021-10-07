@@ -5,10 +5,13 @@ on:
   push:
     branches:
       - main
+  strategy:
+    matrix:
+      os: [ ubuntu-latest, windows-latest ]
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
 
     steps:
       - uses: xembly/workflow-manager@v1
