@@ -41,6 +41,15 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Test Report new
+        uses: dorny/test-reporter@v1
+        if: success() || failure()    # run this step even if previous step failed
+        with:
+          name: Tests            # Name of the check run which will be created
+          path: '**/target/surefire-reports/TEST*.xml'    # Path to test results
+          reporter: java-junit        # Format of test results
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Codacy coverage reporter
         if: ${{ matrix.os != 'windows-latest' }}
         uses: codacy/codacy-coverage-reporter-action@v1
