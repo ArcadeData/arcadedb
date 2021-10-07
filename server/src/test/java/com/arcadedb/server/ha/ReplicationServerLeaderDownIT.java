@@ -27,10 +27,10 @@ import com.arcadedb.server.TestCallback;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.Set;
-import java.util.concurrent.Callable;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.logging.Level;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+import java.util.logging.*;
 
 public class ReplicationServerLeaderDownIT extends ReplicationServerIT {
   private final AtomicInteger messages = new AtomicInteger();
@@ -53,8 +53,6 @@ public class ReplicationServerLeaderDownIT extends ReplicationServerIT {
 
     final RemoteDatabase db = new RemoteDatabase(server1AddressParts[0], Integer.parseInt(server1AddressParts[1]), getDatabaseName(), "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
-
-    db.begin();
 
     LogManager.instance().log(this, Level.INFO, "Executing %s transactions with %d vertices each...", null, getTxs(), getVerticesPerTx());
 
@@ -90,15 +88,11 @@ public class ReplicationServerLeaderDownIT extends ReplicationServerIT {
         }
       }
 
-      db.commit();
-
       if (counter % 1000 == 0) {
         LogManager.instance().log(this, Level.INFO, "- Progress %d/%d", null, counter, (getTxs() * getVerticesPerTx()));
         if (isPrintingConfigurationAtEveryStep())
           getLeaderServer().getHA().printClusterConfiguration();
       }
-
-      db.begin();
     }
 
     LogManager.instance().log(this, Level.INFO, "Done");

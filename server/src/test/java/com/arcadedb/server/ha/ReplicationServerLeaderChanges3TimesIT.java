@@ -32,11 +32,10 @@ import com.arcadedb.utility.Pair;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.Set;
-import java.util.concurrent.Callable;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.logging.Level;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+import java.util.logging.*;
 
 public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT {
   private final AtomicInteger                       messagesInTotal    = new AtomicInteger();
@@ -57,9 +56,8 @@ public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT 
     final String server1Address = getServer(0).getHttpServer().getListeningAddress();
     final String[] server1AddressParts = server1Address.split(":");
 
-    final RemoteDatabase db = new RemoteDatabase(server1AddressParts[0], Integer.parseInt(server1AddressParts[1]), getDatabaseName(), "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
-
-    db.begin();
+    final RemoteDatabase db = new RemoteDatabase(server1AddressParts[0], Integer.parseInt(server1AddressParts[1]), getDatabaseName(), "root",
+        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
     LogManager.instance().log(this, Level.INFO, "Executing %s transactions with %d vertices each...", null, getTxs(), getVerticesPerTx());
 
@@ -82,8 +80,6 @@ public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT 
             Assertions.assertTrue(props.contains("name"));
             Assertions.assertEquals("distributed-test", result.getProperty("name"));
           }
-
-          db.commit();
 
         } catch (DuplicatedKeyException | NeedRetryException | TimeoutException | TransactionException e) {
           // IGNORE IT
@@ -109,8 +105,6 @@ public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT 
         if (isPrintingConfigurationAtEveryStep())
           getLeaderServer().getHA().printClusterConfiguration();
       }
-
-      db.begin();
     }
 
     LogManager.instance().log(this, Level.INFO, "Done");
