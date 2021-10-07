@@ -358,42 +358,30 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
    */
   @Override
   public void kill() {
-    try {
-      if (async != null)
-        async.kill();
-    } catch (Throwable e) {
-      LogManager.instance().log(this, Level.WARNING, "Error on stopping asynchronous manager during kill operation for database '%s'", e, name);
-    }
+    if (async != null)
+      async.kill();
 
-    try {
-      if (getTransaction().isActive())
-        // ROLLBACK ANY PENDING OPERATION
-        getTransaction().kill();
-    } catch (Throwable e) {
-      LogManager.instance().log(this, Level.WARNING, "Error on clearing transaction status during kill operation for database '%s'", e, name);
-    }
+    if (getTransaction().isActive())
+      // ROLLBACK ANY PENDING OPERATION
+      getTransaction().kill();
 
     try {
       schema.close();
       pageManager.kill();
       fileManager.close();
       transactionManager.kill();
-    } catch (Throwable e) {
-      LogManager.instance().log(this, Level.WARNING, "Error on closing internal components during kill operation for database '%s'", e, name);
+
+      if (lockFile != null) {
+        try {
+          lockFileIO.release();
+        } catch (IOException e) {
+          // IGNORE IT
+        }
+      }
+
     } finally {
       open = false;
       Profiler.INSTANCE.unregisterDatabase(EmbeddedDatabase.this);
-    }
-
-    if (lockFile != null) {
-      try {
-        lockFileIO.release();
-      } catch (IOException e) {
-        // IGNORE IT
-        LogManager.instance().log(this, Level.WARNING, "Error on deleting lock file '%s'", e, lockFile);
-      }
-      if (!lockFile.delete())
-        LogManager.instance().log(this, Level.WARNING, "Error on deleting lock file '%s'", null, lockFile);
     }
   }
 
