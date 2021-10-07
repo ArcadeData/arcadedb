@@ -122,8 +122,6 @@ public class HARandomCrashIT extends ReplicationServerIT {
     final RemoteDatabase db = new RemoteDatabase(server1AddressParts[0], Integer.parseInt(server1AddressParts[1]), getDatabaseName(), "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
-    db.begin();
-
     LogManager.instance().log(this, Level.INFO, "TEST: Executing %s transactions with %d vertices each...", null, getTxs(), getVerticesPerTx());
 
     long counter = 0;
@@ -133,8 +131,6 @@ public class HARandomCrashIT extends ReplicationServerIT {
 
       for (int retry = 0; retry < getMaxRetry(); ++retry) {
         try {
-
-          db.begin();
 
           for (int i = 0; i < getVerticesPerTx(); ++i) {
 
@@ -150,8 +146,6 @@ public class HARandomCrashIT extends ReplicationServerIT {
             Assertions.assertTrue(props.contains("name"));
             Assertions.assertEquals("distributed-test", result.getProperty("name"));
           }
-
-          db.commit();
 
           if (delay > 0) {
             try {

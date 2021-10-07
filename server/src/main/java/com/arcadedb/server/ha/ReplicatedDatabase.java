@@ -632,13 +632,18 @@ public class ReplicatedDatabase implements DatabaseInternal {
     final AtomicReference<Object> result = new AtomicReference<>();
 
     // ACQUIRE A DATABASE WRITE LOCK. THE LOCK IS REENTRANT, SO THE ACQUISITION DOWN THE LINE IS GOING TO PASS BECAUSE ALREADY ACQUIRED HERE
-    final DatabaseChangeStructureRequest command = (DatabaseChangeStructureRequest) proxied.executeInWriteLock(() -> {
-      if (!ha.isLeader())
-        return callback.call();
+    final DatabaseChangeStructureRequest command = proxied.executeInWriteLock(() -> {
+      if (!ha.isLeader()) {
+        // NOT THE LEADER< NOT RESPONSIBLE TO SEND CHANGES TO OTHER SERVERS
+        result.set(callback.call());
+        return null;
+      }
 
-      if (!proxied.getFileManager().startRecordingChanges())
+      if (!proxied.getFileManager().startRecordingChanges()) {
         // ALREADY RECORDING
-        return callback.call();
+        result.set(callback.call());
+        return null;
+      }
 
       try {
         result.set(callback.call());
@@ -663,9 +668,11 @@ public class ReplicatedDatabase implements DatabaseInternal {
       }
     });
 
-    // SEND THE COMMAND OUTSIDE THE EXCLUSIVE LOCK
-    final int quorum = ha.getConfiguredServers() - 1;
-    ha.sendCommandToReplicasWithQuorum(command, quorum, timeout);
+    if (command != null) {
+      // SEND THE COMMAND OUTSIDE THE EXCLUSIVE LOCK
+      final int quorum = ha.getConfiguredServers() - 1;
+      ha.sendCommandToReplicasWithQuorum(command, quorum, timeout);
+    }
 
     return result.get();
   }

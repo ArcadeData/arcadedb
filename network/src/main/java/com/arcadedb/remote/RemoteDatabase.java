@@ -160,14 +160,6 @@ public class RemoteDatabase extends RWLockContext {
     });
   }
 
-  public void begin() {
-    command("SQL", "begin");
-  }
-
-  public void commit() {
-    command("SQL", "commit");
-  }
-
   public void rollback() {
     command("SQL", "rollback");
   }
@@ -248,7 +240,7 @@ public class RemoteDatabase extends RWLockContext {
             String detail;
             String reason;
             String exception;
-            String exceptionArg;
+            String exceptionArgs;
             String responsePayload = null;
             try {
               responsePayload = FileUtils.readStreamAsString(connection.getErrorStream(), charset);
@@ -256,7 +248,7 @@ public class RemoteDatabase extends RWLockContext {
               reason = response.getString("error");
               detail = response.has("detail") ? response.getString("detail") : null;
               exception = response.has("exception") ? response.getString("exception") : null;
-              exceptionArg = response.has("exceptionArg") ? response.getString("exceptionArg") : null;
+              exceptionArgs = response.has("exceptionArgs") ? response.getString("exceptionArgs") : null;
             } catch (Exception e) {
               lastException = e;
               // TODO CHECK IF THE COMMAND NEEDS TO BE RE-EXECUTED OR NOT
@@ -271,13 +263,13 @@ public class RemoteDatabase extends RWLockContext {
 
             if (exception != null) {
               if (exception.equals(ServerIsNotTheLeaderException.class.getName())) {
-                throw new ServerIsNotTheLeaderException(detail.substring(0, detail.lastIndexOf('.')), exceptionArg);
+                throw new ServerIsNotTheLeaderException(detail.substring(0, detail.lastIndexOf('.')), exceptionArgs);
               } else if (exception.equals(QuorumNotReachedException.class.getName())) {
                 lastException = new QuorumNotReachedException(detail);
                 continue;
               } else if (exception.equals(DuplicatedKeyException.class.getName())) {
-                final String[] exceptionArgs = exceptionArg.split("\\|");
-                throw new DuplicatedKeyException(exceptionArgs[0], exceptionArgs[1], new RID(null, exceptionArgs[2]));
+                final String[] exceptionArgsParts = exceptionArgs.split("\\|");
+                throw new DuplicatedKeyException(exceptionArgsParts[0], exceptionArgsParts[1], new RID(null, exceptionArgsParts[2]));
               } else if (exception.equals(ConcurrentModificationException.class.getName())) {
                 throw new ConcurrentModificationException(detail);
               } else if (exception.equals(TransactionException.class.getName())) {
