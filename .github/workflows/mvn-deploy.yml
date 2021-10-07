@@ -7,10 +7,10 @@ on:
       - main
 
 jobs:
-  strategy:
-    matrix:
-      os: [ ubuntu-latest, windows-latest ]
   build:
+    strategy:
+      matrix:
+        os: [ ubuntu-latest, windows-latest ]
     runs-on: ${{ matrix.os }}
 
     steps:
