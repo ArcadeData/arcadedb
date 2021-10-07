@@ -31,7 +31,7 @@ jobs:
           cache: 'maven'
 
       - name: Test
-        run: mvn verify -Pintegration -Pcoverage -Dsurefire.useFile=false --batch-mode --quiet --errors --fail-at-end --show-version  --file pom.xml
+        run: mvn verify -Pintegration -Pcoverage "-Dsurefire.useFile=false" --batch-mode --quiet --errors --fail-at-end --show-version  --file pom.xml
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
