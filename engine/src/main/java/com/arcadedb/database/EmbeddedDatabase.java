@@ -288,8 +288,13 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   @Override
   public void close() {
     if (async != null) {
-      // EXECUTE OUTSIDE LOCK
-      async.waitCompletion();
+      try {
+        // EXECUTE OUTSIDE LOCK
+        async.waitCompletion();
+        async.close();
+      } catch (Throwable e) {
+        LogManager.instance().log(this, Level.WARNING, "Error on stopping asynchronous manager during closing operation for database '%s'", e, name);
+      }
     }
 
     executeInWriteLock(() -> {
