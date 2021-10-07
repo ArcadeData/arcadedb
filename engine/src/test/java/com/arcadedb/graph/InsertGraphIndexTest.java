@@ -38,23 +38,21 @@ public class InsertGraphIndexTest extends TestHelper {
 
   @Test
   public void testGraph() {
-    final InsertGraphIndexTest test = new InsertGraphIndexTest();
-
     // PHASE 1
     {
-      test.createSchema();
-      test.createVertices();
-      test.loadVertices();
-      test.createEdges();
+      createSchema();
+      createVertices();
+      loadVertices();
+      createEdges();
     }
 
     // PHASE 2
     {
-      Vertex[] cachedVertices = test.loadVertices();
-      test.checkGraph(cachedVertices);
+      Vertex[] cachedVertices = loadVertices();
+      checkGraph(cachedVertices);
     }
 
-    test.database.close();
+    database.close();
   }
 
   @Override

@@ -75,7 +75,7 @@ public abstract class TestHelper {
   }
 
   public static void executeInNewDatabase(final String testName, final DatabaseTest<DatabaseInternal> callback) throws Exception {
-    try (final DatabaseFactory factory = new DatabaseFactory(testName)) {
+    try (final DatabaseFactory factory = new DatabaseFactory("./target/" + testName)) {
       if (factory.exists())
         factory.open().drop();
 
