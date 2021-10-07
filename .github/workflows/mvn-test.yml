@@ -42,7 +42,7 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Codacy coverage reporter
-        if: ${{ matrix.os != "windows-latest" }}
+        if: ${{ matrix.os != 'windows-latest' }}
         uses: codacy/codacy-coverage-reporter-action@v1
         with:
           project-token: ${{ secrets.CODACY_PROJECT_TOKEN }}
