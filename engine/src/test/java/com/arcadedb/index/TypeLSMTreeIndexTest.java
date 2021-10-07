@@ -17,7 +17,10 @@ package com.arcadedb.index;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
-import com.arcadedb.database.*;
+import com.arcadedb.database.Document;
+import com.arcadedb.database.DocumentCallback;
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.log.LogManager;
@@ -28,8 +31,8 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.logging.Level;
+import java.util.concurrent.atomic.*;
+import java.util.logging.*;
 
 public class TypeLSMTreeIndexTest extends TestHelper {
   private static final int    TOT       = 100000;
@@ -38,89 +41,43 @@ public class TypeLSMTreeIndexTest extends TestHelper {
 
   @Test
   public void testGet() {
-    database.transaction(new Database.TransactionScope() {
-      @Override
-      public void execute() {
+    database.transaction(() -> {
 
-        int total = 0;
+      int total = 0;
 
-        final List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      final List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
 
-        for (int i = 0; i < TOT; ++i) {
-          final List<Integer> results = new ArrayList<>();
-          for (Index index : indexes) {
-            final IndexCursor value = index.get(new Object[] { i });
-            if (value.hasNext())
-              results.add((Integer) ((Document) value.next().getRecord()).get("id"));
-          }
-
-          total++;
-          Assertions.assertEquals(1, results.size());
-          Assertions.assertEquals(i, (int) results.get(0));
+      for (int i = 0; i < TOT; ++i) {
+        final List<Integer> results = new ArrayList<>();
+        for (Index index : indexes) {
+          final IndexCursor value = index.get(new Object[] { i });
+          if (value.hasNext())
+            results.add((Integer) ((Document) value.next().getRecord()).get("id"));
         }
 
-        Assertions.assertEquals(TOT, total);
+        total++;
+        Assertions.assertEquals(1, results.size());
+        Assertions.assertEquals(i, (int) results.get(0));
       }
+
+      Assertions.assertEquals(TOT, total);
     });
   }
 
   @Test
   public void testGetAsRange() {
-    database.transaction(new Database.TransactionScope() {
-      @Override
-      public void execute() {
+    database.transaction(() -> {
 
-        final List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
-        for (int i = 0; i < TOT; ++i) {
-          int total = 0;
+      final List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      for (int i = 0; i < TOT; ++i) {
+        int total = 0;
 
-          for (Index index : indexes) {
-            Assertions.assertNotNull(index);
+        for (Index index : indexes) {
+          Assertions.assertNotNull(index);
 
-            final IndexCursor iterator;
-            try {
-              iterator = ((RangeIndex) index).range(true, new Object[] { i }, true, new Object[] { i }, true);
-              Assertions.assertNotNull(iterator);
-
-              while (iterator.hasNext()) {
-                Identifiable value = iterator.next();
-
-                Assertions.assertNotNull(value);
-
-                int fieldValue = (int) value.asDocument().get("id");
-                Assertions.assertEquals(i, fieldValue);
-
-                Assertions.assertNotNull(iterator.getKeys());
-                Assertions.assertEquals(1, iterator.getKeys().length);
-
-                total++;
-              }
-            } catch (Exception e) {
-              Assertions.fail(e);
-            }
-          }
-
-          Assertions.assertEquals(1, total, "Get item with id=" + i);
-        }
-      }
-    });
-  }
-
-  @Test
-  public void testRangeFromHead() {
-    database.transaction(new Database.TransactionScope() {
-      @Override
-      public void execute() {
-
-        final List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
-        for (int i = 0; i < TOT - 1; ++i) {
-          int total = 0;
-
-          for (Index index : indexes) {
-            Assertions.assertNotNull(index);
-
-            final IndexCursor iterator;
-            iterator = ((RangeIndex) index).range(true, new Object[] { i }, true, new Object[] { i + 1 }, true);
+          final IndexCursor iterator;
+          try {
+            iterator = ((RangeIndex) index).range(true, new Object[] { i }, true, new Object[] { i }, true);
             Assertions.assertNotNull(iterator);
 
             while (iterator.hasNext()) {
@@ -129,17 +86,54 @@ public class TypeLSMTreeIndexTest extends TestHelper {
               Assertions.assertNotNull(value);
 
               int fieldValue = (int) value.asDocument().get("id");
-              Assertions.assertTrue(fieldValue >= i && fieldValue <= i + 1);
+              Assertions.assertEquals(i, fieldValue);
 
               Assertions.assertNotNull(iterator.getKeys());
               Assertions.assertEquals(1, iterator.getKeys().length);
 
-              ++total;
+              total++;
             }
+          } catch (Exception e) {
+            Assertions.fail(e);
           }
-
-          Assertions.assertEquals(2, total, "range " + i + "-" + (i + 1));
         }
+
+        Assertions.assertEquals(1, total, "Get item with id=" + i);
+      }
+    });
+  }
+
+  @Test
+  public void testRangeFromHead() {
+    database.transaction(() -> {
+
+      final List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      for (int i = 0; i < TOT - 1; ++i) {
+        int total = 0;
+
+        for (Index index : indexes) {
+          Assertions.assertNotNull(index);
+
+          final IndexCursor iterator;
+          iterator = ((RangeIndex) index).range(true, new Object[] { i }, true, new Object[] { i + 1 }, true);
+          Assertions.assertNotNull(iterator);
+
+          while (iterator.hasNext()) {
+            Identifiable value = iterator.next();
+
+            Assertions.assertNotNull(value);
+
+            int fieldValue = (int) value.asDocument().get("id");
+            Assertions.assertTrue(fieldValue >= i && fieldValue <= i + 1);
+
+            Assertions.assertNotNull(iterator.getKeys());
+            Assertions.assertEquals(1, iterator.getKeys().length);
+
+            ++total;
+          }
+        }
+
+        Assertions.assertEquals(2, total, "range " + i + "-" + (i + 1));
       }
     });
   }
@@ -219,397 +213,441 @@ public class TypeLSMTreeIndexTest extends TestHelper {
 
   @Test
   public void testScanIndexAscending() {
-    database.transaction(new Database.TransactionScope() {
-      @Override
-      public void execute() {
+    database.transaction(() -> {
 
+      try {
+        // WAIT FOR THE INDEX TO BE COMPACTED
+        Thread.sleep(1000);
+      } catch (InterruptedException e) {
+        e.printStackTrace();
+      }
+
+      int total = 0;
+
+      final List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      for (Index index : indexes) {
+        Assertions.assertNotNull(index);
+
+        final IndexCursor iterator;
         try {
-          // WAIT FOR THE INDEX TO BE COMPACTED
-          Thread.sleep(1000);
-        } catch (InterruptedException e) {
-          e.printStackTrace();
-        }
-
-        int total = 0;
-
-        final List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
-        for (Index index : indexes) {
-          Assertions.assertNotNull(index);
-
-          final IndexCursor iterator;
-          try {
-            iterator = ((RangeIndex) index).iterator(true);
+          iterator = ((RangeIndex) index).iterator(true);
 
 //            LogManager.instance()
 //                .log(this, Level.INFO, "*****************************************************************************\nCURSOR BEGIN%s", iterator.dumpStats());
 
-            Assertions.assertNotNull(iterator);
+          Assertions.assertNotNull(iterator);
 
-            while (iterator.hasNext()) {
-              Assertions.assertNotNull(iterator.next());
+          while (iterator.hasNext()) {
+            Assertions.assertNotNull(iterator.next());
 
-              Assertions.assertNotNull(iterator.getKeys());
-              Assertions.assertEquals(1, iterator.getKeys().length);
+            Assertions.assertNotNull(iterator.getKeys());
+            Assertions.assertEquals(1, iterator.getKeys().length);
 
-              total++;
-            }
+            total++;
+          }
 
 //            LogManager.instance().log(this, Level.INFO, "*****************************************************************************\nCURSOR END total=%d %s", total,
 //                iterator.dumpStats());
 
-          } catch (Exception e) {
-            Assertions.fail(e);
-          }
+        } catch (Exception e) {
+          Assertions.fail(e);
         }
-
-        Assertions.assertEquals(TOT, total);
       }
+
+      Assertions.assertEquals(TOT, total);
     });
   }
 
   @Test
   public void testScanIndexDescending() {
-    database.transaction(new Database.TransactionScope() {
-      @Override
-      public void execute() {
+    database.transaction(() -> {
 
-        try {
-          // WAIT FOR THE INDEX TO BE COMPACTED
-          Thread.sleep(1000);
-        } catch (InterruptedException e) {
-          e.printStackTrace();
-        }
-
-        int total = 0;
-
-        final List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
-        for (Index index : indexes) {
-          Assertions.assertNotNull(index);
-
-          final IndexCursor iterator;
-          try {
-            iterator = ((RangeIndex) index).iterator(false);
-            Assertions.assertNotNull(iterator);
-
-            while (iterator.hasNext()) {
-              Assertions.assertNotNull(iterator.next());
-
-              Assertions.assertNotNull(iterator.getKeys());
-              Assertions.assertEquals(1, iterator.getKeys().length);
-
-              //LogManager.instance().log(this, Level.INFO, "Index %s Key %s", null, index, Arrays.toString(iterator.getKeys()));
-
-              total++;
-            }
-          } catch (Exception e) {
-            Assertions.fail(e);
-          }
-        }
-
-        Assertions.assertEquals(TOT, total);
+      try {
+        // WAIT FOR THE INDEX TO BE COMPACTED
+        Thread.sleep(1000);
+      } catch (InterruptedException e) {
+        e.printStackTrace();
       }
+
+      int total = 0;
+
+      final List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      for (Index index : indexes) {
+        Assertions.assertNotNull(index);
+
+        final IndexCursor iterator;
+        try {
+          iterator = ((RangeIndex) index).iterator(false);
+          Assertions.assertNotNull(iterator);
+
+          while (iterator.hasNext()) {
+            Assertions.assertNotNull(iterator.next());
+
+            Assertions.assertNotNull(iterator.getKeys());
+            Assertions.assertEquals(1, iterator.getKeys().length);
+
+            //LogManager.instance().log(this, Level.INFO, "Index %s Key %s", null, index, Arrays.toString(iterator.getKeys()));
+
+            total++;
+          }
+        } catch (Exception e) {
+          Assertions.fail(e);
+        }
+      }
+
+      Assertions.assertEquals(TOT, total);
     });
   }
 
   @Test
   public void testScanIndexAscendingPartialInclusive() {
-    database.transaction(new Database.TransactionScope() {
-      @Override
-      public void execute() {
+    database.transaction(() -> {
 
-        int total = 0;
+      int total = 0;
 
-        final List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
-        for (Index index : indexes) {
-          Assertions.assertNotNull(index);
+      final List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      for (Index index : indexes) {
+        Assertions.assertNotNull(index);
 
-          final IndexCursor iterator;
-          try {
-            iterator = ((RangeIndex) index).iterator(true, new Object[] { 10 }, true);
+        final IndexCursor iterator;
+        try {
+          iterator = ((RangeIndex) index).iterator(true, new Object[] { 10 }, true);
 
-            Assertions.assertNotNull(iterator);
+          Assertions.assertNotNull(iterator);
 
-            while (iterator.hasNext()) {
-              Assertions.assertNotNull(iterator.next());
+          while (iterator.hasNext()) {
+            Assertions.assertNotNull(iterator.next());
 
-              Assertions.assertNotNull(iterator.getKeys());
-              Assertions.assertEquals(1, iterator.getKeys().length);
+            Assertions.assertNotNull(iterator.getKeys());
+            Assertions.assertEquals(1, iterator.getKeys().length);
 
-              total++;
-            }
-          } catch (Exception e) {
-            Assertions.fail(e);
+            total++;
           }
+        } catch (Exception e) {
+          Assertions.fail(e);
         }
-
-        Assertions.assertEquals(TOT - 10, total);
       }
+
+      Assertions.assertEquals(TOT - 10, total);
     });
   }
 
   @Test
   public void testScanIndexAscendingPartialExclusive() {
-    database.transaction(new Database.TransactionScope() {
-      @Override
-      public void execute() {
+    database.transaction(() -> {
 
-        int total = 0;
+      int total = 0;
 
-        final List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
-        for (Index index : indexes) {
-          Assertions.assertNotNull(index);
+      final List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      for (Index index : indexes) {
+        Assertions.assertNotNull(index);
 
-          final IndexCursor iterator;
-          try {
-            iterator = ((RangeIndex) index).iterator(true, new Object[] { 10 }, false);
+        final IndexCursor iterator;
+        try {
+          iterator = ((RangeIndex) index).iterator(true, new Object[] { 10 }, false);
 
-            Assertions.assertNotNull(iterator);
+          Assertions.assertNotNull(iterator);
 
-            while (iterator.hasNext()) {
-              Assertions.assertNotNull(iterator.next());
+          while (iterator.hasNext()) {
+            Assertions.assertNotNull(iterator.next());
 
-              Assertions.assertNotNull(iterator.getKeys());
-              Assertions.assertEquals(1, iterator.getKeys().length);
+            Assertions.assertNotNull(iterator.getKeys());
+            Assertions.assertEquals(1, iterator.getKeys().length);
 
-              total++;
-            }
-          } catch (Exception e) {
-            Assertions.fail(e);
+            total++;
           }
+        } catch (Exception e) {
+          Assertions.fail(e);
         }
-
-        Assertions.assertEquals(TOT - 11, total);
       }
+
+      Assertions.assertEquals(TOT - 11, total);
     });
   }
 
   @Test
   public void testScanIndexDescendingPartialInclusive() {
-    database.transaction(new Database.TransactionScope() {
-      @Override
-      public void execute() {
+    database.transaction(() -> {
 
-        int total = 0;
+      int total = 0;
 
-        final List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
-        for (Index index : indexes) {
-          Assertions.assertNotNull(index);
+      final List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      for (Index index : indexes) {
+        Assertions.assertNotNull(index);
 
-          final IndexCursor iterator;
-          try {
-            iterator = ((RangeIndex) index).iterator(false, new Object[] { 9 }, true);
-            Assertions.assertNotNull(iterator);
+        final IndexCursor iterator;
+        try {
+          iterator = ((RangeIndex) index).iterator(false, new Object[] { 9 }, true);
+          Assertions.assertNotNull(iterator);
 
-            while (iterator.hasNext()) {
-              Assertions.assertNotNull(iterator.next());
+          while (iterator.hasNext()) {
+            Assertions.assertNotNull(iterator.next());
 
-              Assertions.assertNotNull(iterator.getKeys());
-              Assertions.assertEquals(1, iterator.getKeys().length);
+            Assertions.assertNotNull(iterator.getKeys());
+            Assertions.assertEquals(1, iterator.getKeys().length);
 
-              total++;
-            }
-          } catch (Exception e) {
-            Assertions.fail(e);
+            total++;
           }
+        } catch (Exception e) {
+          Assertions.fail(e);
         }
-
-        Assertions.assertEquals(10, total);
       }
+
+      Assertions.assertEquals(10, total);
     });
   }
 
   @Test
   public void testScanIndexDescendingPartialExclusive() {
-    database.transaction(new Database.TransactionScope() {
-      @Override
-      public void execute() {
+    database.transaction(() -> {
 
-        int total = 0;
+      int total = 0;
 
-        final List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
-        for (Index index : indexes) {
-          Assertions.assertNotNull(index);
+      final List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      for (Index index : indexes) {
+        Assertions.assertNotNull(index);
 
-          final IndexCursor iterator;
-          try {
-            iterator = ((RangeIndex) index).iterator(false, new Object[] { 9 }, false);
-            Assertions.assertNotNull(iterator);
+        final IndexCursor iterator;
+        try {
+          iterator = ((RangeIndex) index).iterator(false, new Object[] { 9 }, false);
+          Assertions.assertNotNull(iterator);
 
-            while (iterator.hasNext()) {
-              Assertions.assertNotNull(iterator.next());
+          while (iterator.hasNext()) {
+            Assertions.assertNotNull(iterator.next());
 
-              Assertions.assertNotNull(iterator.getKeys());
-              Assertions.assertEquals(1, iterator.getKeys().length);
+            Assertions.assertNotNull(iterator.getKeys());
+            Assertions.assertEquals(1, iterator.getKeys().length);
 
-              total++;
-            }
-          } catch (Exception e) {
-            Assertions.fail(e);
+            total++;
           }
+        } catch (Exception e) {
+          Assertions.fail(e);
         }
-
-        Assertions.assertEquals(9, total);
       }
+
+      Assertions.assertEquals(9, total);
     });
   }
 
   @Test
   public void testScanIndexRangeInclusive2Inclusive() {
-    database.transaction(new Database.TransactionScope() {
-      @Override
-      public void execute() {
+    database.transaction(() -> {
 
-        int total = 0;
+      int total = 0;
 
-        final List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
-        for (Index index : indexes) {
-          Assertions.assertNotNull(index);
+      final List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      for (Index index : indexes) {
+        Assertions.assertNotNull(index);
 
-          final IndexCursor iterator;
-          try {
-            iterator = ((RangeIndex) index).range(true, new Object[] { 10 }, true, new Object[] { 19 }, true);
-            Assertions.assertNotNull(iterator);
+        final IndexCursor iterator;
+        try {
+          iterator = ((RangeIndex) index).range(true, new Object[] { 10 }, true, new Object[] { 19 }, true);
+          Assertions.assertNotNull(iterator);
 
-            while (iterator.hasNext()) {
-              Identifiable value = iterator.next();
+          while (iterator.hasNext()) {
+            Identifiable value = iterator.next();
 
-              Assertions.assertNotNull(value);
+            Assertions.assertNotNull(value);
 
-              int fieldValue = (int) value.asDocument().get("id");
-              Assertions.assertTrue(fieldValue >= 10 && fieldValue <= 19);
+            int fieldValue = (int) value.asDocument().get("id");
+            Assertions.assertTrue(fieldValue >= 10 && fieldValue <= 19);
 
-              Assertions.assertNotNull(iterator.getKeys());
-              Assertions.assertEquals(1, iterator.getKeys().length);
+            Assertions.assertNotNull(iterator.getKeys());
+            Assertions.assertEquals(1, iterator.getKeys().length);
 
-              total++;
-            }
-          } catch (Exception e) {
-            Assertions.fail(e);
+            total++;
           }
+        } catch (Exception e) {
+          Assertions.fail(e);
         }
-
-        Assertions.assertEquals(10, total);
       }
+
+      Assertions.assertEquals(10, total);
     });
   }
 
   @Test
   public void testScanIndexRangeInclusive2Exclusive() {
-    database.transaction(new Database.TransactionScope() {
-      @Override
-      public void execute() {
+    database.transaction(() -> {
 
-        int total = 0;
+      int total = 0;
 
-        final List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
-        for (Index index : indexes) {
-          Assertions.assertNotNull(index);
+      final List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      for (Index index : indexes) {
+        Assertions.assertNotNull(index);
 
-          final IndexCursor iterator;
-          try {
-            iterator = ((RangeIndex) index).range(true, new Object[] { 10 }, true, new Object[] { 19 }, false);
-            Assertions.assertNotNull(iterator);
+        final IndexCursor iterator;
+        try {
+          iterator = ((RangeIndex) index).range(true, new Object[] { 10 }, true, new Object[] { 19 }, false);
+          Assertions.assertNotNull(iterator);
 
-            while (iterator.hasNext()) {
-              Identifiable value = iterator.next();
+          while (iterator.hasNext()) {
+            Identifiable value = iterator.next();
 
-              Assertions.assertNotNull(value);
+            Assertions.assertNotNull(value);
 
-              int fieldValue = (int) value.asDocument().get("id");
-              Assertions.assertTrue(fieldValue >= 10 && fieldValue < 19);
+            int fieldValue = (int) value.asDocument().get("id");
+            Assertions.assertTrue(fieldValue >= 10 && fieldValue < 19);
 
-              Assertions.assertNotNull(iterator.getKeys());
-              Assertions.assertEquals(1, iterator.getKeys().length);
+            Assertions.assertNotNull(iterator.getKeys());
+            Assertions.assertEquals(1, iterator.getKeys().length);
 
-              total++;
-            }
-          } catch (Exception e) {
-            Assertions.fail(e);
+            total++;
           }
+        } catch (Exception e) {
+          Assertions.fail(e);
         }
-
-        Assertions.assertEquals(9, total);
       }
+
+      Assertions.assertEquals(9, total);
     });
   }
 
   @Test
   public void testScanIndexRangeExclusive2Inclusive() {
-    database.transaction(new Database.TransactionScope() {
-      @Override
-      public void execute() {
+    database.transaction(() -> {
 
-        int total = 0;
+      int total = 0;
 
-        final List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
-        for (Index index : indexes) {
-          Assertions.assertNotNull(index);
+      final List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      for (Index index : indexes) {
+        Assertions.assertNotNull(index);
 
-          final IndexCursor iterator;
-          try {
-            iterator = ((RangeIndex) index).range(true, new Object[] { 10 }, false, new Object[] { 19 }, true);
-            Assertions.assertNotNull(iterator);
+        final IndexCursor iterator;
+        try {
+          iterator = ((RangeIndex) index).range(true, new Object[] { 10 }, false, new Object[] { 19 }, true);
+          Assertions.assertNotNull(iterator);
 
-            while (iterator.hasNext()) {
-              Identifiable value = iterator.next();
+          while (iterator.hasNext()) {
+            Identifiable value = iterator.next();
 
-              Assertions.assertNotNull(value);
+            Assertions.assertNotNull(value);
 
-              int fieldValue = (int) value.asDocument().get("id");
-              Assertions.assertTrue(fieldValue > 10 && fieldValue <= 19);
+            int fieldValue = (int) value.asDocument().get("id");
+            Assertions.assertTrue(fieldValue > 10 && fieldValue <= 19);
 
-              Assertions.assertNotNull(iterator.getKeys());
-              Assertions.assertEquals(1, iterator.getKeys().length);
+            Assertions.assertNotNull(iterator.getKeys());
+            Assertions.assertEquals(1, iterator.getKeys().length);
 
-              total++;
-            }
-          } catch (Exception e) {
-            Assertions.fail(e);
+            total++;
           }
+        } catch (Exception e) {
+          Assertions.fail(e);
         }
-
-        Assertions.assertEquals(9, total);
       }
+
+      Assertions.assertEquals(9, total);
+    });
+  }
+
+  @Test
+  public void testScanIndexRangeExclusive2InclusiveInverse() {
+    database.transaction(() -> {
+
+      int total = 0;
+
+      final List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      for (Index index : indexes) {
+        Assertions.assertNotNull(index);
+
+        final IndexCursor iterator;
+        try {
+          iterator = ((RangeIndex) index).range(false, new Object[] { 19 }, false, new Object[] { 10 }, true);
+          Assertions.assertNotNull(iterator);
+
+          while (iterator.hasNext()) {
+            Identifiable value = iterator.next();
+
+            Assertions.assertNotNull(value);
+
+            int fieldValue = (int) value.asDocument().get("id");
+            Assertions.assertTrue(fieldValue >= 10 && fieldValue < 19);
+
+            Assertions.assertNotNull(iterator.getKeys());
+            Assertions.assertEquals(1, iterator.getKeys().length);
+
+            total++;
+          }
+        } catch (Exception e) {
+          Assertions.fail(e);
+        }
+      }
+
+      Assertions.assertEquals(9, total);
     });
   }
 
   @Test
   public void testScanIndexRangeExclusive2Exclusive() {
-    database.transaction(new Database.TransactionScope() {
-      @Override
-      public void execute() {
+    database.transaction(() -> {
 
-        int total = 0;
+      int total = 0;
 
-        final List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
-        for (Index index : indexes) {
-          Assertions.assertNotNull(index);
+      final List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      for (Index index : indexes) {
+        Assertions.assertNotNull(index);
 
-          final IndexCursor iterator;
-          try {
-            iterator = ((RangeIndex) index).range(true, new Object[] { 10 }, false, new Object[] { 19 }, false);
-            Assertions.assertNotNull(iterator);
+        final IndexCursor iterator;
+        try {
+          iterator = ((RangeIndex) index).range(true, new Object[] { 10 }, false, new Object[] { 19 }, false);
+          Assertions.assertNotNull(iterator);
 
-            while (iterator.hasNext()) {
-              Identifiable value = iterator.next();
+          while (iterator.hasNext()) {
+            Identifiable value = iterator.next();
 
-              Assertions.assertNotNull(value);
+            Assertions.assertNotNull(value);
 
-              int fieldValue = (int) value.asDocument().get("id");
-              Assertions.assertTrue(fieldValue > 10 && fieldValue < 19);
+            int fieldValue = (int) value.asDocument().get("id");
+            Assertions.assertTrue(fieldValue > 10 && fieldValue < 19);
 
-              Assertions.assertNotNull(iterator.getKeys());
-              Assertions.assertEquals(1, iterator.getKeys().length);
+            Assertions.assertNotNull(iterator.getKeys());
+            Assertions.assertEquals(1, iterator.getKeys().length);
 
-              total++;
-            }
-          } catch (Exception e) {
-            Assertions.fail(e);
+            total++;
           }
+        } catch (Exception e) {
+          Assertions.fail(e);
         }
-
-        Assertions.assertEquals(8, total);
       }
+
+      Assertions.assertEquals(8, total);
+    });
+  }
+
+  @Test
+  public void testScanIndexRangeExclusive2ExclusiveInverse() {
+    database.transaction(() -> {
+
+      int total = 0;
+
+      final List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      for (Index index : indexes) {
+        Assertions.assertNotNull(index);
+
+        final IndexCursor iterator;
+        try {
+          iterator = ((RangeIndex) index).range(false, new Object[] { 19 }, false, new Object[] { 10 }, false);
+          Assertions.assertNotNull(iterator);
+
+          while (iterator.hasNext()) {
+            Identifiable value = iterator.next();
+
+            Assertions.assertNotNull(value);
+
+            int fieldValue = (int) value.asDocument().get("id");
+            Assertions.assertTrue(fieldValue > 10 && fieldValue < 19);
+
+            Assertions.assertNotNull(iterator.getKeys());
+            Assertions.assertEquals(1, iterator.getKeys().length);
+
+            total++;
+          }
+        } catch (Exception e) {
+          Assertions.fail(e);
+        }
+      }
+
+      Assertions.assertEquals(8, total);
     });
   }
 
@@ -756,30 +794,27 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   }
 
   protected void beginTest() {
-    database.transaction(new Database.TransactionScope() {
-      @Override
-      public void execute() {
-        Assertions.assertFalse(database.getSchema().existsType(TYPE_NAME));
+    database.transaction(() -> {
+      Assertions.assertFalse(database.getSchema().existsType(TYPE_NAME));
 
-        final DocumentType type = database.getSchema().createDocumentType(TYPE_NAME, 3);
-        type.createProperty("id", Integer.class);
-        final Index typeIndex = database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
+      final DocumentType type = database.getSchema().createDocumentType(TYPE_NAME, 3);
+      type.createProperty("id", Integer.class);
+      final Index typeIndex = database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
 
-        for (int i = 0; i < TOT; ++i) {
-          final MutableDocument v = database.newDocument(TYPE_NAME);
-          v.set("id", i);
-          v.set("name", "Jay");
-          v.set("surname", "Miner");
+      for (int i = 0; i < TOT; ++i) {
+        final MutableDocument v = database.newDocument(TYPE_NAME);
+        v.set("id", i);
+        v.set("name", "Jay");
+        v.set("surname", "Miner");
 
-          v.save();
-        }
+        v.save();
+      }
 
-        database.commit();
-        database.begin();
+      database.commit();
+      database.begin();
 
-        for (Index index : ((TypeIndex) typeIndex).getIndexesOnBuckets()) {
-          Assertions.assertTrue(((IndexInternal) index).getStats().get("pages") > 1);
-        }
+      for (Index index : ((TypeIndex) typeIndex).getIndexesOnBuckets()) {
+        Assertions.assertTrue(((IndexInternal) index).getStats().get("pages") > 1);
       }
     });
   }
