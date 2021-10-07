@@ -48,7 +48,6 @@ jobs:
           name: Tests            # Name of the check run which will be created
           path: '**/target/surefire-reports/TEST*.xml'    # Path to test results
           reporter: java-junit        # Format of test results
-          github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Codacy coverage reporter
         if: ${{ matrix.os != 'windows-latest' }}
