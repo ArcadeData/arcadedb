@@ -299,19 +299,27 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
       open = false;
 
-      if (async != null)
-        async.close();
+      try {
+        if (async != null)
+          async.close();
+      } catch (Throwable e) {
+        LogManager.instance().log(this, Level.WARNING, "Error on stopping asynchronous manager during closing operation for database '%s'", e, name);
+      }
 
-      final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.removeContext(databasePath);
-      if (dbContext != null && !dbContext.transactions.isEmpty()) {
-        // ROLLBACK ALL THE TX FROM LAST TO FIRST
-        for (int i = dbContext.transactions.size() - 1; i > -1; --i) {
-          final TransactionContext tx = dbContext.transactions.get(i);
-          if (tx.isActive())
-            // ROLLBACK ANY PENDING OPERATION
-            tx.rollback();
+      try {
+        final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.removeContext(databasePath);
+        if (dbContext != null && !dbContext.transactions.isEmpty()) {
+          // ROLLBACK ALL THE TX FROM LAST TO FIRST
+          for (int i = dbContext.transactions.size() - 1; i > -1; --i) {
+            final TransactionContext tx = dbContext.transactions.get(i);
+            if (tx.isActive())
+              // ROLLBACK ANY PENDING OPERATION
+              tx.rollback();
+          }
+          dbContext.transactions.clear();
         }
-        dbContext.transactions.clear();
+      } catch (Throwable e) {
+        LogManager.instance().log(this, Level.WARNING, "Error on clearing transaction status during closing operation for database '%s'", e, name);
       }
 
       try {
@@ -320,22 +328,69 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
         fileManager.close();
         transactionManager.close();
         statementCache.clear();
-
-        if (lockFile != null) {
-          try {
-            lockFileIO.release();
-          } catch (IOException e) {
-            // IGNORE IT
-          }
-          if (!lockFile.delete())
-            LogManager.instance().log(this, Level.WARNING, "Error on deleting lock file '%s'", null, lockFile);
-        }
-
+      } catch (Throwable e) {
+        LogManager.instance().log(this, Level.WARNING, "Error on closing internal components during closing operation for database '%s'", e, name);
       } finally {
         Profiler.INSTANCE.unregisterDatabase(EmbeddedDatabase.this);
       }
+
+      if (lockFile != null) {
+        try {
+          lockFileIO.release();
+        } catch (IOException e) {
+          // IGNORE IT
+          LogManager.instance().log(this, Level.WARNING, "Error on deleting lock file '%s'", e, lockFile);
+        }
+        if (!lockFile.delete())
+          LogManager.instance().log(this, Level.WARNING, "Error on deleting lock file '%s'", null, lockFile);
+      }
+
       return null;
     });
+  }
+
+  /**
+   * Test only API.
+   */
+  @Override
+  public void kill() {
+    try {
+      if (async != null)
+        async.kill();
+    } catch (Throwable e) {
+      LogManager.instance().log(this, Level.WARNING, "Error on stopping asynchronous manager during kill operation for database '%s'", e, name);
+    }
+
+    try {
+      if (getTransaction().isActive())
+        // ROLLBACK ANY PENDING OPERATION
+        getTransaction().kill();
+    } catch (Throwable e) {
+      LogManager.instance().log(this, Level.WARNING, "Error on clearing transaction status during kill operation for database '%s'", e, name);
+    }
+
+    try {
+      schema.close();
+      pageManager.kill();
+      fileManager.close();
+      transactionManager.kill();
+    } catch (Throwable e) {
+      LogManager.instance().log(this, Level.WARNING, "Error on closing internal components during kill operation for database '%s'", e, name);
+    } finally {
+      open = false;
+      Profiler.INSTANCE.unregisterDatabase(EmbeddedDatabase.this);
+    }
+
+    if (lockFile != null) {
+      try {
+        lockFileIO.release();
+      } catch (IOException e) {
+        // IGNORE IT
+        LogManager.instance().log(this, Level.WARNING, "Error on deleting lock file '%s'", e, lockFile);
+      }
+      if (!lockFile.delete())
+        LogManager.instance().log(this, Level.WARNING, "Error on deleting lock file '%s'", null, lockFile);
+    }
   }
 
   public DatabaseAsyncExecutorImpl async() {
@@ -1189,38 +1244,6 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     }
 
     return false;
-  }
-
-  /**
-   * Test only API.
-   */
-  @Override
-  public void kill() {
-    if (async != null)
-      async.kill();
-
-    if (getTransaction().isActive())
-      // ROLLBACK ANY PENDING OPERATION
-      getTransaction().kill();
-
-    try {
-      schema.close();
-      pageManager.kill();
-      fileManager.close();
-      transactionManager.kill();
-
-      if (lockFile != null) {
-        try {
-          lockFileIO.release();
-        } catch (IOException e) {
-          // IGNORE IT
-        }
-      }
-
-    } finally {
-      open = false;
-      Profiler.INSTANCE.unregisterDatabase(EmbeddedDatabase.this);
-    }
   }
 
   @Override

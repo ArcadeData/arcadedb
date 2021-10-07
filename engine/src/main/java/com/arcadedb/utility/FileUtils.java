@@ -20,19 +20,14 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.log.LogManager;
 
 import java.io.*;
-import java.lang.management.ManagementFactory;
-import java.lang.management.ThreadInfo;
-import java.lang.management.ThreadMXBean;
-import java.nio.channels.FileChannel;
+import java.lang.management.*;
+import java.nio.channels.*;
 import java.nio.file.FileSystem;
-import java.nio.file.FileSystems;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.util.Locale;
-import java.util.logging.Level;
-import java.util.zip.GZIPOutputStream;
+import java.nio.file.*;
+import java.security.*;
+import java.util.*;
+import java.util.logging.*;
+import java.util.zip.*;
 
 public class FileUtils {
   public static final int    KILOBYTE = 1024;
@@ -155,25 +150,10 @@ public class FileUtils {
     return iSize + "b";
   }
 
-  public static String getDirectory(String iPath) {
-    iPath = getPath(iPath);
-    int pos = iPath.lastIndexOf("/");
-    if (pos == -1)
-      return "";
-
-    return iPath.substring(0, pos);
-  }
-
   public static void createDirectoryTree(final String iFileName) {
     final String[] fileDirectories = iFileName.split("/");
     for (int i = 0; i < fileDirectories.length - 1; ++i)
       new File(fileDirectories[i]).mkdir();
-  }
-
-  public static String getPath(final String iPath) {
-    if (iPath == null)
-      return null;
-    return iPath.replace('\\', '/');
   }
 
   public static void checkValidName(final String iFileName) throws IOException {
