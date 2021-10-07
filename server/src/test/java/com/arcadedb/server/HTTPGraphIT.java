@@ -176,6 +176,34 @@ public class HTTPGraphIT extends BaseGraphServerTest {
   }
 
   @Test
+  public void checkCommandLoadByRIDWithParameters() throws Exception {
+    testEachServer((serverIndex) -> {
+      HttpURLConnection connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").openConnection();
+
+      connection.setRequestMethod("POST");
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      formatPost(connection, "sql", "SELECT FROM :rid", Collections.singletonMap("rid", "#1:0"));
+      connection.connect();
+
+      try {
+        final String response = readResponse(connection);
+
+        LogManager.instance().log(this, Level.INFO, "Response: ", null, response);
+
+        Assertions.assertEquals(200, connection.getResponseCode());
+
+        Assertions.assertEquals("OK", connection.getResponseMessage());
+
+        Assertions.assertTrue(response.contains("V1"));
+
+      } finally {
+        connection.disconnect();
+      }
+    });
+  }
+
+  @Test
   public void checkRecordLoading() throws Exception {
     testEachServer((serverIndex) -> {
       HttpURLConnection connection = (HttpURLConnection) new URL(

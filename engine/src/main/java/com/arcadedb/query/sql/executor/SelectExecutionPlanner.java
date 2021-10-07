@@ -24,11 +24,48 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.RangeIndex;
 import com.arcadedb.index.TypeIndex;
-import com.arcadedb.query.sql.parser.*;
+import com.arcadedb.query.sql.parser.AggregateProjectionSplit;
+import com.arcadedb.query.sql.parser.AndBlock;
+import com.arcadedb.query.sql.parser.BaseExpression;
+import com.arcadedb.query.sql.parser.BinaryCompareOperator;
+import com.arcadedb.query.sql.parser.BinaryCondition;
+import com.arcadedb.query.sql.parser.BooleanExpression;
+import com.arcadedb.query.sql.parser.Bucket;
+import com.arcadedb.query.sql.parser.ContainsAnyCondition;
+import com.arcadedb.query.sql.parser.EqualsCompareOperator;
+import com.arcadedb.query.sql.parser.Expression;
+import com.arcadedb.query.sql.parser.FromClause;
+import com.arcadedb.query.sql.parser.FromItem;
+import com.arcadedb.query.sql.parser.FunctionCall;
+import com.arcadedb.query.sql.parser.GeOperator;
+import com.arcadedb.query.sql.parser.GroupBy;
+import com.arcadedb.query.sql.parser.GtOperator;
+import com.arcadedb.query.sql.parser.Identifier;
+import com.arcadedb.query.sql.parser.InCondition;
+import com.arcadedb.query.sql.parser.IndexIdentifier;
+import com.arcadedb.query.sql.parser.InputParameter;
+import com.arcadedb.query.sql.parser.LeOperator;
+import com.arcadedb.query.sql.parser.LetClause;
+import com.arcadedb.query.sql.parser.LetItem;
+import com.arcadedb.query.sql.parser.LtOperator;
+import com.arcadedb.query.sql.parser.OrBlock;
+import com.arcadedb.query.sql.parser.OrderBy;
+import com.arcadedb.query.sql.parser.OrderByItem;
+import com.arcadedb.query.sql.parser.PInteger;
+import com.arcadedb.query.sql.parser.Projection;
+import com.arcadedb.query.sql.parser.ProjectionItem;
+import com.arcadedb.query.sql.parser.RecordAttribute;
+import com.arcadedb.query.sql.parser.Rid;
+import com.arcadedb.query.sql.parser.SchemaIdentifier;
+import com.arcadedb.query.sql.parser.SelectStatement;
+import com.arcadedb.query.sql.parser.Statement;
+import com.arcadedb.query.sql.parser.SubQueryCollector;
+import com.arcadedb.query.sql.parser.Timeout;
+import com.arcadedb.query.sql.parser.WhereClause;
 import com.arcadedb.schema.DocumentType;
 
 import java.util.*;
-import java.util.stream.Collectors;
+import java.util.stream.*;
 
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
@@ -1117,6 +1154,10 @@ public class SelectExecutionPlanner {
   private void handleInputParamAsTarget(SelectExecutionPlan result, Set<String> filterClusters, QueryPlanningInfo info, InputParameter inputParam,
       CommandContext ctx, boolean profilingEnabled) {
     Object paramValue = inputParam.getValue(ctx.getInputParameters());
+
+    if (paramValue instanceof String && RID.is(paramValue))
+      paramValue = new RID(ctx.getDatabase(), (String) paramValue);
+
     if (paramValue == null) {
       result.chain(new EmptyStep(ctx, profilingEnabled));//nothing to return
     } else if (paramValue instanceof DocumentType) {
