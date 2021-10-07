@@ -348,12 +348,14 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
           lockFileIO.close();
           lockFile.delete();
           LogManager.instance().log(this, Level.INFO, "Closed lock file '%s'", null, lockFile);
+
+          if (lockFile.exists() && !lockFile.delete())
+            LogManager.instance().log(this, Level.WARNING, "Error on deleting lock file '%s'", null, lockFile);
+
         } catch (IOException e) {
           // IGNORE IT
           LogManager.instance().log(this, Level.WARNING, "Error on deleting lock file '%s'", e, lockFile);
         }
-        if (!lockFile.delete())
-          LogManager.instance().log(this, Level.WARNING, "Error on deleting lock file '%s'", null, lockFile);
       }
 
       return null;
@@ -1536,11 +1538,22 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
       lockFileIOChannel = lockFileIO.getChannel();
       lockFileLock = lockFileIOChannel.tryLock();
 
-      if (lockFileLock == null)
+      if (lockFileLock == null) {
+        lockFileIOChannel.close();
+        lockFileIO.close();
         throw new LockException("Database '" + name + "' is locked by another process (path=" + new File(databasePath).getAbsolutePath() + ")");
+      }
 
     } catch (Exception e) {
-      // IGNORE HERE
+      try {
+        if (lockFileIOChannel != null)
+          lockFileIOChannel.close();
+        if (lockFileIO != null)
+          lockFileIO.close();
+      } catch (Exception e2) {
+        // IGNORE
+      }
+
       throw new LockException("Database '" + name + "' is locked by another process (path=" + new File(databasePath).getAbsolutePath() + ")", e);
     }
   }
