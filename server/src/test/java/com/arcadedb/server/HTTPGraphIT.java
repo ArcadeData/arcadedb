@@ -35,14 +35,10 @@ public class HTTPGraphIT extends BaseGraphServerTest {
 
       connection.setRequestMethod("GET");
       connection.setRequestProperty("Authorization", "Basic " + Base64.getEncoder().encodeToString("root:wrong".getBytes()));
-
       try {
         connection.connect();
-
         readResponse(connection);
-
         Assertions.fail("Authentication was bypassed!");
-
       } catch (IOException e) {
         Assertions.assertTrue(e.toString().contains("403"));
       } finally {
@@ -58,14 +54,10 @@ public class HTTPGraphIT extends BaseGraphServerTest {
           "http://127.0.0.1:248" + serverIndex + "/api/v1/query/graph/sql/select%20from%20V1%20limit%201").openConnection();
 
       connection.setRequestMethod("GET");
-
       try {
         connection.connect();
-
         readResponse(connection);
-
         Assertions.fail("Authentication was bypassed!");
-
       } catch (IOException e) {
         Assertions.assertTrue(e.toString().contains("403"));
       } finally {
@@ -132,15 +124,10 @@ public class HTTPGraphIT extends BaseGraphServerTest {
 
       try {
         final String response = readResponse(connection);
-
         LogManager.instance().log(this, Level.INFO, "Response: ", null, response);
-
         Assertions.assertEquals(200, connection.getResponseCode());
-
         Assertions.assertEquals("OK", connection.getResponseMessage());
-
         Assertions.assertTrue(response.contains("V1"));
-
       } finally {
         connection.disconnect();
       }
@@ -160,15 +147,10 @@ public class HTTPGraphIT extends BaseGraphServerTest {
 
       try {
         final String response = readResponse(connection);
-
         LogManager.instance().log(this, Level.INFO, "Response: ", null, response);
-
         Assertions.assertEquals(200, connection.getResponseCode());
-
         Assertions.assertEquals("OK", connection.getResponseMessage());
-
         Assertions.assertTrue(response.contains("V1"));
-
       } finally {
         connection.disconnect();
       }
@@ -188,15 +170,10 @@ public class HTTPGraphIT extends BaseGraphServerTest {
 
       try {
         final String response = readResponse(connection);
-
         LogManager.instance().log(this, Level.INFO, "Response: ", null, response);
-
         Assertions.assertEquals(200, connection.getResponseCode());
-
         Assertions.assertEquals("OK", connection.getResponseMessage());
-
         Assertions.assertTrue(response.contains("V1"));
-
       } finally {
         connection.disconnect();
       }
@@ -216,15 +193,10 @@ public class HTTPGraphIT extends BaseGraphServerTest {
 
       try {
         final String response = readResponse(connection);
-
         LogManager.instance().log(this, Level.INFO, "Response: ", null, response);
-
         Assertions.assertEquals(200, connection.getResponseCode());
-
         Assertions.assertEquals("OK", connection.getResponseMessage());
-
         Assertions.assertTrue(response.contains("V1"));
-
       } finally {
         connection.disconnect();
       }
@@ -257,12 +229,9 @@ public class HTTPGraphIT extends BaseGraphServerTest {
 
         Assertions.assertEquals(200, connection.getResponseCode());
         Assertions.assertEquals("OK", connection.getResponseMessage());
-
         LogManager.instance().log(this, Level.INFO, "Response: ", null, response);
-
         final JSONObject responseAsJson = new JSONObject(response);
         Assertions.assertTrue(responseAsJson.has("result"));
-
         rid = responseAsJson.getString("result");
         Assertions.assertTrue(rid.contains("#"));
       } finally {
@@ -279,21 +248,14 @@ public class HTTPGraphIT extends BaseGraphServerTest {
 
       try {
         final String response = readResponse(connection2);
-
         LogManager.instance().log(this, Level.INFO, "Response: ", null, response);
-
         final JSONObject responseAsJson = new JSONObject(response);
         Assertions.assertTrue(responseAsJson.has("result"));
-
         final JSONObject object = responseAsJson.getJSONObject("result");
-
         Assertions.assertEquals(200, connection2.getResponseCode());
-
         Assertions.assertEquals("OK", connection2.getResponseMessage());
-
         Assertions.assertEquals(rid, object.remove("@rid").toString());
         Assertions.assertEquals("d", object.remove("@cat"));
-
         Assertions.assertEquals(payload.toMap(), object.toMap());
 
       } finally {
@@ -314,15 +276,10 @@ public class HTTPGraphIT extends BaseGraphServerTest {
 
       try {
         final String response = readResponse(connection);
-
         LogManager.instance().log(this, Level.INFO, "Response: ", null, response);
-
         Assertions.assertEquals(200, connection.getResponseCode());
-
         Assertions.assertEquals("OK", connection.getResponseMessage());
-
         Assertions.assertTrue(new JSONObject(response).getBoolean("result"));
-
       } finally {
         connection.disconnect();
       }
@@ -341,16 +298,11 @@ public class HTTPGraphIT extends BaseGraphServerTest {
 
       try {
         final String response = readResponse(connection);
-
         LogManager.instance().log(this, Level.INFO, "Response: ", null, response);
-
         Assertions.assertEquals(200, connection.getResponseCode());
-
         Assertions.assertEquals("OK", connection.getResponseMessage());
-
         JSONArray databases = new JSONObject(response).getJSONArray("result");
         Assertions.assertEquals(1, databases.length());
-
       } finally {
         connection.disconnect();
       }
