@@ -91,16 +91,12 @@ public class WALFile extends LockContext {
   }
 
   public synchronized void close() throws IOException {
-    LogManager.instance().log(this, Level.INFO, "Closing WAL file '%s'", null, filePath);
-
     this.open = false;
     if (channel != null)
       channel.close();
 
     if (file != null)
       file.close();
-
-    LogManager.instance().log(this, Level.INFO, "WAL file '%s' closed", null, filePath);
   }
 
   public synchronized void drop() throws IOException {
