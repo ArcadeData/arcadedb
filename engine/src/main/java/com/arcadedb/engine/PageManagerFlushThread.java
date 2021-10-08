@@ -45,9 +45,6 @@ public class PageManagerFlushThread extends Thread {
   }
 
   public void scheduleFlushOfPages(final List<MutablePage> pages) throws InterruptedException {
-    // REMOVE ME
-    LogManager.instance().log(this, Level.INFO, "Enqueuing flushing of pages %s in background", null, pages);
-
     // TRY TO INSERT THE PAGE IN THE QUEUE UNTIL THE THREAD IS STILL RUNNING
     while (running) {
       if (queue.offer(pages, 1, TimeUnit.SECONDS))
@@ -86,7 +83,6 @@ public class PageManagerFlushThread extends Thread {
     final List<MutablePage> pages = queue.poll(300L, TimeUnit.MILLISECONDS);
 
     if (pages != null) {
-      LogManager.instance().log(this, Level.INFO, "Found %d pages in queue", null, pages.size());
       for (MutablePage page : pages)
         try {
           pageManager.flushPage(page);

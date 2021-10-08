@@ -349,8 +349,7 @@ public class PageManager extends LockContext {
         if (!file.isOpen())
           throw new DatabaseMetadataException("Cannot flush pages on disk because file '" + file.getFileName() + "' is closed");
 
-        // REMOVE ME
-        LogManager.instance().log(this, Level.INFO, "Flushing page %s to disk (threadId=%d)...", null, page, Thread.currentThread().getId());
+        LogManager.instance().log(this, Level.FINE, "Flushing page %s to disk (threadId=%d)...", null, page, Thread.currentThread().getId());
 
         if (!flushOnlyAtClose) {
           putPageInCache(page.createImmutableView());

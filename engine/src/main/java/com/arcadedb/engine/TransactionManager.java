@@ -50,8 +50,6 @@ public class TransactionManager {
 
     this.logContext = LogManager.instance().getContext();
 
-    LogManager.instance().log(this, Level.INFO, "New TxManager for database %s", null, database.getDatabasePath());
-
     if (database.getMode() == PaginatedFile.MODE.READ_WRITE) {
       createWALFilePool();
 
@@ -124,8 +122,6 @@ public class TransactionManager {
     final File[] walFiles = dir.listFiles((dir1, name) -> name.endsWith(".wal"));
     if (walFiles.length > 0)
       LogManager.instance().log(this, Level.WARNING, "Error on removing all transaction files. Remained: %s", null, walFiles.length);
-
-    LogManager.instance().log(this, Level.INFO, "Closed TxManager for database %s", null, database.getDatabasePath());
   }
 
   public Binary createTransactionBuffer(final long txId, final List<MutablePage> pages) {
@@ -381,8 +377,6 @@ public class TransactionManager {
 
     if (!cleanWALFiles(false))
       LogManager.instance().log(this, Level.WARNING, "Error on removing all transaction files during kill. Remained: %s", null, inactiveWALFilePool);
-
-    LogManager.instance().log(this, Level.INFO, "Killed TxManager for database %s", null, database.getDatabasePath());
   }
 
   public long getNextTransactionId() {
@@ -478,8 +472,7 @@ public class TransactionManager {
     for (Iterator<WALFile> it = inactiveWALFilePool.iterator(); it.hasNext(); ) {
       final WALFile file = it.next();
 
-      // REMOVE ME
-      LogManager.instance().log(this, Level.INFO, "Inactive file %s contains %d pending pages to flush", null, file, file.getPendingPagesToFlush());
+      LogManager.instance().log(this, Level.FINE, "Inactive file %s contains %d pending pages to flush", null, file, file.getPendingPagesToFlush());
 
       if (!dropFiles || file.getPendingPagesToFlush() == 0) {
         // ALL PAGES FLUSHED, REMOVE THE FILE

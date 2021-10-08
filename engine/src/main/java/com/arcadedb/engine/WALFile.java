@@ -85,7 +85,7 @@ public class WALFile extends LockContext {
   public WALFile(final String filePath) throws FileNotFoundException {
     this.filePath = filePath;
     this.file = new RandomAccessFile(filePath, "rw");
-    LogManager.instance().log(this, Level.INFO, "Opened file '%s'", null, filePath);
+    LogManager.instance().log(this, Level.FINE, "Opened file '%s'", null, filePath);
     this.channel = file.getChannel();
     this.open = true;
   }
@@ -97,7 +97,7 @@ public class WALFile extends LockContext {
 
     if (file != null) {
       file.close();
-      LogManager.instance().log(this, Level.INFO, "Closed file '%s'", null, filePath);
+      LogManager.instance().log(this, Level.FINE, "Closed file '%s'", null, filePath);
     }
   }
 
@@ -290,8 +290,6 @@ public class WALFile extends LockContext {
       statsPagesWritten++;
     }
 
-    LogManager.instance().log(this, Level.INFO, "writeTransactionToFile %d %s pages. pageToFlush=%d", null, txId, pages.size(), pagesToFlush.get());
-
     statsBytesWritten += buffer.size();
 
     if (sync == FLUSH_TYPE.YES_NOMETADATA)
@@ -304,7 +302,6 @@ public class WALFile extends LockContext {
 
   public void notifyPageFlushed() {
     pagesToFlush.decrementAndGet();
-    LogManager.instance().log(this, Level.INFO, "notifyPageFlushed PageToFlush=%d", null, pagesToFlush.get());
   }
 
   public long getSize() throws IOException {
