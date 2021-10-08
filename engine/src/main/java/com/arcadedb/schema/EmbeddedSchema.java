@@ -144,6 +144,8 @@ public class EmbeddedSchema implements Schema {
         if (pf != null) {
           final Object mainComponent = pf.getMainComponent();
 
+          LogManager.instance().log(this, Level.SEVERE, "Main component '%s'", null, mainComponent);
+
           if (mainComponent instanceof Bucket)
             bucketMap.put(pf.getName(), (Bucket) mainComponent);
           else if (mainComponent instanceof IndexInternal)
@@ -1094,8 +1096,13 @@ public class EmbeddedSchema implements Schema {
           for (int i = 0; i < schemaBucket.length(); ++i) {
             final PaginatedComponent bucket = bucketMap.get(schemaBucket.getString(i));
             if (bucket == null) {
-              LogManager.instance()
-                  .log(this, Level.WARNING, "Cannot find bucket %s for type '%s', removing it from type configuration", null, schemaBucket.getString(i), type);
+              // REMOVE ME
+
+              LogManager.instance().log(this, Level.WARNING, "Cannot find bucket %s for type '%s', removing it from type configuration: bucketMap", null,
+                  schemaBucket.getString(i), type, bucketMap);
+
+//              LogManager.instance()
+//                  .log(this, Level.WARNING, "Cannot find bucket %s for type '%s', removing it from type configuration", null, schemaBucket.getString(i), type);
 
               // GO BACK
               schemaBucket.remove(i);
