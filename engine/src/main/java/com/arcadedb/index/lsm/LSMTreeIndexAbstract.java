@@ -169,10 +169,11 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
 
     final int extPos = fileName.lastIndexOf('.');
     if (fileName.substring(extPos + 1).startsWith(TEMP_EXT)) {
+      final String newFileName = fileName.substring(0, extPos) + "." + fileName.substring(extPos + TEMP_EXT.length() + 1);
       try {
-        file.rename(fileName.substring(0, extPos) + "." + fileName.substring(extPos + TEMP_EXT.length() + 1));
-      } catch (FileNotFoundException e) {
-        throw new IndexException("Cannot rename temp file", e);
+        file.rename(newFileName);
+      } catch (IOException e) {
+        throw new IndexException("Cannot rename index file '" + file.getFilePath() + "' into temp file '" + newFileName + "'", e);
       }
     }
   }

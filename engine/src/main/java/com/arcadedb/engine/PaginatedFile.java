@@ -52,7 +52,6 @@ public class PaginatedFile {
   public void close() {
     try {
       LogManager.instance().log(this, Level.FINE, "DEBUG - closing file %s (id=%d)", null, filePath, fileId);
-      LogManager.instance().flush();
 
       if (channel != null) {
         channel.close();
@@ -70,17 +69,15 @@ public class PaginatedFile {
     this.open = false;
   }
 
-  public void rename(final String newFileName) throws FileNotFoundException {
+  public void rename(final String newFileName) throws IOException {
     close();
 
     final int pos = filePath.indexOf(fileName);
     final String dir = filePath.substring(0, pos);
 
     final File newFile = new File(dir + "/" + newFileName);
-    new File(filePath).renameTo(newFile);
-
+    Files.move(new File(filePath).toPath(), newFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
     open(newFile.getAbsolutePath(), mode);
-    osFile = newFile;
   }
 
   public void drop() throws IOException {
