@@ -40,16 +40,13 @@ import java.util.logging.*;
 public class ACIDTransactionTest extends TestHelper {
   @Override
   protected void beginTest() {
-    database.transaction(new Database.TransactionScope() {
-      @Override
-      public void execute() {
-        if (!database.getSchema().existsType("V")) {
-          final DocumentType v = database.getSchema().createDocumentType("V");
+    database.transaction(() -> {
+      if (!database.getSchema().existsType("V")) {
+        final DocumentType v = database.getSchema().createDocumentType("V");
 
-          v.createProperty("id", Integer.class);
-          v.createProperty("name", String.class);
-          v.createProperty("surname", String.class);
-        }
+        v.createProperty("id", Integer.class);
+        v.createProperty("name", String.class);
+        v.createProperty("surname", String.class);
       }
     });
   }
@@ -385,6 +382,7 @@ public class ACIDTransactionTest extends TestHelper {
   private void verifyDatabaseWasNotClosedProperly() {
     final AtomicBoolean dbNotClosedCaught = new AtomicBoolean(false);
 
+    database.close();
     factory.registerCallback(DatabaseInternal.CALLBACK_EVENT.DB_NOT_CLOSED, new Callable<Void>() {
       @Override
       public Void call() {

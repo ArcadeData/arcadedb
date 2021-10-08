@@ -1534,10 +1534,6 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   }
 
   private void lockDatabase() {
-    if (System.getProperty("os.name").toLowerCase().contains("win"))
-      // AVOID LOCKING UNDER WINDOWS
-      return;
-
     try {
       lockFileIO = new RandomAccessFile(lockFile, "rw");
       lockFileIOChannel = lockFileIO.getChannel();
