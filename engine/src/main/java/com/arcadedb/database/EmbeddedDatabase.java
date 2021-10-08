@@ -343,10 +343,14 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
       if (lockFile != null) {
         try {
           LogManager.instance().log(this, Level.INFO, "Closing lock file '%s'", null, lockFile);
-          lockFileLock.release();
-          lockFileIOChannel.close();
-          lockFileIO.close();
-          lockFile.delete();
+          if (lockFileLock != null)
+            lockFileLock.release();
+          if (lockFileIOChannel != null)
+            lockFileIOChannel.close();
+          if (lockFileIO != null)
+            lockFileIO.close();
+          if (lockFile.exists())
+            lockFile.delete();
           LogManager.instance().log(this, Level.INFO, "Closed lock file '%s'", null, lockFile);
 
           if (lockFile.exists() && !lockFile.delete())
@@ -363,7 +367,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   }
 
   /**
-   * Test only API.
+   * Test only API. Simulates a forced kill of the JVM leaving the database with the .lck file on the file system.
    */
   @Override
   public void kill() {
@@ -382,10 +386,12 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
       if (lockFile != null) {
         try {
-          lockFileLock.release();
-          lockFileIOChannel.close();
-          lockFileIO.close();
-          lockFile.delete();
+          if (lockFileLock != null)
+            lockFileLock.release();
+          if (lockFileIOChannel != null)
+            lockFileIOChannel.close();
+          if (lockFileIO != null)
+            lockFileIO.close();
         } catch (IOException e) {
           // IGNORE IT
         }
@@ -1529,15 +1535,14 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   }
 
   private void lockDatabase() {
-//    if (System.getProperty("os.name").toLowerCase().contains("win"))
-//      // AVOID LOCKING UNDER WINDOWS
-//      return;
+    if (System.getProperty("os.name").toLowerCase().contains("win"))
+      // AVOID LOCKING UNDER WINDOWS
+      return;
 
     try {
       lockFileIO = new RandomAccessFile(lockFile, "rw");
       lockFileIOChannel = lockFileIO.getChannel();
       lockFileLock = lockFileIOChannel.tryLock();
-
       if (lockFileLock == null) {
         lockFileIOChannel.close();
         lockFileIO.close();
