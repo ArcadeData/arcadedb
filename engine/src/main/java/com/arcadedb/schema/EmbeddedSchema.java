@@ -139,12 +139,14 @@ public class EmbeddedSchema implements Schema {
       if (file != null && !Dictionary.DICT_EXT.equals(file.getFileExtension())) {
         final PaginatedComponent pf = paginatedComponentFactory.createComponent(file, mode);
 
+        // REMOVE ME
         LogManager.instance().log(this, Level.SEVERE, "Loading file '%s'", null, file);
 
         if (pf != null) {
           final Object mainComponent = pf.getMainComponent();
 
-          LogManager.instance().log(this, Level.SEVERE, "Main component '%s'", null, mainComponent);
+          // REMOVE ME
+          LogManager.instance().log(this, Level.SEVERE, "Main component '%s' class = %s", null, mainComponent, mainComponent.getClass());
 
           if (mainComponent instanceof Bucket)
             bucketMap.put(pf.getName(), (Bucket) mainComponent);
@@ -1098,7 +1100,7 @@ public class EmbeddedSchema implements Schema {
             if (bucket == null) {
               // REMOVE ME
 
-              LogManager.instance().log(this, Level.WARNING, "Cannot find bucket %s for type '%s', removing it from type configuration: bucketMap", null,
+              LogManager.instance().log(this, Level.WARNING, "Cannot find bucket %s for type '%s', removing it from type configuration: %s", null,
                   schemaBucket.getString(i), type, bucketMap);
 
 //              LogManager.instance()
