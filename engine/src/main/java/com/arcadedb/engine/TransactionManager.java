@@ -115,6 +115,11 @@ public class TransactionManager {
       if (!cleanWALFiles())
         LogManager.instance().log(this, Level.WARNING, "Error on removing all transaction files. Remained: %s", null, inactiveWALFilePool);
     }
+
+    final File dir = new File(database.getDatabasePath());
+    final File[] walFiles = dir.listFiles((dir1, name) -> name.endsWith(".wal"));
+    if (walFiles.length > 0)
+      LogManager.instance().log(this, Level.WARNING, "Error on removing all transaction files. Remained: %s", null, walFiles.length);
   }
 
   public Binary createTransactionBuffer(final long txId, final List<MutablePage> pages) {

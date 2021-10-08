@@ -342,7 +342,6 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
       if (lockFile != null) {
         try {
-          LogManager.instance().log(this, Level.INFO, "Closing lock file '%s'", null, lockFile);
           if (lockFileLock != null)
             lockFileLock.release();
           if (lockFileIOChannel != null)
@@ -351,7 +350,6 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
             lockFileIO.close();
           if (lockFile.exists())
             lockFile.delete();
-          LogManager.instance().log(this, Level.INFO, "Closed lock file '%s'", null, lockFile);
 
           if (lockFile.exists() && !lockFile.delete())
             LogManager.instance().log(this, Level.WARNING, "Error on deleting lock file '%s'", null, lockFile);

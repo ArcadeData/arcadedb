@@ -162,17 +162,14 @@ public class FileUtils {
   }
 
   public static void deleteRecursively(final File rootFile) {
-    LogManager.instance().log(rootFile, Level.INFO, "Delete directory %s", null, rootFile.getAbsolutePath());
     if (rootFile.exists()) {
       if (rootFile.isDirectory()) {
         final File[] files = rootFile.listFiles();
         if (files != null) {
           for (File f : files) {
             if (f.isFile()) {
-              if (f.getName().endsWith(".lck"))
-                LogManager.instance().log(rootFile, Level.WARNING, "Found lock database file %s", null, f.getAbsolutePath());
               if (!f.delete()) {
-                throw new IllegalStateException(String.format("Can not delete file %s", f));
+                throw new IllegalStateException(String.format("Cannot delete file %s", f));
               }
             } else
               deleteRecursively(f);
@@ -181,7 +178,7 @@ public class FileUtils {
       }
 
       if (!rootFile.delete()) {
-        throw new IllegalStateException(String.format("Can not delete file %s", rootFile));
+        throw new IllegalStateException(String.format("Cannot delete file %s", rootFile));
       }
     }
   }

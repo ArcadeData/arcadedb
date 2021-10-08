@@ -549,6 +549,7 @@ public class BasicGraphTest extends BaseGraphTest {
       //Assertions.fail();
 
     } catch (RuntimeException e) {
+      // EXPECTED
     }
 
     database.transaction(() -> {
@@ -587,6 +588,7 @@ public class BasicGraphTest extends BaseGraphTest {
       Assertions.fail();
 
     } catch (RuntimeException e) {
+      // EXPECTED
     }
 
     Assertions.assertFalse(v1a.isConnectedTo(v2));
