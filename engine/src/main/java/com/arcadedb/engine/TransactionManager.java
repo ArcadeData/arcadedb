@@ -50,7 +50,7 @@ public class TransactionManager {
 
     this.logContext = LogManager.instance().getContext();
 
-    LogManager.instance().log(this, Level.FINE, "New TxManager for database %s", null, database.getDatabasePath());
+    LogManager.instance().log(this, Level.INFO, "New TxManager for database %s", null, database.getDatabasePath());
 
     if (database.getMode() == PaginatedFile.MODE.READ_WRITE) {
       createWALFilePool();
@@ -123,7 +123,7 @@ public class TransactionManager {
     if (walFiles.length > 0)
       LogManager.instance().log(this, Level.WARNING, "Error on removing all transaction files. Remained: %s", null, walFiles.length);
 
-    LogManager.instance().log(this, Level.FINE, "Closed TxManager for database %s", null, database.getDatabasePath());
+    LogManager.instance().log(this, Level.INFO, "Closed TxManager for database %s", null, database.getDatabasePath());
   }
 
   public Binary createTransactionBuffer(final long txId, final List<MutablePage> pages) {
