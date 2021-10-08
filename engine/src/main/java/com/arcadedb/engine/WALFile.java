@@ -19,12 +19,12 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.LockContext;
 
 import java.io.*;
 import java.nio.*;
 import java.nio.channels.*;
-import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
@@ -103,7 +103,7 @@ public class WALFile extends LockContext {
 
   public synchronized void drop() throws IOException {
     close();
-    Files.delete(Paths.get(filePath));
+    FileUtils.deleteFile(new File(filePath));
   }
 
   public WALTransaction getFirstTransaction() throws WALException {

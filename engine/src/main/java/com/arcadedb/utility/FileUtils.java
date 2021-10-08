@@ -205,6 +205,28 @@ public class FileUtils {
     }
   }
 
+  public static boolean deleteFile(final File file) {
+    for (int attempt = 0; attempt < 3; attempt++) {
+      try {
+        Files.delete(file.toPath());
+        return true;
+      } catch (IOException e) {
+        if (System.getProperty("os.name").toLowerCase().contains("win")) {
+          // AVOID LOCKING UNDER WINDOWS
+          try {
+            LogManager.instance().log(file, Level.WARNING, "Cannot delete file '%s'. Forcing GC cleanup and try again (attempt=%d)", e, file, attempt);
+            System.gc();
+            Thread.sleep(1000);
+          } catch (Exception ex) {
+            // IGNORE IT
+          }
+        } else
+          LogManager.instance().log(file, Level.WARNING, "Cannot delete file '%s'", e, file);
+      }
+    }
+    return false;
+  }
+
   @SuppressWarnings("resource")
   public static final void copyFile(final File source, final File destination) throws IOException {
     try (FileChannel sourceChannel = new FileInputStream(source).getChannel(); FileChannel targetChannel = new FileOutputStream(destination).getChannel()) {
@@ -257,23 +279,6 @@ public class FileUtils {
       dump.append("\n\n");
     }
     return dump.toString();
-  }
-
-  public boolean deleteFile(final File file) {
-    if (!file.exists())
-      return true;
-
-    try {
-      final FileSystem fileSystem = FileSystems.getDefault();
-      final Path path = fileSystem.getPath(file.getAbsolutePath());
-
-      Files.delete(path);
-
-      return true;
-    } catch (IOException e) {
-      e.printStackTrace();
-    }
-    return false;
   }
 
   public static String readFileAsString(final File file, final String iCharset) throws IOException {
