@@ -359,8 +359,19 @@ public class TransactionManager {
       // IGNORE IT
     }
 
+    if (activeWALFilePool != null) {
+      for (int i = 0; i < activeWALFilePool.length; ++i) {
+        final WALFile file = activeWALFilePool[i];
+        activeWALFilePool[i] = null;
+        inactiveWALFilePool.add(file);
+        file.setActive(false);
+      }
+    }
+
     if (!cleanWALFiles(false))
       LogManager.instance().log(this, Level.WARNING, "Error on removing all transaction files during kill. Remained: %s", null, inactiveWALFilePool);
+
+    LogManager.instance().log(this, Level.INFO, "Killed TxManager for database %s", null, database.getDatabasePath());
   }
 
   public long getNextTransactionId() {
