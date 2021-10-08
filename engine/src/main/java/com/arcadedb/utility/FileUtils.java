@@ -162,23 +162,39 @@ public class FileUtils {
   }
 
   public static void deleteRecursively(final File rootFile) {
-    if (rootFile.exists()) {
-      if (rootFile.isDirectory()) {
-        final File[] files = rootFile.listFiles();
-        if (files != null) {
-          for (File f : files) {
-            if (f.isFile()) {
-              if (!f.delete()) {
-                throw new IllegalStateException(String.format("Cannot delete file %s", f));
+    for (int attempt = 0; attempt < 3; attempt++) {
+      try {
+        if (rootFile.exists()) {
+          if (rootFile.isDirectory()) {
+            final File[] files = rootFile.listFiles();
+            if (files != null) {
+              for (File f : files) {
+                if (f.isFile()) {
+                  if (!f.delete()) {
+                    throw new IllegalStateException(String.format("Cannot delete file %s", f));
+                  }
+                } else
+                  deleteRecursively(f);
               }
-            } else
-              deleteRecursively(f);
+            }
+          }
+
+          if (!rootFile.delete()) {
+            throw new IllegalStateException(String.format("Cannot delete file %s", rootFile));
           }
         }
-      }
-
-      if (!rootFile.delete()) {
-        throw new IllegalStateException(String.format("Cannot delete file %s", rootFile));
+      } catch (IllegalStateException e) {
+        if (System.getProperty("os.name").toLowerCase().contains("win")) {
+          // AVOID LOCKING UNDER WINDOWS
+          try {
+            LogManager.instance()
+                .log(rootFile, Level.WARNING, "Cannot delete directory '%s'. Forcing GC cleanup and try again (attempt=%d)", null, rootFile, attempt);
+            System.gc();
+            Thread.sleep(1000);
+          } catch (Exception ex) {
+            // IGNORE IT
+          }
+        }
       }
     }
   }
