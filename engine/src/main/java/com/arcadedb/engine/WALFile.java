@@ -85,7 +85,8 @@ public class WALFile extends LockContext {
   public WALFile(final String filePath) throws FileNotFoundException {
     this.filePath = filePath;
     this.file = new RandomAccessFile(filePath, "rw");
-    LogManager.instance().log(this, Level.FINE, "Opened file '%s'", null, filePath);
+    // REMOVE ME
+    LogManager.instance().log(this, Level.INFO, "Opened file '%s'", null, filePath);
     this.channel = file.getChannel();
     this.open = true;
   }
