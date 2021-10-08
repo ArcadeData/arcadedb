@@ -170,31 +170,31 @@ public class FileUtils {
             if (files != null) {
               for (File f : files) {
                 if (f.isFile()) {
-                  if (!f.delete()) {
-                    throw new IllegalStateException(String.format("Cannot delete file %s", f));
-                  }
+                  Files.delete(Paths.get(f.getAbsolutePath()));
                 } else
                   deleteRecursively(f);
               }
             }
           }
 
-          if (!rootFile.delete()) {
-            throw new IllegalStateException(String.format("Cannot delete file %s", rootFile));
-          }
+          Files.delete(Paths.get(rootFile.getAbsolutePath()));
         }
-      } catch (IllegalStateException e) {
+
+        break;
+
+      } catch (IOException e) {
         if (System.getProperty("os.name").toLowerCase().contains("win")) {
           // AVOID LOCKING UNDER WINDOWS
           try {
             LogManager.instance()
-                .log(rootFile, Level.WARNING, "Cannot delete directory '%s'. Forcing GC cleanup and try again (attempt=%d)", null, rootFile, attempt);
+                .log(rootFile, Level.WARNING, "Cannot delete directory '%s'. Forcing GC cleanup and try again (attempt=%d)", e, rootFile, attempt);
             System.gc();
             Thread.sleep(1000);
           } catch (Exception ex) {
             // IGNORE IT
           }
-        }
+        } else
+          LogManager.instance().log(rootFile, Level.WARNING, "Cannot delete directory '%s'", e, rootFile);
       }
     }
   }
