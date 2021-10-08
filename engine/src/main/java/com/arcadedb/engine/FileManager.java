@@ -66,6 +66,9 @@ public class FileManager {
             final PaginatedFile file = new PaginatedFile(f.getAbsolutePath(), mode);
             registerFile(file);
 
+            // REMOVE ME
+            LogManager.instance().log(this, Level.WARNING, "Registering file '%s'", null, file);
+
           } catch (FileNotFoundException e) {
             LogManager.instance().log(this, Level.WARNING, "Cannot load file '%s'", null, f);
           }
@@ -125,7 +128,6 @@ public class FileManager {
 
   public void setVirtualFileSize(final Integer fileId, final long fileSize) {
     fileVirtualSize.put(fileId, fileSize);
-//    LogManager.instance().log(this, Level.INFO, "File %d vSize=%d (thread=%d)", fileId, fileSize, Thread.currentThread().getId());
   }
 
   public FileManagerStats getStats() {
