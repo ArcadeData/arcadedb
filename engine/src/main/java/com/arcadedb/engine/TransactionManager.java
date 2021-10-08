@@ -100,23 +100,25 @@ public class TransactionManager {
       // MOVE ALL WAL FILES AS INACTIVE
       for (int i = 0; i < activeWALFilePool.length; ++i) {
         final WALFile file = activeWALFilePool[i];
-        activeWALFilePool[i] = null;
-        inactiveWALFilePool.add(file);
-        file.setActive(false);
-      }
-
-      for (int retry = 0; retry < 20 && !cleanWALFiles(true); ++retry) {
-        try {
-          Thread.sleep(100);
-        } catch (InterruptedException e) {
-          Thread.currentThread().interrupt();
-          break;
+        if (file != null) {
+          activeWALFilePool[i] = null;
+          inactiveWALFilePool.add(file);
+          file.setActive(false);
         }
       }
-
-      if (!cleanWALFiles(true))
-        LogManager.instance().log(this, Level.WARNING, "Error on removing all transaction files. Remained: %s", null, inactiveWALFilePool);
     }
+
+    for (int retry = 0; retry < 20 && !cleanWALFiles(true); ++retry) {
+      try {
+        Thread.sleep(100);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        break;
+      }
+    }
+
+    if (!cleanWALFiles(true))
+      LogManager.instance().log(this, Level.WARNING, "Error on removing all transaction files. Remained: %s", null, inactiveWALFilePool);
 
     final File dir = new File(database.getDatabasePath());
     final File[] walFiles = dir.listFiles((dir1, name) -> name.endsWith(".wal"));
@@ -151,11 +153,8 @@ public class TransactionManager {
 
   public void notifyPageFlushed(final MutablePage page) {
     final WALFile walFile = page.getWALFile();
-
-    if (walFile == null)
-      return;
-
-    walFile.notifyPageFlushed();
+    if (walFile != null)
+      walFile.notifyPageFlushed();
   }
 
   public void checkIntegrity() {
@@ -362,9 +361,21 @@ public class TransactionManager {
     if (activeWALFilePool != null) {
       for (int i = 0; i < activeWALFilePool.length; ++i) {
         final WALFile file = activeWALFilePool[i];
-        activeWALFilePool[i] = null;
-        inactiveWALFilePool.add(file);
-        file.setActive(false);
+        if (file != null) {
+          activeWALFilePool[i] = null;
+          inactiveWALFilePool.add(file);
+          file.setActive(false);
+        }
+      }
+    }
+
+    // WAIT FOR ALL THE PAGE TO BE FLUSHED
+    for (int retry = 0; retry < 20 && !cleanWALFiles(false); ++retry) {
+      try {
+        Thread.sleep(100);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        break;
       }
     }
 
@@ -467,9 +478,10 @@ public class TransactionManager {
     for (Iterator<WALFile> it = inactiveWALFilePool.iterator(); it.hasNext(); ) {
       final WALFile file = it.next();
 
-      LogManager.instance().log(this, Level.FINE, "Inactive file %s contains %d pending pages to flush", null, file, file.getPagesToFlush());
+      // REMOVE ME
+      LogManager.instance().log(this, Level.INFO, "Inactive file %s contains %d pending pages to flush", null, file, file.getPendingPagesToFlush());
 
-      if (file.getPagesToFlush() == 0) {
+      if (!dropFiles || file.getPendingPagesToFlush() == 0) {
         // ALL PAGES FLUSHED, REMOVE THE FILE
         try {
           final Map<String, Object> fileStats = file.getStats();

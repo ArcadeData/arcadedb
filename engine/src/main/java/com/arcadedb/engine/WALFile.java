@@ -290,6 +290,8 @@ public class WALFile extends LockContext {
       statsPagesWritten++;
     }
 
+    LogManager.instance().log(this, Level.INFO, "writeTransactionToFile %d %s pages. pageToFlush=%d", null, txId, pages.size(), pagesToFlush.get());
+
     statsBytesWritten += buffer.size();
 
     if (sync == FLUSH_TYPE.YES_NOMETADATA)
@@ -300,12 +302,9 @@ public class WALFile extends LockContext {
     database.executeCallbacks(DatabaseInternal.CALLBACK_EVENT.TX_AFTER_WAL_WRITE);
   }
 
-  public int getPagesToFlush() {
-    return pagesToFlush.get();
-  }
-
   public void notifyPageFlushed() {
     pagesToFlush.decrementAndGet();
+    LogManager.instance().log(this, Level.INFO, "notifyPageFlushed PageToFlush=%d", null, pagesToFlush.get());
   }
 
   public long getSize() throws IOException {

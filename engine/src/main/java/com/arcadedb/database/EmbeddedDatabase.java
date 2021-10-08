@@ -370,6 +370,8 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
    */
   @Override
   public void kill() {
+    LogManager.instance().log(this, Level.INFO, "Killing database %s", null, getDatabasePath());
+
     if (async != null)
       async.kill();
 
