@@ -66,9 +66,6 @@ public class FileManager {
             final PaginatedFile file = new PaginatedFile(f.getAbsolutePath(), mode);
             registerFile(file);
 
-            // REMOVE ME
-            LogManager.instance().log(this, Level.WARNING, "Registering file '%s'", null, file);
-
           } catch (FileNotFoundException e) {
             LogManager.instance().log(this, Level.WARNING, "Cannot load file '%s'", null, f);
           }

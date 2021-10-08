@@ -16,7 +16,11 @@
 package com.arcadedb.index.lsm;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.database.*;
+import com.arcadedb.database.Binary;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
+import com.arcadedb.database.TrackableBinary;
 import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.MutablePage;
@@ -30,24 +34,22 @@ import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.BinaryTypes;
 
-import java.io.IOException;
+import java.io.*;
 import java.util.*;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.logging.Level;
+import java.util.concurrent.atomic.*;
+import java.util.logging.*;
 
 import static com.arcadedb.database.Binary.BYTE_SERIALIZED_SIZE;
 import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
 
 public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
-  public static final String UNIQUE_INDEX_EXT    = "umtidx";
-  public static final String NOTUNIQUE_INDEX_EXT = "numtidx";
-
-  private int                   subIndexFileId = -1;
-  private LSMTreeIndexCompacted subIndex       = null;
-
-  private final AtomicLong statsAdjacentSteps  = new AtomicLong();
-  private final int        minPagesToScheduleACompaction;
-  private       int        currentMutablePages = 0;
+  public static final String                UNIQUE_INDEX_EXT    = "umtidx";
+  public static final String                NOTUNIQUE_INDEX_EXT = "numtidx";
+  private             int                   subIndexFileId      = -1;
+  private             LSMTreeIndexCompacted subIndex            = null;
+  private final       AtomicLong            statsAdjacentSteps  = new AtomicLong();
+  private final       int                   minPagesToScheduleACompaction;
+  private             int                   currentMutablePages = 0;
 
   /**
    * Called at creation time.

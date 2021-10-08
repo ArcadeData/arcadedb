@@ -177,17 +177,17 @@ public class FileUtils {
         break;
 
       } catch (IOException e) {
-        if (System.getProperty("os.name").toLowerCase().contains("win")) {
-          // AVOID LOCKING UNDER WINDOWS
-          try {
-            LogManager.instance()
-                .log(rootFile, Level.WARNING, "Cannot delete directory '%s'. Forcing GC cleanup and try again (attempt=%d)", e, rootFile, attempt);
-            System.gc();
-            Thread.sleep(1000);
-          } catch (Exception ex) {
-            // IGNORE IT
-          }
-        } else
+//        if (System.getProperty("os.name").toLowerCase().contains("win")) {
+//          // AVOID LOCKING UNDER WINDOWS
+//          try {
+//            LogManager.instance()
+//                .log(rootFile, Level.WARNING, "Cannot delete directory '%s'. Forcing GC cleanup and try again (attempt=%d)", e, rootFile, attempt);
+//            System.gc();
+//            Thread.sleep(1000);
+//          } catch (Exception ex) {
+//            // IGNORE IT
+//          }
+//        } else
           LogManager.instance().log(rootFile, Level.WARNING, "Cannot delete directory '%s'", e, rootFile);
       }
     }
@@ -205,16 +205,16 @@ public class FileUtils {
         Files.delete(file.toPath());
         return true;
       } catch (IOException e) {
-        if (System.getProperty("os.name").toLowerCase().contains("win")) {
-          // AVOID LOCKING UNDER WINDOWS
-          try {
-            LogManager.instance().log(file, Level.WARNING, "Cannot delete file '%s'. Forcing GC cleanup and try again (attempt=%d)", e, file, attempt);
-            System.gc();
-            Thread.sleep(1000);
-          } catch (Exception ex) {
-            // IGNORE IT
-          }
-        } else
+//        if (System.getProperty("os.name").toLowerCase().contains("win")) {
+//          // AVOID LOCKING UNDER WINDOWS
+//          try {
+//            LogManager.instance().log(file, Level.WARNING, "Cannot delete file '%s'. Forcing GC cleanup and try again (attempt=%d)", e, file, attempt);
+//            System.gc();
+//            Thread.sleep(1000);
+//          } catch (Exception ex) {
+//            // IGNORE IT
+//          }
+//        } else
           LogManager.instance().log(file, Level.WARNING, "Cannot delete file '%s'", e, file);
       }
     }

@@ -97,7 +97,8 @@ public class WALFile extends LockContext {
 
     if (file != null) {
       file.close();
-      LogManager.instance().log(this, Level.FINE, "Closed file '%s'", null, filePath);
+      // REMOVE ME
+      LogManager.instance().log(this, Level.INFO, "Closed file '%s'", null, filePath);
     }
   }
 

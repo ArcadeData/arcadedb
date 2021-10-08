@@ -34,16 +34,15 @@ public class TransactionManager {
 
   private final DatabaseInternal             database;
   private       WALFile[]                    activeWALFilePool;
-  private final List<WALFile>                inactiveWALFilePool = new ArrayList<>();
+  private final List<WALFile>                inactiveWALFilePool = Collections.synchronizedList(new ArrayList<>());
   private final String                       logContext;
   private final Timer                        task;
   private       CountDownLatch               taskExecuting       = new CountDownLatch(0);
   private final AtomicLong                   transactionIds      = new AtomicLong();
   private final AtomicLong                   logFileCounter      = new AtomicLong();
   private final LockManager<Integer, Thread> fileIdsLockManager  = new LockManager<>();
-
-  private final AtomicLong statsPagesWritten = new AtomicLong();
-  private final AtomicLong statsBytesWritten = new AtomicLong();
+  private final AtomicLong                   statsPagesWritten   = new AtomicLong();
+  private final AtomicLong                   statsBytesWritten   = new AtomicLong();
 
   public TransactionManager(final DatabaseInternal database) {
     this.database = database;
@@ -472,7 +471,8 @@ public class TransactionManager {
     for (Iterator<WALFile> it = inactiveWALFilePool.iterator(); it.hasNext(); ) {
       final WALFile file = it.next();
 
-      LogManager.instance().log(this, Level.FINE, "Inactive file %s contains %d pending pages to flush", null, file, file.getPendingPagesToFlush());
+      // REMOVE ME
+      LogManager.instance().log(this, Level.INFO, "Inactive file %s contains %d pending pages to flush", null, file, file.getPendingPagesToFlush());
 
       if (!dropFiles || file.getPendingPagesToFlush() == 0) {
         // ALL PAGES FLUSHED, REMOVE THE FILE

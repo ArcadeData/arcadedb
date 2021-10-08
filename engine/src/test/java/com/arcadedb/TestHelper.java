@@ -53,7 +53,7 @@ public abstract class TestHelper {
   }
 
   public static void executeInNewDatabase(final DatabaseTest<Database> callback) throws Exception {
-    try (final DatabaseFactory factory = new DatabaseFactory("target/databases/" + UUID.randomUUID())) {
+    try (final DatabaseFactory factory = new DatabaseFactory("./target/databases/" + UUID.randomUUID())) {
       if (factory.exists())
         factory.open().drop();
 
