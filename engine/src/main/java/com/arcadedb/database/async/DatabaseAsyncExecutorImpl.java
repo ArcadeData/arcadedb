@@ -507,10 +507,9 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   public void kill() {
     if (executorThreads != null) {
       // WAIT FOR SHUTDOWN, MAX 1S EACH
-      for (int i = 0; i < executorThreads.length; ++i) {
+      for (int i = 0; i < executorThreads.length; ++i)
         executorThreads[i].forceShutdown = true;
-        executorThreads[i] = null;
-      }
+      executorThreads = null;
     }
   }
 
