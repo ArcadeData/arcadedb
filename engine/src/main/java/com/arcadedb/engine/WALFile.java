@@ -101,6 +101,10 @@ public class WALFile extends LockContext {
     }
   }
 
+  public boolean isOpen() {
+    return open;
+  }
+
   public synchronized void drop() throws IOException {
     close();
     FileUtils.deleteFile(new File(filePath));

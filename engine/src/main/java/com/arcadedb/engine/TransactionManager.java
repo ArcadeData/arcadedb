@@ -32,17 +32,15 @@ import java.util.logging.*;
 public class TransactionManager {
   private static final long MAX_LOG_FILE_SIZE = 64 * 1024 * 1024;
 
-  private final DatabaseInternal database;
-  private       WALFile[]        activeWALFilePool;
-  private final List<WALFile>    inactiveWALFilePool = new ArrayList<>();
-  private final String           logContext;
-
-  private final Timer          task;
-  private       CountDownLatch taskExecuting = new CountDownLatch(0);
-
-  private final AtomicLong                   transactionIds     = new AtomicLong();
-  private final AtomicLong                   logFileCounter     = new AtomicLong();
-  private final LockManager<Integer, Thread> fileIdsLockManager = new LockManager<>();
+  private final DatabaseInternal             database;
+  private       WALFile[]                    activeWALFilePool;
+  private final List<WALFile>                inactiveWALFilePool = new ArrayList<>();
+  private final String                       logContext;
+  private final Timer                        task;
+  private       CountDownLatch               taskExecuting       = new CountDownLatch(0);
+  private final AtomicLong                   transactionIds      = new AtomicLong();
+  private final AtomicLong                   logFileCounter      = new AtomicLong();
+  private final LockManager<Integer, Thread> fileIdsLockManager  = new LockManager<>();
 
   private final AtomicLong statsPagesWritten = new AtomicLong();
   private final AtomicLong statsBytesWritten = new AtomicLong();
@@ -51,6 +49,8 @@ public class TransactionManager {
     this.database = database;
 
     this.logContext = LogManager.instance().getContext();
+
+    LogManager.instance().log(this, Level.FINE, "New TxManager for database %s", null, database.getDatabasePath());
 
     if (database.getMode() == PaginatedFile.MODE.READ_WRITE) {
       createWALFilePool();
@@ -99,8 +99,10 @@ public class TransactionManager {
     if (activeWALFilePool != null) {
       // MOVE ALL WAL FILES AS INACTIVE
       for (int i = 0; i < activeWALFilePool.length; ++i) {
-        inactiveWALFilePool.add(activeWALFilePool[i]);
+        final WALFile file = activeWALFilePool[i];
         activeWALFilePool[i] = null;
+        inactiveWALFilePool.add(file);
+        file.setActive(false);
       }
 
       for (int retry = 0; retry < 20 && !cleanWALFiles(true); ++retry) {
@@ -120,6 +122,8 @@ public class TransactionManager {
     final File[] walFiles = dir.listFiles((dir1, name) -> name.endsWith(".wal"));
     if (walFiles.length > 0)
       LogManager.instance().log(this, Level.WARNING, "Error on removing all transaction files. Remained: %s", null, walFiles.length);
+
+    LogManager.instance().log(this, Level.FINE, "Closed TxManager for database %s", null, database.getDatabasePath());
   }
 
   public Binary createTransactionBuffer(final long txId, final List<MutablePage> pages) {
@@ -417,11 +421,12 @@ public class TransactionManager {
   private void createWALFilePool() {
     activeWALFilePool = new WALFile[Runtime.getRuntime().availableProcessors()];
     for (int i = 0; i < activeWALFilePool.length; ++i) {
+      final long counter = logFileCounter.getAndIncrement();
       try {
-        activeWALFilePool[i] = database.getWALFileFactory().newInstance(database.getDatabasePath() + "/txlog_" + logFileCounter.getAndIncrement() + ".wal");
+        activeWALFilePool[i] = database.getWALFileFactory().newInstance(database.getDatabasePath() + "/txlog_" + counter + ".wal");
       } catch (FileNotFoundException e) {
-        LogManager.instance().log(this, Level.SEVERE, "Error on WAL file management for file '%s'", e,
-            database.getDatabasePath() + "/txlog_" + logFileCounter.getAndIncrement() + ".wal");
+        LogManager.instance()
+            .log(this, Level.SEVERE, "Error on WAL file management for file '%s'", e, database.getDatabasePath() + "/txlog_" + counter + ".wal");
       }
     }
   }
@@ -436,6 +441,8 @@ public class TransactionManager {
                 .log(this, Level.FINE, "WAL file '%s' reached maximum size (%d), set it as inactive, waiting for the drop (page2flush=%d)", null, file,
                     MAX_LOG_FILE_SIZE, file.getPendingPagesToFlush());
             activeWALFilePool[i] = database.getWALFileFactory().newInstance(database.getDatabasePath() + "/txlog_" + logFileCounter.getAndIncrement() + ".wal");
+
+            // SET THE FILE AS INACTIVE READY TO BE DISPOSED
             file.setActive(false);
             inactiveWALFilePool.add(file);
           }
