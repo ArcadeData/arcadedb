@@ -113,6 +113,8 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   protected            boolean                                   autoTransaction         = false;
   protected volatile   boolean                                   open                    = false;
   private              boolean                                   readYourWrites          = true;
+  private              File                                      lockFile;
+  private              FileLock                                  lockFileIO;
   private final        Map<CALLBACK_EVENT, List<Callable<Void>>> callbacks;
   private final        StatementCache                            statementCache;
   private final        ExecutionPlanCache                        executionPlanCache;
@@ -121,10 +123,6 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   private              int                                       edgeListSize            = EDGE_LIST_INITIAL_CHUNK_SIZE;
   private              SecurityManager                           security;
   private              Map<String, Object>                       wrappers                = new HashMap<>();
-  private              File                                      lockFile;
-  private              RandomAccessFile                          lockFileIO;
-  private              FileChannel                               lockFileIOChannel;
-  private              FileLock                                  lockFileLock;
 
   protected EmbeddedDatabase(final String path, final PaginatedFile.MODE mode, final ContextConfiguration configuration, final SecurityManager security,
       final Map<CALLBACK_EVENT, List<Callable<Void>>> callbacks) {
@@ -290,13 +288,9 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   @Override
   public void close() {
     if (async != null) {
-      try {
-        // EXECUTE OUTSIDE LOCK
-        async.waitCompletion();
-        async.close();
-      } catch (Throwable e) {
-        LogManager.instance().log(this, Level.WARNING, "Error on stopping asynchronous manager during closing operation for database '%s'", e, name);
-      }
+      // EXECUTE OUTSIDE LOCK
+      async.waitCompletion();
+      async.close();
     }
 
     executeInWriteLock(() -> {
@@ -342,20 +336,13 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
       if (lockFile != null) {
         try {
-          LogManager.instance().log(this, Level.INFO, "Closing lock file '%s'", null, lockFile);
-          lockFileLock.release();
-          lockFileIOChannel.close();
-          lockFileIO.close();
-          lockFile.delete();
-          LogManager.instance().log(this, Level.INFO, "Closed lock file '%s'", null, lockFile);
-
-          if (lockFile.exists() && !lockFile.delete())
-            LogManager.instance().log(this, Level.WARNING, "Error on deleting lock file '%s'", null, lockFile);
-
+          lockFileIO.release();
         } catch (IOException e) {
           // IGNORE IT
           LogManager.instance().log(this, Level.WARNING, "Error on deleting lock file '%s'", e, lockFile);
         }
+        if (!lockFile.delete())
+          LogManager.instance().log(this, Level.WARNING, "Error on deleting lock file '%s'", null, lockFile);
       }
 
       return null;
@@ -382,10 +369,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
       if (lockFile != null) {
         try {
-          lockFileLock.release();
-          lockFileIOChannel.close();
-          lockFileIO.close();
-          lockFile.delete();
+          lockFileIO.release();
         } catch (IOException e) {
           // IGNORE IT
         }
@@ -1529,31 +1513,14 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   }
 
   private void lockDatabase() {
-//    if (System.getProperty("os.name").toLowerCase().contains("win"))
-//      // AVOID LOCKING UNDER WINDOWS
-//      return;
-
     try {
-      lockFileIO = new RandomAccessFile(lockFile, "rw");
-      lockFileIOChannel = lockFileIO.getChannel();
-      lockFileLock = lockFileIOChannel.tryLock();
+      lockFileIO = new RandomAccessFile(lockFile, "rw").getChannel().tryLock();
 
-      if (lockFileLock == null) {
-        lockFileIOChannel.close();
-        lockFileIO.close();
+      if (lockFileIO == null)
         throw new LockException("Database '" + name + "' is locked by another process (path=" + new File(databasePath).getAbsolutePath() + ")");
-      }
 
     } catch (Exception e) {
-      try {
-        if (lockFileIOChannel != null)
-          lockFileIOChannel.close();
-        if (lockFileIO != null)
-          lockFileIO.close();
-      } catch (Exception e2) {
-        // IGNORE
-      }
-
+      // IGNORE HERE
       throw new LockException("Database '" + name + "' is locked by another process (path=" + new File(databasePath).getAbsolutePath() + ")", e);
     }
   }

@@ -162,6 +162,7 @@ public class FileUtils {
   }
 
   public static void deleteRecursively(final File rootFile) {
+    LogManager.instance().log(rootFile, Level.INFO, "Delete directory %s", null, rootFile.getAbsolutePath());
     if (rootFile.exists()) {
       if (rootFile.isDirectory()) {
         final File[] files = rootFile.listFiles();
