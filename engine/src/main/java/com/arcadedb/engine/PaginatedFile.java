@@ -198,21 +198,6 @@ public class PaginatedFile {
     return filePath;
   }
 
-  public static String getFileNameFromPath(final String filePath) {
-    final String filePrefix = filePath.substring(0, filePath.lastIndexOf("."));
-
-    final String fileName;
-    final int fileIdPos = filePrefix.lastIndexOf(".");
-    if (fileIdPos > -1) {
-      int pos = filePrefix.lastIndexOf(File.separator);
-      fileName = filePrefix.substring(pos + 1, filePrefix.lastIndexOf("."));
-    } else {
-      int pos = filePrefix.lastIndexOf(File.separator);
-      fileName = filePrefix.substring(pos + 1);
-    }
-    return fileName;
-  }
-
   private void open(final String filePath, final MODE mode) throws FileNotFoundException {
     this.filePath = filePath;
 

@@ -165,7 +165,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   }
 
   public void removeTempSuffix() {
-    final String fileName = file.getFileName();
+    final String fileName = file.getFilePath();
 
     final int extPos = fileName.lastIndexOf('.');
     if (fileName.substring(extPos + 1).startsWith(TEMP_EXT)) {
