@@ -207,10 +207,10 @@ public class PaginatedFile {
     final String fileName;
     final int fileIdPos = filePrefix.lastIndexOf(".");
     if (fileIdPos > -1) {
-      int pos = filePrefix.lastIndexOf("/");
+      int pos = filePrefix.lastIndexOf(File.separator);
       fileName = filePrefix.substring(pos + 1, filePrefix.lastIndexOf("."));
     } else {
-      int pos = filePrefix.lastIndexOf("/");
+      int pos = filePrefix.lastIndexOf(File.separator);
       fileName = filePrefix.substring(pos + 1);
     }
     return fileName;
@@ -229,15 +229,15 @@ public class PaginatedFile {
     final int fileIdPos = filePrefix.lastIndexOf(".");
     if (fileIdPos > -1) {
       fileId = Integer.parseInt(filePrefix.substring(fileIdPos + 1));
-      int pos = filePrefix.lastIndexOf("/");
+      int pos = filePrefix.lastIndexOf(File.separator);
       componentName = filePrefix.substring(pos + 1, filePrefix.lastIndexOf("."));
     } else {
       fileId = -1;
-      int pos = filePrefix.lastIndexOf("/");
+      int pos = filePrefix.lastIndexOf(File.separator);
       componentName = filePrefix.substring(pos + 1);
     }
 
-    final int lastSlash = filePath.lastIndexOf("/");
+    final int lastSlash = filePath.lastIndexOf(File.separator);
     if (lastSlash > -1)
       fileName = filePath.substring(lastSlash + 1);
     else

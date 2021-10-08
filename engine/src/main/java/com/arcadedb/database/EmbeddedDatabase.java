@@ -138,14 +138,14 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
       this.statementCache = new StatementCache(this, configuration.getValueAsInteger(GlobalConfiguration.SQL_STATEMENT_CACHE));
       this.executionPlanCache = new ExecutionPlanCache(this, configuration.getValueAsInteger(GlobalConfiguration.SQL_STATEMENT_CACHE));
 
-      if (path.endsWith("/"))
+      if (path.endsWith("/") || path.endsWith("\\"))
         databasePath = path.substring(0, path.length() - 1);
       else
         databasePath = path;
 
       configurationFile = new File(databasePath + "/configuration.json");
 
-      final int lastSeparatorPos = path.lastIndexOf("/");
+      final int lastSeparatorPos = path.lastIndexOf(File.separator);
       if (lastSeparatorPos > -1)
         name = path.substring(lastSeparatorPos + 1);
       else

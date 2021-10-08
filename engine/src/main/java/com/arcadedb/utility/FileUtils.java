@@ -150,12 +150,6 @@ public class FileUtils {
     return iSize + "b";
   }
 
-  public static void createDirectoryTree(final String iFileName) {
-    final String[] fileDirectories = iFileName.split("/");
-    for (int i = 0; i < fileDirectories.length - 1; ++i)
-      new File(fileDirectories[i]).mkdir();
-  }
-
   public static void checkValidName(final String iFileName) throws IOException {
     if (iFileName.contains("..") || iFileName.contains("/") || iFileName.contains("\\"))
       throw new IOException("Invalid file name '" + iFileName + "'");

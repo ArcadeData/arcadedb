@@ -37,7 +37,7 @@ public class DatabaseFactory implements AutoCloseable {
     if (path == null || path.isEmpty())
       throw new IllegalArgumentException("Missing path");
 
-    if (path.endsWith("/"))
+    if (path.endsWith("/") || path.endsWith("\\"))
       databasePath = path.substring(0, path.length() - 1);
     else
       databasePath = path;
