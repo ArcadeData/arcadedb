@@ -50,16 +50,14 @@ public class WALFile extends LockContext {
   private final    RandomAccessFile file;
   private final    String           filePath;
   private final    FileChannel      channel;
-  private volatile boolean          active       = true;
+  private volatile boolean          active            = true;
   private volatile boolean          open;
-  private final    AtomicInteger    pagesToFlush = new AtomicInteger();
-
-  private long statsPagesWritten = 0;
-  private long statsBytesWritten = 0;
-
+  private final    AtomicInteger    pagesToFlush      = new AtomicInteger();
+  private          long             statsPagesWritten = 0;
+  private          long             statsBytesWritten = 0;
   // STATIC BUFFERS USED FOR RECOVERY
-  private final ByteBuffer bufferLong = ByteBuffer.allocate(Binary.LONG_SERIALIZED_SIZE);
-  private final ByteBuffer bufferInt  = ByteBuffer.allocate(Binary.INT_SERIALIZED_SIZE);
+  private final    ByteBuffer       bufferLong        = ByteBuffer.allocate(Binary.LONG_SERIALIZED_SIZE);
+  private final    ByteBuffer       bufferInt         = ByteBuffer.allocate(Binary.INT_SERIALIZED_SIZE);
 
   public static class WALTransaction {
     public long      txId;

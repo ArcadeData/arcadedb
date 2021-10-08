@@ -72,7 +72,7 @@ public class TransactionManager {
                 LogManager.instance().setContext(logContext);
 
               checkWALFiles();
-              cleanWALFiles();
+              cleanWALFiles(true);
             } finally {
               taskExecuting.countDown();
             }
@@ -103,7 +103,7 @@ public class TransactionManager {
         activeWALFilePool[i] = null;
       }
 
-      for (int retry = 0; retry < 20 && !cleanWALFiles(); ++retry) {
+      for (int retry = 0; retry < 20 && !cleanWALFiles(true); ++retry) {
         try {
           Thread.sleep(100);
         } catch (InterruptedException e) {
@@ -112,7 +112,7 @@ public class TransactionManager {
         }
       }
 
-      if (!cleanWALFiles())
+      if (!cleanWALFiles(true))
         LogManager.instance().log(this, Level.WARNING, "Error on removing all transaction files. Remained: %s", null, inactiveWALFilePool);
     }
 
@@ -354,6 +354,9 @@ public class TransactionManager {
       Thread.currentThread().interrupt();
       // IGNORE IT
     }
+
+    if (!cleanWALFiles(true))
+      LogManager.instance().log(this, Level.WARNING, "Error on removing all transaction files during kill. Remained: %s", null, inactiveWALFilePool);
   }
 
   public long getNextTransactionId() {
@@ -442,7 +445,7 @@ public class TransactionManager {
       }
   }
 
-  private boolean cleanWALFiles() {
+  private boolean cleanWALFiles(final boolean dropFiles) {
     for (Iterator<WALFile> it = inactiveWALFilePool.iterator(); it.hasNext(); ) {
       final WALFile file = it.next();
 
@@ -455,11 +458,16 @@ public class TransactionManager {
           statsPagesWritten.addAndGet((Long) fileStats.get("pagesWritten"));
           statsBytesWritten.addAndGet((Long) fileStats.get("bytesWritten"));
 
-          file.drop();
+          if (dropFiles) {
+            file.drop();
+            LogManager.instance().log(this, Level.FINE, "Dropped WAL file '%s'", null, file);
+          } else {
+            file.close();
+            LogManager.instance().log(this, Level.FINE, "Closed WAL file '%s'", null, file);
+          }
 
-          LogManager.instance().log(this, Level.FINE, "Dropped WAL file '%s'", null, file);
         } catch (IOException e) {
-          LogManager.instance().log(this, Level.SEVERE, "Error on dropping WAL file '%s'", e, file);
+          LogManager.instance().log(this, Level.SEVERE, "Error on %s WAL file '%s'", e, dropFiles ? "dropping" : "closing", file);
         }
         it.remove();
       }
