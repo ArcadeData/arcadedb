@@ -24,6 +24,7 @@ import com.arcadedb.utility.LockContext;
 import java.io.*;
 import java.nio.*;
 import java.nio.channels.*;
+import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
@@ -101,8 +102,7 @@ public class WALFile extends LockContext {
 
   public synchronized void drop() throws IOException {
     close();
-    if (!new File(filePath).delete())
-      LogManager.instance().log(this, Level.WARNING, "Error on deleting file '%s'", null, filePath);
+    Files.delete(Paths.get(filePath));
   }
 
   public WALTransaction getFirstTransaction() throws WALException {

@@ -79,6 +79,7 @@ import com.arcadedb.utility.RWLockContext;
 
 import java.io.*;
 import java.nio.channels.*;
+import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
@@ -349,7 +350,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
           if (lockFileIO != null)
             lockFileIO.close();
           if (lockFile.exists())
-            lockFile.delete();
+            Files.delete(Paths.get(lockFile.getAbsolutePath()));
 
           if (lockFile.exists() && !lockFile.delete())
             LogManager.instance().log(this, Level.WARNING, "Error on deleting lock file '%s'", null, lockFile);

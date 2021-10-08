@@ -20,6 +20,7 @@ import com.arcadedb.log.LogManager;
 import java.io.*;
 import java.nio.*;
 import java.nio.channels.*;
+import java.nio.file.*;
 import java.util.logging.*;
 
 public class PaginatedFile {
@@ -84,7 +85,7 @@ public class PaginatedFile {
 
   public void drop() throws IOException {
     close();
-    new File(getFilePath()).delete();
+    Files.delete(Paths.get(getFilePath()));
   }
 
   public long getSize() throws IOException {
