@@ -35,19 +35,19 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Test Report
-        if: ${{ always() }}
-        uses: scacap/action-surefire-report@v1
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+#      - name: Test Report
+#        if: ${{ always() }}
+#        uses: scacap/action-surefire-report@v1
+#        with:
+#          github_token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Test Report new
+      - name: Test Reporter
         uses: dorny/test-reporter@v1
-        if: success() || failure()    # run this step even if previous step failed
+        if: ${{ always() }}
         with:
-          name: Tests            # Name of the check run which will be created
-          path: '**/target/surefire-reports/TEST*.xml'    # Path to test results
-          reporter: java-junit        # Format of test results
+          name: Test Report
+          path: '**/surefire-reports/TEST*.xml'
+          reporter: java-junit
 
       - name: Codacy coverage reporter
         if: ${{ matrix.os != 'windows-latest' }}
