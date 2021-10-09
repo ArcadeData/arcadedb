@@ -43,9 +43,9 @@ jobs:
 
       - name: Test Reporter
         uses: dorny/test-reporter@v1
-        if: ${{ always() }}
+        if: success() || failure()
         with:
-          name: Test Report
+          name: Test Report - ${{ matrix.os }}
           path: '**/surefire-reports/TEST*.xml'
           reporter: java-junit
 
