@@ -76,7 +76,7 @@ public class PaginatedFile {
     final String dir = filePath.substring(0, pos);
 
     final File newFile = new File(dir + "/" + newFileName);
-    Files.move(new File(filePath).toPath(), newFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+    new File(filePath).getAbsoluteFile().renameTo(newFile.getAbsoluteFile());
     open(newFile.getAbsolutePath(), mode);
   }
 
