@@ -471,9 +471,6 @@ public class TransactionManager {
     for (Iterator<WALFile> it = inactiveWALFilePool.iterator(); it.hasNext(); ) {
       final WALFile file = it.next();
 
-      // REMOVE ME
-      LogManager.instance().log(this, Level.INFO, "Inactive file %s contains %d pending pages to flush", null, file, file.getPendingPagesToFlush());
-
       if (!dropFiles || file.getPendingPagesToFlush() == 0) {
         // ALL PAGES FLUSHED, REMOVE THE FILE
         try {
