@@ -23,6 +23,8 @@ import java.nio.channels.*;
 import java.nio.file.*;
 import java.util.logging.*;
 
+import static java.util.logging.Level.*;
+
 public class PaginatedFile {
   public enum MODE {
     READ_ONLY, READ_WRITE
@@ -74,6 +76,8 @@ public class PaginatedFile {
 
     final int pos = filePath.indexOf(fileName);
     final String dir = filePath.substring(0, pos);
+
+    LogManager.instance().log(this, INFO, "LOCAL PATH:" + new File(".").getAbsolutePath());
 
     final File newFile = new File(dir + "/" + newFileName);
     new File(filePath).getAbsoluteFile().renameTo(newFile.getAbsoluteFile());
