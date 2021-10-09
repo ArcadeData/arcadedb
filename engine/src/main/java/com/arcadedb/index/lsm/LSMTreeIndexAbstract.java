@@ -37,6 +37,7 @@ import java.util.logging.*;
 
 import static com.arcadedb.database.Binary.BYTE_SERIALIZED_SIZE;
 import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
+import static java.util.logging.Level.*;
 
 /**
  * Abstract class for LSM-based indexes. The first page contains 2 bytes to store key and value types. The pages are populated from the head of the page
@@ -170,6 +171,9 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     final int extPos = fileName.lastIndexOf('.');
     if (fileName.substring(extPos + 1).startsWith(TEMP_EXT)) {
       final String newFileName = fileName.substring(0, extPos) + "." + fileName.substring(extPos + TEMP_EXT.length() + 1);
+
+      LogManager.instance().log(this, SEVERE, "LOCAL PATH: " + new File(".").getAbsolutePath());
+
       try {
         file.rename(newFileName);
       } catch (IOException e) {
