@@ -172,6 +172,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     if (fileName.substring(extPos + 1).startsWith(TEMP_EXT)) {
       final String newFileName = fileName.substring(0, extPos) + "." + fileName.substring(extPos + TEMP_EXT.length() + 1);
 
+      // REMOVE ME
       LogManager.instance().log(this, SEVERE, "LOCAL PATH: " + new File(".").getAbsolutePath());
 
       try {

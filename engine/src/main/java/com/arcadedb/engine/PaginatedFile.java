@@ -74,12 +74,10 @@ public class PaginatedFile {
   public void rename(final String newFileName) throws IOException {
     close();
 
-    final int pos = filePath.indexOf(fileName);
-    final String dir = filePath.substring(0, pos);
+    // REMOVE ME
+    LogManager.instance().log(this, SEVERE, "LOCAL PATH: " + new File(".").getAbsolutePath());
 
-    LogManager.instance().log(this, SEVERE, "LOCAL PATH: " + new File(".").getAbsolutePath() + " DIR: " + dir);
-
-    final File newFile = new File(dir, newFileName);
+    final File newFile = new File(newFileName);
     new File(filePath).renameTo(newFile);
     open(newFile.getAbsolutePath(), mode);
   }
