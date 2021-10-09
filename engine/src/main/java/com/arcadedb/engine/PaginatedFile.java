@@ -77,10 +77,10 @@ public class PaginatedFile {
     final int pos = filePath.indexOf(fileName);
     final String dir = filePath.substring(0, pos);
 
-    LogManager.instance().log(this, INFO, "LOCAL PATH:" + new File(".").getAbsolutePath());
+    LogManager.instance().log(this, SEVERE, "LOCAL PATH: " + new File(".").getAbsolutePath() + " DIR: " + dir);
 
-    final File newFile = new File(dir + "/" + newFileName);
-    new File(filePath).getAbsoluteFile().renameTo(newFile.getAbsoluteFile());
+    final File newFile = new File(dir, newFileName);
+    new File(filePath).renameTo(newFile);
     open(newFile.getAbsolutePath(), mode);
   }
 
