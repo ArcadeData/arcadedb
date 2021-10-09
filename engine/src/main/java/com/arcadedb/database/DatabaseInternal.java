@@ -100,4 +100,6 @@ public interface DatabaseInternal extends Database {
   ExecutionPlanCache getExecutionPlanCache();
 
   int getEdgeListSize(int previousSize);
+
+  <RET> RET recordFileChanges(final Callable<Object> callback);
 }

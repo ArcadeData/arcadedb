@@ -15,7 +15,10 @@
  */
 package com.arcadedb.server.ha.message;
 
+import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ha.HAServer;
+
+import java.util.logging.*;
 
 /**
  * Response for a transaction. This is needed to check the quorum by the leader.
@@ -24,6 +27,7 @@ public class DatabaseChangeStructureResponse extends HAAbstractCommand {
   @Override
   public HACommand execute(final HAServer server, final String remoteServerName, final long messageNumber) {
     server.receivedResponse(remoteServerName, messageNumber);
+    LogManager.instance().log(this, Level.INFO, "Database change structure received");
     return null;
   }
 

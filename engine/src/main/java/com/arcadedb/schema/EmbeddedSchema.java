@@ -29,6 +29,7 @@ import com.arcadedb.engine.PaginatedComponentFactory;
 import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.DatabaseMetadataException;
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexFactory;
@@ -291,22 +292,19 @@ public class EmbeddedSchema implements Schema {
   public Bucket createBucket(final String bucketName, final int pageSize) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
-    return (Bucket) database.executeInWriteLock(new Callable<Object>() {
-      @Override
-      public Object call() {
-        if (bucketMap.containsKey(bucketName))
-          throw new SchemaException("Cannot create bucket '" + bucketName + "' because already exists");
+    if (bucketMap.containsKey(bucketName))
+      throw new SchemaException("Cannot create bucket '" + bucketName + "' because already exists");
 
-        try {
-          final Bucket bucket = new Bucket(database, bucketName, databasePath + "/" + bucketName, PaginatedFile.MODE.READ_WRITE, pageSize);
-          registerFile(bucket);
-          bucketMap.put(bucketName, bucket);
+    return recordFileChanges(() -> {
+      try {
+        final Bucket bucket = new Bucket(database, bucketName, databasePath + "/" + bucketName, PaginatedFile.MODE.READ_WRITE, pageSize);
+        registerFile(bucket);
+        bucketMap.put(bucketName, bucket);
 
-          return bucket;
+        return bucket;
 
-        } catch (IOException e) {
-          throw new SchemaException("Cannot create bucket '" + bucketName + "' (error=" + e + ")", e);
-        }
+      } catch (IOException e) {
+        throw new SchemaException("Cannot create bucket '" + bucketName + "' (error=" + e + ")", e);
       }
     });
   }
@@ -455,56 +453,52 @@ public class EmbeddedSchema implements Schema {
     if (propertyNames.length == 0)
       throw new DatabaseMetadataException("Cannot create index on type '" + typeName + "' because there are no property defined");
 
-    return (TypeIndex) database.executeInWriteLock(new Callable<Object>() {
-      @Override
-      public Object call() {
-        final DocumentType type = getType(typeName);
+    final DocumentType type = getType(typeName);
 
-        final TypeIndex index = type.getPolymorphicIndexByProperties(propertyNames);
-        if (index != null)
-          throw new IllegalArgumentException(
-              "Found the existent index '" + index.getName() + "' defined on the properties '" + Arrays.asList(propertyNames) + "' for type '" + typeName
-                  + "'");
+    final TypeIndex index = type.getPolymorphicIndexByProperties(propertyNames);
+    if (index != null)
+      throw new IllegalArgumentException(
+          "Found the existent index '" + index.getName() + "' defined on the properties '" + Arrays.asList(propertyNames) + "' for type '" + typeName + "'");
 
-        // CHECK ALL THE PROPERTIES EXIST
-        final byte[] keyTypes = new byte[propertyNames.length];
-        int i = 0;
+    // CHECK ALL THE PROPERTIES EXIST
+    final byte[] keyTypes = new byte[propertyNames.length];
+    int i = 0;
 
-        for (String propertyName : propertyNames) {
-          final Property property = type.getPolymorphicPropertyIfExists(propertyName);
-          if (property == null)
-            throw new SchemaException("Cannot create the index on type '" + typeName + "." + propertyName + "' because the property does not exist");
+    for (String propertyName : propertyNames) {
+      final Property property = type.getPolymorphicPropertyIfExists(propertyName);
+      if (property == null)
+        throw new SchemaException("Cannot create the index on type '" + typeName + "." + propertyName + "' because the property does not exist");
 
-          keyTypes[i++] = property.getType().getBinaryType();
+      keyTypes[i++] = property.getType().getBinaryType();
+    }
+
+    final List<Bucket> buckets = type.getBuckets(true);
+    final Index[] indexes = new Index[buckets.size()];
+
+    return recordFileChanges(() -> {
+      database.transaction(() -> {
+
+        try {
+          for (int idx = 0; idx < buckets.size(); ++idx) {
+            final Bucket bucket = buckets.get(idx);
+            indexes[idx] = createBucketIndex(type, keyTypes, bucket, typeName, indexType, unique, pageSize, nullStrategy, callback, propertyNames);
+          }
+
+          saveConfiguration();
+
+        } catch (IOException e) {
+          throw new SchemaException("Cannot create index on type '" + typeName + "' (error=" + e + ")", e);
         }
 
-        final List<Bucket> buckets = type.getBuckets(true);
-        final Index[] indexes = new Index[buckets.size()];
+      }, false, 1, null, (error) -> {
+        for (int j = 0; j < indexes.length; j++) {
+          final IndexInternal indexToRemove = (IndexInternal) indexes[j];
+          if (indexToRemove != null)
+            indexToRemove.drop();
+        }
+      });
 
-        database.transaction(() -> {
-
-          try {
-            for (int idx = 0; idx < buckets.size(); ++idx) {
-              final Bucket bucket = buckets.get(idx);
-              indexes[idx] = createBucketIndex(type, keyTypes, bucket, typeName, indexType, unique, pageSize, nullStrategy, callback, propertyNames);
-            }
-
-            saveConfiguration();
-
-          } catch (IOException e) {
-            throw new SchemaException("Cannot create index on type '" + typeName + "' (error=" + e + ")", e);
-          }
-
-        }, false, 1, null, (error) -> {
-          for (int j = 0; j < indexes.length; j++) {
-            final IndexInternal indexToRemove = (IndexInternal) indexes[j];
-            if (indexToRemove != null)
-              indexToRemove.drop();
-          }
-        });
-
-        return type.getPolymorphicIndexByProperties(propertyNames);
-      }
+      return type.getPolymorphicIndexByProperties(propertyNames);
     });
   }
 
@@ -550,54 +544,50 @@ public class EmbeddedSchema implements Schema {
     if (propertyNames.length == 0)
       throw new DatabaseMetadataException("Cannot create index on type '" + typeName + "' because there are no property defined");
 
-    return (Index) database.executeInWriteLock(new Callable<Object>() {
-      @Override
-      public Object call() {
+    final DocumentType type = getType(typeName);
 
-        final DocumentType type = getType(typeName);
+    // CHECK ALL THE PROPERTIES EXIST
+    final byte[] keyTypes = new byte[propertyNames.length];
+    int i = 0;
 
-        // CHECK ALL THE PROPERTIES EXIST
-        final byte[] keyTypes = new byte[propertyNames.length];
-        int i = 0;
+    for (String propertyName : propertyNames) {
+      final Property property = type.getPolymorphicPropertyIfExists(propertyName);
+      if (property == null)
+        throw new SchemaException("Cannot create the index on type '" + typeName + "." + propertyName + "' because the property does not exist");
 
-        for (String propertyName : propertyNames) {
-          final Property property = type.getPolymorphicPropertyIfExists(propertyName);
-          if (property == null)
-            throw new SchemaException("Cannot create the index on type '" + typeName + "." + propertyName + "' because the property does not exist");
+      keyTypes[i++] = property.getType().getBinaryType();
+    }
 
-          keyTypes[i++] = property.getType().getBinaryType();
+    return recordFileChanges(() -> {
+      final AtomicReference<Index> result = new AtomicReference<>();
+      database.transaction(() -> {
+
+        Bucket bucket = null;
+        final List<Bucket> buckets = type.getBuckets(false);
+        for (Bucket b : buckets) {
+          if (bucketName.equals(b.getName())) {
+            bucket = b;
+            break;
+          }
         }
 
-        final AtomicReference<Index> result = new AtomicReference<>();
-        database.transaction(() -> {
+        try {
+          final Index index = createBucketIndex(type, keyTypes, bucket, typeName, indexType, unique, pageSize, nullStrategy, callback, propertyNames);
+          result.set(index);
 
-          Bucket bucket = null;
-          final List<Bucket> buckets = type.getBuckets(false);
-          for (Bucket b : buckets) {
-            if (bucketName.equals(b.getName())) {
-              bucket = b;
-              break;
-            }
-          }
+          saveConfiguration();
 
-          try {
-            final Index index = createBucketIndex(type, keyTypes, bucket, typeName, indexType, unique, pageSize, nullStrategy, callback, propertyNames);
-            result.set(index);
+        } catch (IOException e) {
+          throw new SchemaException("Cannot create index on type '" + typeName + "' (error=" + e + ")", e);
+        }
+      }, false, 1, null, (error) -> {
+        final Index indexToRemove = result.get();
+        if (indexToRemove != null) {
+          ((IndexInternal) indexToRemove).drop();
+        }
+      });
 
-            saveConfiguration();
-
-          } catch (IOException e) {
-            throw new SchemaException("Cannot create index on type '" + typeName + "' (error=" + e + ")", e);
-          }
-        }, false, 1, null, (error) -> {
-          final Index indexToRemove = result.get();
-          if (indexToRemove != null) {
-            ((IndexInternal) indexToRemove).drop();
-          }
-        });
-
-        return result.get();
-      }
+      return result.get();
     });
   }
 
@@ -614,55 +604,54 @@ public class EmbeddedSchema implements Schema {
     if (indexMap.containsKey(indexName))
       throw new DatabaseMetadataException("Cannot create index '" + indexName + "' on type '" + typeName + "' because it already exists");
 
-    final IndexInternal index = indexFactory.createIndex(indexType.name(), database, indexName, unique, databasePath + "/" + indexName,
-        PaginatedFile.MODE.READ_WRITE, keyTypes, pageSize, nullStrategy, callback);
+    return recordFileChanges(() -> {
 
-    registerFile(index.getPaginatedComponent());
+      final IndexInternal index = indexFactory.createIndex(indexType.name(), database, indexName, unique, databasePath + "/" + indexName,
+          PaginatedFile.MODE.READ_WRITE, keyTypes, pageSize, nullStrategy, callback);
 
-    indexMap.put(indexName, index);
+      registerFile(index.getPaginatedComponent());
 
-    type.addIndexInternal(index, bucket.getId(), propertyNames);
-    index.build(callback);
+      indexMap.put(indexName, index);
 
-    return index;
+      type.addIndexInternal(index, bucket.getId(), propertyNames);
+      index.build(callback);
+      return index;
+    });
   }
 
   public Index createManualIndex(final INDEX_TYPE indexType, final boolean unique, final String indexName, final byte[] keyTypes, final int pageSize,
       final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
-    return (Index) database.executeInWriteLock(new Callable<Object>() {
-      @Override
-      public Object call() {
-        if (indexMap.containsKey(indexName))
-          throw new SchemaException("Cannot create index '" + indexName + "' because already exists");
+    if (indexMap.containsKey(indexName))
+      throw new SchemaException("Cannot create index '" + indexName + "' because already exists");
 
-        final AtomicReference<IndexInternal> result = new AtomicReference<>();
-        database.transaction(() -> {
+    return recordFileChanges(() -> {
+      final AtomicReference<IndexInternal> result = new AtomicReference<>();
+      database.transaction(() -> {
 
-          try {
-            final IndexInternal index = indexFactory.createIndex(indexType.name(), database, FileUtils.encode(indexName, ENCODING), unique,
-                databasePath + "/" + indexName, PaginatedFile.MODE.READ_WRITE, keyTypes, pageSize, nullStrategy, null);
+        try {
+          final IndexInternal index = indexFactory.createIndex(indexType.name(), database, FileUtils.encode(indexName, ENCODING), unique,
+              databasePath + "/" + indexName, PaginatedFile.MODE.READ_WRITE, keyTypes, pageSize, nullStrategy, null);
 
-            result.set(index);
+          result.set(index);
 
-            if (index instanceof PaginatedComponent)
-              registerFile((PaginatedComponent) index);
+          if (index instanceof PaginatedComponent)
+            registerFile((PaginatedComponent) index);
 
-            indexMap.put(indexName, index);
+          indexMap.put(indexName, index);
 
-          } catch (IOException e) {
-            throw new SchemaException("Cannot create index '" + indexName + "' (error=" + e + ")", e);
-          }
-        }, false, 1, null, (error) -> {
-          final IndexInternal indexToRemove = result.get();
-          if (indexToRemove != null) {
-            indexToRemove.drop();
-          }
-        });
+        } catch (IOException e) {
+          throw new SchemaException("Cannot create index '" + indexName + "' (error=" + e + ")", e);
+        }
+      }, false, 1, null, (error) -> {
+        final IndexInternal indexToRemove = result.get();
+        if (indexToRemove != null) {
+          indexToRemove.drop();
+        }
+      });
 
-        return result.get();
-      }
+      return result.get();
     });
   }
 
@@ -727,47 +716,44 @@ public class EmbeddedSchema implements Schema {
   public void dropType(final String typeName) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
-    database.executeInWriteLock(new Callable<Object>() {
-      @Override
-      public Object call() {
-        multipleUpdate = true;
-        try {
-          final DocumentType type = database.getSchema().getType(typeName);
+    recordFileChanges(() -> {
+      multipleUpdate = true;
+      try {
+        final DocumentType type = database.getSchema().getType(typeName);
 
-          // CHECK INHERITANCE TREE AND ATTACH SUB-TYPES DIRECTLY TO THE PARENT TYPE
+        // CHECK INHERITANCE TREE AND ATTACH SUB-TYPES DIRECTLY TO THE PARENT TYPE
+        for (DocumentType parent : type.parentTypes)
+          parent.subTypes.remove(type);
+        for (DocumentType sub : type.subTypes) {
+          sub.parentTypes.remove(type);
           for (DocumentType parent : type.parentTypes)
-            parent.subTypes.remove(type);
-          for (DocumentType sub : type.subTypes) {
-            sub.parentTypes.remove(type);
-            for (DocumentType parent : type.parentTypes)
-              sub.addParentType(parent);
-          }
-
-          final List<Bucket> buckets = type.getBuckets(false);
-          final Set<Integer> bucketIds = new HashSet<>(buckets.size());
-          for (Bucket b : buckets)
-            bucketIds.add(b.getId());
-
-          // DELETE ALL ASSOCIATED INDEXES
-          for (Index m : type.getAllIndexes(true))
-            dropIndex(m.getName());
-
-          // DELETE ALL ASSOCIATED BUCKETS
-          for (Bucket b : buckets)
-            dropBucket(b.getName());
-
-          if (type instanceof VertexType)
-            database.getGraphEngine().dropVertexType(database, (VertexType) type);
-
-          if (types.remove(typeName) == null)
-            throw new SchemaException("Type '" + typeName + "' not found");
-        } finally {
-          multipleUpdate = false;
-          saveConfiguration();
-          updateSecurity();
+            sub.addParentType(parent);
         }
-        return null;
+
+        final List<Bucket> buckets = type.getBuckets(false);
+        final Set<Integer> bucketIds = new HashSet<>(buckets.size());
+        for (Bucket b : buckets)
+          bucketIds.add(b.getId());
+
+        // DELETE ALL ASSOCIATED INDEXES
+        for (Index m : type.getAllIndexes(true))
+          dropIndex(m.getName());
+
+        // DELETE ALL ASSOCIATED BUCKETS
+        for (Bucket b : buckets)
+          dropBucket(b.getName());
+
+        if (type instanceof VertexType)
+          database.getGraphEngine().dropVertexType(database, (VertexType) type);
+
+        if (types.remove(typeName) == null)
+          throw new SchemaException("Type '" + typeName + "' not found");
+      } finally {
+        multipleUpdate = false;
+        saveConfiguration();
+        updateSecurity();
       }
+      return null;
     });
   }
 
@@ -775,29 +761,26 @@ public class EmbeddedSchema implements Schema {
   public void dropBucket(final String bucketName) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
-    database.executeInWriteLock(new Callable<Object>() {
-      @Override
-      public Object call() {
-        final Bucket bucket = getBucketByName(bucketName);
+    final Bucket bucket = getBucketByName(bucketName);
 
-        database.getPageManager().deleteFile(bucket.getId());
-        try {
-          database.getFileManager().dropFile(bucket.getId());
-        } catch (IOException e) {
-          LogManager.instance().log(this, Level.SEVERE, "Error on deleting bucket '%s'", e, bucketName);
-        }
-        removeFile(bucket.getId());
-
-        bucketMap.remove(bucketName);
-
-        for (Index idx : new ArrayList<>(indexMap.values())) {
-          if (idx.getAssociatedBucketId() == bucket.getId())
-            dropIndex(idx.getName());
-        }
-
-        saveConfiguration();
-        return null;
+    recordFileChanges(() -> {
+      database.getPageManager().deleteFile(bucket.getId());
+      try {
+        database.getFileManager().dropFile(bucket.getId());
+      } catch (IOException e) {
+        LogManager.instance().log(this, Level.SEVERE, "Error on deleting bucket '%s'", e, bucketName);
       }
+      removeFile(bucket.getId());
+
+      bucketMap.remove(bucketName);
+
+      for (Index idx : new ArrayList<>(indexMap.values())) {
+        if (idx.getAssociatedBucketId() == bucket.getId())
+          dropIndex(idx.getName());
+      }
+
+      saveConfiguration();
+      return null;
     });
   }
 
@@ -821,36 +804,33 @@ public class EmbeddedSchema implements Schema {
     if (buckets > 32)
       throw new IllegalArgumentException("Cannot create " + buckets + " buckets: maximum is 32");
 
-    return (DocumentType) database.executeInWriteLock(new Callable<Object>() {
-      @Override
-      public Object call() {
-        if (typeName.indexOf(",") > -1)
-          throw new IllegalArgumentException("Type name '" + typeName + "' contains non valid characters");
+    if (typeName.indexOf(",") > -1)
+      throw new IllegalArgumentException("Type name '" + typeName + "' contains non valid characters");
 
-        if (types.containsKey(typeName))
-          throw new SchemaException("Type '" + typeName + "' already exists");
+    if (types.containsKey(typeName))
+      throw new SchemaException("Type '" + typeName + "' already exists");
 
-        // CREATE ENTRY IN DICTIONARY IF NEEDED. THIS IS USED BY EMBEDDED DOCUMENT WHERE THE DICTIONARY ID IS SAVED
-        dictionary.getIdByName(typeName, true);
+    return recordFileChanges(() -> {
+      // CREATE ENTRY IN DICTIONARY IF NEEDED. THIS IS USED BY EMBEDDED DOCUMENT WHERE THE DICTIONARY ID IS SAVED
+      dictionary.getIdByName(typeName, true);
 
-        final DocumentType c = new DocumentType(EmbeddedSchema.this, typeName);
-        types.put(typeName, c);
+      final DocumentType c = new DocumentType(EmbeddedSchema.this, typeName);
+      types.put(typeName, c);
 
-        for (int i = 0; i < buckets; ++i) {
-          final String bucketName = FileUtils.encode(typeName, ENCODING) + "_" + i;
-          if (existsBucket(bucketName)) {
-            LogManager.instance().log(this, Level.WARNING, "Reusing found bucket '%s' for type '%s'", null, bucketName, typeName);
-            c.addBucket(getBucketByName(bucketName));
-          } else
-            // CREATE A NEW ONE
-            c.addBucket(createBucket(bucketName, pageSize));
-        }
-
-        saveConfiguration();
-        updateSecurity();
-
-        return c;
+      for (int i = 0; i < buckets; ++i) {
+        final String bucketName = FileUtils.encode(typeName, ENCODING) + "_" + i;
+        if (existsBucket(bucketName)) {
+          LogManager.instance().log(this, Level.WARNING, "Reusing found bucket '%s' for type '%s'", null, bucketName, typeName);
+          c.addBucket(getBucketByName(bucketName));
+        } else
+          // CREATE A NEW ONE
+          c.addBucket(createBucket(bucketName, pageSize));
       }
+
+      saveConfiguration();
+      updateSecurity();
+
+      return c;
     });
   }
 
@@ -898,35 +878,32 @@ public class EmbeddedSchema implements Schema {
     if (buckets > 32)
       throw new IllegalArgumentException("Cannot create " + buckets + " buckets: maximum is 32");
 
-    return (VertexType) database.executeInWriteLock(new Callable<Object>() {
-      @Override
-      public Object call() {
-        if (typeName.indexOf(",") > -1)
-          throw new IllegalArgumentException("Vertex type name '" + typeName + "' contains non valid characters");
+    if (typeName.indexOf(",") > -1)
+      throw new IllegalArgumentException("Vertex type name '" + typeName + "' contains non valid characters");
 
-        if (types.containsKey(typeName))
-          throw new SchemaException("Vertex type '" + typeName + "' already exists");
+    if (types.containsKey(typeName))
+      throw new SchemaException("Vertex type '" + typeName + "' already exists");
 
-        final VertexType c = new VertexType(EmbeddedSchema.this, typeName);
-        types.put(typeName, c);
+    return recordFileChanges(() -> {
+      final VertexType c = new VertexType(EmbeddedSchema.this, typeName);
+      types.put(typeName, c);
 
-        for (int i = 0; i < buckets; ++i) {
-          final String bucketName = FileUtils.encode(typeName, ENCODING) + "_" + i;
-          if (existsBucket(bucketName)) {
-            LogManager.instance().log(this, Level.WARNING, "Reusing found bucket '%s' for type '%s'", null, bucketName, typeName);
-            c.addBucket(getBucketByName(bucketName));
-          } else
-            // CREATE A NEW ONE
-            c.addBucket(createBucket(bucketName, pageSize));
-        }
-
-        database.getGraphEngine().createVertexType(database, c);
-
-        saveConfiguration();
-        updateSecurity();
-
-        return c;
+      for (int i = 0; i < buckets; ++i) {
+        final String bucketName = FileUtils.encode(typeName, ENCODING) + "_" + i;
+        if (existsBucket(bucketName)) {
+          LogManager.instance().log(this, Level.WARNING, "Reusing found bucket '%s' for type '%s'", null, bucketName, typeName);
+          c.addBucket(getBucketByName(bucketName));
+        } else
+          // CREATE A NEW ONE
+          c.addBucket(createBucket(bucketName, pageSize));
       }
+
+      database.getGraphEngine().createVertexType(database, c);
+
+      saveConfiguration();
+      updateSecurity();
+
+      return c;
     });
   }
 
@@ -974,32 +951,30 @@ public class EmbeddedSchema implements Schema {
     if (buckets > 32)
       throw new IllegalArgumentException("Cannot create " + buckets + " buckets: maximum is 32");
 
-    return (EdgeType) database.executeInWriteLock(new Callable<Object>() {
-      @Override
-      public Object call() {
-        if (typeName.indexOf(",") > -1)
-          throw new IllegalArgumentException("Edge type name '" + typeName + "' contains non valid characters");
+    if (typeName.indexOf(",") > -1)
+      throw new IllegalArgumentException("Edge type name '" + typeName + "' contains non valid characters");
 
-        if (types.containsKey(typeName))
-          throw new SchemaException("Edge type '" + typeName + "' already exists");
-        final DocumentType c = new EdgeType(EmbeddedSchema.this, typeName);
-        types.put(typeName, c);
+    if (types.containsKey(typeName))
+      throw new SchemaException("Edge type '" + typeName + "' already exists");
 
-        for (int i = 0; i < buckets; ++i) {
-          final String bucketName = FileUtils.encode(typeName, ENCODING) + "_" + i;
-          if (existsBucket(bucketName)) {
-            LogManager.instance().log(this, Level.WARNING, "Reusing found bucket '%s' for type '%s'", null, bucketName, typeName);
-            c.addBucket(getBucketByName(bucketName));
-          } else
-            // CREATE A NEW ONE
-            c.addBucket(createBucket(bucketName, pageSize));
-        }
+    return recordFileChanges(() -> {
+      final DocumentType c = new EdgeType(EmbeddedSchema.this, typeName);
+      types.put(typeName, c);
 
-        saveConfiguration();
-        updateSecurity();
-
-        return c;
+      for (int i = 0; i < buckets; ++i) {
+        final String bucketName = FileUtils.encode(typeName, ENCODING) + "_" + i;
+        if (existsBucket(bucketName)) {
+          LogManager.instance().log(this, Level.WARNING, "Reusing found bucket '%s' for type '%s'", null, bucketName, typeName);
+          c.addBucket(getBucketByName(bucketName));
+        } else
+          // CREATE A NEW ONE
+          c.addBucket(createBucket(bucketName, pageSize));
       }
+
+      saveConfiguration();
+      updateSecurity();
+
+      return c;
     });
   }
 
@@ -1337,5 +1312,17 @@ public class EmbeddedSchema implements Schema {
   private void updateSecurity() {
     if (security != null)
       security.updateSchema(database);
+  }
+
+  protected <RET> RET recordFileChanges(final Callable<Object> callback) {
+    if (readingFromFile || !loadInRamCompleted) {
+      try {
+        return (RET) callback.call();
+      } catch (Exception e) {
+        throw new DatabaseOperationException("Error on updating the schema", e);
+      }
+    }
+
+    return database.getWrappedDatabaseInstance().recordFileChanges(callback);
   }
 }

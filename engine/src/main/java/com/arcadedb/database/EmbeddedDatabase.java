@@ -1398,6 +1398,11 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   }
 
   @Override
+  public <RET> RET recordFileChanges(final Callable<Object> callback) {
+    return (RET) executeInWriteLock(callback);
+  }
+
+  @Override
   public StatementCache getStatementCache() {
     return statementCache;
   }
