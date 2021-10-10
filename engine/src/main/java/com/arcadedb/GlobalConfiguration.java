@@ -269,6 +269,11 @@ public enum GlobalConfiguration {
       1000),
 
   // GREMLIN
+
+  // POSTGRES
+  POSTGRES_PORT("arcadedb.postgres.port", "TCP/IP port number used for incoming connections for Postgres plugin. Default is 5432", Integer.class, 5432),
+
+  POSTGRES_HOST("arcadedb.postgres.host", "TCP/IP host name used for incoming connections for Postgres plugin. Default is '0.0.0.0'", String.class, "0.0.0.0"),
   ;
 
   /**
