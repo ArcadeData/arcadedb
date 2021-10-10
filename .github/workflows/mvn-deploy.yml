@@ -48,15 +48,15 @@ jobs:
           DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
           DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Codacy coverage reporter
-        if: ${{ always() }}
-        uses: codacy/codacy-coverage-reporter-action@v1
-        with:
-          project-token: ${{ secrets.CODACY_PROJECT_TOKEN }}
-          coverage-reports:  coverage/target/site/jacoco-aggregate/jacoco.xml
-
       - name: Test Report
         if: ${{ always() }}
         uses: scacap/action-surefire-report@v1
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Codacy coverage reporter
+        if: ${{ matrix.os != 'windows-latest' }}
+        uses: codacy/codacy-coverage-reporter-action@v1
+        with:
+          project-token: ${{ secrets.CODACY_PROJECT_TOKEN }}
+          coverage-reports:  coverage/target/site/jacoco-aggregate/jacoco.xml
