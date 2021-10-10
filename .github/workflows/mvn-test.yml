@@ -10,8 +10,14 @@ jobs:
   build:
     strategy:
       matrix:
-        os: [ ubuntu-latest, windows-latest ]
+        os: [ ubuntu-latest ]
+        optional: [false]
+      include:
+        os: windows-latest
+        optional: [true]
+
     runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.optional }}
 
     steps:
       - uses: xembly/workflow-manager@v1
