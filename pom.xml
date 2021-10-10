@@ -45,6 +45,7 @@
     </licenses>
 
     <properties>
+        <exclude.tests></exclude.tests>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
         <docker.plugin.version>1.2.2</docker.plugin.version>
@@ -192,6 +193,7 @@
                         <exclude>**/*RemoteConsoleIT.java</exclude>
                         <exclude>**/ArcadeGraphProcessDebugTest.java</exclude>
                         <exclude>**/ArcadeGraphStructureDebugTest.java</exclude>
+                        <exclude>${exclude.tests}</exclude>
                     </excludes>
                     <skipITs>${skipIntegration}</skipITs>
                     <argLine>${itCoverageAgent}</argLine>
@@ -422,6 +424,17 @@
             <id>integration</id>
             <properties>
                 <skipIntegration>false</skipIntegration>
+            </properties>
+        </profile>
+        <profile>
+            <id>windows</id>
+            <activation>
+                <os>
+                    <family>windows</family>
+                </os>
+            </activation>
+            <properties>
+                <exclude.tests>**/gremlin/**/*.java</exclude.tests>
             </properties>
         </profile>
 
