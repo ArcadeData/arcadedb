@@ -119,7 +119,7 @@ public class TransactionManager {
 
     final File dir = new File(database.getDatabasePath());
     final File[] walFiles = dir.listFiles((dir1, name) -> name.endsWith(".wal"));
-    if (walFiles.length > 0)
+    if (walFiles != null && walFiles.length > 0)
       LogManager.instance().log(this, Level.WARNING, "Error on removing all transaction files. Remained: %s", null, walFiles.length);
   }
 

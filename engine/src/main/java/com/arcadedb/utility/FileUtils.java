@@ -188,7 +188,7 @@ public class FileUtils {
 //            // IGNORE IT
 //          }
 //        } else
-          LogManager.instance().log(rootFile, Level.WARNING, "Cannot delete directory '%s'", e, rootFile);
+        LogManager.instance().log(rootFile, Level.WARNING, "Cannot delete directory '%s'", e, rootFile);
       }
     }
   }
@@ -202,7 +202,8 @@ public class FileUtils {
   public static boolean deleteFile(final File file) {
     for (int attempt = 0; attempt < 3; attempt++) {
       try {
-        Files.delete(file.toPath());
+        if (file.exists())
+          Files.delete(file.toPath());
         return true;
       } catch (IOException e) {
 //        if (System.getProperty("os.name").toLowerCase().contains("win")) {
@@ -215,7 +216,7 @@ public class FileUtils {
 //            // IGNORE IT
 //          }
 //        } else
-          LogManager.instance().log(file, Level.WARNING, "Cannot delete file '%s'", e, file);
+        LogManager.instance().log(file, Level.WARNING, "Cannot delete file '%s'", e, file);
       }
     }
     return false;
