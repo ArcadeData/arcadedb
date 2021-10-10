@@ -339,10 +339,10 @@ public class FileUtils {
   }
 
   public static void writeContentToStream(final OutputStream output, final String iContent) throws IOException {
-    final OutputStreamWriter os = new OutputStreamWriter(output, DatabaseFactory.getDefaultCharset());
-    final BufferedWriter writer = new BufferedWriter(os);
-    writer.write(iContent);
-    writer.flush();
+    try (final OutputStreamWriter os = new OutputStreamWriter(output, DatabaseFactory.getDefaultCharset());
+        final BufferedWriter writer = new BufferedWriter(os)) {
+      writer.write(iContent);
+    }
   }
 
   public static String encode(final String value, final String encoding) {
