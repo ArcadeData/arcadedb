@@ -40,7 +40,18 @@ jobs:
           server-password: MAVEN_PASSWORD
 
       - name: Publish to OSS and Docker hub
+        if: ${{ matrix.os != 'windows-latest' }}
         run: mvn -Pintegration -Pcoverage -Pdeploy -Pdocker  --batch-mode  --errors --fail-at-end --show-version  --file pom.xml deploy
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MAVEN_USERNAME: ${{ secrets.OSSRH_USERNAME }}
+          MAVEN_PASSWORD: ${{ secrets.OSSRH_TOKEN }}
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Publish to OSS and Docker hub
+        if: ${{ matrix.os == 'windows-latest' }}
+        run: mvn -Pintegration -Pcoverage -Pdeploy -Pdocker  --batch-mode  --errors --fail-at-end --show-version  -Dtest="!org.apache.tinkerpop.gremlin.arcadedb.process*+org.apache.tinkerpop.gremlin.arcadedb.structure*" --file pom.xml deploy
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MAVEN_USERNAME: ${{ secrets.OSSRH_USERNAME }}
