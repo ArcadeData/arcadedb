@@ -478,13 +478,10 @@ public class TransactionManager {
           statsPagesWritten.addAndGet((Long) fileStats.get("pagesWritten"));
           statsBytesWritten.addAndGet((Long) fileStats.get("bytesWritten"));
 
-          if (dropFiles) {
+          if (dropFiles)
             file.drop();
-            LogManager.instance().log(this, Level.FINE, "Dropped WAL file '%s'", null, file);
-          } else {
+          else
             file.close();
-            LogManager.instance().log(this, Level.FINE, "Closed WAL file '%s'", null, file);
-          }
 
         } catch (IOException e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on %s WAL file '%s'", e, dropFiles ? "dropping" : "closing", file);
