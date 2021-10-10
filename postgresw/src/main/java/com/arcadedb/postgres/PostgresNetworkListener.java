@@ -41,14 +41,14 @@ public class PostgresNetworkListener extends Thread {
   private          int                 port;
   private          ClientConnected     callback;
 
-  public PostgresNetworkListener(final ArcadeDBServer server, final ServerSocketFactory iSocketFactory, final String iHostName, final String iHostPortRange) {
-    super(server.getServerName() + " PostgresW listening at " + iHostName + ":" + iHostPortRange);
+  public PostgresNetworkListener(final ArcadeDBServer server, final ServerSocketFactory iSocketFactory, final String hostName, final String hostPortRange) {
+    super(server.getServerName() + " PostgresW listening at " + hostName + ":" + hostPortRange);
 
     this.server = server;
-    this.hostName = iHostName;
+    this.hostName = hostName;
     this.socketFactory = iSocketFactory == null ? ServerSocketFactory.getDefault() : iSocketFactory;
 
-    listen(iHostName, iHostPortRange);
+    listen(hostName, hostPortRange);
 
     start();
   }
