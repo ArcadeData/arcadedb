@@ -42,11 +42,18 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Test Report
-        if: ${{ always() }}
-        uses: scacap/action-surefire-report@v1
+#      - name: Test Report
+#        if: ${{ always() }}
+#        uses: scacap/action-surefire-report@v1
+#        with:
+#          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish Test Report
+        uses: mikepenz/action-junit-report@v2
+        check_name: Junit Test Report - ${{ matrix.os }}
+        if: always() # always run even if the previous step fails
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          report_paths: '**/surefire-reports/TEST*.xml'
 
       - name: Test Reporter
         uses: dorny/test-reporter@v1
