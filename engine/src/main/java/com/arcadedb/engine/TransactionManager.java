@@ -165,6 +165,16 @@ public class TransactionManager {
         return;
       }
 
+      if (activeWALFilePool != null && activeWALFilePool.length > 0) {
+        for( WALFile file : activeWALFilePool ) {
+          try {
+            file.close();
+          } catch (IOException e) {
+            // IGNORE IT
+          }
+        }
+      }
+
       activeWALFilePool = new WALFile[walFiles.length];
       for (int i = 0; i < walFiles.length; ++i) {
         try {
