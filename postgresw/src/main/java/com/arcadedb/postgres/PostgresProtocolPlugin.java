@@ -16,6 +16,7 @@
 package com.arcadedb.postgres;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.ha.network.DefaultServerSocketFactory;
@@ -23,20 +24,23 @@ import com.arcadedb.server.http.HttpServer;
 import io.undertow.server.handlers.PathHandler;
 
 public class PostgresProtocolPlugin implements ServerPlugin {
-  private              ArcadeDBServer          server;
-  private              ContextConfiguration    configuration;
-  private final static int                     DEF_PORT = 5432;
-  private              PostgresNetworkListener listener;
+  private ArcadeDBServer          server;
+  private ContextConfiguration    configuration;
+  private PostgresNetworkListener listener;
+  private String                  host;
+  private int                     port;
 
   @Override
   public void configure(final ArcadeDBServer arcadeDBServer, final ContextConfiguration configuration) {
     this.server = arcadeDBServer;
     this.configuration = configuration;
+    this.host = configuration.getValueAsString(GlobalConfiguration.POSTGRES_HOST);
+    this.port = configuration.getValueAsInteger(GlobalConfiguration.POSTGRES_PORT);
   }
 
   @Override
   public void startService() {
-    listener = new PostgresNetworkListener(server, new DefaultServerSocketFactory(), "localhost", "" + DEF_PORT);
+    listener = new PostgresNetworkListener(server, new DefaultServerSocketFactory(), host, "" + port);
   }
 
   @Override
