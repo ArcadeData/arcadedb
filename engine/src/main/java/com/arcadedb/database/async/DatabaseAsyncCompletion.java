@@ -24,12 +24,12 @@ public class DatabaseAsyncCompletion extends DatabaseAsyncAbstractCallbackTask {
   @Override
   public void execute(final DatabaseAsyncExecutorImpl.AsyncThread async, final DatabaseInternal database) {
     try {
-      database.commit();
+      if (database.isTransactionActive())
+        database.commit();
       async.onOk();
     } catch (Exception e) {
       async.onError(e);
     }
-    database.begin();
   }
 
   @Override

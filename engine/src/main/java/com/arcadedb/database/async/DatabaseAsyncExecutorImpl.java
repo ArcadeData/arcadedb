@@ -111,29 +111,25 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
             LogManager.instance().log(this, Level.FINE, "Received async message %s (threadId=%d)", null, message, Thread.currentThread().getId());
 
             if (message == FORCE_EXIT) {
-
               break;
-
             } else {
-
               try {
-                if (message.requiresActiveTx() && !database.getTransaction().isActive())
+                if (message.requiresActiveTx() && !database.isTransactionActive())
                   database.begin();
 
                 message.execute(this, database);
 
                 count++;
 
-                if (count % commitEvery == 0)
+                if (database.isTransactionActive() && count % commitEvery == 0) {
                   database.commit();
+                  database.begin();
+                }
 
               } catch (Throwable e) {
                 onError(e);
               } finally {
                 message.completed();
-
-                if (!database.isTransactionActive())
-                  database.begin();
               }
             }
 
@@ -146,13 +142,12 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
           break;
         } catch (Throwable e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on executing asynchronous operation (asyncThread=%s)", e, getName());
-          if (!database.getTransaction().isActive())
-            database.begin();
         }
       }
 
       try {
-        database.commit();
+        if (database.isTransactionActive())
+          database.commit();
         onOk();
       } catch (Exception e) {
         onError(e);
