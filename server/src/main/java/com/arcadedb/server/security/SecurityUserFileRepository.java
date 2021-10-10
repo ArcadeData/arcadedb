@@ -62,9 +62,11 @@ public class SecurityUserFileRepository {
     final List<JSONObject> resultSet = new ArrayList<>();
     if (file.exists()) {
 
-      final BufferedReader reader = new BufferedReader(new InputStreamReader(new FileInputStream(file)), BUFFER_SIZE);
-      while (reader.ready())
-        resultSet.add(new JSONObject(reader.readLine()));
+      try (final InputStreamReader is = new InputStreamReader(new FileInputStream(file));//
+          final BufferedReader reader = new BufferedReader(is, BUFFER_SIZE)) {
+        while (reader.ready())
+          resultSet.add(new JSONObject(reader.readLine()));
+      }
     }
 
     if (!resultSet.isEmpty())
