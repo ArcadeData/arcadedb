@@ -25,10 +25,9 @@ import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.ha.ReplicationException;
 import com.arcadedb.utility.FileUtils;
 
-import java.io.File;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.logging.Level;
+import java.io.*;
+import java.util.*;
+import java.util.logging.*;
 
 public class DatabaseChangeStructureRequest extends HAAbstractCommand {
   private String               databaseName;

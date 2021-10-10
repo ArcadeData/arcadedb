@@ -26,6 +26,7 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 
 import java.util.*;
+import java.util.concurrent.*;
 
 public class DocumentType {
   protected final EmbeddedSchema                    schema;
@@ -65,9 +66,11 @@ public class DocumentType {
       if (allProperties.contains(p))
         throw new IllegalArgumentException("Property '" + p + "' is already defined in type '" + name + "' or any parent types");
 
-    parentTypes.add(parent);
-    parent.subTypes.add(this);
-    schema.saveConfiguration();
+    recordFileChanges(() -> {
+      parentTypes.add(parent);
+      parent.subTypes.add(this);
+      return null;
+    });
     return this;
   }
 
@@ -76,12 +79,14 @@ public class DocumentType {
   }
 
   public void removeParentType(final DocumentType parent) {
-    if (!parentTypes.remove(parent))
-      // ALREADY REMOVED PARENT
-      return;
+    recordFileChanges(() -> {
+      if (!parentTypes.remove(parent))
+        // ALREADY REMOVED PARENT
+        return null;
 
-    parent.subTypes.remove(this);
-    schema.saveConfiguration();
+      parent.subTypes.remove(this);
+      return null;
+    });
   }
 
   public boolean instanceOf(final String type) {
@@ -132,10 +137,10 @@ public class DocumentType {
 
     final Property property = new Property(this, propertyName, propertyType);
 
-    properties.put(propertyName, property);
-
-    schema.saveConfiguration();
-
+    recordFileChanges(() -> {
+      properties.put(propertyName, property);
+      return null;
+    });
     return property;
   }
 
@@ -160,8 +165,10 @@ public class DocumentType {
   }
 
   public void dropProperty(final String propertyName) {
-    properties.remove(propertyName);
-    schema.saveConfiguration();
+    recordFileChanges(() -> {
+      properties.remove(propertyName);
+      return null;
+    });
   }
 
   public Index createTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique, final String... propertyNames) {
@@ -211,14 +218,18 @@ public class DocumentType {
   }
 
   public DocumentType addBucket(final Bucket bucket) {
-    addBucketInternal(bucket);
-    schema.saveConfiguration();
+    recordFileChanges(() -> {
+      addBucketInternal(bucket);
+      return null;
+    });
     return this;
   }
 
   public DocumentType removeBucket(final Bucket bucket) {
-    addBucketInternal(bucket);
-    schema.saveConfiguration();
+    recordFileChanges(() -> {
+      addBucketInternal(bucket);
+      return null;
+    });
     return this;
   }
 
@@ -468,13 +479,12 @@ public class DocumentType {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
-    DocumentType that = (DocumentType) o;
-
+    final DocumentType that = (DocumentType) o;
     return name.equals(that.name);
   }
 
@@ -582,5 +592,10 @@ public class DocumentType {
         return true;
     }
     return false;
+  }
+
+  protected void recordFileChanges(final Callable<Object> callback) {
+    schema.recordFileChanges(callback);
+    schema.saveConfiguration();
   }
 }

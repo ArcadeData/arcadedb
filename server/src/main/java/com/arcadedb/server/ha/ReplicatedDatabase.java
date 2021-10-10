@@ -44,6 +44,7 @@ import com.arcadedb.engine.WALFile;
 import com.arcadedb.engine.WALFileFactory;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphEngine;
@@ -71,7 +72,6 @@ import java.util.concurrent.atomic.*;
 public class ReplicatedDatabase implements DatabaseInternal {
   private final ArcadeDBServer   server;
   private final EmbeddedDatabase proxied;
-  private final ReplicatedSchema schema;
   private final HAServer.QUORUM  quorum;
   private final long             timeout;
 
@@ -84,8 +84,6 @@ public class ReplicatedDatabase implements DatabaseInternal {
     this.quorum = HAServer.QUORUM.valueOf(proxied.getConfiguration().getValueAsString(GlobalConfiguration.HA_QUORUM).toUpperCase());
     this.timeout = proxied.getConfiguration().getValueAsLong(GlobalConfiguration.HA_QUORUM_TIMEOUT);
     this.proxied.setWrappedDatabaseInstance(this);
-
-    this.schema = new ReplicatedSchema(this, proxied.getSchema().getEmbedded());
   }
 
   @Override
@@ -475,7 +473,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
 
   @Override
   public Schema getSchema() {
-    return schema;
+    return proxied.getSchema();
   }
 
   @Override
@@ -626,7 +624,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
     return proxied.toString();
   }
 
-  protected Object recordFileChanges(final Callable<Object> callback) {
+  public <RET> RET recordFileChanges(final Callable<Object> callback) {
     final HAServer ha = server.getHA();
 
     final AtomicReference<Object> result = new AtomicReference<>();
@@ -634,9 +632,11 @@ public class ReplicatedDatabase implements DatabaseInternal {
     // ACQUIRE A DATABASE WRITE LOCK. THE LOCK IS REENTRANT, SO THE ACQUISITION DOWN THE LINE IS GOING TO PASS BECAUSE ALREADY ACQUIRED HERE
     final DatabaseChangeStructureRequest command = proxied.executeInWriteLock(() -> {
       if (!ha.isLeader()) {
-        // NOT THE LEADER< NOT RESPONSIBLE TO SEND CHANGES TO OTHER SERVERS
-        result.set(callback.call());
-        return null;
+        // NOT THE LEADER: NOT RESPONSIBLE TO SEND CHANGES TO OTHER SERVERS
+        // TODO: Issue #118SchemaException
+        throw new SchemaException("Changes to the schema must be executed on the leader server");
+//        result.set(callback.call());
+//        return null;
       }
 
       if (!proxied.getFileManager().startRecordingChanges()) {
@@ -670,10 +670,10 @@ public class ReplicatedDatabase implements DatabaseInternal {
 
     if (command != null) {
       // SEND THE COMMAND OUTSIDE THE EXCLUSIVE LOCK
-      final int quorum = ha.getConfiguredServers() - 1;
+      final int quorum = ha.getConfiguredServers();
       ha.sendCommandToReplicasWithQuorum(command, quorum, timeout);
     }
 
-    return result.get();
+    return (RET) result.get();
   }
 }
