@@ -37,7 +37,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Test
-        run: mvn verify -Pintegration -Pcoverage --batch-mode --quiet --errors --fail-at-end --show-version -Dtest=!org.apache.tinkerpop.gremlin.arcadedb.process+org.apache.tinkerpop.gremlin.arcadedb.structure --file pom.xml
+        run: mvn verify -Pintegration -Pcoverage --batch-mode --quiet --errors --fail-at-end --show-version -Dtest="!org.apache.tinkerpop.gremlin.arcadedb.process+org.apache.tinkerpop.gremlin.arcadedb.structure" --file pom.xml
         if: ${{ matrix.os == 'windows-latest' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
