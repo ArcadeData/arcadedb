@@ -87,7 +87,7 @@ public class WALFile extends LockContext {
     this.file = new RandomAccessFile(filePath, "rw");
     this.channel = file.getChannel();
     this.open = true;
-    LogManager.instance().log(this, Level.INFO, "Opened WAL file '%s'", null, file);
+    LogManager.instance().log(this, Level.INFO, "Opened WAL file '%s'", null, filePath);
   }
 
   public synchronized void close() throws IOException {
@@ -97,7 +97,7 @@ public class WALFile extends LockContext {
 
     if (file != null)
       file.close();
-    LogManager.instance().log(this, Level.INFO, "Closed WAL file '%s'", null, file);
+    LogManager.instance().log(this, Level.INFO, "Closed WAL file '%s'", null, filePath);
   }
 
   public boolean isOpen() {
@@ -107,7 +107,7 @@ public class WALFile extends LockContext {
   public synchronized void drop() throws IOException {
     close();
     FileUtils.deleteFile(new File(filePath));
-    LogManager.instance().log(this, Level.INFO, "Dropped WAL file '%s'", null, file);
+    LogManager.instance().log(this, Level.INFO, "Dropped WAL file '%s'", null, filePath);
   }
 
   public WALTransaction getFirstTransaction() throws WALException {
