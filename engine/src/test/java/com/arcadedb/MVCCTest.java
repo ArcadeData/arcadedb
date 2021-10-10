@@ -15,12 +15,10 @@
  */
 package com.arcadedb;
 
-import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.TransactionContext;
-import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.engine.DatabaseChecker;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.graph.MutableVertex;
@@ -41,7 +39,7 @@ public class MVCCTest extends TestHelper {
   private static final int CYCLES      = 3;
   private static final int TOT_ACCOUNT = 100;
   private static final int TOT_TX      = 100;
-  private static final int PARALLEL    = Runtime.getRuntime().availableProcessors();
+  private static final int PARALLEL    = 4;
 
   @Test
   public void testMVCC() {
@@ -56,16 +54,12 @@ public class MVCCTest extends TestHelper {
 
       final AtomicLong otherErrors = new AtomicLong();
       final AtomicLong mvccErrors = new AtomicLong();
-      database.async().onError(new ErrorCallback() {
-        @Override
-        public void call(Throwable exception) {
-
-          if (exception instanceof ConcurrentModificationException) {
-            mvccErrors.incrementAndGet();
-          } else {
-            otherErrors.incrementAndGet();
-            LogManager.instance().log(this, Level.SEVERE, "UNEXPECTED ERROR: " + exception, exception);
-          }
+      database.async().onError((exception) -> {
+        if (exception instanceof ConcurrentModificationException) {
+          mvccErrors.incrementAndGet();
+        } else {
+          otherErrors.incrementAndGet();
+          LogManager.instance().log(this, Level.SEVERE, "UNEXPECTED ERROR: " + exception, exception);
         }
       });
 
@@ -75,28 +69,25 @@ public class MVCCTest extends TestHelper {
         final Random rnd = new Random();
 
         for (long txId = 0; txId < TOT_TX; ++txId) {
-          database.async().transaction(new Database.TransactionScope() {
-            @Override
-            public void execute() {
-              final TransactionContext tx = ((DatabaseInternal) database).getTransaction();
+          database.async().transaction(() -> {
+            final TransactionContext tx = ((DatabaseInternal) database).getTransaction();
 
-              Assertions.assertTrue(tx.getModifiedPages() == 0);
-              Assertions.assertNull(tx.getPageCounter(1));
+            Assertions.assertTrue(tx.getModifiedPages() == 0);
+            Assertions.assertNull(tx.getPageCounter(1));
 
-              final MutableDocument doc = database.newVertex("Transaction");
-              doc.set("uuid", UUID.randomUUID().toString());
-              doc.set("date", new Date());
-              doc.set("amount", rnd.nextInt(TOT_ACCOUNT));
-              doc.save();
+            final MutableDocument doc = database.newVertex("Transaction");
+            doc.set("uuid", UUID.randomUUID().toString());
+            doc.set("date", new Date());
+            doc.set("amount", rnd.nextInt(TOT_ACCOUNT));
+            doc.save();
 
-              final IndexCursor accounts = database.lookupByKey("Account", new String[] { "id" }, new Object[] { 0 });
+            final IndexCursor accounts = database.lookupByKey("Account", new String[] { "id" }, new Object[] { 0 });
 
-              Assertions.assertTrue(accounts.hasNext());
+            Assertions.assertTrue(accounts.hasNext());
 
-              Identifiable account = accounts.next();
+            Identifiable account = accounts.next();
 
-              ((MutableVertex) doc).newEdge("PurchasedBy", account, true, "date", new Date());
-            }
+            ((MutableVertex) doc).newEdge("PurchasedBy", account, true, "date", new Date());
           }, 0);
         }
 
@@ -125,17 +116,14 @@ public class MVCCTest extends TestHelper {
     long begin = System.currentTimeMillis();
 
     try {
-      database.transaction(new Database.TransactionScope() {
-        @Override
-        public void execute() {
-          for (long row = 0; row < TOT_ACCOUNT; ++row) {
-            final MutableDocument record = database.newVertex("Account");
-            record.set("id", row);
-            record.set("name", "Luca" + row);
-            record.set("surname", "Skywalker" + row);
-            record.set("registered", new Date());
-            record.save();
-          }
+      database.transaction(() -> {
+        for (long row = 0; row < TOT_ACCOUNT; ++row) {
+          final MutableDocument record = database.newVertex("Account");
+          record.set("id", row);
+          record.set("name", "Luca" + row);
+          record.set("surname", "Skywalker" + row);
+          record.set("registered", new Date());
+          record.save();
         }
       });
 
