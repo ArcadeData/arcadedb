@@ -54,6 +54,8 @@ jobs:
         with:
           name: Test Report - ${{ matrix.os }}
           path: '**/surefire-reports/TEST*.xml'
+          list-suites: 'failed'
+          list-tests: 'failed'
           reporter: java-junit
 
       - name: Codacy coverage reporter
