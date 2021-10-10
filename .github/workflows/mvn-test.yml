@@ -9,12 +9,13 @@ on:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         os: [ ubuntu-latest ]
-        optional: [false]
-      include:
-        os: windows-latest
-        optional: [true]
+        optional: [ false ]
+        include:
+          - os: windows-latest
+            optional: [ true ]
 
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ matrix.optional }}
@@ -60,4 +61,4 @@ jobs:
         uses: codacy/codacy-coverage-reporter-action@v1
         with:
           project-token: ${{ secrets.CODACY_PROJECT_TOKEN }}
-          coverage-reports:  coverage/target/site/jacoco-aggregate/jacoco.xml
+          coverage-reports: coverage/target/site/jacoco-aggregate/jacoco.xml
