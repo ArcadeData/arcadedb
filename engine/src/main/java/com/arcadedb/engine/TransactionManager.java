@@ -69,7 +69,7 @@ public class TransactionManager {
                 LogManager.instance().setContext(logContext);
 
               checkWALFiles();
-              cleanWALFiles(true);
+              cleanWALFiles(true, false);
             } finally {
               taskExecuting.countDown();
             }
@@ -80,7 +80,7 @@ public class TransactionManager {
       task = null;
   }
 
-  public void close() {
+  public void close(final boolean drop) {
     if (task != null)
       task.cancel();
 
@@ -105,7 +105,7 @@ public class TransactionManager {
       }
     }
 
-    for (int retry = 0; retry < 20 && !cleanWALFiles(true); ++retry) {
+    for (int retry = 0; retry < 20 && !cleanWALFiles(drop, false); ++retry) {
       try {
         Thread.sleep(100);
       } catch (InterruptedException e) {
@@ -114,7 +114,7 @@ public class TransactionManager {
       }
     }
 
-    if (!cleanWALFiles(true))
+    if (!cleanWALFiles(drop, false))
       LogManager.instance().log(this, Level.WARNING, "Error on removing all transaction files. Remained: %s", null, inactiveWALFilePool);
 
     final File dir = new File(database.getDatabasePath());
@@ -166,7 +166,7 @@ public class TransactionManager {
       }
 
       if (activeWALFilePool != null && activeWALFilePool.length > 0) {
-        for( WALFile file : activeWALFilePool ) {
+        for (WALFile file : activeWALFilePool) {
           try {
             file.close();
           } catch (IOException e) {
@@ -375,7 +375,7 @@ public class TransactionManager {
     }
 
     // WAIT FOR ALL THE PAGE TO BE FLUSHED
-    for (int retry = 0; retry < 20 && !cleanWALFiles(false); ++retry) {
+    for (int retry = 0; retry < 20 && !cleanWALFiles(false, false); ++retry) {
       try {
         Thread.sleep(100);
       } catch (InterruptedException e) {
@@ -384,7 +384,7 @@ public class TransactionManager {
       }
     }
 
-    if (!cleanWALFiles(false))
+    if (!cleanWALFiles(false, false))
       LogManager.instance().log(this, Level.WARNING, "Error on removing all transaction files during kill. Remained: %s", null, inactiveWALFilePool);
   }
 
@@ -477,11 +477,11 @@ public class TransactionManager {
       }
   }
 
-  private boolean cleanWALFiles(final boolean dropFiles) {
+  private boolean cleanWALFiles(final boolean dropFiles, final boolean force) {
     for (Iterator<WALFile> it = inactiveWALFilePool.iterator(); it.hasNext(); ) {
       final WALFile file = it.next();
 
-      if (!dropFiles || file.getPendingPagesToFlush() == 0) {
+      if (force || !dropFiles || file.getPendingPagesToFlush() == 0) {
         // ALL PAGES FLUSHED, REMOVE THE FILE
         try {
           final Map<String, Object> fileStats = file.getStats();
