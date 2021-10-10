@@ -375,7 +375,7 @@ public class TransactionManager {
     }
 
     // WAIT FOR ALL THE PAGE TO BE FLUSHED
-    for (int retry = 0; retry < 20 && !cleanWALFiles(false, false); ++retry) {
+    for (int retry = 0; retry < 20 && !cleanWALFiles(false, true); ++retry) {
       try {
         Thread.sleep(100);
       } catch (InterruptedException e) {
@@ -384,7 +384,7 @@ public class TransactionManager {
       }
     }
 
-    if (!cleanWALFiles(false, false))
+    if (!cleanWALFiles(false, true))
       LogManager.instance().log(this, Level.WARNING, "Error on removing all transaction files during kill. Remained: %s", null, inactiveWALFilePool);
   }
 
