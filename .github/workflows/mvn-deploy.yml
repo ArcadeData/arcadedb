@@ -8,6 +8,7 @@ on:
 
 jobs:
   build:
+    runs-on: ubuntu-latest
 
     steps:
       - uses: xembly/workflow-manager@v1
