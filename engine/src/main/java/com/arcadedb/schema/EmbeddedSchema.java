@@ -169,7 +169,7 @@ public class EmbeddedSchema implements Schema {
     final List<PaginatedComponent> newFilesLoaded = new ArrayList<>();
 
     for (PaginatedFile file : filesToOpen) {
-      if (!Dictionary.DICT_EXT.equals(file.getFileExtension())) {
+      if (file != null && !Dictionary.DICT_EXT.equals(file.getFileExtension())) {
         final PaginatedComponent pf = paginatedComponentFactory.createComponent(file, mode);
 
         if (pf != null) {
