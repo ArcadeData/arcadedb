@@ -53,7 +53,7 @@ public class ServerRestoreDatabaseIT extends BaseGraphServerTest {
   }
 
   protected void onServerConfiguration(final ContextConfiguration config) {
-    final File backupFile = new File("backup-test.zip");
+    final File backupFile = new File("backups/graph/backup-test.zip");
     if (backupFile.exists())
       backupFile.delete();
 
@@ -69,13 +69,13 @@ public class ServerRestoreDatabaseIT extends BaseGraphServerTest {
     Assertions.assertTrue(backupFile.exists());
     database.drop();
 
-    config.setValue(GlobalConfiguration.SERVER_DEFAULT_DATABASES, "Movies[elon:musk:admin]{restore:file://backup-test.zip}");
+    config.setValue(GlobalConfiguration.SERVER_DEFAULT_DATABASES, "graph[elon:musk:admin]{restore:file://backups/graph/backup-test.zip}");
   }
 
   @Test
   public void defaultDatabases() {
-    getServer(0).getSecurity().authenticate("elon", "musk", "Movies");
-    Database database = getServer(0).getDatabase("Movies");
+    getServer(0).getSecurity().authenticate("elon", "musk", "graph");
+    Database database = getServer(0).getDatabase("graph");
     Assertions.assertEquals(1, database.countType("testDoc", true));
     FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_DATABASE_DIRECTORY.getValueAsString() + "0/Movies"));
   }
