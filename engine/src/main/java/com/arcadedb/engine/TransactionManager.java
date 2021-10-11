@@ -116,11 +116,16 @@ public class TransactionManager {
 
     if (!cleanWALFiles(drop, false))
       LogManager.instance().log(this, Level.WARNING, "Error on removing all transaction files. Remained: %s", null, inactiveWALFilePool);
+    else {
+      // DELETE ALL THE WAL FILES AT OS-LEVEL
+      final File dir = new File(database.getDatabasePath());
+      File[] walFiles = dir.listFiles((dir1, name) -> name.endsWith(".wal"));
+      Arrays.asList(walFiles).stream().forEach(File::delete);
+      walFiles = dir.listFiles((dir1, name) -> name.endsWith(".wal"));
 
-    final File dir = new File(database.getDatabasePath());
-    final File[] walFiles = dir.listFiles((dir1, name) -> name.endsWith(".wal"));
-    if (walFiles != null && walFiles.length > 0)
-      LogManager.instance().log(this, Level.WARNING, "Error on removing all transaction files. Remained: %s", null, walFiles.length);
+      if (walFiles != null && walFiles.length > 0)
+        LogManager.instance().log(this, Level.WARNING, "Error on removing all transaction files. Remained: %s", null, walFiles.length);
+    }
   }
 
   public Binary createTransactionBuffer(final long txId, final List<MutablePage> pages) {

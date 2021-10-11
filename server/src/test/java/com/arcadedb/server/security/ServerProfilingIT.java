@@ -427,7 +427,7 @@ public class ServerProfilingIT {
 
       Assertions.assertTrue(SECURITY.getDatabaseGroupsConfiguration("*").getBoolean("reloaded"));
     } finally {
-      // RESTORE THE ORIGINAL FILE AND WAIT FOR THE RELOAD
+      // RESTORE THE ORIGINAL FILE AND WAIT FOR TO RELOAD
       FileUtils.writeContentToStream(file, original);
       Thread.sleep(6_000);
       createSecurity();
@@ -548,6 +548,7 @@ public class ServerProfilingIT {
     SECURITY.getDatabaseGroupsConfiguration(DATABASE_NAME).put("readerOfDocumentsShortTimeout",//
         new JSONObject().put("readTimeout", 1)
             .put("types", new JSONObject().put("Document1", new JSONObject().put("access", new JSONArray(new String[] { "readRecord" })))));
+    SECURITY.saveGroups();
   }
 
   @AfterAll

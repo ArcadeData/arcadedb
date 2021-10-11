@@ -315,7 +315,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
         try {
           if (lockFileLock != null) {
             lockFileLock.release();
-            LogManager.instance().log(this, Level.SEVERE, "RELEASED DATABASE FILE '%s' (thread=%s)", null, lockFile, Thread.currentThread().getId());
+            //LogManager.instance().log(this, Level.INFO, "RELEASED DATABASE FILE '%s' (thread=%s)", null, lockFile, Thread.currentThread().getId());
           }
           if (lockFileIOChannel != null)
             lockFileIOChannel.close();
@@ -1479,7 +1479,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
         throw new LockException("Database '" + name + "' is locked by another process (path=" + new File(databasePath).getAbsolutePath() + ")");
       }
 
-      LogManager.instance().log(this, Level.SEVERE, "LOCKED DATABASE FILE '%s' (thread=%s)", null, lockFile, Thread.currentThread().getId());
+      //LogManager.instance().log(this, Level.INFO, "LOCKED DATABASE FILE '%s' (thread=%s)", null, lockFile, Thread.currentThread().getId());
 
     } catch (Exception e) {
       try {
@@ -1556,7 +1556,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
         try {
           if (lockFileLock != null) {
             lockFileLock.release();
-            LogManager.instance().log(this, Level.SEVERE, "RELEASED DATABASE FILE '%s' (thread=%s)", null, lockFile, Thread.currentThread().getId());
+            //LogManager.instance().log(this, Level.INFO, "RELEASED DATABASE FILE '%s' (thread=%s)", null, lockFile, Thread.currentThread().getId());
           }
           if (lockFileIOChannel != null)
             lockFileIOChannel.close();

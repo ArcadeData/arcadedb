@@ -38,10 +38,10 @@ public class SecurityGroupFileRepository {
   private              Callable<Void, JSONObject> reloadCallback          = null;
 
   public SecurityGroupFileRepository(String securityConfPath) {
-    if (!securityConfPath.endsWith("/"))
+    if (!securityConfPath.endsWith("/") && !securityConfPath.endsWith("\\"))
       securityConfPath += "/";
     this.securityConfPath = securityConfPath;
-    file = new File(securityConfPath + FILE_NAME);
+    file = new File(securityConfPath, FILE_NAME);
   }
 
   public void stop() {
