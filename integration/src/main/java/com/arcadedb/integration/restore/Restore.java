@@ -34,8 +34,8 @@ public class Restore {
   }
 
   public Restore(final String file, final String databaseURL) {
-    settings.url = file;
-    settings.databaseURL = databaseURL;
+    settings.inputFileURL = file;
+    settings.databaseDirectory = databaseURL;
   }
 
   public static void main(final String[] args) {
@@ -52,7 +52,7 @@ public class Restore {
       formatImplementation.restoreDatabase();
 
     } catch (Exception e) {
-      throw new RestoreException("Error during restore of database from file '" + settings.url + "'", e);
+      throw new RestoreException("Error during restore of database from file '" + settings.inputFileURL + "'", e);
     }
   }
 

@@ -15,13 +15,12 @@
  */
 package com.arcadedb.integration.restore;
 
-import java.text.*;
 import java.util.*;
 
 public class RestoreSettings {
   public       String              format               = "full";
-  public       String              databaseURL;
-  public       String              url;
+  public       String              inputFileURL;
+  public       String              databaseDirectory;
   public       boolean             overwriteDestination = false;
   public       int                 verboseLevel         = 2;
   public final Map<String, String> options              = new HashMap<>();
@@ -37,27 +36,20 @@ public class RestoreSettings {
     if (format == null)
       throw new IllegalArgumentException("Missing backup format");
 
-    if (url == null)
-      // ASSIGN DEFAULT FILENAME
-      switch (format) {
-      case "full":
-        url = "arcadedb-backup-%s.zip";
-        break;
-      }
+    if (inputFileURL == null)
+      throw new IllegalArgumentException("Missing input file url. Use -f <input-file-url>");
 
-    if (url == null) {
-      final DateFormat dateFormat = new SimpleDateFormat("yyyyMMdd-HHmmssSSS");
-      url = String.format(url, dateFormat.format(System.currentTimeMillis()));
-    }
+    if (databaseDirectory == null)
+      throw new IllegalArgumentException("Missing database url. Use -d <database-directory>");
   }
 
   public int parseParameter(final String name, final String value) {
     if ("format".equals(name))
       format = value.toLowerCase();
     else if ("f".equals(name))
-      url = value;
+      inputFileURL = value;
     else if ("d".equals(name))
-      databaseURL = value;
+      databaseDirectory = value;
     else if ("o".equals(name)) {
       overwriteDestination = true;
       return 1;
