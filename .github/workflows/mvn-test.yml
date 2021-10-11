@@ -46,6 +46,7 @@ jobs:
         if: ${{ always() }}
         uses: scacap/action-surefire-report@v1
         with:
+          check_name: Surefire Test Report - ${{ matrix.os }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Junit Test Report
