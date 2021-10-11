@@ -26,8 +26,8 @@ import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.List;
-import java.util.logging.Level;
+import java.util.*;
+import java.util.logging.*;
 
 public class LSMTreeFullTextIndexTest extends TestHelper {
   private static final int    TOT       = 10000;
@@ -80,8 +80,8 @@ public class LSMTreeFullTextIndexTest extends TestHelper {
 
         LogManager.instance().log(this, Level.FINE, "Committed");
 
-        final List<String> keywords = ((LSMTreeFullTextIndex) ((TypeIndex) typeIndex).getIndexesOnBuckets()[0])
-            .analyzeText(((LSMTreeFullTextIndex) ((TypeIndex) typeIndex).getIndexesOnBuckets()[0]).getAnalyzer(), new Object[] { text });
+        final List<String> keywords = ((LSMTreeFullTextIndex) ((TypeIndex) typeIndex).getIndexesOnBuckets()[0]).analyzeText(
+            ((LSMTreeFullTextIndex) ((TypeIndex) typeIndex).getIndexesOnBuckets()[0]).getAnalyzer(), new Object[] { text });
         Assertions.assertFalse(keywords.isEmpty());
 
         LogManager.instance().log(this, Level.FINE, "Checking keywords...");
@@ -114,25 +114,4 @@ public class LSMTreeFullTextIndexTest extends TestHelper {
       }
     });
   }
-
-  @Override
-  public void afterTest() {
-  }
-
-  //
-//  @Override
-//  protected void beginTest() {
-//    database.transaction(new Database.TransactionScope() {
-//      @Override
-//      public void execute(Database database) {
-//        Assertions.assertFalse(database.getSchema().existsType(TYPE_NAME));
-//
-//        final DocumentType type = database.getSchema().createDocumentType(TYPE_NAME, 3);
-//        type.createProperty("text", String.class);
-//        database.getSchema().createClassIndexes(SchemaImpl.INDEX_TYPE.FULL_TEXT, false, TYPE_NAME, new String[] { "text" }, PAGE_SIZE);
-//      }
-//    });
-//
-//    reopenDatabase();
-//  }
 }
