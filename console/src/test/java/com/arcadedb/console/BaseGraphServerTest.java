@@ -310,7 +310,8 @@ public abstract class BaseGraphServerTest {
   protected void deleteDatabaseFolders() {
     if (databases != null)
       for (int i = 0; i < databases.length; ++i) {
-        databases[i].drop();
+        if (databases[i] != null)
+          databases[i].drop();
       }
 
     if (servers != null)

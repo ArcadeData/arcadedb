@@ -29,11 +29,9 @@ import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.Iterator;
-import java.util.Timer;
-import java.util.TimerTask;
-import java.util.concurrent.CountDownLatch;
-import java.util.logging.Level;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.logging.*;
 
 /**
  * This test stresses the index compaction by forcing using only 1MB of RAM for compaction causing multiple page compacted index.
@@ -124,22 +122,19 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
   }
 
   private void insertData() {
-    database.transaction(new Database.TransactionScope() {
-      @Override
-      public void execute() {
-        if (!database.getSchema().existsType(TYPE_NAME)) {
-          DocumentType v = database.getSchema().createDocumentType(TYPE_NAME, PARALLEL);
+    database.transaction(() -> {
+      if (!database.getSchema().existsType(TYPE_NAME)) {
+        DocumentType v = database.getSchema().createDocumentType(TYPE_NAME, PARALLEL);
 
-          v.createProperty("id", String.class);
-          v.createProperty("number", String.class);
-          v.createProperty("relativeName", String.class);
+        v.createProperty("id", String.class);
+        v.createProperty("number", String.class);
+        v.createProperty("relativeName", String.class);
 
-          v.createProperty("Name", String.class);
+        v.createProperty("Name", String.class);
 
-          database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "id" }, INDEX_PAGE_SIZE);
-          database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "number" }, INDEX_PAGE_SIZE);
-          database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "relativeName" }, INDEX_PAGE_SIZE);
-        }
+        database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "id" }, INDEX_PAGE_SIZE);
+        database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "number" }, INDEX_PAGE_SIZE);
+        database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "relativeName" }, INDEX_PAGE_SIZE);
       }
     });
 
