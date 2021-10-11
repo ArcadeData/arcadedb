@@ -285,28 +285,6 @@ public class BinaryCondition extends BooleanExpression {
     return result;
   }
 
-  @Override
-  public void translateLuceneOperator() {
-    if (operator instanceof LuceneOperator) {
-      Expression newLeft = new Expression(-1);
-      newLeft.mathExpression = new BaseExpression(-1);
-      BaseIdentifier identifier = new BaseIdentifier(-1);
-      ((BaseExpression) newLeft.mathExpression).identifier = identifier;
-      identifier.levelZero = new LevelZeroIdentifier(-1);
-      FunctionCall function = new FunctionCall(-1);
-      identifier.levelZero.functionCall = function;
-      function.name = new Identifier("search_fields");
-      function.params = new ArrayList<>();
-      function.params.add(fieldNamesToStrings(left));
-      function.params.add(right);
-      left = newLeft;
-
-      operator = new EqualsCompareOperator(-1);
-      right = new Expression(-1);
-      right.booleanValue = true;
-    }
-  }
-
   private Expression fieldNamesToStrings(Expression left) {
     if (left.isBaseIdentifier()) {
       Identifier identifier = ((BaseExpression) left.mathExpression).identifier.suffix.identifier;
