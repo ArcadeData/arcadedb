@@ -30,88 +30,85 @@ public class ReplicatedDocumentType extends DocumentType {
 
   @Override
   public Property createProperty(String propertyName, Type propertyType) {
-    return (Property) ((ReplicatedDatabase) ((DatabaseInternal) schema.getDatabase()).getWrappedDatabaseInstance()).recordFileChanges(
-        () -> super.createProperty(propertyName, propertyType));
+    return (((DatabaseInternal) schema.getDatabase()).getWrappedDatabaseInstance()).recordFileChanges(() -> super.createProperty(propertyName, propertyType));
   }
 
   @Override
   public Property createProperty(String propertyName, Class<?> propertyType) {
-    return (Property) ((ReplicatedDatabase) ((DatabaseInternal) schema.getDatabase()).getWrappedDatabaseInstance()).recordFileChanges(
-        () -> super.createProperty(propertyName, propertyType));
+    return (((DatabaseInternal) schema.getDatabase()).getWrappedDatabaseInstance()).recordFileChanges(() -> super.createProperty(propertyName, propertyType));
   }
 
   @Override
   public Property createProperty(String propertyName, String propertyType) {
-    return (Property) ((ReplicatedDatabase) ((DatabaseInternal) schema.getDatabase()).getWrappedDatabaseInstance()).recordFileChanges(
-        () -> super.createProperty(propertyName, propertyType));
+    return (((DatabaseInternal) schema.getDatabase()).getWrappedDatabaseInstance()).recordFileChanges(() -> super.createProperty(propertyName, propertyType));
   }
 
   @Override
   public Property getOrCreateProperty(String propertyName, Type propertyType) {
-    return (Property) ((ReplicatedDatabase) ((DatabaseInternal) schema.getDatabase()).getWrappedDatabaseInstance()).recordFileChanges(
+    return (((DatabaseInternal) schema.getDatabase()).getWrappedDatabaseInstance()).recordFileChanges(
         () -> super.getOrCreateProperty(propertyName, propertyType));
   }
 
   @Override
   public Property getOrCreateProperty(String propertyName, Class<?> propertyType) {
-    return (Property) ((ReplicatedDatabase) ((DatabaseInternal) schema.getDatabase()).getWrappedDatabaseInstance()).recordFileChanges(
+    return (((DatabaseInternal) schema.getDatabase()).getWrappedDatabaseInstance()).recordFileChanges(
         () -> super.getOrCreateProperty(propertyName, propertyType));
   }
 
   @Override
   public Property getOrCreateProperty(String propertyName, String propertyType) {
-    return (Property) ((ReplicatedDatabase) ((DatabaseInternal) schema.getDatabase()).getWrappedDatabaseInstance()).recordFileChanges(
+    return (((DatabaseInternal) schema.getDatabase()).getWrappedDatabaseInstance()).recordFileChanges(
         () -> super.getOrCreateProperty(propertyName, propertyType));
   }
 
   @Override
   public Index createTypeIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String... propertyNames) {
-    return (Index) ((ReplicatedDatabase) ((DatabaseInternal) schema.getDatabase()).getWrappedDatabaseInstance()).recordFileChanges(
+    return (((DatabaseInternal) schema.getDatabase()).getWrappedDatabaseInstance()).recordFileChanges(
         () -> super.createTypeIndex(indexType, unique, propertyNames));
   }
 
   @Override
   public Index createTypeIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String[] propertyNames, int pageSize) {
-    return (Index) ((ReplicatedDatabase) ((DatabaseInternal) schema.getDatabase()).getWrappedDatabaseInstance()).recordFileChanges(
+    return (((DatabaseInternal) schema.getDatabase()).getWrappedDatabaseInstance()).recordFileChanges(
         () -> super.createTypeIndex(indexType, unique, propertyNames, pageSize));
   }
 
   @Override
   public Index createTypeIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String[] propertyNames, int pageSize, Index.BuildIndexCallback callback) {
-    return (Index) ((ReplicatedDatabase) ((DatabaseInternal) schema.getDatabase()).getWrappedDatabaseInstance()).recordFileChanges(
+    return (((DatabaseInternal) schema.getDatabase()).getWrappedDatabaseInstance()).recordFileChanges(
         () -> super.createTypeIndex(indexType, unique, propertyNames, pageSize, callback));
   }
 
   @Override
   public Index createTypeIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String[] propertyNames, int pageSize,
       LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, Index.BuildIndexCallback callback) {
-    return (Index) ((ReplicatedDatabase) ((DatabaseInternal) schema.getDatabase()).getWrappedDatabaseInstance()).recordFileChanges(
+    return (((DatabaseInternal) schema.getDatabase()).getWrappedDatabaseInstance()).recordFileChanges(
         () -> super.createTypeIndex(indexType, unique, propertyNames, pageSize, nullStrategy, callback));
   }
 
   @Override
   public Index getOrCreateTypeIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String... propertyNames) {
-    return (Index) ((ReplicatedDatabase) ((DatabaseInternal) schema.getDatabase()).getWrappedDatabaseInstance()).recordFileChanges(
+    return (((DatabaseInternal) schema.getDatabase()).getWrappedDatabaseInstance()).recordFileChanges(
         () -> super.getOrCreateTypeIndex(indexType, unique, propertyNames));
   }
 
   @Override
   public Index getOrCreateTypeIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String[] propertyNames, int pageSize) {
-    return (Index) ((ReplicatedDatabase) ((DatabaseInternal) schema.getDatabase()).getWrappedDatabaseInstance()).recordFileChanges(
+    return (((DatabaseInternal) schema.getDatabase()).getWrappedDatabaseInstance()).recordFileChanges(
         () -> super.getOrCreateTypeIndex(indexType, unique, propertyNames, pageSize));
   }
 
   @Override
   public Index getOrCreateTypeIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String[] propertyNames, int pageSize,
       Index.BuildIndexCallback callback) {
-    return (Index) ((ReplicatedDatabase) ((DatabaseInternal) schema.getDatabase()).getWrappedDatabaseInstance()).recordFileChanges(
+    return (((DatabaseInternal) schema.getDatabase()).getWrappedDatabaseInstance()).recordFileChanges(
         () -> super.getOrCreateTypeIndex(indexType, unique, propertyNames, pageSize, callback));
   }
 
   @Override
   public Index getOrCreateTypeIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String[] propertyNames, int pageSize,
       LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, Index.BuildIndexCallback callback) {
-    return (Index) ((ReplicatedDatabase) ((DatabaseInternal) schema.getDatabase()).getWrappedDatabaseInstance()).recordFileChanges(
+    return (((DatabaseInternal) schema.getDatabase()).getWrappedDatabaseInstance()).recordFileChanges(
         () -> super.getOrCreateTypeIndex(indexType, unique, propertyNames, pageSize, nullStrategy, callback));
   }
 }
