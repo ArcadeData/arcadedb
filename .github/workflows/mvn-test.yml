@@ -12,20 +12,19 @@ jobs:
       fail-fast: false
       matrix:
         os: [ ubuntu-latest ]
-        optional: [ false ]
+        continue-on-error: [ false ]
         include:
           - os: windows-latest
-            optional: [ true ]
+            continue-on-error: [ true ]
 
     runs-on: ${{ matrix.os }}
-#    continue-on-error: ${{ matrix.optional }}
 
     steps:
       - uses: xembly/workflow-manager@v1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           run: clean, cancel
-          verbose: true
+          verbose: false
       - uses: actions/checkout@v2.3.4
       - uses: actions/setup-python@v2
       - uses: pre-commit/action@v2.0.3
@@ -33,27 +32,15 @@ jobs:
       - name: Set up JDK 11
         uses: actions/setup-java@v2
         with:
-          distribution: "adopt"
+          distribution: "temurin"
           java-version: 11
           cache: 'maven'
 
       - name: Test
+        continue-on-error: ${{ matrix.continue-on-error }}
         run: mvn verify -Pintegration -Pcoverage --batch-mode --quiet --errors --fail-at-end --show-version  --file pom.xml
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-#      - name: Test Report
-#        if: ${{ always() }}
-#        uses: scacap/action-surefire-report@v1
-#        with:
-#          github_token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Publish Test Report
-        uses: mikepenz/action-junit-report@v2
-        if: always() # always run even if the previous step fails
-        with:
-          check_name: Junit Test Report - ${{ matrix.os }}
-          report_paths: '**/surefire-reports/TEST*.xml'
 
       - name: Test Reporter
         uses: dorny/test-reporter@v1
