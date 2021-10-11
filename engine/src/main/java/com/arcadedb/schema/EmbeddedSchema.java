@@ -1227,8 +1227,8 @@ public class EmbeddedSchema implements Schema {
   public synchronized JSONObject serializeConfiguration() {
     final JSONObject root = new JSONObject();
     root.put("schemaVersion", versionSerial.incrementAndGet());
-    root.put("version", Constants.getRawVersion());
-    root.put("build", Constants.getBuildNumber());
+    root.put("dbmsVersion", Constants.getRawVersion());
+    root.put("dbmsBuild", Constants.getBuildNumber());
 
     final JSONObject settings = new JSONObject();
     root.put("settings", settings);
