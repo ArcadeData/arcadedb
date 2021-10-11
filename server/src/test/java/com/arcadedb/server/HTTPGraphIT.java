@@ -302,7 +302,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
         Assertions.assertEquals(200, connection.getResponseCode());
         Assertions.assertEquals("OK", connection.getResponseMessage());
         JSONArray databases = new JSONObject(response).getJSONArray("result");
-        Assertions.assertEquals(1, databases.length());
+        Assertions.assertEquals(1, databases.length(), "Found the following databases: " + databases);
       } finally {
         connection.disconnect();
       }
