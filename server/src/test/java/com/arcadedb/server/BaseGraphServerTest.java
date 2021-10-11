@@ -404,8 +404,9 @@ public abstract class BaseGraphServerTest {
 
   protected void deleteAllDatabases() {
     for (int i = 0; i < getServerCount(); ++i)
-      if (getServer(i).existsDatabase(getDatabaseName()))
-        getServer(i).getDatabase(getDatabaseName()).drop();
+      for (String dbName : getServer(i).getDatabaseNames())
+        if (getServer(i).existsDatabase(dbName))
+          getServer(i).getDatabase(dbName).drop();
 
     for (int i = 0; i < getServerCount(); ++i)
       FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_DATABASE_DIRECTORY.getValueAsString() + i + "/"));
