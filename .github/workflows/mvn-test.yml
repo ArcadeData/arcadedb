@@ -8,14 +8,23 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest ]
+        continue-on-error: [ false ]
+        include:
+          - os: windows-latest
+            continue-on-error: [ true ]
+
+    runs-on: ${{ matrix.os }}
 
     steps:
       - uses: xembly/workflow-manager@v1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           run: clean, cancel
-          verbose: true
+          verbose: false
       - uses: actions/checkout@v2.3.4
       - uses: actions/setup-python@v2
       - uses: pre-commit/action@v2.0.3
@@ -23,24 +32,29 @@ jobs:
       - name: Set up JDK 11
         uses: actions/setup-java@v2
         with:
-          distribution: "adopt"
+          distribution: "temurin"
           java-version: 11
           cache: 'maven'
 
       - name: Test
+        continue-on-error: ${{ matrix.continue-on-error }}
         run: mvn verify -Pintegration -Pcoverage --batch-mode --quiet --errors --fail-at-end --show-version  --file pom.xml
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Test Reporter
+        uses: dorny/test-reporter@v1
+        if: success() || failure()
+        with:
+          name: Test Report - ${{ matrix.os }}
+          path: '**/surefire-reports/TEST*.xml'
+          list-suites: 'failed'
+          list-tests: 'failed'
+          reporter: java-junit
+
       - name: Codacy coverage reporter
-        if: ${{ always() }}
+        if: ${{ matrix.os != 'windows-latest' }}
         uses: codacy/codacy-coverage-reporter-action@v1
         with:
           project-token: ${{ secrets.CODACY_PROJECT_TOKEN }}
-          coverage-reports:  coverage/target/site/jacoco-aggregate/jacoco.xml
-
-      - name: Test Report
-        if: ${{ always() }}
-        uses: scacap/action-surefire-report@v1
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          coverage-reports: coverage/target/site/jacoco-aggregate/jacoco.xml

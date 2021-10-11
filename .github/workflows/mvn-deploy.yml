@@ -8,7 +8,6 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
 
     steps:
       - uses: xembly/workflow-manager@v1
@@ -45,15 +44,19 @@ jobs:
           DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
           DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
 
+      - name: Test Reporter
+        uses: dorny/test-reporter@v1
+        if: success() || failure()
+        with:
+          name: Test Report - ${{ matrix.os }}
+          path: '**/surefire-reports/TEST*.xml'
+          list-suites: 'failed'
+          list-tests: 'failed'
+          reporter: java-junit
+
       - name: Codacy coverage reporter
-        if: ${{ always() }}
+        if: ${{ matrix.os != 'windows-latest' }}
         uses: codacy/codacy-coverage-reporter-action@v1
         with:
           project-token: ${{ secrets.CODACY_PROJECT_TOKEN }}
           coverage-reports:  coverage/target/site/jacoco-aggregate/jacoco.xml
-
-      - name: Test Report
-        if: ${{ always() }}
-        uses: scacap/action-surefire-report@v1
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
