@@ -26,11 +26,8 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Assertions;
 
-import java.io.BufferedOutputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.File;
-import java.io.PrintWriter;
-import java.util.logging.Level;
+import java.io.*;
+import java.util.logging.*;
 
 import static com.arcadedb.server.BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
 
@@ -170,17 +167,6 @@ public abstract class BasePerformanceTest {
     return null;
   }
 
-  protected boolean areAllServersOnline() {
-    final int onlineReplicas = getLeaderServer().getHA().getOnlineReplicas();
-    if (1 + onlineReplicas < getServerCount()) {
-      // NOT ALL THE SERVERS ARE UP, AVOID A QUORUM ERROR
-      LogManager.instance().log(this, Level.INFO, "TEST: Not all the servers are ONLINE (%d), skip this crash...", null, onlineReplicas);
-      getLeaderServer().getHA().printClusterConfiguration();
-      return false;
-    }
-    return true;
-  }
-
   protected int[] getServerToCheck() {
     final int[] result = new int[getServerCount()];
     for (int i = 0; i < result.length; ++i)
@@ -189,6 +175,10 @@ public abstract class BasePerformanceTest {
   }
 
   protected void deleteDatabaseFolders() {
+    for (int i = 0; i < getServerCount(); ++i)
+      if (getServer(i).existsDatabase(getDatabaseName()))
+        getServer(i).getDatabase(getDatabaseName()).drop();
+
     for (int i = 0; i < getServerCount(); ++i)
       FileUtils.deleteRecursively(new File(getDatabasePath(i)));
     FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_ROOT_PATH.getValueAsString() + "/replication"));
@@ -205,9 +195,4 @@ public abstract class BasePerformanceTest {
       new DatabaseComparator().compare(db1, db2);
     }
   }
-
-  protected boolean isPrintingConfigurationAtEveryStep() {
-    return false;
-  }
-
 }

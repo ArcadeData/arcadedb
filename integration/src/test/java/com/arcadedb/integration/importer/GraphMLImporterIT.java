@@ -62,8 +62,8 @@ public class GraphMLImporterIT {
   public void testImportNotCompressedOK() throws IOException {
     final URL inputFile = GraphMLImporterIT.class.getClassLoader().getResource(FILE);
 
-    try (final GZIPInputStream gis = new GZIPInputStream(new FileInputStream(inputFile.getFile()))) {
-      final FileOutputStream fos = new FileOutputStream(UNCOMPRESSED_FILE);
+    try (final GZIPInputStream gis = new GZIPInputStream(new FileInputStream(inputFile.getFile()));
+        final FileOutputStream fos = new FileOutputStream(UNCOMPRESSED_FILE)) {
       final byte[] buffer = new byte[1024 * 8];
       int len;
       while ((len = gis.read(buffer)) > 0) {
