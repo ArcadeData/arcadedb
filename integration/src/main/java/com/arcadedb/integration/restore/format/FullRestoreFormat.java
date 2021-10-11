@@ -47,18 +47,18 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
   public void restoreDatabase() throws Exception {
     final RestoreInputSource inputSource = openInputFile();
 
-    final File databaseDirectory = new File(settings.databaseURL);
+    final File databaseDirectory = new File(settings.databaseDirectory);
     if (databaseDirectory.exists()) {
       if (!settings.overwriteDestination)
-        throw new RestoreException(String.format("The database directory '%s' already exist and '-o' setting is false", settings.databaseURL));
+        throw new RestoreException(String.format("The database directory '%s' already exist and '-o' setting is false", settings.databaseDirectory));
 
       FileUtils.deleteRecursively(databaseDirectory);
     }
 
     if (!databaseDirectory.mkdirs())
-      throw new RestoreException(String.format("Error on restoring database: the database directory '%s' cannot be created", settings.databaseURL));
+      throw new RestoreException(String.format("Error on restoring database: the database directory '%s' cannot be created", settings.databaseDirectory));
 
-    logger.logLine(0, "Executing full restore of database from file '%s' to '%s'...", settings.url, settings.databaseURL);
+    logger.logLine(0, "Executing full restore of database from file '%s' to '%s'...", settings.inputFileURL, settings.databaseDirectory);
 
     try (ZipInputStream zipFile = new ZipInputStream(inputSource.inputStream, DatabaseFactory.getDefaultCharset())) {
       final long beginTime = System.currentTimeMillis();
@@ -102,8 +102,8 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
   }
 
   private RestoreInputSource openInputFile() throws IOException {
-    if (settings.url.startsWith("http://") || settings.url.startsWith("https://")) {
-      final HttpURLConnection connection = (HttpURLConnection) new URL(settings.url).openConnection();
+    if (settings.inputFileURL.startsWith("http://") || settings.inputFileURL.startsWith("https://")) {
+      final HttpURLConnection connection = (HttpURLConnection) new URL(settings.inputFileURL).openConnection();
       connection.setRequestMethod("GET");
       connection.setDoOutput(true);
       connection.connect();
@@ -111,7 +111,7 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
       return new RestoreInputSource(connection.getInputStream(), 0);
     }
 
-    String path = settings.url;
+    String path = settings.inputFileURL;
     if (path.startsWith("file://"))
       path = path.substring("file://".length());
     else if (path.startsWith("classpath://"))
@@ -119,7 +119,7 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
 
     final File file = new File(path);
     if (!file.exists())
-      throw new RestoreException(String.format("The backup file '%s' not exist", settings.url));
+      throw new RestoreException(String.format("The backup file '%s' not exist", settings.inputFileURL));
 
     return new RestoreInputSource(new FileInputStream(file), file.length());
   }
