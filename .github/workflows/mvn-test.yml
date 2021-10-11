@@ -49,13 +49,6 @@ jobs:
           check_name: Surefire Test Report - ${{ matrix.os }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Junit Test Report
-        uses: mikepenz/action-junit-report@v2
-        if: always()
-        with:
-          check_name: Junit Test Report - ${{ matrix.os }}
-          report_paths: '**/surefire-reports/TEST*.xml'
-
       - name: Test Reporter
         uses: dorny/test-reporter@v1
         if: success() || failure()
