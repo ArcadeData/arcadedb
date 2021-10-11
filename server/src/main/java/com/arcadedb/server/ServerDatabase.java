@@ -72,16 +72,16 @@ public class ServerDatabase implements DatabaseInternal {
 
   @Override
   public void drop() {
-    throw new UnsupportedOperationException("Embedded database taken from the server cannot be dropped");
+    throw new UnsupportedOperationException("Embedded database taken from the server are shared and therefore cannot be dropped");
   }
 
   @Override
   public void close() {
-    throw new UnsupportedOperationException("Embedded database taken from the server cannot be closed");
+    throw new UnsupportedOperationException("Embedded database taken from the server are shared and therefore cannot be closed");
   }
 
   public void kill() {
-    throw new UnsupportedOperationException("Embedded database taken from the server cannot be killed");
+    throw new UnsupportedOperationException("Embedded database taken from the server are shared and therefore cannot be killed");
   }
 
   @Override
