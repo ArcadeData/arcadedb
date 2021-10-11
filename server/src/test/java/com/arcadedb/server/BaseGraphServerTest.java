@@ -95,25 +95,22 @@ public abstract class BaseGraphServerTest {
 
     if (isPopulateDatabase()) {
       final Database database = getDatabase(0);
-      database.transaction(new Database.TransactionScope() {
-        @Override
-        public void execute() {
-          final Schema schema = database.getSchema();
-          Assertions.assertFalse(schema.existsType(VERTEX1_TYPE_NAME));
+      database.transaction(() -> {
+        final Schema schema = database.getSchema();
+        Assertions.assertFalse(schema.existsType(VERTEX1_TYPE_NAME));
 
-          VertexType v = schema.createVertexType(VERTEX1_TYPE_NAME, 3);
-          v.createProperty("id", Long.class);
+        VertexType v = schema.createVertexType(VERTEX1_TYPE_NAME, 3);
+        v.createProperty("id", Long.class);
 
-          schema.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, VERTEX1_TYPE_NAME, "id");
+        schema.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, VERTEX1_TYPE_NAME, "id");
 
-          Assertions.assertFalse(schema.existsType(VERTEX2_TYPE_NAME));
-          schema.createVertexType(VERTEX2_TYPE_NAME, 3);
+        Assertions.assertFalse(schema.existsType(VERTEX2_TYPE_NAME));
+        schema.createVertexType(VERTEX2_TYPE_NAME, 3);
 
-          schema.createEdgeType(EDGE1_TYPE_NAME);
-          schema.createEdgeType(EDGE2_TYPE_NAME);
+        schema.createEdgeType(EDGE1_TYPE_NAME);
+        schema.createEdgeType(EDGE2_TYPE_NAME);
 
-          schema.createDocumentType("Person");
-        }
+        schema.createDocumentType("Person");
       });
 
       final Database db = getDatabase(0);
@@ -392,10 +389,16 @@ public abstract class BaseGraphServerTest {
   }
 
   protected void deleteDatabaseFolders() {
-    for (int i = 0; i < getServerCount(); ++i) {
-      if (getServer(i).existsDatabase(getDatabaseName()))
-        getServer(i).getDatabase(getDatabaseName()).drop();
-    }
+    if (databases != null)
+      for (int i = 0; i < databases.length; ++i) {
+        databases[i].drop();
+      }
+
+    if (servers != null)
+      for (int i = 0; i < getServerCount(); ++i) {
+        if (getServer(i).existsDatabase(getDatabaseName()))
+          getServer(i).getDatabase(getDatabaseName()).drop();
+      }
 
     for (int i = 0; i < getServerCount(); ++i)
       FileUtils.deleteRecursively(new File(getDatabasePath(i)));
@@ -403,10 +406,16 @@ public abstract class BaseGraphServerTest {
   }
 
   protected void deleteAllDatabases() {
-    for (int i = 0; i < getServerCount(); ++i)
-      for (String dbName : getServer(i).getDatabaseNames())
-        if (getServer(i).existsDatabase(dbName))
-          getServer(i).getDatabase(dbName).drop();
+    if (databases != null)
+      for (int i = 0; i < databases.length; ++i) {
+        databases[i].drop();
+      }
+
+    if (servers != null)
+      for (int i = 0; i < getServerCount(); ++i)
+        for (String dbName : getServer(i).getDatabaseNames())
+          if (getServer(i).existsDatabase(dbName))
+            getServer(i).getDatabase(dbName).drop();
 
     for (int i = 0; i < getServerCount(); ++i)
       FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_DATABASE_DIRECTORY.getValueAsString() + i + "/"));
