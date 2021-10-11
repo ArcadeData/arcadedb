@@ -17,15 +17,15 @@ package com.arcadedb.mongo;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.File;
+import java.io.*;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
@@ -52,7 +52,7 @@ public class MongoDBQueryTest {
     if (database != null) {
       if (database.isTransactionActive())
         database.rollback();
-      ((ServerDatabase)database).getWrappedDatabaseInstance().drop();
+      ((DatabaseInternal) database).getWrappedDatabaseInstance().drop();
     }
   }
 
