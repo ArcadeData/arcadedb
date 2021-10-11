@@ -81,6 +81,7 @@ public class GraphMLExporterIT {
   @BeforeEach
   @AfterEach
   public void clean() {
+    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty());
     FileUtils.deleteRecursively(databaseDirectory);
     FileUtils.deleteRecursively(importedDatabaseDirectory);
     if (file.exists())

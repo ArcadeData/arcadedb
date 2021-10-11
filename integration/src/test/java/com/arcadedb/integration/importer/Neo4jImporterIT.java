@@ -80,6 +80,7 @@ public class Neo4jImporterIT {
           Assertions.assertEquals("P5M1DT12H", e.get("bffSince"));
         }
       }
+      Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty());
     } finally {
       FileUtils.deleteRecursively(databaseDirectory);
     }

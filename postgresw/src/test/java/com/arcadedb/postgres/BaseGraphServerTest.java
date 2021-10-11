@@ -252,6 +252,8 @@ public abstract class BaseGraphServerTest {
           getServer(i).getDatabase(getDatabaseName()).drop();
       }
 
+    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty());
+
     for (int i = 0; i < getServerCount(); ++i)
       FileUtils.deleteRecursively(new File(getDatabasePath(i)));
     FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_ROOT_PATH.getValueAsString() + "/replication"));

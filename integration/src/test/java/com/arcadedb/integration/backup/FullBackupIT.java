@@ -63,24 +63,26 @@ public class FullBackupIT {
         new DatabaseComparator().compare(originalDatabase, restoredDatabase);
       }
     }
+    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty());
   }
 
   @Test
   public void testFullBackupAPIOK() throws IOException {
-    final Database importedDatabase = importDatabase();
+    try (final Database importedDatabase = importDatabase()) {
 
-    new Backup(importedDatabase, FILE).backupDatabase();
+      new Backup(importedDatabase, FILE).backupDatabase();
 
-    Assertions.assertTrue(file.exists());
-    Assertions.assertTrue(file.length() > 0);
+      Assertions.assertTrue(file.exists());
+      Assertions.assertTrue(file.length() > 0);
 
-    new Restore(FILE, restoredDirectory.getAbsolutePath()).restoreDatabase();
+      new Restore(FILE, restoredDirectory.getAbsolutePath()).restoreDatabase();
 
-    try (Database restoredDatabase = new DatabaseFactory(restoredDirectory.getAbsolutePath()).open(PaginatedFile.MODE.READ_ONLY)) {
-      new DatabaseComparator().compare(importedDatabase, restoredDatabase);
+      try (Database restoredDatabase = new DatabaseFactory(restoredDirectory.getAbsolutePath()).open(PaginatedFile.MODE.READ_ONLY)) {
+        new DatabaseComparator().compare(importedDatabase, restoredDatabase);
+      }
     }
 
-    importedDatabase.close();
+    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty());
   }
 
   /**
@@ -168,6 +170,7 @@ public class FullBackupIT {
         }
       }
 
+      Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty());
     } finally {
       for (int i = 0; i < CONCURRENT_THREADS; i++) {
         new File(FILE + "_" + i).delete();

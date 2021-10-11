@@ -76,6 +76,8 @@ public abstract class BaseGraphServerTest {
 
   @BeforeEach
   public void beginTest() {
+    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty());
+
     setTestConfiguration();
 
     checkArcadeIsTotallyDown();
@@ -205,6 +207,7 @@ public abstract class BaseGraphServerTest {
         GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(null);
       }
     }
+    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty());
   }
 
   protected void checkArcadeIsTotallyDown() {
@@ -400,6 +403,7 @@ public abstract class BaseGraphServerTest {
         if (getServer(i).existsDatabase(getDatabaseName()))
           getServer(i).getDatabase(getDatabaseName()).drop();
       }
+    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty());
 
     for (int i = 0; i < getServerCount(); ++i)
       FileUtils.deleteRecursively(new File(getDatabasePath(i)));
@@ -418,6 +422,8 @@ public abstract class BaseGraphServerTest {
         for (String dbName : getServer(i).getDatabaseNames())
           if (getServer(i).existsDatabase(dbName))
             getServer(i).getDatabase(dbName).drop();
+
+    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty());
 
     for (int i = 0; i < getServerCount(); ++i)
       FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_DATABASE_DIRECTORY.getValueAsString() + i + "/"));

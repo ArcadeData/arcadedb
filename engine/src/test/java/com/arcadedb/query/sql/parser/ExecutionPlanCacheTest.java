@@ -79,6 +79,7 @@ public class ExecutionPlanCacheTest {
 
     } finally {
       db.drop();
+      Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty());
     }
   }
 }

@@ -106,11 +106,13 @@ public class GraphMLImporterIT {
         Assertions.assertTrue(database.countType(type.getName(), true) > 0);
       }
     }
+    Assertions.assertNull(DatabaseFactory.getActiveDatabaseInstance(DATABASE_PATH));
   }
 
   @BeforeEach
   @AfterEach
   public void clean() {
+    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty());
     FileUtils.deleteRecursively(databaseDirectory);
     if (new File(UNCOMPRESSED_FILE).exists())
       new File(UNCOMPRESSED_FILE).delete();

@@ -34,21 +34,23 @@ public class SQLLocalExporterTest {
 
     FileUtils.deleteRecursively(new File("databases/importedFromOrientDB"));
 
-    final Database database = new DatabaseFactory("databases/importedFromOrientDB").create();
-    database.getConfiguration().setValue(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE, Bucket.DEF_PAGE_SIZE * 10);
+    try (final Database database = new DatabaseFactory("databases/importedFromOrientDB").create()) {
+      database.getConfiguration().setValue(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE, Bucket.DEF_PAGE_SIZE * 10);
 
-    database.command("sql", "import database file://" + inputFile.getFile());
+      database.command("sql", "import database file://" + inputFile.getFile());
 
-    Assertions.assertEquals(500, database.countType("Person", false));
-    Assertions.assertEquals(10000, database.countType("Friend", false));
+      Assertions.assertEquals(500, database.countType("Person", false));
+      Assertions.assertEquals(10000, database.countType("Friend", false));
 
-    database.command("sql", "export database file://export.jsonl.tgz");
+      database.command("sql", "export database file://export.jsonl.tgz");
 
-    final File exportFile = new File("./exports/export.jsonl.tgz");
-    Assertions.assertTrue(exportFile.exists());
-    Assertions.assertTrue(exportFile.length() > 50_000);
+      final File exportFile = new File("./exports/export.jsonl.tgz");
+      Assertions.assertTrue(exportFile.exists());
+      Assertions.assertTrue(exportFile.length() > 50_000);
+      exportFile.delete();
+    }
 
-    exportFile.delete();
+    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty());
     FileUtils.deleteRecursively(new File("databases/importedFromOrientDB"));
   }
 }

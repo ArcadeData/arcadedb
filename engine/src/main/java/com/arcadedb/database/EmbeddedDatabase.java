@@ -1576,6 +1576,8 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
       return null;
     });
+
+    DatabaseFactory.removeActiveDatabaseInstance(databasePath);
   }
 
 }

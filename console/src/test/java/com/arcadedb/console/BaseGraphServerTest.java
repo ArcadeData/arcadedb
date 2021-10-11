@@ -315,10 +315,11 @@ public abstract class BaseGraphServerTest {
       }
 
     if (servers != null)
-      for (int i = 0; i < getServerCount(); ++i) {
+      for (int i = 0; i < getServerCount(); ++i)
         if (getServer(i).existsDatabase(getDatabaseName()))
           getServer(i).getDatabase(getDatabaseName()).drop();
-      }
+
+    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty());
 
     for (int i = 0; i < getServerCount(); ++i)
       FileUtils.deleteRecursively(new File(getDatabasePath(i)));

@@ -293,17 +293,6 @@ public abstract class BaseGraphServerTest {
     return null;
   }
 
-  protected boolean areAllServersOnline() {
-    final int onlineReplicas = getLeaderServer().getHA().getOnlineReplicas();
-    if (1 + onlineReplicas < getServerCount()) {
-      // NOT ALL THE SERVERS ARE UP, AVOID A QUORUM ERROR
-      LogManager.instance().log(this, Level.INFO, "TEST: Not all the servers are ONLINE (%d), skip this crash...", null, onlineReplicas);
-      getLeaderServer().getHA().printClusterConfiguration();
-      return false;
-    }
-    return true;
-  }
-
   protected int[] getServerToCheck() {
     final int[] result = new int[getServerCount()];
     for (int i = 0; i < result.length; ++i)
@@ -323,6 +312,8 @@ public abstract class BaseGraphServerTest {
         if (getServer(i).existsDatabase(getDatabaseName()))
           getServer(i).getDatabase(getDatabaseName()).drop();
       }
+
+    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty());
 
     for (int i = 0; i < getServerCount(); ++i)
       FileUtils.deleteRecursively(new File(getDatabasePath(i)));

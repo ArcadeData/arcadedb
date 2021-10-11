@@ -20,6 +20,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseComparator;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
@@ -185,6 +186,8 @@ public abstract class BasePerformanceTest {
       for (int i = 0; i < getServerCount(); ++i)
         if (getServer(i).existsDatabase(getDatabaseName()))
           getServer(i).getDatabase(getDatabaseName()).drop();
+
+    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty());
 
     for (int i = 0; i < getServerCount(); ++i)
       FileUtils.deleteRecursively(new File(getDatabasePath(i)));

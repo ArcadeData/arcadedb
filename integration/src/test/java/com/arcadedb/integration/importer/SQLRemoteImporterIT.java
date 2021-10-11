@@ -21,24 +21,25 @@ import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.io.File;
+import java.io.*;
 
 public class SQLRemoteImporterIT {
   @Test
   public void importOrientDB() {
     FileUtils.deleteRecursively(new File("./target/databases/importedFromOrientDB"));
 
-    final Database database = new DatabaseFactory("./target/databases/importedFromOrientDB").create();
+    try (final Database database = new DatabaseFactory("./target/databases/importedFromOrientDB").create()) {
 
-    //database.command("sql", "import database https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/MovieRatings.gz");
-    database.command("sql", "import database https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/GratefulDeadConcerts.gz");
+      //database.command("sql", "import database https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/MovieRatings.gz");
+      database.command("sql", "import database https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/GratefulDeadConcerts.gz");
 
-    Assertions.assertEquals(809, database.countType("V", false));
-    Assertions.assertEquals(7047, database.countType("followed_by", false));
-    Assertions.assertEquals(501, database.countType("sung_by", false));
-    Assertions.assertEquals(501, database.countType("written_by", false));
+      Assertions.assertEquals(809, database.countType("V", false));
+      Assertions.assertEquals(7047, database.countType("followed_by", false));
+      Assertions.assertEquals(501, database.countType("sung_by", false));
+      Assertions.assertEquals(501, database.countType("written_by", false));
+    }
 
-    database.drop();
+    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty());
     FileUtils.deleteRecursively(new File("./target/databases/importedFromOrientDB"));
   }
 }
