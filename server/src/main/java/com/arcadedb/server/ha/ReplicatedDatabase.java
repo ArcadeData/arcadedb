@@ -535,7 +535,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
       return (ResultSet) server.getHA().forwardCommandToLeader(command, timeout * 2);
     }
 
-    return (ResultSet) recordFileChanges(() -> proxied.command(language, query, args));
+    return recordFileChanges(() -> proxied.command(language, query, args));
   }
 
   @Override
@@ -546,7 +546,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
       return (ResultSet) server.getHA().forwardCommandToLeader(command, timeout * 2);
     }
 
-    return (ResultSet) recordFileChanges(() -> proxied.command(language, query, args));
+    return recordFileChanges(() -> proxied.command(language, query, args));
   }
 
   @Override
@@ -645,10 +645,16 @@ public class ReplicatedDatabase implements DatabaseInternal {
         return null;
       }
 
+      final long schemaVersionBefore = proxied.getSchema().getEmbedded().getVersion();
+
       try {
         result.set(callback.call());
 
         final List<FileManager.FileChange> fileChanges = proxied.getFileManager().getRecordedChanges();
+
+        if (fileChanges.isEmpty() && proxied.getSchema().getEmbedded().getVersion() == schemaVersionBefore)
+          // NO CHANGES
+          return null;
 
         final Map<Integer, String> addFiles = new HashMap<>();
         final Map<Integer, String> removeFiles = new HashMap<>();

@@ -81,6 +81,7 @@ public class EmbeddedSchema implements Schema {
   private              boolean                    dirtyConfiguration        = false;
   private              boolean                    loadInRamCompleted        = false;
   private              boolean                    multipleUpdate            = false;
+  private              AtomicLong                 versionSerial             = new AtomicLong();
 
   public EmbeddedSchema(final DatabaseInternal database, final String databasePath, final SecurityManager security) {
     this.database = database;
@@ -1024,6 +1025,8 @@ public class EmbeddedSchema implements Schema {
         // EMPTY SCHEMA
         return;
 
+      versionSerial.set(root.has("schemaVersion") ? root.getLong("schemaVersion") : 0L);
+
       final JSONObject settings = root.getJSONObject("settings");
 
       timeZone = TimeZone.getTimeZone(settings.getString("timeZone"));
@@ -1222,10 +1225,11 @@ public class EmbeddedSchema implements Schema {
     }
   }
 
-  public JSONObject serializeConfiguration() {
+  public synchronized JSONObject serializeConfiguration() {
     final JSONObject root = new JSONObject();
-    root.put("version", Constants.getRawVersion());
-    root.put("build", Constants.getBuildNumber());
+    root.put("schemaVersion", versionSerial.incrementAndGet());
+    root.put("dbmsVersion", Constants.getRawVersion());
+    root.put("dbmsBuild", Constants.getBuildNumber());
 
     final JSONObject settings = new JSONObject();
     root.put("settings", settings);
@@ -1308,6 +1312,10 @@ public class EmbeddedSchema implements Schema {
 
   public File getConfigurationFile() {
     return configurationFile;
+  }
+
+  public long getVersion() {
+    return versionSerial.get();
   }
 
   private void updateSecurity() {
