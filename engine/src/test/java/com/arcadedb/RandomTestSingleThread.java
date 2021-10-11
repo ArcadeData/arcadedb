@@ -38,7 +38,7 @@ import java.util.logging.Level;
 public class RandomTestSingleThread extends TestHelper {
   private static final int CYCLES           = 1500;
   private static final int STARTING_ACCOUNT = 100;
-  private static final int PARALLEL         = Runtime.getRuntime().availableProcessors();
+  private static final int PARALLEL         = 4;
 
   private final AtomicLong otherErrors = new AtomicLong();
   private final AtomicLong mvccErrors  = new AtomicLong();

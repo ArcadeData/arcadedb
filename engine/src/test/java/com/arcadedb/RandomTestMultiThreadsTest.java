@@ -39,8 +39,8 @@ import java.util.logging.Level;
 public class RandomTestMultiThreadsTest extends TestHelper {
   private static final int CYCLES           = 10000;
   private static final int STARTING_ACCOUNT = 10000;
-  private static final int PARALLEL         = Runtime.getRuntime().availableProcessors();
-  private static final int WORKERS          = Runtime.getRuntime().availableProcessors() * 8;
+  private static final int PARALLEL         = 4;
+  private static final int WORKERS          = 4 * 8;
 
   private final AtomicLong                     total                   = new AtomicLong();
   private final AtomicLong                     totalTransactionRecords = new AtomicLong();

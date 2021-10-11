@@ -1033,7 +1033,7 @@ public class LSMTreeIndexTest extends TestHelper {
     final AtomicLong duplicatedExceptions = new AtomicLong();
     final AtomicLong crossThreadsInserted = new AtomicLong();
 
-    final Thread[] threads = new Thread[Runtime.getRuntime().availableProcessors() * 4];
+    final Thread[] threads = new Thread[16];
     LogManager.instance().log(this, Level.INFO, "%s Started with %d threads", null, getClass(), threads.length);
 
     for (int i = 0; i < threads.length; ++i) {
