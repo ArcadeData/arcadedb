@@ -308,6 +308,11 @@ public abstract class BaseGraphServerTest {
   }
 
   protected void deleteDatabaseFolders() {
+    for (int i = 0; i < getServerCount(); ++i) {
+      if (getServer(i).existsDatabase(getDatabaseName()))
+        getServer(i).getDatabase(getDatabaseName()).drop();
+    }
+
     for (int i = 0; i < getServerCount(); ++i)
       FileUtils.deleteRecursively(new File(getDatabasePath(i)));
     FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_ROOT_PATH.getValueAsString() + "/replication"));
