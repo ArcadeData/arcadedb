@@ -1215,6 +1215,7 @@ public class EmbeddedSchema implements Schema {
       }
 
       dirtyConfiguration = false;
+      database.getExecutionPlanCache().invalidate();
 
     } catch (IOException e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on saving schema configuration to file: %s", e, databasePath + "/" + SCHEMA_FILE_NAME);

@@ -406,7 +406,7 @@ public class ArcadeDBServer implements ServerLogger {
       databases.put(databaseName, db);
     }
 
-    return db;
+    return new ServerDatabase(db);
   }
 
   private void loadDatabases() {
