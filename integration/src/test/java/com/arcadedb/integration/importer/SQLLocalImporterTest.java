@@ -43,7 +43,7 @@ public class SQLLocalImporterTest {
       Assertions.assertEquals(10000, database.countType("Friend", false));
     }
 
-    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty());
+    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
 
     FileUtils.deleteRecursively(new File("databases/importedFromOrientDB"));
   }

@@ -313,7 +313,7 @@ public abstract class BaseGraphServerTest {
           getServer(i).getDatabase(getDatabaseName()).drop();
       }
 
-    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty());
+    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
 
     for (int i = 0; i < getServerCount(); ++i)
       FileUtils.deleteRecursively(new File(getDatabasePath(i)));

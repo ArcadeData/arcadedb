@@ -43,7 +43,7 @@ public class ImporterTest {
       Assertions.assertEquals(6, db.countType("Node", true));
       Assertions.assertEquals("Jay", db.lookupByKey("Node", "Id", 0).next().getRecord().asVertex().get("First Name"));
     }
-    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty());
+    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
 
   }
 }

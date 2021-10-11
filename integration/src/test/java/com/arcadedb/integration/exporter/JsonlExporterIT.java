@@ -101,7 +101,7 @@ public class JsonlExporterIT {
   @BeforeEach
   @AfterEach
   public void beforeTests() {
-    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty());
+    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
     FileUtils.deleteRecursively(new File(DATABASE_PATH));
   }
 }

@@ -37,7 +37,7 @@ public class ConsoleTest {
   @AfterEach
   public void drop() {
     console.close();
-    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty());
+    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
     FileUtils.deleteRecursively(new File(DB_PATH));
   }
 

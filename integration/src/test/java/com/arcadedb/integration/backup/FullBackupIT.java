@@ -63,7 +63,7 @@ public class FullBackupIT {
         new DatabaseComparator().compare(originalDatabase, restoredDatabase);
       }
     }
-    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty());
+    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
   }
 
   @Test
@@ -82,7 +82,7 @@ public class FullBackupIT {
       }
     }
 
-    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty());
+    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
   }
 
   /**
@@ -170,7 +170,7 @@ public class FullBackupIT {
         }
       }
 
-      Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty());
+      Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
     } finally {
       for (int i = 0; i < CONCURRENT_THREADS; i++) {
         new File(FILE + "_" + i).delete();

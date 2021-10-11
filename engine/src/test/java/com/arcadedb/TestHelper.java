@@ -44,7 +44,7 @@ public abstract class TestHelper {
   protected TestHelper(final boolean cleanBeforeTest) {
     GlobalConfiguration.PROFILE.setValue(getPerformanceProfile());
 
-    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty());
+    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
 
     if (cleanBeforeTest)
       FileUtils.deleteRecursively(new File(getDatabasePath()));
@@ -160,7 +160,7 @@ public abstract class TestHelper {
       database = null;
     }
 
-    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty());
+    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
     FileUtils.deleteRecursively(new File(getDatabasePath()));
   }
 

@@ -39,7 +39,7 @@ public class SQLRemoteImporterIT {
       Assertions.assertEquals(501, database.countType("written_by", false));
     }
 
-    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty());
+    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
     FileUtils.deleteRecursively(new File("./target/databases/importedFromOrientDB"));
   }
 }

@@ -489,7 +489,7 @@ public class SQLFunctionsTest {
 
   @BeforeEach
   public void beforeEach() {
-    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty());
+    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
     FileUtils.deleteRecursively(new File("./target/databases/SQLFunctionsTest"));
     database = factory.create();
     database.getSchema().createDocumentType("V");
@@ -517,7 +517,7 @@ public class SQLFunctionsTest {
   public void afterEach() {
     if (database != null)
       database.drop();
-    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty());
+    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
     FileUtils.deleteRecursively(new File("./target/databases/SQLFunctionsTest"));
   }
 }

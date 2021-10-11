@@ -50,7 +50,7 @@ public class SQLLocalExporterTest {
       exportFile.delete();
     }
 
-    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty());
+    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
     FileUtils.deleteRecursively(new File("databases/importedFromOrientDB"));
   }
 }
