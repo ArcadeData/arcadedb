@@ -116,7 +116,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
 
           if (!server.getReplicationLogFile().checkMessageOrder(message)) {
             // SKIP
-            channel.close();
+            closeChannel();
             connect();
             continue;
           }
@@ -129,7 +129,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
         if (reqId > -1) {
           if (!server.getReplicationLogFile().appendMessage(message)) {
             // ERROR IN THE SEQUENCE, FORCE A RECONNECTION
-            channel.close();
+            closeChannel();
             connect();
             continue;
           }
@@ -310,13 +310,13 @@ public class Replica2LeaderNetworkExecutor extends Thread {
             server.getServer()
                 .log(this, Level.INFO, "Cannot accept incoming connections: remote server is not a Leader, connecting to the current Leader '%s' (%s)",
                     leaderServerName, leaderAddress);
-            channel.close();
+            closeChannel();
             throw new ServerIsNotTheLeaderException(
                 "Remote server is not a Leader, connecting to the current Leader '" + leaderServerName + "' (" + leaderAddress + ")", leaderAddress);
 
           case ReplicationProtocol.ERROR_CONNECT_ELECTION_PENDING:
             server.getServer().log(this, Level.INFO, "Cannot accept incoming connections: an election for the Leader server is in progress");
-            channel.close();
+            closeChannel();
             throw new ReplicationException("An election for the Leader server is pending");
 
           case ReplicationProtocol.ERROR_CONNECT_UNSUPPORTEDPROTOCOL:
@@ -338,7 +338,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
             server.getServer().log(this, Level.INFO, "Cannot accept incoming connections: unknown reason code '%s'", reasonCode);
           }
 
-          channel.close();
+          closeChannel();
           throw new ConnectionException(host + ":" + port, reason);
         }
 

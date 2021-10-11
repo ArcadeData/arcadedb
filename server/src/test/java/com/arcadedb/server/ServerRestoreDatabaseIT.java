@@ -77,6 +77,5 @@ public class ServerRestoreDatabaseIT extends BaseGraphServerTest {
     getServer(0).getSecurity().authenticate("elon", "musk", "Movies");
     Database database = getServer(0).getDatabase("Movies");
     Assertions.assertEquals(1, database.countType("testDoc", true));
-    deleteAllDatabases();
   }
 }

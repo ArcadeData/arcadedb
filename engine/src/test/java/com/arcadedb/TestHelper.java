@@ -156,7 +156,7 @@ public abstract class TestHelper {
       if (database.getMode() == PaginatedFile.MODE.READ_ONLY)
         reopenDatabase();
 
-      database.drop();
+      ((DatabaseInternal) database).getWrappedDatabaseInstance().drop();
       database = null;
     }
 

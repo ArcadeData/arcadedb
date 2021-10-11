@@ -16,6 +16,7 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
@@ -27,11 +28,11 @@ public class PostDropDatabaseHandler extends DatabaseAbstractHandler {
 
   @Override
   public void execute(final HttpServerExchange exchange, ServerSecurityUser user, final Database database) {
-    database.drop();
+    ((DatabaseInternal) database).getWrappedDatabaseInstance().drop();
 
     httpServer.getServer().getServerMetrics().meter("http.drop-database").mark();
 
-    httpServer.getServer().removeDatabase( database.getName() );
+    httpServer.getServer().removeDatabase(database.getName());
 
     exchange.setStatusCode(200);
     exchange.getResponseSender().send("{ \"result\" : \"ok\"}");

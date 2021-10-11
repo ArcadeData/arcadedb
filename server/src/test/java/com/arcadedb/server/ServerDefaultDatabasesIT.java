@@ -73,7 +73,5 @@ public class ServerDefaultDatabasesIT extends BaseGraphServerTest {
 
     Assertions.assertTrue(getServer(0).existsDatabase("Universe"));
     Assertions.assertTrue(getServer(0).existsDatabase("Amiga"));
-
-    deleteAllDatabases();
   }
 }

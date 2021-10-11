@@ -19,6 +19,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -51,7 +52,7 @@ public class MongoDBQueryTest {
     if (database != null) {
       if (database.isTransactionActive())
         database.rollback();
-      database.drop();
+      ((ServerDatabase)database).getWrappedDatabaseInstance().drop();
     }
   }
 

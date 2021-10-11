@@ -54,11 +54,20 @@ import java.io.*;
 import java.util.*;
 import java.util.concurrent.*;
 
+/**
+ * Wrapper of database returned from the server when runs embedded that prevents the close(), drop() and kill() by the user.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
 public class ServerDatabase implements DatabaseInternal {
   private final DatabaseInternal wrapped;
 
   public ServerDatabase(final DatabaseInternal wrapped) {
     this.wrapped = wrapped;
+  }
+
+  public DatabaseInternal getWrappedDatabaseInstance() {
+    return wrapped;
   }
 
   @Override
@@ -445,10 +454,6 @@ public class ServerDatabase implements DatabaseInternal {
   @Override
   public String toString() {
     return wrapped.toString();
-  }
-
-  public DatabaseInternal getWrappedDatabaseInstance() {
-    return wrapped.getWrappedDatabaseInstance();
   }
 
   @Override

@@ -374,11 +374,15 @@ public abstract class BaseGraphServerTest {
   }
 
   protected boolean areAllServersOnline() {
-    final int onlineReplicas = getLeaderServer().getHA().getOnlineReplicas();
+    final ArcadeDBServer leader = getLeaderServer();
+    if (leader == null)
+      return false;
+
+    final int onlineReplicas = leader.getHA().getOnlineReplicas();
     if (1 + onlineReplicas < getServerCount()) {
       // NOT ALL THE SERVERS ARE UP, AVOID A QUORUM ERROR
       LogManager.instance().log(this, Level.INFO, "TEST: Not all the servers are ONLINE (%d), skip this crash...", null, onlineReplicas);
-      getLeaderServer().getHA().printClusterConfiguration();
+      leader.getHA().printClusterConfiguration();
       return false;
     }
     return true;
@@ -395,38 +399,19 @@ public abstract class BaseGraphServerTest {
     if (databases != null)
       for (int i = 0; i < databases.length; ++i) {
         if (databases[i] != null)
-          databases[i].drop();
-      }
-
-    if (servers != null)
-      for (int i = 0; i < getServerCount(); ++i) {
-        if (getServer(i).existsDatabase(getDatabaseName()))
-          getServer(i).getDatabase(getDatabaseName()).drop();
-      }
-    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
-
-    for (int i = 0; i < getServerCount(); ++i)
-      FileUtils.deleteRecursively(new File(getDatabasePath(i)));
-    FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_ROOT_PATH.getValueAsString() + "/replication"));
-  }
-
-  protected void deleteAllDatabases() {
-    if (databases != null)
-      for (int i = 0; i < databases.length; ++i) {
-        if (databases[i] != null)
-          databases[i].drop();
+          ((DatabaseInternal) databases[i]).getWrappedDatabaseInstance().drop();
       }
 
     if (servers != null)
       for (int i = 0; i < getServerCount(); ++i)
         for (String dbName : getServer(i).getDatabaseNames())
           if (getServer(i).existsDatabase(dbName))
-            getServer(i).getDatabase(dbName).drop();
+            ((DatabaseInternal) getServer(i).getDatabase(dbName)).getWrappedDatabaseInstance().drop();
 
     Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
 
     for (int i = 0; i < getServerCount(); ++i)
-      FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_DATABASE_DIRECTORY.getValueAsString() + i + "/"));
+      FileUtils.deleteRecursively(new File(getDatabasePath(i)));
     FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_ROOT_PATH.getValueAsString() + "/replication"));
   }
 
