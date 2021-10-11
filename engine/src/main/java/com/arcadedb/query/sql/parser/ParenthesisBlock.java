@@ -123,11 +123,6 @@ public class ParenthesisBlock extends BooleanExpression {
   }
 
   @Override
-  public void translateLuceneOperator() {
-    subElement.translateLuceneOperator();
-  }
-
-  @Override
   public boolean isCacheable() {
     return subElement.isCacheable();
   }

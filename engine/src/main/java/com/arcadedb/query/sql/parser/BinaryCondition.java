@@ -285,48 +285,6 @@ public class BinaryCondition extends BooleanExpression {
     return result;
   }
 
-  private Expression fieldNamesToStrings(Expression left) {
-    if (left.isBaseIdentifier()) {
-      Identifier identifier = ((BaseExpression) left.mathExpression).identifier.suffix.identifier;
-      PCollection newColl = new PCollection(-1);
-      newColl.expressions = new ArrayList<>();
-      newColl.expressions.add(identifierToStringExpr(identifier));
-      Expression result = new Expression(-1);
-      BaseExpression newBase = new BaseExpression(-1);
-      result.mathExpression = newBase;
-      newBase.identifier = new BaseIdentifier(-1);
-      newBase.identifier.levelZero = new LevelZeroIdentifier(-1);
-      newBase.identifier.levelZero.collection = newColl;
-      return result;
-    } else if (left.mathExpression instanceof BaseExpression) {
-      BaseExpression base = (BaseExpression) left.mathExpression;
-      if (base.identifier != null && base.identifier.levelZero != null && base.identifier.levelZero.collection != null) {
-        PCollection coll = base.identifier.levelZero.collection;
-
-        PCollection newColl = new PCollection(-1);
-        newColl.expressions = new ArrayList<>();
-
-        for (Expression exp : coll.expressions) {
-          if (exp.isBaseIdentifier()) {
-            Identifier identifier = ((BaseExpression) exp.mathExpression).identifier.suffix.identifier;
-            Expression val = identifierToStringExpr(identifier);
-            newColl.expressions.add(val);
-          } else {
-            throw new CommandExecutionException("Cannot execute because of invalid LUCENE expression");
-          }
-        }
-        Expression result = new Expression(-1);
-        BaseExpression newBase = new BaseExpression(-1);
-        result.mathExpression = newBase;
-        newBase.identifier = new BaseIdentifier(-1);
-        newBase.identifier.levelZero = new LevelZeroIdentifier(-1);
-        newBase.identifier.levelZero.collection = newColl;
-        return result;
-      }
-    }
-    throw new CommandExecutionException("Cannot execute because of invalid LUCENE expression");
-  }
-
   private Expression identifierToStringExpr(Identifier identifier) {
     BaseExpression bExp = new BaseExpression(identifier.getStringValue());
 

@@ -21,7 +21,12 @@ import com.arcadedb.database.RID;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.PaginatedComponentFactory;
 import com.arcadedb.engine.PaginatedFile;
-import com.arcadedb.index.*;
+import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexCursor;
+import com.arcadedb.index.IndexCursorEntry;
+import com.arcadedb.index.IndexException;
+import com.arcadedb.index.IndexInternal;
+import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -30,9 +35,9 @@ import org.apache.lucene.analysis.TokenStream;
 import org.apache.lucene.analysis.standard.StandardAnalyzer;
 import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
 
-import java.io.IOException;
+import java.io.*;
 import java.util.*;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.*;
 
 /**
  * Full Text index implementation based on LSM-Tree index.

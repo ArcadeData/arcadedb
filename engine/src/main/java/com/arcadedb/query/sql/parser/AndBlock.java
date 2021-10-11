@@ -245,11 +245,6 @@ public class AndBlock extends BooleanExpression {
   }
 
   @Override
-  public void translateLuceneOperator() {
-    subBlocks.forEach(x -> x.translateLuceneOperator());
-  }
-
-  @Override
   public boolean isCacheable() {
     for (BooleanExpression exp : subBlocks) {
       if (!exp.isCacheable()) {

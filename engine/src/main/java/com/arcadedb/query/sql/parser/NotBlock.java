@@ -168,11 +168,6 @@ public class NotBlock extends BooleanExpression {
   }
 
   @Override
-  public void translateLuceneOperator() {
-    sub.translateLuceneOperator();
-  }
-
-  @Override
   public boolean isCacheable() {
     return sub.isCacheable();
   }
