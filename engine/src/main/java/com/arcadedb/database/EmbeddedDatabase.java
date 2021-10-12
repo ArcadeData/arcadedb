@@ -217,7 +217,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
         if (fileManager.getFiles().isEmpty())
           schema.create(mode);
         else
-          schema.load(mode);
+          schema.load(mode, true);
 
         if (mode == PaginatedFile.MODE.READ_WRITE)
           checkForRecovery();

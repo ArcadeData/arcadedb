@@ -122,7 +122,13 @@ public class EmbeddedSchema implements Schema {
     }
   }
 
-  public void load(final PaginatedFile.MODE mode) throws IOException {
+  public void load(final PaginatedFile.MODE mode, final boolean initialize) throws IOException {
+    files.clear();
+    types.clear();
+    bucketMap.clear();
+    indexMap.clear();
+    dictionary = null;
+
     final Collection<PaginatedFile> filesToOpen = database.getFileManager().getFiles();
 
     // REGISTER THE DICTIONARY FIRST
@@ -154,49 +160,11 @@ public class EmbeddedSchema implements Schema {
       }
     }
 
-    for (PaginatedComponent f : files)
-      if (f != null)
-        f.onAfterLoad();
+    if (initialize)
+      initComponents();
 
     readConfiguration();
     updateSecurity();
-  }
-
-  public void loadChanges() throws IOException {
-    final Collection<PaginatedFile> filesToOpen = database.getFileManager().getFiles();
-
-    final PaginatedFile.MODE mode = database.getMode();
-
-    final List<PaginatedComponent> newFilesLoaded = new ArrayList<>();
-
-    for (PaginatedFile file : filesToOpen) {
-      if (file != null && !Dictionary.DICT_EXT.equals(file.getFileExtension())) {
-        final PaginatedComponent pf = paginatedComponentFactory.createComponent(file, mode);
-
-        if (pf != null) {
-          if (pf.getId() < files.size() && files.get(pf.getId()) != null)
-            // ALREADY LOADED
-            continue;
-
-          final Object mainComponent = pf.getMainComponent();
-
-          if (mainComponent instanceof Bucket)
-            bucketMap.put(pf.getName(), (Bucket) mainComponent);
-          else if (mainComponent instanceof IndexInternal)
-            indexMap.put(pf.getName(), (IndexInternal) mainComponent);
-
-          registerFile(pf);
-
-          newFilesLoaded.add(pf);
-        }
-      }
-    }
-
-    for (PaginatedComponent f : newFilesLoaded)
-      if (f != null)
-        f.onAfterLoad();
-
-    readConfiguration();
   }
 
   @Override
@@ -432,18 +400,18 @@ public class EmbeddedSchema implements Schema {
 
   @Override
   public TypeIndex createTypeIndex(final INDEX_TYPE indexType, final boolean unique, final String typeName, final String... propertyNames) {
-    return createTypeIndex(indexType, unique, typeName, propertyNames, LSMTreeIndexAbstract.DEF_PAGE_SIZE, null);
+    return createTypeIndex(indexType, unique, typeName, propertyNames, LSMTreeIndexAbstract.DEF_PAGE_SIZE, LSMTreeIndexAbstract.NULL_STRATEGY.SKIP, null);
   }
 
   @Override
   public TypeIndex createTypeIndex(final INDEX_TYPE indexType, final boolean unique, final String typeName, final String[] propertyNames, final int pageSize) {
-    return createTypeIndex(indexType, unique, typeName, propertyNames, pageSize, LSMTreeIndexAbstract.NULL_STRATEGY.ERROR, null);
+    return createTypeIndex(indexType, unique, typeName, propertyNames, pageSize, LSMTreeIndexAbstract.NULL_STRATEGY.SKIP, null);
   }
 
   @Override
   public TypeIndex createTypeIndex(final INDEX_TYPE indexType, final boolean unique, final String typeName, final String[] propertyNames, final int pageSize,
       final Index.BuildIndexCallback callback) {
-    return createTypeIndex(indexType, unique, typeName, propertyNames, pageSize, LSMTreeIndexAbstract.NULL_STRATEGY.ERROR, callback);
+    return createTypeIndex(indexType, unique, typeName, propertyNames, pageSize, LSMTreeIndexAbstract.NULL_STRATEGY.SKIP, callback);
   }
 
   @Override
@@ -476,7 +444,7 @@ public class EmbeddedSchema implements Schema {
     final List<Bucket> buckets = type.getBuckets(true);
     final Index[] indexes = new Index[buckets.size()];
 
-    return recordFileChanges(() -> {
+    recordFileChanges(() -> {
       database.transaction(() -> {
 
         try {
@@ -490,7 +458,6 @@ public class EmbeddedSchema implements Schema {
         } catch (IOException e) {
           throw new SchemaException("Cannot create index on type '" + typeName + "' (error=" + e + ")", e);
         }
-
       }, false, 1, null, (error) -> {
         for (int j = 0; j < indexes.length; j++) {
           final IndexInternal indexToRemove = (IndexInternal) indexes[j];
@@ -498,9 +465,10 @@ public class EmbeddedSchema implements Schema {
             indexToRemove.drop();
         }
       });
-
-      return type.getPolymorphicIndexByProperties(propertyNames);
+      return null;
     });
+
+    return type.getPolymorphicIndexByProperties(propertyNames);
   }
 
   @Override
@@ -731,7 +699,7 @@ public class EmbeddedSchema implements Schema {
             sub.addParentType(parent);
         }
 
-        final List<Bucket> buckets = type.getBuckets(false);
+        final List<Bucket> buckets = new ArrayList<>(type.getBuckets(false));
         final Set<Integer> bucketIds = new HashSet<>(buckets.size());
         for (Bucket b : buckets)
           bucketIds.add(b.getId());
@@ -741,8 +709,10 @@ public class EmbeddedSchema implements Schema {
           dropIndex(m.getName());
 
         // DELETE ALL ASSOCIATED BUCKETS
-        for (Bucket b : buckets)
+        for (Bucket b : buckets) {
+          type.removeBucket(b);
           dropBucket(b.getName());
+        }
 
         if (type instanceof VertexType)
           database.getGraphEngine().dropVertexType(database, (VertexType) type);
@@ -765,6 +735,12 @@ public class EmbeddedSchema implements Schema {
     final Bucket bucket = getBucketByName(bucketName);
 
     recordFileChanges(() -> {
+      for (DocumentType type : types.values()) {
+        if (type.buckets.contains(bucket))
+          throw new SchemaException(
+              "Error on dropping bucket '" + bucketName + "' because it is assigned to type '" + type.getName() + "'. Remove the association first");
+      }
+
       database.getPageManager().deleteFile(bucket.getId());
       try {
         database.getFileManager().dropFile(bucket.getId());
@@ -1304,6 +1280,12 @@ public class EmbeddedSchema implements Schema {
       throw new SchemaException("File with id '" + fileId + "' already exists (previous=" + files.get(fileId) + " new=" + file + ")");
 
     files.set(fileId, file);
+  }
+
+  public void initComponents() {
+    for (PaginatedComponent f : files)
+      if (f != null)
+        f.onAfterLoad();
   }
 
   public boolean isDirty() {

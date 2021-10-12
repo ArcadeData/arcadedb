@@ -159,7 +159,17 @@ public class ReplicatedDatabase implements DatabaseInternal {
       throw new IllegalArgumentException("Quorum " + quorum + " not managed");
     }
 
-    server.getHA().sendCommandToReplicasWithQuorum(new TxRequest(getName(), bufferChanges, reqQuorum > 1), reqQuorum, timeout);
+    final TxRequest req = new TxRequest(getName(), bufferChanges, reqQuorum > 1);
+
+    final DatabaseChangeStructureRequest changeStructureRequest = getChangeStructure(-1);
+    if (changeStructureRequest != null) {
+      // RESET STRUCTURE CHANGES FROM THIS POINT ONWARDS
+      proxied.getFileManager().stopRecordingChanges();
+      proxied.getFileManager().startRecordingChanges();
+      req.changeStructure = changeStructureRequest;
+    }
+
+    server.getHA().sendCommandToReplicasWithQuorum(req, reqQuorum, timeout);
 
     // COMMIT 2ND PHASE ONLY IF THE QUORUM HAS BEEN REACHED
     tx.commit2ndPhase(changes);
@@ -650,26 +660,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
       try {
         result.set(callback.call());
 
-        final List<FileManager.FileChange> fileChanges = proxied.getFileManager().getRecordedChanges();
-
-        if (fileChanges.isEmpty() &&//
-            !proxied.getSchema().getEmbedded().isDirty() && //
-            proxied.getSchema().getEmbedded().getVersion() == schemaVersionBefore)
-          // NO CHANGES
-          return null;
-
-        final Map<Integer, String> addFiles = new HashMap<>();
-        final Map<Integer, String> removeFiles = new HashMap<>();
-        for (FileManager.FileChange c : fileChanges) {
-          if (c.create)
-            addFiles.put(c.fileId, c.fileName);
-          else
-            removeFiles.put(c.fileId, c.fileName);
-        }
-
-        final String schemaJson = proxied.getSchema().getEmbedded().serializeConfiguration().toString();
-
-        return new DatabaseChangeStructureRequest(proxied.getName(), schemaJson, addFiles, removeFiles);
+        return getChangeStructure(schemaVersionBefore);
 
       } finally {
         proxied.getFileManager().stopRecordingChanges();
@@ -683,5 +674,29 @@ public class ReplicatedDatabase implements DatabaseInternal {
     }
 
     return (RET) result.get();
+  }
+
+  private DatabaseChangeStructureRequest getChangeStructure(final long schemaVersionBefore) {
+    final List<FileManager.FileChange> fileChanges = proxied.getFileManager().getRecordedChanges();
+
+    if (fileChanges == null ||//
+        (fileChanges.isEmpty() &&//
+            !proxied.getSchema().getEmbedded().isDirty() && //
+            schemaVersionBefore > -1 && proxied.getSchema().getEmbedded().getVersion() == schemaVersionBefore))
+      // NO CHANGES
+      return null;
+
+    final Map<Integer, String> addFiles = new HashMap<>();
+    final Map<Integer, String> removeFiles = new HashMap<>();
+    for (FileManager.FileChange c : fileChanges) {
+      if (c.create)
+        addFiles.put(c.fileId, c.fileName);
+      else
+        removeFiles.put(c.fileId, c.fileName);
+    }
+
+    final String schemaJson = proxied.getSchema().getEmbedded().serializeConfiguration().toString();
+
+    return new DatabaseChangeStructureRequest(proxied.getName(), schemaJson, addFiles, removeFiles);
   }
 }

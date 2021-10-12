@@ -18,6 +18,7 @@ package com.arcadedb.server.ha.message;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.server.ArcadeDBServer;
@@ -113,31 +114,34 @@ public class DatabaseChangeStructureRequest extends HAAbstractCommand {
     try {
       final DatabaseInternal db = (DatabaseInternal) server.getServer().getDatabase(databaseName);
 
-      final String databasePath = db.getDatabasePath();
-
-      // ADD FILES
-      for (Map.Entry<Integer, String> entry : filesToAdd.entrySet()) {
-        db.getFileManager().getOrCreateFile(entry.getKey(), databasePath + "/" + entry.getValue());
-      }
-
-      // REMOVE FILES
-      for (Map.Entry<Integer, String> entry : filesToRemove.entrySet()) {
-        db.getFileManager().dropFile(entry.getKey());
-      }
-
-      // REPLACE SCHEMA FILE
-      final File file = new File(db.getDatabasePath() + "/" + EmbeddedSchema.SCHEMA_FILE_NAME);
-      FileUtils.writeContentToStream(file, schemaJson.getBytes(DatabaseFactory.getDefaultCharset()));
+      updateFiles(db);
 
       // RELOAD SCHEMA
-      db.getSchema().getEmbedded().loadChanges();
-
+      db.getSchema().getEmbedded().load(PaginatedFile.MODE.READ_WRITE, true);
       return new DatabaseChangeStructureResponse();
 
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on changing database structure request from the leader node", e);
       throw new ReplicationException("Error on changing database structure request from the leader node", e);
     }
+  }
+
+  public void updateFiles(final DatabaseInternal db) throws IOException {
+    final String databasePath = db.getDatabasePath();
+
+    // ADD FILES
+    for (Map.Entry<Integer, String> entry : filesToAdd.entrySet()) {
+      db.getFileManager().getOrCreateFile(entry.getKey(), databasePath + "/" + entry.getValue());
+    }
+
+    // REMOVE FILES
+    for (Map.Entry<Integer, String> entry : filesToRemove.entrySet()) {
+      db.getFileManager().dropFile(entry.getKey());
+    }
+
+    // REPLACE SCHEMA FILE
+    final File file = new File(db.getDatabasePath() + "/" + EmbeddedSchema.SCHEMA_FILE_NAME);
+    FileUtils.writeContentToStream(file, schemaJson.getBytes(DatabaseFactory.getDefaultCharset()));
   }
 
   @Override

@@ -172,7 +172,7 @@ public class DocumentType {
   }
 
   public Index createTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique, final String... propertyNames) {
-    return schema.createTypeIndex(indexType, unique, name, propertyNames);
+    return schema.createTypeIndex(indexType, unique, name, propertyNames, LSMTreeIndexAbstract.DEF_PAGE_SIZE, LSMTreeIndexAbstract.NULL_STRATEGY.SKIP, null);
   }
 
   public Index createTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique, String[] propertyNames, final int pageSize) {
@@ -227,7 +227,7 @@ public class DocumentType {
 
   public DocumentType removeBucket(final Bucket bucket) {
     recordFileChanges(() -> {
-      addBucketInternal(bucket);
+      removeBucketInternal(bucket);
       return null;
     });
     return this;
@@ -550,12 +550,10 @@ public class DocumentType {
   }
 
   protected void removeBucketInternal(final Bucket bucket) {
-    for (DocumentType cl : schema.getTypes()) {
-      if (!cl.hasBucket(bucket.getName()))
-        throw new SchemaException(
-            "Cannot remove the bucket '" + bucket.getName() + "' to the type '" + name + "', because the bucket is not associated to the type '" + cl.getName()
-                + "'");
-    }
+    if (!buckets.contains(bucket))
+      throw new SchemaException(
+          "Cannot remove the bucket '" + bucket.getName() + "' to the type '" + name + "', because the bucket is not associated to the type '" + getName()
+              + "'");
 
     buckets.remove(bucket);
   }

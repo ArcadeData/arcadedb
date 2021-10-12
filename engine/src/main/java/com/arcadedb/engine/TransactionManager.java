@@ -272,7 +272,7 @@ public class TransactionManager {
       final PaginatedFile file;
 
       if (!database.getFileManager().existsFile(txPage.fileId)) {
-        LogManager.instance().log(this, Level.WARNING, "Error on restoring transaction. Found deleted file %d", null, txPage.fileId);
+        LogManager.instance().log(this, Level.WARNING, "Error on restoring transaction: received operation on deleted file %d", null, txPage.fileId);
         continue;
       }
 
