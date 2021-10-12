@@ -48,7 +48,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
   private             int                   subIndexFileId      = -1;
   private             LSMTreeIndexCompacted subIndex            = null;
   private final       AtomicLong            statsAdjacentSteps  = new AtomicLong();
-  private final       int                   minPagesToScheduleACompaction;
+  private             int                   minPagesToScheduleACompaction;
   private             int                   currentMutablePages = 0;
 
   /**
@@ -78,24 +78,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
   protected LSMTreeIndexMutable(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name, final boolean unique, final String filePath,
       final int id, final PaginatedFile.MODE mode, final int pageSize) throws IOException {
     super(mainIndex, database, name, unique, filePath, id, mode, pageSize);
-
-    final BasePage currentPage = this.database.getTransaction().getPage(new PageId(file.getFileId(), 0), pageSize);
-
-    int pos = INT_SERIALIZED_SIZE + INT_SERIALIZED_SIZE + BYTE_SERIALIZED_SIZE + INT_SERIALIZED_SIZE;
-
-    // TODO: COUNT THE MUTABLE PAGES FROM THE TAIL BACK TO THE HEAD
-    currentMutablePages = 1;
-
-    subIndexFileId = currentPage.readInt(pos);
-
-    pos += INT_SERIALIZED_SIZE;
-
-    final int len = currentPage.readByte(pos++);
-    this.keyTypes = new byte[len];
-    for (int i = 0; i < len; ++i)
-      this.keyTypes[i] = currentPage.readByte(pos++);
-
-    minPagesToScheduleACompaction = database.getConfiguration().getValueAsInteger(GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE);
+    onAfterLoad();
   }
 
   @Override
@@ -107,19 +90,38 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
 
   @Override
   public void onAfterLoad() {
-    if (subIndexFileId > -1) {
-      try {
+    // RELOAD THE PAGE. THIS CAN BE CALLED AT CREATION OF THE OBJECT (CONSTRUCTOR) OR IN A TX WHEN DATABASE STRUCTURE CHANGES
+    try {
+      final BasePage currentPage = this.database.getTransaction().getPage(new PageId(file.getFileId(), 0), pageSize);
+
+      int pos = INT_SERIALIZED_SIZE + INT_SERIALIZED_SIZE + BYTE_SERIALIZED_SIZE + INT_SERIALIZED_SIZE;
+
+      // TODO: COUNT THE MUTABLE PAGES FROM THE TAIL BACK TO THE HEAD
+      currentMutablePages = 1;
+
+      subIndexFileId = currentPage.readInt(pos);
+
+      pos += INT_SERIALIZED_SIZE;
+
+      final int len = currentPage.readByte(pos++);
+      this.keyTypes = new byte[len];
+      for (int i = 0; i < len; ++i)
+        this.keyTypes[i] = currentPage.readByte(pos++);
+
+      minPagesToScheduleACompaction = database.getConfiguration().getValueAsInteger(GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE);
+
+      if (subIndexFileId > 0) {
         subIndex = (LSMTreeIndexCompacted) database.getSchema().getFileById(subIndexFileId);
         subIndex.mainIndex = mainIndex;
         subIndex.keyTypes = keyTypes;
 
-      } catch (Exception e) {
-        LogManager.instance().log(this, Level.SEVERE,
-            "Invalid sub-index for index '%s', ignoring it. WARNING: This could lead on using partial indexes. Please recreate the index from scratch (error=%s)",
-            null, name, e.getMessage());
-
-        database.getSchema().dropIndex(name);
       }
+    } catch (Exception e) {
+      LogManager.instance().log(this, Level.SEVERE,
+          "Invalid sub-index for index '%s', ignoring it. WARNING: This could lead on using partial indexes. Please recreate the index from scratch (error=%s)",
+          null, name, e.getMessage());
+
+      database.getSchema().dropIndex(name);
     }
   }
 

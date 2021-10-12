@@ -20,7 +20,6 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.index.Index;
-import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
@@ -63,8 +62,8 @@ public class DropPropertyStatement extends DDLStatement {
     if (!indexes.isEmpty()) {
       if (force) {
         for (final Index index : indexes) {
-          ((IndexInternal) index).drop();
-          ResultInternal result = new ResultInternal();
+          database.getSchema().dropIndex(index.getName());
+          final ResultInternal result = new ResultInternal();
           result.setProperty("operation", "cascade drop index");
           result.setProperty("indexName", index.getName());
           rs.add(result);

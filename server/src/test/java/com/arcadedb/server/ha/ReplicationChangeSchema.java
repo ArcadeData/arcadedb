@@ -16,7 +16,12 @@
 package com.arcadedb.server.ha;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.exception.TransactionException;
+import com.arcadedb.index.Index;
+import com.arcadedb.schema.Property;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.Assertions;
@@ -27,15 +32,30 @@ public class ReplicationChangeSchema extends ReplicationServerIT {
   public void testReplication() {
     super.testReplication();
 
+    // CREATE NEW TYPE
     final Database database0 = getServerDatabase(0, getDatabaseName());
-    final VertexType type0 = database0.getSchema().createVertexType("RuntimeVertex0");
-    type0.createProperty("nameNotFoundInDictionary", Type.STRING);
-
     final Database database1 = getServerDatabase(1, getDatabaseName());
 
+    final VertexType type0 = database0.getSchema().createVertexType("RuntimeVertex0");
+    Assertions.assertNotNull(database0.getSchema().getType("RuntimeVertex0"));
     Assertions.assertNotNull(database1.getSchema().getType("RuntimeVertex0"));
+
+    // CREATE NEW PROPERTY
+    type0.createProperty("nameNotFoundInDictionary", Type.STRING);
+    Assertions.assertNotNull(database0.getSchema().getType("RuntimeVertex0").getProperty("nameNotFoundInDictionary"));
     Assertions.assertNotNull(database1.getSchema().getType("RuntimeVertex0").getProperty("nameNotFoundInDictionary"));
 
+    // CREATE NEW BUCKET
+    final Bucket newBucket = database0.getSchema().createBucket("newBucket");
+
+    Assertions.assertTrue(database0.getSchema().existsBucket("newBucket"));
+    Assertions.assertTrue(database1.getSchema().existsBucket("newBucket"));
+
+    type0.addBucket(newBucket);
+    Assertions.assertTrue(database0.getSchema().getType("RuntimeVertex0").hasBucket("newBucket"));
+    Assertions.assertTrue(database0.getSchema().getType("RuntimeVertex0").hasBucket("newBucket"));
+
+    // CHANGE SCHEMA FROM A REPLICA (ERROR EXPECTED)
     try {
       database1.getSchema().createVertexType("RuntimeVertex1");
       Assertions.fail();
@@ -45,6 +65,63 @@ public class ReplicationChangeSchema extends ReplicationServerIT {
 
     Assertions.assertFalse(database0.getSchema().existsType("RuntimeVertex1"));
     Assertions.assertFalse(database1.getSchema().existsType("RuntimeVertex1"));
+
+    // DROP PROPERTY
+    type0.dropProperty("nameNotFoundInDictionary");
+    Assertions.assertFalse(database0.getSchema().getType("RuntimeVertex0").existsProperty("nameNotFoundInDictionary"));
+    Assertions.assertFalse(database1.getSchema().getType("RuntimeVertex0").existsProperty("nameNotFoundInDictionary"));
+
+    // DROP NEW BUCKET
+    try {
+      database0.getSchema().dropBucket("newBucket");
+    } catch (SchemaException e) {
+      // EXPECTED
+    }
+
+    database0.getSchema().getType("RuntimeVertex0").removeBucket(database0.getSchema().getBucketByName("newBucket"));
+    Assertions.assertFalse(database0.getSchema().getType("RuntimeVertex0").hasBucket("newBucket"));
+    Assertions.assertFalse(database0.getSchema().getType("RuntimeVertex0").hasBucket("newBucket"));
+
+    database0.getSchema().dropBucket("newBucket");
+    Assertions.assertFalse(database0.getSchema().existsBucket("newBucket"));
+    Assertions.assertFalse(database1.getSchema().existsBucket("newBucket"));
+
+    // DROP TYPE
+    database0.getSchema().dropType("RuntimeVertex0");
+    Assertions.assertFalse(database0.getSchema().existsType("RuntimeVertex0"));
+    Assertions.assertFalse(database1.getSchema().existsType("RuntimeVertex0"));
+
+    final VertexType indexedType = database0.getSchema().createVertexType("IndexedVertex0");
+    Assertions.assertNotNull(database0.getSchema().getType("IndexedVertex0"));
+    Assertions.assertNotNull(database1.getSchema().getType("IndexedVertex0"));
+
+    // CREATE NEW PROPERTY
+    final Property indexedProperty = indexedType.createProperty("propertyIndexed", Type.INTEGER);
+    Assertions.assertNotNull(database0.getSchema().getType("IndexedVertex0").getProperty("propertyIndexed"));
+    Assertions.assertNotNull(database1.getSchema().getType("IndexedVertex0").getProperty("propertyIndexed"));
+
+    final Index idx = indexedProperty.createIndex(Schema.INDEX_TYPE.LSM_TREE, true);
+    Assertions.assertEquals(1, database0.getSchema().getType("IndexedVertex0").getAllIndexes(true).size());
+    Assertions.assertEquals(1, database1.getSchema().getType("IndexedVertex0").getAllIndexes(true).size());
+
+    for (int i = 0; i < 10; i++)
+      database0.newVertex("IndexedVertex0").set("propertyIndexed", i).save();
+
+    database0.commit();
+
+    for (int i = 0; i < 10; i++)
+      database1.newVertex("IndexedVertex0").set("propertyIndexed", i).save();
+
+    try {
+      database1.commit();
+      Assertions.fail();
+    } catch (TransactionException e) {
+      // EXPECTED
+    }
+
+    database0.getSchema().dropIndex(idx.getName());
+    Assertions.assertEquals(0, database0.getSchema().getType("IndexedVertex0").getAllIndexes(true).size());
+    Assertions.assertEquals(0, database1.getSchema().getType("IndexedVertex0").getAllIndexes(true).size());
   }
 
   protected int getServerCount() {

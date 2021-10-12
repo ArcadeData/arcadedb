@@ -435,7 +435,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
     // RELOAD THE SCHEMA
     database.getSchema().getEmbedded().close();
     DatabaseContext.INSTANCE.init(database);
-    database.getSchema().getEmbedded().load(PaginatedFile.MODE.READ_ONLY);
+    database.getSchema().getEmbedded().load(PaginatedFile.MODE.READ_WRITE, true);
   }
 
   private void installFile(final Binary buffer, final String db, final DatabaseInternal database, final int fileId, final String fileName) throws IOException {
