@@ -529,8 +529,11 @@ public class DocumentType {
 
     for (IndexInternal idx : index.getIndexesOnBuckets()) {
       final List<IndexInternal> list = bucketIndexesByBucket.get(idx.getAssociatedBucketId());
-      if (list != null)
+      if (list != null) {
         list.remove(idx);
+        if (list.isEmpty())
+          bucketIndexesByBucket.remove(idx.getAssociatedBucketId());
+      }
     }
 
     for (DocumentType parent : parentTypes)

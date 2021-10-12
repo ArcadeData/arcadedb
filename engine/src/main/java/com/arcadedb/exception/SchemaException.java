@@ -15,14 +15,12 @@
  */
 package com.arcadedb.exception;
 
-import java.io.IOException;
-
 public class SchemaException extends ArcadeDBException {
   public SchemaException(final String s) {
     super(s);
   }
 
-  public SchemaException(String s, IOException e) {
+  public SchemaException(String s, Exception e) {
     super(s, e);
   }
 }

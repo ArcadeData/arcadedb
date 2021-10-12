@@ -381,13 +381,19 @@ public class EmbeddedSchema implements Schema {
   public void dropIndex(final String indexName) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
-    final IndexInternal index = indexMap.remove(indexName);
-    if (index == null)
-      return;
+    recordFileChanges(() -> {
+      multipleUpdate = true;
+      try {
+        final IndexInternal index = indexMap.remove(indexName);
+        if (index == null)
+          return null;
 
-    index.drop();
-
-    saveConfiguration();
+        index.drop();
+      } catch (Exception e) {
+        throw new SchemaException("Cannot drop the index '" + indexName + "' (error=" + e + ")", e);
+      }
+      return null;
+    });
   }
 
   @Override
@@ -574,7 +580,6 @@ public class EmbeddedSchema implements Schema {
       throw new DatabaseMetadataException("Cannot create index '" + indexName + "' on type '" + typeName + "' because it already exists");
 
     return recordFileChanges(() -> {
-
       final IndexInternal index = indexFactory.createIndex(indexType.name(), database, indexName, unique, databasePath + "/" + indexName,
           PaginatedFile.MODE.READ_WRITE, keyTypes, pageSize, nullStrategy, callback);
 

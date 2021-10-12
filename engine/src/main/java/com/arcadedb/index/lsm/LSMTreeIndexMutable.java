@@ -110,7 +110,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
 
       minPagesToScheduleACompaction = database.getConfiguration().getValueAsInteger(GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE);
 
-      if (subIndexFileId > -1) {
+      if (subIndexFileId > 0) {
         subIndex = (LSMTreeIndexCompacted) database.getSchema().getFileById(subIndexFileId);
         subIndex.mainIndex = mainIndex;
         subIndex.keyTypes = keyTypes;

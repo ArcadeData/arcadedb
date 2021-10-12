@@ -18,6 +18,8 @@ package com.arcadedb.server.ha;
 import com.arcadedb.database.Database;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.exception.TransactionException;
+import com.arcadedb.index.Index;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -94,14 +96,32 @@ public class ReplicationChangeSchema extends ReplicationServerIT {
     Assertions.assertNotNull(database1.getSchema().getType("IndexedVertex0"));
 
     // CREATE NEW PROPERTY
-    final Property indexedProperty = indexedType.createProperty("propertyIndexes", Type.INTEGER);
-    Assertions.assertNotNull(database0.getSchema().getType("IndexedVertex0").getProperty("propertyIndexes"));
-    Assertions.assertNotNull(database1.getSchema().getType("IndexedVertex0").getProperty("propertyIndexes"));
+    final Property indexedProperty = indexedType.createProperty("propertyIndexed", Type.INTEGER);
+    Assertions.assertNotNull(database0.getSchema().getType("IndexedVertex0").getProperty("propertyIndexed"));
+    Assertions.assertNotNull(database1.getSchema().getType("IndexedVertex0").getProperty("propertyIndexed"));
 
-    indexedProperty.createIndex(Schema.INDEX_TYPE.LSM_TREE, true);
+    final Index idx = indexedProperty.createIndex(Schema.INDEX_TYPE.LSM_TREE, true);
     Assertions.assertEquals(1, database0.getSchema().getType("IndexedVertex0").getAllIndexes(true).size());
     Assertions.assertEquals(1, database1.getSchema().getType("IndexedVertex0").getAllIndexes(true).size());
 
+    for (int i = 0; i < 10; i++)
+      database0.newVertex("IndexedVertex0").set("propertyIndexed", i).save();
+
+    database0.commit();
+
+    for (int i = 0; i < 10; i++)
+      database1.newVertex("IndexedVertex0").set("propertyIndexed", i).save();
+
+    try {
+      database1.commit();
+      Assertions.fail();
+    } catch (TransactionException e) {
+      // EXPECTED
+    }
+
+    database0.getSchema().dropIndex(idx.getName());
+    Assertions.assertEquals(0, database0.getSchema().getType("IndexedVertex0").getAllIndexes(true).size());
+    Assertions.assertEquals(0, database1.getSchema().getType("IndexedVertex0").getAllIndexes(true).size());
   }
 
   protected int getServerCount() {
