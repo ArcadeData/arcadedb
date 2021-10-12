@@ -107,7 +107,6 @@ public interface SqlParserVisitor
   Object visit(GeOperator node, Object data);
   Object visit(LeOperator node, Object data);
   Object visit(LikeOperator node, Object data);
-  Object visit(LuceneOperator node, Object data);
   Object visit(NearOperator node, Object data);
   Object visit(WithinOperator node, Object data);
   Object visit(ScAndOperator node, Object data);

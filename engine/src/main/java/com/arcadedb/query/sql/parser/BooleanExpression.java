@@ -73,10 +73,6 @@ public abstract class BooleanExpression extends SimpleNode {
     }
 
     @Override
-    public void translateLuceneOperator() {
-    }
-
-    @Override
     public boolean isCacheable() {
       return true;
     }
@@ -97,14 +93,12 @@ public abstract class BooleanExpression extends SimpleNode {
 
     @Override
     public void extractSubQueries(SubQueryCollector collector) {
-
     }
 
     @Override
     public boolean refersToParent() {
       return false;
     }
-
   };
 
   public static final BooleanExpression FALSE = new BooleanExpression(0) {
@@ -149,11 +143,6 @@ public abstract class BooleanExpression extends SimpleNode {
     }
 
     @Override
-    public void translateLuceneOperator() {
-
-    }
-
-    @Override
     public boolean isCacheable() {
       return true;
     }
@@ -181,7 +170,6 @@ public abstract class BooleanExpression extends SimpleNode {
     public boolean refersToParent() {
       return false;
     }
-
   };
 
   public BooleanExpression(int id) {
@@ -204,17 +192,17 @@ public abstract class BooleanExpression extends SimpleNode {
   public abstract boolean evaluate(Result currentRecord, CommandContext ctx);
 
   /**
-   * @return true if this expression can be calculated in plain Java, false otherwise (eg. LUCENE operator)
+   * @return true if this expression can be calculated in plain Java, false otherwise
    */
   protected abstract boolean supportsBasicCalculation();
 
   /**
-   * @return the number of sub-expressions that have to be calculated using an external engine (eg. LUCENE)
+   * @return the number of sub-expressions that have to be calculated using an external engine
    */
   protected abstract int getNumberOfExternalCalculations();
 
   /**
-   * @return the sub-expressions that have to be calculated using an external engine (eg. LUCENE)
+   * @return the sub-expressions that have to be calculated using an external engine
    */
   protected abstract List<Object> getExternalCalculationConditions();
 
@@ -262,14 +250,9 @@ public abstract class BooleanExpression extends SimpleNode {
 
   public abstract List<String> getMatchPatternInvolvedAliases();
 
-  public void translateLuceneOperator() {
-
-  }
-
   public static BooleanExpression deserializeFromOResult(Result doc) {
     try {
-      BooleanExpression result = (BooleanExpression) Class.forName(doc.getProperty("__class")).getConstructor(Integer.class)
-          .newInstance(-1);
+      BooleanExpression result = (BooleanExpression) Class.forName(doc.getProperty("__class")).getConstructor(Integer.class).newInstance(-1);
       result.deserialize(doc);
     } catch (Exception e) {
       throw new CommandExecutionException("", e);

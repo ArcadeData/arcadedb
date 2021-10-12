@@ -236,11 +236,6 @@ public class OrBlock extends BooleanExpression {
   }
 
   @Override
-  public void translateLuceneOperator() {
-    subBlocks.forEach(x -> x.translateLuceneOperator());
-  }
-
-  @Override
   public boolean isCacheable() {
     for (BooleanExpression block : this.subBlocks) {
       if (!block.isCacheable()) {
