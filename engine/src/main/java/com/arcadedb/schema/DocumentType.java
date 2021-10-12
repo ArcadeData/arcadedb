@@ -594,8 +594,7 @@ public class DocumentType {
     return false;
   }
 
-  protected void recordFileChanges(final Callable<Object> callback) {
-    schema.recordFileChanges(callback);
-    schema.saveConfiguration();
+  protected <RET> RET recordFileChanges(final Callable<Object> callback) {
+    return schema.recordFileChanges(callback);
   }
 }

@@ -65,6 +65,8 @@ public interface DatabaseInternal extends Database {
 
   void checkPermissionsOnFile(int fileId, SecurityDatabaseUser.ACCESS access);
 
+  boolean checkTransactionIsActive(boolean createTx);
+
   long getResultSetLimit();
 
   long getReadTimeout();

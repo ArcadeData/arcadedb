@@ -29,12 +29,12 @@ public class ReplicationChangeSchema extends ReplicationServerIT {
 
     final Database database0 = getServerDatabase(0, getDatabaseName());
     final VertexType type0 = database0.getSchema().createVertexType("RuntimeVertex0");
-    type0.createProperty("id", Type.STRING);
+    type0.createProperty("nameNotFoundInDictionary", Type.STRING);
 
     final Database database1 = getServerDatabase(1, getDatabaseName());
 
     Assertions.assertNotNull(database1.getSchema().getType("RuntimeVertex0"));
-    Assertions.assertNotNull(database1.getSchema().getType("RuntimeVertex0").getProperty("id"));
+    Assertions.assertNotNull(database1.getSchema().getType("RuntimeVertex0").getProperty("nameNotFoundInDictionary"));
 
     try {
       database1.getSchema().createVertexType("RuntimeVertex1");
