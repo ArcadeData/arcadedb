@@ -65,6 +65,7 @@ public class OrientDBImporterIT {
           Assertions.assertEquals("admin", security.getString("name"));
         }
       }
+      Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
     } finally {
       FileUtils.deleteRecursively(databaseDirectory);
     }

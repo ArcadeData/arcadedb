@@ -36,12 +36,24 @@ public class FullBackupFormat extends AbstractBackupFormat {
 
   @Override
   public void backupDatabase() throws Exception {
-    File file = new File(settings.file);
-    if (file.exists() && !settings.overwriteFile)
+    settings.validateSettings();
+
+    String fileName;
+    if (settings.file.startsWith("file://"))
+      fileName = settings.file.substring("file://".length());
+    else
+      fileName = settings.file;
+
+    if (settings.directory != null)
+      fileName = settings.directory + "/" + fileName;
+
+    final File backupFile = new File(fileName);
+
+    if (backupFile.exists() && !settings.overwriteFile)
       throw new BackupException(String.format("The backup file '%s' already exist and '-o' setting is false", settings.file));
 
-    if (file.getParentFile() != null && !file.getParentFile().exists()) {
-      if (!file.getParentFile().mkdirs())
+    if (backupFile.getParentFile() != null && !backupFile.getParentFile().exists()) {
+      if (!backupFile.getParentFile().mkdirs())
         throw new BackupException(String.format("The backup file '%s' cannot be created", settings.file));
     }
 
@@ -49,12 +61,6 @@ public class FullBackupFormat extends AbstractBackupFormat {
       throw new BackupException("Transaction in progress found");
 
     logger.logLine(0, "Executing full backup of database to '%s'...", settings.file);
-
-    final File backupFile;
-    if (settings.file.startsWith("file://"))
-      backupFile = new File(settings.file.substring("file://".length()));
-    else
-      backupFile = new File(settings.file);
 
     try (ZipOutputStream zipFile = new ZipOutputStream(new FileOutputStream(backupFile), DatabaseFactory.getDefaultCharset())) {
       zipFile.setLevel(9);

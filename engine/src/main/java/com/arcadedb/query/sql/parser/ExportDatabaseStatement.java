@@ -49,7 +49,7 @@ public class ExportDatabaseStatement extends SimpleExecStatement {
     result.setProperty("toUrl", targetUrl);
 
     String fileName = targetUrl.startsWith("file://") ? targetUrl.substring("file://".length()) : targetUrl;
-    if (fileName.contains("..") || fileName.contains("/"))
+    if (fileName.contains("..") || fileName.contains("/") || fileName.contains("\\"))
       throw new IllegalArgumentException("Export file cannot contain path change because the directory is specified");
 
     fileName = "exports/" + fileName;

@@ -20,19 +20,14 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.log.LogManager;
 
 import java.io.*;
-import java.lang.management.ManagementFactory;
-import java.lang.management.ThreadInfo;
-import java.lang.management.ThreadMXBean;
-import java.nio.channels.FileChannel;
+import java.lang.management.*;
+import java.nio.channels.*;
 import java.nio.file.FileSystem;
-import java.nio.file.FileSystems;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.util.Locale;
-import java.util.logging.Level;
-import java.util.zip.GZIPOutputStream;
+import java.nio.file.*;
+import java.security.*;
+import java.util.*;
+import java.util.logging.*;
+import java.util.zip.*;
 
 public class FileUtils {
   public static final int    KILOBYTE = 1024;
@@ -155,50 +150,45 @@ public class FileUtils {
     return iSize + "b";
   }
 
-  public static String getDirectory(String iPath) {
-    iPath = getPath(iPath);
-    int pos = iPath.lastIndexOf("/");
-    if (pos == -1)
-      return "";
-
-    return iPath.substring(0, pos);
-  }
-
-  public static void createDirectoryTree(final String iFileName) {
-    final String[] fileDirectories = iFileName.split("/");
-    for (int i = 0; i < fileDirectories.length - 1; ++i)
-      new File(fileDirectories[i]).mkdir();
-  }
-
-  public static String getPath(final String iPath) {
-    if (iPath == null)
-      return null;
-    return iPath.replace('\\', '/');
-  }
-
   public static void checkValidName(final String iFileName) throws IOException {
     if (iFileName.contains("..") || iFileName.contains("/") || iFileName.contains("\\"))
       throw new IOException("Invalid file name '" + iFileName + "'");
   }
 
   public static void deleteRecursively(final File rootFile) {
-    if (rootFile.exists()) {
-      if (rootFile.isDirectory()) {
-        final File[] files = rootFile.listFiles();
-        if (files != null) {
-          for (File f : files) {
-            if (f.isFile()) {
-              if (!f.delete()) {
-                throw new IllegalStateException(String.format("Can not delete file %s", f));
+    for (int attempt = 0; attempt < 3; attempt++) {
+      try {
+        if (rootFile.exists()) {
+          if (rootFile.isDirectory()) {
+            final File[] files = rootFile.listFiles();
+            if (files != null) {
+              for (File f : files) {
+                if (f.isFile()) {
+                  Files.delete(Paths.get(f.getAbsolutePath()));
+                } else
+                  deleteRecursively(f);
               }
-            } else
-              deleteRecursively(f);
+            }
           }
-        }
-      }
 
-      if (!rootFile.delete()) {
-        throw new IllegalStateException(String.format("Can not delete file %s", rootFile));
+          Files.delete(Paths.get(rootFile.getAbsolutePath()));
+        }
+
+        break;
+
+      } catch (IOException e) {
+//        if (System.getProperty("os.name").toLowerCase().contains("win")) {
+//          // AVOID LOCKING UNDER WINDOWS
+//          try {
+//            LogManager.instance()
+//                .log(rootFile, Level.WARNING, "Cannot delete directory '%s'. Forcing GC cleanup and try again (attempt=%d)", e, rootFile, attempt);
+//            System.gc();
+//            Thread.sleep(1000);
+//          } catch (Exception ex) {
+//            // IGNORE IT
+//          }
+//        } else
+        LogManager.instance().log(rootFile, Level.WARNING, "Cannot delete directory '%s'", e, rootFile);
       }
     }
   }
@@ -207,6 +197,29 @@ public class FileUtils {
     if (dir != null && dir.listFiles() != null && dir.listFiles().length == 0) {
       deleteRecursively(dir);
     }
+  }
+
+  public static boolean deleteFile(final File file) {
+    for (int attempt = 0; attempt < 3; attempt++) {
+      try {
+        if (file.exists())
+          Files.delete(file.toPath());
+        return true;
+      } catch (IOException e) {
+//        if (System.getProperty("os.name").toLowerCase().contains("win")) {
+//          // AVOID LOCKING UNDER WINDOWS
+//          try {
+//            LogManager.instance().log(file, Level.WARNING, "Cannot delete file '%s'. Forcing GC cleanup and try again (attempt=%d)", e, file, attempt);
+//            System.gc();
+//            Thread.sleep(1000);
+//          } catch (Exception ex) {
+//            // IGNORE IT
+//          }
+//        } else
+        LogManager.instance().log(file, Level.WARNING, "Cannot delete file '%s'", e, file);
+      }
+    }
+    return false;
   }
 
   @SuppressWarnings("resource")
@@ -261,23 +274,6 @@ public class FileUtils {
       dump.append("\n\n");
     }
     return dump.toString();
-  }
-
-  public boolean deleteFile(final File file) {
-    if (!file.exists())
-      return true;
-
-    try {
-      final FileSystem fileSystem = FileSystems.getDefault();
-      final Path path = fileSystem.getPath(file.getAbsolutePath());
-
-      Files.delete(path);
-
-      return true;
-    } catch (IOException e) {
-      e.printStackTrace();
-    }
-    return false;
   }
 
   public static String readFileAsString(final File file, final String iCharset) throws IOException {
@@ -343,10 +339,10 @@ public class FileUtils {
   }
 
   public static void writeContentToStream(final OutputStream output, final String iContent) throws IOException {
-    final OutputStreamWriter os = new OutputStreamWriter(output, DatabaseFactory.getDefaultCharset());
-    final BufferedWriter writer = new BufferedWriter(os);
-    writer.write(iContent);
-    writer.flush();
+    try (final OutputStreamWriter os = new OutputStreamWriter(output, DatabaseFactory.getDefaultCharset());
+        final BufferedWriter writer = new BufferedWriter(os)) {
+      writer.write(iContent);
+    }
   }
 
   public static String encode(final String value, final String encoding) {

@@ -62,8 +62,8 @@ public class GraphMLImporterIT {
   public void testImportNotCompressedOK() throws IOException {
     final URL inputFile = GraphMLImporterIT.class.getClassLoader().getResource(FILE);
 
-    try (final GZIPInputStream gis = new GZIPInputStream(new FileInputStream(inputFile.getFile()))) {
-      final FileOutputStream fos = new FileOutputStream(UNCOMPRESSED_FILE);
+    try (final GZIPInputStream gis = new GZIPInputStream(new FileInputStream(inputFile.getFile()));
+        final FileOutputStream fos = new FileOutputStream(UNCOMPRESSED_FILE)) {
       final byte[] buffer = new byte[1024 * 8];
       int len;
       while ((len = gis.read(buffer)) > 0) {
@@ -106,11 +106,13 @@ public class GraphMLImporterIT {
         Assertions.assertTrue(database.countType(type.getName(), true) > 0);
       }
     }
+    Assertions.assertNull(DatabaseFactory.getActiveDatabaseInstance(DATABASE_PATH));
   }
 
   @BeforeEach
   @AfterEach
   public void clean() {
+    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
     FileUtils.deleteRecursively(databaseDirectory);
     if (new File(UNCOMPRESSED_FILE).exists())
       new File(UNCOMPRESSED_FILE).delete();

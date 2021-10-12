@@ -33,8 +33,7 @@ public class ExecutionPlanCache {
   private final DatabaseInternal                   db;
   private final Map<String, InternalExecutionPlan> map;
   private final int                                mapSize;
-
-  protected long lastInvalidation = -1;
+  protected     long                               lastInvalidation = -1;
 
   /**
    * @param size the size of the cache
@@ -42,7 +41,7 @@ public class ExecutionPlanCache {
   public ExecutionPlanCache(final DatabaseInternal db, final int size) {
     this.db = db;
     this.mapSize = size;
-    this.map = new LinkedHashMap<String, InternalExecutionPlan>(size) {
+    this.map = new LinkedHashMap<>(size) {
       protected boolean removeEldestEntry(final Map.Entry<String, InternalExecutionPlan> eldest) {
         return super.size() > mapSize;
       }
@@ -106,12 +105,12 @@ public class ExecutionPlanCache {
     }
   }
 
-  public static ExecutionPlanCache instance(DatabaseInternal db) {
+  public static ExecutionPlanCache instance(final DatabaseInternal db) {
     if (db == null) {
       throw new IllegalArgumentException("DB cannot be null");
     }
 
-    ExecutionPlanCache resource = db.getExecutionPlanCache();
+    final ExecutionPlanCache resource = db.getExecutionPlanCache();
     return resource;
   }
 

@@ -1069,7 +1069,7 @@ public class EmbeddedSchema implements Schema {
         if (schemaBucket != null) {
           for (int i = 0; i < schemaBucket.length(); ++i) {
             final PaginatedComponent bucket = bucketMap.get(schemaBucket.getString(i));
-            if (bucket == null || !(bucket instanceof Bucket)) {
+            if (bucket == null) {
               LogManager.instance()
                   .log(this, Level.WARNING, "Cannot find bucket %s for type '%s', removing it from type configuration", null, schemaBucket.getString(i), type);
 
@@ -1218,6 +1218,7 @@ public class EmbeddedSchema implements Schema {
       }
 
       dirtyConfiguration = false;
+      database.getExecutionPlanCache().invalidate();
 
     } catch (IOException e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on saving schema configuration to file: %s", e, databasePath + "/" + SCHEMA_FILE_NAME);

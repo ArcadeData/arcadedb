@@ -31,13 +31,13 @@ public class SecurityUserFileRepository {
   private final        String securityConfPath;
 
   public SecurityUserFileRepository(String securityConfPath) {
-    if (!securityConfPath.endsWith("/"))
+    if (!securityConfPath.endsWith("/") && !securityConfPath.endsWith("\\"))
       securityConfPath += "/";
     this.securityConfPath = securityConfPath;
   }
 
   public void save(final List<JSONObject> configuration) throws IOException {
-    final File file = new File(securityConfPath + FILE_NAME);
+    final File file = new File(securityConfPath, FILE_NAME);
     if (!file.exists())
       file.getParentFile().mkdirs();
 
@@ -57,14 +57,16 @@ public class SecurityUserFileRepository {
   }
 
   protected List<JSONObject> load() throws IOException {
-    final File file = new File(securityConfPath + FILE_NAME);
+    final File file = new File(securityConfPath, FILE_NAME);
 
     final List<JSONObject> resultSet = new ArrayList<>();
     if (file.exists()) {
 
-      final BufferedReader reader = new BufferedReader(new InputStreamReader(new FileInputStream(file)), BUFFER_SIZE);
-      while (reader.ready())
-        resultSet.add(new JSONObject(reader.readLine()));
+      try (final InputStreamReader is = new InputStreamReader(new FileInputStream(file));//
+          final BufferedReader reader = new BufferedReader(is, BUFFER_SIZE)) {
+        while (reader.ready())
+          resultSet.add(new JSONObject(reader.readLine()));
+      }
     }
 
     if (!resultSet.isEmpty())

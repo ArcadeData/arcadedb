@@ -45,6 +45,8 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
 
   @Override
   public void restoreDatabase() throws Exception {
+    settings.validate();
+
     final RestoreInputSource inputSource = openInputFile();
 
     final File databaseDirectory = new File(settings.databaseDirectory);
@@ -112,9 +114,9 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
     }
 
     String path = settings.inputFileURL;
-    if (path.startsWith("file://"))
+    if (path.startsWith("file://")) {
       path = path.substring("file://".length());
-    else if (path.startsWith("classpath://"))
+    } else if (path.startsWith("classpath://"))
       path = getClass().getClassLoader().getResource(path.substring("classpath://".length())).getFile();
 
     final File file = new File(path);

@@ -40,16 +40,13 @@ import java.util.logging.*;
 public class ACIDTransactionTest extends TestHelper {
   @Override
   protected void beginTest() {
-    database.transaction(new Database.TransactionScope() {
-      @Override
-      public void execute() {
-        if (!database.getSchema().existsType("V")) {
-          final DocumentType v = database.getSchema().createDocumentType("V");
+    database.transaction(() -> {
+      if (!database.getSchema().existsType("V")) {
+        final DocumentType v = database.getSchema().createDocumentType("V");
 
-          v.createProperty("id", Integer.class);
-          v.createProperty("name", String.class);
-          v.createProperty("surname", String.class);
-        }
+        v.createProperty("id", Integer.class);
+        v.createProperty("name", String.class);
+        v.createProperty("surname", String.class);
       }
     });
   }
@@ -292,12 +289,7 @@ public class ACIDTransactionTest extends TestHelper {
 
     verifyDatabaseWasNotClosedProperly();
 
-    database.transaction(new Database.TransactionScope() {
-      @Override
-      public void execute() {
-        Assertions.assertEquals(TOT, database.countType("V", true));
-      }
-    });
+    database.transaction(() -> Assertions.assertEquals(TOT, database.countType("V", true)));
   }
 
   @Test
@@ -385,12 +377,10 @@ public class ACIDTransactionTest extends TestHelper {
   private void verifyDatabaseWasNotClosedProperly() {
     final AtomicBoolean dbNotClosedCaught = new AtomicBoolean(false);
 
-    factory.registerCallback(DatabaseInternal.CALLBACK_EVENT.DB_NOT_CLOSED, new Callable<Void>() {
-      @Override
-      public Void call() {
-        dbNotClosedCaught.set(true);
-        return null;
-      }
+    database.close();
+    factory.registerCallback(DatabaseInternal.CALLBACK_EVENT.DB_NOT_CLOSED, () -> {
+      dbNotClosedCaught.set(true);
+      return null;
     });
 
     database = factory.open();
@@ -401,12 +391,7 @@ public class ACIDTransactionTest extends TestHelper {
     File dbDir = new File(getDatabasePath());
     Assertions.assertTrue(dbDir.exists());
     Assertions.assertTrue(dbDir.isDirectory());
-    File[] files = dbDir.listFiles(new FilenameFilter() {
-      @Override
-      public boolean accept(File dir, String name) {
-        return name.endsWith("wal");
-      }
-    });
+    File[] files = dbDir.listFiles((dir, name) -> name.endsWith("wal"));
     Assertions.assertTrue(files.length > 0);
   }
 }

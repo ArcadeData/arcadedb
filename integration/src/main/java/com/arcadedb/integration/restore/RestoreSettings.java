@@ -33,14 +33,7 @@ public class RestoreSettings {
       for (int i = 0; i < args.length; )
         i += parseParameter(args[i].substring(1), i < args.length - 1 ? args[i + 1] : null);
 
-    if (format == null)
-      throw new IllegalArgumentException("Missing backup format");
-
-    if (inputFileURL == null)
-      throw new IllegalArgumentException("Missing input file url. Use -f <input-file-url>");
-
-    if (databaseDirectory == null)
-      throw new IllegalArgumentException("Missing database url. Use -d <database-directory>");
+    validate();
   }
 
   public int parseParameter(final String name, final String value) {
@@ -57,5 +50,19 @@ public class RestoreSettings {
       // ADDITIONAL OPTIONS
       options.put(name, value);
     return 2;
+  }
+
+  public void validate() {
+    if (format == null)
+      throw new IllegalArgumentException("Missing backup format");
+
+    if (inputFileURL == null)
+      throw new IllegalArgumentException("Missing input file url. Use -f <input-file-url>");
+
+    if (databaseDirectory == null)
+      throw new IllegalArgumentException("Missing database url. Use -d <database-directory>");
+
+    if (inputFileURL.contains("..") || inputFileURL.startsWith("/"))
+      throw new IllegalArgumentException("Invalid backup file: cannot contain '..' or start with '/'");
   }
 }

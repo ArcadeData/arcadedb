@@ -33,16 +33,17 @@ public class SQLLocalImporterTest {
 
     FileUtils.deleteRecursively(new File("databases/importedFromOrientDB"));
 
-    final Database database = new DatabaseFactory("databases/importedFromOrientDB").create();
-    database.getConfiguration().setValue(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE, Bucket.DEF_PAGE_SIZE * 10);
+    try (final Database database = new DatabaseFactory("databases/importedFromOrientDB").create()) {
+      database.getConfiguration().setValue(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE, Bucket.DEF_PAGE_SIZE * 10);
 
-    //database.command("sql", "import database " + "file:///Users/luca/Downloads/Reactome.gz");
-    database.command("sql", "import database file://" + inputFile.getFile());
+      //database.command("sql", "import database " + "file:///Users/luca/Downloads/Reactome.gz");
+      database.command("sql", "import database file://" + inputFile.getFile());
 
-    Assertions.assertEquals(500, database.countType("Person", false));
-    Assertions.assertEquals(10000, database.countType("Friend", false));
+      Assertions.assertEquals(500, database.countType("Person", false));
+      Assertions.assertEquals(10000, database.countType("Friend", false));
+    }
 
-    database.close();
+    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
 
     FileUtils.deleteRecursively(new File("databases/importedFromOrientDB"));
   }

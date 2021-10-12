@@ -29,20 +29,18 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 
 import java.io.*;
-import java.net.HttpURLConnection;
-import java.util.Scanner;
-import java.util.Timer;
-import java.util.TimerTask;
-import java.util.concurrent.Callable;
-import java.util.logging.Level;
+import java.net.*;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.logging.*;
 
 /**
  * This class has been copied under Console project to avoid complex dependencies.
  */
 public abstract class BaseGraphServerTest {
   public static final String           DEFAULT_PASSWORD_FOR_TESTS = "DefaultPasswordForTests";
-  private ArcadeDBServer[] servers;
-  private Database[]       databases;
+  private             ArcadeDBServer[] servers;
+  private             Database[]       databases;
 
   protected Database getDatabase(final int serverId) {
     return databases[serverId];
@@ -242,6 +240,20 @@ public abstract class BaseGraphServerTest {
   }
 
   protected void deleteDatabaseFolders() {
+    if (databases != null)
+      for (int i = 0; i < databases.length; ++i) {
+        if (databases[i] != null)
+          databases[i].drop();
+      }
+
+    if (servers != null)
+      for (int i = 0; i < getServerCount(); ++i) {
+        if (getServer(i).existsDatabase(getDatabaseName()))
+          getServer(i).getDatabase(getDatabaseName()).drop();
+      }
+
+    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
+
     for (int i = 0; i < getServerCount(); ++i)
       FileUtils.deleteRecursively(new File(getDatabasePath(i)));
     FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_ROOT_PATH.getValueAsString() + "/replication"));

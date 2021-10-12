@@ -76,6 +76,8 @@ public abstract class BaseGraphServerTest {
 
   @BeforeEach
   public void beginTest() {
+    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
+
     setTestConfiguration();
 
     checkArcadeIsTotallyDown();
@@ -95,25 +97,22 @@ public abstract class BaseGraphServerTest {
 
     if (isPopulateDatabase()) {
       final Database database = getDatabase(0);
-      database.transaction(new Database.TransactionScope() {
-        @Override
-        public void execute() {
-          final Schema schema = database.getSchema();
-          Assertions.assertFalse(schema.existsType(VERTEX1_TYPE_NAME));
+      database.transaction(() -> {
+        final Schema schema = database.getSchema();
+        Assertions.assertFalse(schema.existsType(VERTEX1_TYPE_NAME));
 
-          VertexType v = schema.createVertexType(VERTEX1_TYPE_NAME, 3);
-          v.createProperty("id", Long.class);
+        VertexType v = schema.createVertexType(VERTEX1_TYPE_NAME, 3);
+        v.createProperty("id", Long.class);
 
-          schema.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, VERTEX1_TYPE_NAME, "id");
+        schema.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, VERTEX1_TYPE_NAME, "id");
 
-          Assertions.assertFalse(schema.existsType(VERTEX2_TYPE_NAME));
-          schema.createVertexType(VERTEX2_TYPE_NAME, 3);
+        Assertions.assertFalse(schema.existsType(VERTEX2_TYPE_NAME));
+        schema.createVertexType(VERTEX2_TYPE_NAME, 3);
 
-          schema.createEdgeType(EDGE1_TYPE_NAME);
-          schema.createEdgeType(EDGE2_TYPE_NAME);
+        schema.createEdgeType(EDGE1_TYPE_NAME);
+        schema.createEdgeType(EDGE2_TYPE_NAME);
 
-          schema.createDocumentType("Person");
-        }
+        schema.createDocumentType("Person");
       });
 
       final Database db = getDatabase(0);
@@ -208,6 +207,7 @@ public abstract class BaseGraphServerTest {
         GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(null);
       }
     }
+    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
   }
 
   protected void checkArcadeIsTotallyDown() {
@@ -374,11 +374,15 @@ public abstract class BaseGraphServerTest {
   }
 
   protected boolean areAllServersOnline() {
-    final int onlineReplicas = getLeaderServer().getHA().getOnlineReplicas();
+    final ArcadeDBServer leader = getLeaderServer();
+    if (leader == null)
+      return false;
+
+    final int onlineReplicas = leader.getHA().getOnlineReplicas();
     if (1 + onlineReplicas < getServerCount()) {
       // NOT ALL THE SERVERS ARE UP, AVOID A QUORUM ERROR
       LogManager.instance().log(this, Level.INFO, "TEST: Not all the servers are ONLINE (%d), skip this crash...", null, onlineReplicas);
-      getLeaderServer().getHA().printClusterConfiguration();
+      leader.getHA().printClusterConfiguration();
       return false;
     }
     return true;
@@ -392,14 +396,22 @@ public abstract class BaseGraphServerTest {
   }
 
   protected void deleteDatabaseFolders() {
+    if (databases != null)
+      for (int i = 0; i < databases.length; ++i) {
+        if (databases[i] != null)
+          ((DatabaseInternal) databases[i]).getWrappedDatabaseInstance().drop();
+      }
+
+    if (servers != null)
+      for (int i = 0; i < getServerCount(); ++i)
+        for (String dbName : getServer(i).getDatabaseNames())
+          if (getServer(i).existsDatabase(dbName))
+            ((DatabaseInternal) getServer(i).getDatabase(dbName)).getWrappedDatabaseInstance().drop();
+
+    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
+
     for (int i = 0; i < getServerCount(); ++i)
       FileUtils.deleteRecursively(new File(getDatabasePath(i)));
-    FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_ROOT_PATH.getValueAsString() + "/replication"));
-  }
-
-  protected void deleteAllDatabases() {
-    for (int i = 0; i < getServerCount(); ++i)
-      FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_DATABASE_DIRECTORY.getValueAsString() + i + "/"));
     FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_ROOT_PATH.getValueAsString() + "/replication"));
   }
 

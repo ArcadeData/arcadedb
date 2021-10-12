@@ -79,6 +79,7 @@ import com.arcadedb.utility.RWLockContext;
 
 import java.io.*;
 import java.nio.channels.*;
+import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
@@ -113,8 +114,6 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   protected            boolean                                   autoTransaction         = false;
   protected volatile   boolean                                   open                    = false;
   private              boolean                                   readYourWrites          = true;
-  private              File                                      lockFile;
-  private              FileLock                                  lockFileIO;
   private final        Map<CALLBACK_EVENT, List<Callable<Void>>> callbacks;
   private final        StatementCache                            statementCache;
   private final        ExecutionPlanCache                        executionPlanCache;
@@ -123,6 +122,10 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   private              int                                       edgeListSize            = EDGE_LIST_INITIAL_CHUNK_SIZE;
   private              SecurityManager                           security;
   private              Map<String, Object>                       wrappers                = new HashMap<>();
+  private              File                                      lockFile;
+  private              RandomAccessFile                          lockFileIO;
+  private              FileChannel                               lockFileIOChannel;
+  private              FileLock                                  lockFileLock;
 
   protected EmbeddedDatabase(final String path, final PaginatedFile.MODE mode, final ContextConfiguration configuration, final SecurityManager security,
       final Map<CALLBACK_EVENT, List<Callable<Void>>> callbacks) {
@@ -135,14 +138,14 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
       this.statementCache = new StatementCache(this, configuration.getValueAsInteger(GlobalConfiguration.SQL_STATEMENT_CACHE));
       this.executionPlanCache = new ExecutionPlanCache(this, configuration.getValueAsInteger(GlobalConfiguration.SQL_STATEMENT_CACHE));
 
-      if (path.endsWith("/"))
+      if (path.endsWith("/") || path.endsWith("\\"))
         databasePath = path.substring(0, path.length() - 1);
       else
         databasePath = path;
 
       configurationFile = new File(databasePath + "/configuration.json");
 
-      final int lastSeparatorPos = path.lastIndexOf("/");
+      final int lastSeparatorPos = path.lastIndexOf(File.separator);
       if (lastSeparatorPos > -1)
         name = path.substring(lastSeparatorPos + 1);
       else
@@ -277,7 +280,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     if (mode == PaginatedFile.MODE.READ_ONLY)
       throw new DatabaseIsReadOnlyException("Cannot drop database");
 
-    close();
+    internalClose(true);
 
     executeInWriteLock(() -> {
       FileUtils.deleteRecursively(new File(databasePath));
@@ -287,55 +290,46 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
   @Override
   public void close() {
-    if (async != null) {
-      // EXECUTE OUTSIDE LOCK
-      async.waitCompletion();
-      async.close();
-    }
+    internalClose(false);
+  }
 
-    executeInWriteLock(() -> {
-      if (!open)
-        return null;
+  /**
+   * Test only API. Simulates a forced kill of the JVM leaving the database with the .lck file on the file system.
+   */
+  @Override
+  public void kill() {
+    if (async != null)
+      async.kill();
 
-      open = false;
+    if (getTransaction().isActive())
+      // ROLLBACK ANY PENDING OPERATION
+      getTransaction().kill();
 
-      if (async != null)
-        async.close();
+    try {
+      schema.close();
+      pageManager.kill();
+      fileManager.close();
+      transactionManager.kill();
 
-      final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.removeContext(databasePath);
-      if (dbContext != null && !dbContext.transactions.isEmpty()) {
-        // ROLLBACK ALL THE TX FROM LAST TO FIRST
-        for (int i = dbContext.transactions.size() - 1; i > -1; --i) {
-          final TransactionContext tx = dbContext.transactions.get(i);
-          if (tx.isActive())
-            // ROLLBACK ANY PENDING OPERATION
-            tx.rollback();
-        }
-        dbContext.transactions.clear();
-      }
-
-      try {
-        schema.close();
-        pageManager.close();
-        fileManager.close();
-        transactionManager.close();
-        statementCache.clear();
-
-        if (lockFile != null) {
-          try {
-            lockFileIO.release();
-          } catch (IOException e) {
-            // IGNORE IT
+      if (lockFile != null) {
+        try {
+          if (lockFileLock != null) {
+            lockFileLock.release();
+            //LogManager.instance().log(this, Level.INFO, "RELEASED DATABASE FILE '%s' (thread=%s)", null, lockFile, Thread.currentThread().getId());
           }
-          if (!lockFile.delete())
-            LogManager.instance().log(this, Level.WARNING, "Error on deleting lock file '%s'", null, lockFile);
+          if (lockFileIOChannel != null)
+            lockFileIOChannel.close();
+          if (lockFileIO != null)
+            lockFileIO.close();
+        } catch (IOException e) {
+          // IGNORE IT
         }
-
-      } finally {
-        Profiler.INSTANCE.unregisterDatabase(EmbeddedDatabase.this);
       }
-      return null;
-    });
+
+    } finally {
+      open = false;
+      Profiler.INSTANCE.unregisterDatabase(EmbeddedDatabase.this);
+    }
   }
 
   public DatabaseAsyncExecutorImpl async() {
@@ -1191,38 +1185,6 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     return false;
   }
 
-  /**
-   * Test only API.
-   */
-  @Override
-  public void kill() {
-    if (async != null)
-      async.kill();
-
-    if (getTransaction().isActive())
-      // ROLLBACK ANY PENDING OPERATION
-      getTransaction().kill();
-
-    try {
-      schema.close();
-      pageManager.kill();
-      fileManager.close();
-      transactionManager.kill();
-
-      if (lockFile != null) {
-        try {
-          lockFileIO.release();
-        } catch (IOException e) {
-          // IGNORE IT
-        }
-      }
-
-    } finally {
-      open = false;
-      Profiler.INSTANCE.unregisterDatabase(EmbeddedDatabase.this);
-    }
-  }
-
   @Override
   public DocumentIndexer getIndexer() {
     return indexer;
@@ -1508,13 +1470,27 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
   private void lockDatabase() {
     try {
-      lockFileIO = new RandomAccessFile(lockFile, "rw").getChannel().tryLock();
-
-      if (lockFileIO == null)
+      lockFileIO = new RandomAccessFile(lockFile, "rw");
+      lockFileIOChannel = lockFileIO.getChannel();
+      lockFileLock = lockFileIOChannel.tryLock();
+      if (lockFileLock == null) {
+        lockFileIOChannel.close();
+        lockFileIO.close();
         throw new LockException("Database '" + name + "' is locked by another process (path=" + new File(databasePath).getAbsolutePath() + ")");
+      }
+
+      //LogManager.instance().log(this, Level.INFO, "LOCKED DATABASE FILE '%s' (thread=%s)", null, lockFile, Thread.currentThread().getId());
 
     } catch (Exception e) {
-      // IGNORE HERE
+      try {
+        if (lockFileIOChannel != null)
+          lockFileIOChannel.close();
+        if (lockFileIO != null)
+          lockFileIO.close();
+      } catch (Exception e2) {
+        // IGNORE
+      }
+
       throw new LockException("Database '" + name + "' is locked by another process (path=" + new File(databasePath).getAbsolutePath() + ")", e);
     }
   }
@@ -1523,4 +1499,85 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     if (name.contains("*") || name.contains(".."))
       throw new IllegalArgumentException("Invalid characters used in database name");
   }
+
+  private void internalClose(final boolean drop) {
+    if (async != null) {
+      try {
+        // EXECUTE OUTSIDE LOCK
+        async.waitCompletion();
+        async.close();
+      } catch (Throwable e) {
+        LogManager.instance().log(this, Level.WARNING, "Error on stopping asynchronous manager during closing operation for database '%s'", e, name);
+      }
+    }
+
+    executeInWriteLock(() -> {
+      if (!open)
+        return null;
+
+      open = false;
+
+      try {
+        if (async != null)
+          async.close();
+      } catch (Throwable e) {
+        LogManager.instance().log(this, Level.WARNING, "Error on stopping asynchronous manager during closing operation for database '%s'", e, name);
+      }
+
+      try {
+        final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.removeContext(databasePath);
+        if (dbContext != null && !dbContext.transactions.isEmpty()) {
+          // ROLLBACK ALL THE TX FROM LAST TO FIRST
+          for (int i = dbContext.transactions.size() - 1; i > -1; --i) {
+            final TransactionContext tx = dbContext.transactions.get(i);
+            if (tx.isActive())
+              // ROLLBACK ANY PENDING OPERATION
+              tx.rollback();
+          }
+          dbContext.transactions.clear();
+        }
+      } catch (Throwable e) {
+        LogManager.instance().log(this, Level.WARNING, "Error on clearing transaction status during closing operation for database '%s'", e, name);
+      }
+
+      try {
+        schema.close();
+        pageManager.close();
+        fileManager.close();
+        transactionManager.close(drop);
+        statementCache.clear();
+      } catch (Throwable e) {
+        LogManager.instance().log(this, Level.WARNING, "Error on closing internal components during closing operation for database '%s'", e, name);
+      } finally {
+        Profiler.INSTANCE.unregisterDatabase(EmbeddedDatabase.this);
+      }
+
+      if (lockFile != null) {
+        try {
+          if (lockFileLock != null) {
+            lockFileLock.release();
+            //LogManager.instance().log(this, Level.INFO, "RELEASED DATABASE FILE '%s' (thread=%s)", null, lockFile, Thread.currentThread().getId());
+          }
+          if (lockFileIOChannel != null)
+            lockFileIOChannel.close();
+          if (lockFileIO != null)
+            lockFileIO.close();
+          if (lockFile.exists())
+            Files.delete(Paths.get(lockFile.getAbsolutePath()));
+
+          if (lockFile.exists() && !lockFile.delete())
+            LogManager.instance().log(this, Level.WARNING, "Error on deleting lock file '%s'", null, lockFile);
+
+        } catch (IOException e) {
+          // IGNORE IT
+          LogManager.instance().log(this, Level.WARNING, "Error on deleting lock file '%s'", e, lockFile);
+        }
+      }
+
+      return null;
+    });
+
+    DatabaseFactory.removeActiveDatabaseInstance(databasePath);
+  }
+
 }

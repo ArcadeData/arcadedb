@@ -51,7 +51,9 @@ public class ServerProfilingIT {
   void userDefaultAccessCannotAccessDatabase() throws Throwable {
     SECURITY.createUser(new JSONObject().put("name", "elon").put("password", SECURITY.encodePassword("musk")));
 
-    try (DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME)) {
+    try {
+      DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME);
+
       checkElonUser(setCurrentUser("elon", database));
 
       createSchemaNotAllowed(database);
@@ -85,7 +87,9 @@ public class ServerProfilingIT {
     SECURITY.createUser(new JSONObject().put("name", "elon").put("password", SECURITY.encodePassword("musk"))
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "admin" }))));
 
-    try (DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME)) {
+    try {
+      DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME);
+
       checkElonUser(setCurrentUser("elon", database));
 
       createSchema(database);
@@ -108,7 +112,9 @@ public class ServerProfilingIT {
     SECURITY.createUser(new JSONObject().put("name", "elon").put("password", SECURITY.encodePassword("musk"))
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "creator", "reader", "updater", "deleter" }))));
 
-    try (DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME)) {
+    try {
+      DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME);
+
       setCurrentUser("root", database);
       createSchema(database);
 
@@ -134,7 +140,9 @@ public class ServerProfilingIT {
         new JSONObject().put(DATABASE_NAME,
             new JSONArray(new String[] { "creatorOfDocuments", "readerOfDocuments", "updaterOfDocuments", "deleterOfDocuments" }))));
 
-    try (DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME)) {
+    try {
+      DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME);
+
       setCurrentUser("root", database);
       createSchema(database);
 
@@ -162,7 +170,9 @@ public class ServerProfilingIT {
     SECURITY.createUser(new JSONObject().put("name", "elon").put("password", SECURITY.encodePassword("musk"))
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "creator" }))));
 
-    try (DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME)) {
+    try {
+      DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME);
+
       checkElonUser(setCurrentUser("elon", database));
 
       createSchemaNotAllowed(database);
@@ -196,7 +206,9 @@ public class ServerProfilingIT {
     SECURITY.createUser(new JSONObject().put("name", "elon").put("password", SECURITY.encodePassword("musk"))
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "reader" }))));
 
-    try (DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME)) {
+    try {
+      DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME);
+
       checkElonUser(setCurrentUser("elon", database));
 
       createSchemaNotAllowed(database);
@@ -230,7 +242,9 @@ public class ServerProfilingIT {
     SECURITY.createUser(new JSONObject().put("name", "elon").put("password", SECURITY.encodePassword("musk"))
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "updater" }))));
 
-    try (DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME)) {
+    try {
+      DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME);
+
       checkElonUser(setCurrentUser("elon", database));
 
       createSchemaNotAllowed(database);
@@ -270,7 +284,9 @@ public class ServerProfilingIT {
     SECURITY.createUser(new JSONObject().put("name", "elon").put("password", SECURITY.encodePassword("musk"))
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "deleter" }))));
 
-    try (DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME)) {
+    try {
+      DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME);
+
       checkElonUser(setCurrentUser("elon", database));
 
       createSchemaNotAllowed(database);
@@ -309,7 +325,9 @@ public class ServerProfilingIT {
     SECURITY.createUser(new JSONObject().put("name", "elon").put("password", SECURITY.encodePassword("musk"))
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "readerOfDocumentsCapped" }))));
 
-    try (DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME)) {
+    try {
+      DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME);
+
       checkElonUser(setCurrentUser("elon", database));
 
       createSchemaNotAllowed(database);
@@ -360,7 +378,9 @@ public class ServerProfilingIT {
     SECURITY.createUser(new JSONObject().put("name", "elon").put("password", SECURITY.encodePassword("musk"))
         .put("databases", new JSONObject().put(DATABASE_NAME, new JSONArray(new String[] { "readerOfDocumentsShortTimeout" }))));
 
-    try (DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME)) {
+    try {
+      DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME);
+
       checkElonUser(setCurrentUser("elon", database));
 
       createSchemaNotAllowed(database);
@@ -427,7 +447,7 @@ public class ServerProfilingIT {
 
       Assertions.assertTrue(SECURITY.getDatabaseGroupsConfiguration("*").getBoolean("reloaded"));
     } finally {
-      // RESTORE THE ORIGINAL FILE AND WAIT FOR THE RELOAD
+      // RESTORE THE ORIGINAL FILE AND WAIT FOR TO RELOAD
       FileUtils.writeContentToStream(file, original);
       Thread.sleep(6_000);
       createSecurity();
@@ -548,6 +568,7 @@ public class ServerProfilingIT {
     SECURITY.getDatabaseGroupsConfiguration(DATABASE_NAME).put("readerOfDocumentsShortTimeout",//
         new JSONObject().put("readTimeout", 1)
             .put("types", new JSONObject().put("Document1", new JSONObject().put("access", new JSONArray(new String[] { "readRecord" })))));
+    SECURITY.saveGroups();
   }
 
   @AfterAll

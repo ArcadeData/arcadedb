@@ -17,6 +17,7 @@ package com.arcadedb.database;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.engine.PaginatedFile;
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.security.SecurityManager;
 
@@ -26,18 +27,19 @@ import java.util.*;
 import java.util.concurrent.*;
 
 public class DatabaseFactory implements AutoCloseable {
+  private              SecurityManager                                            security;
+  private              boolean                                                    autoTransaction      = false;
+  private final static Charset                                                    DEFAULT_CHARSET      = StandardCharsets.UTF_8;
+  private static final Map<String, Database>                                      ACTIVE_INSTANCES     = new ConcurrentHashMap<>();
   private final        ContextConfiguration                                       contextConfiguration = new ContextConfiguration();
   private final        String                                                     databasePath;
   private final        Map<DatabaseInternal.CALLBACK_EVENT, List<Callable<Void>>> callbacks            = new HashMap<>();
-  private final static Charset                                                    DEFAULT_CHARSET      = StandardCharsets.UTF_8;
-  private              SecurityManager                                            security;
-  private              boolean                                                    autoTransaction      = false;
 
   public DatabaseFactory(final String path) {
     if (path == null || path.isEmpty())
       throw new IllegalArgumentException("Missing path");
 
-    if (path.endsWith("/"))
+    if (path.endsWith("/") || path.endsWith("\\"))
       databasePath = path.substring(0, path.length() - 1);
     else
       databasePath = path;
@@ -55,21 +57,35 @@ public class DatabaseFactory implements AutoCloseable {
     return exists;
   }
 
+  public String getDatabasePath() {
+    return databasePath;
+  }
+
   public Database open() {
     return open(PaginatedFile.MODE.READ_WRITE);
   }
 
   public synchronized Database open(final PaginatedFile.MODE mode) {
+    checkForActiveInstance(databasePath);
+
     final EmbeddedDatabase database = new EmbeddedDatabase(databasePath, mode, contextConfiguration, security, callbacks);
     database.setAutoTransaction(autoTransaction);
     database.open();
+
+    registerActiveInstance(database);
+
     return database;
   }
 
   public synchronized Database create() {
+    checkForActiveInstance(databasePath);
+
     final EmbeddedDatabase database = new EmbeddedDatabase(databasePath, PaginatedFile.MODE.READ_WRITE, contextConfiguration, security, callbacks);
     database.setAutoTransaction(autoTransaction);
     database.create();
+
+    registerActiveInstance(database);
+
     return database;
   }
 
@@ -105,5 +121,29 @@ public class DatabaseFactory implements AutoCloseable {
       this.callbacks.put(event, callbacks);
     }
     callbacks.add(callback);
+  }
+
+  public static Database getActiveDatabaseInstance(final String databasePath) {
+    return ACTIVE_INSTANCES.get(databasePath);
+  }
+
+  protected static void removeActiveDatabaseInstance(final String databasePath) {
+    ACTIVE_INSTANCES.remove(databasePath);
+  }
+
+  public static Collection<Database> getActiveDatabaseInstances() {
+    return Collections.unmodifiableCollection(ACTIVE_INSTANCES.values());
+  }
+
+  private static void checkForActiveInstance(final String databasePath) {
+    if (ACTIVE_INSTANCES.get(databasePath) != null)
+      throw new DatabaseOperationException("Found active instance of database '" + databasePath + "' already in use");
+  }
+
+  private static void registerActiveInstance(final EmbeddedDatabase database) {
+    if (ACTIVE_INSTANCES.putIfAbsent(database.databasePath, database) != null) {
+      database.close();
+      throw new DatabaseOperationException("Found active instance of database '" + database.databasePath + "' already in use");
+    }
   }
 }

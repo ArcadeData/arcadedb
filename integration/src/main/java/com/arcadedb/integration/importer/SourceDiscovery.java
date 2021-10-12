@@ -191,8 +191,8 @@ public class SourceDiscovery {
     case DATABASE:
       // NO SPECIAL SETTINGS
       String fileExtensionForFormat = settings.url;
-      if (fileExtensionForFormat.lastIndexOf('/') > -1)
-        fileExtensionForFormat = fileExtensionForFormat.substring(fileExtensionForFormat.lastIndexOf('/') + 1);
+      if (fileExtensionForFormat.lastIndexOf(File.separator) > -1)
+        fileExtensionForFormat = fileExtensionForFormat.substring(fileExtensionForFormat.lastIndexOf(File.separator) + 1);
 
       if (fileExtensionForFormat.endsWith(".tgz"))
         fileExtensionForFormat = fileExtensionForFormat.substring(0, fileExtensionForFormat.length() - ".tgz".length());

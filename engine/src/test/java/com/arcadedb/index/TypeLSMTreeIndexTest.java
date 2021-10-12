@@ -661,7 +661,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
     final long total = 2000;
     final int maxRetries = 100;
 
-    final Thread[] threads = new Thread[Runtime.getRuntime().availableProcessors() * 4];
+    final Thread[] threads = new Thread[16];
 
     final AtomicLong needRetryExceptions = new AtomicLong();
     final AtomicLong duplicatedExceptions = new AtomicLong();

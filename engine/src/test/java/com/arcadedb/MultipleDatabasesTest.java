@@ -18,6 +18,7 @@ package com.arcadedb;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.EmbeddedDocument;
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
@@ -94,6 +95,18 @@ public class MultipleDatabasesTest extends TestHelper {
     database.close();
     database2.close();
     database3.close();
+
+    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
+  }
+
+  @Test
+  public void testErrorMultipleDatabaseInstancesSamePath() {
+    try {
+      new DatabaseFactory(getDatabasePath()).open();
+      Assertions.fail();
+    } catch (DatabaseOperationException e) {
+      // EXPECTED
+    }
   }
 
   @AfterEach

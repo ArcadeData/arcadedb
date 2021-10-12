@@ -19,6 +19,7 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.LockContext;
 
 import java.io.*;
@@ -46,18 +47,17 @@ public class WALFile extends LockContext {
 
   public static final long MAGIC_NUMBER = 9371515385058702L;
 
-  private final    String        filePath;
-  private final    FileChannel   channel;
-  private volatile boolean       active       = true;
-  private volatile boolean       open;
-  private final    AtomicInteger pagesToFlush = new AtomicInteger();
-
-  private long statsPagesWritten = 0;
-  private long statsBytesWritten = 0;
-
+  private final    RandomAccessFile file;
+  private final    String           filePath;
+  private final    FileChannel      channel;
+  private volatile boolean          active            = true;
+  private volatile boolean          open;
+  private final    AtomicInteger    pagesToFlush      = new AtomicInteger();
+  private          long             statsPagesWritten = 0;
+  private          long             statsBytesWritten = 0;
   // STATIC BUFFERS USED FOR RECOVERY
-  private final ByteBuffer bufferLong = ByteBuffer.allocate(Binary.LONG_SERIALIZED_SIZE);
-  private final ByteBuffer bufferInt  = ByteBuffer.allocate(Binary.INT_SERIALIZED_SIZE);
+  private final    ByteBuffer       bufferLong        = ByteBuffer.allocate(Binary.LONG_SERIALIZED_SIZE);
+  private final    ByteBuffer       bufferInt         = ByteBuffer.allocate(Binary.INT_SERIALIZED_SIZE);
 
   public static class WALTransaction {
     public long      txId;
@@ -84,19 +84,27 @@ public class WALFile extends LockContext {
 
   public WALFile(final String filePath) throws FileNotFoundException {
     this.filePath = filePath;
-    this.channel = new RandomAccessFile(filePath, "rw").getChannel();
+    this.file = new RandomAccessFile(filePath, "rw");
+    this.channel = file.getChannel();
     this.open = true;
   }
 
   public synchronized void close() throws IOException {
     this.open = false;
-    channel.close();
+    if (channel != null)
+      channel.close();
+
+    if (file != null)
+      file.close();
+  }
+
+  public boolean isOpen() {
+    return open;
   }
 
   public synchronized void drop() throws IOException {
     close();
-    if (!new File(getFilePath()).delete())
-      LogManager.instance().log(this, Level.WARNING, "Error on deleting file '%s'", null, getFilePath());
+    FileUtils.deleteFile(new File(filePath));
   }
 
   public WALTransaction getFirstTransaction() throws WALException {
@@ -121,7 +129,7 @@ public class WALFile extends LockContext {
     } catch (RuntimeException e) {
       throw e;
     } catch (Exception e) {
-      throw new WALException("Error on writing to WAL file " + getFilePath(), e);
+      throw new WALException("Error on writing to WAL file " + filePath, e);
     }
 
     return true;
@@ -287,10 +295,6 @@ public class WALFile extends LockContext {
       channel.force(true);
 
     database.executeCallbacks(DatabaseInternal.CALLBACK_EVENT.TX_AFTER_WAL_WRITE);
-  }
-
-  public int getPagesToFlush() {
-    return pagesToFlush.get();
   }
 
   public void notifyPageFlushed() {

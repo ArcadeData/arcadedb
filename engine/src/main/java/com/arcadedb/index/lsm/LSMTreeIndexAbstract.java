@@ -37,6 +37,7 @@ import java.util.logging.*;
 
 import static com.arcadedb.database.Binary.BYTE_SERIALIZED_SIZE;
 import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
+import static java.util.logging.Level.*;
 
 /**
  * Abstract class for LSM-based indexes. The first page contains 2 bytes to store key and value types. The pages are populated from the head of the page
@@ -165,14 +166,18 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   }
 
   public void removeTempSuffix() {
-    final String fileName = file.getFileName();
+    final String fileName = file.getFilePath();
 
     final int extPos = fileName.lastIndexOf('.');
     if (fileName.substring(extPos + 1).startsWith(TEMP_EXT)) {
+      final String newFileName = fileName.substring(0, extPos) + "." + fileName.substring(extPos + TEMP_EXT.length() + 1);
+
       try {
-        file.rename(fileName.substring(0, extPos) + "." + fileName.substring(extPos + TEMP_EXT.length() + 1));
-      } catch (FileNotFoundException e) {
-        throw new IndexException("Cannot rename temp file", e);
+        file.rename(newFileName);
+      } catch (IOException e) {
+        throw new IndexException(
+            "Cannot rename index file '" + file.getFilePath() + "' into temp file '" + newFileName + "' (exists=" + (new File(file.getFilePath()).exists())
+                + ")", e);
       }
     }
   }

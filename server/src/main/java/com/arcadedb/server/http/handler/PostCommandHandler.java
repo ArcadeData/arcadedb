@@ -18,6 +18,7 @@ package com.arcadedb.server.http.handler;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
@@ -80,6 +81,9 @@ public class PostCommandHandler extends DatabaseAbstractHandler {
       final ResultSet qResult = language.equalsIgnoreCase("sqlScript") ?
           executeScript(database, language, command, paramMap) :
           executeCommand(database, language, command, paramMap);
+
+      if (qResult == null)
+        throw new CommandExecutionException("Error on executing command");
 
       final JSONObject response = createResult(user);
 

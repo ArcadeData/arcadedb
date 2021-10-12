@@ -125,7 +125,6 @@ public class FileManager {
 
   public void setVirtualFileSize(final Integer fileId, final long fileSize) {
     fileVirtualSize.put(fileId, fileSize);
-//    LogManager.instance().log(this, Level.INFO, "File %d vSize=%d (thread=%d)", fileId, fileSize, Thread.currentThread().getId());
   }
 
   public FileManagerStats getStats() {

@@ -29,6 +29,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
@@ -329,14 +330,22 @@ public abstract class BaseGraphServerTest {
   }
 
   protected void deleteDatabaseFolders() {
+    if (databases != null)
+      for (int i = 0; i < databases.length; ++i) {
+        if (databases[i] != null)
+          ((ServerDatabase) databases[i]).getWrappedDatabaseInstance().drop();
+      }
+
+    if (servers != null)
+      for (int i = 0; i < getServerCount(); ++i) {
+        if (getServer(i).existsDatabase(getDatabaseName()))
+          ((ServerDatabase) getServer(i).getDatabase(getDatabaseName())).getWrappedDatabaseInstance().drop();
+      }
+
+    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
+
     for (int i = 0; i < getServerCount(); ++i)
       FileUtils.deleteRecursively(new File(getDatabasePath(i)));
-    FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_ROOT_PATH.getValueAsString() + "/replication"));
-  }
-
-  protected void deleteAllDatabases() {
-    for (int i = 0; i < getServerCount(); ++i)
-      FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_DATABASE_DIRECTORY.getValueAsString() + i + "/"));
     FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_ROOT_PATH.getValueAsString() + "/replication"));
   }
 

@@ -17,11 +17,10 @@ package com.arcadedb.integration.importer;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.integration.importer.Importer;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
+import java.io.*;
 
 public class ImporterTest {
   @Test
@@ -44,6 +43,7 @@ public class ImporterTest {
       Assertions.assertEquals(6, db.countType("Node", true));
       Assertions.assertEquals("Jay", db.lookupByKey("Node", "Id", 0).next().getRecord().asVertex().get("First Name"));
     }
+    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
 
   }
 }

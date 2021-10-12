@@ -34,7 +34,7 @@ public class ServerBackupDatabaseIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void backupDatabase() throws IOException {
+  public void backupDatabase() {
     final File backupFile = new File("backup-test.tgz");
     if (backupFile.exists())
       backupFile.delete();

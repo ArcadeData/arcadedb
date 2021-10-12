@@ -16,7 +16,6 @@
 package com.arcadedb.mongo;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.database.Database;
 import com.mongodb.MongoClient;
 import com.mongodb.ServerAddress;
 import com.mongodb.client.MongoCursor;
@@ -26,7 +25,12 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import static com.mongodb.client.model.Filters.*;
+import static com.mongodb.client.model.Filters.and;
+import static com.mongodb.client.model.Filters.eq;
+import static com.mongodb.client.model.Filters.exists;
+import static com.mongodb.client.model.Filters.gt;
+import static com.mongodb.client.model.Filters.lte;
+import static com.mongodb.client.model.Filters.ne;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
@@ -48,7 +52,7 @@ public class MongoDBServerTest extends BaseGraphServerTest {
   public void beginTest() {
     super.beginTest();
 
-    Database db = getDatabase(0);
+    getDatabase(0);
 
     client = new MongoClient(new ServerAddress("localhost", DEF_PORT));
     client.getDatabase(getDatabaseName()).createCollection("MongoDBCollection");
@@ -73,38 +77,22 @@ public class MongoDBServerTest extends BaseGraphServerTest {
   @Test
   public void testSimpleInsertQuery() {
     assertEquals(10, collection.countDocuments());
-
     assertEquals(obj, collection.find().first());
-
     assertEquals(obj, collection.find(BsonDocument.parse("{ name: \"Jay\" } ")).first());
-
     assertNull(collection.find(BsonDocument.parse("{ name: \"Jay2\" } ")).first());
-
     assertEquals(obj, collection.find(BsonDocument.parse("{ name: { $eq: \"Jay\" } } ")).first());
-
     assertEquals(obj, collection.find(BsonDocument.parse("{ name: { $ne: \"Jay2\" } } ")).first());
-
     assertEquals(obj, collection.find(BsonDocument.parse("{ name: { $in: [ \"Jay\", \"John\" ] } } ")).first());
-
     assertEquals(obj, collection.find(BsonDocument.parse("{ name: { $nin: [ \"Jay2\", \"John\" ] } } ")).first());
-
     assertEquals(obj, collection.find(BsonDocument.parse("{ name: { $lt: \"Jay2\" } } ")).first());
-
     assertEquals(obj, collection.find(BsonDocument.parse("{ name: { $lte: \"Jay2\" } } ")).first());
-
     assertEquals(obj, collection.find(BsonDocument.parse("{ name: { $gt: \"A\" } } ")).first());
-
     assertEquals(obj, collection.find(BsonDocument.parse("{ name: { $gte: \"A\" } } ")).first());
-
     assertEquals(obj, collection.find(and(gt("name", "A"), lte("name", "Jay"))).first());
-
     assertEquals(obj, collection.find(BsonDocument.parse("{ $or: [ { name: { $eq: 'Jay' } }, { lastName: 'Miner222'} ] }")).first());
-
     assertEquals(obj, collection.find(BsonDocument.parse("{ $not: { name: { $eq: 'Jay2' } } }")).first());
-
     assertEquals(obj, collection.find(BsonDocument.parse(
         "{ $and: [ { name: { $eq: 'Jay' } }, { lastName: { $exists: true } }, { lastName: { $eq: 'Miner' } }, { lastName: { $ne: 'Miner22' } } ] }")).first());
-
     assertEquals(obj, collection.find(and(eq("name", "Jay"), exists("lastName"), eq("lastName", "Miner"), ne("lastName", "Miner22"))).first());
   }
 

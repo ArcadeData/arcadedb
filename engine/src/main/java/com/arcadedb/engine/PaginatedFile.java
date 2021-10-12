@@ -17,30 +17,28 @@ package com.arcadedb.engine;
 
 import com.arcadedb.log.LogManager;
 
-import java.io.File;
-import java.io.FileNotFoundException;
-import java.io.IOException;
-import java.io.RandomAccessFile;
-import java.nio.ByteBuffer;
-import java.nio.channels.ClosedChannelException;
-import java.nio.channels.FileChannel;
-import java.util.logging.Level;
+import java.io.*;
+import java.nio.*;
+import java.nio.channels.*;
+import java.nio.file.*;
+import java.util.logging.*;
 
 public class PaginatedFile {
   public enum MODE {
     READ_ONLY, READ_WRITE
   }
 
-  private final MODE        mode;
-  private       String      filePath;
-  private       String      fileName;
-  private       File        osFile;
-  private       FileChannel channel;
-  private       int         fileId;
-  private       int         pageSize;
-  private       String      componentName;
-  private       String      fileExtension;
-  private       boolean     open;
+  private       RandomAccessFile file;
+  private final MODE             mode;
+  private       String           filePath;
+  private       String           fileName;
+  private       File             osFile;
+  private       FileChannel      channel;
+  private       int              fileId;
+  private       int              pageSize;
+  private       String           componentName;
+  private       String           fileExtension;
+  private       boolean          open;
 
   public PaginatedFile() {
     this.mode = MODE.READ_ONLY;
@@ -54,9 +52,16 @@ public class PaginatedFile {
   public void close() {
     try {
       LogManager.instance().log(this, Level.FINE, "DEBUG - closing file %s (id=%d)", null, filePath, fileId);
-      LogManager.instance().flush();
 
-      channel.close();
+      if (channel != null) {
+        channel.close();
+        channel = null;
+      }
+
+      if (file != null) {
+        file.close();
+        file = null;
+      }
 
     } catch (IOException e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on closing file %s (id=%d)", e, filePath, fileId);
@@ -64,22 +69,16 @@ public class PaginatedFile {
     this.open = false;
   }
 
-  public void rename(final String newFileName) throws FileNotFoundException {
+  public void rename(final String newFileName) throws IOException {
     close();
-
-    final int pos = filePath.indexOf(fileName);
-    final String dir = filePath.substring(0, pos);
-
-    final File newFile = new File(dir + "/" + newFileName);
+    final File newFile = new File(newFileName);
     new File(filePath).renameTo(newFile);
-
     open(newFile.getAbsolutePath(), mode);
-    osFile = newFile;
   }
 
   public void drop() throws IOException {
     close();
-    new File(getFilePath()).delete();
+    Files.delete(Paths.get(getFilePath()));
   }
 
   public long getSize() throws IOException {
@@ -195,21 +194,6 @@ public class PaginatedFile {
     return filePath;
   }
 
-  public static String getFileNameFromPath(final String filePath) {
-    final String filePrefix = filePath.substring(0, filePath.lastIndexOf("."));
-
-    final String fileName;
-    final int fileIdPos = filePrefix.lastIndexOf(".");
-    if (fileIdPos > -1) {
-      int pos = filePrefix.lastIndexOf("/");
-      fileName = filePrefix.substring(pos + 1, filePrefix.lastIndexOf("."));
-    } else {
-      int pos = filePrefix.lastIndexOf("/");
-      fileName = filePrefix.substring(pos + 1);
-    }
-    return fileName;
-  }
-
   private void open(final String filePath, final MODE mode) throws FileNotFoundException {
     this.filePath = filePath;
 
@@ -223,22 +207,23 @@ public class PaginatedFile {
     final int fileIdPos = filePrefix.lastIndexOf(".");
     if (fileIdPos > -1) {
       fileId = Integer.parseInt(filePrefix.substring(fileIdPos + 1));
-      int pos = filePrefix.lastIndexOf("/");
+      int pos = filePrefix.lastIndexOf(File.separator);
       componentName = filePrefix.substring(pos + 1, filePrefix.lastIndexOf("."));
     } else {
       fileId = -1;
-      int pos = filePrefix.lastIndexOf("/");
+      int pos = filePrefix.lastIndexOf(File.separator);
       componentName = filePrefix.substring(pos + 1);
     }
 
-    final int lastSlash = filePath.lastIndexOf("/");
+    final int lastSlash = filePath.lastIndexOf(File.separator);
     if (lastSlash > -1)
       fileName = filePath.substring(lastSlash + 1);
     else
       fileName = filePath;
 
     this.osFile = new File(filePath);
-    this.channel = new RandomAccessFile(osFile, mode == MODE.READ_WRITE ? "rw" : "r").getChannel();
+    this.file = new RandomAccessFile(osFile, mode == MODE.READ_WRITE ? "rw" : "r");
+    this.channel = this.file.getChannel();
     this.open = true;
   }
 }

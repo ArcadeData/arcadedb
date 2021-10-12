@@ -22,6 +22,7 @@ import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 
 import java.io.*;
@@ -43,21 +44,27 @@ public abstract class TestHelper {
   protected TestHelper(final boolean cleanBeforeTest) {
     GlobalConfiguration.PROFILE.setValue(getPerformanceProfile());
 
+    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
+
     if (cleanBeforeTest)
       FileUtils.deleteRecursively(new File(getDatabasePath()));
     factory = new DatabaseFactory(getDatabasePath());
     database = factory.exists() ? factory.open() : factory.create();
+    Assertions.assertEquals(database, DatabaseFactory.getActiveDatabaseInstance(database.getDatabasePath()));
 
     if (autoStartTx)
       database.begin();
   }
 
   public static void executeInNewDatabase(final DatabaseTest<Database> callback) throws Exception {
-    try (final DatabaseFactory factory = new DatabaseFactory("target/databases/" + UUID.randomUUID())) {
-      if (factory.exists())
+    try (final DatabaseFactory factory = new DatabaseFactory("./target/databases/" + UUID.randomUUID())) {
+      if (factory.exists()) {
         factory.open().drop();
+        Assertions.assertNull(DatabaseFactory.getActiveDatabaseInstance(factory.getDatabasePath()));
+      }
 
       final Database database = factory.create();
+      Assertions.assertEquals(database, DatabaseFactory.getActiveDatabaseInstance(factory.getDatabasePath()));
       try {
         database.begin();
         callback.call(database);
@@ -75,15 +82,17 @@ public abstract class TestHelper {
   }
 
   public static void executeInNewDatabase(final String testName, final DatabaseTest<DatabaseInternal> callback) throws Exception {
-    try (final DatabaseFactory factory = new DatabaseFactory(testName)) {
+    try (final DatabaseFactory factory = new DatabaseFactory("./target/" + testName)) {
       if (factory.exists())
         factory.open().drop();
 
       final DatabaseInternal database = (DatabaseInternal) factory.create();
+      Assertions.assertEquals(database, DatabaseFactory.getActiveDatabaseInstance(factory.getDatabasePath()));
       try {
         callback.call(database);
       } finally {
         database.drop();
+        Assertions.assertNull(DatabaseFactory.getActiveDatabaseInstance(database.getDatabasePath()));
       }
     }
   }
@@ -96,19 +105,27 @@ public abstract class TestHelper {
     final DatabaseFactory factory = new DatabaseFactory(databaseName);
     if (factory.exists())
       factory.open().drop();
+    Assertions.assertNull(DatabaseFactory.getActiveDatabaseInstance(factory.getDatabasePath()));
     return factory;
   }
 
   protected void reopenDatabase() {
-    if (database != null)
+    if (database != null) {
       database.close();
+      Assertions.assertNull(DatabaseFactory.getActiveDatabaseInstance(database.getDatabasePath()));
+    }
     database = factory.open();
+    Assertions.assertEquals(database, DatabaseFactory.getActiveDatabaseInstance(database.getDatabasePath()));
   }
 
   protected void reopenDatabaseInReadOnlyMode() {
-    if (database != null)
+    if (database != null) {
       database.close();
+      Assertions.assertNull(DatabaseFactory.getActiveDatabaseInstance(database.getDatabasePath()));
+    }
+
     database = factory.open(PaginatedFile.MODE.READ_ONLY);
+    Assertions.assertEquals(database, DatabaseFactory.getActiveDatabaseInstance(database.getDatabasePath()));
   }
 
   protected String getDatabasePath() {
@@ -139,9 +156,11 @@ public abstract class TestHelper {
       if (database.getMode() == PaginatedFile.MODE.READ_ONLY)
         reopenDatabase();
 
-      database.drop();
+      ((DatabaseInternal) database).getWrappedDatabaseInstance().drop();
       database = null;
     }
+
+    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
     FileUtils.deleteRecursively(new File(getDatabasePath()));
   }
 

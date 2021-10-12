@@ -38,10 +38,10 @@ public class SecurityGroupFileRepository {
   private              Callable<Void, JSONObject> reloadCallback          = null;
 
   public SecurityGroupFileRepository(String securityConfPath) {
-    if (!securityConfPath.endsWith("/"))
+    if (!securityConfPath.endsWith("/") && !securityConfPath.endsWith("\\"))
       securityConfPath += "/";
     this.securityConfPath = securityConfPath;
-    file = new File(securityConfPath + FILE_NAME);
+    file = new File(securityConfPath, FILE_NAME);
   }
 
   public void stop() {
@@ -100,20 +100,23 @@ public class SecurityGroupFileRepository {
   protected synchronized JSONObject load() throws IOException {
     if (checkFileUpdatedTimer == null) {
       checkFileUpdatedTimer = new Timer();
+      final Timer timer = checkFileUpdatedTimer;
       checkFileUpdatedTimer.schedule(new TimerTask() {
         @Override
         public void run() {
-          try {
-            if (file.exists() && file.lastModified() > fileLastUpdated) {
-              LogManager.instance().log(this, Level.INFO, "Server groups configuration changed, reloading it...");
-              load();
+          // CHECK THE INSTANCE IS NOT CHANGED (THIS COULD HAPPEN DURING TESTS)
+          if (checkFileUpdatedTimer == timer)
+            try {
+              if (file.exists() && file.lastModified() > fileLastUpdated) {
+                LogManager.instance().log(this, Level.INFO, "Server groups configuration changed, reloading it...");
+                load();
 
-              if (reloadCallback != null)
-                reloadCallback.call(latestGroupConfiguration);
+                if (reloadCallback != null)
+                  reloadCallback.call(latestGroupConfiguration);
+              }
+            } catch (Throwable e) {
+              LogManager.instance().log(this, Level.SEVERE, "Error on reloading file '%s' after was changed", e, FILE_NAME);
             }
-          } catch (Throwable e) {
-            LogManager.instance().log(this, Level.SEVERE, "Error on reloading file '%s' after was changed", e, FILE_NAME);
-          }
         }
       }, CHECK_FOR_UPDATES_EVERY * 1_000, CHECK_FOR_UPDATES_EVERY * 1_000);
     }
