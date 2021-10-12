@@ -652,7 +652,9 @@ public class ReplicatedDatabase implements DatabaseInternal {
 
         final List<FileManager.FileChange> fileChanges = proxied.getFileManager().getRecordedChanges();
 
-        if (fileChanges.isEmpty() && proxied.getSchema().getEmbedded().getVersion() == schemaVersionBefore)
+        if (fileChanges.isEmpty() &&//
+            !proxied.getSchema().getEmbedded().isDirty() && //
+            proxied.getSchema().getEmbedded().getVersion() == schemaVersionBefore)
           // NO CHANGES
           return null;
 

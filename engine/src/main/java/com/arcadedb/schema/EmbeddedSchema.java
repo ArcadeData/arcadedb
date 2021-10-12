@@ -1332,6 +1332,21 @@ public class EmbeddedSchema implements Schema {
       }
     }
 
-    return database.getWrappedDatabaseInstance().recordFileChanges(callback);
+    final boolean madeDirty = !dirtyConfiguration;
+    if (madeDirty)
+      dirtyConfiguration = true;
+
+    boolean executed = false;
+    try {
+      final RET result = database.getWrappedDatabaseInstance().recordFileChanges(callback);
+      executed = true;
+      saveConfiguration();
+      return result;
+
+    } finally {
+      if (!executed && madeDirty)
+        // ROLLBACK THE DIRTY STATUS
+        dirtyConfiguration = false;
+    }
   }
 }

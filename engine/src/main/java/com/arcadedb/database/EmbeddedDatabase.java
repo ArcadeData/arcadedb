@@ -943,7 +943,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
   @Override
   public boolean transaction(final TransactionScope txBlock, final boolean joinCurrentTx) {
-    return transaction(txBlock, joinCurrentTx, configuration.getValueAsInteger(GlobalConfiguration.TX_RETRIES));
+    return transaction(txBlock, joinCurrentTx, configuration.getValueAsInteger(GlobalConfiguration.TX_RETRIES), null, null);
   }
 
   @Override

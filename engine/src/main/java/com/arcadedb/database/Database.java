@@ -55,9 +55,10 @@ public interface Database extends AutoCloseable {
    */
   String getCurrentUserName();
 
+  /**
+   * Returns true if there is a transaction active. A transaction is active if it is in the following states: `{BEGUN, COMMIT_1ST_PHASE, COMMIT_2ND_PHASE}`.
+   */
   boolean isTransactionActive();
-
-  boolean checkTransactionIsActive(boolean createTx);
 
   /**
    * Executes a lambda in the transaction scope. If there is an active transaction, then the current transaction is parked and a new sub-transaction is begun.
