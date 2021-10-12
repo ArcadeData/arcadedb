@@ -288,9 +288,6 @@ public class SqlParserDefaultVisitor implements SqlParserVisitor{
   public Object visit(LikeOperator node, Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(LuceneOperator node, Object data){
-    return defaultVisit(node, data);
-  }
   public Object visit(NearOperator node, Object data){
     return defaultVisit(node, data);
   }

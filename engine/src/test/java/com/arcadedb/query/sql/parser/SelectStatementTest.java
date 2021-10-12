@@ -16,8 +16,6 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.DatabaseFactory;
-import org.junit.jupiter.api.Assertions;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
@@ -412,24 +410,6 @@ public class SelectStatementTest {
   }
 
   @Test
-  @Disabled
-  public void testMultipleLucene() {
-    checkRightSyntax("select from Foo where a lucene 'a'");
-    checkWrongSyntax("select from Foo where a lucene 'a' and b lucene 'a'");
-
-    checkWrongSyntax("select union($a, $b) let $a = (select from Foo where a lucene 'a' and b lucene 'b'), $b = (select from Foo where b lucene 'b')");
-    checkRightSyntax("select union($a, $b) let $a = (select from Foo where a lucene 'a'), $b = (select from Foo where b lucene 'b')");
-    checkWrongSyntax("select from (select from Foo) where a lucene 'a'");
-
-    checkWrongSyntax(
-        "select from Foo where (a=2 and b=3 and (a = 4 and (b=5 and d lucene 'foo')))) or select from Foo where (a=2 and b=3 and (a = 4 and (b=5 and d lucene 'foo'))))");
-
-    checkWrongSyntax("select from bucket:foo where a lucene 'b'");
-    checkWrongSyntax("select from #12:0 where a lucene 'b'");
-    checkWrongSyntax("select from [#12:0, #12:1] where a lucene 'b'");
-  }
-
-  @Test
   public void testBacktick() {
     checkRightSyntax("select `foo` from foo where `foo` = 'bar'");
     checkRightSyntax("select `SELECT` from foo where `SELECT` = 'bar'");
@@ -526,7 +506,6 @@ public class SelectStatementTest {
     checkRightSyntax("select `strategy` from foo where `strategy` = 'bar'");
     checkRightSyntax("select `depth_first` from foo where `depth_first` = 'bar'");
     checkRightSyntax("select `breadth_first` from foo where `breadth_first` = 'bar'");
-    checkRightSyntax("select `lucene` from foo where `lucene` = 'bar'");
     checkRightSyntax("select `near` from foo where `near` = 'bar'");
     checkRightSyntax("select `within` from foo where `within` = 'bar'");
     checkRightSyntax("select `unwind` from foo where `unwind` = 'bar'");
@@ -653,14 +632,6 @@ public class SelectStatementTest {
     checkRightSyntax("select \"@rid\" as v from V");
     checkRightSyntax("select {\"@rid\": \"#12:0\"} as v from V");
     //System.out.println(stm2);
-  }
-
-  @Test
-  public void testTranslateLucene() {
-    SelectStatement stm = (SelectStatement) checkRightSyntax("select from V where name LUCENE 'foo'");
-    stm.whereClause.getBaseExpression().translateLuceneOperator();
-    Assertions.assertTrue(stm.whereClause.toString().contains("search_fields([\"name\"], 'foo') = true"));
-    Assertions.assertFalse(stm.whereClause.toString().contains("LUCENE"));
   }
 
   @Test

@@ -92,7 +92,6 @@ public class SelectExecutionPlanner {
 
     info.target = this.statement.getTarget();
     info.whereClause = this.statement.getWhereClause() == null ? null : this.statement.getWhereClause().copy();
-    info.whereClause = translateLucene(info.whereClause);
     info.perRecordLetClause = this.statement.getLetClause() == null ? null : this.statement.getLetClause().copy();
     info.groupBy = this.statement.getGroupBy() == null ? null : this.statement.getGroupBy().copy();
     info.orderBy = this.statement.getOrderBy() == null ? null : this.statement.getOrderBy().copy();
@@ -453,17 +452,6 @@ public class SelectExecutionPlanner {
     }
 
     return null;
-  }
-
-  private WhereClause translateLucene(WhereClause whereClause) {
-    if (whereClause == null) {
-      return null;
-    }
-
-    if (whereClause.getBaseExpression() != null) {
-      whereClause.getBaseExpression().translateLuceneOperator();
-    }
-    return whereClause;
   }
 
   /**

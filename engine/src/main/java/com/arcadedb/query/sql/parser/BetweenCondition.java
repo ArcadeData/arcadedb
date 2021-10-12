@@ -222,10 +222,6 @@ public class BetweenCondition extends BooleanExpression {
   }
 
   @Override
-  public void translateLuceneOperator() {
-  }
-
-  @Override
   public boolean isCacheable() {
     if (first != null && !first.isCacheable()) {
       return false;
