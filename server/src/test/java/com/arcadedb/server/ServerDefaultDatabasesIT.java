@@ -17,6 +17,7 @@ package com.arcadedb.server;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.server.security.ServerSecurityException;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -73,5 +74,8 @@ public class ServerDefaultDatabasesIT extends BaseGraphServerTest {
 
     Assertions.assertTrue(getServer(0).existsDatabase("Universe"));
     Assertions.assertTrue(getServer(0).existsDatabase("Amiga"));
+
+    ((DatabaseInternal) getServer(0).getDatabase("Universe")).getWrappedDatabaseInstance().drop();
+    ((DatabaseInternal) getServer(0).getDatabase("Amiga")).getWrappedDatabaseInstance().drop();
   }
 }
