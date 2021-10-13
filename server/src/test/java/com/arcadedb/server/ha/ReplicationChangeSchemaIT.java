@@ -27,7 +27,7 @@ import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-public class ReplicationChangeSchema extends ReplicationServerIT {
+public class ReplicationChangeSchemaIT extends ReplicationServerIT {
   @Test
   public void testReplication() {
     super.testReplication();
