@@ -60,10 +60,6 @@ public abstract class BaseGraphServerTest {
     void call(int serverIndex) throws Exception;
   }
 
-  protected Database getDatabase(final int serverId) {
-    return databases[serverId];
-  }
-
   protected BaseGraphServerTest() {
   }
 
@@ -96,7 +92,7 @@ public abstract class BaseGraphServerTest {
       databases = new Database[0];
 
     if (isPopulateDatabase()) {
-      final Database database = getDatabase(0);
+      final Database database = databases[0];
       database.transaction(() -> {
         final Schema schema = database.getSchema();
         Assertions.assertFalse(schema.existsType(VERTEX1_TYPE_NAME));
@@ -115,7 +111,7 @@ public abstract class BaseGraphServerTest {
         schema.createDocumentType("Person");
       });
 
-      final Database db = getDatabase(0);
+      final Database db = databases[0];
       db.begin();
 
       final MutableVertex v1 = db.newVertex(VERTEX1_TYPE_NAME);
@@ -153,7 +149,7 @@ public abstract class BaseGraphServerTest {
       root = v1.getIdentity();
     }
 
-    // CLOSE ALL DATABASES BEFORE TO START THE SERVERS
+    // CLOSE ALL DATABASES BEFORE STARTING THE SERVERS
     LogManager.instance().log(this, Level.INFO, "TEST: Closing databases before starting");
     for (int i = 0; i < databases.length; ++i) {
       databases[i].close();
@@ -306,6 +302,14 @@ public abstract class BaseGraphServerTest {
 
   protected ArcadeDBServer getServer(final int i) {
     return servers[i];
+  }
+
+  protected ArcadeDBServer[] getServers() {
+    return servers;
+  }
+
+  protected Database[] getDatabases() {
+    return databases;
   }
 
   protected Database getServerDatabase(final int i, final String name) {
