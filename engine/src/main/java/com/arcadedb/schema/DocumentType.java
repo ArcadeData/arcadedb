@@ -62,7 +62,7 @@ public class DocumentType {
       return this;
 
     final Set<String> allProperties = getPolymorphicPropertyNames();
-    for (String p : parent.getPropertyNames())
+    for (String p : parent.getPolymorphicPropertyNames())
       if (allProperties.contains(p))
         throw new IllegalArgumentException("Property '" + p + "' is already defined in type '" + name + "' or any parent types");
 
@@ -104,6 +104,18 @@ public class DocumentType {
   public List<DocumentType> getParentTypes() {
     return Collections.unmodifiableList(parentTypes);
   }
+  
+  public void setParentTypes(List<DocumentType> newParents) {
+	if(newParents==null) newParents = Collections.emptyList();
+	List<DocumentType> commonParents = new ArrayList<>(parentTypes);
+	commonParents.retainAll(newParents);
+	List<DocumentType> toRemove = new ArrayList<>(parentTypes);
+	toRemove.removeAll(commonParents);
+	toRemove.forEach(this::removeParentType);
+	List<DocumentType> toAdd = new ArrayList<>(newParents);
+	toAdd.removeAll(commonParents);
+	toAdd.forEach(this::addParentType);
+  }
 
   public List<DocumentType> getSubTypes() {
     return Collections.unmodifiableList(subTypes);
@@ -115,8 +127,9 @@ public class DocumentType {
 
   public Set<String> getPolymorphicPropertyNames() {
     final Set<String> allProperties = new HashSet<>();
+    allProperties.addAll(getPropertyNames());
     for (DocumentType p : parentTypes)
-      allProperties.addAll(p.getPropertyNames());
+      allProperties.addAll(p.getPolymorphicPropertyNames());
     return allProperties;
   }
 
