@@ -22,6 +22,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 
@@ -55,7 +56,7 @@ class SQLMethodSizeTest {
     void testSizeOfMultiValue() {
         Database db = Mockito.mock(Database.class);
         RID rid = new RID(db, 1, 1);
-        Collection<RID> multiValue = List.of(rid, rid, rid);
+        Collection<RID> multiValue = Arrays.asList(rid, rid, rid);
         Object result = method.execute(null, null, null, multiValue, null);
         assertThat(result).isInstanceOf(Number.class);
         assertThat(result).isEqualTo(3);

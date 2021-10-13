@@ -40,8 +40,7 @@ public class SecurityUserFileRepository {
     final File file = new File(securityConfPath, FILE_NAME);
     if (!file.exists())
       file.getParentFile().mkdirs();
-
-    try (FileWriter writer = new FileWriter(file, DatabaseFactory.getDefaultCharset())) {
+    try (OutputStreamWriter writer = new OutputStreamWriter(new FileOutputStream(file), DatabaseFactory.getDefaultCharset())) {
       for (JSONObject line : configuration)
         writer.write(line.toString() + "\n");
     }

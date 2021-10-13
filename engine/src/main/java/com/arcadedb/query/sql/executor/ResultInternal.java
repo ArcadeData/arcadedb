@@ -319,7 +319,7 @@ public class ResultInternal implements Result {
     }
     final ResultInternal resultObj = (ResultInternal) obj;
     if (element != null) {
-      if (resultObj.getElement().isEmpty()) {
+      if (!resultObj.getElement().isPresent()) {
         return false;
       }
       return element.equals(resultObj.getElement().get());

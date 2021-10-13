@@ -45,7 +45,7 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
   }
 
   public void addGroup(final String group) {
-    final Set<String> set = new HashSet<>(List.of(groups));
+    final Set<String> set = new HashSet<>(Arrays.asList(groups));
     if (set.add(group))
       this.groups = set.toArray(new String[set.size()]);
   }

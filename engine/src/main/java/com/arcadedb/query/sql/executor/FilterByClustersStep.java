@@ -50,7 +50,7 @@ public class FilterByClustersStep extends AbstractExecutionStep {
   @Override
   public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
     init(ctx.getDatabase());
-    if (prev.isEmpty()) {
+    if (!prev.isPresent()) {
       throw new IllegalStateException("filter step requires a previous step");
     }
     ExecutionStepInternal prevStep = prev.get();

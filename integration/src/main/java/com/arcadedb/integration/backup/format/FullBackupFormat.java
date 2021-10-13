@@ -108,7 +108,11 @@ public class FullBackupFormat extends AbstractBackupFormat {
     zipFile.putNextEntry(zipEntry);
 
     try (final FileInputStream fileIn = new FileInputStream(inputFile)) {
-      fileIn.transferTo(zipFile);
+    	byte[] buf = new byte[10240];
+    	int length;
+        while ((length = fileIn.read(buf)) > 0) {
+        	zipFile.write(buf, 0, length);
+        }
     }
     zipFile.closeEntry();
 

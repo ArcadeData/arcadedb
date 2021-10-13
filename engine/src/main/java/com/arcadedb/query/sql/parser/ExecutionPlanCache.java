@@ -41,7 +41,7 @@ public class ExecutionPlanCache {
   public ExecutionPlanCache(final DatabaseInternal db, final int size) {
     this.db = db;
     this.mapSize = size;
-    this.map = new LinkedHashMap<>(size) {
+    this.map = new LinkedHashMap<String, InternalExecutionPlan>(size) {
       protected boolean removeEldestEntry(final Map.Entry<String, InternalExecutionPlan> eldest) {
         return super.size() > mapSize;
       }

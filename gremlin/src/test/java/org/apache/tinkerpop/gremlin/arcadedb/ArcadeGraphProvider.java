@@ -85,7 +85,7 @@ public class ArcadeGraphProvider extends AbstractGraphProvider {
 
     final String directory = makeTestDirectory(graphName, test, testMethodName);
 
-    return new HashMap<>() {{
+    return new HashMap<String, Object>() {{
       put(Graph.GRAPH, ArcadeGraph.class.getName());
       put("name", graphName);
       put(ArcadeGraph.CONFIG_DIRECTORY, directory);

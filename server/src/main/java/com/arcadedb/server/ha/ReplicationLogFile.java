@@ -294,7 +294,7 @@ public class ReplicationLogFile extends LockContext {
       else
         nextPos = positionInFile + BUFFER_HEADER_SIZE + contentLength + BUFFER_FOOTER_SIZE;
 
-      return new Pair<>(new ReplicationMessage(messageNumber, new Binary(bufferPayload.rewind())), nextPos);
+      return new Pair<>(new ReplicationMessage(messageNumber, new Binary((ByteBuffer)bufferPayload.rewind())), nextPos);
     });
   }
 
@@ -351,12 +351,12 @@ public class ReplicationLogFile extends LockContext {
       final ByteBuffer bufferPayload = ByteBuffer.allocate(contentLength);
       lastChunkChannel.read(bufferPayload, pos - entrySize + BUFFER_HEADER_SIZE);
 
-      return new ReplicationMessage(messageNumber, new Binary(bufferPayload.rewind()));
+      return new ReplicationMessage(messageNumber, new Binary((ByteBuffer)bufferPayload.rewind()));
     });
   }
 
   public long getSize() {
-    return (Long) executeInLock(new Callable<>() {
+    return (Long) executeInLock(new Callable<Object>() {
       @Override
       public Object call() {
         try {

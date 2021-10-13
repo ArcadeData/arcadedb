@@ -34,6 +34,9 @@ import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.RecordTableFormatter;
 import com.arcadedb.utility.TableFormatter;
+
+import jline.internal.InputStreamReader;
+
 import org.jline.reader.Completer;
 import org.jline.reader.EndOfFileException;
 import org.jline.reader.LineReader;
@@ -458,7 +461,7 @@ public class Console {
     if (!file.exists())
       throw new ArcadeDBException("File name '" + fileName + "' not found");
 
-    try (final BufferedReader bufferedReader = new BufferedReader(new FileReader(file, DatabaseFactory.getDefaultCharset()))) {
+    try (final BufferedReader bufferedReader = new BufferedReader(new InputStreamReader(new FileInputStream(file), DatabaseFactory.getDefaultCharset()))) {
       while (bufferedReader.ready())
         parse(bufferedReader.readLine(), true);
     }

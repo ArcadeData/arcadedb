@@ -53,7 +53,7 @@ public class SecurityGroupFileRepository {
     if (!file.exists())
       file.getParentFile().mkdirs();
 
-    try (FileWriter writer = new FileWriter(file, DatabaseFactory.getDefaultCharset())) {
+    try (OutputStreamWriter writer = new OutputStreamWriter(new FileOutputStream(file), DatabaseFactory.getDefaultCharset())) {
       writer.write(configuration.toString(2));
       latestGroupConfiguration = configuration;
     }
@@ -76,7 +76,7 @@ public class SecurityGroupFileRepository {
       file.getParentFile().mkdirs();
 
     try {
-      try (FileWriter writer = new FileWriter(file, DatabaseFactory.getDefaultCharset())) {
+      try (OutputStreamWriter writer = new OutputStreamWriter(new FileOutputStream(file), DatabaseFactory.getDefaultCharset())) {	
         writer.write(latestGroupConfiguration.toString());
       }
     } catch (Exception e2) {

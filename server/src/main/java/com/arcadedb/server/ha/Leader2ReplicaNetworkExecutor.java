@@ -333,7 +333,7 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
     if (status == STATUS.OFFLINE)
       return false;
 
-    return (boolean) executeInLock(new Callable<>() {
+    return (boolean) executeInLock(new Callable<Object, Object>() {
       @Override
       public Object call(Object iArgument) {
         // WRITE DIRECTLY TO THE MESSAGE QUEUE
@@ -384,7 +384,7 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
       // NO STATUS CHANGE
       return;
 
-    executeInLock(new Callable<>() {
+    executeInLock(new Callable<Object, Object>() {
       @Override
       public Object call(Object iArgument) {
         Leader2ReplicaNetworkExecutor.this.status = status;

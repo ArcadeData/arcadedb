@@ -128,14 +128,8 @@
                 <artifactId>maven-compiler-plugin</artifactId>
                 <version>${maven-compiler-plugin.version}</version>
                 <configuration>
-                    <source>11</source>
-                    <target>11</target>
-                    <compilerArgs>
-                        <arg>--add-modules</arg>
-                        <arg>jdk.hotspot.agent</arg>
-                        <arg>--add-exports</arg>
-                        <arg>jdk.hotspot.agent/sun.jvm.hotspot.tools=ALL-UNNAMED</arg>
-                    </compilerArgs>
+                    <source>8</source>
+                    <target>8</target>
                 </configuration>
             </plugin>
             <plugin>

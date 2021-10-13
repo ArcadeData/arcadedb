@@ -174,10 +174,16 @@ public abstract class BaseGraphServerTest {
 
   protected void checkArcadeIsTotallyDown() {
     final ByteArrayOutputStream os = new ByteArrayOutputStream();
-    final PrintWriter output = new PrintWriter(new BufferedOutputStream(os), false, DatabaseFactory.getDefaultCharset());
+    
+    final PrintWriter output = new PrintWriter(new OutputStreamWriter(new BufferedOutputStream(os), DatabaseFactory.getDefaultCharset()), false);
     new Exception().printStackTrace(output);
     output.flush();
-    final String out = os.toString(DatabaseFactory.getDefaultCharset());
+    String out;
+    try {
+		out = os.toString(DatabaseFactory.getDefaultCharset().name());
+	} catch (UnsupportedEncodingException e) {
+		out = new String(os.toByteArray());
+	}
     Assertions.assertFalse(out.contains("ArcadeDB"), "Some thread is still up & running: \n" + out);
   }
 
@@ -254,7 +260,7 @@ public abstract class BaseGraphServerTest {
 
   protected String readResponse(final HttpURLConnection connection) throws IOException {
     InputStream in = connection.getInputStream();
-    Scanner scanner = new Scanner(in, DatabaseFactory.getDefaultCharset());
+    Scanner scanner = new Scanner(new InputStreamReader(in, DatabaseFactory.getDefaultCharset()));
 
     final StringBuilder buffer = new StringBuilder();
 

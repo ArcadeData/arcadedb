@@ -42,7 +42,7 @@ public class LetQueryStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    if (getPrev().isEmpty()) {
+    if (!getPrev().isPresent()) {
       throw new CommandExecutionException("Cannot execute a local LET on a query without a target");
     }
     return new ResultSet() {

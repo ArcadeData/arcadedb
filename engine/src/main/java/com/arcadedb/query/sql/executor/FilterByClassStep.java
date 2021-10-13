@@ -42,7 +42,7 @@ public class FilterByClassStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    if (prev.isEmpty()) {
+    if (!prev.isPresent()) {
       throw new IllegalStateException("filter step requires a previous step");
     }
     ExecutionStepInternal prevStep = prev.get();

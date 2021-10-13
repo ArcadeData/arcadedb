@@ -91,7 +91,7 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
 
   private void executeAggregation(CommandContext ctx, int nRecords) {
     long timeoutBegin = System.currentTimeMillis();
-    if (prev.isEmpty()) {
+    if (!prev.isPresent()) {
       throw new CommandExecutionException("Cannot execute an aggregation or a GROUP BY without a previous result");
     }
     ExecutionStepInternal prevStep = prev.get();
