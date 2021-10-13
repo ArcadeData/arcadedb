@@ -424,7 +424,8 @@ public class EmbeddedSchema implements Schema {
   public TypeIndex createTypeIndex(final INDEX_TYPE indexType, final boolean unique, final String typeName, final String[] propertyNames, final int pageSize,
       final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, final Index.BuildIndexCallback callback) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
-
+    if(indexType==null)
+    	throw new DatabaseMetadataException("Cannot create index on type '" + typeName + "' because indexType was not specified");
     if (propertyNames.length == 0)
       throw new DatabaseMetadataException("Cannot create index on type '" + typeName + "' because there are no property defined");
 
