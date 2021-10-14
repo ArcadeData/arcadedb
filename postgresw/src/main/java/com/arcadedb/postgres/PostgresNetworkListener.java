@@ -30,14 +30,14 @@ public class PostgresNetworkListener extends Thread {
     void connected();
   }
 
-  private final ArcadeDBServer      server;
-  private final ServerSocketFactory socketFactory;
-  private       ServerSocket        serverSocket;
+  private final    ArcadeDBServer      server;
+  private final    ServerSocketFactory socketFactory;
+  private          ServerSocket        serverSocket;
   private          InetSocketAddress   inboundAddr;
-  private volatile boolean active           = true;
-  private final    int     socketBufferSize = 0;
-  private final    int     protocolVersion  = -1;
-  private final String hostName;
+  private volatile boolean             active           = true;
+  private final    int                 socketBufferSize = 0;
+  private final    int                 protocolVersion  = -1;
+  private final    String              hostName;
   private          int                 port;
   private          ClientConnected     callback;
 
