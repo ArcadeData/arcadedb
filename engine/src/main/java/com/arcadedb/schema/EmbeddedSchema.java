@@ -1218,7 +1218,7 @@ public class EmbeddedSchema implements Schema {
     final JSONObject settings = new JSONObject();
     root.put("settings", settings);
 
-    settings.put("timeZone", timeZone.getDisplayName());
+    settings.put("timeZone", timeZone.getID());
     settings.put("dateFormat", dateFormat);
     settings.put("dateTimeFormat", dateTimeFormat);
 
