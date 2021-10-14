@@ -120,6 +120,7 @@ function createDatabase(){
         }
       })
       .done(function(data){
+        $("#inputDatabase").val(database);
         updateDatabases();
       })
       .fail(function( jqXHR, textStatus, errorThrown ){
@@ -127,6 +128,8 @@ function createDatabase(){
       });
     }
   });
+
+  $("#inputCreateDatabaseName").focus();
 }
 
 function dropDatabase(){
@@ -403,7 +406,7 @@ function displaySchema(){
       let row = data.result[i];
 
       let tabHtml = "<li class='nav-item'><a data-toggle='tab' href='#tab-" + row.name + "' class='nav-link vertical-tab" + (i == 0 ? " active show" : "");
-      tabHtml += "' id='tab-" + row.name + "-sel'>" + row.name + " (" + row.properties.length + ")</a></li>";
+      tabHtml += "' id='tab-" + row.name + "-sel'>" + row.name + "</a></li>";
 
       let panelHtml = "<div class='tab-pane fade"+(i == 0 ? " active show" : "") +"' id='tab-"+row.name+"' role='tabpanel'>";
 

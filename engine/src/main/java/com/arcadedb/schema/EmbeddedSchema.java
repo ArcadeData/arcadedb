@@ -58,30 +58,30 @@ public class EmbeddedSchema implements Schema {
   public static final String DEFAULT_DATETIME_FORMAT = "yyyy-MM-dd HH:mm:ss";
   public static final String DEFAULT_ENCODING        = "UTF-8";
 
-  public static final  String                     SCHEMA_FILE_NAME          = "schema.json";
-  public static final  String                     SCHEMA_PREV_FILE_NAME     = "schema.prev.json";
-  private static final String                     ENCODING                  = DEFAULT_ENCODING;
-  private static final int                        EDGE_DEF_PAGE_SIZE        = Bucket.DEF_PAGE_SIZE / 3;
-  private static final int                        DEFAULT_CLUSTERS_PER_TYPE = 8;
+  public static final  String                     SCHEMA_FILE_NAME         = "schema.json";
+  public static final  String                     SCHEMA_PREV_FILE_NAME    = "schema.prev.json";
+  private static final String                     ENCODING                 = DEFAULT_ENCODING;
+  private static final int                        EDGE_DEF_PAGE_SIZE       = Bucket.DEF_PAGE_SIZE / 3;
+  private static final int                        DEFAULT_BUCKETS_PER_TYPE = 8;
   private final        DatabaseInternal           database;
   private final        SecurityManager            security;
-  private final        List<PaginatedComponent>   files                     = new ArrayList<>();
-  private final        Map<String, DocumentType>  types                     = new HashMap<>();
-  private final        Map<String, Bucket>        bucketMap                 = new HashMap<>();
-  protected final      Map<String, IndexInternal> indexMap                  = new HashMap<>();
+  private final        List<PaginatedComponent>   files                    = new ArrayList<>();
+  private final        Map<String, DocumentType>  types                    = new HashMap<>();
+  private final        Map<String, Bucket>        bucketMap                = new HashMap<>();
+  protected final      Map<String, IndexInternal> indexMap                 = new HashMap<>();
   private final        String                     databasePath;
   private final        File                       configurationFile;
   private final        PaginatedComponentFactory  paginatedComponentFactory;
-  private final        IndexFactory               indexFactory              = new IndexFactory();
+  private final        IndexFactory               indexFactory             = new IndexFactory();
   private              Dictionary                 dictionary;
-  private              String                     dateFormat                = DEFAULT_DATE_FORMAT;
-  private              String                     dateTimeFormat            = DEFAULT_DATETIME_FORMAT;
-  private              TimeZone                   timeZone                  = TimeZone.getDefault();
-  private              boolean                    readingFromFile           = false;
-  private              boolean                    dirtyConfiguration        = false;
-  private              boolean                    loadInRamCompleted        = false;
-  private              boolean                    multipleUpdate            = false;
-  private              AtomicLong                 versionSerial             = new AtomicLong();
+  private              String                     dateFormat               = DEFAULT_DATE_FORMAT;
+  private              String                     dateTimeFormat           = DEFAULT_DATETIME_FORMAT;
+  private              TimeZone                   timeZone                 = TimeZone.getDefault();
+  private              boolean                    readingFromFile          = false;
+  private              boolean                    dirtyConfiguration       = false;
+  private              boolean                    loadInRamCompleted       = false;
+  private              boolean                    multipleUpdate           = false;
+  private              AtomicLong                 versionSerial            = new AtomicLong();
 
   public EmbeddedSchema(final DatabaseInternal database, final String databasePath, final SecurityManager security) {
     this.database = database;
@@ -391,6 +391,8 @@ public class EmbeddedSchema implements Schema {
         index.drop();
       } catch (Exception e) {
         throw new SchemaException("Cannot drop the index '" + indexName + "' (error=" + e + ")", e);
+      } finally {
+        multipleUpdate = false;
       }
       return null;
     });
@@ -424,8 +426,8 @@ public class EmbeddedSchema implements Schema {
   public TypeIndex createTypeIndex(final INDEX_TYPE indexType, final boolean unique, final String typeName, final String[] propertyNames, final int pageSize,
       final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, final Index.BuildIndexCallback callback) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
-    if(indexType==null)
-    	throw new DatabaseMetadataException("Cannot create index on type '" + typeName + "' because indexType was not specified");
+    if (indexType == null)
+      throw new DatabaseMetadataException("Cannot create index on type '" + typeName + "' because indexType was not specified");
     if (propertyNames.length == 0)
       throw new DatabaseMetadataException("Cannot create index on type '" + typeName + "' because there are no property defined");
 
@@ -768,7 +770,7 @@ public class EmbeddedSchema implements Schema {
   }
 
   public DocumentType createDocumentType(final String typeName) {
-    return createDocumentType(typeName, DEFAULT_CLUSTERS_PER_TYPE);
+    return createDocumentType(typeName, DEFAULT_BUCKETS_PER_TYPE);
   }
 
   public DocumentType createDocumentType(final String typeName, final int buckets) {
@@ -819,7 +821,7 @@ public class EmbeddedSchema implements Schema {
 
   @Override
   public DocumentType getOrCreateDocumentType(final String typeName) {
-    return getOrCreateDocumentType(typeName, DEFAULT_CLUSTERS_PER_TYPE);
+    return getOrCreateDocumentType(typeName, DEFAULT_BUCKETS_PER_TYPE);
   }
 
   @Override
@@ -840,7 +842,7 @@ public class EmbeddedSchema implements Schema {
 
   @Override
   public VertexType createVertexType(final String typeName) {
-    return createVertexType(typeName, DEFAULT_CLUSTERS_PER_TYPE);
+    return createVertexType(typeName, DEFAULT_BUCKETS_PER_TYPE, database.getConfiguration().getValueAsInteger(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE));
   }
 
   @Override
@@ -892,7 +894,7 @@ public class EmbeddedSchema implements Schema {
 
   @Override
   public VertexType getOrCreateVertexType(final String typeName) {
-    return getOrCreateVertexType(typeName, DEFAULT_CLUSTERS_PER_TYPE);
+    return getOrCreateVertexType(typeName, DEFAULT_BUCKETS_PER_TYPE);
   }
 
   @Override
@@ -913,7 +915,7 @@ public class EmbeddedSchema implements Schema {
 
   @Override
   public EdgeType createEdgeType(final String typeName) {
-    return createEdgeType(typeName, DEFAULT_CLUSTERS_PER_TYPE);
+    return createEdgeType(typeName, DEFAULT_BUCKETS_PER_TYPE);
   }
 
   @Override
@@ -963,7 +965,7 @@ public class EmbeddedSchema implements Schema {
 
   @Override
   public EdgeType getOrCreateEdgeType(final String typeName) {
-    return getOrCreateEdgeType(typeName, DEFAULT_CLUSTERS_PER_TYPE);
+    return getOrCreateEdgeType(typeName, DEFAULT_BUCKETS_PER_TYPE);
   }
 
   @Override

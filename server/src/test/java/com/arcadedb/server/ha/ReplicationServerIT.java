@@ -31,6 +31,7 @@ import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
+import java.io.*;
 import java.util.*;
 import java.util.logging.*;
 
@@ -56,7 +57,7 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void testReplication() {
+  public void testReplication() throws IOException, Exception {
     testReplication(0);
   }
 
@@ -159,59 +160,60 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
 
   protected void checkEntriesOnServer(final int s) {
     final Database db = getServerDatabase(s, getDatabaseName());
-    db.begin();
-    try {
-      final long recordInDb = db.countType(VERTEX1_TYPE_NAME, true);
-      Assertions.assertTrue(recordInDb <= 1 + getTxs() * getVerticesPerTx(),
-          "TEST: Check for vertex count for server" + s + " found " + recordInDb + " not less than " + (1 + getTxs() * getVerticesPerTx()));
+    db.transaction(() -> {
+      try {
+        final long recordInDb = db.countType(VERTEX1_TYPE_NAME, true);
+        Assertions.assertTrue(recordInDb <= 1 + getTxs() * getVerticesPerTx(),
+            "TEST: Check for vertex count for server" + s + " found " + recordInDb + " not less than " + (1 + getTxs() * getVerticesPerTx()));
 
-      final TypeIndex index = db.getSchema().getType(VERTEX1_TYPE_NAME).getPolymorphicIndexByProperties("id");
-      long total = 0;
-      for (IndexCursor it = index.iterator(true); it.hasNext(); ) {
-        it.dumpStats();
-        it.next();
-        ++total;
+        final TypeIndex index = db.getSchema().getType(VERTEX1_TYPE_NAME).getPolymorphicIndexByProperties("id");
+        long total = 0;
+        for (IndexCursor it = index.iterator(true); it.hasNext(); ) {
+          it.dumpStats();
+          it.next();
+          ++total;
+        }
+
+        LogManager.instance().log(this, Level.INFO, "TEST: Entries in the index (%d) >= records in database (%d)", null, total, recordInDb);
+
+        final Map<RID, Set<String>> ridsFoundInIndex = new HashMap<>();
+        long total2 = 0;
+        long missingsCount = 0;
+
+        for (IndexCursor it = index.iterator(true); it.hasNext(); ) {
+          final Identifiable rid = it.next();
+          ++total2;
+
+          Set<String> rids = ridsFoundInIndex.get(rid);
+          if (rids == null) {
+            rids = new HashSet<>();
+            ridsFoundInIndex.put(rid.getIdentity(), rids);
+          }
+
+          rids.add(index.getName());
+
+          Record record = null;
+          try {
+            record = rid.getRecord(true);
+          } catch (RecordNotFoundException e) {
+            // IGNORE IT, CAUGHT BELOW
+          }
+
+          if (record == null) {
+            LogManager.instance().log(this, Level.INFO, "TEST: - Cannot find record %s in database even if it's present in the index (null)", null, rid);
+            missingsCount++;
+          }
+
+        }
+
+        Assertions.assertEquals(recordInDb, ridsFoundInIndex.size(), "TEST: Found " + ridsFoundInIndex + " missing records");
+        Assertions.assertEquals(0, missingsCount);
+        Assertions.assertEquals(total, total2);
+
+      } catch (Exception e) {
+        e.printStackTrace();
+        Assertions.fail("TEST: Error on checking on server" + s);
       }
-
-      LogManager.instance().log(this, Level.INFO, "TEST: Entries in the index (%d) >= records in database (%d)", null, total, recordInDb);
-
-      final Map<RID, Set<String>> ridsFoundInIndex = new HashMap<>();
-      long total2 = 0;
-      long missingsCount = 0;
-
-      for (IndexCursor it = index.iterator(true); it.hasNext(); ) {
-        final Identifiable rid = it.next();
-        ++total2;
-
-        Set<String> rids = ridsFoundInIndex.get(rid);
-        if (rids == null) {
-          rids = new HashSet<>();
-          ridsFoundInIndex.put(rid.getIdentity(), rids);
-        }
-
-        rids.add(index.getName());
-
-        Record record = null;
-        try {
-          record = rid.getRecord(true);
-        } catch (RecordNotFoundException e) {
-          // IGNORE IT, CAUGHT BELOW
-        }
-
-        if (record == null) {
-          LogManager.instance().log(this, Level.INFO, "TEST: - Cannot find record %s in database even if it's present in the index (null)", null, rid);
-          missingsCount++;
-        }
-
-      }
-
-      Assertions.assertEquals(recordInDb, ridsFoundInIndex.size(), "TEST: Found " + ridsFoundInIndex + " missing records");
-      Assertions.assertEquals(0, missingsCount);
-      Assertions.assertEquals(total, total2);
-
-    } catch (Exception e) {
-      e.printStackTrace();
-      Assertions.fail("TEST: Error on checking on server" + s);
-    }
+    });
   }
 }
