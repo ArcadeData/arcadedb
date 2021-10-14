@@ -124,6 +124,9 @@ public class ReplicatedDatabase implements DatabaseInternal {
           throw new TransactionException("Error on commit distributed transaction", e);
         }
 
+        if (getSchema().getEmbedded().isDirty())
+          getSchema().getEmbedded().saveConfiguration();
+
       } finally {
         current.popIfNotLastTransaction();
       }
