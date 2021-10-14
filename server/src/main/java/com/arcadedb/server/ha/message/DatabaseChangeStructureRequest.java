@@ -16,15 +16,13 @@
 package com.arcadedb.server.ha.message;
 
 import com.arcadedb.database.Binary;
-import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.ha.ReplicationException;
-import com.arcadedb.utility.FileUtils;
+import org.json.JSONObject;
 
 import java.io.*;
 import java.util.*;
@@ -130,18 +128,16 @@ public class DatabaseChangeStructureRequest extends HAAbstractCommand {
     final String databasePath = db.getDatabasePath();
 
     // ADD FILES
-    for (Map.Entry<Integer, String> entry : filesToAdd.entrySet()) {
+    for (Map.Entry<Integer, String> entry : filesToAdd.entrySet())
       db.getFileManager().getOrCreateFile(entry.getKey(), databasePath + "/" + entry.getValue());
-    }
 
     // REMOVE FILES
-    for (Map.Entry<Integer, String> entry : filesToRemove.entrySet()) {
+    for (Map.Entry<Integer, String> entry : filesToRemove.entrySet())
       db.getFileManager().dropFile(entry.getKey());
-    }
 
-    // REPLACE SCHEMA FILE
-    final File file = new File(db.getDatabasePath() + "/" + EmbeddedSchema.SCHEMA_FILE_NAME);
-    FileUtils.writeContentToStream(file, schemaJson.getBytes(DatabaseFactory.getDefaultCharset()));
+    if (!schemaJson.isEmpty())
+      // REPLACE SCHEMA FILE
+      db.getSchema().getEmbedded().update(new JSONObject(schemaJson));
   }
 
   @Override

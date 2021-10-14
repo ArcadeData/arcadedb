@@ -105,7 +105,6 @@ public class DatabaseComparator {
         db2.getPageManager().removePageFromCache(page2.getPageId());
       }
     }
-
   }
 
   public void compareTypes(final Database db1, final Database db2) {

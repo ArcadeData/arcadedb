@@ -54,10 +54,9 @@ import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
 public class EmbeddedSchema implements Schema {
-  public static final String DEFAULT_DATE_FORMAT     = "yyyy-MM-dd";
-  public static final String DEFAULT_DATETIME_FORMAT = "yyyy-MM-dd HH:mm:ss";
-  public static final String DEFAULT_ENCODING        = "UTF-8";
-
+  public static final  String                     DEFAULT_DATE_FORMAT      = "yyyy-MM-dd";
+  public static final  String                     DEFAULT_DATETIME_FORMAT  = "yyyy-MM-dd HH:mm:ss";
+  public static final  String                     DEFAULT_ENCODING         = "UTF-8";
   public static final  String                     SCHEMA_FILE_NAME         = "schema.json";
   public static final  String                     SCHEMA_PREV_FILE_NAME    = "schema.prev.json";
   private static final String                     ENCODING                 = DEFAULT_ENCODING;
@@ -1185,24 +1184,11 @@ public class EmbeddedSchema implements Schema {
     }
 
     try {
-      final JSONObject root = serializeConfiguration();
+      versionSerial.incrementAndGet();
 
-      if (configurationFile.exists()) {
-        final File copy = new File(databasePath + "/" + SCHEMA_PREV_FILE_NAME);
-        if (copy.exists())
-          if (!copy.delete())
-            LogManager.instance().log(this, Level.WARNING, "Error on deleting previous schema file '%s'", null, copy);
-
-        if (!configurationFile.renameTo(copy))
-          LogManager.instance().log(this, Level.WARNING, "Error on renaming previous schema file '%s'", null, copy);
-      }
-
-      try (FileWriter file = new FileWriter(databasePath + "/" + SCHEMA_FILE_NAME)) {
-        file.write(root.toString());
-      }
+      update(serializeConfiguration());
 
       dirtyConfiguration = false;
-      database.getExecutionPlanCache().invalidate();
 
     } catch (IOException e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on saving schema configuration to file: %s", e, databasePath + "/" + SCHEMA_FILE_NAME);
@@ -1211,7 +1197,7 @@ public class EmbeddedSchema implements Schema {
 
   public synchronized JSONObject serializeConfiguration() {
     final JSONObject root = new JSONObject();
-    root.put("schemaVersion", versionSerial.incrementAndGet());
+    root.put("schemaVersion", versionSerial.get());
     root.put("dbmsVersion", Constants.getRawVersion());
     root.put("dbmsBuild", Constants.getBuildNumber());
 
@@ -1338,5 +1324,28 @@ public class EmbeddedSchema implements Schema {
         // ROLLBACK THE DIRTY STATUS
         dirtyConfiguration = false;
     }
+  }
+
+  public synchronized void update(final JSONObject newSchema) throws IOException {
+    if (newSchema.has("schemaVersion"))
+      versionSerial.set(newSchema.getLong("schemaVersion"));
+
+    final String latestSchema = newSchema.toString();
+
+    if (configurationFile.exists()) {
+      final File copy = new File(databasePath + "/" + SCHEMA_PREV_FILE_NAME);
+      if (copy.exists())
+        if (!copy.delete())
+          LogManager.instance().log(this, Level.WARNING, "Error on deleting previous schema file '%s'", null, copy);
+
+      if (!configurationFile.renameTo(copy))
+        LogManager.instance().log(this, Level.WARNING, "Error on renaming previous schema file '%s'", null, copy);
+    }
+
+    try (FileWriter file = new FileWriter(databasePath + "/" + SCHEMA_FILE_NAME)) {
+      file.write(latestSchema);
+    }
+
+    database.getExecutionPlanCache().invalidate();
   }
 }

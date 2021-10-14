@@ -63,6 +63,7 @@ import com.arcadedb.server.ha.message.DatabaseChangeStructureRequest;
 import com.arcadedb.server.ha.message.TxForwardRequest;
 import com.arcadedb.server.ha.message.TxRequest;
 import com.arcadedb.utility.Pair;
+import org.json.JSONObject;
 
 import java.io.*;
 import java.util.*;
@@ -682,10 +683,11 @@ public class ReplicatedDatabase implements DatabaseInternal {
   private DatabaseChangeStructureRequest getChangeStructure(final long schemaVersionBefore) {
     final List<FileManager.FileChange> fileChanges = proxied.getFileManager().getRecordedChanges();
 
+    final boolean schemaChanged = proxied.getSchema().getEmbedded().isDirty() || //
+        schemaVersionBefore < 0 || proxied.getSchema().getEmbedded().getVersion() != schemaVersionBefore;
+
     if (fileChanges == null ||//
-        (fileChanges.isEmpty() &&//
-            !proxied.getSchema().getEmbedded().isDirty() && //
-            schemaVersionBefore > -1 && proxied.getSchema().getEmbedded().getVersion() == schemaVersionBefore))
+        (fileChanges.isEmpty() && !schemaChanged))
       // NO CHANGES
       return null;
 
@@ -698,8 +700,15 @@ public class ReplicatedDatabase implements DatabaseInternal {
         removeFiles.put(c.fileId, c.fileName);
     }
 
-    final String schemaJson = proxied.getSchema().getEmbedded().serializeConfiguration().toString();
+    final String serializedSchema;
+    if (schemaChanged) {
+      // SEND THE SCHEMA CONFIGURATION WITH NEXT VERSION (ON CURRENT SERVER WILL BE INCREMENTED + SAVED AT COMMIT TIME)
+      final JSONObject schemaJson = proxied.getSchema().getEmbedded().serializeConfiguration();
+      schemaJson.put("schemaVersion", schemaJson.getLong("schemaVersion") + 1);
+      serializedSchema = schemaJson.toString();
+    } else
+      serializedSchema = "";
 
-    return new DatabaseChangeStructureRequest(proxied.getName(), schemaJson, addFiles, removeFiles);
+    return new DatabaseChangeStructureRequest(proxied.getName(), serializedSchema, addFiles, removeFiles);
   }
 }
