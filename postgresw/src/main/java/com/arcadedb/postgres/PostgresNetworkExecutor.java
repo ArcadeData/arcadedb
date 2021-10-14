@@ -25,6 +25,7 @@ import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.QueryParsingException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ChannelBinaryServer;
+import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -63,10 +64,16 @@ public class PostgresNetworkExecutor extends Thread {
   private              long                                           processIdSequence          = 0;
   private static final Map<Long, Pair<Long, PostgresNetworkExecutor>> ACTIVE_SESSIONS            = new ConcurrentHashMap<>();
   private final        Map<String, PostgresPortal>                    portals                    = new HashMap<>();
-  private final        boolean                                        DEBUG                      = false;
+  private final        boolean                                        DEBUG                      = true;
   private final        Map<String, Object>                            connectionProperties       = new HashMap<>();
   private              boolean                                        explicitTransactionStarted = false;
   private              boolean                                        errorInTransaction         = false;
+  private              Set<String>                                    ignoreQueriesAppNames      = new HashSet<>(//
+      List.of("dbvis", "Database Navigator - Pool"));
+  private              Set<String>                                    ignoreQueries              = new HashSet<>(//
+      List.of(//
+          "select distinct PRIVILEGE_TYPE as PRIVILEGE_NAME from INFORMATION_SCHEMA.USAGE_PRIVILEGES order by PRIVILEGE_TYPE asc"//
+      ));
 
   private interface ReadMessageCallback {
     void read(char type, long length) throws IOException;
@@ -343,7 +350,12 @@ public class PostgresNetworkExecutor extends Thread {
           language = "mongo";
           queryText = queryText.substring("{mongo}".length());
         }
-        final ResultSet resultSet = database.command(language, queryText);
+
+        final ResultSet resultSet;
+        if (queryText.startsWith("SET ")) {
+          resultSet = new IteratorResultSet(Collections.emptyIterator());
+        } else
+          resultSet = database.command(language, queryText);
 
         final List<Result> cachedResultset = browseAndCacheResultset(resultSet);
 
@@ -566,8 +578,16 @@ public class PostgresNetworkExecutor extends Thread {
             Thread.currentThread().getId());
 
       final String upperCaseText = portal.query.toUpperCase();
-      if (upperCaseText.startsWith("SET ")) {
 
+      if (portal.query.isEmpty() ||//
+          (ignoreQueriesAppNames.contains(connectionProperties.get("application_name")) &&//
+              ignoreQueries.contains(portal.query))) {
+        // RETURN EMPTY RESULT
+        portal.executed = true;
+        portal.cachedResultset = new ArrayList<>();
+      } else if (upperCaseText.startsWith("SAVEPOINT ")) {
+        portal.ignoreExecution = true;
+      } else if (upperCaseText.startsWith("SET ")) {
         final String q = portal.query.substring("SET ".length());
         final String[] parts = q.split("=");
 
@@ -580,6 +600,28 @@ public class PostgresNetworkExecutor extends Thread {
         connectionProperties.put(parts[0], parts[1]);
 
         portal.ignoreExecution = true;
+      } else if (upperCaseText.equals("SELECT VERSION()")) {
+        portal.executed = true;
+        portal.cachedResultset = new ArrayList<>();
+        final Map<String, Object> map = new HashMap<>();
+        map.put("VERSION", "11.0.0");
+
+        final Result result = new ResultInternal(map);
+        portal.cachedResultset.add(result);
+
+        portal.columns = new HashMap<>();
+        portal.columns.put("VERSION", PostgresType.VARCHAR);
+      } else if (upperCaseText.equals("SELECT CURRENT_SCHEMA()")) {
+        portal.executed = true;
+        portal.cachedResultset = new ArrayList<>();
+        final Map<String, Object> map = new HashMap<>();
+        map.put("CURRENT_SCHEMA", database.getName());
+
+        final Result result = new ResultInternal(map);
+        portal.cachedResultset.add(result);
+
+        portal.columns = new HashMap<>();
+        portal.columns.put("CURRENT_SCHEMA", PostgresType.VARCHAR);
       } else if (upperCaseText.startsWith("SHOW ")) {
         portal.ignoreExecution = true;
       } else if ("dbvis".equals(connectionProperties.get("application_name"))) {
@@ -635,6 +677,76 @@ public class PostgresNetworkExecutor extends Thread {
             portal.columns.put("REF_GENERATION", PostgresType.VARCHAR);
           }
         }
+      } else if (portal.query.equals(
+          "select distinct GRANTEE as USER_NAME, 'N' as IS_EXPIRED, 'N' as IS_LOCKED from INFORMATION_SCHEMA.USAGE_PRIVILEGES order by GRANTEE asc")) {
+        portal.executed = true;
+        portal.cachedResultset = new ArrayList<>();
+        final Map<String, Object> map = new HashMap<>();
+        map.put("USER_NAME", "root");
+        map.put("IS_EXPIRED", 'N');
+        map.put("IS_LOCKED", 'N');
+        final Result result = new ResultInternal(map);
+        portal.cachedResultset.add(result);
+
+        portal.columns = new HashMap<>();
+        portal.columns.put("USER_NAME", PostgresType.VARCHAR);
+        portal.columns.put("IS_EXPIRED", PostgresType.CHAR);
+        portal.columns.put("IS_LOCKED", PostgresType.CHAR);
+
+      } else if (portal.query.equals(
+          "select CHARACTER_SET_NAME as CHARSET_NAME, -1 as MAX_LENGTH from INFORMATION_SCHEMA.CHARACTER_SETS order by CHARACTER_SET_NAME asc")) {
+        portal.executed = true;
+        portal.cachedResultset = new ArrayList<>();
+        final Map<String, Object> map = new HashMap<>();
+        map.put("CHARSET_NAME", "UTF-8");
+        map.put("MAX_LENGTH", -1);
+        final Result result = new ResultInternal(map);
+        portal.cachedResultset.add(result);
+
+        portal.columns = new HashMap<>();
+        portal.columns.put("CHARSET_NAME", PostgresType.VARCHAR);
+        portal.columns.put("MAX_LENGTH", PostgresType.INTEGER);
+      } else if (//
+          portal.query.equals(
+              "select NSPNAME as SCHEMA_NAME, case when lower(NSPNAME)='pg_catalog' then 'Y' else 'N' end as IS_PUBLIC, case when lower(NSPNAME)='information_schema' then 'Y' else 'N' end as IS_SYSTEM, 'N' as IS_EMPTY from PG_CATALOG.PG_NAMESPACE order by NSPNAME asc")
+              || portal.query.equals(
+              "select SCHEMA_NAME, case when lower(SCHEMA_NAME)='pg_catalog' then 'Y' else 'N' end as IS_PUBLIC, case when lower(SCHEMA_NAME)='information_schema' then 'Y' else 'N' end as IS_SYSTEM, 'N' as IS_EMPTY from INFORMATION_SCHEMA.SCHEMATA order by SCHEMA_NAME asc")) {
+
+        portal.executed = true;
+        portal.cachedResultset = new ArrayList<>();
+
+        for (String dbName : server.getDatabaseNames()) {
+          final Map<String, Object> map = new HashMap<>();
+          map.put("SCHEMA_NAME", dbName);
+          map.put("IS_PUBLIC", "Y");
+          map.put("IS_SYSTEM", "N");
+          map.put("IS_EMPTY", "N");
+          final Result result = new ResultInternal(map);
+          portal.cachedResultset.add(result);
+        }
+
+        portal.columns = new HashMap<>();
+        portal.columns.put("SCHEMA_NAME", PostgresType.VARCHAR);
+        portal.columns.put("IS_PUBLIC", PostgresType.CHAR);
+        portal.columns.put("IS_SYSTEM", PostgresType.CHAR);
+        portal.columns.put("IS_EMPTY", PostgresType.CHAR);
+      } else if (portal.query.equals(
+          "SELECT nspname AS TABLE_SCHEM, NULL AS TABLE_CATALOG FROM pg_catalog.pg_namespace  WHERE nspname <> 'pg_toast' AND (nspname !~ '^pg_temp_'  OR nspname = (pg_catalog.current_schemas(true))[1]) AND (nspname !~ '^pg_toast_temp_'  OR nspname = replace((pg_catalog.current_schemas(true))[1], 'pg_temp_', 'pg_toast_temp_'))  AND nspname LIKE E'%' ORDER BY TABLE_SCHEM")) {
+
+        portal.executed = true;
+        portal.cachedResultset = new ArrayList<>();
+
+        for (DocumentType t : database.getSchema().getTypes()) {
+          final Map<String, Object> map = new HashMap<>();
+          map.put("TABLE_SCHEM", t.getName());
+          map.put("TABLE_CATALOG", database.getName());
+          final Result result = new ResultInternal(map);
+          portal.cachedResultset.add(result);
+        }
+
+        portal.columns = new HashMap<>();
+        portal.columns.put("TABLE_SCHEM", PostgresType.VARCHAR);
+        portal.columns.put("TABLE_CATALOG", PostgresType.VARCHAR);
       } else
         portal.statement = SQLEngine.parse(portal.query, (DatabaseInternal) database);
 

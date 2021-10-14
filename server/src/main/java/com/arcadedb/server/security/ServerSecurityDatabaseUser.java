@@ -134,7 +134,7 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
       databaseAccessMap[DATABASE_ACCESS.getByName(access.getString(i)).ordinal()] = true;
   }
 
-  public void updateFileAccess(final DatabaseInternal database, final JSONObject configuredGroups) {
+  public synchronized void updateFileAccess(final DatabaseInternal database, final JSONObject configuredGroups) {
     if (configuredGroups == null)
       return;
 
