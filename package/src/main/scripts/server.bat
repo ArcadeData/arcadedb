@@ -87,6 +87,6 @@ rem TO DEBUG ARCADEDB SERVER RUN IT WITH THESE OPTIONS:
 rem -Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=n,address=1044
 rem AND ATTACH TO THE CURRENT HOST, PORT 1044
 
-call %JAVA% -server %JAVA_OPTS% %ARCADEDB_OPTS_MEMORY% %JAVA_OPTS_SCRIPT% %ARCADEDB_JMX% %ARCADEDB_SETTINGS% -cp "%ARCADEDB_HOME%\lib\*" %CMD_LINE_ARGS% com.arcadedb.server.ArcadeDBServer
+call %JAVA% -server %JAVA_OPTS% %ARCADEDB_OPTS_MEMORY% %JAVA_OPTS_SCRIPT% %ARCADEDB_JMX% %ARCADEDB_SETTINGS% %CMD_LINE_ARGS% -cp "%ARCADEDB_HOME%\lib\*" com.arcadedb.server.ArcadeDBServer
 
 :end
