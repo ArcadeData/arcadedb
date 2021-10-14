@@ -104,7 +104,7 @@ public class DocumentType {
   public List<DocumentType> getParentTypes() {
     return Collections.unmodifiableList(parentTypes);
   }
-  
+
   public void setParentTypes(List<DocumentType> newParents) {
 	if(newParents==null) newParents = Collections.emptyList();
 	List<DocumentType> commonParents = new ArrayList<>(parentTypes);

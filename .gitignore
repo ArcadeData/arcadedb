@@ -395,3 +395,6 @@ server/backups/
 config/server-users.jsonl
 config/server-groups.json
 gremlin/file:/
+
+# Ignore Vim Swap/Cache files
+*~
