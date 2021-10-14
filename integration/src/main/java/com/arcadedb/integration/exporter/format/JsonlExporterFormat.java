@@ -34,13 +34,13 @@ import java.io.*;
 import java.util.*;
 import java.util.zip.*;
 
-public class JsonlExporter extends AbstractExporter {
+public class JsonlExporterFormat extends AbstractExporterFormat {
   public static final  String             NAME       = "jsonl";
   protected final      JSONObject         sharedJson = new JSONObject();
   private              OutputStreamWriter writer;
   private final static int                VERSION    = 1;
 
-  public JsonlExporter(final DatabaseInternal database, final ExporterSettings settings, final ExporterContext context, final ConsoleLogger logger) {
+  public JsonlExporterFormat(final DatabaseInternal database, final ExporterSettings settings, final ExporterContext context, final ConsoleLogger logger) {
     super(database, settings, context, logger);
   }
 

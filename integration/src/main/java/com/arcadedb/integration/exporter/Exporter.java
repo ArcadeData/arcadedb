@@ -18,9 +18,10 @@ package com.arcadedb.integration.exporter;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.integration.exporter.format.AbstractExporter;
-import com.arcadedb.integration.exporter.format.GraphMLExporter;
-import com.arcadedb.integration.exporter.format.JsonlExporter;
+import com.arcadedb.integration.exporter.format.AbstractExporterFormat;
+import com.arcadedb.integration.exporter.format.GraphMLExporterFormat;
+import com.arcadedb.integration.exporter.format.GraphSONExporterFormat;
+import com.arcadedb.integration.exporter.format.JsonlExporterFormat;
 import com.arcadedb.integration.importer.ConsoleLogger;
 import com.arcadedb.log.LogManager;
 
@@ -28,12 +29,12 @@ import java.util.*;
 import java.util.logging.*;
 
 public class Exporter {
-  protected ExporterSettings settings = new ExporterSettings();
-  protected ExporterContext  context  = new ExporterContext();
-  protected DatabaseInternal database;
-  protected Timer            timer;
-  protected ConsoleLogger    logger;
-  protected AbstractExporter formatImplementation;
+  protected ExporterSettings       settings = new ExporterSettings();
+  protected ExporterContext        context  = new ExporterContext();
+  protected DatabaseInternal       database;
+  protected Timer                  timer;
+  protected ConsoleLogger          logger;
+  protected AbstractExporterFormat formatImplementation;
 
   public Exporter(final String[] args) {
     settings.parseParameters(args);
@@ -157,13 +158,16 @@ public class Exporter {
     }
   }
 
-  protected AbstractExporter createFormatImplementation() {
+  protected AbstractExporterFormat createFormatImplementation() {
     switch (settings.format.toLowerCase()) {
-    case JsonlExporter.NAME:
-      return new JsonlExporter(database, settings, context, logger);
+    case JsonlExporterFormat.NAME:
+      return new JsonlExporterFormat(database, settings, context, logger);
 
-    case GraphMLExporter.NAME:
-      return new GraphMLExporter(database, settings, context, logger);
+    case GraphMLExporterFormat.NAME:
+      return new GraphMLExporterFormat(database, settings, context, logger);
+
+    case GraphSONExporterFormat.NAME:
+      return new GraphSONExporterFormat(database, settings, context, logger);
 
     default:
       throw new ExportException("Format '" + settings.format + "' not supported");

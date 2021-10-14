@@ -27,11 +27,11 @@ import org.json.JSONObject;
 import java.io.*;
 import java.util.zip.*;
 
-public class GraphMLExporter extends AbstractExporter {
+public class GraphMLExporterFormat extends AbstractExporterFormat {
   public static final String     NAME       = "graphml";
   protected final     JSONObject sharedJson = new JSONObject();
 
-  public GraphMLExporter(final DatabaseInternal database, final ExporterSettings settings, final ExporterContext context, final ConsoleLogger logger) {
+  public GraphMLExporterFormat(final DatabaseInternal database, final ExporterSettings settings, final ExporterContext context, final ConsoleLogger logger) {
     super(database, settings, context, logger);
   }
 

@@ -18,6 +18,7 @@ package com.arcadedb.integration.importer;
 import com.arcadedb.integration.importer.format.CSVImporterFormat;
 import com.arcadedb.integration.importer.format.FormatImporter;
 import com.arcadedb.integration.importer.format.GraphMLImporterFormat;
+import com.arcadedb.integration.importer.format.GraphSONImporterFormat;
 import com.arcadedb.integration.importer.format.JSONImporterFormat;
 import com.arcadedb.integration.importer.format.OrientDBImporterFormat;
 import com.arcadedb.integration.importer.format.RDFImporterFormat;
@@ -196,6 +197,8 @@ public class SourceDiscovery {
 
       if (fileExtensionForFormat.endsWith(".tgz"))
         fileExtensionForFormat = fileExtensionForFormat.substring(0, fileExtensionForFormat.length() - ".tgz".length());
+      else if (fileExtensionForFormat.endsWith(".gz"))
+        fileExtensionForFormat = fileExtensionForFormat.substring(0, fileExtensionForFormat.length() - ".gz".length());
       else if (fileExtensionForFormat.endsWith(".zip"))
         fileExtensionForFormat = fileExtensionForFormat.substring(0, fileExtensionForFormat.length() - ".zip".length());
 
@@ -208,6 +211,9 @@ public class SourceDiscovery {
         break;
       case "graphml":
         knownFileType = "graphml";
+        break;
+      case "graphson":
+        knownFileType = "graphson";
         break;
       }
 
@@ -227,6 +233,8 @@ public class SourceDiscovery {
         return new XMLImporterFormat();
       else if (knownFileType.equalsIgnoreCase("graphml"))
         return new GraphMLImporterFormat();
+      else if (knownFileType.equalsIgnoreCase("graphson"))
+        return new GraphSONImporterFormat();
       else
         LogManager.instance().log(this, Level.WARNING, "File type '%s' is not supported. Trying to understand file type...", null, knownFileType);
     }
