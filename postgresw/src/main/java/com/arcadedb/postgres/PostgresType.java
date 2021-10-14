@@ -31,7 +31,6 @@ public enum PostgresType {
   BOOLEAN(16, Boolean.class, 1, -1),  //
   DATE(1082, Date.class, 8, -1), //
   VARCHAR(1043, String.class, -1, -1), //
-  ANY(2276, Object.class, 4, -1) //
   ;
 
   public final int      code;
@@ -98,11 +97,11 @@ public enum PostgresType {
       typeBuffer.putInt(Binary.BYTE_SERIALIZED_SIZE);
       typeBuffer.put((byte) (((Boolean) value) ? 1 : 0));
       break;
-
-    case ANY:
-      typeBuffer.putInt(Binary.INT_SERIALIZED_SIZE);
-      typeBuffer.putInt(((Number) value).intValue());
-      break;
+//
+//    case ANY:
+//      typeBuffer.putInt(Binary.INT_SERIALIZED_SIZE);
+//      typeBuffer.putInt(((Number) value).intValue());
+//      break;
 
     default:
       throw new PostgresProtocolException("Type " + this + " not supported for serializing");
@@ -131,8 +130,8 @@ public enum PostgresType {
         return str.charAt(0);
       else if (code == BOOLEAN.code)
         return str.equalsIgnoreCase("true");
-      else if (code == ANY.code)
-        return Integer.parseInt(str);
+//      else if (code == ANY.code)
+//        return Integer.parseInt(str);
       else
         throw new PostgresProtocolException("Type with code " + code + " not supported for deserializing");
 
@@ -160,8 +159,8 @@ public enum PostgresType {
         return typeBuffer.getChar();
       else if (code == BOOLEAN.code)
         return typeBuffer.get() == 1;
-      else if (code == ANY.code)
-        return typeBuffer.getInt();
+//      else if (code == ANY.code)
+//        return typeBuffer.getInt();
       else
         throw new PostgresProtocolException("Type with code " + code + " not supported for deserializing");
 

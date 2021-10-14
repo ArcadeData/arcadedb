@@ -343,7 +343,20 @@ public class PostgresNetworkExecutor extends Thread {
           language = "mongo";
           queryText = queryText.substring("{mongo}".length());
         }
+<<<<<<< Updated upstream
         final ResultSet resultSet = database.command(language, queryText);
+=======
+
+        final ResultSet resultSet;
+        if (queryText.startsWith("SET ")) {
+          resultSet = new IteratorResultSet(Collections.emptyIterator());
+        } else if (queryText.equals("SELECT VERSION()")) {
+          resultSet = new IteratorResultSet(createResultSet("VERSION", "11.0.0").iterator());
+        } else if (queryText.equals("SELECT CURRENT_SCHEMA()")) {
+          resultSet = new IteratorResultSet(createResultSet("CURRENT_SCHEMA", database.getName()).iterator());
+        } else
+          resultSet = database.command(language, queryText);
+>>>>>>> Stashed changes
 
         final List<Result> cachedResultset = browseAndCacheResultset(resultSet);
 
@@ -407,7 +420,7 @@ public class PostgresNetworkExecutor extends Thread {
 
           if (valueType == null) {
             // FIND THE VALUE TYPE AND WRITE IT IN THE DATA DESCRIPTION
-            final Class valueClass = value.getClass();
+            Class valueClass = value.getClass();
 
             for (PostgresType t : PostgresType.values()) {
               if (t.cls.isAssignableFrom(valueClass)) {
@@ -417,7 +430,7 @@ public class PostgresNetworkExecutor extends Thread {
             }
 
             if (valueType == null)
-              valueType = PostgresType.ANY;
+              valueType = PostgresType.VARCHAR;
 
             columns.put(p, valueType);
           }
@@ -580,8 +593,18 @@ public class PostgresNetworkExecutor extends Thread {
         connectionProperties.put(parts[0], parts[1]);
 
         portal.ignoreExecution = true;
+<<<<<<< Updated upstream
+=======
+      } else if (upperCaseText.equals("SELECT VERSION()")) {
+        createResultSet(portal, "VERSION", "11.0.0");
+
+      } else if (upperCaseText.equals("SELECT CURRENT_SCHEMA()")) {
+        createResultSet(portal, "CURRENT_SCHEMA", database.getName());
+
+>>>>>>> Stashed changes
       } else if (upperCaseText.startsWith("SHOW ")) {
         portal.ignoreExecution = true;
+
       } else if ("dbvis".equals(connectionProperties.get("application_name"))) {
         // SPECIAL CASES
         if (portal.query.equals(
@@ -947,5 +970,21 @@ public class PostgresNetworkExecutor extends Thread {
       return portals.remove(name);
     else
       return portals.get(name);
+  }
+
+  private void createResultSet(final PostgresPortal portal, final Object... elements) {
+    portal.executed = true;
+    portal.cachedResultset = createResultSet(elements);
+    portal.columns = getColumns(portal.cachedResultset);
+  }
+
+  private List<Result> createResultSet(final Object... elements) {
+    final List<Result> resultSet = new ArrayList<>();
+    for (int i = 0; i < elements.length; i += 2) {
+      final Map<String, Object> map = new HashMap<>(2);
+      map.put((String) elements[i], elements[i + 1]);
+      resultSet.add(new ResultInternal(map));
+    }
+    return resultSet;
   }
 }
