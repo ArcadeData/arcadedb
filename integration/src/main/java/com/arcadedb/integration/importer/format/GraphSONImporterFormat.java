@@ -28,7 +28,7 @@ import org.apache.tinkerpop.gremlin.structure.io.IoCore;
 
 import java.io.*;
 
-public class GraphMLImporterFormat extends CSVImporterFormat {
+public class GraphSONImporterFormat extends CSVImporterFormat {
   @Override
   public void load(final SourceSchema sourceSchema, AnalyzedEntity.ENTITY_TYPE entityType, final Parser parser, final DatabaseInternal database,
       final ImporterContext context, final ImporterSettings settings) throws ImportException {
@@ -36,7 +36,7 @@ public class GraphMLImporterFormat extends CSVImporterFormat {
     final ArcadeGraph graph = ArcadeGraph.open(database);
 
     try (InputStream is = parser.getInputStream()) {
-      graph.io(IoCore.graphml()).reader().create().readGraph(is, graph);
+      graph.io(IoCore.graphson()).reader().create().readGraph(is, graph);
     } catch (IOException e) {
       throw new ImportException("Error on importing GraphML", e);
     }
@@ -50,6 +50,6 @@ public class GraphMLImporterFormat extends CSVImporterFormat {
 
   @Override
   public String getFormat() {
-    return "graphml";
+    return "graphson";
   }
 }

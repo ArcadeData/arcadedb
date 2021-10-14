@@ -23,14 +23,14 @@ import com.arcadedb.integration.importer.ConsoleLogger;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
 
-public abstract class AbstractExporter {
+public abstract class AbstractExporterFormat {
   protected final        ExporterSettings settings;
   protected final        ExporterContext  context;
   protected final        DatabaseInternal database;
   protected final        ConsoleLogger    logger;
   protected static final DateFormat       dateFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS");
 
-  protected AbstractExporter(final DatabaseInternal database, final ExporterSettings settings, final ExporterContext context, final ConsoleLogger logger) {
+  protected AbstractExporterFormat(final DatabaseInternal database, final ExporterSettings settings, final ExporterContext context, final ConsoleLogger logger) {
     this.database = database;
     this.settings = settings;
     this.context = context;
