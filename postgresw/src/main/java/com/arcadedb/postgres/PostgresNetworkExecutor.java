@@ -252,9 +252,9 @@ public class PostgresNetworkExecutor extends Thread {
     }
 
     if (type == 'P') {
-      if (portal.statement != null) {
+      if (portal.sqlStatement != null) {
         final Object[] parameters = portal.parameterValues != null ? portal.parameterValues.toArray() : new Object[0];
-        final ResultSet resultSet = portal.statement.execute(database, parameters);
+        final ResultSet resultSet = portal.sqlStatement.execute(database, parameters);
         portal.executed = true;
         if (portal.isExpectingResult) {
           portal.cachedResultset = browseAndCacheResultset(resultSet);
@@ -294,7 +294,7 @@ public class PostgresNetworkExecutor extends Thread {
       else {
         if (!portal.executed) {
           final Object[] parameters = portal.parameterValues != null ? portal.parameterValues.toArray() : new Object[0];
-          final ResultSet resultSet = portal.statement.execute(database, parameters);
+          final ResultSet resultSet = portal.sqlStatement.execute(database, parameters);
           portal.executed = true;
           if (portal.isExpectingResult) {
             portal.cachedResultset = browseAndCacheResultset(resultSet);
@@ -339,17 +339,10 @@ public class PostgresNetworkExecutor extends Thread {
         writeMessage("empty query response", null, 'I', 4);
 
       } else {
-        String language = "sql";
-        if (queryText.startsWith("{cypher}")) {
-          language = "cypher";
-          queryText = queryText.substring("{cypher}".length());
-        } else if (queryText.startsWith("{gremlin}")) {
-          language = "gremlin";
-          queryText = queryText.substring("{gremlin}".length());
-        } else if (queryText.startsWith("{mongo}")) {
-          language = "mongo";
-          queryText = queryText.substring("{mongo}".length());
-        }
+        final String[] query = getLanguageAndQuery(queryText);
+        final String language = query[0];
+        queryText = query[1];
+
         final ResultSet resultSet;
         if (queryText.startsWith("SET ")) {
           resultSet = new IteratorResultSet(Collections.emptyIterator());
@@ -735,8 +728,22 @@ public class PostgresNetworkExecutor extends Thread {
         portal.columns = new HashMap<>();
         portal.columns.put("TABLE_SCHEM", PostgresType.VARCHAR);
         portal.columns.put("TABLE_CATALOG", PostgresType.VARCHAR);
-      } else
-        portal.statement = SQLEngine.parse(portal.query, (DatabaseInternal) database);
+      } else {
+        final String[] query = getLanguageAndQuery(portal.query);
+        final String language = query[0];
+        final String queryText = query[1];
+
+        switch (language) {
+        case "sql":
+          portal.sqlStatement = SQLEngine.parse(queryText, (DatabaseInternal) database);
+          break;
+        default:
+          portal.executed = true;
+          final ResultSet resultSet = database.command(language, queryText);
+          portal.cachedResultset = browseAndCacheResultset(resultSet);
+          portal.columns = getColumns(portal.cachedResultset);
+        }
+      }
 
       if (portal.query.equalsIgnoreCase("BEGIN")) {
         explicitTransactionStarted = true;
@@ -1063,5 +1070,21 @@ public class PostgresNetworkExecutor extends Thread {
       resultSet.add(new ResultInternal(map));
     }
     return resultSet;
+  }
+
+  private String[] getLanguageAndQuery(final String query) {
+    String language = "sql";
+    String queryText = query;
+    if (queryText.startsWith("{cypher}")) {
+      language = "cypher";
+      queryText = queryText.substring("{cypher}".length());
+    } else if (queryText.startsWith("{gremlin}")) {
+      language = "gremlin";
+      queryText = queryText.substring("{gremlin}".length());
+    } else if (queryText.startsWith("{mongo}")) {
+      language = "mongo";
+      queryText = queryText.substring("{mongo}".length());
+    }
+    return new String[] { language, queryText };
   }
 }

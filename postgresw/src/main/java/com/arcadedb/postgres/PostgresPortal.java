@@ -18,8 +18,7 @@ package com.arcadedb.postgres;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.parser.Statement;
 
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 public class PostgresPortal {
   public String                    query;
@@ -27,7 +26,7 @@ public class PostgresPortal {
   public List<Integer>             parameterFormats;
   public List<Object>              parameterValues;
   public List<Integer>             resultFormats;
-  public Statement                 statement;
+  public Statement                 sqlStatement;
   public boolean                   ignoreExecution   = false;
   public List<Result>              cachedResultset;
   public Map<String, PostgresType> columns;
