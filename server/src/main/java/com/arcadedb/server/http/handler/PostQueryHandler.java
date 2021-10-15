@@ -46,9 +46,7 @@ public class PostQueryHandler extends DatabaseAbstractHandler {
     final JSONObject json = new JSONObject(payload);
 
     final Map<String, Object> requestMap = json.toMap();
-
     final String language = (String) requestMap.get("language");
-
     final String command = (String) requestMap.get("command");
 
     if (command == null || command.isEmpty()) {
@@ -58,16 +56,11 @@ public class PostQueryHandler extends DatabaseAbstractHandler {
     }
 
     final Map<String, Object> paramMap = (Map<String, Object>) requestMap.get("params");
-
     final ServerMetrics.MetricTimer timer = httpServer.getServer().getServerMetrics().timer("http.command");
 
-    database.begin();
     try {
-
       final ResultSet qResult = command(database, language, command, paramMap);
-
       final JsonSerializer serializer = httpServer.getJsonSerializer();
-
       final String result = qResult.stream().map(r -> serializer.serializeResult(r).toString()).collect(Collectors.joining(","));
 
       if (database.isTransactionActive())
@@ -78,7 +71,6 @@ public class PostQueryHandler extends DatabaseAbstractHandler {
 
     } finally {
       timer.stop();
-      database.rollbackAllNested();
     }
 
   }
@@ -104,5 +96,10 @@ public class PostQueryHandler extends DatabaseAbstractHandler {
       }
     }
     return Optional.ofNullable(paramMap).orElse(Collections.emptyMap());
+  }
+
+  @Override
+  protected boolean requiresTransaction() {
+    return false;
   }
 }

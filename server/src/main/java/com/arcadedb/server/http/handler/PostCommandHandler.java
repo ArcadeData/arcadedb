@@ -150,14 +150,10 @@ public class PostCommandHandler extends DatabaseAbstractHandler {
       }
       }
 
-      if (database.isTransactionActive())
-        database.commit();
-
       exchange.setStatusCode(200);
       exchange.getResponseSender().send(response.toString());
 
     } finally {
-      database.rollbackAllNested();
       timer.stop();
     }
   }

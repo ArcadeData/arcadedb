@@ -1,0 +1,100 @@
+/*
+ * Copyright 2021 Arcade Data Ltd
+ *
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+package com.arcadedb.server.http;
+
+import com.arcadedb.database.TransactionContext;
+import com.arcadedb.log.LogManager;
+import com.arcadedb.server.security.ServerSecurityUser;
+import com.arcadedb.utility.RWLockContext;
+
+import java.util.*;
+import java.util.logging.*;
+
+/**
+ * Handles the stateful transactions in HTTP protocol as sessions. A HTTP transaction starts with the `/begin` command and is committed with `/commit` and
+ * rolled back with `/rollback`.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+public class HttpTransactionManager extends RWLockContext {
+  public static final String                   ARCADEDB_SESSION_ID = "arcadedb-session-id";
+  private final       Map<String, HttpSession> sessions            = new HashMap<>();
+  private final       long                     expirationTimeInMs;
+  private final       Timer                    timer;
+
+  public HttpTransactionManager(final long expirationTimeInMs) {
+    this.expirationTimeInMs = expirationTimeInMs;
+
+    timer = new Timer();
+    timer.schedule(new TimerTask() {
+      @Override
+      public void run() {
+        final int expired = checkSessionsValidity();
+        if (expired > 0)
+          LogManager.instance().log(this, Level.FINE, "Removed %d expired sessions", null, expired);
+      }
+    }, expirationTimeInMs, expirationTimeInMs);
+  }
+
+  public void close() {
+    timer.cancel();
+    sessions.clear();
+  }
+
+  public int checkSessionsValidity() {
+    return executeInWriteLock(() -> {
+      int expired = 0;
+      Map.Entry<String, HttpSession> s;
+      for (Iterator<Map.Entry<String, HttpSession>> it = sessions.entrySet().iterator(); it.hasNext(); ) {
+        s = it.next();
+
+        if (s.getValue().elapsedFromLastUpdate() > expirationTimeInMs) {
+          // REMOVE THE SESSION
+          it.remove();
+          expired++;
+        }
+      }
+      return expired;
+    });
+  }
+
+  public HttpSession getSessionById(final ServerSecurityUser user, final String txId) {
+    return executeInReadLock(() -> {
+      final HttpSession tx = sessions.get(txId);
+      if (tx != null)
+        tx.use(user);
+      return tx;
+    });
+  }
+
+  public HttpSession createSession(final ServerSecurityUser user, final TransactionContext dbTx) {
+    return executeInWriteLock(() -> {
+      final String id = "AS-" + UUID.randomUUID();
+      final HttpSession session = new HttpSession(user, id, dbTx);
+      sessions.put(id, session);
+      return session;
+    });
+  }
+
+  public HttpSession removeSession(final String iSessionId) {
+    return executeInWriteLock(() -> sessions.remove(iSessionId));
+  }
+}

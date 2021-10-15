@@ -16,6 +16,7 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.Constants;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
@@ -114,19 +115,19 @@ public abstract class AbstractHandler implements HttpHandler {
       }
 
     } catch (ServerSecurityException e) {
-      LogManager.instance().log(this, Level.FINE, "Security error on command execution (%s)", e, getClass().getSimpleName());
+      LogManager.instance().log(this, getErrorLogLevel(), "Security error on command execution (%s)", e, getClass().getSimpleName());
       exchange.setStatusCode(403);
       exchange.getResponseSender().send(error2json("Security error", e.getMessage(), e, null, null));
     } catch (ServerIsNotTheLeaderException e) {
-      LogManager.instance().log(this, Level.FINE, "Error on command execution (%s)", e, getClass().getSimpleName());
+      LogManager.instance().log(this, getErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
       exchange.setStatusCode(400);
       exchange.getResponseSender().send(error2json("Cannot execute command", e.getMessage(), e, e.getLeaderAddress(), null));
     } catch (NeedRetryException e) {
-      LogManager.instance().log(this, Level.FINE, "Error on command execution (%s)", e, getClass().getSimpleName());
+      LogManager.instance().log(this, getErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
       exchange.setStatusCode(503);
       exchange.getResponseSender().send(error2json("Cannot execute command", e.getMessage(), e, null, null));
     } catch (DuplicatedKeyException e) {
-      LogManager.instance().log(this, Level.FINE, "Error on command execution (%s)", e, getClass().getSimpleName());
+      LogManager.instance().log(this, getErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
       exchange.setStatusCode(503);
       exchange.getResponseSender()
           .send(error2json("Found duplicate key in index", e.getMessage(), e, e.getIndexName() + "|" + e.getKeys() + "|" + e.getCurrentIndexedRID(), null));
@@ -135,7 +136,7 @@ public abstract class AbstractHandler implements HttpHandler {
       if (e.getCause() != null)
         realException = e.getCause();
 
-      LogManager.instance().log(this, Level.FINE, "Error on command execution (%s)", e, getClass().getSimpleName());
+      LogManager.instance().log(this, getErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
       exchange.setStatusCode(500);
       exchange.getResponseSender().send(error2json("Cannot execute command", realException.getMessage(), realException, null, null));
     } catch (TransactionException e) {
@@ -143,11 +144,11 @@ public abstract class AbstractHandler implements HttpHandler {
       if (e.getCause() != null)
         realException = e.getCause();
 
-      LogManager.instance().log(this, Level.FINE, "Error on transaction execution (%s)", e, getClass().getSimpleName());
+      LogManager.instance().log(this, getErrorLogLevel(), "Error on transaction execution (%s)", e, getClass().getSimpleName());
       exchange.setStatusCode(500);
       exchange.getResponseSender().send(error2json("Error on transaction commit", realException.getMessage(), realException, null, null));
     } catch (Exception e) {
-      LogManager.instance().log(this, Level.FINE, "Error on command execution (%s)", e, getClass().getSimpleName());
+      LogManager.instance().log(this, getErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
       exchange.setStatusCode(500);
       exchange.getResponseSender().send(error2json("Internal error", e.getMessage(), e, null, null));
     } finally {
@@ -191,5 +192,9 @@ public abstract class AbstractHandler implements HttpHandler {
 
   protected String encodeError(final String message) {
     return message.replaceAll("\\\\", " ").replaceAll("\n", " ");//.replaceAll("\"", "'");
+  }
+
+  private Level getErrorLogLevel() {
+    return "development".equals(httpServer.getServer().getConfiguration().getValueAsString(GlobalConfiguration.SERVER_MODE)) ? Level.INFO : Level.FINE;
   }
 }

@@ -15,7 +15,9 @@
  */
 package com.arcadedb.console;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.remote.RemoteException;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
@@ -29,6 +31,11 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
   private static final String  URL_NOCREDENTIALS = "remote:localhost/console";
   private static final String  URL_WRONGPASSWD   = "remote:localhost/console root wrong";
   private static       Console console;
+
+  public void setTestConfiguration() {
+    super.setTestConfiguration();
+    GlobalConfiguration.SERVER_HTTP_TX_EXPIRE_TIMEOUT.setValue(3);
+  }
 
   @Test
   public void testConnect() throws IOException {
@@ -64,12 +71,7 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
     Assertions.assertTrue(console.parse("create document type Person2", false));
 
     final StringBuilder buffer = new StringBuilder();
-    console.setOutput(new ConsoleOutput() {
-      @Override
-      public void onOutput(final String output) {
-        buffer.append(output);
-      }
-    });
+    console.setOutput(output -> buffer.append(output));
     Assertions.assertTrue(console.parse("info types", false));
     Assertions.assertTrue(buffer.toString().contains("Person2"));
     Assertions.assertTrue(console.parse("drop type Person2", false));
@@ -82,45 +84,64 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
     Assertions.assertTrue(console.parse("insert into Person2 set name = 'Jay', lastname='Miner'", false));
 
     final StringBuilder buffer = new StringBuilder();
-    console.setOutput(new ConsoleOutput() {
-      @Override
-      public void onOutput(final String output) {
-        buffer.append(output);
-      }
-    });
+    console.setOutput(output -> buffer.append(output));
     Assertions.assertTrue(console.parse("select from Person2", false));
     Assertions.assertTrue(buffer.toString().contains("Jay"));
     Assertions.assertTrue(console.parse("drop type Person2", false));
   }
-//
-//  @Test
-//  public void testInsertAndRollback() throws IOException {
-//    Assertions.assertTrue(console.parse("connect " + URL));
-//    Assertions.assertTrue(console.parse("begin"));
-//    Assertions.assertTrue(console.parse("create document type Person"));
-//    Assertions.assertTrue(console.parse("insert into Person set name = 'Jay', lastname='Miner'"));
-//    Assertions.assertTrue(console.parse("rollback"));
-//
-//    final StringBuilder buffer = new StringBuilder();
-//    console.setOutput(new ConsoleOutput() {
-//      @Override
-//      public void onOutput(final String output) {
-//        buffer.append(output);
-//      }
-//    });
-//    Assertions.assertTrue(console.parse("select from Person"));
-//    Assertions.assertFalse(buffer.toString().contains("Jay"));
-//  }
+
+  @Test
+  public void testInsertAndRollback() throws IOException {
+    Assertions.assertTrue(console.parse("connect " + URL, false));
+    Assertions.assertTrue(console.parse("begin", false));
+    Assertions.assertTrue(console.parse("create document type Person", false));
+    Assertions.assertTrue(console.parse("insert into Person set name = 'Jay', lastname='Miner'", false));
+    Assertions.assertTrue(console.parse("rollback", false));
+
+    final StringBuilder buffer = new StringBuilder();
+    console.setOutput(output -> buffer.append(output));
+    Assertions.assertTrue(console.parse("select from Person", false));
+    Assertions.assertFalse(buffer.toString().contains("Jay"));
+  }
+
+  @Test
+  public void testInsertAndCommit() throws IOException {
+    Assertions.assertTrue(console.parse("connect " + URL, false));
+    Assertions.assertTrue(console.parse("begin", false));
+    Assertions.assertTrue(console.parse("create document type Person", false));
+    Assertions.assertTrue(console.parse("insert into Person set name = 'Jay', lastname='Miner'", false));
+    Assertions.assertTrue(console.parse("commit", false));
+
+    final StringBuilder buffer = new StringBuilder();
+    console.setOutput(output -> buffer.append(output));
+    Assertions.assertTrue(console.parse("select from Person", false));
+    Assertions.assertTrue(buffer.toString().contains("Jay"));
+  }
+
+  @Test
+  public void testTransactionExpired() throws IOException, InterruptedException {
+    Assertions.assertTrue(console.parse("connect " + URL, false));
+    Assertions.assertTrue(console.parse("begin", false));
+    Assertions.assertTrue(console.parse("create document type Person", false));
+    Assertions.assertTrue(console.parse("insert into Person set name = 'Jay', lastname='Miner'", false));
+    Thread.sleep(5000);
+    try {
+      Assertions.assertTrue(console.parse("commit", false));
+      Assertions.fail();
+    } catch (Exception e) {
+      // EXPECTED
+    }
+
+    final StringBuilder buffer = new StringBuilder();
+    console.setOutput(output -> buffer.append(output));
+    Assertions.assertTrue(console.parse("select from Person", false));
+    Assertions.assertFalse(buffer.toString().contains("Jay"));
+  }
 
   @Test
   public void testHelp() throws IOException {
     final StringBuilder buffer = new StringBuilder();
-    console.setOutput(new ConsoleOutput() {
-      @Override
-      public void onOutput(final String output) {
-        buffer.append(output);
-      }
-    });
+    console.setOutput(output -> buffer.append(output));
     Assertions.assertTrue(console.parse("?", false));
     Assertions.assertTrue(buffer.toString().contains("quit"));
   }
@@ -154,5 +175,10 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
     super.endTest();
     if (console != null)
       console.close();
+  }
+
+  @AfterAll
+  public static void afterAll() {
+    GlobalConfiguration.SERVER_HTTP_TX_EXPIRE_TIMEOUT.setValue(GlobalConfiguration.SERVER_HTTP_TX_EXPIRE_TIMEOUT.getDefValue());
   }
 }

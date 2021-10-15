@@ -221,6 +221,9 @@ public enum GlobalConfiguration {
   SERVER_HTTP_AUTOINCREMENT_PORT("arcadedb.server.httpAutoIncrementPort",
       "True to increment the TCP/IP port number used for incoming HTTP in case the configured is not available", Boolean.class, true),
 
+  SERVER_HTTP_TX_EXPIRE_TIMEOUT("arcadedb.server.httpTxExpireTimeout",
+      "Timeout in seconds for a HTTP transaction to expire. This timeout is computed from the latest command against the transaction", Long.class, 30),
+
   // SERVER SECURITY
   SERVER_SECURITY_ALGORITHM("arcadedb.server.securityAlgorithm", "Default encryption algorithm used for passwords hashing", String.class,
       "PBKDF2WithHmacSHA256"),

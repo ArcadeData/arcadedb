@@ -17,36 +17,25 @@ package com.arcadedb.server.http.handler;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.http.HttpTransactionManager;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
-import java.util.*;
+import java.io.*;
 
-public class PostCreateDatabaseHandler extends DatabaseAbstractHandler {
-  public PostCreateDatabaseHandler(final HttpServer httpServer) {
+public class PostRollbackHandler extends DatabaseAbstractHandler {
+
+  public PostRollbackHandler(final HttpServer httpServer) {
     super(httpServer);
   }
 
   @Override
-  protected boolean requiresDatabase() {
-    return false;
-  }
+  public void execute(final HttpServerExchange exchange, ServerSecurityUser user, final Database database) throws IOException {
+    database.rollback();
 
-  @Override
-  public void execute(final HttpServerExchange exchange, ServerSecurityUser user, final Database database) {
-    final Deque<String> databaseName = exchange.getQueryParameters().get("database");
-    if (databaseName.isEmpty()) {
-      exchange.setStatusCode(400);
-      exchange.getResponseSender().send("{ \"error\" : \"Database parameter is null\"}");
-      return;
-    }
-
-    httpServer.getServer().getServerMetrics().meter("http.create-database").mark();
-
-    httpServer.getServer().createDatabase(databaseName.getFirst());
-
-    exchange.setStatusCode(200);
-    exchange.getResponseSender().send("{ \"result\" : \"ok\"}");
+    exchange.getResponseHeaders().remove(HttpTransactionManager.ARCADEDB_SESSION_ID);
+    exchange.setStatusCode(204);
+    exchange.getResponseSender().send("");
   }
 
   @Override

@@ -19,22 +19,30 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.http.HttpSession;
+import com.arcadedb.server.http.HttpTransactionManager;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
+import io.undertow.util.HeaderValues;
+import io.undertow.util.HttpString;
 
 import java.util.*;
 
 public abstract class DatabaseAbstractHandler extends AbstractHandler {
-  public DatabaseAbstractHandler(final HttpServer httpServer) {
+  private static final HttpString SESSION_ID_HEADER = new HttpString(HttpTransactionManager.ARCADEDB_SESSION_ID);
+
+  protected DatabaseAbstractHandler(final HttpServer httpServer) {
     super(httpServer);
   }
 
   protected abstract void execute(HttpServerExchange exchange, ServerSecurityUser user, Database database) throws Exception;
 
   @Override
-  public void execute(final HttpServerExchange exchange, ServerSecurityUser user) throws Exception {
+  public void execute(final HttpServerExchange exchange, final ServerSecurityUser user) throws Exception {
     final Database database;
-    if (openDatabase()) {
+    HttpSession activeSession = null;
+    boolean atomicTransaction = false;
+    if (requiresDatabase()) {
       final Deque<String> databaseName = exchange.getQueryParameters().get("database");
       if (databaseName.isEmpty()) {
         exchange.setStatusCode(400);
@@ -44,22 +52,70 @@ public abstract class DatabaseAbstractHandler extends AbstractHandler {
 
       database = httpServer.getServer().getDatabase(databaseName.getFirst());
 
-      DatabaseContext.INSTANCE.init((DatabaseInternal) database).setCurrentUser(user.getDatabaseUser(database));
+      activeSession = setTransactionInThreadLocal(exchange, database, user, false);
+
+      if (requiresTransaction() && activeSession == null) {
+        atomicTransaction = true;
+        database.begin();
+      }
 
     } else
       database = null;
 
     try {
-
       execute(exchange, user, database);
-
     } finally {
-      if (database != null)
-        database.rollbackAllNested();
+
+      if (activeSession != null) {
+        // TRANSACTION FOUND, REMOVE THE TRANSACTION TO BE REUSED IN ANOTHER REQUEST
+        activeSession.endUsage();
+        DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
+      } else if (database != null) {
+        if (atomicTransaction)
+          // STARTED ATOMIC TRANSACTION, COMMIT
+          database.commit();
+        else
+          // NO TRANSACTION, ROLLBACK TO MAKE SURE ANY PENDING OPERATION IS REMOVED
+          database.rollbackAllNested();
+      }
     }
   }
 
-  protected boolean openDatabase() {
+  protected boolean requiresDatabase() {
     return true;
+  }
+
+  protected boolean requiresTransaction() {
+    return true;
+  }
+
+  protected HttpSession setTransactionInThreadLocal(final HttpServerExchange exchange, final Database database, ServerSecurityUser user,
+      final boolean mandatory) {
+    final HeaderValues sessionId = exchange.getRequestHeaders().get(HttpTransactionManager.ARCADEDB_SESSION_ID);
+    if (sessionId == null || sessionId.isEmpty()) {
+      if (mandatory) {
+        exchange.setStatusCode(401);
+        exchange.getResponseSender().send("{ \"error\" : \"Transaction id not found in request headers\" }");
+      }
+      return null;
+    }
+
+    final HttpSession session = httpServer.getTransactionManager().getSessionById(user, sessionId.getFirst());
+    if (session == null) {
+      if (mandatory) {
+        exchange.setStatusCode(401);
+        exchange.getResponseSender().send("{ \"error\" : \"Transaction not found or expired\" }");
+        return null;
+      }
+    }
+
+    if (session != null) {
+      // FORCE THE RESET OF TL
+      final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.init((DatabaseInternal) database, session.transaction);
+      current.setCurrentUser(user != null ? user.getDatabaseUser(database) : null);
+      exchange.getResponseHeaders().put(SESSION_ID_HEADER, session.id);
+    }
+
+    return session;
   }
 }

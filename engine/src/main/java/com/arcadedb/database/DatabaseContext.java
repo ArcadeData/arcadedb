@@ -25,6 +25,10 @@ import java.util.*;
  */
 public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.DatabaseContextTL>> {
   public DatabaseContextTL init(final DatabaseInternal database) {
+    return init(database, null);
+  }
+
+  public DatabaseContextTL init(final DatabaseInternal database, final TransactionContext firstTransaction) {
     Map<String, DatabaseContextTL> map = get();
 
     final String key = database.getDatabasePath();
@@ -57,7 +61,7 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
     }
 
     if (current.transactions.isEmpty())
-      current.transactions.add(new TransactionContext(database.getWrappedDatabaseInstance()));
+      current.transactions.add(firstTransaction != null ? firstTransaction : new TransactionContext(database.getWrappedDatabaseInstance()));
 
     return current;
   }

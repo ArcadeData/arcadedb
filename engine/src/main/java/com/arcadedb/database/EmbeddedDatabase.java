@@ -246,30 +246,6 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     }
   }
 
-  private void checkForRecovery() throws IOException {
-    lockFile = new File(databasePath + "/database.lck");
-
-    if (lockFile.exists()) {
-      lockDatabase();
-
-      // RECOVERY
-      LogManager.instance().log(this, Level.WARNING, "Database '%s' was not closed properly last time", null, name);
-
-      if (mode == PaginatedFile.MODE.READ_ONLY)
-        throw new DatabaseMetadataException("Database needs recovery but has been open in read only mode");
-
-      executeCallbacks(CALLBACK_EVENT.DB_NOT_CLOSED);
-
-      transactionManager.checkIntegrity();
-    } else {
-      if (mode == PaginatedFile.MODE.READ_WRITE) {
-        lockFile.createNewFile();
-        lockDatabase();
-      } else
-        lockFile = null;
-    }
-  }
-
   @Override
   public void drop() {
     checkDatabaseIsOpen();
@@ -1580,4 +1556,27 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     DatabaseFactory.removeActiveDatabaseInstance(databasePath);
   }
 
+  private void checkForRecovery() throws IOException {
+    lockFile = new File(databasePath + "/database.lck");
+
+    if (lockFile.exists()) {
+      lockDatabase();
+
+      // RECOVERY
+      LogManager.instance().log(this, Level.WARNING, "Database '%s' was not closed properly last time", null, name);
+
+      if (mode == PaginatedFile.MODE.READ_ONLY)
+        throw new DatabaseMetadataException("Database needs recovery but has been open in read only mode");
+
+      executeCallbacks(CALLBACK_EVENT.DB_NOT_CLOSED);
+
+      transactionManager.checkIntegrity();
+    } else {
+      if (mode == PaginatedFile.MODE.READ_WRITE) {
+        lockFile.createNewFile();
+        lockDatabase();
+      } else
+        lockFile = null;
+    }
+  }
 }

@@ -402,7 +402,7 @@ public abstract class BaseGraphServerTest {
   protected void deleteDatabaseFolders() {
     if (databases != null)
       for (int i = 0; i < databases.length; ++i) {
-        if (databases[i] != null)
+        if (databases[i] != null && databases[i].isOpen())
           ((DatabaseInternal) databases[i]).getWrappedDatabaseInstance().drop();
       }
 
@@ -415,7 +415,7 @@ public abstract class BaseGraphServerTest {
     Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
 
     for (int i = 0; i < getServerCount(); ++i)
-      FileUtils.deleteRecursively(new File(getDatabasePath(i)));
+      FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_DATABASE_DIRECTORY.getValueAsString() + i + "/"));
     FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_ROOT_PATH.getValueAsString() + "/replication"));
   }
 
@@ -445,7 +445,6 @@ public abstract class BaseGraphServerTest {
     LogManager.instance().log(this, Level.INFO, "TEST: " + msg, null, args);
     LogManager.instance()
         .log(this, Level.INFO, "****************************************************************************************************************");
-
   }
 
   protected void testEachServer(Callback callback) throws Exception {
@@ -453,5 +452,4 @@ public abstract class BaseGraphServerTest {
       callback.call(i);
     }
   }
-
 }

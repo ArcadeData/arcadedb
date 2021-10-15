@@ -44,18 +44,11 @@ public class PostCreateDocumentHandler extends DatabaseAbstractHandler {
 
     httpServer.getServer().getServerMetrics().meter("http.create-record").mark();
 
-    database.begin();
-    try {
-      final MutableDocument document = database.newDocument(type);
-      document.fromJSON(json);
-      document.save();
-      database.commit();
+    final MutableDocument document = database.newDocument(type);
+    document.fromJSON(json);
+    document.save();
 
-      exchange.setStatusCode(200);
-      exchange.getResponseSender().send("{ \"result\" : \"" + document.getIdentity() + "\"}");
-
-    } finally {
-      database.rollbackAllNested();
-    }
+    exchange.setStatusCode(200);
+    exchange.getResponseSender().send("{ \"result\" : \"" + document.getIdentity() + "\"}");
   }
 }
