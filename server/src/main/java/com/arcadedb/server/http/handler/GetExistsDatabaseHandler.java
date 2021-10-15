@@ -29,7 +29,7 @@ public class GetExistsDatabaseHandler extends DatabaseAbstractHandler {
   }
 
   @Override
-  protected boolean openDatabase() {
+  protected boolean requiresDatabase() {
     return false;
   }
 
@@ -50,4 +50,10 @@ public class GetExistsDatabaseHandler extends DatabaseAbstractHandler {
     exchange.setStatusCode(200);
     exchange.getResponseSender().send("{ \"result\" : \"" + existsDatabase + "\"}");
   }
+
+  @Override
+  protected boolean requiresTransaction() {
+    return false;
+  }
+
 }

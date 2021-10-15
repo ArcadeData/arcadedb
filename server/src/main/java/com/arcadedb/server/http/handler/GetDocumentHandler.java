@@ -42,15 +42,14 @@ public class GetDocumentHandler extends DatabaseAbstractHandler {
 
     final String[] ridParts = rid.getFirst().split(":");
 
-    database.begin();
-    try {
-      final Document record = (Document) database.lookupByRID(new RID(database, Integer.parseInt(ridParts[0]), Long.parseLong(ridParts[1])), true);
+    final Document record = (Document) database.lookupByRID(new RID(database, Integer.parseInt(ridParts[0]), Long.parseLong(ridParts[1])), true);
 
-      exchange.setStatusCode(200);
-      exchange.getResponseSender().send("{ \"result\" : " + httpServer.getJsonSerializer().serializeDocument(record).toString() + "}");
+    exchange.setStatusCode(200);
+    exchange.getResponseSender().send("{ \"result\" : " + httpServer.getJsonSerializer().serializeDocument(record).toString() + "}");
+  }
 
-    } finally {
-      database.rollbackAllNested();
-    }
+  @Override
+  protected boolean requiresTransaction() {
+    return false;
   }
 }

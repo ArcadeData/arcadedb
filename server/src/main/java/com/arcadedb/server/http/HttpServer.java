@@ -21,16 +21,19 @@ import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ServerPlugin;
+import com.arcadedb.server.http.handler.GetDatabasesHandler;
+import com.arcadedb.server.http.handler.GetDocumentHandler;
+import com.arcadedb.server.http.handler.GetDynamicContentHandler;
+import com.arcadedb.server.http.handler.GetExistsDatabaseHandler;
+import com.arcadedb.server.http.handler.GetQueryHandler;
+import com.arcadedb.server.http.handler.PostBeginHandler;
 import com.arcadedb.server.http.handler.PostCommandHandler;
+import com.arcadedb.server.http.handler.PostCommitHandler;
 import com.arcadedb.server.http.handler.PostCreateDatabaseHandler;
 import com.arcadedb.server.http.handler.PostCreateDocumentHandler;
 import com.arcadedb.server.http.handler.PostDropDatabaseHandler;
-import com.arcadedb.server.http.handler.GetDynamicContentHandler;
-import com.arcadedb.server.http.handler.GetExistsDatabaseHandler;
-import com.arcadedb.server.http.handler.GetDatabasesHandler;
-import com.arcadedb.server.http.handler.GetDocumentHandler;
-import com.arcadedb.server.http.handler.GetQueryHandler;
 import com.arcadedb.server.http.handler.PostQueryHandler;
+import com.arcadedb.server.http.handler.PostRollbackHandler;
 import com.arcadedb.server.http.handler.PostServersHandler;
 import io.undertow.Handlers;
 import io.undertow.Undertow;
@@ -43,15 +46,17 @@ import java.util.logging.*;
 import static io.undertow.UndertowOptions.SHUTDOWN_TIMEOUT;
 
 public class HttpServer implements ServerPlugin {
-  private       Undertow       undertow;
-  private final JsonSerializer jsonSerializer = new JsonSerializer();
-  private final ArcadeDBServer server;
-  private       String         listeningAddress;
-  private       String         host;
-  private       int            port;
+  private final ArcadeDBServer         server;
+  private final HttpTransactionManager transactionManager;
+  private final JsonSerializer         jsonSerializer = new JsonSerializer();
+  private       Undertow               undertow;
+  private       String                 listeningAddress;
+  private       String                 host;
+  private       int                    port;
 
   public HttpServer(final ArcadeDBServer server) {
     this.server = server;
+    this.transactionManager = new HttpTransactionManager(server.getConfiguration().getValueAsInteger(GlobalConfiguration.SERVER_HTTP_TX_EXPIRE_TIMEOUT) * 1000);
   }
 
   @Override
@@ -84,7 +89,9 @@ public class HttpServer implements ServerPlugin {
     final RoutingHandler basicRoutes = Handlers.routing();
     routes.addPrefixPath("/api/v1",//
         basicRoutes//
+            .post("/begin/{database}", new PostBeginHandler(this))//
             .post("/command/{database}", new PostCommandHandler(this))//
+            .post("/commit/{database}", new PostCommitHandler(this))//
             .post("/create/{database}", new PostCreateDatabaseHandler(this))//
             .get("/databases", new GetDatabasesHandler(this))//
             .get("/document/{database}/{rid}", new GetDocumentHandler(this))//
@@ -93,6 +100,7 @@ public class HttpServer implements ServerPlugin {
             .get("/exists/{database}", new GetExistsDatabaseHandler(this))//
             .get("/query/{database}/{language}/{command}", new GetQueryHandler(this))//
             .post("/query/{database}", new PostQueryHandler(this))//
+            .post("/rollback/{database}", new PostRollbackHandler(this))//
             .post("/server", new PostServersHandler(this))//
     );
 
@@ -126,6 +134,10 @@ public class HttpServer implements ServerPlugin {
         throw new ServerException("Error on starting HTTP Server", e);
       }
     } while (httpAutoIncrementPort);
+  }
+
+  public HttpTransactionManager getTransactionManager() {
+    return transactionManager;
   }
 
   public ArcadeDBServer getServer() {

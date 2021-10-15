@@ -178,7 +178,7 @@ public abstract class BasePerformanceTest {
   protected void deleteDatabaseFolders() {
     if (databases != null)
       for (int i = 0; i < databases.length; ++i) {
-        if (databases[i] != null)
+        if (databases[i] != null && databases[i].isOpen())
           databases[i].drop();
       }
 
@@ -190,7 +190,7 @@ public abstract class BasePerformanceTest {
     Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
 
     for (int i = 0; i < getServerCount(); ++i)
-      FileUtils.deleteRecursively(new File(getDatabasePath(i)));
+      FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_DATABASE_DIRECTORY.getValueAsString() + i + "/"));
     FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_ROOT_PATH.getValueAsString() + "/replication"));
   }
 

@@ -37,4 +37,9 @@ public class PostDropDatabaseHandler extends DatabaseAbstractHandler {
     exchange.setStatusCode(200);
     exchange.getResponseSender().send("{ \"result\" : \"ok\"}");
   }
+
+  @Override
+  protected boolean requiresTransaction() {
+    return false;
+  }
 }

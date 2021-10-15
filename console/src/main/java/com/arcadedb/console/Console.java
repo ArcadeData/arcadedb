@@ -217,7 +217,7 @@ public class Console {
     if (localDatabase != null)
       localDatabase.begin();
     else
-      remoteDatabase.command("SQL", "begin");
+      remoteDatabase.begin();
   }
 
   private void executeCommit() {
@@ -225,7 +225,7 @@ public class Console {
     if (localDatabase != null)
       localDatabase.commit();
     else
-      remoteDatabase.command("SQL", "commit");
+      remoteDatabase.commit();
   }
 
   private void executeRollback() {
@@ -233,7 +233,7 @@ public class Console {
     if (localDatabase != null)
       localDatabase.rollback();
     else
-      remoteDatabase.command("SQL", "rollback");
+      remoteDatabase.rollback();
   }
 
   private void executeClose() {
