@@ -638,7 +638,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   @Override
   public Record lookupByRID(final RID rid, final boolean loadContent) {
     if (rid == null)
-      throw new IllegalArgumentException("record is null");
+      throw new IllegalArgumentException("Record is null");
 
     stats.readRecord.incrementAndGet();
 

@@ -20,8 +20,10 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionException;
@@ -121,7 +123,7 @@ public class RemoteDatabase extends RWLockContext {
       throw new TransactionException("Transaction already begun");
 
     try {
-      final HttpURLConnection connection = createConnection(getUrl("begin", databaseName));
+      final HttpURLConnection connection = createConnection("POST", getUrl("begin", databaseName));
       connection.connect();
       if (connection.getResponseCode() != 204)
         throw new TransactionException("Error on transaction begin");
@@ -135,7 +137,7 @@ public class RemoteDatabase extends RWLockContext {
     if (sessionId == null)
       throw new TransactionException("Transaction not begun");
     try {
-      final HttpURLConnection connection = createConnection(getUrl("commit", databaseName));
+      final HttpURLConnection connection = createConnection("POST", getUrl("commit", databaseName));
       connection.connect();
       if (connection.getResponseCode() != 204)
         throw new TransactionException("Error on transaction commit");
@@ -149,7 +151,7 @@ public class RemoteDatabase extends RWLockContext {
     if (sessionId == null)
       throw new TransactionException("Transaction not begun");
     try {
-      final HttpURLConnection connection = createConnection(getUrl("rollback", databaseName));
+      final HttpURLConnection connection = createConnection("POST", getUrl("rollback", databaseName));
       connection.connect();
       if (connection.getResponseCode() != 204)
         throw new TransactionException("Error on transaction rollback");
@@ -157,6 +159,26 @@ public class RemoteDatabase extends RWLockContext {
       sessionId = null;
     } catch (Exception e) {
       throw new TransactionException("Error on transaction rollback", e);
+    }
+  }
+
+  public JSONObject lookupByRID(final String rid) {
+    if (rid == null)
+      throw new IllegalArgumentException("Record is null");
+
+    try {
+      final HttpURLConnection connection = createConnection("GET", getUrl("document", databaseName + "/" + rid.substring(1)));
+      connection.connect();
+      if (connection.getResponseCode() == 404)
+        throw new RecordNotFoundException("Record " + rid + " not found", new RID(null, rid));
+
+      final JSONObject response = new JSONObject(FileUtils.readStreamAsString(connection.getInputStream(), charset));
+      if(response.has("result"))
+        return response.getJSONObject("result");
+      return null;
+
+    } catch (Exception e) {
+      throw new DatabaseOperationException("Error on loading record " + rid, e);
     }
   }
 
@@ -242,7 +264,7 @@ public class RemoteDatabase extends RWLockContext {
         url += "/" + extendedURL;
 
       try {
-        final HttpURLConnection connection = createConnection(url);
+        final HttpURLConnection connection = createConnection("POST", url);
         connection.setDoOutput(true);
         try {
 
@@ -386,10 +408,10 @@ public class RemoteDatabase extends RWLockContext {
     Object call(HttpURLConnection iArgument, JSONObject response) throws Exception;
   }
 
-  protected HttpURLConnection createConnection(final String url) throws IOException {
+  protected HttpURLConnection createConnection(final String httpMethod, final String url) throws IOException {
     final HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
     connection.setRequestProperty("charset", "utf-8");
-    connection.setRequestMethod("POST");
+    connection.setRequestMethod(httpMethod);
 
     final String authorization = userName + ":" + userPassword;
     connection.setRequestProperty("Authorization", "Basic " + Base64.getEncoder().encodeToString(authorization.getBytes(DatabaseFactory.getDefaultCharset())));
