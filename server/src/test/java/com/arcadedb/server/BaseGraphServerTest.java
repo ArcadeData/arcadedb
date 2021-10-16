@@ -206,6 +206,10 @@ public abstract class BaseGraphServerTest {
     Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
   }
 
+  protected Database getDatabase(final int serverId) {
+    return databases[serverId];
+  }
+
   protected void checkArcadeIsTotallyDown() {
     final ByteArrayOutputStream os = new ByteArrayOutputStream();
     final PrintWriter output = new PrintWriter(new BufferedOutputStream(os));
