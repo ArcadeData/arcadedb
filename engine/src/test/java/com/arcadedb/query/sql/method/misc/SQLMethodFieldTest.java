@@ -16,8 +16,6 @@
 package com.arcadedb.query.sql.method.misc;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.database.MutableDocument;
-import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.executor.SQLMethod;
 import com.arcadedb.schema.DocumentType;
 import org.junit.jupiter.api.BeforeEach;
