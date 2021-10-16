@@ -63,9 +63,6 @@ public class PostQueryHandler extends DatabaseAbstractHandler {
       final JsonSerializer serializer = httpServer.getJsonSerializer();
       final String result = qResult.stream().map(r -> serializer.serializeResult(r).toString()).collect(Collectors.joining(","));
 
-      if (database.isTransactionActive())
-        database.commit();
-
       exchange.setStatusCode(200);
       exchange.getResponseSender().send("{ \"result\" : [" + result + "] }");
 
