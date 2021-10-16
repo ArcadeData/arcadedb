@@ -18,7 +18,6 @@ package com.arcadedb.query.sql.method.misc;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
-import com.arcadedb.utility.Callable;
 
 /**
  * Remove all the occurrences of elements from a collection.
@@ -28,31 +27,33 @@ import com.arcadedb.utility.Callable;
  */
 public class SQLMethodRemoveAll extends AbstractSQLMethod {
 
-  public static final String NAME = "removeall";
+    public static final String NAME = "removeall";
 
-  public SQLMethodRemoveAll() {
-    super(NAME, 1, -1);
-  }
-
-  @Override
-  public Object execute( Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext,
-      Object ioResult, Object[] iParams) {
-    if (iParams != null && iParams.length > 0 && iParams[0] != null) {
-      iParams = MultiValue.array(iParams, Object.class, new Callable<Object, Object>() {
-
-        @Override
-        public Object call(final Object iArgument) {
-          if (iArgument instanceof String && ((String) iArgument).startsWith("$")) {
-            return iContext.getVariable((String) iArgument);
-          }
-          return iArgument;
-        }
-      });
-      for (Object o : iParams) {
-        ioResult = MultiValue.remove(ioResult, o, true);
-      }
+    public SQLMethodRemoveAll() {
+        super(NAME, 1, -1);
     }
 
-    return ioResult;
-  }
+    @Override
+    public Object execute(Object self,
+                          final Identifiable currentRecord,
+                          final CommandContext context,
+                          Object result,
+                          final Object[] params) {
+        if (params != null &&
+                params.length > 0 &&
+                params[0] != null) {
+            Object[] arguments = MultiValue.array(params, Object.class, iArgument -> {
+                if (iArgument instanceof String &&
+                        ((String) iArgument).startsWith("$")) {
+                    return context.getVariable((String) iArgument);
+                }
+                return iArgument;
+            });
+            for (Object o : arguments) {
+                result = MultiValue.remove(result, o, true);
+            }
+        }
+
+        return result;
+    }
 }

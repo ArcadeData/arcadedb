@@ -19,40 +19,41 @@ import com.arcadedb.query.sql.executor.SQLMethod;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.awt.*;
-import java.util.ArrayList;
-import java.util.List;
-
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.jupiter.api.Assertions.*;
 
-class SQLMethodJavaTypeTest {
+class SQLMethodNormalizeTest {
 
     private SQLMethod method;
 
     @BeforeEach
-    void setUp() {
-        method = new SQLMethodJavaType();
+    public void setup() {
+        method = new SQLMethodNormalize();
     }
 
     @Test
-    void testNulIsReturnedAsNull() {
+    void testNull() {
         Object result = method.execute(null, null, null, null, null);
         assertThat(result).isNull();
     }
 
     @Test
-    void testJavaClassName() {
-
-        Object result = method.execute(null, null, null, "string", null);
-        assertThat(result).isEqualTo(String.class.getName());
+    void testNormalizeWithDefaultNormalizer() {
+        Object result = method.execute(null, null, null, "À", null);
+        assertThat(result).isEqualTo("A");
 
     }
+
     @Test
-    void testJavaClassNameOfList() {
-
-        Object result = method.execute(null, null, null, new ArrayList<>(), null);
-        assertThat(result).isEqualTo(ArrayList.class.getName());
-
+    void testNormalizeWithNFC() {
+        Object result = method.execute(null, null, null, "À", new Object[]{"NFC"});
+        assertThat(result).isEqualTo("À");
     }
+
+    @Test
+    void testNormalizeWithNFCAndPattern() {
+        Object result = method.execute(null, null, null, "À", new Object[]{"NFC", ""});
+        assertThat(result).isEqualTo("À");
+    }
+
+
 }

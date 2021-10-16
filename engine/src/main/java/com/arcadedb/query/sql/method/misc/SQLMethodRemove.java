@@ -34,27 +34,28 @@ public class SQLMethodRemove extends AbstractSQLMethod {
     }
 
     @Override
-    public Object execute(final Object iThis,
-                          final Identifiable iCurrentRecord,
-                          final CommandContext iContext,
-                          final Object ioResult,
-                          final Object[] iParams) {
-        if (iParams != null && iParams.length > 0 && iParams[0] != null) {
-            Object[] arguments = MultiValue.array(iParams, Object.class, iArgument -> {
-                if (iArgument instanceof String &&
-                        ((String) iArgument).startsWith("$")) {
-                    return iContext.getVariable((String) iArgument);
+    public Object execute(final Object self,
+                          final Identifiable currentRecord,
+                          final CommandContext context,
+                          Object result,
+                          final Object[] params) {
+        if (params != null &&
+                params.length > 0 &&
+                params[0] != null) {
+            Object[] arguments = MultiValue.array(params, Object.class, argument -> {
+                if (argument instanceof String &&
+                        ((String) argument).startsWith("$")) {
+                    return context.getVariable((String) argument);
                 }
-                return iArgument;
+                return argument;
             });
-            Object cleaned = null;
             for (Object o : arguments) {
-                cleaned = MultiValue.remove(ioResult, o, false);
+                result = MultiValue.remove(result, o, false);
             }
-            return cleaned;
+            return result;
         }
 
-        return ioResult;
+        return result;
     }
 
     @Override

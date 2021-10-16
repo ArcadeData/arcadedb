@@ -16,8 +16,8 @@
 package com.arcadedb.query.sql.method.misc;
 
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.schema.Type;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.schema.Type;
 
 /**
  * Returns the value's Arcadedb Type.
@@ -26,23 +26,26 @@ import com.arcadedb.query.sql.executor.CommandContext;
  */
 public class SQLMethodType extends AbstractSQLMethod {
 
-  public static final String NAME = "type";
+    public static final String NAME = "type";
 
-  public SQLMethodType() {
-    super(NAME);
-  }
+    public SQLMethodType() {
+        super(NAME);
+    }
 
-  @Override
-  public Object execute( final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext,
-      final Object ioResult, final Object[] iParams) {
-    if (ioResult == null)
-      return null;
+    @Override
+    public Object execute(final Object iThis,
+                          final Identifiable iCurrentRecord,
+                          final CommandContext iContext,
+                          final Object result,
+                          final Object[] iParams) {
+        if (result == null)
+            return null;
 
-    final Type t = Type.getTypeByValue(ioResult);
+        final Type type = Type.getTypeByValue(result);
 
-    if (t != null)
-      return t.toString();
+        if (type != null)
+            return type.toString();
 
-    return null;
-  }
+        return null;
+    }
 }

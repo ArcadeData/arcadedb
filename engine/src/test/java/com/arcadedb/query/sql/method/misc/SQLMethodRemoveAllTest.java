@@ -15,44 +15,45 @@
  */
 package com.arcadedb.query.sql.method.misc;
 
+import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.SQLMethod;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.awt.*;
 import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.jupiter.api.Assertions.*;
 
-class SQLMethodJavaTypeTest {
-
+class SQLMethodRemoveAllTest {
     private SQLMethod method;
 
     @BeforeEach
-    void setUp() {
-        method = new SQLMethodJavaType();
+    public void setup() {
+        method = new SQLMethodRemoveAll();
     }
 
     @Test
-    void testNulIsReturnedAsNull() {
+    void testNull() {
         Object result = method.execute(null, null, null, null, null);
         assertThat(result).isNull();
     }
 
     @Test
-    void testJavaClassName() {
-
-        Object result = method.execute(null, null, null, "string", null);
-        assertThat(result).isEqualTo(String.class.getName());
-
+    void testRemoveMultipleValuesFromList() {
+        List<String> numbers = new ArrayList<>(List.of("one", "one", "two", "three", "one"));
+        List<String> result = (List<String>) method.execute(null, null, null, numbers, new Object[]{"one"});
+        assertThat(result).contains("two", "three");
     }
+
     @Test
-    void testJavaClassNameOfList() {
-
-        Object result = method.execute(null, null, null, new ArrayList<>(), null);
-        assertThat(result).isEqualTo(ArrayList.class.getName());
-
+    void testRemoveMultipleValuesWithVariableInContext() {
+        List<String> numbers = new ArrayList<>(List.of("one", "one", "two", "three", "one"));
+        CommandContext context = new BasicCommandContext();
+        context.setVariable("name", "one");
+        List<String> result = (List<String>) method.execute(null, null, context, numbers, new Object[]{"$name"});
+        assertThat(result).contains("two", "three");
     }
+
 }

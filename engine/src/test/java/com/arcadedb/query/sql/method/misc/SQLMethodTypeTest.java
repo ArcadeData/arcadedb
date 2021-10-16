@@ -19,20 +19,16 @@ import com.arcadedb.query.sql.executor.SQLMethod;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.awt.*;
 import java.util.ArrayList;
-import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.jupiter.api.Assertions.*;
 
-class SQLMethodJavaTypeTest {
-
+class SQLMethodTypeTest {
     private SQLMethod method;
 
     @BeforeEach
     void setUp() {
-        method = new SQLMethodJavaType();
+        method = new SQLMethodType();
     }
 
     @Test
@@ -42,17 +38,25 @@ class SQLMethodJavaTypeTest {
     }
 
     @Test
-    void testJavaClassName() {
+    void testUnknonwTypesReturnedAsNull() {
+        Object result = method.execute(null, null, null, new SQLMethodType(), null);
+        assertThat(result).isNull();
+    }
+
+    @Test
+    void testTypeName() {
 
         Object result = method.execute(null, null, null, "string", null);
-        assertThat(result).isEqualTo(String.class.getName());
+        assertThat(result).isEqualTo("STRING");
 
     }
+
     @Test
-    void testJavaClassNameOfList() {
+    void testTypeNameOfList() {
 
         Object result = method.execute(null, null, null, new ArrayList<>(), null);
-        assertThat(result).isEqualTo(ArrayList.class.getName());
+        assertThat(result).isEqualTo("LIST");
 
     }
+
 }
