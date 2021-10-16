@@ -98,6 +98,47 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
       // RETRIEVE DOCUMENT
       checkDocumentWasCreated(serverIndex, payload, rid, sessionId);
 
+      // QUERY IN GET
+      connection = (HttpURLConnection) new URL(
+          "http://127.0.0.1:248" + serverIndex + "/api/v1/query/graph/sql/select%20from%20Person%20limit%201").openConnection();
+
+      connection.setRequestMethod("GET");
+      connection.setRequestProperty(ARCADEDB_SESSION_ID, sessionId);
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      connection.connect();
+
+      try {
+        final String response = readResponse(connection);
+        LogManager.instance().log(this, Level.INFO, "Response: ", null, response);
+        Assertions.assertEquals(200, connection.getResponseCode());
+        Assertions.assertEquals("OK", connection.getResponseMessage());
+        Assertions.assertTrue(response.contains("Person"));
+
+      } finally {
+        connection.disconnect();
+      }
+
+      // QUERY IN POST
+      connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/query/graph").openConnection();
+
+      connection.setRequestMethod("POST");
+      connection.setRequestProperty(ARCADEDB_SESSION_ID, sessionId);
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      formatPost(connection, "sql", "select from Person limit 1", new HashMap<>());
+      connection.connect();
+
+      try {
+        final String response = readResponse(connection);
+        LogManager.instance().log(this, Level.INFO, "Response: ", null, response);
+        Assertions.assertEquals(200, connection.getResponseCode());
+        Assertions.assertEquals("OK", connection.getResponseMessage());
+        Assertions.assertTrue(response.contains("Person"));
+      } finally {
+        connection.disconnect();
+      }
+
       // COMMIT
       connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/commit/graph").openConnection();
 

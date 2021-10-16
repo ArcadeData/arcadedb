@@ -69,7 +69,6 @@ public class PostQueryHandler extends DatabaseAbstractHandler {
     } finally {
       timer.stop();
     }
-
   }
 
   private ResultSet command(Database database, String language, String command, Map<String, Object> paramMap) {
