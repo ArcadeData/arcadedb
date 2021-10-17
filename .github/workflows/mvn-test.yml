@@ -38,7 +38,7 @@ jobs:
 
       - name: Test
         continue-on-error: ${{ matrix.continue-on-error }}
-        run: mvn verify -Pintegration -Pcoverage --batch-mode --quiet --errors --fail-at-end --show-version  --file pom.xml
+        run: mvn verify -Pintegration -Pcoverage --batch-mode  --errors --fail-at-end --show-version  --file pom.xml
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
