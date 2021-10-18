@@ -428,6 +428,9 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
   @Override
   public void rollbackAllNested() {
+    if (!isTransactionActive())
+      return;
+
     stats.txRollbacks.incrementAndGet();
 
     executeInReadLock(() -> {
@@ -914,7 +917,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
   @Override
   public void transaction(final TransactionScope txBlock) {
-    transaction(txBlock, true, configuration.getValueAsInteger(GlobalConfiguration.TX_RETRIES));
+    transaction(txBlock, true, configuration.getValueAsInteger(GlobalConfiguration.TX_RETRIES), null, null);
   }
 
   @Override

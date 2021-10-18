@@ -120,8 +120,10 @@ public class TransactionManager {
       // DELETE ALL THE WAL FILES AT OS-LEVEL
       final File dir = new File(database.getDatabasePath());
       File[] walFiles = dir.listFiles((dir1, name) -> name.endsWith(".wal"));
-      Arrays.asList(walFiles).stream().forEach(File::delete);
-      walFiles = dir.listFiles((dir1, name) -> name.endsWith(".wal"));
+      if (walFiles != null) {
+        Arrays.asList(walFiles).stream().forEach(File::delete);
+        walFiles = dir.listFiles((dir1, name) -> name.endsWith(".wal"));
+      }
 
       if (walFiles != null && walFiles.length > 0)
         LogManager.instance().log(this, Level.WARNING, "Error on removing all transaction files. Remained: %s", null, walFiles.length);
