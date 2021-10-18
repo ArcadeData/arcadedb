@@ -648,8 +648,9 @@ public class BasicGraphTest extends BaseGraphTest {
     final MutableVertex[] v1 = new MutableVertex[1];
     final MutableVertex[] v2 = new MutableVertex[1];
     database.transaction(() -> {
-      final EdgeType e = database.getSchema().createEdgeType("OnlyOneBetweenVertices");
-      e.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "@out", "@in");
+      database.command("sql", "create edge type OnlyOneBetweenVertices");
+
+      database.command("sql", "create index OnlyOneBetweenVertices_unique ON OnlyOneBetweenVertices (`@out`, `@in`) UNIQUE");
 
       v1[0] = database.newVertex(VERTEX1_TYPE_NAME).set("id", 1001).save();
       v2[0] = database.newVertex(VERTEX1_TYPE_NAME).set("id", 1002).save();
