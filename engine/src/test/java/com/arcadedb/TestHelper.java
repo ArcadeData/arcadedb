@@ -21,6 +21,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.FileUtils;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
@@ -162,6 +163,11 @@ public abstract class TestHelper {
 
     Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
     FileUtils.deleteRecursively(new File(getDatabasePath()));
+  }
+
+  @AfterAll
+  public static void endAllTests() {
+    GlobalConfiguration.resetAll();
   }
 
   protected String getPerformanceProfile() {

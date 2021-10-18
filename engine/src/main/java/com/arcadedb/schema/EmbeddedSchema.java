@@ -442,11 +442,15 @@ public class EmbeddedSchema implements Schema {
     int i = 0;
 
     for (String propertyName : propertyNames) {
-      final Property property = type.getPolymorphicPropertyIfExists(propertyName);
-      if (property == null)
-        throw new SchemaException("Cannot create the index on type '" + typeName + "." + propertyName + "' because the property does not exist");
+      if (type instanceof EdgeType && ("@out".equals(propertyName) || "@in".equals(propertyName))) {
+        keyTypes[i++] = Type.LINK.getBinaryType();
+      } else {
+        final Property property = type.getPolymorphicPropertyIfExists(propertyName);
+        if (property == null)
+          throw new SchemaException("Cannot create the index on type '" + typeName + "." + propertyName + "' because the property does not exist");
 
-      keyTypes[i++] = property.getType().getBinaryType();
+        keyTypes[i++] = property.getType().getBinaryType();
+      }
     }
 
     final List<Bucket> buckets = type.getBuckets(true);

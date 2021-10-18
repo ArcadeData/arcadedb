@@ -40,6 +40,8 @@ import java.util.logging.*;
 public class ACIDTransactionTest extends TestHelper {
   @Override
   protected void beginTest() {
+    GlobalConfiguration.TX_RETRIES.setValue(50);
+
     database.transaction(() -> {
       if (!database.getSchema().existsType("V")) {
         final DocumentType v = database.getSchema().createDocumentType("V");
@@ -92,12 +94,7 @@ public class ACIDTransactionTest extends TestHelper {
 
     verifyDatabaseWasNotClosedProperly();
 
-    database.transaction(new Database.TransactionScope() {
-      @Override
-      public void execute() {
-        Assertions.assertEquals(TOT, database.countType("V", true));
-      }
-    });
+    database.transaction(() -> Assertions.assertEquals(TOT, database.countType("V", true)));
   }
 
   @Test

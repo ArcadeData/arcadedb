@@ -20,8 +20,7 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.Identifier;
 
-import java.util.Map;
-import java.util.Optional;
+import java.util.*;
 
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
@@ -51,7 +50,7 @@ public class SaveElementStep extends AbstractExecutionStep {
       @Override
       public Result next() {
         Result result = upstream.next();
-        if (result.isElement()) {
+        if (result != null && result.isElement()) {
           final Document doc = result.getElement().orElse(null);
 
           final MutableDocument modifiableDoc = doc.modify();

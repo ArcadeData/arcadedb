@@ -18,28 +18,24 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.InsertExecutionPlan;
 import com.arcadedb.query.sql.executor.CreateEdgeExecutionPlanner;
+import com.arcadedb.query.sql.executor.InsertExecutionPlan;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.*;
 
 public class CreateEdgeStatement extends Statement {
-
   protected Identifier targetType;
   protected Identifier targetBucketName;
-
   protected Expression leftExpression;
-
   protected Expression rightExpression;
-
   protected InsertBody body;
   protected Number     retry;
   protected Number     wait;
   protected Batch      batch;
+  protected boolean    ifNotExists;
 
   public CreateEdgeStatement(int id) {
     super(id);
@@ -49,7 +45,8 @@ public class CreateEdgeStatement extends Statement {
     super(p, id);
   }
 
-  @Override public ResultSet execute(Database db, Object[] args, CommandContext parentCtx, boolean usePlanCache) {
+  @Override
+  public ResultSet execute(Database db, Object[] args, CommandContext parentCtx, boolean usePlanCache) {
     BasicCommandContext ctx = new BasicCommandContext();
     if (parentCtx != null) {
       ctx.setParentWithoutOverridingChild(parentCtx);
@@ -61,7 +58,8 @@ public class CreateEdgeStatement extends Statement {
     return new LocalResultSet(executionPlan);
   }
 
-  @Override public ResultSet execute(Database db, Map params, CommandContext parentCtx, boolean usePlanCache) {
+  @Override
+  public ResultSet execute(Database db, Map params, CommandContext parentCtx, boolean usePlanCache) {
     BasicCommandContext ctx = new BasicCommandContext();
     if (parentCtx != null) {
       ctx.setParentWithoutOverridingChild(parentCtx);
@@ -94,6 +92,9 @@ public class CreateEdgeStatement extends Statement {
     builder.append(" TO ");
     rightExpression.toString(params, builder);
 
+    if (ifNotExists)
+      builder.append(" IF NOT EXISTS");
+
     if (body != null) {
       builder.append(" ");
       body.toString(params, builder);
@@ -111,35 +112,29 @@ public class CreateEdgeStatement extends Statement {
     }
   }
 
-  @Override public CreateEdgeStatement copy() {
-    CreateEdgeStatement result = null;
-    try {
-      result = getClass().getConstructor(Integer.TYPE).newInstance(-1);
-    } catch (Exception e) {
-      throw new ArcadeDBException(e);
-    }
-
-    result.targetType = targetType ==null?null: targetType.copy();
-    result.targetBucketName = targetBucketName ==null?null: targetBucketName.copy();
-
-    result.leftExpression = leftExpression==null?null:leftExpression.copy();
-
-    result.rightExpression = rightExpression==null?null:rightExpression.copy();
-
-    result.body = body==null?null:body.copy();
+  @Override
+  public CreateEdgeStatement copy() {
+    final CreateEdgeStatement result = new CreateEdgeStatement(-1);
+    result.targetType = targetType == null ? null : targetType.copy();
+    result.targetBucketName = targetBucketName == null ? null : targetBucketName.copy();
+    result.leftExpression = leftExpression == null ? null : leftExpression.copy();
+    result.rightExpression = rightExpression == null ? null : rightExpression.copy();
+    result.ifNotExists = ifNotExists;
+    result.body = body == null ? null : body.copy();
     result.retry = retry;
     result.wait = wait;
-    result.batch = batch==null?null:batch.copy();
+    result.batch = batch == null ? null : batch.copy();
     return result;
   }
 
-  @Override public boolean equals(Object o) {
+  @Override
+  public boolean equals(Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    CreateEdgeStatement that = (CreateEdgeStatement) o;
+    final CreateEdgeStatement that = (CreateEdgeStatement) o;
 
     if (targetType != null ? !targetType.equals(that.targetType) : that.targetType != null)
       return false;
@@ -148,6 +143,8 @@ public class CreateEdgeStatement extends Statement {
     if (leftExpression != null ? !leftExpression.equals(that.leftExpression) : that.leftExpression != null)
       return false;
     if (rightExpression != null ? !rightExpression.equals(that.rightExpression) : that.rightExpression != null)
+      return false;
+    if (ifNotExists = !that.ifNotExists)
       return false;
     if (body != null ? !body.equals(that.body) : that.body != null)
       return false;
@@ -158,11 +155,13 @@ public class CreateEdgeStatement extends Statement {
     return batch != null ? batch.equals(that.batch) : that.batch == null;
   }
 
-  @Override public int hashCode() {
+  @Override
+  public int hashCode() {
     int result = targetType != null ? targetType.hashCode() : 0;
     result = 31 * result + (targetBucketName != null ? targetBucketName.hashCode() : 0);
     result = 31 * result + (leftExpression != null ? leftExpression.hashCode() : 0);
     result = 31 * result + (rightExpression != null ? rightExpression.hashCode() : 0);
+    result = 31 * result + (ifNotExists ? 1 : 0);
     result = 31 * result + (body != null ? body.hashCode() : 0);
     result = 31 * result + (retry != null ? retry.hashCode() : 0);
     result = 31 * result + (wait != null ? wait.hashCode() : 0);
@@ -174,64 +173,36 @@ public class CreateEdgeStatement extends Statement {
     return targetType;
   }
 
-  public void setTargetType(Identifier targetType) {
-    this.targetType = targetType;
-  }
-
   public Identifier getTargetBucketName() {
     return targetBucketName;
-  }
-
-  public void setTargetBucketName(Identifier targetBucketName) {
-    this.targetBucketName = targetBucketName;
   }
 
   public Expression getLeftExpression() {
     return leftExpression;
   }
 
-  public void setLeftExpression(Expression leftExpression) {
-    this.leftExpression = leftExpression;
-  }
-
   public Expression getRightExpression() {
     return rightExpression;
   }
 
-  public void setRightExpression(Expression rightExpression) {
-    this.rightExpression = rightExpression;
+  public boolean ifNotExists() {
+    return ifNotExists;
   }
 
   public InsertBody getBody() {
     return body;
   }
 
-  public void setBody(InsertBody body) {
-    this.body = body;
-  }
-
   public Number getRetry() {
     return retry;
-  }
-
-  public void setRetry(Number retry) {
-    this.retry = retry;
   }
 
   public Number getWait() {
     return wait;
   }
 
-  public void setWait(Number wait) {
-    this.wait = wait;
-  }
-
   public Batch getBatch() {
     return batch;
-  }
-
-  public void setBatch(Batch batch) {
-    this.batch = batch;
   }
 }
 /* JavaCC - OriginalChecksum=2d3dc5693940ffa520146f8f7f505128 (do not edit this line) */

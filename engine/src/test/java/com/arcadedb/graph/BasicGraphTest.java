@@ -19,18 +19,20 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.DatabaseChecker;
+import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.SQLEngine;
 import com.arcadedb.query.sql.function.SQLFunctionAbstract;
+import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.Iterator;
-import java.util.List;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.*;
+import java.util.concurrent.atomic.*;
 
 public class BasicGraphTest extends BaseGraphTest {
   @Test
@@ -592,5 +594,89 @@ public class BasicGraphTest extends BaseGraphTest {
     }
 
     Assertions.assertFalse(v1a.isConnectedTo(v2));
+  }
+
+  @Test
+  public void edgeUnivocity() {
+    final MutableVertex[] v1 = new MutableVertex[1];
+    final MutableVertex[] v2 = new MutableVertex[1];
+    database.transaction(() -> {
+      final EdgeType e = database.getSchema().createEdgeType("OnlyOneBetweenVertices");
+      e.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "@out", "@in");
+
+      v1[0] = database.newVertex(VERTEX1_TYPE_NAME).set("id", 1001).save();
+      v2[0] = database.newVertex(VERTEX1_TYPE_NAME).set("id", 1002).save();
+      v1[0].newEdge("OnlyOneBetweenVertices", v2[0], true);
+    });
+
+    try {
+      database.transaction(() -> {
+        v1[0].newEdge("OnlyOneBetweenVertices", v2[0], true);
+      });
+      Assertions.fail();
+    } catch (DuplicatedKeyException ex) {
+      // EXPECTED
+    }
+
+    database.transaction(() -> {
+      v2[0].newEdge("OnlyOneBetweenVertices", v1[0], true);
+    });
+
+    database.transaction(() -> {
+      final Iterable<Edge> edges = v1[0].getEdges(Vertex.DIRECTION.OUT, "OnlyOneBetweenVertices");
+      for (Edge e : edges)
+        e.delete();
+    });
+
+    database.transaction(() -> {
+      v1[0].newEdge("OnlyOneBetweenVertices", v2[0], true);
+    });
+
+    database.transaction(() -> {
+      final Iterable<Edge> edges = v2[0].getEdges(Vertex.DIRECTION.OUT, "OnlyOneBetweenVertices");
+      for (Edge e : edges)
+        e.delete();
+    });
+
+    database.transaction(() -> {
+      v2[0].newEdge("OnlyOneBetweenVertices", v1[0], true);
+    });
+  }
+
+  @Test
+  public void edgeUnivocitySQL() {
+    final MutableVertex[] v1 = new MutableVertex[1];
+    final MutableVertex[] v2 = new MutableVertex[1];
+    database.transaction(() -> {
+      final EdgeType e = database.getSchema().createEdgeType("OnlyOneBetweenVertices");
+      e.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "@out", "@in");
+
+      v1[0] = database.newVertex(VERTEX1_TYPE_NAME).set("id", 1001).save();
+      v2[0] = database.newVertex(VERTEX1_TYPE_NAME).set("id", 1002).save();
+      ResultSet result = database.command("sql", "create edge OnlyOneBetweenVertices from ? to ?", v1[0], v2[0]);
+      Assertions.assertTrue(result.hasNext());
+    });
+
+    try {
+      database.transaction(() -> {
+        v1[0].newEdge("OnlyOneBetweenVertices", v2[0], true);
+      });
+      Assertions.fail();
+    } catch (DuplicatedKeyException ex) {
+      // EXPECTED
+    }
+
+    try {
+      database.transaction(() -> {
+        database.command("sql", "create edge OnlyOneBetweenVertices from ? to ?", v1[0], v2[0]);
+      });
+      Assertions.fail();
+    } catch (DuplicatedKeyException ex) {
+      // EXPECTED
+    }
+
+    database.transaction(() -> {
+      database.command("sql", "create edge OnlyOneBetweenVertices from ? to ? IF NOT EXISTS", v1[0], v2[0]);
+    });
   }
 }

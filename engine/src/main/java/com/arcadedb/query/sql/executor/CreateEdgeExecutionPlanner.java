@@ -16,11 +16,16 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.query.sql.parser.Batch;
+import com.arcadedb.query.sql.parser.CreateEdgeStatement;
+import com.arcadedb.query.sql.parser.Expression;
+import com.arcadedb.query.sql.parser.Identifier;
+import com.arcadedb.query.sql.parser.InsertBody;
+import com.arcadedb.query.sql.parser.InsertSetExpression;
+import com.arcadedb.query.sql.parser.UpdateItem;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.query.sql.parser.*;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
 
 /**
  * Created by luigidellaquila on 08/08/16.
@@ -31,18 +36,18 @@ public class CreateEdgeExecutionPlanner {
   protected final Identifier targetClusterName;
   protected final Expression leftExpression;
   protected final Expression rightExpression;
-
+  protected final boolean    ifNotExists;
   protected final InsertBody body;
   protected final Number     retry;
   protected final Number     wait;
   protected final Batch      batch;
-
 
   public CreateEdgeExecutionPlanner(CreateEdgeStatement statement) {
     this.targetClass = statement.getTargetType() == null ? null : statement.getTargetType().copy();
     this.targetClusterName = statement.getTargetBucketName() == null ? null : statement.getTargetBucketName().copy();
     this.leftExpression = statement.getLeftExpression() == null ? null : statement.getLeftExpression().copy();
     this.rightExpression = statement.getRightExpression() == null ? null : statement.getRightExpression().copy();
+    this.ifNotExists = statement.ifNotExists();
     this.body = statement.getBody() == null ? null : statement.getBody().copy();
     this.retry = statement.getRetry();
     this.wait = statement.getWait();
@@ -57,8 +62,7 @@ public class CreateEdgeExecutionPlanner {
         targetClass = new Identifier("E");
       } else {
         Database db = ctx.getDatabase();
-        DocumentType typez = db.getSchema()
-            .getTypeByBucketId((db.getSchema().getBucketByName(targetClusterName.getStringValue()).getId()));
+        DocumentType typez = db.getSchema().getTypeByBucketId((db.getSchema().getBucketByName(targetClusterName.getStringValue()).getId()));
         if (typez != null) {
           targetClass = new Identifier(typez.getName());
         } else {
@@ -74,8 +78,9 @@ public class CreateEdgeExecutionPlanner {
     handleGlobalLet(result, new Identifier("$__ARCADEDB_CREATE_EDGE_fromV"), leftExpression, ctx, enableProfiling);
     handleGlobalLet(result, new Identifier("$__ARCADEDB_CREATE_EDGE_toV"), rightExpression, ctx, enableProfiling);
 
-    result.chain(new CreateEdgesStep(targetClass, targetClusterName, new Identifier("$__ARCADEDB_CREATE_EDGE_fromV"),
-        new Identifier("$__ARCADEDB_CREATE_EDGE_toV"), wait, retry, batch, ctx, enableProfiling));
+    result.chain(
+        new CreateEdgesStep(targetClass, targetClusterName, new Identifier("$__ARCADEDB_CREATE_EDGE_fromV"), new Identifier("$__ARCADEDB_CREATE_EDGE_toV"),
+            ifNotExists, wait, retry, batch, ctx, enableProfiling));
 
     handleSetFields(result, body, ctx, enableProfiling);
     handleSave(result, targetClusterName, ctx, enableProfiling);

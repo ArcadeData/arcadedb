@@ -39,18 +39,15 @@ public abstract class BaseGraphTest extends TestHelper {
     GlobalConfiguration.resetAll();
     FileUtils.deleteRecursively(new File(DB_PATH));
 
-    database.transaction(new Database.TransactionScope() {
-      @Override
-      public void execute() {
-        Assertions.assertFalse(database.getSchema().existsType(VERTEX1_TYPE_NAME));
-        database.getSchema().createVertexType(VERTEX1_TYPE_NAME, 3);
+    database.transaction(() -> {
+      Assertions.assertFalse(database.getSchema().existsType(VERTEX1_TYPE_NAME));
+      database.getSchema().createVertexType(VERTEX1_TYPE_NAME, 3);
 
-        Assertions.assertFalse(database.getSchema().existsType(VERTEX2_TYPE_NAME));
-        database.getSchema().createVertexType(VERTEX2_TYPE_NAME, 3);
+      Assertions.assertFalse(database.getSchema().existsType(VERTEX2_TYPE_NAME));
+      database.getSchema().createVertexType(VERTEX2_TYPE_NAME, 3);
 
-        database.getSchema().createEdgeType(EDGE1_TYPE_NAME);
-        database.getSchema().createEdgeType(EDGE2_TYPE_NAME);
-      }
+      database.getSchema().createEdgeType(EDGE1_TYPE_NAME);
+      database.getSchema().createEdgeType(EDGE2_TYPE_NAME);
     });
 
     final Database db = database;

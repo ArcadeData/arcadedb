@@ -25,10 +25,7 @@ import com.arcadedb.utility.Pair;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
 
 public class EdgeLinkedList {
   private final Vertex           vertex;
@@ -88,10 +85,10 @@ public class EdgeLinkedList {
     return array;
   }
 
-  public boolean containsVertex(final RID rid) {
+  public boolean containsVertex(final RID rid, final int[] edgeBucketFilter) {
     EdgeSegment current = first;
     while (current != null) {
-      if (current.containsVertex(rid))
+      if (current.containsVertex(rid, edgeBucketFilter))
         return true;
 
       current = current.getNext();
