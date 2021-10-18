@@ -32,7 +32,6 @@ public class DeleteVertexStatement extends Statement {
   protected FromClause  fromClause;
   protected WhereClause whereClause;
   protected boolean     returnBefore = false;
-  protected Batch       batch        = null;
 
   public DeleteVertexStatement(int id) {
     super(id);
@@ -89,9 +88,6 @@ public class DeleteVertexStatement extends Statement {
     if (limit != null) {
       limit.toString(params, builder);
     }
-    if (batch != null) {
-      batch.toString(params, builder);
-    }
   }
 
   @Override
@@ -102,7 +98,6 @@ public class DeleteVertexStatement extends Statement {
     result.whereClause = whereClause == null ? null : whereClause.copy();
     result.returnBefore = returnBefore;
     result.limit = limit == null ? null : limit.copy();
-    result.batch = batch == null ? null : batch.copy();
     return result;
   }
 
@@ -125,7 +120,7 @@ public class DeleteVertexStatement extends Statement {
       return false;
     if (limit != null ? !limit.equals(that.limit) : that.limit != null)
       return false;
-    return batch != null ? batch.equals(that.batch) : that.batch == null;
+    return true;
   }
 
   @Override
@@ -135,7 +130,6 @@ public class DeleteVertexStatement extends Statement {
     result = 31 * result + (whereClause != null ? whereClause.hashCode() : 0);
     result = 31 * result + (returnBefore ? 1 : 0);
     result = 31 * result + (limit != null ? limit.hashCode() : 0);
-    result = 31 * result + (batch != null ? batch.hashCode() : 0);
     return result;
   }
 
@@ -143,40 +137,16 @@ public class DeleteVertexStatement extends Statement {
     return from;
   }
 
-  public void setFrom(boolean from) {
-    this.from = from;
-  }
-
   public FromClause getFromClause() {
     return fromClause;
-  }
-
-  public void setFromClause(FromClause fromClause) {
-    this.fromClause = fromClause;
   }
 
   public WhereClause getWhereClause() {
     return whereClause;
   }
 
-  public void setWhereClause(WhereClause whereClause) {
-    this.whereClause = whereClause;
-  }
-
   public boolean isReturnBefore() {
     return returnBefore;
-  }
-
-  public void setReturnBefore(boolean returnBefore) {
-    this.returnBefore = returnBefore;
-  }
-
-  public Batch getBatch() {
-    return batch;
-  }
-
-  public void setBatch(Batch batch) {
-    this.batch = batch;
   }
 }
 /* JavaCC - OriginalChecksum=b62d3046f4bd1b9c1f78ed4f125b06d3 (do not edit this line) */

@@ -19,9 +19,7 @@ package com.arcadedb.query.sql.parser;
 
 import java.util.*;
 
-public
-class Url extends SimpleNode {
-
+public class Url extends SimpleNode {
   protected String urlString;
 
   public Url(int id) {
@@ -32,23 +30,25 @@ class Url extends SimpleNode {
     super(p, id);
   }
 
-
-  /** Accept the visitor. **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return
-    visitor.visit(this, data);
+  /**
+   * Accept the visitor.
+   **/
+  public Object jjtAccept(final SqlParserVisitor visitor, final Object data) {
+    return visitor.visit(this, data);
   }
 
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append(urlString);
   }
 
   @Override
-  public boolean equals(Object o) {
-    if (this == o) return true;
-    if (o == null || getClass() != o.getClass()) return false;
-    Url url = (Url) o;
+  public boolean equals(final Object o) {
+    if (this == o)
+      return true;
+    if (o == null || getClass() != o.getClass())
+      return false;
+    final Url url = (Url) o;
     return Objects.equals(urlString, url.urlString);
   }
 
@@ -59,7 +59,7 @@ class Url extends SimpleNode {
 
   @Override
   public SimpleNode copy() {
-    Url result = new Url(-1);
+    final Url result = new Url(-1);
     result.urlString = urlString;
     return result;
   }

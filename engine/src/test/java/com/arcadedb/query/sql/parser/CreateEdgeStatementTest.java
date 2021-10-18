@@ -89,7 +89,7 @@ public class CreateEdgeStatementTest {
   @Test
   public void testBatch() {
     checkRightSyntax(
-        "create edge Foo from [#11:0, #11:3] to [#11:1, #12:0] set foo='bar', bar=2 retry 3 wait 20 batch 10");
+        "create edge Foo from [#11:0, #11:3] to [#11:1, #12:0] set foo='bar', bar=2 retry 3 wait 20");
   }
 
   public void testInputVariables() {

@@ -375,9 +375,6 @@ public class SqlParserDefaultVisitor implements SqlParserVisitor{
   public Object visit(Skip node, Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(Batch node, Object data){
-    return defaultVisit(node, data);
-  }
   public Object visit(Timeout node, Object data){
     return defaultVisit(node, data);
   }

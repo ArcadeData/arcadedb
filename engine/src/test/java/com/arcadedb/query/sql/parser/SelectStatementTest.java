@@ -75,7 +75,6 @@ public class SelectStatementTest {
     SelectStatement select = (SelectStatement) stm;
     assertNull(select.getProjection());
     assertNotNull(select.getTarget());
-    assertFalse(Boolean.TRUE.equals(select.getLockRecord()));
     assertNull(select.getWhereClause());
   }
 
@@ -88,7 +87,6 @@ public class SelectStatementTest {
     assertNotNull(select.getProjection().getItems());
     assertEquals(select.getProjection().getItems().size(), 1);
     assertNotNull(select.getTarget());
-    assertFalse(Boolean.TRUE.equals(select.getLockRecord()));
     assertNull(select.getWhereClause());
   }
 
@@ -325,8 +323,8 @@ public class SelectStatementTest {
   @Test
   public void testRecordAttributes() {
     // issue #4430
-    checkRightSyntax("SELECT @this, @rid, @rid_id, @rid_pos, @type, @size, @fields, @raw from V");
-    checkRightSyntax("SELECT @THIS, @RID, @RID_ID, @RID_POS, @TYPE, @SIZE, @FIELDS, @RAW from V");
+    checkRightSyntax("SELECT @this, @rid, @rid_id, @rid_pos, @type, @fields, @out, @in from V");
+    checkRightSyntax("SELECT @THIS, @RID, @RID_ID, @RID_POS, @TYPE, @FIELDS, @OUT, @IN from V");
   }
 
   @Test

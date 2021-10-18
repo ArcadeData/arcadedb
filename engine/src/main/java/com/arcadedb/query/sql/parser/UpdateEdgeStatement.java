@@ -18,8 +18,8 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.UpdateExecutionPlanner;
 import com.arcadedb.query.sql.executor.UpdateExecutionPlan;
+import com.arcadedb.query.sql.executor.UpdateExecutionPlanner;
 
 import java.util.stream.*;
 
@@ -36,7 +36,8 @@ public class UpdateEdgeStatement extends UpdateStatement {
     return "UPDATE EDGE ";
   }
 
-  @Override public UpdateExecutionPlan createExecutionPlan(CommandContext ctx, boolean enableProfiling) {
+  @Override
+  public UpdateExecutionPlan createExecutionPlan(CommandContext ctx, boolean enableProfiling) {
     UpdateExecutionPlanner planner = new UpdateExecutionPlanner(this);
     return planner.createExecutionPlan(ctx, enableProfiling);
   }
@@ -48,7 +49,8 @@ public class UpdateEdgeStatement extends UpdateStatement {
     return visitor.visit(this, data);
   }
 
-  @Override public UpdateEdgeStatement copy() {
+  @Override
+  public UpdateEdgeStatement copy() {
     UpdateEdgeStatement result = new UpdateEdgeStatement(-1);
     result.target = target == null ? null : target.copy();
     result.operations = operations == null ? null : operations.stream().map(x -> x.copy()).collect(Collectors.toList());
@@ -57,7 +59,6 @@ public class UpdateEdgeStatement extends UpdateStatement {
     result.returnAfter = returnAfter;
     result.returnProjection = returnProjection == null ? null : returnProjection.copy();
     result.whereClause = whereClause == null ? null : whereClause.copy();
-    result.lockRecord = lockRecord;
     result.limit = limit == null ? null : limit.copy();
     result.timeout = timeout == null ? null : timeout.copy();
     return result;

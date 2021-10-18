@@ -46,14 +46,13 @@ public class SelectStatement extends Statement {
   protected OrderBy     orderBy;
   protected Unwind      unwind;
   protected Skip        skip;
-  protected Object      lockRecord = null;
   protected LetClause   letClause;
 
-  public SelectStatement(int id) {
+  public SelectStatement(final int id) {
     super(id);
   }
 
-  public SelectStatement(SqlParser p, int id) {
+  public SelectStatement(final SqlParser p, final int id) {
     super(p, id);
   }
 
@@ -61,15 +60,11 @@ public class SelectStatement extends Statement {
     return projection;
   }
 
-  public void setProjection(Projection projection) {
-    this.projection = projection;
-  }
-
   public FromClause getTarget() {
     return target;
   }
 
-  public void setTarget(FromClause target) {
+  public void setTarget(final FromClause target) {
     this.target = target;
   }
 
@@ -77,7 +72,7 @@ public class SelectStatement extends Statement {
     return whereClause;
   }
 
-  public void setWhereClause(WhereClause whereClause) {
+  public void setWhereClause(final WhereClause whereClause) {
     this.whereClause = whereClause;
   }
 
@@ -85,43 +80,19 @@ public class SelectStatement extends Statement {
     return groupBy;
   }
 
-  public void setGroupBy(GroupBy groupBy) {
-    this.groupBy = groupBy;
-  }
-
   public OrderBy getOrderBy() {
     return orderBy;
-  }
-
-  public void setOrderBy(OrderBy orderBy) {
-    this.orderBy = orderBy;
   }
 
   public Skip getSkip() {
     return skip;
   }
 
-  public void setSkip(Skip skip) {
-    this.skip = skip;
-  }
-
-  public Object getLockRecord() {
-    return lockRecord;
-  }
-
-  public void setLockRecord(Object lockRecord) {
-    this.lockRecord = lockRecord;
-  }
-
   public LetClause getLetClause() {
     return letClause;
   }
 
-  public void setLetClause(LetClause letClause) {
-    this.letClause = letClause;
-  }
-
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
 
     builder.append("SELECT");
     if (projection != null) {
@@ -166,28 +137,9 @@ public class SelectStatement extends Statement {
       limit.toString(params, builder);
     }
 
-//    if (lockRecord != null) {
-//      builder.append(" LOCK ");
-//      switch (lockRecord) {
-//      case DEFAULT:
-//        builder.append("DEFAULT");
-//        break;
-//      case EXCLUSIVE_LOCK:
-//        builder.append("RECORD");
-//        break;
-//      case SHARED_LOCK:
-//        builder.append("SHARED");
-//        break;
-//      case NONE:
-//        builder.append("NONE");
-//        break;
-//      }
-//    }
-
     if (timeout != null) {
       timeout.toString(params, builder);
     }
-
   }
 
   public void validate() throws CommandSQLParsingException {
@@ -279,7 +231,6 @@ public class SelectStatement extends Statement {
     result.unwind = unwind == null ? null : unwind.copy();
     result.skip = skip == null ? null : skip.copy();
     result.limit = limit == null ? null : limit.copy();
-    result.lockRecord = lockRecord;
     result.letClause = letClause == null ? null : letClause.copy();
     result.timeout = timeout == null ? null : timeout.copy();
 
@@ -311,8 +262,6 @@ public class SelectStatement extends Statement {
       return false;
     if (limit != null ? !limit.equals(that.limit) : that.limit != null)
       return false;
-    if (lockRecord != that.lockRecord)
-      return false;
     if (letClause != null ? !letClause.equals(that.letClause) : that.letClause != null)
       return false;
     return timeout != null ? timeout.equals(that.timeout) : that.timeout == null;
@@ -328,7 +277,6 @@ public class SelectStatement extends Statement {
     result = 31 * result + (unwind != null ? unwind.hashCode() : 0);
     result = 31 * result + (skip != null ? skip.hashCode() : 0);
     result = 31 * result + (limit != null ? limit.hashCode() : 0);
-    result = 31 * result + (lockRecord != null ? lockRecord.hashCode() : 0);
     result = 31 * result + (letClause != null ? letClause.hashCode() : 0);
     result = 31 * result + (timeout != null ? timeout.hashCode() : 0);
     return result;
@@ -392,9 +340,6 @@ public class SelectStatement extends Statement {
     if (limit != null) {
       result.setProperty("limit", limit.serialize());
     }
-    if (lockRecord != null) {
-      result.setProperty("lockRecord", lockRecord.toString());
-    }
     if (letClause != null) {
       result.setProperty("letClause", letClause.serialize());
     }
@@ -436,9 +381,6 @@ public class SelectStatement extends Statement {
     if (fromResult.getProperty("limit") != null) {
       limit = new Limit(-1);
       limit.deserialize(fromResult.getProperty("limit"));
-    }
-    if (fromResult.getProperty("lockRecord") != null) {
-      lockRecord = fromResult.getProperty("lockRecord");//TODO
     }
     if (fromResult.getProperty("letClause") != null) {
       letClause = new LetClause(-1);

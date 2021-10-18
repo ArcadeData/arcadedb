@@ -59,7 +59,7 @@ public class DeleteEdgeStatementTest {
         "DELETE EDGE E from (select from V where name = 'foo') to (select from V where name = 'bar')");
 
     checkRightSyntax(
-        "DELETE EDGE E from (select from V where name = 'foo') to (select from V where name = 'bar') BATCH 14");
+        "DELETE EDGE E from (select from V where name = 'foo') to (select from V where name = 'bar')");
 
     checkRightSyntax("DELETE EDGE E where age = 50");
     checkRightSyntax("DELETE EDGE E from #12:0 where age = 50");

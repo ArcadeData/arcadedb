@@ -36,7 +36,6 @@ public class DeleteEdgeStatement extends Statement {
   protected Expression  leftExpression;
   protected Expression  rightExpression;
   protected WhereClause whereClause;
-  protected Batch       batch = null;
 
   public DeleteEdgeStatement(int id) {
     super(id);
@@ -127,9 +126,6 @@ public class DeleteEdgeStatement extends Statement {
     if (limit != null) {
       limit.toString(params, builder);
     }
-    if (batch != null) {
-      batch.toString(params, builder);
-    }
   }
 
   @Override
@@ -148,7 +144,6 @@ public class DeleteEdgeStatement extends Statement {
     result.rightExpression = rightExpression == null ? null : rightExpression.copy();
     result.whereClause = whereClause == null ? null : whereClause.copy();
     result.limit = limit == null ? null : limit.copy();
-    result.batch = batch == null ? null : batch.copy();
     return result;
   }
 
@@ -177,7 +172,7 @@ public class DeleteEdgeStatement extends Statement {
       return false;
     if (limit != null ? !limit.equals(that.limit) : that.limit != null)
       return false;
-    return batch != null ? batch.equals(that.batch) : that.batch == null;
+    return true;
   }
 
   @Override
@@ -190,7 +185,6 @@ public class DeleteEdgeStatement extends Statement {
     result = 31 * result + (rightExpression != null ? rightExpression.hashCode() : 0);
     result = 31 * result + (whereClause != null ? whereClause.hashCode() : 0);
     result = 31 * result + (limit != null ? limit.hashCode() : 0);
-    result = 31 * result + (batch != null ? batch.hashCode() : 0);
     return result;
   }
 
@@ -198,64 +192,28 @@ public class DeleteEdgeStatement extends Statement {
     return typeName;
   }
 
-  public void setTypeName(Identifier typeName) {
-    this.typeName = typeName;
-  }
-
   public Identifier getTargetBucketName() {
     return targetBucketName;
-  }
-
-  public void setTargetBucketName(Identifier targetBucketName) {
-    this.targetBucketName = targetBucketName;
   }
 
   public Rid getRid() {
     return rid;
   }
 
-  public void setRid(Rid rid) {
-    this.rid = rid;
-  }
-
   public List<Rid> getRids() {
     return rids;
-  }
-
-  public void setRids(List<Rid> rids) {
-    this.rids = rids;
   }
 
   public WhereClause getWhereClause() {
     return whereClause;
   }
 
-  public void setWhereClause(WhereClause whereClause) {
-    this.whereClause = whereClause;
-  }
-
-  public Batch getBatch() {
-    return batch;
-  }
-
-  public void setBatch(Batch batch) {
-    this.batch = batch;
-  }
-
   public Expression getLeftExpression() {
     return leftExpression;
   }
 
-  public void setLeftExpression(Expression leftExpression) {
-    this.leftExpression = leftExpression;
-  }
-
   public Expression getRightExpression() {
     return rightExpression;
-  }
-
-  public void setRightExpression(Expression rightExpression) {
-    this.rightExpression = rightExpression;
   }
 }
 /* JavaCC - OriginalChecksum=8f4c5bafa99572d7d87a5d0a2c7d55a7 (do not edit this line) */

@@ -34,7 +34,6 @@ public class CreateEdgeStatement extends Statement {
   protected InsertBody body;
   protected Number     retry;
   protected Number     wait;
-  protected Batch      batch;
   protected boolean    ifNotExists;
 
   public CreateEdgeStatement(int id) {
@@ -107,9 +106,6 @@ public class CreateEdgeStatement extends Statement {
       builder.append(" WAIT ");
       builder.append(wait);
     }
-    if (batch != null) {
-      batch.toString(params, builder);
-    }
   }
 
   @Override
@@ -123,7 +119,6 @@ public class CreateEdgeStatement extends Statement {
     result.body = body == null ? null : body.copy();
     result.retry = retry;
     result.wait = wait;
-    result.batch = batch == null ? null : batch.copy();
     return result;
   }
 
@@ -152,7 +147,7 @@ public class CreateEdgeStatement extends Statement {
       return false;
     if (wait != null ? !wait.equals(that.wait) : that.wait != null)
       return false;
-    return batch != null ? batch.equals(that.batch) : that.batch == null;
+    return true;
   }
 
   @Override
@@ -165,7 +160,6 @@ public class CreateEdgeStatement extends Statement {
     result = 31 * result + (body != null ? body.hashCode() : 0);
     result = 31 * result + (retry != null ? retry.hashCode() : 0);
     result = 31 * result + (wait != null ? wait.hashCode() : 0);
-    result = 31 * result + (batch != null ? batch.hashCode() : 0);
     return result;
   }
 
@@ -199,10 +193,6 @@ public class CreateEdgeStatement extends Statement {
 
   public Number getWait() {
     return wait;
-  }
-
-  public Batch getBatch() {
-    return batch;
   }
 }
 /* JavaCC - OriginalChecksum=2d3dc5693940ffa520146f8f7f505128 (do not edit this line) */

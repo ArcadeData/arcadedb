@@ -16,30 +16,30 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.CommandExecutionException;
-import com.arcadedb.query.sql.parser.*;
+import com.arcadedb.query.sql.parser.DeleteEdgeStatement;
+import com.arcadedb.query.sql.parser.Expression;
+import com.arcadedb.query.sql.parser.FromClause;
+import com.arcadedb.query.sql.parser.FromItem;
+import com.arcadedb.query.sql.parser.Identifier;
+import com.arcadedb.query.sql.parser.Limit;
+import com.arcadedb.query.sql.parser.Rid;
+import com.arcadedb.query.sql.parser.SelectStatement;
+import com.arcadedb.query.sql.parser.WhereClause;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.stream.Collectors;
+import java.util.*;
+import java.util.stream.*;
 
 /**
  * Created by luigidellaquila on 08/08/16.
  */
 public class DeleteEdgeExecutionPlanner {
-
-  protected final Identifier className;
-  protected final Identifier targetClusterName;
-
-  protected final List<Rid> rids;
-
-  private final Expression leftExpression;
-  private final Expression rightExpression;
-
-  protected Batch batch;
-
-  private final WhereClause whereClause;
-
-  private final Limit limit;
+  protected final Identifier  className;
+  protected final Identifier  targetClusterName;
+  protected final List<Rid>   rids;
+  private final   Expression  leftExpression;
+  private final   Expression  rightExpression;
+  private final   WhereClause whereClause;
+  private final   Limit       limit;
 
   public DeleteEdgeExecutionPlanner(DeleteEdgeStatement stm) {
 
@@ -56,7 +56,6 @@ public class DeleteEdgeExecutionPlanner {
     this.rightExpression = stm.getRightExpression() == null ? null : stm.getRightExpression().copy();
 
     this.whereClause = stm.getWhereClause() == null ? null : stm.getWhereClause().copy();
-    this.batch = stm.getBatch() == null ? null : stm.getBatch().copy();
     this.limit = stm.getLimit() == null ? null : stm.getLimit().copy();
   }
 
@@ -66,8 +65,7 @@ public class DeleteEdgeExecutionPlanner {
     if (leftExpression != null || rightExpression != null) {
       handleGlobalLet(result, new Identifier("$__ARCADEDB_DELETE_EDGE_fromV"), leftExpression, ctx, enableProfiling);
       handleGlobalLet(result, new Identifier("$__ARCADEDB_DELETE_EDGE_toV"), rightExpression, ctx, enableProfiling);
-      handleFetchFromTo(result, ctx, "$__ARCADEDB_DELETE_EDGE_fromV", "$__ARCADEDB_DELETE_EDGE_toV", className, targetClusterName,
-          enableProfiling);
+      handleFetchFromTo(result, ctx, "$__ARCADEDB_DELETE_EDGE_fromV", "$__ARCADEDB_DELETE_EDGE_toV", className, targetClusterName, enableProfiling);
       handleWhere(result, ctx, whereClause, enableProfiling);
     } else if (whereClause != null) {
       FromClause fromClause = new FromClause(-1);
@@ -101,8 +99,8 @@ public class DeleteEdgeExecutionPlanner {
     }
   }
 
-  private void handleFetchFromTo(DeleteExecutionPlan result, CommandContext ctx, String fromAlias, String toAlias,
-      Identifier targetClass, Identifier targetCluster, boolean profilingEnabled) {
+  private void handleFetchFromTo(DeleteExecutionPlan result, CommandContext ctx, String fromAlias, String toAlias, Identifier targetClass,
+      Identifier targetCluster, boolean profilingEnabled) {
     if (fromAlias != null && toAlias != null) {
       result.chain(new FetchEdgesFromToVerticesStep(fromAlias, toAlias, targetClass, targetCluster, ctx, profilingEnabled));
     } else if (toAlias != null) {
@@ -112,14 +110,11 @@ public class DeleteEdgeExecutionPlanner {
 
   private void handleTargetRids(DeleteExecutionPlan result, CommandContext ctx, List<Rid> rids, boolean profilingEnabled) {
     if (rids != null) {
-      result.chain(
-          new FetchFromRidsStep(rids.stream().map(x -> x.toRecordId((Result) null, ctx)).collect(Collectors.toList()), ctx,
-              profilingEnabled));
+      result.chain(new FetchFromRidsStep(rids.stream().map(x -> x.toRecordId((Result) null, ctx)).collect(Collectors.toList()), ctx, profilingEnabled));
     }
   }
 
-  private void handleTargetCluster(DeleteExecutionPlan result, CommandContext ctx, Identifier targetClusterName,
-      boolean profilingEnabled) {
+  private void handleTargetCluster(DeleteExecutionPlan result, CommandContext ctx, Identifier targetClusterName, boolean profilingEnabled) {
     if (targetClusterName != null) {
       String name = targetClusterName.getStringValue();
       int bucketId = ctx.getDatabase().getSchema().getBucketByName(name).getId();
@@ -130,8 +125,7 @@ public class DeleteEdgeExecutionPlanner {
     }
   }
 
-  private void handleTargetClass(DeleteExecutionPlan result, CommandContext ctx, Identifier className,
-      boolean profilingEnabled) {
+  private void handleTargetClass(DeleteExecutionPlan result, CommandContext ctx, Identifier className, boolean profilingEnabled) {
     if (className != null) {
       result.chain(new FetchFromClassExecutionStep(className.getStringValue(), null, ctx, null, profilingEnabled));
     }
@@ -163,8 +157,7 @@ public class DeleteEdgeExecutionPlanner {
     plan.chain(new CastToEdgeStep(ctx, profilingEnabled));
   }
 
-  private void handleTarget(UpdateExecutionPlan result, CommandContext ctx, FromClause target, WhereClause whereClause,
-      boolean profilingEnabled) {
+  private void handleTarget(UpdateExecutionPlan result, CommandContext ctx, FromClause target, WhereClause whereClause, boolean profilingEnabled) {
     SelectStatement sourceStatement = new SelectStatement(-1);
     sourceStatement.setTarget(target);
     sourceStatement.setWhereClause(whereClause);
@@ -172,8 +165,7 @@ public class DeleteEdgeExecutionPlanner {
     result.chain(new SubQueryStep(planner.createExecutionPlan(ctx, profilingEnabled), ctx, ctx, profilingEnabled));
   }
 
-  private void handleGlobalLet(DeleteExecutionPlan result, Identifier name, Expression expression, CommandContext ctx,
-      boolean profilingEnabled) {
+  private void handleGlobalLet(DeleteExecutionPlan result, Identifier name, Expression expression, CommandContext ctx, boolean profilingEnabled) {
     if (expression != null) {
       result.chain(new GlobalLetExpressionStep(name, expression, ctx, profilingEnabled));
     }
