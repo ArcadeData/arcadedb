@@ -353,28 +353,24 @@ TOKEN:
 	|
 	< THIS: "@" ( ( "t" | "T" ) ( "h" | "H" ) ( "i" | "I" ) ( "s" | "S" ) ) >
 	|
-	< RECORD_ATTRIBUTE: <RID_ATTR> | <TYPE_ATTR> | <VERSION_ATTR> | <SIZE_ATTR> | <TYPE_ATTR> | <RAW_ATTR> | <RID_ID_ATTR> | <RID_POS_ATTR> | <FIELDS_ATTR> >
+	< RECORD_ATTRIBUTE: <RID_ATTR> | <TYPE_ATTR> | <RID_ID_ATTR> | <RID_POS_ATTR> | <FIELDS_ATTR> | <OUT_ATTR> | <IN_ATTR> >
 	|
 	< RID_ATTR: "@" ( ( "r" | "R" ) ( "i" | "I" ) ( "d" | "D" ) ) >
 	|
 	< RID_STRING: "\"@" ( ( "r" | "R" ) ( "i" | "I" ) ( "d" | "D" ) ) "\"">
 	|
-	< #VERSION_ATTR: "@" ( ( "v" | "V" ) ( "e" | "E" ) ( "r" | "R" ) ( "s" | "S" ) ( "i" | "I" ) ( "o" | "O" ) ( "n" | "N" )) >
+	< OUT_ATTR: "@" ( ( "o" | "O" ) ( "u" | "U" ) ( "t" | "T" ) ) >
 	|
-	< #SIZE_ATTR: "@" ( ( "s" | "S" ) ( "i" | "I" ) ( "z" | "Z" ) ( "e" | "E" ) ) >
-	|
-	< #TYPE_ATTR: "@" ( ( "t" | "T" ) ( "y" | "Y" ) ( "p" | "P" ) ( "e" | "E" ) ) >
+	< IN_ATTR: "@" ( ( "i" | "I" ) ( "n" | "N" ) ) >
   |
-	< #RAW_ATTR: "@" ( ( "r" | "R" ) ( "a" | "A" ) ( "w" | "W" ) ) >
-	|
+  < #TYPE_ATTR: "@" ( ( "t" | "T" ) ( "y" | "Y" ) ( "p" | "P" ) ( "e" | "E" ) ) >
+  |
 	< #RID_ID_ATTR: "@" ( ( "r" | "R" ) ( "i" | "I" ) ( "d" | "D" ) "_" ( "i" | "I" ) ( "d" | "D" )) >
 	|
 	< #RID_POS_ATTR: "@" ( ( "r" | "R" ) ( "i" | "I" ) ( "d" | "D" ) "_" ( "p" | "P" ) ( "o" | "O" )  ( "s" | "S" )) >
   |
   < #FIELDS_ATTR: "@" ( ( "f" | "F" ) ( "i" | "I" ) ( "e" | "E" ) ( "l" | "L" ) ( "d" | "D" ) ( "s" | "S" )) >
-
 }
-
 
 /* LITERALS */
 
