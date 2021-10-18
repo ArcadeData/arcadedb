@@ -30,34 +30,31 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
       final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, "graph", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
       // BEGIN
-      database.begin();
+      database.transaction(() -> {
+        // CREATE DOCUMENT
+        ResultSet result = database.command("SQL", "insert into Person set name = 'Elon'");
+        Assertions.assertNotNull(result);
+        Assertions.assertTrue(result.hasNext());
+        Result rec = result.next();
+        Assertions.assertTrue(rec.toJSON().contains("Elon"));
+        String rid = rec.getProperty("@rid");
 
-      // CREATE DOCUMENT
-      ResultSet result = database.command("SQL", "insert into Person set name = 'Elon'");
-      Assertions.assertNotNull(result);
-      Assertions.assertTrue(result.hasNext());
-      Result rec = result.next();
-      Assertions.assertTrue(rec.toJSON().contains("Elon"));
-      String rid = rec.getProperty("@rid");
+        // RETRIEVE DOCUMENT WITH QUERY
+        result = database.query("SQL", "select from Person where name = 'Elon'");
+        Assertions.assertTrue(result.hasNext());
 
-      // RETRIEVE DOCUMENT WITH QUERY
-      result = database.query("SQL", "select from Person where name = 'Elon'");
-      Assertions.assertTrue(result.hasNext());
+        // UPDATE DOCUMENT WITH COMMAND
+        result = database.command("SQL", "update Person set lastName = 'Musk' where name = 'Elon'");
+        Assertions.assertTrue(result.hasNext());
+        Assertions.assertEquals(1, new JSONObject(result.next().toJSON()).getInt("count"));
 
-      // UPDATE DOCUMENT WITH COMMAND
-      result = database.command("SQL", "update Person set lastName = 'Musk' where name = 'Elon'");
-      Assertions.assertTrue(result.hasNext());
-      Assertions.assertEquals(1, new JSONObject(result.next().toJSON()).getInt("count"));
-
-      JSONObject record = database.lookupByRID(rid);
-      Assertions.assertNotNull(result);
-      Assertions.assertEquals("Musk", record.getString("lastName"));
-
-      // COMMIT
-      database.commit();
+        JSONObject record = database.lookupByRID(rid);
+        Assertions.assertNotNull(result);
+        Assertions.assertEquals("Musk", record.getString("lastName"));
+      });
 
       // RETRIEVE DOCUMENT WITH QUERY AFTER COMMIT
-      result = database.query("SQL", "select from Person where name = 'Elon'");
+      final ResultSet result = database.query("SQL", "select from Person where name = 'Elon'");
       Assertions.assertTrue(result.hasNext());
       Assertions.assertEquals("Musk", result.next().getProperty("lastName"));
     });
