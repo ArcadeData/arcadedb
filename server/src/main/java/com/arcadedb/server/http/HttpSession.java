@@ -16,10 +16,10 @@
 package com.arcadedb.server.http;
 
 import com.arcadedb.database.TransactionContext;
-import com.arcadedb.exception.TransactionException;
 import com.arcadedb.server.security.ServerSecurityUser;
 
-import java.util.concurrent.atomic.*;
+import java.util.concurrent.*;
+import java.util.concurrent.locks.*;
 
 /**
  * Manage a transaction on the HTTP protocol.
@@ -27,36 +27,39 @@ import java.util.concurrent.atomic.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class HttpSession {
-  public final     String                  id;
-  public final     TransactionContext      transaction;
-  public final     ServerSecurityUser      user;
-  public final     AtomicReference<Thread> currentThreadUsing = new AtomicReference<>();
-  private volatile long                    lastUpdate         = 0L;
+  private static final long               DEFAULT_TIMEOUT = 5_000;
+  public final         String             id;
+  public final         TransactionContext transaction;
+  public final         ServerSecurityUser user;
+  private final        ReentrantLock      lock            = new ReentrantLock();
+  private volatile     long               lastUpdate      = 0L;
 
   public HttpSession(final ServerSecurityUser user, final String id, final TransactionContext dbTx) {
     this.user = user;
     this.id = id;
     this.transaction = dbTx;
-    use(user);
   }
 
   public long elapsedFromLastUpdate() {
     return System.currentTimeMillis() - lastUpdate;
   }
 
-  public HttpSession use(final ServerSecurityUser user) {
+  public HttpSession execute(final ServerSecurityUser user, final Callable callback) throws Exception {
     if (!this.user.equals(user))
       throw new SecurityException("Cannot use the requested transaction because in use by a different user");
 
-    if (!currentThreadUsing.compareAndSet(null, Thread.currentThread()))
-      throw new TransactionException("Cannot use the requested transaction because in use by a different thread");
+    lastUpdate = System.currentTimeMillis();
+
+    if (lock.tryLock(DEFAULT_TIMEOUT, TimeUnit.MILLISECONDS)) {
+      try {
+        callback.call();
+      } finally {
+        lock.unlock();
+      }
+    } else
+      throw new TimeoutException("Timeout on locking http session");
 
     lastUpdate = System.currentTimeMillis();
-    return this;
-  }
-
-  public HttpSession endUsage() {
-    currentThreadUsing.set(null);
     return this;
   }
 }
