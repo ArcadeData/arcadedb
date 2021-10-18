@@ -1729,6 +1729,7 @@ CreateEdgeStatement CreateEdgeStatement():
   (
     jjtThis.rightExpression = Expression()
   )
+	[ <IF> <NOT> <EXISTS> { jjtThis.ifNotExists = true; }]
   [ jjtThis.body = InsertBody() ]
   [ jjtThis.retry = Retry() ]
   [ jjtThis.wait = Wait() ]

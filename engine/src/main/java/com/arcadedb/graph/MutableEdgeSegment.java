@@ -116,7 +116,7 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
   }
 
   @Override
-  public boolean containsVertex(final RID rid) {
+  public boolean containsVertex(final RID rid, final int[] edgeBucketFilter) {
     final int used = getUsed();
     if (used == 0)
       return false;
@@ -127,14 +127,21 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
     buffer.position(CONTENT_START_POSITION);
 
     while (buffer.position() < used) {
-      // SKIP EDGE RID
-      buffer.getNumber();
+      final int currEdgeBucketId = (int) buffer.getNumber();
       buffer.getNumber();
 
-      final int currEdgeBucketId = (int) buffer.getNumber();
-      final long currEdgePosition = buffer.getNumber();
-      if (currEdgeBucketId == bucketId && currEdgePosition == position)
-        return true;
+      final int currVertexBucketId = (int) buffer.getNumber();
+      final long currVertexPosition = buffer.getNumber();
+      if (currVertexBucketId == bucketId && currVertexPosition == position) {
+        if (edgeBucketFilter != null) {
+          // FILTER BY EDGE BUCKETS
+          for (int i = 0; i < edgeBucketFilter.length; i++) {
+            if (currEdgeBucketId == edgeBucketFilter[i])
+              return true;
+          }
+        } else
+          return true;
+      }
     }
 
     return false;

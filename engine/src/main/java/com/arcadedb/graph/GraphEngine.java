@@ -15,7 +15,11 @@
  */
 package com.arcadedb.graph;
 
-import com.arcadedb.database.*;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
@@ -25,7 +29,7 @@ import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.Pair;
 
 import java.util.*;
-import java.util.logging.Level;
+import java.util.logging.*;
 
 /**
  * Central class to work with graphs. This is not intended to be used by the end user, but rather from Vertex and Edge classes.
@@ -510,11 +514,11 @@ public class GraphEngine {
       throw new IllegalArgumentException("Destination vertex is null");
 
     final EdgeLinkedList outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
-    if (outEdges != null && outEdges.containsVertex(toVertex.getIdentity()))
+    if (outEdges != null && outEdges.containsVertex(toVertex.getIdentity(), null))
       return true;
 
     final EdgeLinkedList inEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.IN);
-    return inEdges != null && inEdges.containsVertex(toVertex.getIdentity());
+    return inEdges != null && inEdges.containsVertex(toVertex.getIdentity(), null);
   }
 
   public boolean isVertexConnectedTo(final VertexInternal vertex, final Identifiable toVertex, final Vertex.DIRECTION direction) {
@@ -526,13 +530,39 @@ public class GraphEngine {
 
     if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH) {
       final EdgeLinkedList outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
-      if (outEdges != null && outEdges.containsVertex(toVertex.getIdentity()))
+      if (outEdges != null && outEdges.containsVertex(toVertex.getIdentity(), null))
         return true;
     }
 
     if (direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH) {
       final EdgeLinkedList inEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.IN);
-      return inEdges != null && inEdges.containsVertex(toVertex.getIdentity());
+      return inEdges != null && inEdges.containsVertex(toVertex.getIdentity(), null);
+    }
+
+    return false;
+  }
+
+  public boolean isVertexConnectedTo(final VertexInternal vertex, final Identifiable toVertex, final Vertex.DIRECTION direction, final String edgeType) {
+    if (toVertex == null)
+      throw new IllegalArgumentException("Destination vertex is null");
+
+    if (direction == null)
+      throw new IllegalArgumentException("Direction is null");
+
+    if (edgeType == null)
+      throw new IllegalArgumentException("Edge type is null");
+
+    final int[] bucketFilter = vertex.getDatabase().getSchema().getType(edgeType).getBuckets(true).stream().mapToInt(x -> x.getId()).toArray();
+
+    if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH) {
+      final EdgeLinkedList outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
+      if (outEdges != null && outEdges.containsVertex(toVertex.getIdentity(), bucketFilter))
+        return true;
+    }
+
+    if (direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH) {
+      final EdgeLinkedList inEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.IN);
+      return inEdges != null && inEdges.containsVertex(toVertex.getIdentity(), bucketFilter);
     }
 
     return false;

@@ -52,7 +52,7 @@ public class PostBeginHandler extends DatabaseAbstractHandler {
     database.begin();
     final TransactionContext tx = ((DatabaseInternal) database).getTransaction();
 
-    final HttpSession session = httpServer.getTransactionManager().createSession(user, tx).endUsage();
+    final HttpSession session = httpServer.getTransactionManager().createSession(user, tx);
 
     DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
 

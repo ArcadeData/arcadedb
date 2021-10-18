@@ -16,11 +16,12 @@
 package com.arcadedb.database;
 
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.schema.DocumentType;
 
-import java.util.List;
+import java.util.*;
 
 public class DocumentIndexer {
   private final EmbeddedDatabase database;
@@ -60,7 +61,7 @@ public class DocumentIndexer {
 
     final Object[] keyValues = new Object[keyNames.size()];
     for (int i = 0; i < keyValues.length; ++i)
-      keyValues[i] = record.get(keyNames.get((i)));
+      keyValues[i] = getPropertyValue(record, keyNames.get(i));
 
     index.put(keyValues, new RID[] { rid });
   }
@@ -86,8 +87,8 @@ public class DocumentIndexer {
 
       boolean keyValuesAreModified = false;
       for (int i = 0; i < keyNames.size(); ++i) {
-        oldKeyValues[i] = originalRecord.get(keyNames.get(i));
-        newKeyValues[i] = modifiedRecord.get(keyNames.get(i));
+        oldKeyValues[i] = getPropertyValue(originalRecord, keyNames.get(i));
+        newKeyValues[i] = getPropertyValue(modifiedRecord, keyNames.get(i));
 
         if ((newKeyValues[i] == null && oldKeyValues[i] != null) || (newKeyValues[i] != null && !newKeyValues[i].equals(oldKeyValues[i]))) {
           keyValuesAreModified = true;
@@ -127,11 +128,22 @@ public class DocumentIndexer {
         final List<String> keyNames = index.getPropertyNames();
         final Object[] keyValues = new Object[keyNames.size()];
         for (int i = 0; i < keyNames.size(); ++i) {
-          keyValues[i] = record.get(keyNames.get(i));
+          keyValues[i] = getPropertyValue(record, keyNames.get(i));
         }
 
         index.remove(keyValues, record.getIdentity());
       }
     }
+  }
+
+  private Object getPropertyValue(final Document record, final String propertyName) {
+    if (record instanceof Edge) {
+      // EDGE: CHECK FOR SPECIAL CASES @OUT AND @IN
+      if ("@out".equals(propertyName))
+        return ((Edge) record).getOut();
+      else if ("@in".equals(propertyName))
+        return ((Edge) record).getIn();
+    }
+    return record.get(propertyName);
   }
 }

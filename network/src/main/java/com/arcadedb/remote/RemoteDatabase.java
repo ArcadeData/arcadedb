@@ -17,8 +17,10 @@ package com.arcadedb.remote;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.DuplicatedKeyException;
@@ -118,6 +120,38 @@ public class RemoteDatabase extends RWLockContext {
     close();
   }
 
+  public void transaction(final Database.TransactionScope txBlock) {
+    transaction(txBlock, configuration.getValueAsInteger(GlobalConfiguration.TX_RETRIES));
+  }
+
+  public void transaction(final Database.TransactionScope txBlock, int attempts) {
+    if (txBlock == null)
+      throw new IllegalArgumentException("Transaction block is null");
+
+    ArcadeDBException lastException = null;
+
+    if (attempts < 1)
+      attempts = 1;
+
+    for (int retry = 0; retry < attempts; ++retry) {
+      try {
+        begin();
+        txBlock.execute();
+        commit();
+
+        return;
+      } catch (NeedRetryException | DuplicatedKeyException e) {
+        // RETRY
+        lastException = e;
+      } catch (Exception e) {
+        rollback();
+        throw e;
+      }
+    }
+
+    throw lastException;
+  }
+
   public void begin() {
     if (sessionId != null)
       throw new TransactionException("Transaction already begun");
@@ -173,7 +207,7 @@ public class RemoteDatabase extends RWLockContext {
         throw new RecordNotFoundException("Record " + rid + " not found", new RID(null, rid));
 
       final JSONObject response = new JSONObject(FileUtils.readStreamAsString(connection.getInputStream(), charset));
-      if(response.has("result"))
+      if (response.has("result"))
         return response.getJSONObject("result");
       return null;
 

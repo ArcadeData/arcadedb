@@ -63,14 +63,19 @@ public abstract class DatabaseAbstractHandler extends AbstractHandler {
       database = null;
 
     try {
-      execute(exchange, user, database);
+      if (activeSession != null)
+        // EXECUTE THE CODE LOCKING THE CURRENT SESSION. THIS AVOIDS USING THE SAME SESSION FROM MULTIPLE THREADS AT THE SAME TIME
+        activeSession.execute(user, () -> {
+          execute(exchange, user, database);
+          return null;
+        });
+      else
+        execute(exchange, user, database);
     } finally {
 
-      if (activeSession != null) {
-        // TRANSACTION FOUND, REMOVE THE TRANSACTION TO BE REUSED IN ANOTHER REQUEST
-        activeSession.endUsage();
+      if (activeSession != null)
         DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
-      } else if (database != null) {
+      else if (database != null) {
         if (atomicTransaction)
           // STARTED ATOMIC TRANSACTION, COMMIT
           database.commit();
@@ -111,7 +116,6 @@ public abstract class DatabaseAbstractHandler extends AbstractHandler {
 
     if (session != null) {
       // FORCE THE RESET OF TL
-      session.use(user);
       final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.init((DatabaseInternal) database, session.transaction);
       current.setCurrentUser(user != null ? user.getDatabaseUser(database) : null);
       exchange.getResponseHeaders().put(SESSION_ID_HEADER, session.id);

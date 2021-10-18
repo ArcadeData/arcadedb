@@ -15,12 +15,12 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.query.sql.parser.Batch;
 import com.arcadedb.query.sql.parser.Identifier;
 
@@ -30,11 +30,11 @@ import java.util.*;
  * Created by luigidellaquila on 28/11/16.
  */
 public class CreateEdgesStep extends AbstractExecutionStep {
-
   private final Identifier targetClass;
   private final Identifier targetCluster;
   private final Identifier fromAlias;
   private final Identifier toAlias;
+  private final boolean    ifNotExists;
 
   //operation stuff
   Iterator fromIter;
@@ -42,17 +42,16 @@ public class CreateEdgesStep extends AbstractExecutionStep {
   Vertex   currentFrom;
   final   List    toList = new ArrayList<>();
   private boolean inited = false;
+  private long    cost   = 0;
 
-  private long cost = 0;
-
-  public CreateEdgesStep(Identifier targetClass, Identifier targetClusterName, Identifier fromAlias, Identifier toAlias, Number wait, Number retry, Batch batch,
-      CommandContext ctx, boolean profilingEnabled) {
+  public CreateEdgesStep(final Identifier targetClass, final Identifier targetClusterName, final Identifier fromAlias, final Identifier toAlias,
+      final boolean ifNotExists, final Number wait, final Number retry, final Batch batch, final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
     this.targetClass = targetClass;
     this.targetCluster = targetClusterName;
     this.fromAlias = fromAlias;
     this.toAlias = toAlias;
-
+    this.ifNotExists = ifNotExists;
   }
 
   @Override
@@ -90,7 +89,14 @@ public class CreateEdgesStep extends AbstractExecutionStep {
               throw new CommandExecutionException("Invalid TO vertex for edge");
             }
 
-            MutableEdge edge = currentFrom.newEdge(targetClass.getStringValue(), currentTo, true);
+            if (ifNotExists) {
+              if (ctx.getDatabase().getGraphEngine()
+                  .isVertexConnectedTo((VertexInternal) currentFrom, currentTo, Vertex.DIRECTION.OUT, targetClass.getStringValue()))
+                // SKIP CREATING EDGE
+                return null;
+            }
+
+            final MutableEdge edge = currentFrom.newEdge(targetClass.getStringValue(), currentTo, true);
 
             UpdatableResult result = new UpdatableResult(edge);
             result.setElement(edge);
