@@ -136,7 +136,6 @@ public interface SqlParserVisitor
   Object visit(Unwind node, Object data);
   Object visit(Limit node, Object data);
   Object visit(Skip node, Object data);
-  Object visit(Batch node, Object data);
   Object visit(Timeout node, Object data);
   Object visit(Wait node, Object data);
   Object visit(Retry node, Object data);

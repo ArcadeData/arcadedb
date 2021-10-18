@@ -28,17 +28,14 @@ import java.util.*;
 import java.util.stream.*;
 
 public class UpdateStatement extends Statement {
-  public FromClause target;
-
-  protected List<UpdateOperations> operations = new ArrayList<UpdateOperations>();
-
-  protected boolean     upsert       = false;
-  protected boolean     returnBefore = false;
-  protected boolean     returnAfter  = false;
-  protected boolean     returnCount  = false;
-  protected Projection  returnProjection;
-  public    WhereClause whereClause;
-  public    Object      lockRecord   = null;
+  protected FromClause             target;
+  protected List<UpdateOperations> operations   = new ArrayList<UpdateOperations>();
+  protected boolean                upsert       = false;
+  protected boolean                returnBefore = false;
+  protected boolean                returnAfter  = false;
+  protected boolean                returnCount  = false;
+  protected Projection             returnProjection;
+  protected WhereClause            whereClause;
 
   public UpdateStatement(int id) {
     super(id);
@@ -81,24 +78,6 @@ public class UpdateStatement extends Statement {
       builder.append(" WHERE ");
       whereClause.toString(params, builder);
     }
-
-//    if (lockRecord != null) {
-//      builder.append(" LOCK ");
-//      switch (lockRecord) {
-//      case DEFAULT:
-//        builder.append("DEFAULT");
-//        break;
-//      case EXCLUSIVE_LOCK:
-//        builder.append("RECORD");
-//        break;
-//      case SHARED_LOCK:
-//        builder.append("SHARED");
-//        break;
-//      case NONE:
-//        builder.append("NONE");
-//        break;
-//      }
-//    }
     if (limit != null) {
       limit.toString(params, builder);
     }
@@ -113,7 +92,7 @@ public class UpdateStatement extends Statement {
 
   @Override
   public UpdateStatement copy() {
-    UpdateStatement result = new UpdateStatement(-1);
+    final UpdateStatement result = new UpdateStatement(-1);
     result.target = target == null ? null : target.copy();
     result.operations = operations == null ? null : operations.stream().map(x -> x.copy()).collect(Collectors.toList());
     result.upsert = upsert;
@@ -121,28 +100,27 @@ public class UpdateStatement extends Statement {
     result.returnAfter = returnAfter;
     result.returnProjection = returnProjection == null ? null : returnProjection.copy();
     result.whereClause = whereClause == null ? null : whereClause.copy();
-    result.lockRecord = lockRecord;
     result.limit = limit == null ? null : limit.copy();
     result.timeout = timeout == null ? null : timeout.copy();
     return result;
   }
 
   @Override
-  public ResultSet execute(Database db, Object[] args, CommandContext parentCtx, boolean usePlanCache) {
-    BasicCommandContext ctx = new BasicCommandContext();
+  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentCtx, final boolean usePlanCache) {
+    final BasicCommandContext ctx = new BasicCommandContext();
     if (parentCtx != null) {
       ctx.setParentWithoutOverridingChild(parentCtx);
     }
     ctx.setDatabase(db);
     ctx.setInputParameters(args);
-    UpdateExecutionPlan executionPlan = createExecutionPlan(ctx, false);
+    final UpdateExecutionPlan executionPlan = createExecutionPlan(ctx, false);
     executionPlan.executeInternal();
     return new LocalResultSet(executionPlan);
   }
 
   @Override
-  public ResultSet execute(Database db, Map params, CommandContext parentCtx, boolean usePlanCache) {
-    BasicCommandContext ctx = new BasicCommandContext();
+  public ResultSet execute(final Database db, final Map params, final CommandContext parentCtx, final boolean usePlanCache) {
+    final BasicCommandContext ctx = new BasicCommandContext();
     if (parentCtx != null) {
       ctx.setParentWithoutOverridingChild(parentCtx);
     }
@@ -153,8 +131,8 @@ public class UpdateStatement extends Statement {
     return new LocalResultSet(executionPlan);
   }
 
-  public UpdateExecutionPlan createExecutionPlan(CommandContext ctx, boolean enableProfiling) {
-    UpdateExecutionPlanner planner = new UpdateExecutionPlanner(this);
+  public UpdateExecutionPlan createExecutionPlan(final CommandContext ctx, final boolean enableProfiling) {
+    final UpdateExecutionPlanner planner = new UpdateExecutionPlanner(this);
     return planner.createExecutionPlan(ctx, enableProfiling);
   }
 
@@ -165,7 +143,7 @@ public class UpdateStatement extends Statement {
     if (o == null || getClass() != o.getClass())
       return false;
 
-    UpdateStatement that = (UpdateStatement) o;
+    final UpdateStatement that = (UpdateStatement) o;
 
     if (upsert != that.upsert)
       return false;
@@ -181,8 +159,6 @@ public class UpdateStatement extends Statement {
       return false;
     if (whereClause != null ? !whereClause.equals(that.whereClause) : that.whereClause != null)
       return false;
-    if (lockRecord != that.lockRecord)
-      return false;
     if (limit != null ? !limit.equals(that.limit) : that.limit != null)
       return false;
     return timeout != null ? timeout.equals(that.timeout) : that.timeout == null;
@@ -197,7 +173,6 @@ public class UpdateStatement extends Statement {
     result = 31 * result + (returnAfter ? 1 : 0);
     result = 31 * result + (returnProjection != null ? returnProjection.hashCode() : 0);
     result = 31 * result + (whereClause != null ? whereClause.hashCode() : 0);
-    result = 31 * result + (lockRecord != null ? lockRecord.hashCode() : 0);
     result = 31 * result + (limit != null ? limit.hashCode() : 0);
     result = 31 * result + (timeout != null ? timeout.hashCode() : 0);
     return result;
@@ -233,10 +208,6 @@ public class UpdateStatement extends Statement {
 
   public WhereClause getWhereClause() {
     return whereClause;
-  }
-
-  public Object getLockRecord() {
-    return lockRecord;
   }
 }
 /* JavaCC - OriginalChecksum=093091d7273f1073ad49f2a2bf709a53 (do not edit this line) */

@@ -17,8 +17,7 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-public
-class CreateVertexStatementEmpty extends CreateVertexStatement {
+public class CreateVertexStatementEmpty extends CreateVertexStatement {
   public CreateVertexStatementEmpty(int id) {
     super(id);
   }
@@ -27,13 +26,15 @@ class CreateVertexStatementEmpty extends CreateVertexStatement {
     super(p, id);
   }
 
-
-  /** Accept the visitor. **/
+  /**
+   * Accept the visitor.
+   **/
   public Object jjtAccept(SqlParserVisitor visitor, Object data) {
     return visitor.visit(this, data);
   }
 
-  @Override public CreateVertexStatement copy() {
+  @Override
+  public CreateVertexStatement copy() {
     return super.copy();
   }
 }

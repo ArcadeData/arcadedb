@@ -151,40 +151,20 @@ public class CreateVertexStatement extends Statement {
     return targetType;
   }
 
-  public void setTargetType(Identifier targetType) {
-    this.targetType = targetType;
-  }
-
   public Identifier getTargetBucketName() {
     return targetBucketName;
-  }
-
-  public void setTargetBucketName(Identifier targetBucketName) {
-    this.targetBucketName = targetBucketName;
   }
 
   public Bucket getTargetBucket() {
     return targetBucket;
   }
 
-  public void setTargetBucket(Bucket targetBucket) {
-    this.targetBucket = targetBucket;
-  }
-
   public Projection getReturnStatement() {
     return returnStatement;
   }
 
-  public void setReturnStatement(Projection returnStatement) {
-    this.returnStatement = returnStatement;
-  }
-
   public InsertBody getInsertBody() {
     return insertBody;
-  }
-
-  public void setInsertBody(InsertBody insertBody) {
-    this.insertBody = insertBody;
   }
 }
 /* JavaCC - OriginalChecksum=0ac3d3f09a76b9924a17fd05bc293863 (do not edit this line) */

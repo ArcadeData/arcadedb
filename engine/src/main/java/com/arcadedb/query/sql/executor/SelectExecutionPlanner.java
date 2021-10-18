@@ -98,7 +98,6 @@ public class SelectExecutionPlanner {
     info.unwind = this.statement.getUnwind() == null ? null : this.statement.getUnwind().copy();
     info.skip = this.statement.getSkip();
     info.limit = this.statement.getLimit();
-//    info.lockRecord = this.statement.getLockRecord();
     info.timeout = this.statement.getTimeout() == null ? null : this.statement.getTimeout().copy();
     if (info.timeout == null && ctx.getDatabase().getConfiguration().getValueAsLong(GlobalConfiguration.COMMAND_TIMEOUT) > 0) {
       info.timeout = new Timeout(-1);

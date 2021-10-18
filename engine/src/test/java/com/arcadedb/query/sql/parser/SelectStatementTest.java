@@ -75,7 +75,6 @@ public class SelectStatementTest {
     SelectStatement select = (SelectStatement) stm;
     assertNull(select.getProjection());
     assertNotNull(select.getTarget());
-    assertFalse(Boolean.TRUE.equals(select.getLockRecord()));
     assertNull(select.getWhereClause());
   }
 
@@ -88,7 +87,6 @@ public class SelectStatementTest {
     assertNotNull(select.getProjection().getItems());
     assertEquals(select.getProjection().getItems().size(), 1);
     assertNotNull(select.getTarget());
-    assertFalse(Boolean.TRUE.equals(select.getLockRecord()));
     assertNull(select.getWhereClause());
   }
 

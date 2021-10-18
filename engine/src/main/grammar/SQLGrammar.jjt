@@ -145,8 +145,6 @@ TOKEN:
 	|
 	< ERROR2: ( "e" | "E" ) ( "r" | "R" ) ( "r" | "R" ) ( "o" | "O" ) ( "r" | "R" ) >
 	|
-	< BATCH: ( "b" | "B" ) ( "a" | "A" ) ( "t" | "T" ) ( "c" | "C" ) ( "h" | "H" ) >
-	|
 	< OFFSET: ( "o" | "O" ) ( "f" | "F" ) ( "f" | "F" ) ( "s" | "S" ) ( "e" | "E" ) ( "t" | "T" ) >
 	|
 	< TIMEOUT: ( "t" | "T" ) ( "i" | "I" ) ( "m" | "M" ) ( "e" | "E" ) ( "o" | "O" ) ( "u" | "U" ) ( "t" | "T" ) >
@@ -163,8 +161,6 @@ TOKEN:
 	|
 	< AFTER: ( "a" | "A" ) ( "f" | "F" ) ( "t" | "T" ) ( "e" | "E" ) ( "r" | "R" ) >
 	|
-	< LOCK: ( "l" | "L" ) ( "o" | "O" ) ( "c" | "C" ) ( "k" | "K" ) >
-  |
   < RECORD: ( "r" | "R" ) ( "e" | "E" ) ( "c" | "C" ) ( "o" | "O" ) ( "r" | "R" ) ( "d" | "D" ) >
   |
   < WAIT: ( "w" | "W" ) ( "a" | "A" ) ( "i" | "I" ) ( "t" | "T" ) >
@@ -1271,7 +1267,6 @@ DeleteVertexStatement DeleteVertexStatement():
   [ <RETURN> <BEFORE> { jjtThis.returnBefore = true; } ]
   [ <WHERE> jjtThis.whereClause = WhereClause() ]
   [ jjtThis.limit = Limit() ]
-  [ jjtThis.batch = Batch() ]
   {return jjtThis;}
 }
 
@@ -1321,7 +1316,6 @@ DeleteEdgeStatement DeleteEdgeByRidStatement():
       ] <RBRACKET>
     )
   )
-  [ jjtThis.batch = Batch() ]
 {return jjtThis;}
 }
 
@@ -1339,7 +1333,6 @@ DeleteEdgeStatement DeleteEdgeFromToStatement():
   ]
   [ <WHERE> jjtThis.whereClause = WhereClause() ]
   [ jjtThis.limit = Limit() ]
-  [ jjtThis.batch = Batch() ]
   {return jjtThis;}
 }
 
@@ -1354,7 +1347,6 @@ DeleteEdgeStatement DeleteEdgeToStatement():
   jjtThis.rightExpression = Expression()
   [ <WHERE> jjtThis.whereClause = WhereClause() ]
   [ jjtThis.limit = Limit() ]
-  [ jjtThis.batch = Batch() ]
   {return jjtThis;}
 }
 
@@ -1367,7 +1359,6 @@ DeleteEdgeStatement DeleteEdgeVToStatement():
   jjtThis.rightExpression = Expression()
   [ <WHERE> jjtThis.whereClause = WhereClause() ]
   [ jjtThis.limit = Limit() ]
-  [ jjtThis.batch = Batch() ]
   {return jjtThis;}
 }
 
@@ -1383,7 +1374,6 @@ DeleteEdgeStatement DeleteEdgeWhereStatement():
 
   [ <WHERE> jjtThis.whereClause = WhereClause() ]
   [ jjtThis.limit = Limit() ]
-  [ jjtThis.batch = Batch() ]
   {return jjtThis;}
 }
 
@@ -1733,7 +1723,6 @@ CreateEdgeStatement CreateEdgeStatement():
   [ jjtThis.body = InsertBody() ]
   [ jjtThis.retry = Retry() ]
   [ jjtThis.wait = Wait() ]
-  [ jjtThis.batch = Batch() ]
   {return jjtThis;}
 }
 
@@ -3058,18 +3047,6 @@ Skip Skip():
       )
     )
   ) {return jjtThis;}
-}
-
-Batch Batch():
-{}
-{
-  <BATCH>
-  (
-    jjtThis.num  = PInteger()
-    |
-    jjtThis.inputParam = InputParameter()
-  )
-  { return jjtThis; }
 }
 
 Timeout Timeout():

@@ -33,24 +33,17 @@ import java.util.stream.*;
  * Created by luigidellaquila on 08/08/16.
  */
 public class UpdateExecutionPlanner {
-  private final FromClause  target;
-  public final  WhereClause whereClause;
-
-  protected boolean upsert;
-
-  protected List<UpdateOperations> operations;
-  protected boolean                returnBefore;
-  protected boolean                returnAfter;
-  protected boolean                returnCount;
-
-  protected boolean updateEdge = false;
-
-  protected final Projection returnProjection;
-
-//  public OStorage.LOCKING_STRATEGY lockRecord = null;
-
-  public final Limit   limit;
-  public final Timeout timeout;
+  private final   FromClause             target;
+  public final    WhereClause            whereClause;
+  protected       boolean                upsert;
+  protected       List<UpdateOperations> operations;
+  protected       boolean                returnBefore;
+  protected       boolean                returnAfter;
+  protected       boolean                returnCount;
+  protected       boolean                updateEdge = false;
+  protected final Projection             returnProjection;
+  public final    Limit                  limit;
+  public final    Timeout                timeout;
 
   public UpdateExecutionPlanner(UpdateStatement oUpdateStatement) {
     if (oUpdateStatement instanceof UpdateEdgeStatement) {
@@ -58,16 +51,14 @@ public class UpdateExecutionPlanner {
     }
     this.target = oUpdateStatement.getTarget().copy();
     this.whereClause = oUpdateStatement.getWhereClause() == null ? null : oUpdateStatement.getWhereClause().copy();
-    this.operations = oUpdateStatement.getOperations() == null ?
-        null :
-        oUpdateStatement.getOperations().stream().map(x -> x.copy()).collect(Collectors.toList());
+    this.operations =
+        oUpdateStatement.getOperations() == null ? null : oUpdateStatement.getOperations().stream().map(x -> x.copy()).collect(Collectors.toList());
     this.upsert = oUpdateStatement.isUpsert();
 
     this.returnBefore = oUpdateStatement.isReturnBefore();
     this.returnAfter = oUpdateStatement.isReturnAfter();
     this.returnCount = !(returnAfter || returnBefore);
     this.returnProjection = oUpdateStatement.getReturnProjection() == null ? null : oUpdateStatement.getReturnProjection().copy();
-//    this.lockRecord = oUpdateStatement.getLockRecord();
     this.limit = oUpdateStatement.getLimit() == null ? null : oUpdateStatement.getLimit().copy();
     this.timeout = oUpdateStatement.getTimeout() == null ? null : oUpdateStatement.getTimeout().copy();
   }
@@ -76,7 +67,7 @@ public class UpdateExecutionPlanner {
     UpdateExecutionPlan result = new UpdateExecutionPlan(ctx);
 
     handleTarget(result, ctx, this.target, this.whereClause, this.timeout, enableProfiling);
-    if(updateEdge){
+    if (updateEdge) {
       result.chain(new CheckRecordTypeStep(ctx, "E", enableProfiling));
     }
     handleUpsert(result, ctx, this.target, this.whereClause, this.upsert, enableProfiling);
@@ -85,7 +76,6 @@ public class UpdateExecutionPlanner {
     handleLimit(result, ctx, this.limit, enableProfiling);
     handleReturnBefore(result, ctx, this.returnBefore, enableProfiling);
     handleOperations(result, ctx, this.operations, enableProfiling);
-//    handleLock(result, ctx, this.lockRecord);
     handleSave(result, ctx, enableProfiling);
     handleResultForReturnBefore(result, ctx, this.returnBefore, returnProjection, enableProfiling);
     handleResultForReturnAfter(result, ctx, this.returnAfter, returnProjection, enableProfiling);
@@ -109,8 +99,8 @@ public class UpdateExecutionPlanner {
     }
   }
 
-  private void handleResultForReturnAfter(UpdateExecutionPlan result, CommandContext ctx, boolean returnAfter,
-      Projection returnProjection, boolean profilingEnabled) {
+  private void handleResultForReturnAfter(UpdateExecutionPlan result, CommandContext ctx, boolean returnAfter, Projection returnProjection,
+      boolean profilingEnabled) {
     if (returnAfter) {
       //re-convert to normal step
       result.chain(new ConvertToResultInternalStep(ctx, profilingEnabled));
@@ -120,8 +110,8 @@ public class UpdateExecutionPlanner {
     }
   }
 
-  private void handleResultForReturnBefore(UpdateExecutionPlan result, CommandContext ctx, boolean returnBefore,
-      Projection returnProjection, boolean profilingEnabled) {
+  private void handleResultForReturnBefore(UpdateExecutionPlan result, CommandContext ctx, boolean returnBefore, Projection returnProjection,
+      boolean profilingEnabled) {
     if (returnBefore) {
       result.chain(new UnwrapPreviousValueStep(ctx, profilingEnabled));
       if (returnProjection != null) {
@@ -146,18 +136,13 @@ public class UpdateExecutionPlanner {
     }
   }
 
-//  private void handleLock(OUpdateExecutionPlan result, OCommandContext ctx, OStorage.LOCKING_STRATEGY lockRecord) {
-//
-//  }
-
   private void handleLimit(UpdateExecutionPlan plan, CommandContext ctx, Limit limit, boolean profilingEnabled) {
     if (limit != null) {
       plan.chain(new LimitExecutionStep(limit, ctx, profilingEnabled));
     }
   }
 
-  private void handleUpsert(UpdateExecutionPlan plan, CommandContext ctx, FromClause target, WhereClause where,
-      boolean upsert, boolean profilingEnabled) {
+  private void handleUpsert(UpdateExecutionPlan plan, CommandContext ctx, FromClause target, WhereClause where, boolean upsert, boolean profilingEnabled) {
     if (upsert) {
       plan.chain(new UpsertStep(target, where, ctx, profilingEnabled));
     }
@@ -171,7 +156,7 @@ public class UpdateExecutionPlanner {
           plan.chain(new UpdateSetStep(op.getUpdateItems(), ctx, profilingEnabled));
           //TODO: ARCADEDB MANAGES EDGES IN DIFFERENT WAY. DO WE NEED THIS?
           //if(updateEdge){
-            //plan.chain(new UpdateEdgePointersStep( ctx, profilingEnabled));
+          //plan.chain(new UpdateEdgePointersStep( ctx, profilingEnabled));
           //}
           break;
         case UpdateOperations.TYPE_REMOVE:
@@ -192,9 +177,9 @@ public class UpdateExecutionPlanner {
     }
   }
 
-  private void handleTarget(UpdateExecutionPlan result, CommandContext ctx, FromClause target, WhereClause whereClause,
-      Timeout timeout, boolean profilingEnabled) {
-    SelectStatement sourceStatement = new SelectStatement(-1);
+  private void handleTarget(UpdateExecutionPlan result, CommandContext ctx, FromClause target, WhereClause whereClause, Timeout timeout,
+      boolean profilingEnabled) {
+    final SelectStatement sourceStatement = new SelectStatement(-1);
     sourceStatement.setTarget(target);
     sourceStatement.setWhereClause(whereClause);
     if (timeout != null) {

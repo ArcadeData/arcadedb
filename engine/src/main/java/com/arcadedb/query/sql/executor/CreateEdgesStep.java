@@ -21,7 +21,6 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
-import com.arcadedb.query.sql.parser.Batch;
 import com.arcadedb.query.sql.parser.Identifier;
 
 import java.util.*;
@@ -45,7 +44,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
   private long    cost   = 0;
 
   public CreateEdgesStep(final Identifier targetClass, final Identifier targetClusterName, final Identifier fromAlias, final Identifier toAlias,
-      final boolean ifNotExists, final Number wait, final Number retry, final Batch batch, final CommandContext ctx, final boolean profilingEnabled) {
+      final boolean ifNotExists, final Number wait, final Number retry, final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
     this.targetClass = targetClass;
     this.targetCluster = targetClusterName;

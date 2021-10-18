@@ -16,7 +16,6 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.query.sql.parser.Batch;
 import com.arcadedb.query.sql.parser.CreateEdgeStatement;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.Identifier;
@@ -40,7 +39,6 @@ public class CreateEdgeExecutionPlanner {
   protected final InsertBody body;
   protected final Number     retry;
   protected final Number     wait;
-  protected final Batch      batch;
 
   public CreateEdgeExecutionPlanner(CreateEdgeStatement statement) {
     this.targetClass = statement.getTargetType() == null ? null : statement.getTargetType().copy();
@@ -51,8 +49,6 @@ public class CreateEdgeExecutionPlanner {
     this.body = statement.getBody() == null ? null : statement.getBody().copy();
     this.retry = statement.getRetry();
     this.wait = statement.getWait();
-    this.batch = statement.getBatch() == null ? null : statement.getBatch().copy();
-
   }
 
   public InsertExecutionPlan createExecutionPlan(CommandContext ctx, boolean enableProfiling) {
@@ -80,7 +76,7 @@ public class CreateEdgeExecutionPlanner {
 
     result.chain(
         new CreateEdgesStep(targetClass, targetClusterName, new Identifier("$__ARCADEDB_CREATE_EDGE_fromV"), new Identifier("$__ARCADEDB_CREATE_EDGE_toV"),
-            ifNotExists, wait, retry, batch, ctx, enableProfiling));
+            ifNotExists, wait, retry, ctx, enableProfiling));
 
     handleSetFields(result, body, ctx, enableProfiling);
     handleSave(result, targetClusterName, ctx, enableProfiling);
