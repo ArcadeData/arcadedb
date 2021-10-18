@@ -17,15 +17,16 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.schema.*;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Property;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Assertions;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 public class ExecutionPlanCacheTest {
 
   @Test
-  @Disabled
   public void testCacheInvalidation1() throws InterruptedException {
     String testName = "testCacheInvalidation1";
 
