@@ -29,13 +29,13 @@ import java.util.logging.*;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class HttpTransactionManager extends RWLockContext {
+public class HttpSessionManager extends RWLockContext {
   public static final String                   ARCADEDB_SESSION_ID = "arcadedb-session-id";
   private final       Map<String, HttpSession> sessions            = new HashMap<>();
   private final       long                     expirationTimeInMs;
   private final       Timer                    timer;
 
-  public HttpTransactionManager(final long expirationTimeInMs) {
+  public HttpSessionManager(final long expirationTimeInMs) {
     this.expirationTimeInMs = expirationTimeInMs;
 
     timer = new Timer();

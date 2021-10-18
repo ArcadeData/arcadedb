@@ -21,7 +21,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.HttpSession;
-import com.arcadedb.server.http.HttpTransactionManager;
+import com.arcadedb.server.http.HttpSessionManager;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HeaderValues;
@@ -37,7 +37,7 @@ public class PostBeginHandler extends DatabaseAbstractHandler {
 
   @Override
   public void execute(final HttpServerExchange exchange, ServerSecurityUser user, final Database database) throws IOException {
-    final HeaderValues txId = exchange.getRequestHeaders().get(HttpTransactionManager.ARCADEDB_SESSION_ID);
+    final HeaderValues txId = exchange.getRequestHeaders().get(HttpSessionManager.ARCADEDB_SESSION_ID);
     if (txId != null && !txId.isEmpty()) {
       final HttpSession tx = httpServer.getTransactionManager().getSessionById(user, txId.getFirst());
       if (tx != null) {
@@ -56,7 +56,7 @@ public class PostBeginHandler extends DatabaseAbstractHandler {
 
     DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
 
-    exchange.getResponseHeaders().put(new HttpString(HttpTransactionManager.ARCADEDB_SESSION_ID), session.id);
+    exchange.getResponseHeaders().put(new HttpString(HttpSessionManager.ARCADEDB_SESSION_ID), session.id);
     exchange.setStatusCode(204);
     exchange.getResponseSender().send("");
   }

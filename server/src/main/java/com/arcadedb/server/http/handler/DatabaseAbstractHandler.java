@@ -20,7 +20,7 @@ import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.HttpSession;
-import com.arcadedb.server.http.HttpTransactionManager;
+import com.arcadedb.server.http.HttpSessionManager;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HeaderValues;
@@ -29,7 +29,7 @@ import io.undertow.util.HttpString;
 import java.util.*;
 
 public abstract class DatabaseAbstractHandler extends AbstractHandler {
-  private static final HttpString SESSION_ID_HEADER = new HttpString(HttpTransactionManager.ARCADEDB_SESSION_ID);
+  private static final HttpString SESSION_ID_HEADER = new HttpString(HttpSessionManager.ARCADEDB_SESSION_ID);
 
   protected DatabaseAbstractHandler(final HttpServer httpServer) {
     super(httpServer);
@@ -91,7 +91,7 @@ public abstract class DatabaseAbstractHandler extends AbstractHandler {
 
   protected HttpSession setTransactionInThreadLocal(final HttpServerExchange exchange, final Database database, ServerSecurityUser user,
       final boolean mandatory) {
-    final HeaderValues sessionId = exchange.getRequestHeaders().get(HttpTransactionManager.ARCADEDB_SESSION_ID);
+    final HeaderValues sessionId = exchange.getRequestHeaders().get(HttpSessionManager.ARCADEDB_SESSION_ID);
     if (sessionId == null || sessionId.isEmpty()) {
       if (mandatory) {
         exchange.setStatusCode(401);

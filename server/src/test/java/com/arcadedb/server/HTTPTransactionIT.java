@@ -25,7 +25,7 @@ import java.net.*;
 import java.util.*;
 import java.util.logging.*;
 
-import static com.arcadedb.server.http.HttpTransactionManager.ARCADEDB_SESSION_ID;
+import static com.arcadedb.server.http.HttpSessionManager.ARCADEDB_SESSION_ID;
 
 public class HTTPTransactionIT extends BaseGraphServerTest {
 

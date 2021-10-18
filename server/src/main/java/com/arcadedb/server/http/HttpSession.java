@@ -19,17 +19,19 @@ import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.server.security.ServerSecurityUser;
 
+import java.util.concurrent.atomic.*;
+
 /**
  * Manage a transaction on the HTTP protocol.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class HttpSession {
-  public final     String             id;
-  public final     TransactionContext transaction;
-  public final     ServerSecurityUser user;
-  public volatile  Thread             currentThreadUsing;
-  private volatile long               lastUpdate = 0L;
+  public final     String                  id;
+  public final     TransactionContext      transaction;
+  public final     ServerSecurityUser      user;
+  public final     AtomicReference<Thread> currentThreadUsing = new AtomicReference<>();
+  private volatile long                    lastUpdate         = 0L;
 
   public HttpSession(final ServerSecurityUser user, final String id, final TransactionContext dbTx) {
     this.user = user;
@@ -43,19 +45,18 @@ public class HttpSession {
   }
 
   public HttpSession use(final ServerSecurityUser user) {
-    if (currentThreadUsing != null)
-      throw new TransactionException("Cannot use the requested transaction because in use by a different thread");
-
     if (!this.user.equals(user))
       throw new SecurityException("Cannot use the requested transaction because in use by a different user");
 
+    if (!currentThreadUsing.compareAndSet(null, Thread.currentThread()))
+      throw new TransactionException("Cannot use the requested transaction because in use by a different thread");
+
     lastUpdate = System.currentTimeMillis();
-    currentThreadUsing = Thread.currentThread();
     return this;
   }
 
   public HttpSession endUsage() {
-    currentThreadUsing = null;
+    currentThreadUsing.set(null);
     return this;
   }
 }

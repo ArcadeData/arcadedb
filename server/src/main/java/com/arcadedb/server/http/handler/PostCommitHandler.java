@@ -17,7 +17,7 @@ package com.arcadedb.server.http.handler;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.server.http.HttpServer;
-import com.arcadedb.server.http.HttpTransactionManager;
+import com.arcadedb.server.http.HttpSessionManager;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
@@ -33,7 +33,7 @@ public class PostCommitHandler extends DatabaseAbstractHandler {
   public void execute(final HttpServerExchange exchange, ServerSecurityUser user, final Database database) throws IOException {
     database.commit();
 
-    exchange.getResponseHeaders().remove(HttpTransactionManager.ARCADEDB_SESSION_ID);
+    exchange.getResponseHeaders().remove(HttpSessionManager.ARCADEDB_SESSION_ID);
     exchange.setStatusCode(204);
     exchange.getResponseSender().send("");
   }
