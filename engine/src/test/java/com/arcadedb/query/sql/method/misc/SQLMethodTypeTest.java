@@ -15,45 +15,48 @@
  */
 package com.arcadedb.query.sql.method.misc;
 
-import com.arcadedb.database.Database;
 import com.arcadedb.query.sql.executor.SQLMethod;
-import com.arcadedb.schema.DocumentType;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.Mockito;
+
+import java.util.ArrayList;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-class SQLMethodFieldTest {
-
+class SQLMethodTypeTest {
     private SQLMethod method;
 
     @BeforeEach
     void setUp() {
-        method = new SQLMethodField();
-
+        method = new SQLMethodType();
     }
 
     @Test
-    void testNulIParamsReturnedAsNull() {
-        Object result = method.execute(null, null, null, null, new Object[]{null});
+    void testNulIsReturnedAsNull() {
+        Object result = method.execute(null, null, null, null, null);
         assertThat(result).isNull();
     }
 
     @Test
-    void testFieldValue() {
+    void testUnknonwTypesReturnedAsNull() {
+        Object result = method.execute(null, null, null, new SQLMethodType(), null);
+        assertThat(result).isNull();
+    }
 
-        Database database = Mockito.mock(Database.class);
+    @Test
+    void testTypeName() {
 
-        DocumentType type = Mockito.mock(DocumentType.class);
-
-//        MutableDocument doc = new MutableDocument(database, type, null);
-//        doc.set("name", "Foo");
-//        doc.set("surname", "Bar");
-
-//        Object result = method.execute(null, doc, null, null, new Object[]{"name"});
-//        assertThat(result).isNotNull();
-//        assertThat(result).isEqualTo("Foo");
+        Object result = method.execute(null, null, null, "string", null);
+        assertThat(result).isEqualTo("STRING");
 
     }
+
+    @Test
+    void testTypeNameOfList() {
+
+        Object result = method.execute(null, null, null, new ArrayList<>(), null);
+        assertThat(result).isEqualTo("LIST");
+
+    }
+
 }

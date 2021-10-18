@@ -15,33 +15,47 @@
  */
 package com.arcadedb.query.sql.method.misc;
 
+import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.SQLMethod;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
-class SQLMethodTrimTest {
+class SQLMethodRemoveTest {
 
     private SQLMethod method;
 
     @BeforeEach
-    void setUp() {
-        method = new SQLMethodTrim();
+    public void setup() {
+        method = new SQLMethodRemove();
     }
 
     @Test
-    void testNulIReturnedAsNull() {
+    void testNull() {
         Object result = method.execute(null, null, null, null, null);
         assertThat(result).isNull();
     }
 
+    @Test
+    void testRemoveSingleValueFromList() {
+        List<String> numbers = new ArrayList<>(List.of("one", "one", "two", "three"));
+        List<String> result = (List<String>) method.execute(null, null, null, numbers, new Object[]{"one"});
+        assertThat(result).contains("one", "two", "three");
+    }
 
     @Test
-    void testTrimSpaces() {
-        Object result = method.execute(null, null, null, "trim me    ", null);
-        assertThat(result).isEqualTo("trim me");
-
+    void testRemoveFromListWithVariableInContext() {
+        List<String> numbers = new ArrayList<>(List.of("one", "two", "three"));
+        CommandContext context = new BasicCommandContext();
+        context.setVariable("name", "one");
+        List<String> result = (List<String>) method.execute(null, null, context, numbers, new Object[]{"$name"});
+        assertThat(result).contains("two", "three");
     }
+
 
 }

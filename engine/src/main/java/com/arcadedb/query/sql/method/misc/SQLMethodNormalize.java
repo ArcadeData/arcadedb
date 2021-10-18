@@ -17,8 +17,8 @@ package com.arcadedb.query.sql.method.misc;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.utility.PatternConst;
 import com.arcadedb.utility.FileUtils;
+import com.arcadedb.utility.PatternConst;
 
 import java.text.Normalizer;
 
@@ -28,29 +28,30 @@ import java.text.Normalizer;
  */
 public class SQLMethodNormalize extends AbstractSQLMethod {
 
-  public static final String NAME = "normalize";
+    public static final String NAME = "normalize";
 
-  public SQLMethodNormalize() {
-    super(NAME, 0, 2);
-  }
-
-  @Override
-  public Object execute( final Object iThis, Identifiable iCurrentRecord, CommandContext iContext,
-      Object ioResult, Object[] iParams) {
-
-    if (ioResult != null) {
-      final Normalizer.Form form = iParams != null && iParams.length > 0 ?
-          Normalizer.Form.valueOf(FileUtils.getStringContent(iParams[0].toString())) :
-          Normalizer.Form.NFD;
-
-      String normalized = Normalizer.normalize(ioResult.toString(), form);
-      if (iParams != null && iParams.length > 1) {
-        normalized = normalized.replaceAll(FileUtils.getStringContent(iParams[0].toString()), "");
-      } else {
-        normalized = PatternConst.PATTERN_DIACRITICAL_MARKS.matcher(normalized).replaceAll("");
-      }
-      ioResult = normalized;
+    public SQLMethodNormalize() {
+        super(NAME, 0, 2);
     }
-    return ioResult;
-  }
+
+    @Override
+    public Object execute(final Object iThis,
+                          final Identifiable iCurrentRecord,
+                          final CommandContext iContext,
+                          final Object ioResult,
+                          final Object[] iParams) {
+
+        if (ioResult != null) {
+            final Normalizer.Form form = iParams != null && iParams.length > 0 ?
+                    Normalizer.Form.valueOf(FileUtils.getStringContent(iParams[0].toString())) :
+                    Normalizer.Form.NFD;
+
+            String normalized = Normalizer.normalize(ioResult.toString(), form);
+            if (iParams != null && iParams.length > 1) {
+                return normalized.replaceAll(FileUtils.getStringContent(iParams[1].toString()), "");
+            }
+            return PatternConst.PATTERN_DIACRITICAL_MARKS.matcher(normalized).replaceAll("");
+        }
+        return null;
+    }
 }
