@@ -73,10 +73,7 @@ public class HttpTransactionManager extends RWLockContext {
 
   public HttpSession getSessionById(final ServerSecurityUser user, final String txId) {
     return executeInReadLock(() -> {
-      final HttpSession tx = sessions.get(txId);
-      if (tx != null)
-        tx.use(user);
-      return tx;
+      return sessions.get(txId);
     });
   }
 

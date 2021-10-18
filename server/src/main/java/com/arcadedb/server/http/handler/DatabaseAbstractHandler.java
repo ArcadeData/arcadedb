@@ -111,6 +111,7 @@ public abstract class DatabaseAbstractHandler extends AbstractHandler {
 
     if (session != null) {
       // FORCE THE RESET OF TL
+      session.use(user);
       final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.init((DatabaseInternal) database, session.transaction);
       current.setCurrentUser(user != null ? user.getDatabaseUser(database) : null);
       exchange.getResponseHeaders().put(SESSION_ID_HEADER, session.id);
