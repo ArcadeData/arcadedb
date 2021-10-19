@@ -108,6 +108,9 @@ public interface Database extends AutoCloseable {
    */
   boolean transaction(TransactionScope txBlock, boolean joinCurrentTx, int attempts, final OkCallback ok, final ErrorCallback error);
 
+  /**
+   * Returns true if a transaction is started automatically for all non-idempotent operation in the database.
+   */
   boolean isAutoTransaction();
 
   void setAutoTransaction(boolean autoTransaction);
@@ -165,6 +168,8 @@ public interface Database extends AutoCloseable {
       boolean createVertexIfNotExist, String edgeType, boolean bidirectional, Object... properties);
 
   Schema getSchema();
+
+  RecordEvents getEvents();
 
   ResultSet command(String language, String query, Map<String, Object> args);
 

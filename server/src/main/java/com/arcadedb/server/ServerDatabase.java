@@ -27,6 +27,7 @@ import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.RecordCallback;
+import com.arcadedb.database.RecordEvents;
 import com.arcadedb.database.RecordFactory;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.database.async.DatabaseAsyncExecutor;
@@ -291,6 +292,11 @@ public class ServerDatabase implements DatabaseInternal {
   @Override
   public Schema getSchema() {
     return wrapped.getSchema();
+  }
+
+  @Override
+  public RecordEvents getEvents() {
+    return wrapped.getEvents();
   }
 
   public BinarySerializer getSerializer() {

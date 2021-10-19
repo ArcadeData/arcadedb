@@ -16,6 +16,8 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.database.Document;
+import com.arcadedb.database.RecordEvents;
+import com.arcadedb.database.RecordEventsRegistry;
 import com.arcadedb.database.bucketselectionstrategy.BucketSelectionStrategy;
 import com.arcadedb.database.bucketselectionstrategy.RoundRobinBucketSelectionStrategy;
 import com.arcadedb.engine.Bucket;
@@ -38,6 +40,7 @@ public class DocumentType {
   protected final Map<String, Property>             properties              = new HashMap<>();
   protected       Map<Integer, List<IndexInternal>> bucketIndexesByBucket   = new HashMap<>();
   protected       Map<List<String>, TypeIndex>      indexesByProperties     = new HashMap<>();
+  protected final RecordEventsRegistry              events                  = new RecordEventsRegistry();
 
   public DocumentType(final EmbeddedSchema schema, final String name) {
     this.schema = schema;
@@ -50,6 +53,10 @@ public class DocumentType {
 
   public byte getType() {
     return Document.RECORD_TYPE;
+  }
+
+  public RecordEvents getEvents() {
+    return events;
   }
 
   public DocumentType addParentType(final String parentName) {
@@ -106,15 +113,16 @@ public class DocumentType {
   }
 
   public void setParentTypes(List<DocumentType> newParents) {
-	if(newParents==null) newParents = Collections.emptyList();
-	List<DocumentType> commonParents = new ArrayList<>(parentTypes);
-	commonParents.retainAll(newParents);
-	List<DocumentType> toRemove = new ArrayList<>(parentTypes);
-	toRemove.removeAll(commonParents);
-	toRemove.forEach(this::removeParentType);
-	List<DocumentType> toAdd = new ArrayList<>(newParents);
-	toAdd.removeAll(commonParents);
-	toAdd.forEach(this::addParentType);
+    if (newParents == null)
+      newParents = Collections.emptyList();
+    List<DocumentType> commonParents = new ArrayList<>(parentTypes);
+    commonParents.retainAll(newParents);
+    List<DocumentType> toRemove = new ArrayList<>(parentTypes);
+    toRemove.removeAll(commonParents);
+    toRemove.forEach(this::removeParentType);
+    List<DocumentType> toAdd = new ArrayList<>(newParents);
+    toAdd.removeAll(commonParents);
+    toAdd.forEach(this::addParentType);
   }
 
   public List<DocumentType> getSubTypes() {

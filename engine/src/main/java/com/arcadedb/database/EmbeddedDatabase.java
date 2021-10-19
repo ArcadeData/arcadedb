@@ -126,6 +126,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   private              RandomAccessFile                          lockFileIO;
   private              FileChannel                               lockFileIOChannel;
   private              FileLock                                  lockFileLock;
+  private final        RecordEventsRegistry                      events                  = new RecordEventsRegistry();
 
   protected EmbeddedDatabase(final String path, final PaginatedFile.MODE mode, final ContextConfiguration configuration, final SecurityManager security,
       final Map<CALLBACK_EVENT, List<Callable<Void>>> callbacks) {
@@ -759,6 +760,11 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   }
 
   @Override
+  public RecordEvents getEvents() {
+    return events;
+  }
+
+  @Override
   public void createRecord(final Record record, final String bucketName) {
     executeInReadLock(() -> {
       createRecordNoLock(record, bucketName);
@@ -773,6 +779,13 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
     if (mode == PaginatedFile.MODE.READ_ONLY)
       throw new DatabaseIsReadOnlyException("Cannot create a new record");
+
+    // INVOKE EVENT CALLBACKS
+    if (!events.onBeforeCreate(record))
+      return;
+    if (record instanceof Document)
+      if (!((RecordEventsRegistry) ((Document) record).getType().getEvents()).onBeforeCreate(record))
+        return;
 
     boolean success = false;
     final boolean implicitTransaction = checkTransactionIsActive(autoTransaction);
@@ -797,6 +810,11 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
       success = true;
 
+      // INVOKE EVENT CALLBACKS
+      events.onAfterCreate(record);
+      if (record instanceof Document)
+        ((RecordEventsRegistry) ((Document) record).getType().getEvents()).onAfterCreate(record);
+
     } finally {
       if (implicitTransaction) {
         if (success)
@@ -815,6 +833,13 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     if (mode == PaginatedFile.MODE.READ_ONLY)
       throw new DatabaseIsReadOnlyException("Cannot update a record");
 
+    // INVOKE EVENT CALLBACKS
+    if (!events.onBeforeUpdate(record))
+      return;
+    if (record instanceof Document)
+      if (!((RecordEventsRegistry) ((Document) record).getType().getEvents()).onBeforeUpdate(record))
+        return;
+
     executeInReadLock(() -> {
       if (isTransactionActive()) {
         // MARK THE RECORD FOR UPDATE IN TX AND DEFER THE SERIALIZATION AT COMMIT TIME. THIS SPEEDS UP CASES WHEN THE SAME RECORDS ARE UPDATE MULTIPLE TIME INSIDE
@@ -827,6 +852,12 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
         }
       } else
         updateRecordNoLock(record);
+
+      // INVOKE EVENT CALLBACKS
+      events.onAfterUpdate(record);
+      if (record instanceof Document)
+        ((RecordEventsRegistry) ((Document) record).getType().getEvents()).onAfterUpdate(record);
+
       return null;
     });
   }
@@ -875,10 +906,17 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     if (record.getIdentity() == null)
       throw new IllegalArgumentException("Cannot delete a non persistent record");
 
-    executeInReadLock(() -> {
-      if (mode == PaginatedFile.MODE.READ_ONLY)
-        throw new DatabaseIsReadOnlyException("Cannot delete record " + record.getIdentity());
+    if (mode == PaginatedFile.MODE.READ_ONLY)
+      throw new DatabaseIsReadOnlyException("Cannot delete record " + record.getIdentity());
 
+    // INVOKE EVENT CALLBACKS
+    if (!events.onBeforeDelete(record))
+      return;
+    if (record instanceof Document)
+      if (!((RecordEventsRegistry) ((Document) record).getType().getEvents()).onBeforeDelete(record))
+        return;
+
+    executeInReadLock(() -> {
       boolean success = false;
       final boolean implicitTransaction = checkTransactionIsActive(autoTransaction);
 
@@ -896,6 +934,11 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
           bucket.deleteRecord(record.getIdentity());
 
         success = true;
+
+        // INVOKE EVENT CALLBACKS
+        events.onAfterDelete(record);
+        if (record instanceof Document)
+          ((RecordEventsRegistry) ((Document) record).getType().getEvents()).onAfterDelete(record);
 
       } finally {
         if (implicitTransaction) {
