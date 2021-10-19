@@ -51,6 +51,7 @@ public abstract class BaseGraphServerTest {
   protected static final String VERTEX2_TYPE_NAME          = "V2";
   protected static final String EDGE1_TYPE_NAME            = "E1";
   protected static final String EDGE2_TYPE_NAME            = "E2";
+  private static final   int    PARALLEL_LEVEL             = 4;
 
   protected static RID              root;
   private          ArcadeDBServer[] servers;
@@ -87,6 +88,8 @@ public abstract class BaseGraphServerTest {
       for (int i = 0; i < getServerCount(); ++i) {
         GlobalConfiguration.SERVER_DATABASE_DIRECTORY.setValue("./target/databases");
         databases[i] = new DatabaseFactory(getDatabasePath(i)).create();
+        databases[i].async().setParallelLevel(PARALLEL_LEVEL);
+
       }
     } else
       databases = new Database[0];
