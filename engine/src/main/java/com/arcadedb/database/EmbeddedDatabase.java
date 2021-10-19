@@ -126,6 +126,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   private              RandomAccessFile                          lockFileIO;
   private              FileChannel                               lockFileIOChannel;
   private              FileLock                                  lockFileLock;
+  private final        DatabaseEventsRegistry                    events                  = new DatabaseEventsRegistry();
 
   protected EmbeddedDatabase(final String path, final PaginatedFile.MODE mode, final ContextConfiguration configuration, final SecurityManager security,
       final Map<CALLBACK_EVENT, List<Callable<Void>>> callbacks) {
@@ -759,6 +760,11 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   }
 
   @Override
+  public DatabaseEvents getEvents() {
+    return events;
+  }
+
+  @Override
   public void createRecord(final Record record, final String bucketName) {
     executeInReadLock(() -> {
       createRecordNoLock(record, bucketName);
@@ -773,6 +779,9 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
     if (mode == PaginatedFile.MODE.READ_ONLY)
       throw new DatabaseIsReadOnlyException("Cannot create a new record");
+
+    if (!events.onBeforeCreate(record))
+      return;
 
     boolean success = false;
     final boolean implicitTransaction = checkTransactionIsActive(autoTransaction);
@@ -797,6 +806,8 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
       success = true;
 
+      events.onAfterCreate(record);
+
     } finally {
       if (implicitTransaction) {
         if (success)
@@ -815,6 +826,9 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     if (mode == PaginatedFile.MODE.READ_ONLY)
       throw new DatabaseIsReadOnlyException("Cannot update a record");
 
+    if (!events.onBeforeUpdate(record))
+      return;
+
     executeInReadLock(() -> {
       if (isTransactionActive()) {
         // MARK THE RECORD FOR UPDATE IN TX AND DEFER THE SERIALIZATION AT COMMIT TIME. THIS SPEEDS UP CASES WHEN THE SAME RECORDS ARE UPDATE MULTIPLE TIME INSIDE
@@ -827,6 +841,9 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
         }
       } else
         updateRecordNoLock(record);
+
+      events.onAfterUpdate(record);
+
       return null;
     });
   }
@@ -875,10 +892,13 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     if (record.getIdentity() == null)
       throw new IllegalArgumentException("Cannot delete a non persistent record");
 
-    executeInReadLock(() -> {
-      if (mode == PaginatedFile.MODE.READ_ONLY)
-        throw new DatabaseIsReadOnlyException("Cannot delete record " + record.getIdentity());
+    if (mode == PaginatedFile.MODE.READ_ONLY)
+      throw new DatabaseIsReadOnlyException("Cannot delete record " + record.getIdentity());
 
+    if (!events.onBeforeDelete(record))
+      return;
+
+    executeInReadLock(() -> {
       boolean success = false;
       final boolean implicitTransaction = checkTransactionIsActive(autoTransaction);
 
@@ -896,6 +916,8 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
           bucket.deleteRecord(record.getIdentity());
 
         success = true;
+
+        events.onAfterDelete(record);
 
       } finally {
         if (implicitTransaction) {

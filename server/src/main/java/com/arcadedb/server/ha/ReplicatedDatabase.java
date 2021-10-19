@@ -20,6 +20,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
+import com.arcadedb.database.DatabaseEvents;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.DocumentCallback;
 import com.arcadedb.database.DocumentIndexer;
@@ -488,6 +489,11 @@ public class ReplicatedDatabase implements DatabaseInternal {
   @Override
   public Schema getSchema() {
     return proxied.getSchema();
+  }
+
+  @Override
+  public DatabaseEvents getEvents() {
+    return proxied.getEvents();
   }
 
   @Override

@@ -15,11 +15,12 @@
  */
 package com.arcadedb.database.async;
 
+import com.arcadedb.database.DatabaseEventsRegistry;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Record;
 import com.arcadedb.log.LogManager;
 
-import java.util.logging.Level;
+import java.util.logging.*;
 
 public class DatabaseAsyncUpdateRecord extends DatabaseAsyncAbstractTask {
   public final Record                record;
@@ -33,7 +34,12 @@ public class DatabaseAsyncUpdateRecord extends DatabaseAsyncAbstractTask {
   @Override
   public void execute(DatabaseAsyncExecutorImpl.AsyncThread async, DatabaseInternal database) {
     try {
+      if (!((DatabaseEventsRegistry) database.getEvents()).onBeforeUpdate(record))
+        return;
+
       database.updateRecordNoLock(record);
+
+      ((DatabaseEventsRegistry) database.getEvents()).onAfterUpdate(record);
 
       if (callback != null)
         callback.call(record);

@@ -18,6 +18,7 @@ package com.arcadedb.server;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
+import com.arcadedb.database.DatabaseEvents;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.DocumentCallback;
 import com.arcadedb.database.DocumentIndexer;
@@ -291,6 +292,11 @@ public class ServerDatabase implements DatabaseInternal {
   @Override
   public Schema getSchema() {
     return wrapped.getSchema();
+  }
+
+  @Override
+  public DatabaseEvents getEvents() {
+    return wrapped.getEvents();
   }
 
   public BinarySerializer getSerializer() {
