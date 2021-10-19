@@ -22,28 +22,28 @@ import com.arcadedb.event.BeforeRecordCreateListener;
 import com.arcadedb.event.BeforeRecordDeleteListener;
 import com.arcadedb.event.BeforeRecordUpdateListener;
 
-public interface DatabaseEvents {
-  DatabaseEvents registerListener(final BeforeRecordCreateListener listener);
+public interface RecordEvents {
+  RecordEvents registerListener(final BeforeRecordCreateListener listener);
 
-  DatabaseEvents registerListener(final BeforeRecordUpdateListener listener);
+  RecordEvents registerListener(final BeforeRecordUpdateListener listener);
 
-  DatabaseEvents registerListener(final BeforeRecordDeleteListener listener);
+  RecordEvents registerListener(final BeforeRecordDeleteListener listener);
 
-  DatabaseEvents registerListener(final AfterRecordCreateListener listener);
+  RecordEvents registerListener(final AfterRecordCreateListener listener);
 
-  DatabaseEvents registerListener(final AfterRecordUpdateListener listener);
+  RecordEvents registerListener(final AfterRecordUpdateListener listener);
 
-  DatabaseEvents registerListener(final AfterRecordDeleteListener listener);
+  RecordEvents registerListener(final AfterRecordDeleteListener listener);
 
-  DatabaseEvents unregisterListener(final BeforeRecordCreateListener listener);
+  RecordEvents unregisterListener(final BeforeRecordCreateListener listener);
 
-  DatabaseEvents unregisterListener(final BeforeRecordUpdateListener listener);
+  RecordEvents unregisterListener(final BeforeRecordUpdateListener listener);
 
-  DatabaseEvents unregisterListener(final BeforeRecordDeleteListener listener);
+  RecordEvents unregisterListener(final BeforeRecordDeleteListener listener);
 
-  DatabaseEvents unregisterListener(final AfterRecordCreateListener listener);
+  RecordEvents unregisterListener(final AfterRecordCreateListener listener);
 
-  DatabaseEvents unregisterListener(final AfterRecordUpdateListener listener);
+  RecordEvents unregisterListener(final AfterRecordUpdateListener listener);
 
-  DatabaseEvents unregisterListener(final AfterRecordDeleteListener listener);
+  RecordEvents unregisterListener(final AfterRecordDeleteListener listener);
 }

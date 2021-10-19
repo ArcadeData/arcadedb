@@ -23,11 +23,9 @@ import org.junit.jupiter.api.Test;
 import java.util.concurrent.atomic.*;
 
 /**
- * TODO: ADD TESTS FOR DOCUMENTS AND EDGES
- *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class DatabaseEventsTest extends TestHelper {
+public class TypeEventsTest extends TestHelper {
   @Override
   public void beginTest() {
     database.getSchema().createVertexType("Vertex");
@@ -43,7 +41,8 @@ public class DatabaseEventsTest extends TestHelper {
       return counter.get() == 1;
     };
 
-    database.getEvents().registerListener(listener);
+    database.getSchema().getType("Vertex").getEvents().registerListener(listener);
+
     try {
 
       database.transaction(() -> {
@@ -61,7 +60,7 @@ public class DatabaseEventsTest extends TestHelper {
       });
 
     } finally {
-      database.getEvents().unregisterListener(listener);
+      database.getSchema().getType("Vertex").getEvents().unregisterListener(listener);
     }
   }
 
@@ -72,7 +71,7 @@ public class DatabaseEventsTest extends TestHelper {
       counter.incrementAndGet();
     };
 
-    database.getEvents().registerListener(listener);
+    database.getSchema().getType("Vertex").getEvents().registerListener(listener);
     try {
 
       database.transaction(() -> {
@@ -90,7 +89,7 @@ public class DatabaseEventsTest extends TestHelper {
       });
 
     } finally {
-      database.getEvents().unregisterListener(listener);
+      database.getSchema().getType("Vertex").getEvents().unregisterListener(listener);
     }
   }
 
@@ -102,7 +101,7 @@ public class DatabaseEventsTest extends TestHelper {
       return counter.get() == 1;
     };
 
-    database.getEvents().registerListener(listener);
+    database.getSchema().getType("Vertex").getEvents().registerListener(listener);
     try {
 
       database.transaction(() -> {
@@ -131,7 +130,7 @@ public class DatabaseEventsTest extends TestHelper {
       Assertions.assertFalse(database.iterateType("Vertex", true).next().asVertex().has("modified2"));
 
     } finally {
-      database.getEvents().unregisterListener(listener);
+      database.getSchema().getType("Vertex").getEvents().unregisterListener(listener);
     }
   }
 
@@ -142,7 +141,7 @@ public class DatabaseEventsTest extends TestHelper {
       counter.incrementAndGet();
     };
 
-    database.getEvents().registerListener(listener);
+    database.getSchema().getType("Vertex").getEvents().registerListener(listener);
     try {
 
       database.transaction(() -> {
@@ -160,7 +159,7 @@ public class DatabaseEventsTest extends TestHelper {
       });
 
     } finally {
-      database.getEvents().unregisterListener(listener);
+      database.getSchema().getType("Vertex").getEvents().unregisterListener(listener);
     }
   }
 
@@ -172,7 +171,7 @@ public class DatabaseEventsTest extends TestHelper {
       return counter.get() == 1;
     };
 
-    database.getEvents().registerListener(listener);
+    database.getSchema().getType("Vertex").getEvents().registerListener(listener);
     try {
 
       database.transaction(() -> {
@@ -202,7 +201,7 @@ public class DatabaseEventsTest extends TestHelper {
       Assertions.assertEquals(1, database.countType("Vertex", true));
 
     } finally {
-      database.getEvents().unregisterListener(listener);
+      database.getSchema().getType("Vertex").getEvents().unregisterListener(listener);
     }
   }
 
@@ -213,7 +212,7 @@ public class DatabaseEventsTest extends TestHelper {
       counter.incrementAndGet();
     };
 
-    database.getEvents().registerListener(listener);
+    database.getSchema().getType("Vertex").getEvents().registerListener(listener);
     try {
 
       database.transaction(() -> {
@@ -243,7 +242,7 @@ public class DatabaseEventsTest extends TestHelper {
       Assertions.assertEquals(0, database.countType("Vertex", true));
 
     } finally {
-      database.getEvents().unregisterListener(listener);
+      database.getSchema().getType("Vertex").getEvents().unregisterListener(listener);
     }
   }
 }

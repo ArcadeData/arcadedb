@@ -24,18 +24,18 @@ package com.arcadedb.event;
 import com.arcadedb.database.Record;
 
 /**
- * Listener to receive events before a record (documents, vertices and edges) is deleted.
+ * Listener to receive events before a new record (documents, vertices and edges) is created.
  * <p>
  * NOTE: the callback is invoked synchronously. For this reason the execution should be as fast as possible. Even with a fast implementation, using this
- * callback may cause a sensible slowdown of delete operations.
+ * callback may cause a sensible slowdown of creation operations.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  **/
-public interface DatabaseEventBeforeDeleteListener {
+public interface BeforeRecordCreateListener {
   /**
-   * Callback invoked right before a record (documents, vertices and edges) is deleted.
+   * Callback invoked right before a new record (documents, vertices and edges) has been saved.
    *
-   * @return true if the record must be deleted, otherwise false to prevent the record deletion.
+   * @return true if the record must be saved, otherwise false to prevent the record to be created.
    */
-  boolean onBeforeDelete(Record record);
+  boolean onBeforeCreate(Record record);
 }

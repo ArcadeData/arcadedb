@@ -15,9 +15,10 @@
  */
 package com.arcadedb.database.async;
 
-import com.arcadedb.database.DatabaseEventsRegistry;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.Record;
+import com.arcadedb.database.RecordEventsRegistry;
 import com.arcadedb.log.LogManager;
 
 import java.util.logging.*;
@@ -34,12 +35,19 @@ public class DatabaseAsyncUpdateRecord extends DatabaseAsyncAbstractTask {
   @Override
   public void execute(DatabaseAsyncExecutorImpl.AsyncThread async, DatabaseInternal database) {
     try {
-      if (!((DatabaseEventsRegistry) database.getEvents()).onBeforeUpdate(record))
+      // INVOKE EVENT CALLBACKS
+      if (!((RecordEventsRegistry) database.getEvents()).onBeforeUpdate(record))
         return;
+      if (record instanceof Document)
+        if (!((RecordEventsRegistry) ((Document) record).getType().getEvents()).onBeforeUpdate(record))
+          return;
 
       database.updateRecordNoLock(record);
 
-      ((DatabaseEventsRegistry) database.getEvents()).onAfterUpdate(record);
+      // INVOKE EVENT CALLBACKS
+      ((RecordEventsRegistry) database.getEvents()).onAfterUpdate(record);
+      if (record instanceof Document)
+        ((RecordEventsRegistry) ((Document) record).getType().getEvents()).onAfterUpdate(record);
 
       if (callback != null)
         callback.call(record);

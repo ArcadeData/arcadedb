@@ -18,7 +18,6 @@ package com.arcadedb.server;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
-import com.arcadedb.database.DatabaseEvents;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.DocumentCallback;
 import com.arcadedb.database.DocumentIndexer;
@@ -28,6 +27,7 @@ import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.RecordCallback;
+import com.arcadedb.database.RecordEvents;
 import com.arcadedb.database.RecordFactory;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.database.async.DatabaseAsyncExecutor;
@@ -295,7 +295,7 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
-  public DatabaseEvents getEvents() {
+  public RecordEvents getEvents() {
     return wrapped.getEvents();
   }
 

@@ -24,7 +24,7 @@ import com.arcadedb.event.BeforeRecordUpdateListener;
 
 import java.util.*;
 
-public class DatabaseEventsRegistry implements DatabaseEvents {
+public class RecordEventsRegistry implements RecordEvents {
   private final List<BeforeRecordCreateListener>        beforeCreateListeners = new ArrayList<>();
   private final List<BeforeRecordUpdateListener> beforeUpdateListeners = new ArrayList<>();
   private final List<BeforeRecordDeleteListener> beforeDeleteListeners = new ArrayList<>();
@@ -32,83 +32,80 @@ public class DatabaseEventsRegistry implements DatabaseEvents {
   private final List<AfterRecordUpdateListener> afterUpdateListeners = new ArrayList<>();
   private final List<AfterRecordDeleteListener> afterDeleteListeners = new ArrayList<>();
 
-  protected DatabaseEventsRegistry() {
-  }
-
   @Override
-  public synchronized DatabaseEventsRegistry registerListener(final BeforeRecordCreateListener listener) {
+  public synchronized RecordEventsRegistry registerListener(final BeforeRecordCreateListener listener) {
     if (!beforeCreateListeners.contains(listener))
       beforeCreateListeners.add(listener);
     return this;
   }
 
   @Override
-  public synchronized DatabaseEventsRegistry registerListener(final BeforeRecordUpdateListener listener) {
+  public synchronized RecordEventsRegistry registerListener(final BeforeRecordUpdateListener listener) {
     if (!beforeUpdateListeners.contains(listener))
       beforeUpdateListeners.add(listener);
     return this;
   }
 
   @Override
-  public synchronized DatabaseEventsRegistry registerListener(final BeforeRecordDeleteListener listener) {
+  public synchronized RecordEventsRegistry registerListener(final BeforeRecordDeleteListener listener) {
     if (!beforeDeleteListeners.contains(listener))
       beforeDeleteListeners.add(listener);
     return this;
   }
 
   @Override
-  public synchronized DatabaseEventsRegistry registerListener(final AfterRecordCreateListener listener) {
+  public synchronized RecordEventsRegistry registerListener(final AfterRecordCreateListener listener) {
     if (!afterCreateListeners.contains(listener))
       afterCreateListeners.add(listener);
     return this;
   }
 
   @Override
-  public synchronized DatabaseEventsRegistry registerListener(final AfterRecordUpdateListener listener) {
+  public synchronized RecordEventsRegistry registerListener(final AfterRecordUpdateListener listener) {
     if (!afterUpdateListeners.contains(listener))
       afterUpdateListeners.add(listener);
     return this;
   }
 
   @Override
-  public synchronized DatabaseEventsRegistry registerListener(final AfterRecordDeleteListener listener) {
+  public synchronized RecordEventsRegistry registerListener(final AfterRecordDeleteListener listener) {
     if (!afterDeleteListeners.contains(listener))
       afterDeleteListeners.add(listener);
     return this;
   }
 
   @Override
-  public synchronized DatabaseEventsRegistry unregisterListener(final BeforeRecordCreateListener listener) {
+  public synchronized RecordEventsRegistry unregisterListener(final BeforeRecordCreateListener listener) {
     beforeCreateListeners.remove(listener);
     return this;
   }
 
   @Override
-  public synchronized DatabaseEventsRegistry unregisterListener(final BeforeRecordUpdateListener listener) {
+  public synchronized RecordEventsRegistry unregisterListener(final BeforeRecordUpdateListener listener) {
     beforeUpdateListeners.remove(listener);
     return this;
   }
 
   @Override
-  public synchronized DatabaseEventsRegistry unregisterListener(final BeforeRecordDeleteListener listener) {
+  public synchronized RecordEventsRegistry unregisterListener(final BeforeRecordDeleteListener listener) {
     beforeDeleteListeners.remove(listener);
     return this;
   }
 
   @Override
-  public synchronized DatabaseEventsRegistry unregisterListener(final AfterRecordCreateListener listener) {
+  public synchronized RecordEventsRegistry unregisterListener(final AfterRecordCreateListener listener) {
     afterCreateListeners.remove(listener);
     return this;
   }
 
   @Override
-  public synchronized DatabaseEventsRegistry unregisterListener(final AfterRecordUpdateListener listener) {
+  public synchronized RecordEventsRegistry unregisterListener(final AfterRecordUpdateListener listener) {
     afterUpdateListeners.remove(listener);
     return this;
   }
 
   @Override
-  public synchronized DatabaseEventsRegistry unregisterListener(final AfterRecordDeleteListener listener) {
+  public synchronized RecordEventsRegistry unregisterListener(final AfterRecordDeleteListener listener) {
     afterDeleteListeners.remove(listener);
     return this;
   }

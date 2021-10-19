@@ -24,18 +24,16 @@ package com.arcadedb.event;
 import com.arcadedb.database.Record;
 
 /**
- * Listener to receive events before updating records (documents, vertices and edges).
+ * Listener to receive events after an update operation occurs on records (documents, vertices and edges).
  * <p>
  * NOTE: the callback is invoked synchronously. For this reason the execution should be as fast as possible. Even with a fast implementation, using this
- * callback may cause a sensible slowdown of updating operations.
+ * callback may cause a sensible slowdown of update operations.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  **/
-public interface DatabaseEventBeforeUpdateListener {
+public interface AfterRecordUpdateListener {
   /**
-   * Callback invoked right before a record (documents, vertices and edges) is updated.
-   *
-   * @return true if the record must be saved, otherwise false to prevent the record update.
+   * Callback invoked right after a record (documents, vertices and edges) has been updated. You can use this callback to enrich the record with additional properties.
    */
-  boolean onBeforeUpdate(Record record);
+  void onAfterUpdate(Record record);
 }

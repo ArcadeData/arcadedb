@@ -169,7 +169,7 @@ public interface Database extends AutoCloseable {
 
   Schema getSchema();
 
-  DatabaseEvents getEvents();
+  RecordEvents getEvents();
 
   ResultSet command(String language, String query, Map<String, Object> args);
 

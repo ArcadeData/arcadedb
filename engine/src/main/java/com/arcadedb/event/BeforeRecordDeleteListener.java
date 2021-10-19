@@ -24,16 +24,18 @@ package com.arcadedb.event;
 import com.arcadedb.database.Record;
 
 /**
- * Listener to receive events after a delete operation occurs on records (documents, vertices and edges).
+ * Listener to receive events before a record (documents, vertices and edges) is deleted.
  * <p>
  * NOTE: the callback is invoked synchronously. For this reason the execution should be as fast as possible. Even with a fast implementation, using this
  * callback may cause a sensible slowdown of delete operations.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  **/
-public interface DatabaseEventAfterDeleteListener {
+public interface BeforeRecordDeleteListener {
   /**
-   * Callback invoked right after a record (documents, vertices and edges) has been deleted. You can use this callback to implement a cascade deletion.
+   * Callback invoked right before a record (documents, vertices and edges) is deleted.
+   *
+   * @return true if the record must be deleted, otherwise false to prevent the record deletion.
    */
-  void onAfterDelete(Record record);
+  boolean onBeforeDelete(Record record);
 }
