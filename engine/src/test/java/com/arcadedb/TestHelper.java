@@ -30,9 +30,10 @@ import java.io.*;
 import java.util.*;
 
 public abstract class TestHelper {
-  protected final DatabaseFactory factory;
-  protected       Database        database;
-  protected       boolean         autoStartTx = false;
+  private static final int             PARALLEL_LEVEL = 4;
+  protected final      DatabaseFactory factory;
+  protected            Database        database;
+  protected            boolean         autoStartTx    = false;
 
   public interface DatabaseTest<PAR> {
     void call(PAR iArgument) throws Exception;
@@ -52,6 +53,8 @@ public abstract class TestHelper {
     factory = new DatabaseFactory(getDatabasePath());
     database = factory.exists() ? factory.open() : factory.create();
     Assertions.assertEquals(database, DatabaseFactory.getActiveDatabaseInstance(database.getDatabasePath()));
+
+    database.async().setParallelLevel(PARALLEL_LEVEL);
 
     if (autoStartTx)
       database.begin();
