@@ -26,9 +26,11 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
+import com.arcadedb.log.LogManager;
 
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.logging.*;
 
 public class DocumentType {
   protected final EmbeddedSchema                    schema;
@@ -70,8 +72,10 @@ public class DocumentType {
 
     final Set<String> allProperties = getPolymorphicPropertyNames();
     for (String p : parent.getPolymorphicPropertyNames())
-      if (allProperties.contains(p))
-        throw new IllegalArgumentException("Property '" + p + "' is already defined in type '" + name + "' or any parent types");
+      if (allProperties.contains(p)) {
+        LogManager.instance().log(this, Level.WARNING, "Property '" + p + "' is already defined in type '" + name + "' or any parent types");
+        //throw new IllegalArgumentException("Property '" + p + "' is already defined in type '" + name + "' or any parent types");
+      }
 
     recordFileChanges(() -> {
       parentTypes.add(parent);
