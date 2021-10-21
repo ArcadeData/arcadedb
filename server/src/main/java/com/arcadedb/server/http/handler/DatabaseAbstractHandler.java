@@ -102,13 +102,15 @@ public abstract class DatabaseAbstractHandler extends AbstractHandler {
     if (current == null)
       current = DatabaseContext.INSTANCE.getContext(database.getDatabasePath());
 
-    TransactionContext tx;
-    while ((tx = current.popLastTransaction()) != null) {
-      if (tx.isActive())
-        tx.rollback();
-    }
+    if (current != null) {
+      TransactionContext tx;
+      while ((tx = current.popLastTransaction()) != null) {
+        if (tx.isActive())
+          tx.rollback();
+      }
 
-    DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
+      DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
+    }
   }
 
   protected boolean requiresDatabase() {
