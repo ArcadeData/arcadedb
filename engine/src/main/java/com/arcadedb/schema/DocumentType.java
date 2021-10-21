@@ -70,6 +70,7 @@ public class DocumentType {
       // ALREADY PARENT
       return this;
 
+    // CHECK FOR CONFLICT WITH PROPERTIES NAMES
     final Set<String> allProperties = getPolymorphicPropertyNames();
     for (String p : parent.getPolymorphicPropertyNames())
       if (allProperties.contains(p)) {
@@ -80,6 +81,22 @@ public class DocumentType {
     recordFileChanges(() -> {
       parentTypes.add(parent);
       parent.subTypes.add(this);
+
+      // CREATE INDEXES AUTOMATICALLY ON PROPERTIES DEFINED IN SUPER TYPES
+      final List<TypeIndex> indexes = getAllIndexes(true);
+      indexes.removeAll(indexesByProperties.values());
+
+      schema.getDatabase().transaction(() -> {
+        for (TypeIndex index : indexes) {
+          for (int i = 0; i < buckets.size(); i++) {
+            final Bucket bucket = buckets.get(i);
+            schema.createBucketIndex(schema.getType(index.getTypeName()), index.getKeyTypes(), bucket, name, index.getType(), index.isUnique(),
+                LSMTreeIndexAbstract.DEF_PAGE_SIZE, index.getNullStrategy(), null,
+                index.getPropertyNames().toArray(new String[index.getPropertyNames().size()]));
+          }
+        }
+      }, false);
+
       return null;
     });
     return this;
@@ -322,16 +339,15 @@ public class DocumentType {
     return prop;
   }
 
-  public List<Index> getAllIndexes(final boolean polymorphic) {
+  public List<TypeIndex> getAllIndexes(final boolean polymorphic) {
     if (!polymorphic || parentTypes.isEmpty())
       return new ArrayList<>(indexesByProperties.values());
 
-    final List<Index> list = new ArrayList<>();
-    for (TypeIndex idx : indexesByProperties.values())
-      list.add(idx);
+    final List<TypeIndex> list = new ArrayList<>(indexesByProperties.values());
 
-    for (DocumentType t : parentTypes)
-      list.addAll(t.getAllIndexes(polymorphic));
+    if (polymorphic)
+      for (DocumentType t : parentTypes)
+        list.addAll(t.getAllIndexes(true));
 
     return list;
   }

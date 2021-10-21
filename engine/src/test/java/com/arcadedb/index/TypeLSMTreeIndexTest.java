@@ -45,7 +45,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
 
       int total = 0;
 
-      final List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      final List<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
 
       for (int i = 0; i < TOT; ++i) {
         final List<Integer> results = new ArrayList<>();
@@ -68,7 +68,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   public void testGetAsRange() {
     database.transaction(() -> {
 
-      final List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      final List<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
       for (int i = 0; i < TOT; ++i) {
         int total = 0;
 
@@ -107,7 +107,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   public void testRangeFromHead() {
     database.transaction(() -> {
 
-      final List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      final List<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
       for (int i = 0; i < TOT - 1; ++i) {
         int total = 0;
 
@@ -145,7 +145,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
 //      @Override
 //      public void execute(Database database) {
 //
-//        final List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+//        final List<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
 //        for (int i = TOT - 1; i > 0; --i) {
 //          int total = 0;
 //
@@ -224,7 +224,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
 
       int total = 0;
 
-      final List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      final List<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
       for (Index index : indexes) {
         Assertions.assertNotNull(index);
 
@@ -271,7 +271,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
 
       int total = 0;
 
-      final List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      final List<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
       for (Index index : indexes) {
         Assertions.assertNotNull(index);
 
@@ -305,7 +305,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
 
       int total = 0;
 
-      final List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      final List<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
       for (Index index : indexes) {
         Assertions.assertNotNull(index);
 
@@ -338,7 +338,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
 
       int total = 0;
 
-      final List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      final List<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
       for (Index index : indexes) {
         Assertions.assertNotNull(index);
 
@@ -371,7 +371,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
 
       int total = 0;
 
-      final List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      final List<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
       for (Index index : indexes) {
         Assertions.assertNotNull(index);
 
@@ -403,7 +403,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
 
       int total = 0;
 
-      final List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      final List<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
       for (Index index : indexes) {
         Assertions.assertNotNull(index);
 
@@ -435,7 +435,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
 
       int total = 0;
 
-      final List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      final List<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
       for (Index index : indexes) {
         Assertions.assertNotNull(index);
 
@@ -472,7 +472,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
 
       int total = 0;
 
-      final List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      final List<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
       for (Index index : indexes) {
         Assertions.assertNotNull(index);
 
@@ -509,7 +509,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
 
       int total = 0;
 
-      final List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      final List<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
       for (Index index : indexes) {
         Assertions.assertNotNull(index);
 
@@ -546,7 +546,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
 
       int total = 0;
 
-      final List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      final List<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
       for (Index index : indexes) {
         Assertions.assertNotNull(index);
 
@@ -583,7 +583,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
 
       int total = 0;
 
-      final List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      final List<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
       for (Index index : indexes) {
         Assertions.assertNotNull(index);
 
@@ -620,7 +620,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
 
       int total = 0;
 
-      final List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      final List<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
       for (Index index : indexes) {
         Assertions.assertNotNull(index);
 

@@ -459,17 +459,13 @@ public class EmbeddedSchema implements Schema {
     recordFileChanges(() -> {
       database.transaction(() -> {
 
-        try {
-          for (int idx = 0; idx < buckets.size(); ++idx) {
-            final Bucket bucket = buckets.get(idx);
-            indexes[idx] = createBucketIndex(type, keyTypes, bucket, typeName, indexType, unique, pageSize, nullStrategy, callback, propertyNames);
-          }
-
-          saveConfiguration();
-
-        } catch (IOException e) {
-          throw new SchemaException("Cannot create index on type '" + typeName + "' (error=" + e + ")", e);
+        for (int idx = 0; idx < buckets.size(); ++idx) {
+          final Bucket bucket = buckets.get(idx);
+          indexes[idx] = createBucketIndex(type, keyTypes, bucket, typeName, indexType, unique, pageSize, nullStrategy, callback, propertyNames);
         }
+
+        saveConfiguration();
+
       }, false, 1, null, (error) -> {
         for (int j = 0; j < indexes.length; j++) {
           final IndexInternal indexToRemove = (IndexInternal) indexes[j];
@@ -552,15 +548,11 @@ public class EmbeddedSchema implements Schema {
           }
         }
 
-        try {
-          final Index index = createBucketIndex(type, keyTypes, bucket, typeName, indexType, unique, pageSize, nullStrategy, callback, propertyNames);
-          result.set(index);
+        final Index index = createBucketIndex(type, keyTypes, bucket, typeName, indexType, unique, pageSize, nullStrategy, callback, propertyNames);
+        result.set(index);
 
-          saveConfiguration();
+        saveConfiguration();
 
-        } catch (IOException e) {
-          throw new SchemaException("Cannot create index on type '" + typeName + "' (error=" + e + ")", e);
-        }
       }, false, 1, null, (error) -> {
         final Index indexToRemove = result.get();
         if (indexToRemove != null) {
@@ -572,9 +564,9 @@ public class EmbeddedSchema implements Schema {
     });
   }
 
-  private Index createBucketIndex(final DocumentType type, final byte[] keyTypes, final Bucket bucket, final String typeName, final INDEX_TYPE indexType,
+  protected Index createBucketIndex(final DocumentType type, final byte[] keyTypes, final Bucket bucket, final String typeName, final INDEX_TYPE indexType,
       final boolean unique, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, final Index.BuildIndexCallback callback,
-      final String[] propertyNames) throws IOException {
+      final String[] propertyNames) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
     if (bucket == null)

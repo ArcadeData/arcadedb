@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.index.Index;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -89,7 +90,7 @@ public class WhereClause extends SimpleNode {
 
     long indexesCount = 0L;
     List<AndBlock> flattenedConditions = flatten();
-    List<Index> indexes = oClass.getAllIndexes(true);
+    List<TypeIndex> indexes = oClass.getAllIndexes(true);
     for (AndBlock condition : flattenedConditions) {
 
       List<BinaryCondition> indexedFunctConditions = condition.getIndexedFunctionConditions(oClass, ctx.getDatabase());

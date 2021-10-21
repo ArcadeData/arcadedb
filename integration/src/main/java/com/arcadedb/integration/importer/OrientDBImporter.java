@@ -23,6 +23,7 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.Index;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
@@ -968,7 +969,7 @@ public class OrientDBImporter {
 
   private boolean checkForNullIndexes(final Map<String, Object> properties, final DocumentType type) {
     boolean valid = true;
-    final List<Index> indexes = type.getAllIndexes(true);
+    final List<TypeIndex> indexes = type.getAllIndexes(true);
     for (Index index : indexes) {
       if (index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.ERROR) {
         final String indexedPropName = index.getPropertyNames().get(0);
