@@ -767,7 +767,9 @@ public class OrientDBImporter {
       // PATCH TO ALWAYS USE SKIP BECAUSE IN ORIENTDB AN INDEX WITHOUT THE IGNORE SETTINGS CAN STILL HAVE NULL PROPERTIES INDEXES.
       nullValuesIgnored = true;
 
-      final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy = nullValuesIgnored ? LSMTreeIndexAbstract.NULL_STRATEGY.SKIP : LSMTreeIndexAbstract.NULL_STRATEGY.ERROR;
+      final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy = nullValuesIgnored ?
+          LSMTreeIndexAbstract.NULL_STRATEGY.SKIP :
+          LSMTreeIndexAbstract.NULL_STRATEGY.ERROR;
 
       database.getSchema()
           .getOrCreateTypeIndex(Schema.INDEX_TYPE.LSM_TREE, unique, className, properties, LSMTreeIndexAbstract.DEF_PAGE_SIZE, nullStrategy, null);
@@ -840,13 +842,14 @@ public class OrientDBImporter {
       case "LINKMAP":
         orientdbType = "MAP";
         break;
-      default:
-        logger.logLine(1, "- Unknown type '%s', ignoring creation of property in the schema for '%s.%s'", orientdbType, t.getName(), entry.getKey());
-        ++warnings;
-        continue;
       }
 
-      t.createProperty(entry.getKey(), Type.valueOf(orientdbType));
+      try {
+        t.createProperty(entry.getKey(), Type.valueOf(orientdbType));
+      } catch (Exception e) {
+        logger.logLine(1, "- Unknown type '%s', ignoring creation of property in the schema for '%s.%s'", orientdbType, t.getName(), entry.getKey());
+        ++warnings;
+      }
     }
 
     logger.logLine(2, "- Created type '%s' with the following properties %s", className, classInfo.properties);

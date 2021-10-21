@@ -389,18 +389,16 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     executeInReadLock(() -> {
       final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(EmbeddedDatabase.this.getDatabasePath());
 
-      while (true) {
+      TransactionContext tx;
+      while ((tx = current.popLastTransaction()) != null) {
         try {
-          if (!isTransactionActive())
-            break;
-
-          current.popIfNotLastTransaction().rollback();
+          if (tx.isActive())
+            tx.rollback();
 
         } catch (InvalidDatabaseInstanceException e) {
           current.popIfNotLastTransaction().rollback();
-
         } catch (TransactionException e) {
-          // ALREADY ROLLBACKED
+          // ALREADY ROLLED BACK
         }
       }
       return null;

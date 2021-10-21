@@ -152,6 +152,13 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
       return transactions.get(0);
     }
 
+    public TransactionContext popLastTransaction() {
+      if (transactions.isEmpty())
+        return null;
+
+      return transactions.remove(transactions.size() - 1);
+    }
+
     public int getMaxNested() {
       return maxNested;
     }
