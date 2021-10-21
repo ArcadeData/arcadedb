@@ -22,35 +22,85 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
 
 import java.util.*;
 
 public class LSMTreeIndexPolymorphicTest extends TestHelper {
 
-  //@Test
-  public void testDocumentAfterCreation() {
+  @Test
+  public void testPolymorphic() {
+    testPolymorphic(Schema.INDEX_TYPE.LSM_TREE);
+  }
+
+  @Test
+  public void testPolymorphicFullText() {
+    testPolymorphic(Schema.INDEX_TYPE.FULL_TEXT);
+  }
+
+  private void testPolymorphic(Schema.INDEX_TYPE indexType) {
     DocumentType typeRoot = database.getSchema().getOrCreateDocumentType("TestRoot");
     typeRoot.getOrCreateProperty("name", String.class);
-    typeRoot.getOrCreateTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "name");
+    typeRoot.getOrCreateTypeIndex(indexType, true, "name");
     database.command("sql", "delete from TestRoot");
 
     DocumentType typeChild = database.getSchema().getOrCreateDocumentType("TestChild");
     typeChild.setParentTypes(Arrays.asList(typeRoot));
 
-    MutableDocument doc = database.newDocument("TestChild");
-
+    MutableDocument docRoot = database.newDocument("TestRoot");
     database.transaction(() -> {
-      doc.set("name", "Document Name");
-      Assertions.assertEquals("Document Name", doc.get("name"));
-      doc.save();
+      docRoot.set("name", "Root");
+      Assertions.assertEquals("Root", docRoot.get("name"));
+      docRoot.save();
     });
+    Assertions.assertEquals("Root", docRoot.get("name"));
 
-    Assertions.assertEquals("Document Name", doc.get("name"));
-    try (ResultSet rs = database.query("sql", "select from TestChild where name = :name", Map.of("arg0", "Test2", "name", "Document Name"))) {
+    MutableDocument docChild = database.newDocument("TestChild");
+    database.transaction(() -> {
+      docChild.set("name", "Child");
+      Assertions.assertEquals("Child", docChild.get("name"));
+      docChild.save();
+    });
+    Assertions.assertEquals("Child", docChild.get("name"));
+
+    try (ResultSet rs = database.query("sql", "select from TestRoot where name <> :name", Map.of("arg0", "Test2", "name", "Nonsense"))) {
       Assertions.assertTrue(rs.hasNext());
-      Document docRetrieved = rs.next().getElement().orElse(null);
-      Assertions.assertEquals("Document Name", docRetrieved.get("name"));
+      Document doc1Retrieved = rs.next().getElement().orElse(null);
+      Assertions.assertTrue(rs.hasNext());
+      Document doc2Retrieved = rs.next().getElement().orElse(null);
+
+      if (doc1Retrieved.getTypeName().equals("TestRoot"))
+        Assertions.assertEquals("Root", doc1Retrieved.get("name"));
+      else if (doc2Retrieved.getTypeName().equals("TestChild"))
+        Assertions.assertEquals("Child", doc2Retrieved.get("name"));
+      else
+        Assertions.fail();
+
+      Assertions.assertFalse(rs.hasNext());
+    }
+
+    try (ResultSet rs = database.query("sql", "select from TestChild where name = :name", Map.of("arg0", "Test2", "name", "Child"))) {
+      Assertions.assertTrue(rs.hasNext());
+      Document doc1Retrieved = rs.next().getElement().orElse(null);
+      Assertions.assertEquals("Child", doc1Retrieved.get("name"));
+      Assertions.assertFalse(rs.hasNext());
+    }
+
+    typeChild.removeParentType(typeRoot);
+
+    try (ResultSet rs = database.query("sql", "select from TestChild where name = :name", Map.of("arg0", "Test2", "name", "Child"))) {
+      Assertions.assertTrue(rs.hasNext());
+      Document doc1Retrieved = rs.next().getElement().orElse(null);
+      Assertions.assertEquals("Child", doc1Retrieved.get("name"));
+      Assertions.assertFalse(rs.hasNext());
+    }
+
+    try (ResultSet rs = database.query("sql", "select from TestRoot where name <> :name", Map.of("arg0", "Test2", "name", "Nonsense"))) {
+      Assertions.assertTrue(rs.hasNext());
+      Document doc1Retrieved = rs.next().getElement().orElse(null);
+      Assertions.assertEquals("Root", doc1Retrieved.get("name"));
       Assertions.assertFalse(rs.hasNext());
     }
   }
+
 }

@@ -1780,7 +1780,7 @@ public class SelectExecutionPlanner {
       throw new CommandExecutionException("Cannot find class " + targetClass);
     }
 
-    final List<Index> indexes = typez.getAllIndexes(true);
+    final List<TypeIndex> indexes = typez.getAllIndexes(true);
 
     final List<IndexSearchDescriptor> indexSearchDescriptors = new ArrayList<>();
 
@@ -1980,7 +1980,8 @@ public class SelectExecutionPlanner {
    *
    * @return
    */
-  private List<IndexSearchDescriptor> findBestIndexesFor(final CommandContext ctx, final List<Index> indexes, final AndBlock block, final DocumentType typez) {
+  private List<IndexSearchDescriptor> findBestIndexesFor(final CommandContext ctx, final List<TypeIndex> indexes, final AndBlock block,
+      final DocumentType typez) {
     final Iterator<IndexSearchDescriptor> it = indexes.stream()
         //.filter(index -> index.getInternal().canBeUsedInEqualityOperators())
         .map(index -> buildIndexSearchDescriptor(ctx, index, block, typez)).filter(Objects::nonNull).filter(x -> x.keyCondition != null)

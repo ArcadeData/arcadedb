@@ -460,7 +460,7 @@ public class LSMTreeIndexTest extends TestHelper {
 
     database.transaction(() -> {
       // GET EACH ITEM TO CHECK IT HAS BEEN DELETED
-      List<Index> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      final List<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
 
       for (int i = 0; i < TOT; ++i) {
         for (Index index : indexes) {
