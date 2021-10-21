@@ -1951,9 +1951,9 @@ public class MatchStatementExecutioTest extends TestHelper {
     String clazz = "testBucketTarget";
     database.command("SQL", "CREATE vertex type " + clazz).close();
 
-    database.command("SQL", "ALTER TYPE " + clazz + " ADDBUCKET " + clazz + "_one").close();
-    database.command("SQL", "ALTER TYPE " + clazz + " ADDBUCKET " + clazz + "_two").close();
-    database.command("SQL", "ALTER TYPE " + clazz + " ADDBUCKET " + clazz + "_three").close();
+    database.command("SQL", "ALTER TYPE " + clazz + " BUCKET +" + clazz + "_one").close();
+    database.command("SQL", "ALTER TYPE " + clazz + " BUCKET +" + clazz + "_two").close();
+    database.command("SQL", "ALTER TYPE " + clazz + " BUCKET +" + clazz + "_three").close();
 
     MutableVertex v1 = database.newVertex(clazz);
     v1.set("name", "one");
