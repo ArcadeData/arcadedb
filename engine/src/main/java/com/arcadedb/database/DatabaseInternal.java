@@ -104,4 +104,6 @@ public interface DatabaseInternal extends Database {
   int getEdgeListSize(int previousSize);
 
   <RET> RET recordFileChanges(final Callable<Object> callback);
+
+  void saveConfiguration() throws IOException;
 }

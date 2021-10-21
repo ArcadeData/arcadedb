@@ -21,10 +21,11 @@ public class AlterDatabaseStatementTest extends ParserTestAbstract {
 
   @Test
   public void testPlain() {
-    checkRightSyntax("ALTER DATABASE BUCKETSELECTION 'default'");
-    checkRightSyntax("alter database BUCKETSELECTION 'default'");
+    checkRightSyntax("ALTER DATABASE `arcadedb.bucketDefaultPageSize` 262144");
+    checkRightSyntax("alter database `arcadedb.bucketDefaultPageSize` 262144");
 
     checkWrongSyntax("alter database ");
+    checkWrongSyntax("alter database xxx");
     checkWrongSyntax("alter database bar baz zz");
   }
 }

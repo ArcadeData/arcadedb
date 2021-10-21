@@ -422,6 +422,11 @@ public class ServerDatabase implements DatabaseInternal {
     return wrapped.recordFileChanges(callback);
   }
 
+  @Override
+  public void saveConfiguration() throws IOException {
+    wrapped.saveConfiguration();
+  }
+
   public StatementCache getStatementCache() {
     return wrapped.getStatementCache();
   }
