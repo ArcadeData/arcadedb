@@ -82,8 +82,11 @@ public abstract class DatabaseAbstractHandler extends AbstractHandler {
         execute(exchange, user, database);
     } finally {
 
-      try {
-        if (activeSession == null && database != null) {
+      if (activeSession != null)
+        // DETACH CURRENT CONTECT/TRANSACTIONS FROM CURRENT THREAD
+        DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
+      else if (database != null) {
+        try {
           if (atomicTransaction) {
             if (database.isTransactionActive())
               // STARTED ATOMIC TRANSACTION, COMMIT
@@ -91,9 +94,9 @@ public abstract class DatabaseAbstractHandler extends AbstractHandler {
           } else
             // NO TRANSACTION, ROLLBACK TO MAKE SURE ANY PENDING OPERATION IS REMOVED
             database.rollbackAllNested();
+        } finally {
+          cleanTL(database, null);
         }
-      } finally {
-        cleanTL(database, null);
       }
     }
   }
