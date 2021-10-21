@@ -19,6 +19,7 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.utility.CollectionUtils;
 
 import java.math.*;
 import java.util.*;
@@ -281,7 +282,6 @@ public class BinaryComparator {
       }
       break;
     }
-
 
     case BinaryTypes.TYPE_NULL: {
       switch (type2) {
@@ -713,6 +713,15 @@ public class BinaryComparator {
         return ((Identifiable) value1).getIdentity().compareTo((Identifiable) value2);
       }
     }
+
+    case BinaryTypes.TYPE_LIST: {
+      switch (type2) {
+      case BinaryTypes.TYPE_LIST:
+        return CollectionUtils.compare((List) value1, (List) value2);
+      }
+      break;
+    }
+
     }
 
     throw new IllegalArgumentException("Comparison between type " + type1 + " and " + type2 + " not supported");
