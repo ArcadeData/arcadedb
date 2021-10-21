@@ -119,12 +119,15 @@ public class DocumentType {
   public void setParentTypes(List<DocumentType> newParents) {
     if (newParents == null)
       newParents = Collections.emptyList();
-    List<DocumentType> commonParents = new ArrayList<>(parentTypes);
+
+    final List<DocumentType> commonParents = new ArrayList<>(parentTypes);
     commonParents.retainAll(newParents);
-    List<DocumentType> toRemove = new ArrayList<>(parentTypes);
+
+    final List<DocumentType> toRemove = new ArrayList<>(parentTypes);
     toRemove.removeAll(commonParents);
     toRemove.forEach(this::removeParentType);
-    List<DocumentType> toAdd = new ArrayList<>(newParents);
+
+    final List<DocumentType> toAdd = new ArrayList<>(newParents);
     toAdd.removeAll(commonParents);
     toAdd.forEach(this::addParentType);
   }
