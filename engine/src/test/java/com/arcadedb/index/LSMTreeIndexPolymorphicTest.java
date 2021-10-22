@@ -45,7 +45,7 @@ public class LSMTreeIndexPolymorphicTest extends TestHelper {
     database.command("sql", "delete from TestRoot");
 
     DocumentType typeChild = database.getSchema().getOrCreateDocumentType("TestChild");
-    typeChild.setParentTypes(Arrays.asList(typeRoot));
+    typeChild.setSuperTypes(Arrays.asList(typeRoot));
 
     MutableDocument docRoot = database.newDocument("TestRoot");
     database.transaction(() -> {
@@ -86,7 +86,7 @@ public class LSMTreeIndexPolymorphicTest extends TestHelper {
       Assertions.assertFalse(rs.hasNext());
     }
 
-    typeChild.removeParentType(typeRoot);
+    typeChild.removeSuperType(typeRoot);
 
     try (ResultSet rs = database.query("sql", "select from TestChild where name = :name", Map.of("arg0", "Test2", "name", "Child"))) {
       Assertions.assertTrue(rs.hasNext());

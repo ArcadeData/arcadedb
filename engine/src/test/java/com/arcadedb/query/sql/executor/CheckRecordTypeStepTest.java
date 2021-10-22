@@ -61,7 +61,7 @@ public class CheckRecordTypeStepTest {
     TestHelper.executeInNewDatabase((db) -> {
       CommandContext context = new BasicCommandContext();
       DocumentType parentClass = TestHelper.createRandomType(db);
-      DocumentType childClass = TestHelper.createRandomType(db).addParentType(parentClass);
+      DocumentType childClass = TestHelper.createRandomType(db).addSuperType(parentClass);
       CheckRecordTypeStep step = new CheckRecordTypeStep(context, parentClass.getName(), false);
       AbstractExecutionStep previous = new AbstractExecutionStep(context, false) {
         boolean done = false;

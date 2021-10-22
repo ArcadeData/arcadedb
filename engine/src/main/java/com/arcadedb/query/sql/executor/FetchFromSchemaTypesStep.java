@@ -72,7 +72,7 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
 
           r.setProperty("type", t);
 
-          List<String> parents = type.getParentTypes().stream().map(pt -> pt.getName()).collect(Collectors.toList());
+          List<String> parents = type.getSuperTypes().stream().map(pt -> pt.getName()).collect(Collectors.toList());
           r.setProperty("parentTypes", parents);
 
           final List<ResultInternal> propertiesTypes = type.getPropertyNames().stream().sorted(String::compareToIgnoreCase).map(name -> type.getProperty(name))

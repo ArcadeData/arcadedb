@@ -3685,33 +3685,32 @@ AlterTypeStatement AlterTypeStatement():
 		)
 		|
 		(
-			<SUPERTYPE> { jjtThis.property = "supertype"; }
-			[
-				(
-					<PLUS> {jjtThis.add = true;}
-				)
-				|
-				(
-					<MINUS> {jjtThis.remove = true;}
-				)
-			]
-			(
-				jjtThis.identifierValue = Identifier()
-				|
-				<NULL> { jjtThis.identifierValue = null; }
-			)
-		)
-		|
-		(
-			<SUPERTYPES> {
-				jjtThis.property = "supertypes";
-				jjtThis.identifierListValue = new ArrayList<Identifier>();
+			<SUPERTYPE> {
+				jjtThis.property = "supertype";
 			}
 			(
 				(
+  				(
+            (
+              <PLUS> {jjtThis.add = true;}
+            )
+            |
+            (
+              <MINUS> {jjtThis.remove = true;}
+            )
+          )
 					lastIdentifier = Identifier() { jjtThis.identifierListValue.add(lastIdentifier); }
 					(
 						<COMMA>
+            (
+              (
+                <PLUS> {jjtThis.add = true;}
+              )
+              |
+              (
+                <MINUS> {jjtThis.remove = true;}
+              )
+            )
 						lastIdentifier = Identifier() { jjtThis.identifierListValue.add(lastIdentifier); }
 					)*
 				)
@@ -3721,24 +3720,23 @@ AlterTypeStatement AlterTypeStatement():
 		)
 		|
 		(
-			<ADDBUCKET> { jjtThis.property = "addbucket"; }
+			<BUCKET> { jjtThis.property = "bucket"; }
 			(
-				jjtThis.identifierValue = Identifier()
-				|
-				jjtThis.numberValue = PInteger()
-			)
-		)
-		|
-		(
-			<REMOVEBUCKET> { jjtThis.property = "removebucket"; }
-			(
-				jjtThis.identifierValue = Identifier()
-				|
-				jjtThis.numberValue = PInteger()
-			)
+        (
+          <PLUS> {jjtThis.add = true;}
+        )
+        |
+        (
+          <MINUS> {jjtThis.remove = true;}
+        )
+      )
+      lastIdentifier = Identifier() { jjtThis.identifierListValue.add(lastIdentifier); }
+      (
+        <COMMA>
+        lastIdentifier = Identifier() { jjtThis.identifierListValue.add(lastIdentifier); }
+      )*
 		)
 	)
-	[ <UNSAFE> { jjtThis.unsafe = true; } ]
 	{ return jjtThis; }
 }
 

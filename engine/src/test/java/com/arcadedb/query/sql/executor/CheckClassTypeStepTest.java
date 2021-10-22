@@ -29,7 +29,7 @@ public class CheckClassTypeStepTest {
       BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(db);
       DocumentType parentClass = TestHelper.createRandomType(db);
-      DocumentType childClass = TestHelper.createRandomType(db).addParentType(parentClass);
+      DocumentType childClass = TestHelper.createRandomType(db).addSuperType(parentClass);
       CheckClassTypeStep step = new CheckClassTypeStep(childClass.getName(), parentClass.getName(), context, false);
 
       ResultSet result = step.syncPull(context, 20);

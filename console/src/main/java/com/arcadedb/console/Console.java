@@ -518,7 +518,7 @@ public class Console {
         else if (kind == Edge.RECORD_TYPE)
           row.setField("TYPE", "Edge");
 
-        row.setField("PARENT TYPES", type.getParentTypes());
+        row.setField("SUPER TYPES", type.getSuperTypes());
         row.setField("BUCKETS", type.getBuckets(false));
         row.setField("PROPERTIES", type.getPropertyNames());
         row.setField("SYNC STRATEGY", type.getBucketSelectionStrategy());

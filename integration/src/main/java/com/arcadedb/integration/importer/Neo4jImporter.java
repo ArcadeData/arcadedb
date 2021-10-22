@@ -213,7 +213,7 @@ public class Neo4jImporter {
           final VertexType type = database.getSchema().getOrCreateVertexType(labels.getFirst());
           if (labels.getSecond() != null)
             for (String parent : labels.getSecond())
-              type.addParentType(parent);
+              type.addSuperType(parent);
 
           database.transaction(() -> {
             final Property id = type.createProperty("id", Type.STRING);
