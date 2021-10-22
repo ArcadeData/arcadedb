@@ -107,9 +107,11 @@ public abstract class DatabaseAbstractHandler extends AbstractHandler {
 
     if (current != null) {
       TransactionContext tx;
-      while ((tx = current.popLastTransaction()) != null) {
+      while ((tx = current.popIfNotLastTransaction()) != null) {
         if (tx.isActive())
           tx.rollback();
+        else
+          break;
       }
 
       DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
