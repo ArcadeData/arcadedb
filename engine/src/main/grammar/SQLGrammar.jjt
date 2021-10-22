@@ -3692,11 +3692,11 @@ AlterTypeStatement AlterTypeStatement():
 				(
   				(
             (
-              <PLUS> {jjtThis.add = true;}
+              <PLUS> {jjtThis.identifierListAddRemove.add(true);}
             )
             |
             (
-              <MINUS> {jjtThis.remove = true;}
+              <MINUS> {jjtThis.identifierListAddRemove.add(false);}
             )
           )
 					lastIdentifier = Identifier() { jjtThis.identifierListValue.add(lastIdentifier); }
@@ -3704,11 +3704,11 @@ AlterTypeStatement AlterTypeStatement():
 						<COMMA>
             (
               (
-                <PLUS> {jjtThis.add = true;}
+                <PLUS> {jjtThis.identifierListAddRemove.add(true);}
               )
               |
               (
-                <MINUS> {jjtThis.remove = true;}
+                <MINUS> {jjtThis.identifierListAddRemove.add(false);}
               )
             )
 						lastIdentifier = Identifier() { jjtThis.identifierListValue.add(lastIdentifier); }
@@ -3723,16 +3723,25 @@ AlterTypeStatement AlterTypeStatement():
 			<BUCKET> { jjtThis.property = "bucket"; }
 			(
         (
-          <PLUS> {jjtThis.add = true;}
+          <PLUS> {jjtThis.identifierListAddRemove.add(true);}
         )
         |
         (
-          <MINUS> {jjtThis.remove = true;}
+          <MINUS> {jjtThis.identifierListAddRemove.add(false);}
         )
       )
       lastIdentifier = Identifier() { jjtThis.identifierListValue.add(lastIdentifier); }
       (
         <COMMA>
+        (
+          (
+            <PLUS> {jjtThis.identifierListAddRemove.add(true);}
+          )
+          |
+          (
+            <MINUS> {jjtThis.identifierListAddRemove.add(false);}
+          )
+        )
         lastIdentifier = Identifier() { jjtThis.identifierListValue.add(lastIdentifier); }
       )*
 		)
