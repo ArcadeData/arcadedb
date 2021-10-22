@@ -40,7 +40,7 @@ public class PolymorphicTest extends TestHelper {
         vehicle.createProperty("brand", String.class);
 
         VertexType motorcycle = database.getSchema().createVertexType("Motorcycle", 3);
-        motorcycle.addParentType("Vehicle");
+        motorcycle.addSuperType("Vehicle");
 
         try {
           motorcycle.createProperty("brand", String.class);
@@ -49,10 +49,10 @@ public class PolymorphicTest extends TestHelper {
         }
 
         Assertions.assertTrue(database.getSchema().getType("Motorcycle").instanceOf("Vehicle"));
-        database.getSchema().createVertexType("Car", 3).addParentType("Vehicle");
+        database.getSchema().createVertexType("Car", 3).addSuperType("Vehicle");
         Assertions.assertTrue(database.getSchema().getType("Car").instanceOf("Vehicle"));
 
-        database.getSchema().createVertexType("Supercar", 3).addParentType("Car");
+        database.getSchema().createVertexType("Supercar", 3).addSuperType("Car");
         Assertions.assertTrue(database.getSchema().getType("Supercar").instanceOf("Car"));
         Assertions.assertTrue(database.getSchema().getType("Supercar").instanceOf("Vehicle"));
 
@@ -60,7 +60,7 @@ public class PolymorphicTest extends TestHelper {
         // PEOPLE VERTICES
         //------------
         VertexType person = database.getSchema().createVertexType("Person");
-        database.getSchema().createVertexType("Client").addParentType(person);
+        database.getSchema().createVertexType("Client").addSuperType(person);
         Assertions.assertTrue(database.getSchema().getType("Client").instanceOf("Person"));
         Assertions.assertFalse(database.getSchema().getType("Client").instanceOf("Vehicle"));
 
@@ -68,7 +68,7 @@ public class PolymorphicTest extends TestHelper {
         // EDGES
         //------------
         database.getSchema().createEdgeType("Drives");
-        database.getSchema().createEdgeType("Owns").addParentType("Drives");
+        database.getSchema().createEdgeType("Owns").addSuperType("Drives");
 
         Assertions.assertTrue(database.getSchema().getType("Owns").instanceOf("Drives"));
         Assertions.assertFalse(database.getSchema().getType("Owns").instanceOf("Vehicle"));

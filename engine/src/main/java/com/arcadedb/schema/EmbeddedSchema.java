@@ -694,12 +694,12 @@ public class EmbeddedSchema implements Schema {
         final DocumentType type = database.getSchema().getType(typeName);
 
         // CHECK INHERITANCE TREE AND ATTACH SUB-TYPES DIRECTLY TO THE PARENT TYPE
-        for (DocumentType parent : type.parentTypes)
+        for (DocumentType parent : type.superTypes)
           parent.subTypes.remove(type);
         for (DocumentType sub : type.subTypes) {
-          sub.parentTypes.remove(type);
-          for (DocumentType parent : type.parentTypes)
-            sub.addParentType(parent);
+          sub.superTypes.remove(type);
+          for (DocumentType parent : type.superTypes)
+            sub.addSuperType(parent);
         }
 
         final List<Bucket> buckets = new ArrayList<>(type.getBuckets(false));
@@ -1157,7 +1157,7 @@ public class EmbeddedSchema implements Schema {
       for (Map.Entry<String, String[]> entry : parentTypes.entrySet()) {
         final DocumentType type = getType(entry.getKey());
         for (String p : entry.getValue())
-          type.addParentType(getType(p));
+          type.addSuperType(getType(p));
       }
 
       loadInRamCompleted = true;
@@ -1220,9 +1220,9 @@ public class EmbeddedSchema implements Schema {
         kind = "d";
       type.put("type", kind);
 
-      final String[] parents = new String[t.getParentTypes().size()];
+      final String[] parents = new String[t.getSuperTypes().size()];
       for (int i = 0; i < parents.length; ++i)
-        parents[i] = t.getParentTypes().get(i).getName();
+        parents[i] = t.getSuperTypes().get(i).getName();
       type.put("parents", parents);
 
       final List<Bucket> originalBuckets = t.getBuckets(false);

@@ -88,7 +88,7 @@ public class CreateDocumentTypeStatement extends DDLStatement {
     }
 
     for (DocumentType c : superclasses)
-      type.addParentType(c);
+      type.addSuperType(c);
 
     InternalResultSet rs = new InternalResultSet();
     rs.add(result);
