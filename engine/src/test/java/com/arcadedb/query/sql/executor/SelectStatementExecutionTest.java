@@ -2186,9 +2186,9 @@ public class SelectStatementExecutionTest extends TestHelper {
 //        DocumentType childClass1 = database.getSchema().createDocumentType(child1, parentClass);
 //        DocumentType childClass2 = database.getSchema().createDocumentType(child2, parentClass);
     DocumentType childClass1 = database.getSchema().createDocumentType(child1);
-    childClass1.addParentType(parentClass);
+    childClass1.addSuperType(parentClass);
     DocumentType childClass2 = database.getSchema().createDocumentType(child2);
-    childClass2.addParentType(parentClass);
+    childClass2.addSuperType(parentClass);
 
     parentClass.createProperty("name", Type.STRING);
     childClass1.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name");
@@ -2232,9 +2232,9 @@ public class SelectStatementExecutionTest extends TestHelper {
 //        DocumentType childClass1 = database.getSchema().createDocumentType(child1, parentClass);
 //        DocumentType childClass2 = database.getSchema().createDocumentType(child2, parentClass);
     DocumentType childClass1 = database.getSchema().createDocumentType(child1);
-    childClass1.addParentType(parentClass);
+    childClass1.addSuperType(parentClass);
     DocumentType childClass2 = database.getSchema().createDocumentType(child2);
-    childClass2.addParentType(parentClass);
+    childClass2.addSuperType(parentClass);
 
     parentClass.createProperty("name", Type.STRING);
     childClass1.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name");
@@ -2277,9 +2277,9 @@ public class SelectStatementExecutionTest extends TestHelper {
 //        DocumentType childClass1 = database.getSchema().createDocumentType(child1, parentClass);
 //        DocumentType childClass2 = database.getSchema().createDocumentType(child2, parentClass);
     DocumentType childClass1 = database.getSchema().createDocumentType(child1);
-    childClass1.addParentType(parent);
+    childClass1.addSuperType(parent);
     DocumentType childClass2 = database.getSchema().createDocumentType(child2);
-    childClass2.addParentType(parent);
+    childClass2.addSuperType(parent);
 
     parentClass.createProperty("name", Type.STRING);
     childClass1.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name");
@@ -2332,13 +2332,13 @@ public class SelectStatementExecutionTest extends TestHelper {
 //        DocumentType childClass2_1 = database.getSchema().createDocumentType(child2_1, childClass2);
 //        DocumentType childClass2_2 = database.getSchema().createDocumentType(child2_2, childClass2);
     DocumentType childClass1 = database.getSchema().createDocumentType(child1);
-    childClass1.addParentType(parent);
+    childClass1.addSuperType(parent);
     DocumentType childClass2 = database.getSchema().createDocumentType(child2);
-    childClass2.addParentType(parent);
+    childClass2.addSuperType(parent);
     DocumentType childClass2_1 = database.getSchema().createDocumentType(child2_1);
-    childClass2_1.addParentType(child2);
+    childClass2_1.addSuperType(child2);
     DocumentType childClass2_2 = database.getSchema().createDocumentType(child2_2);
-    childClass2_2.addParentType(child2);
+    childClass2_2.addSuperType(child2);
 
     childClass1.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name");
     childClass2_1.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name");
@@ -2394,12 +2394,12 @@ public class SelectStatementExecutionTest extends TestHelper {
 //        DocumentType childClass12 =
 //                database.getSchema().createDocumentType(child12, childClass1, childClass2);
     DocumentType childClass1 = database.getSchema().createDocumentType(child1);
-    childClass1.addParentType(parentClass);
+    childClass1.addSuperType(parentClass);
     DocumentType childClass2 = database.getSchema().createDocumentType(child2);
-    childClass2.addParentType(parentClass);
+    childClass2.addSuperType(parentClass);
     DocumentType childClass12 = database.getSchema().createDocumentType(child12);
-    childClass12.addParentType(childClass1);
-    childClass12.addParentType(childClass2);
+    childClass12.addSuperType(childClass1);
+    childClass12.addSuperType(childClass2);
 
     parentClass.createProperty("name", Type.STRING);
     childClass1.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name");

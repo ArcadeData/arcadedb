@@ -189,11 +189,11 @@ public class AlterTypeStatement extends DDLStatement {
 
     if (Boolean.TRUE.equals(add)) {
       for (DocumentType superclass : superclasses) {
-        oClass.addParentType(superclass);
+        oClass.addSuperType(superclass);
       }
     } else if (Boolean.TRUE.equals(remove)) {
       for (DocumentType superclass : superclasses) {
-        oClass.removeParentType(superclass);
+        oClass.removeSuperType(superclass);
       }
     }
   }

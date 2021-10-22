@@ -35,7 +35,7 @@ import java.util.logging.*;
 public class DocumentType {
   protected final EmbeddedSchema                    schema;
   protected final String                            name;
-  protected final List<DocumentType>                parentTypes             = new ArrayList<>();
+  protected final List<DocumentType>                superTypes              = new ArrayList<>();
   protected final List<DocumentType>                subTypes                = new ArrayList<>();
   protected final List<Bucket>                      buckets                 = new ArrayList<>();
   protected       BucketSelectionStrategy           bucketSelectionStrategy = new RoundRobinBucketSelectionStrategy();
@@ -61,26 +61,26 @@ public class DocumentType {
     return events;
   }
 
-  public DocumentType addParentType(final String parentName) {
-    return addParentType(schema.getType(parentName));
+  public DocumentType addSuperType(final String superName) {
+    return addSuperType(schema.getType(superName));
   }
 
-  public DocumentType addParentType(final DocumentType parent) {
-    if (parentTypes.indexOf(parent) > -1)
+  public DocumentType addSuperType(final DocumentType superType) {
+    if (superTypes.indexOf(superType) > -1)
       // ALREADY PARENT
       return this;
 
     // CHECK FOR CONFLICT WITH PROPERTIES NAMES
     final Set<String> allProperties = getPolymorphicPropertyNames();
-    for (String p : parent.getPolymorphicPropertyNames())
+    for (String p : superType.getPolymorphicPropertyNames())
       if (allProperties.contains(p)) {
-        LogManager.instance().log(this, Level.WARNING, "Property '" + p + "' is already defined in type '" + name + "' or any parent types");
-        //throw new IllegalArgumentException("Property '" + p + "' is already defined in type '" + name + "' or any parent types");
+        LogManager.instance().log(this, Level.WARNING, "Property '" + p + "' is already defined in type '" + name + "' or any super types");
+        //throw new IllegalArgumentException("Property '" + p + "' is already defined in type '" + name + "' or any super types");
       }
 
     recordFileChanges(() -> {
-      parentTypes.add(parent);
-      parent.subTypes.add(this);
+      superTypes.add(superType);
+      superType.subTypes.add(this);
 
       // CREATE INDEXES AUTOMATICALLY ON PROPERTIES DEFINED IN SUPER TYPES
       final List<TypeIndex> indexes = getAllIndexes(true);
@@ -102,17 +102,17 @@ public class DocumentType {
     return this;
   }
 
-  public void removeParentType(final String parentName) {
-    removeParentType(schema.getType(parentName));
+  public void removeSuperType(final String superTypeName) {
+    removeSuperType(schema.getType(superTypeName));
   }
 
-  public void removeParentType(final DocumentType parent) {
+  public void removeSuperType(final DocumentType superType) {
     recordFileChanges(() -> {
-      if (!parentTypes.remove(parent))
-        // ALREADY REMOVED PARENT
+      if (!superTypes.remove(superType))
+        // ALREADY REMOVED SUPER TYPE
         return null;
 
-      parent.subTypes.remove(this);
+      superType.subTypes.remove(this);
       return null;
     });
   }
@@ -121,7 +121,7 @@ public class DocumentType {
     if (name.equals(type))
       return true;
 
-    for (DocumentType t : parentTypes) {
+    for (DocumentType t : superTypes) {
       if (t.instanceOf(type))
         return true;
     }
@@ -129,24 +129,24 @@ public class DocumentType {
     return false;
   }
 
-  public List<DocumentType> getParentTypes() {
-    return Collections.unmodifiableList(parentTypes);
+  public List<DocumentType> getSuperTypes() {
+    return Collections.unmodifiableList(superTypes);
   }
 
-  public void setParentTypes(List<DocumentType> newParents) {
-    if (newParents == null)
-      newParents = Collections.emptyList();
+  public void setSuperTypes(List<DocumentType> newSuperTypes) {
+    if (newSuperTypes == null)
+      newSuperTypes = Collections.emptyList();
 
-    final List<DocumentType> commonParents = new ArrayList<>(parentTypes);
-    commonParents.retainAll(newParents);
+    final List<DocumentType> commonSuperTypes = new ArrayList<>(superTypes);
+    commonSuperTypes.retainAll(newSuperTypes);
 
-    final List<DocumentType> toRemove = new ArrayList<>(parentTypes);
-    toRemove.removeAll(commonParents);
-    toRemove.forEach(this::removeParentType);
+    final List<DocumentType> toRemove = new ArrayList<>(superTypes);
+    toRemove.removeAll(commonSuperTypes);
+    toRemove.forEach(this::removeSuperType);
 
-    final List<DocumentType> toAdd = new ArrayList<>(newParents);
-    toAdd.removeAll(commonParents);
-    toAdd.forEach(this::addParentType);
+    final List<DocumentType> toAdd = new ArrayList<>(newSuperTypes);
+    toAdd.removeAll(commonSuperTypes);
+    toAdd.forEach(this::addSuperType);
   }
 
   public List<DocumentType> getSubTypes() {
@@ -160,7 +160,7 @@ public class DocumentType {
   public Set<String> getPolymorphicPropertyNames() {
     final Set<String> allProperties = new HashSet<>();
     allProperties.addAll(getPropertyNames());
-    for (DocumentType p : parentTypes)
+    for (DocumentType p : superTypes)
       allProperties.addAll(p.getPolymorphicPropertyNames());
     return allProperties;
   }
@@ -178,7 +178,7 @@ public class DocumentType {
       throw new SchemaException("Cannot create the property '" + propertyName + "' in type '" + name + "' because it already exists");
 
     if (getPolymorphicPropertyNames().contains(propertyName))
-      throw new SchemaException("Cannot create the property '" + propertyName + "' in type '" + name + "' because it was already defined in a parent type");
+      throw new SchemaException("Cannot create the property '" + propertyName + "' in type '" + name + "' because it was already defined in a super type");
 
     final Property property = new Property(this, propertyName, propertyType);
 
@@ -312,8 +312,8 @@ public class DocumentType {
     if (prop != null)
       return prop;
 
-    for (DocumentType parent : parentTypes) {
-      prop = parent.getPolymorphicPropertyIfExists(propertyName);
+    for (DocumentType superType : superTypes) {
+      prop = superType.getPolymorphicPropertyIfExists(propertyName);
       if (prop != null)
         return prop;
     }
@@ -340,13 +340,13 @@ public class DocumentType {
   }
 
   public List<TypeIndex> getAllIndexes(final boolean polymorphic) {
-    if (!polymorphic || parentTypes.isEmpty())
+    if (!polymorphic || superTypes.isEmpty())
       return new ArrayList<>(indexesByProperties.values());
 
     final List<TypeIndex> list = new ArrayList<>(indexesByProperties.values());
 
     if (polymorphic)
-      for (DocumentType t : parentTypes)
+      for (DocumentType t : superTypes)
         list.addAll(t.getAllIndexes(true));
 
     return list;
@@ -354,12 +354,12 @@ public class DocumentType {
 
   public List<Index> getPolymorphicBucketIndexByBucketId(final int bucketId) {
     final List<IndexInternal> r = bucketIndexesByBucket.get(bucketId);
-    if (r != null && parentTypes.isEmpty())
+    if (r != null && superTypes.isEmpty())
       // MOST COMMON CASE, SAVE CREATING AND COPYING TO A NEW ARRAY
       return Collections.unmodifiableList(r);
 
     final List<Index> result = r != null ? new ArrayList<>(r) : new ArrayList<>();
-    for (DocumentType t : parentTypes)
+    for (DocumentType t : superTypes)
       result.addAll(t.getPolymorphicBucketIndexByBucketId(bucketId));
 
     return result;
@@ -388,7 +388,7 @@ public class DocumentType {
     TypeIndex idx = indexesByProperties.get(properties);
 
     if (idx == null)
-      for (DocumentType t : parentTypes) {
+      for (DocumentType t : superTypes) {
         idx = t.getPolymorphicIndexByProperties(properties);
         if (idx != null)
           break;
@@ -416,14 +416,14 @@ public class DocumentType {
     if (!Objects.equals(name, that.name))
       return false;
 
-    if (parentTypes.size() != that.parentTypes.size())
+    if (superTypes.size() != that.superTypes.size())
       return false;
 
     final Set<String> set = new HashSet<>();
-    for (DocumentType t : parentTypes)
+    for (DocumentType t : superTypes)
       set.add(t.name);
 
-    for (DocumentType t : that.parentTypes)
+    for (DocumentType t : that.superTypes)
       set.remove(t.name);
 
     if (!set.isEmpty())
@@ -580,8 +580,8 @@ public class DocumentType {
       }
     }
 
-    for (DocumentType parent : parentTypes)
-      parent.removeIndexInternal(index);
+    for (DocumentType superType : superTypes)
+      superType.removeIndexInternal(index);
   }
 
   protected void addBucketInternal(final Bucket bucket) {
@@ -609,7 +609,7 @@ public class DocumentType {
     final Map<String, Property> allProperties = new HashMap<>();
     allProperties.putAll(properties);
 
-    for (DocumentType p : parentTypes)
+    for (DocumentType p : superTypes)
       allProperties.putAll(p.getPolymorphicProperties());
 
     return allProperties;
@@ -632,8 +632,21 @@ public class DocumentType {
 
     if (type.equalsIgnoreCase(getName()))
       return true;
-    for (DocumentType parentType : parentTypes) {
-      if (parentType.isSubTypeOf(type))
+    for (DocumentType superType : superTypes) {
+      if (superType.isSubTypeOf(type))
+        return true;
+    }
+    return false;
+  }
+
+  public boolean isSuperTypeOf(final String type) {
+    if (type == null)
+      return false;
+
+    if (type.equalsIgnoreCase(getName()))
+      return true;
+    for (DocumentType subType : subTypes) {
+      if (subType.isSuperTypeOf(type))
         return true;
     }
     return false;

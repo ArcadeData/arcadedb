@@ -88,7 +88,7 @@ public class CreateVertexTypeStatement extends DDLStatement {
     }
 
     for (VertexType c : superclasses)
-      type.addParentType(c);
+      type.addSuperType(c);
 
     return new InternalResultSet(result);
   }

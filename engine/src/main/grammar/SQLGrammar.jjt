@@ -3702,6 +3702,15 @@ AlterTypeStatement AlterTypeStatement():
 					lastIdentifier = Identifier() { jjtThis.identifierListValue.add(lastIdentifier); }
 					(
 						<COMMA>
+            (
+              (
+                <PLUS> {jjtThis.add = true;}
+              )
+              |
+              (
+                <MINUS> {jjtThis.remove = true;}
+              )
+            )
 						lastIdentifier = Identifier() { jjtThis.identifierListValue.add(lastIdentifier); }
 					)*
 				)
