@@ -38,9 +38,8 @@ public class AlterTypeStatement extends DDLStatement {
    */
   public    String           property;
   protected Identifier       identifierValue;
-  protected List<Identifier> identifierListValue = new ArrayList<Identifier>();
-  protected Boolean          add;
-  protected Boolean          remove;
+  protected List<Boolean>    identifierListAddRemove = new ArrayList<>();
+  protected List<Identifier> identifierListValue     = new ArrayList<>();
   protected PNumber          numberValue;
   protected Boolean          booleanValue;
 
@@ -70,8 +69,7 @@ public class AlterTypeStatement extends DDLStatement {
     result.name = name == null ? null : name.copy();
     result.property = property;
     result.identifierListValue = identifierListValue.stream().map(x -> x.copy()).collect(Collectors.toList());
-    result.add = add;
-    result.remove = remove;
+    result.identifierListAddRemove = new ArrayList<>(identifierListAddRemove);
     result.numberValue = numberValue == null ? null : numberValue.copy();
     result.booleanValue = booleanValue;
     result.customString = customString;
@@ -96,9 +94,7 @@ public class AlterTypeStatement extends DDLStatement {
       return false;
     if (!identifierListValue.equals(that.identifierListValue))
       return false;
-    if (add != null ? !add.equals(that.add) : that.add != null)
-      return false;
-    if (remove != null ? !remove.equals(that.remove) : that.remove != null)
+    if (!identifierListAddRemove.equals(that.identifierListAddRemove))
       return false;
     if (numberValue != null ? !numberValue.equals(that.numberValue) : that.numberValue != null)
       return false;
@@ -112,8 +108,7 @@ public class AlterTypeStatement extends DDLStatement {
     int result = name != null ? name.hashCode() : 0;
     result = 31 * result + (property != null ? property.hashCode() : 0);
     result = 31 * result + identifierListValue.hashCode();
-    result = 31 * result + (add != null ? add.hashCode() : 0);
-    result = 31 * result + (remove != null ? remove.hashCode() : 0);
+    result = 31 * result + identifierListAddRemove.hashCode();
     result = 31 * result + (numberValue != null ? numberValue.hashCode() : 0);
     result = 31 * result + (booleanValue != null ? booleanValue.hashCode() : 0);
     result = 31 * result + (customString != null ? customString.hashCode() : 0);
@@ -130,7 +125,10 @@ public class AlterTypeStatement extends DDLStatement {
     if (property != null) {
       switch (property) {
       case "bucket":
-        for (Identifier identifierValue : identifierListValue) {
+        for (int i = 0; i < identifierListValue.size(); i++) {
+          final Identifier identifierValue = identifierListValue.get(i);
+          final Boolean add = identifierListAddRemove.get(i);
+
           if (Boolean.TRUE.equals(add)) {
 
             if (identifierValue != null) {
@@ -144,7 +142,7 @@ public class AlterTypeStatement extends DDLStatement {
             else
               throw new CommandExecutionException("Invalid bucket value: " + this);
 
-          } else if (Boolean.TRUE.equals(remove)) {
+          } else if (Boolean.FALSE.equals(add)) {
 
             if (identifierValue != null)
               type.removeBucket(ctx.getDatabase().getSchema().getBucketByName(identifierValue.getStringValue()));
@@ -158,7 +156,7 @@ public class AlterTypeStatement extends DDLStatement {
         break;
 
       case "supertype":
-        doSetSuperType(ctx, type, identifierListValue);
+        doSetSuperType(ctx, type);
         break;
 
       default:
@@ -174,27 +172,23 @@ public class AlterTypeStatement extends DDLStatement {
     return resultSet;
   }
 
-  private void doSetSuperType(final CommandContext ctx, final DocumentType oClass, final List<Identifier> superclassNames) {
-    if (superclassNames == null) {
-      throw new CommandExecutionException("Invalid parent type name: " + this);
-    }
-    final List<DocumentType> superclasses = new ArrayList<>();
-    for (Identifier superclassName : superclassNames) {
-      DocumentType superclass = ctx.getDatabase().getSchema().getType(superclassName.getStringValue());
-      if (superclass == null) {
-        throw new CommandExecutionException("parent type not found: " + this);
-      }
-      superclasses.add(superclass);
-    }
+  private void doSetSuperType(final CommandContext ctx, final DocumentType oClass) {
+    if (identifierListValue == null)
+      throw new CommandExecutionException("Invalid super type names");
 
-    if (Boolean.TRUE.equals(add)) {
-      for (DocumentType superclass : superclasses) {
+    final List<DocumentType> superclasses = new ArrayList<>();
+    for (int i = 0; i < identifierListValue.size(); i++) {
+      final Identifier superTypeName = identifierListValue.get(i);
+      final Boolean add = identifierListAddRemove.get(i);
+
+      final DocumentType superclass = ctx.getDatabase().getSchema().getType(superTypeName.getStringValue());
+      if (superclass == null)
+        throw new CommandExecutionException("Super type '" + superTypeName.getStringValue() + "' not found");
+
+      if (add)
         oClass.addSuperType(superclass);
-      }
-    } else if (Boolean.TRUE.equals(remove)) {
-      for (DocumentType superclass : superclasses) {
+      else
         oClass.removeSuperType(superclass);
-      }
     }
   }
 }

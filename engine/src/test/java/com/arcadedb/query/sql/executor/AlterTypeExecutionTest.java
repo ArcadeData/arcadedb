@@ -26,7 +26,7 @@ import java.util.stream.*;
  */
 public class AlterTypeExecutionTest extends TestHelper {
   @Test
-  public void testBasicCreateProperty() {
+  public void alterTypeInheritanceUsingSQL() {
     database.command("sql", "CREATE VERTEX TYPE Car");
 
     Assertions.assertTrue(database.getSchema().getType("Car").getSuperTypes().isEmpty());
