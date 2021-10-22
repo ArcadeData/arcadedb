@@ -487,13 +487,13 @@ public class EmbeddedSchema implements Schema {
   @Override
   public TypeIndex getOrCreateTypeIndex(final INDEX_TYPE indexType, final boolean unique, final String typeName, final String[] propertyNames,
       final int pageSize) {
-    return getOrCreateTypeIndex(indexType, unique, typeName, propertyNames, pageSize, LSMTreeIndexAbstract.NULL_STRATEGY.ERROR, null);
+    return getOrCreateTypeIndex(indexType, unique, typeName, propertyNames, pageSize, LSMTreeIndexAbstract.NULL_STRATEGY.SKIP, null);
   }
 
   @Override
   public TypeIndex getOrCreateTypeIndex(final INDEX_TYPE indexType, final boolean unique, final String typeName, final String[] propertyNames,
       final int pageSize, final Index.BuildIndexCallback callback) {
-    return getOrCreateTypeIndex(indexType, unique, typeName, propertyNames, pageSize, LSMTreeIndexAbstract.NULL_STRATEGY.ERROR, callback);
+    return getOrCreateTypeIndex(indexType, unique, typeName, propertyNames, pageSize, LSMTreeIndexAbstract.NULL_STRATEGY.SKIP, callback);
   }
 
   @Override

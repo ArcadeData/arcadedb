@@ -21,6 +21,7 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -103,4 +104,27 @@ public class LSMTreeIndexPolymorphicTest extends TestHelper {
     }
   }
 
+  @Test
+  public void testDocumentAfterCreation2() {
+    DocumentType typeRoot = database.getSchema().getOrCreateDocumentType("TestRoot2");
+    typeRoot.getOrCreateProperty("name", String.class);
+    typeRoot.getOrCreateProperty("parent", Type.LINK);
+    typeRoot.getOrCreateTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "name", "parent");
+    database.command("sql", "delete from TestRoot2");
+    database.begin();
+    DocumentType typeChild = database.getSchema().getOrCreateDocumentType("TestChild2");
+    typeChild.setSuperTypes(Arrays.asList(typeRoot));
+    MutableDocument doc = database.newDocument("TestChild2");
+    doc.set("name", "Document Name");
+    Assertions.assertEquals("Document Name", doc.get("name"));
+    doc.save();
+    Assertions.assertEquals("Document Name", doc.get("name"));
+    try (ResultSet rs = database.query("sql", "select from TestChild2 where name = :name", Map.of("arg0", "Test2", "name", "Document Name"))) {
+      Assertions.assertTrue(rs.hasNext());
+      Document docRetrieved = rs.next().getElement().orElse(null);
+      Assertions.assertEquals("Document Name", docRetrieved.get("name"));
+      Assertions.assertFalse(rs.hasNext());
+    }
+    database.commit();
+  }
 }

@@ -37,7 +37,6 @@ import java.util.logging.*;
 
 import static com.arcadedb.database.Binary.BYTE_SERIALIZED_SIZE;
 import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
-import static java.util.logging.Level.*;
 
 /**
  * Abstract class for LSM-based indexes. The first page contains 2 bytes to store key and value types. The pages are populated from the head of the page
@@ -66,7 +65,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   protected final BinarySerializer serializer;
   protected final boolean          unique;
   protected       byte[]           keyTypes;
-  protected       NULL_STRATEGY    nullStrategy = NULL_STRATEGY.ERROR;
+  protected       NULL_STRATEGY    nullStrategy = NULL_STRATEGY.SKIP;
 
   public enum COMPACTING_STATUS {NO, SCHEDULED, IN_PROGRESS}
 
