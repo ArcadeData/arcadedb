@@ -17,123 +17,99 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.InternalResultSet;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.security.SecurityDatabaseUser;
 
+import java.io.*;
 import java.util.*;
 
 public class AlterDatabaseStatement extends DDLStatement {
 
-  Identifier customPropertyName;
-  Expression customPropertyValue;
-
   Identifier settingName;
   Expression settingValue;
 
-  public AlterDatabaseStatement(int id) {
+  public AlterDatabaseStatement(final int id) {
     super(id);
   }
 
-  public AlterDatabaseStatement(SqlParser p, int id) {
+  public AlterDatabaseStatement(final SqlParser p, final int id) {
     super(p, id);
   }
 
-  @Override public ResultSet executeDDL(CommandContext ctx) {
-//    OInternalResultSet result = new OInternalResultSet();
-//    if (customPropertyName == null) {
-//      result.add(executeSimpleAlter(settingName, settingValue, ctx));
-//    } else {
-//      result.add(executeCustomAlter(customPropertyName, customPropertyValue, ctx));
-//    }
-//    return result;
-    throw new UnsupportedOperationException();
+  @Override
+  public ResultSet executeDDL(final CommandContext ctx) {
+    final InternalResultSet result = new InternalResultSet();
+    result.add(executeSimpleAlter(settingName, settingValue, ctx));
+    return result;
   }
 
-//  private OResult executeCustomAlter(OIdentifier customPropertyName, OExpression customPropertyValue, OCommandContext ctx) {
-//    ODatabaseDocumentInternal db = (ODatabaseDocumentInternal) ctx.getDatabase();
-//    db.checkSecurity(ORule.ResourceGeneric.DATABASE, ORole.PERMISSION_UPDATE);
-//    List<OStorageEntryConfiguration> oldValues = (List<OStorageEntryConfiguration>) db.get(ODatabase.ATTRIBUTES.CUSTOM);
-//    String oldValue = null;
-//    if (oldValues != null) {
-//      for (OStorageEntryConfiguration entry : oldValues) {
-//        if (entry.name.equals(customPropertyName.getStringValue())) {
-//          oldValue = entry.value;
-//          break;
-//        }
-//      }
-//    }
-//    Object finalValue = customPropertyValue.execute((PIdentifiable) null, ctx);
-//    db.setCustom(customPropertyName.getStringValue(), finalValue);
-//
-//    OResultInternal result = new OResultInternal();
-//    result.setProperty("operation", "alter database");
-//    result.setProperty("customAttribute", customPropertyName.getStringValue());
-//    result.setProperty("oldValue", oldValue);
-//    result.setProperty("newValue", finalValue);
-//    return result;
-//  }
-//
-//  private OResult executeSimpleAlter(OIdentifier settingName, OExpression settingValue, OCommandContext ctx) {
-//    ODatabase.ATTRIBUTES attribute = ODatabase.ATTRIBUTES.valueOf(settingName.getStringValue().toUpperCase(Locale.ENGLISH));
-//    ODatabaseDocumentInternal db = (ODatabaseDocumentInternal) ctx.getDatabase();
-//    db.checkSecurity(ORule.ResourceGeneric.DATABASE, ORole.PERMISSION_UPDATE);
-//    Object oldValue = db.get(attribute);
-//    Object finalValue = settingValue.execute((PIdentifiable) null, ctx);
-//    db.setInternal(attribute, finalValue);
-//
-//    OResultInternal result = new OResultInternal();
-//    result.setProperty("operation", "alter database");
-//    result.setProperty("attribute", settingName.getStringValue());
-//    result.setProperty("oldValue", oldValue);
-//    result.setProperty("newValue", finalValue);
-//    return result;
-//  }
+  private Result executeSimpleAlter(Identifier settingName, Expression settingValue, CommandContext ctx) {
+    final DatabaseInternal db = ctx.getDatabase();
+    db.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_DATABASE_SETTINGS);
 
-  @Override public void toString(Map<String, Object> params, StringBuilder builder) {
-    builder.append("ALTER DATABASE ");
+    final GlobalConfiguration cfg = GlobalConfiguration.findByKey(settingName.getStringValue());
+    if (cfg == null)
+      throw new DatabaseOperationException("Database setting '" + settingName.getStringValue() + "' not found");
 
-    if (customPropertyName != null) {
-      builder.append("CUSTOM ");
-      customPropertyName.toString(params, builder);
-      builder.append(" = ");
-      customPropertyValue.toString(params, builder);
-    } else {
-      settingName.toString(params, builder);
-      builder.append(" ");
-      settingValue.toString(params, builder);
+    final Object oldValue = db.getConfiguration().getValue(cfg);
+    final Object finalValue = settingValue.execute((Identifiable) null, ctx);
+
+    db.getConfiguration().setValue(cfg, finalValue);
+    try {
+      db.saveConfiguration();
+    } catch (IOException e) {
+      throw new CommandExecutionException("Error on saving database configuration");
     }
+
+    final ResultInternal result = new ResultInternal();
+    result.setProperty("operation", "alter database");
+    result.setProperty("attribute", settingName.getStringValue());
+    result.setProperty("oldValue", oldValue);
+    result.setProperty("newValue", finalValue);
+    return result;
   }
 
-  @Override public AlterDatabaseStatement copy() {
-    AlterDatabaseStatement result = new AlterDatabaseStatement(-1);
-    result.customPropertyName = customPropertyName == null ? null : customPropertyName.copy();
-    result.customPropertyValue = customPropertyValue == null ? null : customPropertyValue.copy();
+  @Override
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
+    builder.append("ALTER DATABASE ");
+    settingName.toString(params, builder);
+    builder.append(" ");
+    settingValue.toString(params, builder);
+  }
+
+  @Override
+  public AlterDatabaseStatement copy() {
+    final AlterDatabaseStatement result = new AlterDatabaseStatement(-1);
     result.settingName = settingName == null ? null : settingName.copy();
     result.settingValue = settingValue == null ? null : settingValue.copy();
     return result;
   }
 
-  @Override public boolean equals(Object o) {
+  @Override
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    AlterDatabaseStatement that = (AlterDatabaseStatement) o;
-
-    if (customPropertyName != null ? !customPropertyName.equals(that.customPropertyName) : that.customPropertyName != null)
-      return false;
-    if (customPropertyValue != null ? !customPropertyValue.equals(that.customPropertyValue) : that.customPropertyValue != null)
-      return false;
+    final AlterDatabaseStatement that = (AlterDatabaseStatement) o;
     if (settingName != null ? !settingName.equals(that.settingName) : that.settingName != null)
       return false;
     return settingValue != null ? settingValue.equals(that.settingValue) : that.settingValue == null;
   }
 
-  @Override public int hashCode() {
-    int result = customPropertyName != null ? customPropertyName.hashCode() : 0;
-    result = 31 * result + (customPropertyValue != null ? customPropertyValue.hashCode() : 0);
-    result = 31 * result + (settingName != null ? settingName.hashCode() : 0);
+  @Override
+  public int hashCode() {
+    int result = settingName != null ? settingName.hashCode() : 0;
     result = 31 * result + (settingValue != null ? settingValue.hashCode() : 0);
     return result;
   }

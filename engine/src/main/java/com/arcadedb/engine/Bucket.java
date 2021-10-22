@@ -387,7 +387,8 @@ public class Bucket extends PaginatedComponent {
     if (buffer.size() > pageSize - contentHeaderSize)
       // TODO: SUPPORT MULTI-PAGE CONTENT
       throw new DatabaseOperationException(
-          "Record too big to be stored in bucket '" + name + "' (" + id + "), size=" + buffer.size() + " max=" + (pageSize - contentHeaderSize));
+          "Record too big to be stored in bucket '" + name + "' (" + id + "), size=" + buffer.size() + " max=" + (pageSize - contentHeaderSize)
+              + ". Change the `arcadedb.bucketDefaultPageSize` database settings and try again");
 
     // RECORD SIZE CANNOT BE < 5 BYTES IN CASE OF UPDATE AND PLACEHOLDER, 5 BYTES IS THE SPACE REQUIRED TO HOST THE PLACEHOLDER
     while (buffer.size() < 5)

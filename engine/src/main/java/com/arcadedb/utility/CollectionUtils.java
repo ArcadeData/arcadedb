@@ -13,19 +13,27 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.arcadedb.query.sql.parser;
+package com.arcadedb.utility;
 
-import org.junit.jupiter.api.Test;
+import com.arcadedb.serializer.BinaryComparator;
 
-public class AlterDatabaseStatementTest extends ParserTestAbstract {
+import java.util.*;
 
-  @Test
-  public void testPlain() {
-    checkRightSyntax("ALTER DATABASE `arcadedb.bucketDefaultPageSize` 262144");
-    checkRightSyntax("alter database `arcadedb.bucketDefaultPageSize` 262144");
+public class CollectionUtils {
 
-    checkWrongSyntax("alter database ");
-    checkWrongSyntax("alter database xxx");
-    checkWrongSyntax("alter database bar baz zz");
+  public static int compare(final List l1, final List l2) {
+    final int length = Math.min(l1.size(), l2.size());
+
+    for (int j = 0; j < length; j++) {
+      final int cmp = BinaryComparator.compareTo(l1.get(j), l2.get(j));
+      if (cmp != 0)
+        return cmp;
+    }
+
+    if (l1.size() > l2.size())
+      return 1;
+    else if (l1.size() < l2.size())
+      return -1;
+    return 0;
   }
 }

@@ -686,6 +686,11 @@ public class ReplicatedDatabase implements DatabaseInternal {
     return (RET) result.get();
   }
 
+  @Override
+  public void saveConfiguration() throws IOException {
+    proxied.saveConfiguration();
+  }
+
   private DatabaseChangeStructureRequest getChangeStructure(final long schemaVersionBefore) {
     final List<FileManager.FileChange> fileChanges = proxied.getFileManager().getRecordedChanges();
 

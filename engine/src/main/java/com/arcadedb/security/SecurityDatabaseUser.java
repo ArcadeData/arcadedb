@@ -38,7 +38,8 @@ public interface SecurityDatabaseUser {
 
   enum DATABASE_ACCESS {
     UPDATE_SECURITY("updateSecurity", "update security"),//
-    UPDATE_SCHEMA("updateSchema", "update schema");
+    UPDATE_SCHEMA("updateSchema", "update schema"),//
+    UPDATE_DATABASE_SETTINGS("updateDatabaseSettings", "update database settings");
 
     public final String name;
     public final String fullName;

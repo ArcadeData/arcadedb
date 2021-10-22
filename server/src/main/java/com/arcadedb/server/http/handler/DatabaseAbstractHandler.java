@@ -18,6 +18,8 @@ package com.arcadedb.server.http.handler;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.TransactionContext;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.HttpSession;
 import com.arcadedb.server.http.HttpSessionManager;
@@ -27,6 +29,7 @@ import io.undertow.util.HeaderValues;
 import io.undertow.util.HttpString;
 
 import java.util.*;
+import java.util.logging.*;
 
 public abstract class DatabaseAbstractHandler extends AbstractHandler {
   private static final HttpString SESSION_ID_HEADER = new HttpString(HttpSessionManager.ARCADEDB_SESSION_ID);
@@ -52,6 +55,12 @@ public abstract class DatabaseAbstractHandler extends AbstractHandler {
 
       database = httpServer.getServer().getDatabase(databaseName.getFirst());
 
+      final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(database.getDatabasePath());
+      if (current != null && !current.transactions.isEmpty()) {
+        LogManager.instance().log(this, Level.WARNING, "Found pending transaction from a previous operation. Rolling back it...");
+        cleanTL(database, current);
+      }
+
       activeSession = setTransactionInThreadLocal(exchange, database, user, false);
 
       if (requiresTransaction() && activeSession == null) {
@@ -74,15 +83,38 @@ public abstract class DatabaseAbstractHandler extends AbstractHandler {
     } finally {
 
       if (activeSession != null)
+        // DETACH CURRENT CONTECT/TRANSACTIONS FROM CURRENT THREAD
         DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
       else if (database != null) {
-        if (atomicTransaction)
-          // STARTED ATOMIC TRANSACTION, COMMIT
-          database.commit();
-        else
-          // NO TRANSACTION, ROLLBACK TO MAKE SURE ANY PENDING OPERATION IS REMOVED
-          database.rollbackAllNested();
+        try {
+          if (atomicTransaction) {
+            if (database.isTransactionActive())
+              // STARTED ATOMIC TRANSACTION, COMMIT
+              database.commit();
+          } else
+            // NO TRANSACTION, ROLLBACK TO MAKE SURE ANY PENDING OPERATION IS REMOVED
+            database.rollbackAllNested();
+        } finally {
+          cleanTL(database, null);
+        }
       }
+    }
+  }
+
+  private void cleanTL(final Database database, DatabaseContext.DatabaseContextTL current) {
+    if (current == null)
+      current = DatabaseContext.INSTANCE.getContext(database.getDatabasePath());
+
+    if (current != null) {
+      TransactionContext tx;
+      while ((tx = current.popIfNotLastTransaction()) != null) {
+        if (tx.isActive())
+          tx.rollback();
+        else
+          break;
+      }
+
+      DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
     }
   }
 

@@ -27,9 +27,10 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.BinaryComparator;
+import com.arcadedb.utility.CollectionUtils;
 
 import java.util.*;
-import java.util.logging.Level;
+import java.util.logging.*;
 
 public class TransactionIndexContext {
   private final DatabaseInternal                                   database;
@@ -104,14 +105,8 @@ public class TransactionIndexContext {
         } else if (v2 == null) {
           return -1;
         } else if (v1 instanceof List && v2 instanceof List) {
-          List l1 = (List) v1;
-          List l2 = (List) v2;
 
-          for (int j = 0; j < l1.size(); j++) {
-            cmp = BinaryComparator.compareTo(l1.get(j), l2.get(j));
-            if (cmp != 0)
-              return cmp;
-          }
+          return CollectionUtils.compare((List) v1, (List) v2);
 
         } else if (v1 instanceof List) {
           List l1 = (List) v1;

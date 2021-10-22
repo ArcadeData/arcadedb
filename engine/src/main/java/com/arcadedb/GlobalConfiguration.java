@@ -31,7 +31,7 @@ import java.util.logging.*;
  */
 public enum GlobalConfiguration {
   // ENVIRONMENT
-  DUMP_CONFIG_AT_STARTUP("arcadedb.dumpConfigAtStartup", "Dumps the configuration at startup", Boolean.class, false, new Callable<Object, Object>() {
+  DUMP_CONFIG_AT_STARTUP("arcadedb.dumpConfigAtStartup", "Dumps the configuration at startup", Boolean.class, false, new Callable<>() {
     @Override
     public Object call(final Object value) {
       dumpConfiguration(System.out);
@@ -40,7 +40,7 @@ public enum GlobalConfiguration {
   }),
 
   DUMP_METRICS_EVERY("arcadedb.dumpMetricsEvery", "Dumps the metrics at startup, shutdown and every configurable amount of time (in seconds)", Long.class, 0,
-      new Callable<Object, Object>() {
+      new Callable<>() {
         @Override
         public Object call(final Object value) {
           final long time = (long) value * 1000;
@@ -58,48 +58,47 @@ public enum GlobalConfiguration {
         }
       }),
 
-  PROFILE("arcadedb.profile", "Specify the preferred profile among: default, high-performance, low-ram, low-cpu", String.class, "default",
-      new Callable<Object, Object>() {
-        @Override
-        public Object call(final Object value) {
-          final String v = value.toString();
-          if (v.equalsIgnoreCase("default")) {
-            // NOT MUCH TO DO HERE, THIS IS THE DEFAULT OPTION
-          } else if (v.equalsIgnoreCase("high-performance")) {
-            ASYNC_OPERATIONS_QUEUE_IMPL.setValue("fast");
+  PROFILE("arcadedb.profile", "Specify the preferred profile among: default, high-performance, low-ram, low-cpu", String.class, "default", new Callable<>() {
+    @Override
+    public Object call(final Object value) {
+      final String v = value.toString();
+      if (v.equalsIgnoreCase("default")) {
+        // NOT MUCH TO DO HERE, THIS IS THE DEFAULT OPTION
+      } else if (v.equalsIgnoreCase("high-performance")) {
+        ASYNC_OPERATIONS_QUEUE_IMPL.setValue("fast");
 
-            final int cores = Runtime.getRuntime().availableProcessors();
-            if (cores > 1)
-              // USE ONLY HALF OF THE CORES MINUS ONE
-              ASYNC_WORKER_THREADS.setValue((cores / 2) - 1);
-            else
-              ASYNC_WORKER_THREADS.setValue(1);
+        final int cores = Runtime.getRuntime().availableProcessors();
+        if (cores > 1)
+          // USE ONLY HALF OF THE CORES MINUS ONE
+          ASYNC_WORKER_THREADS.setValue((cores / 2) - 1);
+        else
+          ASYNC_WORKER_THREADS.setValue(1);
 
-          } else if (v.equalsIgnoreCase("low-ram")) {
-            MAX_PAGE_RAM.setValue(16); // 16 MB OF RAM FOR PAGE CACHE
-            INDEX_COMPACTION_RAM_MB.setValue(16);
-            INITIAL_PAGE_CACHE_SIZE.setValue(256);
-            FREE_PAGE_RAM.setValue(100);
-            ASYNC_OPERATIONS_QUEUE_SIZE.setValue(8);
-            ASYNC_TX_BATCH_SIZE.setValue(8);
-            PAGE_FLUSH_QUEUE.setValue(8);
-            SQL_STATEMENT_CACHE.setValue(16);
-            HA_REPLICATION_QUEUE_SIZE.setValue(8);
-            ASYNC_OPERATIONS_QUEUE_IMPL.setValue("standard");
+      } else if (v.equalsIgnoreCase("low-ram")) {
+        MAX_PAGE_RAM.setValue(16); // 16 MB OF RAM FOR PAGE CACHE
+        INDEX_COMPACTION_RAM_MB.setValue(16);
+        INITIAL_PAGE_CACHE_SIZE.setValue(256);
+        FREE_PAGE_RAM.setValue(100);
+        ASYNC_OPERATIONS_QUEUE_SIZE.setValue(8);
+        ASYNC_TX_BATCH_SIZE.setValue(8);
+        PAGE_FLUSH_QUEUE.setValue(8);
+        SQL_STATEMENT_CACHE.setValue(16);
+        HA_REPLICATION_QUEUE_SIZE.setValue(8);
+        ASYNC_OPERATIONS_QUEUE_IMPL.setValue("standard");
 
-          } else if (v.equalsIgnoreCase("low-cpu")) {
-            ASYNC_WORKER_THREADS.setValue(1);
-            ASYNC_OPERATIONS_QUEUE_IMPL.setValue("standard");
-          } else
-            throw new IllegalArgumentException("Profile '" + v + "' not available");
+      } else if (v.equalsIgnoreCase("low-cpu")) {
+        ASYNC_WORKER_THREADS.setValue(1);
+        ASYNC_OPERATIONS_QUEUE_IMPL.setValue("standard");
+      } else
+        throw new IllegalArgumentException("Profile '" + v + "' not available");
 
-          return value;
-        }
-      }),
+      return value;
+    }
+  }),
 
   TEST("arcadedb.test", "Tells if it is running in test mode. This enables the calling of callbacks for testing purpose ", Boolean.class, false),
 
-  MAX_PAGE_RAM("arcadedb.maxPageRAM", "Maximum amount of pages (in MB) to keep in RAM", Long.class, 4 * 1024, new Callable<Object, Object>() {
+  MAX_PAGE_RAM("arcadedb.maxPageRAM", "Maximum amount of pages (in MB) to keep in RAM", Long.class, 4 * 1024, new Callable<>() {
     @Override
     public Object call(final Object value) {
       final long maxRAM = ((long) value) * 1024 * 1024; // VALUE IN MB
@@ -118,7 +117,7 @@ public enum GlobalConfiguration {
       }
       return value;
     }
-  }, new Callable<Object, Object>() {
+  }, new Callable<>() {
     @Override
     public Object call(final Object value) {
       return Runtime.getRuntime().maxMemory() / 4 / 1024 / 1024;
@@ -182,13 +181,13 @@ public enum GlobalConfiguration {
 
   NETWORK_USE_SSL("arcadedb.ssl.enabled", "Use SSL for client connections", Boolean.class, false),
 
-  NETWORK_SSL_KEYSTORE("arcadedb.ssl.keyStore", "Use SSL for client connections", String.class, null),
+  NETWORK_SSL_KEYSTORE("arcadedb.ssl.keyStore", "Path where the SSL certificates are stored", String.class, null),
 
-  NETWORK_SSL_KEYSTORE_PASSWORD("arcadedb.ssl.keyStorePass", "Use SSL for client connections", String.class, null),
+  NETWORK_SSL_KEYSTORE_PASSWORD("arcadedb.ssl.keyStorePass", "Password to open the SSL key store", String.class, null),
 
-  NETWORK_SSL_TRUSTSTORE("arcadedb.ssl.trustStore", "Use SSL for client connections", String.class, null),
+  NETWORK_SSL_TRUSTSTORE("arcadedb.ssl.trustStore", "Path to the SSL trust store", String.class, null),
 
-  NETWORK_SSL_TRUSTSTORE_PASSWORD("arcadedb.ssl.trustStorePass", "Use SSL for client connections", String.class, null),
+  NETWORK_SSL_TRUSTSTORE_PASSWORD("arcadedb.ssl.trustStorePass", "Password to open the SSL trust store", String.class, null),
 
   // SERVER
   SERVER_NAME("arcadedb.server.name", "Server name", String.class, Constants.PRODUCT + "_0"),
@@ -400,8 +399,11 @@ public enum GlobalConfiguration {
    * @return OGlobalConfiguration instance if found, otherwise null
    */
   public static GlobalConfiguration findByKey(final String iKey) {
+    String key = iKey;
+    if (!key.startsWith(PREFIX))
+      key = PREFIX + iKey;
     for (GlobalConfiguration v : values()) {
-      if (v.getKey().equalsIgnoreCase(iKey))
+      if (v.getKey().equalsIgnoreCase(key))
         return v;
     }
     return null;

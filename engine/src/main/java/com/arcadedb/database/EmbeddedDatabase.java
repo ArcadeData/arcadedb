@@ -87,46 +87,45 @@ import java.util.concurrent.locks.*;
 import java.util.logging.*;
 
 public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal {
-  public static final int EDGE_LIST_INITIAL_CHUNK_SIZE         = 64;
-  public static final int MAX_RECOMMENDED_EDGE_LIST_CHUNK_SIZE = 8192;
-
-  private static final Set<String>                               SUPPORTED_FILE_EXT      = Collections.unmodifiableSet(new HashSet<>(
+  public static final  int                                       EDGE_LIST_INITIAL_CHUNK_SIZE         = 64;
+  public static final  int                                       MAX_RECOMMENDED_EDGE_LIST_CHUNK_SIZE = 8192;
+  private static final Set<String>                               SUPPORTED_FILE_EXT                   = Collections.unmodifiableSet(new HashSet<>(
       Arrays.asList(Dictionary.DICT_EXT, Bucket.BUCKET_EXT, LSMTreeIndexMutable.NOTUNIQUE_INDEX_EXT, LSMTreeIndexMutable.UNIQUE_INDEX_EXT,
           LSMTreeIndexCompacted.NOTUNIQUE_INDEX_EXT, LSMTreeIndexCompacted.UNIQUE_INDEX_EXT)));
-  public final         AtomicLong                                indexCompactions        = new AtomicLong();
+  public final         AtomicLong                                indexCompactions                     = new AtomicLong();
   protected final      String                                    name;
   protected final      PaginatedFile.MODE                        mode;
   protected final      ContextConfiguration                      configuration;
   protected final      String                                    databasePath;
-  protected final      BinarySerializer                          serializer              = new BinarySerializer();
-  protected final      RecordFactory                             recordFactory           = new RecordFactory();
-  protected final      GraphEngine                               graphEngine             = new GraphEngine();
+  protected final      BinarySerializer                          serializer                           = new BinarySerializer();
+  protected final      RecordFactory                             recordFactory                        = new RecordFactory();
+  protected final      GraphEngine                               graphEngine                          = new GraphEngine();
   protected final      WALFileFactory                            walFactory;
   protected final      DocumentIndexer                           indexer;
   protected final      QueryEngineManager                        queryEngineManager;
-  protected final      DatabaseStats                             stats                   = new DatabaseStats();
+  protected final      DatabaseStats                             stats                                = new DatabaseStats();
   protected            FileManager                               fileManager;
   protected            PageManager                               pageManager;
   protected            EmbeddedSchema                            schema;
   protected            TransactionManager                        transactionManager;
-  protected volatile   DatabaseAsyncExecutorImpl                 async                   = null;
-  protected            Lock                                      asyncLock               = new ReentrantLock();
-  protected            boolean                                   autoTransaction         = false;
-  protected volatile   boolean                                   open                    = false;
-  private              boolean                                   readYourWrites          = true;
+  protected volatile   DatabaseAsyncExecutorImpl                 async                                = null;
+  protected            Lock                                      asyncLock                            = new ReentrantLock();
+  protected            boolean                                   autoTransaction                      = false;
+  protected volatile   boolean                                   open                                 = false;
+  private              boolean                                   readYourWrites                       = true;
   private final        Map<CALLBACK_EVENT, List<Callable<Void>>> callbacks;
   private final        StatementCache                            statementCache;
   private final        ExecutionPlanCache                        executionPlanCache;
   private final        File                                      configurationFile;
-  private              DatabaseInternal                          wrappedDatabaseInstance = this;
-  private              int                                       edgeListSize            = EDGE_LIST_INITIAL_CHUNK_SIZE;
+  private              DatabaseInternal                          wrappedDatabaseInstance              = this;
+  private              int                                       edgeListSize                         = EDGE_LIST_INITIAL_CHUNK_SIZE;
   private              SecurityManager                           security;
-  private              Map<String, Object>                       wrappers                = new HashMap<>();
+  private              Map<String, Object>                       wrappers                             = new HashMap<>();
   private              File                                      lockFile;
   private              RandomAccessFile                          lockFileIO;
   private              FileChannel                               lockFileIOChannel;
   private              FileLock                                  lockFileLock;
-  private final        RecordEventsRegistry                      events                  = new RecordEventsRegistry();
+  private final        RecordEventsRegistry                      events                               = new RecordEventsRegistry();
 
   protected EmbeddedDatabase(final String path, final PaginatedFile.MODE mode, final ContextConfiguration configuration, final SecurityManager security,
       final Map<CALLBACK_EVENT, List<Callable<Void>>> callbacks) {
@@ -194,56 +193,10 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
     schema.saveConfiguration();
 
-    String cfgFileName = databasePath + "/configuration.json";
     try {
-      FileUtils.writeFile(new File(cfgFileName), configuration.toJSON());
+      saveConfiguration();
     } catch (IOException e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error on saving configuration to file '%s'", e, cfgFileName);
-    }
-  }
-
-  private void openInternal() {
-    try {
-      DatabaseContext.INSTANCE.init(this);
-
-      fileManager = new FileManager(databasePath, mode, SUPPORTED_FILE_EXT);
-      transactionManager = new TransactionManager(wrappedDatabaseInstance);
-      pageManager = new PageManager(fileManager, transactionManager, configuration);
-
-      open = true;
-
-      try {
-        schema = new EmbeddedSchema(wrappedDatabaseInstance, databasePath, security);
-
-        if (fileManager.getFiles().isEmpty())
-          schema.create(mode);
-        else
-          schema.load(mode, true);
-
-        if (mode == PaginatedFile.MODE.READ_WRITE)
-          checkForRecovery();
-
-        if (security != null)
-          security.updateSchema(this);
-
-        Profiler.INSTANCE.registerDatabase(this);
-
-      } catch (RuntimeException e) {
-        open = false;
-        pageManager.close();
-        throw e;
-      } catch (Exception e) {
-        open = false;
-        pageManager.close();
-        throw new DatabaseOperationException("Error on creating new database instance", e);
-      }
-    } catch (Exception e) {
-      open = false;
-
-      if (e instanceof DatabaseOperationException)
-        throw (DatabaseOperationException) e;
-
-      throw new DatabaseOperationException("Error on creating new database instance", e);
+      LogManager.instance().log(this, Level.SEVERE, "Error on saving configuration to file '%s'", e, configurationFile);
     }
   }
 
@@ -292,7 +245,6 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
         try {
           if (lockFileLock != null) {
             lockFileLock.release();
-            //LogManager.instance().log(this, Level.INFO, "RELEASED DATABASE FILE '%s' (thread=%s)", null, lockFile, Thread.currentThread().getId());
           }
           if (lockFileIOChannel != null)
             lockFileIOChannel.close();
@@ -437,18 +389,18 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     executeInReadLock(() -> {
       final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(EmbeddedDatabase.this.getDatabasePath());
 
-      while (true) {
+      TransactionContext tx;
+      while ((tx = current.popIfNotLastTransaction()) != null) {
         try {
-          if (!isTransactionActive())
+          if (tx.isActive())
+            tx.rollback();
+          else
             break;
-
-          current.popIfNotLastTransaction().rollback();
 
         } catch (InvalidDatabaseInstanceException e) {
           current.popIfNotLastTransaction().rollback();
-
         } catch (TransactionException e) {
-          // ALREADY ROLLBACKED
+          // ALREADY ROLLED BACK
         }
       }
       return null;
@@ -1471,14 +1423,6 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     return newSize;
   }
 
-  protected void checkDatabaseIsOpen() {
-    if (!open)
-      throw new DatabaseIsClosedException(name);
-
-    if (DatabaseContext.INSTANCE.getContext(databasePath) == null)
-      DatabaseContext.INSTANCE.init(this);
-  }
-
   public Map<String, Object> getWrappers() {
     return wrappers;
   }
@@ -1488,6 +1432,10 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
       this.wrappers.remove(name);
     else
       this.wrappers.put(name, instance);
+  }
+
+  public void saveConfiguration() throws IOException {
+    FileUtils.writeFile(configurationFile, configuration.toJSON());
   }
 
   private void lockDatabase() {
@@ -1624,5 +1572,58 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
       } else
         lockFile = null;
     }
+  }
+
+  private void openInternal() {
+    try {
+      DatabaseContext.INSTANCE.init(this);
+
+      fileManager = new FileManager(databasePath, mode, SUPPORTED_FILE_EXT);
+      transactionManager = new TransactionManager(wrappedDatabaseInstance);
+      pageManager = new PageManager(fileManager, transactionManager, configuration);
+
+      open = true;
+
+      try {
+        schema = new EmbeddedSchema(wrappedDatabaseInstance, databasePath, security);
+
+        if (fileManager.getFiles().isEmpty())
+          schema.create(mode);
+        else
+          schema.load(mode, true);
+
+        if (mode == PaginatedFile.MODE.READ_WRITE)
+          checkForRecovery();
+
+        if (security != null)
+          security.updateSchema(this);
+
+        Profiler.INSTANCE.registerDatabase(this);
+
+      } catch (RuntimeException e) {
+        open = false;
+        pageManager.close();
+        throw e;
+      } catch (Exception e) {
+        open = false;
+        pageManager.close();
+        throw new DatabaseOperationException("Error on creating new database instance", e);
+      }
+    } catch (Exception e) {
+      open = false;
+
+      if (e instanceof DatabaseOperationException)
+        throw (DatabaseOperationException) e;
+
+      throw new DatabaseOperationException("Error on creating new database instance", e);
+    }
+  }
+
+  protected void checkDatabaseIsOpen() {
+    if (!open)
+      throw new DatabaseIsClosedException(name);
+
+    if (DatabaseContext.INSTANCE.getContext(databasePath) == null)
+      DatabaseContext.INSTANCE.init(this);
   }
 }
