@@ -21,38 +21,25 @@ import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ServerPlugin;
-import com.arcadedb.server.http.handler.GetDatabasesHandler;
-import com.arcadedb.server.http.handler.GetDocumentHandler;
-import com.arcadedb.server.http.handler.GetDynamicContentHandler;
-import com.arcadedb.server.http.handler.GetExistsDatabaseHandler;
-import com.arcadedb.server.http.handler.GetQueryHandler;
-import com.arcadedb.server.http.handler.PostBeginHandler;
-import com.arcadedb.server.http.handler.PostCommandHandler;
-import com.arcadedb.server.http.handler.PostCommitHandler;
-import com.arcadedb.server.http.handler.PostCreateDatabaseHandler;
-import com.arcadedb.server.http.handler.PostCreateDocumentHandler;
-import com.arcadedb.server.http.handler.PostDropDatabaseHandler;
-import com.arcadedb.server.http.handler.PostQueryHandler;
-import com.arcadedb.server.http.handler.PostRollbackHandler;
-import com.arcadedb.server.http.handler.PostServersHandler;
+import com.arcadedb.server.http.handler.*;
 import io.undertow.Handlers;
 import io.undertow.Undertow;
 import io.undertow.server.RoutingHandler;
 import io.undertow.server.handlers.PathHandler;
 
-import java.net.*;
-import java.util.logging.*;
+import java.net.BindException;
+import java.util.logging.Level;
 
 import static io.undertow.UndertowOptions.SHUTDOWN_TIMEOUT;
 
 public class HttpServer implements ServerPlugin {
   private final ArcadeDBServer     server;
   private final HttpSessionManager transactionManager;
-  private final JsonSerializer     jsonSerializer = new JsonSerializer();
-  private       Undertow               undertow;
-  private       String                 listeningAddress;
-  private       String                 host;
-  private       int                    port;
+  private final JsonSerializer     jsonSerializer    = new JsonSerializer();
+  private       Undertow           undertow;
+  private       String             listeningAddress;
+  private       String             host;
+  private       int                port;
 
   public HttpServer(final ArcadeDBServer server) {
     this.server = server;
@@ -87,6 +74,9 @@ public class HttpServer implements ServerPlugin {
     final PathHandler routes = new PathHandler();
 
     final RoutingHandler basicRoutes = Handlers.routing();
+
+    routes.addPrefixPath("/ws", new WebSocketConnectionHandler(this));
+
     routes.addPrefixPath("/api/v1",//
         basicRoutes//
             .post("/begin/{database}", new PostBeginHandler(this))//
