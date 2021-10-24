@@ -82,8 +82,8 @@ public class WebSocketEventBus {
     this.databaseWatchers.remove(database);
   }
 
-  private Set<Pair<UUID, WebSocketChannel>> getSubscriberSet(String database, String type) {
-    if (type == null) type = "*";
+  private Set<Pair<UUID, WebSocketChannel>> getSubscriberSet(String database, String typeFilter) {
+    var type = typeFilter == null || typeFilter.trim().isEmpty() ? "*" : typeFilter;
     if (!this.subscribers.containsKey(database)) this.subscribers.put(database, new ConcurrentHashMap<>());
     if (!this.subscribers.get(database).containsKey(type)) this.subscribers.get(database).put(type, new HashSet<>());
     return this.subscribers.get(database).get(type);
