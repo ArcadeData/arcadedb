@@ -25,145 +25,181 @@ import com.arcadedb.event.BeforeRecordUpdateListener;
 import java.util.*;
 
 public class RecordEventsRegistry implements RecordEvents {
-  private final List<BeforeRecordCreateListener>        beforeCreateListeners = new ArrayList<>();
+  private final List<BeforeRecordCreateListener> beforeCreateListeners = new ArrayList<>();
   private final List<BeforeRecordUpdateListener> beforeUpdateListeners = new ArrayList<>();
   private final List<BeforeRecordDeleteListener> beforeDeleteListeners = new ArrayList<>();
   private final List<AfterRecordCreateListener>  afterCreateListeners  = new ArrayList<>();
-  private final List<AfterRecordUpdateListener> afterUpdateListeners = new ArrayList<>();
-  private final List<AfterRecordDeleteListener> afterDeleteListeners = new ArrayList<>();
+  private final List<AfterRecordUpdateListener>  afterUpdateListeners  = new ArrayList<>();
+  private final List<AfterRecordDeleteListener>  afterDeleteListeners  = new ArrayList<>();
 
   @Override
-  public synchronized RecordEventsRegistry registerListener(final BeforeRecordCreateListener listener) {
-    if (!beforeCreateListeners.contains(listener))
-      beforeCreateListeners.add(listener);
+  public RecordEventsRegistry registerListener(final BeforeRecordCreateListener listener) {
+    synchronized (beforeCreateListeners) {
+      if (!beforeCreateListeners.contains(listener))
+        beforeCreateListeners.add(listener);
+    }
     return this;
   }
 
   @Override
-  public synchronized RecordEventsRegistry registerListener(final BeforeRecordUpdateListener listener) {
-    if (!beforeUpdateListeners.contains(listener))
-      beforeUpdateListeners.add(listener);
+  public RecordEventsRegistry registerListener(final BeforeRecordUpdateListener listener) {
+    synchronized (beforeUpdateListeners) {
+      if (!beforeUpdateListeners.contains(listener))
+        beforeUpdateListeners.add(listener);
+    }
     return this;
   }
 
   @Override
-  public synchronized RecordEventsRegistry registerListener(final BeforeRecordDeleteListener listener) {
-    if (!beforeDeleteListeners.contains(listener))
-      beforeDeleteListeners.add(listener);
+  public RecordEventsRegistry registerListener(final BeforeRecordDeleteListener listener) {
+    synchronized (beforeDeleteListeners) {
+      if (!beforeDeleteListeners.contains(listener))
+        beforeDeleteListeners.add(listener);
+    }
     return this;
   }
 
   @Override
-  public synchronized RecordEventsRegistry registerListener(final AfterRecordCreateListener listener) {
-    if (!afterCreateListeners.contains(listener))
-      afterCreateListeners.add(listener);
+  public RecordEventsRegistry registerListener(final AfterRecordCreateListener listener) {
+    synchronized (afterCreateListeners) {
+      if (!afterCreateListeners.contains(listener))
+        afterCreateListeners.add(listener);
+    }
     return this;
   }
 
   @Override
-  public synchronized RecordEventsRegistry registerListener(final AfterRecordUpdateListener listener) {
-    if (!afterUpdateListeners.contains(listener))
-      afterUpdateListeners.add(listener);
+  public RecordEventsRegistry registerListener(final AfterRecordUpdateListener listener) {
+    synchronized (afterUpdateListeners) {
+      if (!afterUpdateListeners.contains(listener))
+        afterUpdateListeners.add(listener);
+    }
     return this;
   }
 
   @Override
-  public synchronized RecordEventsRegistry registerListener(final AfterRecordDeleteListener listener) {
-    if (!afterDeleteListeners.contains(listener))
-      afterDeleteListeners.add(listener);
+  public RecordEventsRegistry registerListener(final AfterRecordDeleteListener listener) {
+    synchronized (afterDeleteListeners) {
+      if (!afterDeleteListeners.contains(listener))
+        afterDeleteListeners.add(listener);
+    }
     return this;
   }
 
   @Override
-  public synchronized RecordEventsRegistry unregisterListener(final BeforeRecordCreateListener listener) {
-    beforeCreateListeners.remove(listener);
+  public RecordEventsRegistry unregisterListener(final BeforeRecordCreateListener listener) {
+    synchronized (beforeCreateListeners) {
+      beforeCreateListeners.remove(listener);
+    }
     return this;
   }
 
   @Override
-  public synchronized RecordEventsRegistry unregisterListener(final BeforeRecordUpdateListener listener) {
-    beforeUpdateListeners.remove(listener);
+  public RecordEventsRegistry unregisterListener(final BeforeRecordUpdateListener listener) {
+    synchronized (beforeUpdateListeners) {
+      beforeUpdateListeners.remove(listener);
+    }
     return this;
   }
 
   @Override
-  public synchronized RecordEventsRegistry unregisterListener(final BeforeRecordDeleteListener listener) {
-    beforeDeleteListeners.remove(listener);
+  public RecordEventsRegistry unregisterListener(final BeforeRecordDeleteListener listener) {
+    synchronized (beforeDeleteListeners) {
+      beforeDeleteListeners.remove(listener);
+    }
     return this;
   }
 
   @Override
   public synchronized RecordEventsRegistry unregisterListener(final AfterRecordCreateListener listener) {
-    afterCreateListeners.remove(listener);
+    synchronized (afterCreateListeners) {
+      afterCreateListeners.remove(listener);
+    }
     return this;
   }
 
   @Override
   public synchronized RecordEventsRegistry unregisterListener(final AfterRecordUpdateListener listener) {
-    afterUpdateListeners.remove(listener);
+    synchronized (afterUpdateListeners) {
+      afterUpdateListeners.remove(listener);
+    }
     return this;
   }
 
   @Override
-  public synchronized RecordEventsRegistry unregisterListener(final AfterRecordDeleteListener listener) {
-    afterDeleteListeners.remove(listener);
+  public RecordEventsRegistry unregisterListener(final AfterRecordDeleteListener listener) {
+    synchronized (afterDeleteListeners) {
+      afterDeleteListeners.remove(listener);
+    }
     return this;
   }
 
   public boolean onBeforeCreate(final Record record) {
-    if (beforeCreateListeners.isEmpty())
-      return true;
+    synchronized (beforeCreateListeners) {
+      if (beforeCreateListeners.isEmpty())
+        return true;
 
-    for (int i = 0; i < beforeCreateListeners.size(); i++) {
-      if (!beforeCreateListeners.get(i).onBeforeCreate(record))
-        return false;
+      for (int i = 0; i < beforeCreateListeners.size(); i++) {
+        if (!beforeCreateListeners.get(i).onBeforeCreate(record))
+          return false;
+      }
     }
     return true;
   }
 
   public boolean onBeforeUpdate(final Record record) {
-    if (beforeUpdateListeners.isEmpty())
-      return true;
+    synchronized (beforeUpdateListeners) {
+      if (beforeUpdateListeners.isEmpty())
+        return true;
 
-    for (int i = 0; i < beforeUpdateListeners.size(); i++) {
-      if (!beforeUpdateListeners.get(i).onBeforeUpdate(record))
-        return false;
+      for (int i = 0; i < beforeUpdateListeners.size(); i++) {
+        if (!beforeUpdateListeners.get(i).onBeforeUpdate(record))
+          return false;
+      }
     }
     return true;
   }
 
   public boolean onBeforeDelete(final Record record) {
-    if (beforeDeleteListeners.isEmpty())
-      return true;
+    synchronized (beforeDeleteListeners) {
+      if (beforeDeleteListeners.isEmpty())
+        return true;
 
-    for (int i = 0; i < beforeDeleteListeners.size(); i++) {
-      if (!beforeDeleteListeners.get(i).onBeforeDelete(record))
-        return false;
+      for (int i = 0; i < beforeDeleteListeners.size(); i++) {
+        if (!beforeDeleteListeners.get(i).onBeforeDelete(record))
+          return false;
+      }
     }
     return true;
   }
 
   public void onAfterCreate(final Record record) {
-    if (afterCreateListeners.isEmpty())
-      return;
+    synchronized (afterCreateListeners) {
+      if (afterCreateListeners.isEmpty())
+        return;
 
-    for (int i = 0; i < afterCreateListeners.size(); i++)
-      afterCreateListeners.get(i).onAfterCreate(record);
+      for (int i = 0; i < afterCreateListeners.size(); i++)
+        afterCreateListeners.get(i).onAfterCreate(record);
+    }
   }
 
   public void onAfterUpdate(final Record record) {
-    if (afterUpdateListeners.isEmpty())
-      return;
+    synchronized (afterUpdateListeners) {
+      if (afterUpdateListeners.isEmpty())
+        return;
 
-    for (int i = 0; i < afterUpdateListeners.size(); i++)
-      afterUpdateListeners.get(i).onAfterUpdate(record);
+      for (int i = 0; i < afterUpdateListeners.size(); i++)
+        afterUpdateListeners.get(i).onAfterUpdate(record);
+    }
   }
 
   public void onAfterDelete(final Record record) {
-    if (afterDeleteListeners.isEmpty())
-      return;
+    synchronized (afterDeleteListeners) {
+      if (afterDeleteListeners.isEmpty())
+        return;
 
-    for (int i = 0; i < afterDeleteListeners.size(); i++)
-      afterDeleteListeners.get(i).onAfterDelete(record);
+      for (int i = 0; i < afterDeleteListeners.size(); i++)
+        afterDeleteListeners.get(i).onAfterDelete(record);
+    }
   }
 }

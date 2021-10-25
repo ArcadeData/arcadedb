@@ -42,7 +42,6 @@ public class TypeEventsTest extends TestHelper {
     };
 
     database.getSchema().getType("Vertex").getEvents().registerListener(listener);
-
     try {
 
       database.transaction(() -> {
