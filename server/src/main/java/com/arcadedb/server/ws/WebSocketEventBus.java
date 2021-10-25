@@ -1,4 +1,4 @@
-package com.arcadedb.server.http;
+package com.arcadedb.server.ws;
 
 import com.arcadedb.event.AfterRecordCreateListener;
 import com.arcadedb.event.AfterRecordDeleteListener;
@@ -9,6 +9,7 @@ import com.arcadedb.utility.Pair;
 import io.undertow.websockets.core.WebSocketChannel;
 import io.undertow.websockets.core.WebSockets;
 
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.UUID;
@@ -42,7 +43,7 @@ public class WebSocketEventBus {
   }
 
   private void startDatabaseWatcher(String database) {
-    WebSocketEventListener listener = new WebSocketEventListener(this, database);
+    WebSocketEventListener listener = new WebSocketEventListener(this);
     this.arcadeServer.getDatabase(database).getEvents()
         .registerListener((AfterRecordCreateListener) listener)
         .registerListener((AfterRecordUpdateListener) listener)
@@ -60,7 +61,7 @@ public class WebSocketEventBus {
         }};
 
         var json = event.toJSON();
-        if (subscribers.isEmpty()) {
+        if (matchingSubscribers.isEmpty()) {
           this.stopDatabaseWatcher(database);
         } else {
           matchingSubscribers.forEach(pair -> WebSockets.sendText(json, pair.getSecond(), null));
@@ -85,7 +86,7 @@ public class WebSocketEventBus {
   private Set<Pair<UUID, WebSocketChannel>> getSubscriberSet(String database, String typeFilter) {
     var type = typeFilter == null || typeFilter.trim().isEmpty() ? "*" : typeFilter;
     if (!this.subscribers.containsKey(database)) this.subscribers.put(database, new ConcurrentHashMap<>());
-    if (!this.subscribers.get(database).containsKey(type)) this.subscribers.get(database).put(type, new HashSet<>());
+    if (!this.subscribers.get(database).containsKey(type)) this.subscribers.get(database).put(type, Collections.emptySet());
     return this.subscribers.get(database).get(type);
   }
 

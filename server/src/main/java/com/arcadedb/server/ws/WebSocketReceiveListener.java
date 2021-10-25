@@ -1,6 +1,5 @@
-package com.arcadedb.server.http.handler;
+package com.arcadedb.server.ws;
 
-import com.arcadedb.server.http.WebSocketEventBus;
 import io.undertow.websockets.core.*;
 import org.json.JSONObject;
 

@@ -6,18 +6,12 @@ import org.json.JSONObject;
 public class ChangeEvent {
   private final TYPE   type;
   private final Record record;
-  private final String database;
 
   public enum TYPE {CREATE, UPDATE, DELETE}
 
-  public ChangeEvent(TYPE type, Record record, String database) {
+  public ChangeEvent(TYPE type, Record record) {
     this.type = type;
     this.record = record;
-    this.database = database;
-  }
-
-  public String getDatabase() {
-    return database;
   }
 
   public Record getRecord() {
@@ -32,7 +26,7 @@ public class ChangeEvent {
     var jsonObject = new JSONObject();
     jsonObject.put("changeType", this.type.toString().toLowerCase());
     jsonObject.put("record", this.record.toJSON());
-    jsonObject.put("database", this.database);
+    jsonObject.put("database", this.record.getDatabase().getName());
     return jsonObject.toString();
   }
 }

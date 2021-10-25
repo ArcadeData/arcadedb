@@ -1,7 +1,7 @@
-package com.arcadedb.server.http.handler;
+package com.arcadedb.server.ws;
 
 import com.arcadedb.server.http.HttpServer;
-import com.arcadedb.server.http.WebSocketEventBus;
+import com.arcadedb.server.http.handler.AbstractHandler;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.websockets.WebSocketConnectionCallback;
