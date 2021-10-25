@@ -223,6 +223,10 @@ public enum GlobalConfiguration {
   SERVER_HTTP_TX_EXPIRE_TIMEOUT("arcadedb.server.httpTxExpireTimeout",
       "Timeout in seconds for a HTTP transaction to expire. This timeout is computed from the latest command against the transaction", Long.class, 30),
 
+  // SERVER WS
+  SERVER_WS_EVENT_BUS_QUEUE_SIZE("arcadedb.server.eventBusQueueSize",
+      "Size of the queue used as a buffer for unserviced database change events.", Integer.class, 1000),
+
   // SERVER SECURITY
   SERVER_SECURITY_ALGORITHM("arcadedb.server.securityAlgorithm", "Default encryption algorithm used for passwords hashing", String.class,
       "PBKDF2WithHmacSHA256"),

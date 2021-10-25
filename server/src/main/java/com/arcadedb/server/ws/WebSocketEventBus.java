@@ -1,5 +1,6 @@
 package com.arcadedb.server.ws;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.event.AfterRecordCreateListener;
 import com.arcadedb.event.AfterRecordDeleteListener;
 import com.arcadedb.event.AfterRecordUpdateListener;
@@ -9,28 +10,34 @@ import com.arcadedb.utility.Pair;
 import io.undertow.websockets.core.WebSocketChannel;
 import io.undertow.websockets.core.WebSockets;
 
-import java.util.Collections;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.*;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.logging.Level;
 
 public class WebSocketEventBus {
-  private final ConcurrentLinkedQueue<ChangeEvent> events           = new ConcurrentLinkedQueue<>();
-  private final ConcurrentHashMap<String, ConcurrentHashMap<String, Set<Pair<UUID, WebSocketChannel>>>>
-                                                   subscribers      = new ConcurrentHashMap<>();
-  private final ConcurrentHashMap<String, Pair<WebSocketEventListener, ScheduledExecutorService>>
-                                                   databaseWatchers = new ConcurrentHashMap<>();
-  private final ArcadeDBServer                     arcadeServer;
+  private final ArrayBlockingQueue<ChangeEvent> eventQueue;
+  private final ConcurrentHashMap<String, ConcurrentHashMap<String, HashSet<Pair<UUID, WebSocketChannel>>>>
+                                                subscribers      = new ConcurrentHashMap<>();
+  private final ConcurrentHashMap<String, Pair<WebSocketEventListener, Thread>>
+                                                databaseWatchers = new ConcurrentHashMap<>();
+  private final ArcadeDBServer                  arcadeServer;
 
   public static final String CHANNEL_ID = "ID";
 
   public WebSocketEventBus(final ArcadeDBServer server) {
     this.arcadeServer = server;
+    this.eventQueue = new ArrayBlockingQueue<>(server.getConfiguration().getValueAsInteger(GlobalConfiguration.SERVER_WS_EVENT_BUS_QUEUE_SIZE), true);
   }
 
   public void push(ChangeEvent event) {
-    this.events.add(event);
+    try {
+      this.eventQueue.add(event);
+    } catch (IllegalStateException ex) {
+      this.arcadeServer.log(this, Level.WARNING, "Skipping event as eventQueue is full. Consider increasing eventBusQueueSize.");
+    }
   }
 
   public void subscribe(String database, String type, WebSocketChannel channel) {
@@ -49,27 +56,33 @@ public class WebSocketEventBus {
         .registerListener((AfterRecordUpdateListener) listener)
         .registerListener((AfterRecordDeleteListener) listener);
 
-    ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor();
-    executor.scheduleAtFixedRate(() -> {
-      ChangeEvent event;
-      while ((event = events.poll()) != null) {
-        var databaseWatchers = this.getSubscriberSet(database, "*");
-        var typeWatchers = this.getSubscriberSet(database, event.getRecord().asDocument().getTypeName());
-        HashSet<Pair<UUID, WebSocketChannel>> matchingSubscribers = new HashSet<>() {{
-          addAll(databaseWatchers);
-          addAll(typeWatchers);
-        }};
+    var watcherThread = new Thread(() -> {
+      try {
+        this.arcadeServer.log(this, Level.INFO, "Starting up watcher thread for %s.", database);
 
-        var json = event.toJSON();
-        if (matchingSubscribers.isEmpty()) {
-          this.stopDatabaseWatcher(database);
-        } else {
-          matchingSubscribers.forEach(pair -> WebSockets.sendText(json, pair.getSecond(), null));
+        while (true) {
+          var event = eventQueue.take();
+          var databaseWatchers = this.getSubscriberSet(database, "*");
+          var typeWatchers = this.getSubscriberSet(database, event.getRecord().asDocument().getTypeName());
+          var matchingSubscribers = new HashSet<Pair<UUID, WebSocketChannel>>() {{
+            addAll(databaseWatchers);
+            addAll(typeWatchers);
+          }};
+
+          var json = event.toJSON();
+          if (matchingSubscribers.isEmpty()) {
+            this.stopDatabaseWatcher(database);
+          } else {
+            matchingSubscribers.forEach(pair -> WebSockets.sendText(json, pair.getSecond(), null));
+          }
         }
+      } catch (InterruptedException ignored) {
+        this.arcadeServer.log(this, Level.INFO, "Shutting down watcher thread for %s.", database);
       }
-    }, 0, 500, TimeUnit.MILLISECONDS);
+    });
+    watcherThread.start();
 
-    this.databaseWatchers.put(database, new Pair<>(listener, executor));
+    this.databaseWatchers.put(database, new Pair<>(listener, watcherThread));
   }
 
   private void stopDatabaseWatcher(String database) {
@@ -79,15 +92,15 @@ public class WebSocketEventBus {
         .unregisterListener((AfterRecordUpdateListener) pair.getFirst())
         .unregisterListener((AfterRecordDeleteListener) pair.getFirst());
 
-    pair.getSecond().shutdown();
+    pair.getSecond().interrupt();
     this.databaseWatchers.remove(database);
   }
 
   private Set<Pair<UUID, WebSocketChannel>> getSubscriberSet(String database, String typeFilter) {
     var type = typeFilter == null || typeFilter.trim().isEmpty() ? "*" : typeFilter;
-    if (!this.subscribers.containsKey(database)) this.subscribers.put(database, new ConcurrentHashMap<>());
-    if (!this.subscribers.get(database).containsKey(type)) this.subscribers.get(database).put(type, Collections.emptySet());
-    return this.subscribers.get(database).get(type);
+    return this.subscribers
+        .computeIfAbsent(database, key -> new ConcurrentHashMap<>())
+        .computeIfAbsent(type, key -> new HashSet<>());
   }
 
   public void unsubscribeAll(UUID id) {
