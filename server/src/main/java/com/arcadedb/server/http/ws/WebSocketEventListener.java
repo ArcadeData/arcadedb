@@ -6,24 +6,24 @@ import com.arcadedb.server.ChangeEvent;
 
 public class WebSocketEventListener implements AfterRecordCreateListener, AfterRecordUpdateListener, AfterRecordDeleteListener {
 
-  private final WebSocketEventBus eventBus;
+  private final DatabaseEventWatcherThread watcherThread;
 
-  public WebSocketEventListener(final WebSocketEventBus eventBus) {
-    this.eventBus = eventBus;
+  public WebSocketEventListener(final DatabaseEventWatcherThread watcherThread) {
+    this.watcherThread = watcherThread;
   }
 
   @Override
   public void onAfterCreate(Record record) {
-    this.eventBus.push(new ChangeEvent(ChangeEvent.TYPE.CREATE, record));
+    this.watcherThread.push(new ChangeEvent(ChangeEvent.TYPE.CREATE, record));
   }
 
   @Override
   public void onAfterUpdate(Record record) {
-    this.eventBus.push(new ChangeEvent(ChangeEvent.TYPE.UPDATE, record));
+    this.watcherThread.push(new ChangeEvent(ChangeEvent.TYPE.UPDATE, record));
   }
 
   @Override
   public void onAfterDelete(Record record) {
-    this.eventBus.push(new ChangeEvent(ChangeEvent.TYPE.DELETE, record));
+    this.watcherThread.push(new ChangeEvent(ChangeEvent.TYPE.DELETE, record));
   }
 }
