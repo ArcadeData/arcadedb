@@ -23,6 +23,7 @@ import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.http.handler.*;
 import com.arcadedb.server.ws.WebSocketConnectionHandler;
+import com.arcadedb.server.ws.WebSocketEventBus;
 import io.undertow.Handlers;
 import io.undertow.Undertow;
 import io.undertow.server.RoutingHandler;
@@ -36,7 +37,8 @@ import static io.undertow.UndertowOptions.SHUTDOWN_TIMEOUT;
 public class HttpServer implements ServerPlugin {
   private final ArcadeDBServer     server;
   private final HttpSessionManager transactionManager;
-  private final JsonSerializer     jsonSerializer    = new JsonSerializer();
+  private final JsonSerializer     jsonSerializer = new JsonSerializer();
+  private final WebSocketEventBus  webSocketEventBus;
   private       Undertow           undertow;
   private       String             listeningAddress;
   private       String             host;
@@ -45,6 +47,7 @@ public class HttpServer implements ServerPlugin {
   public HttpServer(final ArcadeDBServer server) {
     this.server = server;
     this.transactionManager = new HttpSessionManager(server.getConfiguration().getValueAsInteger(GlobalConfiguration.SERVER_HTTP_TX_EXPIRE_TIMEOUT) * 1000);
+    this.webSocketEventBus = new WebSocketEventBus(this.server);
   }
 
   @Override
@@ -76,7 +79,7 @@ public class HttpServer implements ServerPlugin {
 
     final RoutingHandler basicRoutes = Handlers.routing();
 
-    routes.addPrefixPath("/ws", new WebSocketConnectionHandler(this));
+    routes.addPrefixPath("/ws", new WebSocketConnectionHandler(this, webSocketEventBus));
 
     routes.addPrefixPath("/api/v1",//
         basicRoutes//

@@ -12,15 +12,15 @@ import java.util.UUID;
 public class WebSocketConnectionHandler extends AbstractHandler {
   private final WebSocketEventBus webSocketEventBus;
 
-  public WebSocketConnectionHandler(final HttpServer httpServer) {
+  public WebSocketConnectionHandler(final HttpServer httpServer, final WebSocketEventBus webSocketEventBus) {
     super(httpServer);
-    this.webSocketEventBus = new WebSocketEventBus(httpServer.getServer());
+    this.webSocketEventBus = webSocketEventBus;
   }
 
   @Override
   protected void execute(HttpServerExchange exchange, ServerSecurityUser user) throws Exception {
     var handler = new WebSocketProtocolHandshakeHandler((WebSocketConnectionCallback) (webSocketHttpExchange, channel) -> {
-      channel.getReceiveSetter().set(new WebSocketReceiveListener(webSocketEventBus));
+      channel.getReceiveSetter().set(new WebSocketReceiveListener(this.httpServer, webSocketEventBus));
       channel.setAttribute(WebSocketEventBus.CHANNEL_ID, UUID.randomUUID());
       channel.resumeReceives();
     });

@@ -50,7 +50,7 @@ public class WebSocketEventBus {
   }
 
   private void startDatabaseWatcher(String database) {
-    WebSocketEventListener listener = new WebSocketEventListener(this);
+    var listener = new WebSocketEventListener(this);
     this.arcadeServer.getDatabase(database).getEvents()
         .registerListener((AfterRecordCreateListener) listener)
         .registerListener((AfterRecordUpdateListener) listener)
