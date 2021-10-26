@@ -1,4 +1,4 @@
-package com.arcadedb.server.ws;
+package com.arcadedb.server.http.ws;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;

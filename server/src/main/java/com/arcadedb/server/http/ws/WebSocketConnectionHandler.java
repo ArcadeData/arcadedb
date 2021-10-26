@@ -1,4 +1,4 @@
-package com.arcadedb.server.ws;
+package com.arcadedb.server.http.ws;
 
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.AbstractHandler;
