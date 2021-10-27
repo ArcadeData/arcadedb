@@ -2,9 +2,7 @@ package com.arcadedb.server.http.ws;
 
 import io.undertow.websockets.core.WebSocketChannel;
 
-import java.util.HashSet;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
 
 public class EventWatcherSubscription {
   private final String                database;
@@ -12,7 +10,7 @@ public class EventWatcherSubscription {
   private final Set<ChangeEvent.TYPE> changeTypes;
   private final WebSocketChannel      channel;
 
-  public EventWatcherSubscription(String database, String type, List<Object> changeTypes, WebSocketChannel channel) {
+  public EventWatcherSubscription(final String database, final String type, final List<Object> changeTypes, final WebSocketChannel channel) {
     this.database = database;
     this.type = type;
     if (changeTypes != null) {
@@ -40,8 +38,8 @@ public class EventWatcherSubscription {
     return channel;
   }
 
-  public boolean isMatch(ChangeEvent event) {
-    return (this.changeTypes == null || this.changeTypes.contains(event.getType())) &&
-        (this.type == null || this.type.equals(event.getRecord().asDocument().getTypeName()));
+  public boolean isMatch(final ChangeEvent event) {
+    return (this.changeTypes == null || this.changeTypes.contains(event.getType())) && (this.type == null || this.type.equals(
+        event.getRecord().asDocument().getTypeName()));
   }
 }

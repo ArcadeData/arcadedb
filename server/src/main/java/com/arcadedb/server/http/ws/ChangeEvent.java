@@ -9,7 +9,7 @@ public class ChangeEvent {
 
   public enum TYPE {CREATE, UPDATE, DELETE}
 
-  public ChangeEvent(TYPE type, Record record) {
+  public ChangeEvent(final TYPE type, final Record record) {
     this.type = type;
     this.record = record;
   }
@@ -23,7 +23,7 @@ public class ChangeEvent {
   }
 
   public String toJSON() {
-    var jsonObject = new JSONObject();
+    final var jsonObject = new JSONObject();
     jsonObject.put("changeType", this.type.toString().toLowerCase());
     jsonObject.put("record", this.record.toJSON());
     jsonObject.put("database", this.record.getDatabase().getName());
