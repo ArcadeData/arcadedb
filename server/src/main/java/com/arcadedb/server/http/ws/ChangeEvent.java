@@ -1,4 +1,4 @@
-package com.arcadedb.server;
+package com.arcadedb.server.http.ws;
 
 import com.arcadedb.database.Record;
 import org.json.JSONObject;

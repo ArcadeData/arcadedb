@@ -34,12 +34,13 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
     try {
       switch (action) {
         case SUBSCRIBE:
-          this.webSocketEventBus.subscribe(message.getString("database"), message.optString("type", null), channel);
+          var changeTypes = message.optJSONArray("changeTypes");
+          this.webSocketEventBus.subscribe(new EventWatcherSubscription(message.getString("database"),
+              message.optString("type", null), changeTypes == null ? null : changeTypes.toList(), channel));
           this.sendAck(channel, action);
           break;
         case UNSUBSCRIBE:
-          this.webSocketEventBus.unsubscribe(message.getString("database"), message.optString("type", null),
-              (UUID) channel.getAttribute(WebSocketEventBus.CHANNEL_ID));
+          this.webSocketEventBus.unsubscribe(message.getString("database"), (UUID) channel.getAttribute(WebSocketEventBus.CHANNEL_ID));
           this.sendAck(channel, action);
           break;
         default:
