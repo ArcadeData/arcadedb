@@ -19,15 +19,16 @@ import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.*;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.Future;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.TimeUnit;
 
 import static org.apache.lucene.store.BufferedIndexInput.BUFFER_SIZE;
 
 public class WebSocketClientHelper {
-  private static       XnioWorker       worker;
-  private              WebSocketChannel channel;
-  private static final ByteBufferPool   pool = new DefaultByteBufferPool(true, BUFFER_SIZE, 1000, 10, 100);
+  private static       XnioWorker                 worker;
+  private final        WebSocketChannel           channel;
+  private static final ByteBufferPool             pool         = new DefaultByteBufferPool(true, BUFFER_SIZE, 1000, 10, 100);
+  private final        ArrayBlockingQueue<String> messageQueue = new ArrayBlockingQueue<>(10);
 
   static {
     Xnio xnio = Xnio.getInstance(BaseGraphServerTest.class.getClassLoader());
@@ -41,7 +42,7 @@ public class WebSocketClientHelper {
           .set(Options.TCP_NODELAY, true)
           .set(Options.CORK, true)
           .getMap());
-    } catch (IOException e) {
+    } catch (IOException ignored) {
     }
   }
 
@@ -57,37 +58,35 @@ public class WebSocketClientHelper {
       });
     }
     this.channel = builder.connect().get();
-  }
 
-  public Future<String> send(String payload) throws URISyntaxException, IOException {
-    var future = this.get();
-
-    var sendChannel = channel.send(WebSocketFrameType.TEXT);
-    new StringWriteChannelListener(payload).setup(sendChannel);
-
-    return future;
-  }
-
-  public Future<String> get() throws URISyntaxException, IOException {
-    var future = new CompletableFuture<String>();
-    channel.suspendReceives();
     channel.getReceiveSetter().set(new AbstractReceiveListener() {
       @Override
-      protected void onFullTextMessage(WebSocketChannel channel, BufferedTextMessage message) throws IOException {
-        String data = message.getData();
-        future.complete(data);
+      protected void onFullTextMessage(WebSocketChannel channel, BufferedTextMessage message) {
+        messageQueue.offer(message.getData());
       }
 
       @Override
       protected void onError(WebSocketChannel channel, Throwable error) {
         super.onError(channel, error);
-        error.printStackTrace();
-        future.complete(null);
+        messageQueue.offer(error.getMessage());
       }
     });
     channel.resumeReceives();
+  }
 
-    return future;
+  public String send(String payload) throws URISyntaxException, IOException {
+    var sendChannel = channel.send(WebSocketFrameType.TEXT);
+    new StringWriteChannelListener(payload).setup(sendChannel);
+    return this.popMessage();
+  }
+
+  public String popMessage() {
+    try {
+      return this.messageQueue.poll(100, TimeUnit.MILLISECONDS);
+    } catch (InterruptedException ignored) {
+    }
+
+    return null;
   }
 
   public void close() throws IOException {

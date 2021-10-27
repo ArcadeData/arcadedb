@@ -23,15 +23,15 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
 
   @Override
   protected void onFullTextMessage(WebSocketChannel channel, BufferedTextMessage textMessage) throws IOException {
-    JSONObject message = new JSONObject(textMessage.getData());
-    String rawAction = message.getString("action");
-    ACTION action = ACTION.UNKNOWN;
     try {
-      action = ACTION.valueOf(rawAction.toUpperCase());
-    } catch (IllegalArgumentException ignored) {
-    }
+      var message = new JSONObject(textMessage.getData());
+      var rawAction = message.optString("action");
+      var action = ACTION.UNKNOWN;
+      try {
+        action = ACTION.valueOf(rawAction.toUpperCase());
+      } catch (IllegalArgumentException ignored) {
+      }
 
-    try {
       switch (action) {
         case SUBSCRIBE:
           var changeTypes = message.optJSONArray("changeTypes");
@@ -44,7 +44,11 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
           this.sendAck(channel, action);
           break;
         default:
-          sendError(channel, "Unknown action", String.format("%s is not a valid action.", rawAction), null);
+          if (rawAction.equals("")) {
+            sendError(channel, "Message error", "Property 'action' is required.", null);
+          } else {
+            sendError(channel, "Unknown action", String.format("%s is not a valid action.", rawAction), null);
+          }
           break;
       }
     } catch (Exception e) {

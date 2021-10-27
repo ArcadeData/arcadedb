@@ -5,25 +5,62 @@ import org.json.JSONObject;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
-
 public class WebSocketEventBusIT extends BaseGraphServerTest {
+
+  @Test
+  public void invalidJsonReturnsError() throws Exception {
+    var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+
+    var result = new JSONObject(client.send("42"));
+    Assertions.assertEquals("error", result.get("result"));
+    Assertions.assertEquals("org.json.JSONException", result.get("exception"));
+  }
+
+  @Test
+  public void invalidDatabaseReturnsError() throws Exception {
+    var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+
+    var result = new JSONObject(client.send(buildActionMessage("subscribe", "invalid")));
+    Assertions.assertEquals("error", result.get("result"));
+    Assertions.assertEquals("com.arcadedb.exception.DatabaseOperationException", result.get("exception"));
+  }
+
+  @Test
+  public void unsubscribeWithoutSubscribeDoesNothing() throws Exception {
+    var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+
+    var result = new JSONObject(client.send(buildActionMessage("unsubscribe", "graph")));
+    Assertions.assertEquals("ok", result.get("result"));
+  }
+
+  @Test
+  public void invalidActionReturnsError() throws Exception {
+    var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+
+    var result = new JSONObject(client.send(buildActionMessage("invalid", "graph")));
+    Assertions.assertEquals("error", result.get("result"));
+    Assertions.assertEquals("invalid is not a valid action.", result.get("detail"));
+  }
+
+  @Test
+  public void missingActionReturnsError() throws Exception {
+    var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+
+    var result = new JSONObject(client.send("{\"database\": \"graph\"}"));
+    Assertions.assertEquals("error", result.get("result"));
+    Assertions.assertEquals("Property 'action' is required.", result.get("detail"));
+  }
 
   @Test
   public void subscribeDatabaseWorks() throws Exception {
     var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
     var result = client.send(buildActionMessage("subscribe", "graph"));
-    var json = new JSONObject(result.get(1, TimeUnit.SECONDS));
-    Assertions.assertEquals("ok", json.get("result"));
+    Assertions.assertEquals("ok", new JSONObject(result).get("result"));
 
-    result = client.get();
-    var db = this.getServerDatabase(0, "graph");
-    var v1 = db.newVertex("V1").set("name", "test");
-    v1.save();
+    this.getServerDatabase(0, "graph").newVertex("V1").set("name", "test").save();
 
-    json = new JSONObject(result.get(1, TimeUnit.SECONDS));
+    var json = new JSONObject(client.popMessage());
     Assertions.assertEquals("create", json.get("changeType"));
     var record = json.getJSONObject("record");
     Assertions.assertEquals("test", record.get("name"));
@@ -37,15 +74,11 @@ public class WebSocketEventBusIT extends BaseGraphServerTest {
     var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
     var result = client.send(buildActionMessage("subscribe", "graph", "V1"));
-    var json = new JSONObject(result.get(1, TimeUnit.SECONDS));
-    Assertions.assertEquals("ok", json.get("result"));
+    Assertions.assertEquals("ok", new JSONObject(result).get("result"));
 
-    result = client.get();
-    var db = this.getServerDatabase(0, "graph");
-    var v1 = db.newVertex("V1").set("name", "test");
-    v1.save();
+    this.getServerDatabase(0, "graph").newVertex("V1").set("name", "test").save();
 
-    json = new JSONObject(result.get(1, TimeUnit.SECONDS));
+    var json = new JSONObject(client.popMessage());
     Assertions.assertEquals("create", json.get("changeType"));
     var record = json.getJSONObject("record");
     Assertions.assertEquals("test", record.get("name"));
@@ -59,17 +92,39 @@ public class WebSocketEventBusIT extends BaseGraphServerTest {
     var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
     var result = client.send(buildActionMessage("subscribe", "graph", null, new String[]{"create"}));
-    var json = new JSONObject(result.get(1, TimeUnit.SECONDS));
-    Assertions.assertEquals("ok", json.get("result"));
+    Assertions.assertEquals("ok", new JSONObject(result).get("result"));
 
-    result = client.get();
-    var db = this.getServerDatabase(0, "graph");
-    var v1 = db.newVertex("V1").set("name", "test");
-    v1.save();
+    this.getServerDatabase(0, "graph").newVertex("V1").set("name", "test").save();
 
-    json = new JSONObject(result.get(1, TimeUnit.SECONDS));
+    var json = new JSONObject(client.popMessage());
     Assertions.assertEquals("create", json.get("changeType"));
     var record = json.getJSONObject("record");
+    Assertions.assertEquals("test", record.get("name"));
+    Assertions.assertEquals("V1", record.get("@type"));
+
+    client.close();
+  }
+
+  @Test
+  public void subscribeMultipleChangeTypesWorks() throws Exception {
+    var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+
+    var result = client.send(buildActionMessage("subscribe", "graph", null, new String[]{"create", "delete"}));
+    Assertions.assertEquals("ok", new JSONObject(result).get("result"));
+
+    var v1 = this.getServerDatabase(0, "graph").newVertex("V1").set("name", "test").save();
+
+    var json = new JSONObject(client.popMessage());
+    Assertions.assertEquals("create", json.get("changeType"));
+    var record = json.getJSONObject("record");
+    Assertions.assertEquals("test", record.get("name"));
+    Assertions.assertEquals("V1", record.get("@type"));
+
+    v1.delete();
+
+    json = new JSONObject(client.popMessage());
+    Assertions.assertEquals("delete", json.get("changeType"));
+    record = json.getJSONObject("record");
     Assertions.assertEquals("test", record.get("name"));
     Assertions.assertEquals("V1", record.get("@type"));
 
@@ -81,20 +136,11 @@ public class WebSocketEventBusIT extends BaseGraphServerTest {
     var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
     var result = client.send(buildActionMessage("subscribe", "graph", null, new String[]{"update"}));
-    var json = new JSONObject(result.get(1, TimeUnit.SECONDS));
-    Assertions.assertEquals("ok", json.get("result"));
+    Assertions.assertEquals("ok", new JSONObject(result).get("result"));
 
-    result = client.get();
-    var db = this.getServerDatabase(0, "graph");
-    var v2 = db.newVertex("V2").set("name", "test");
-    v2.save();
+    this.getServerDatabase(0, "graph").newVertex("V2").save();
 
-    try {
-      result.get(100, TimeUnit.MILLISECONDS);
-    } catch (TimeoutException ignored) {
-    }
-
-    Assertions.assertFalse(result.isDone());
+    Assertions.assertNull(client.popMessage());
 
     client.close();
   }
@@ -104,20 +150,11 @@ public class WebSocketEventBusIT extends BaseGraphServerTest {
     var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
     var result = client.send(buildActionMessage("subscribe", "graph", "V1"));
-    var json = new JSONObject(result.get(1, TimeUnit.SECONDS));
-    Assertions.assertEquals("ok", json.get("result"));
+    Assertions.assertEquals("ok", new JSONObject(result).get("result"));
 
-    result = client.get();
-    var db = this.getServerDatabase(0, "graph");
-    var v2 = db.newVertex("V2").set("name", "test");
-    v2.save();
+    this.getServerDatabase(0, "graph").newVertex("V2").save();
 
-    try {
-      result.get(100, TimeUnit.MILLISECONDS);
-    } catch (TimeoutException ignored) {
-    }
-
-    Assertions.assertFalse(result.isDone());
+    Assertions.assertNull(client.popMessage());
 
     client.close();
   }
@@ -127,24 +164,14 @@ public class WebSocketEventBusIT extends BaseGraphServerTest {
     var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
     var result = client.send(buildActionMessage("subscribe", "graph"));
-    var json = new JSONObject(result.get(1, TimeUnit.SECONDS));
-    Assertions.assertEquals("ok", json.get("result"));
+    Assertions.assertEquals("ok", new JSONObject(result).get("result"));
 
     result = client.send(buildActionMessage("unsubscribe", "graph"));
-    json = new JSONObject(result.get(1, TimeUnit.SECONDS));
-    Assertions.assertEquals("ok", json.get("result"));
+    Assertions.assertEquals("ok", new JSONObject(result).get("result"));
 
-    result = client.get();
-    var db = this.getServerDatabase(0, "graph");
-    var v1 = db.newVertex("V1").set("name", "test");
-    v1.save();
+    this.getServerDatabase(0, "graph").newVertex("V1").save();
 
-    try {
-      result.get(100, TimeUnit.MILLISECONDS);
-    } catch (TimeoutException ignored) {
-    }
-
-    Assertions.assertFalse(result.isDone());
+    Assertions.assertNull(client.popMessage());
 
     client.close();
   }
