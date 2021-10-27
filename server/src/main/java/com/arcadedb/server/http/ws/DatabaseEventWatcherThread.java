@@ -16,8 +16,7 @@ final public class DatabaseEventWatcherThread extends Thread {
   private final ArrayBlockingQueue<ChangeEvent> eventQueue;
   private final Database                        database;
 
-  volatile boolean                running = true;
-  private  WebSocketEventListener listener;
+  volatile boolean running = true;
 
   public boolean isRunning() {
     return running;
@@ -42,14 +41,15 @@ final public class DatabaseEventWatcherThread extends Thread {
 
   @Override
   public void run() {
+    var listener = new WebSocketEventListener(this);
+
     try {
       LogManager.instance().log(this, Level.INFO, "Starting up watcher thread for %s.", null, database);
 
-      this.listener = new WebSocketEventListener(this);
       this.database.getEvents()
-          .registerListener((AfterRecordCreateListener) this.listener)
-          .registerListener((AfterRecordUpdateListener) this.listener)
-          .registerListener((AfterRecordDeleteListener) this.listener);
+          .registerListener((AfterRecordCreateListener) listener)
+          .registerListener((AfterRecordUpdateListener) listener)
+          .registerListener((AfterRecordDeleteListener) listener);
 
       while (this.running) {
         var event = this.eventQueue.poll(500, TimeUnit.MILLISECONDS);
@@ -60,9 +60,9 @@ final public class DatabaseEventWatcherThread extends Thread {
     } catch (InterruptedException ignored) {
     } finally {
       this.database.getEvents()
-          .unregisterListener((AfterRecordCreateListener) this.listener)
-          .unregisterListener((AfterRecordUpdateListener) this.listener)
-          .unregisterListener((AfterRecordDeleteListener) this.listener);
+          .unregisterListener((AfterRecordCreateListener) listener)
+          .unregisterListener((AfterRecordUpdateListener) listener)
+          .unregisterListener((AfterRecordDeleteListener) listener);
 
       LogManager.instance().log(this, Level.INFO, "Shutting down watcher thread for %s.", null, database);
     }
