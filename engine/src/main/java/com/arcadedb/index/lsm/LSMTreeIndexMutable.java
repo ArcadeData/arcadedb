@@ -43,6 +43,7 @@ import static com.arcadedb.database.Binary.BYTE_SERIALIZED_SIZE;
 import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
 
 public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
+  public static final int                   CURRENT_VERSION     = 1;
   public static final String                UNIQUE_INDEX_EXT    = "umtidx";
   public static final String                NOTUNIQUE_INDEX_EXT = "numtidx";
   private             int                   subIndexFileId      = -1;
@@ -56,7 +57,8 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
    */
   protected LSMTreeIndexMutable(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name, final boolean unique, final String filePath,
       final PaginatedFile.MODE mode, final byte[] keyTypes, final int pageSize, final NULL_STRATEGY nullStrategy) throws IOException {
-    super(mainIndex, database, name, unique, filePath, unique ? UNIQUE_INDEX_EXT : NOTUNIQUE_INDEX_EXT, mode, keyTypes, pageSize, nullStrategy);
+    super(mainIndex, database, name, unique, filePath, unique ? UNIQUE_INDEX_EXT : NOTUNIQUE_INDEX_EXT, mode, keyTypes, pageSize, CURRENT_VERSION,
+        nullStrategy);
     database.checkTransactionIsActive(database.isAutoTransaction());
     createNewPage();
     minPagesToScheduleACompaction = database.getConfiguration().getValueAsInteger(GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE);
@@ -66,8 +68,8 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
    * Called at cloning time.
    */
   protected LSMTreeIndexMutable(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name, final boolean unique, final String filePath,
-      final byte[] keyTypes, final int pageSize, final LSMTreeIndexCompacted subIndex) throws IOException {
-    super(mainIndex, database, name, unique, filePath, unique ? UNIQUE_INDEX_EXT : NOTUNIQUE_INDEX_EXT, keyTypes, pageSize);
+      final byte[] keyTypes, final int pageSize, final int version, final LSMTreeIndexCompacted subIndex) throws IOException {
+    super(mainIndex, database, name, unique, filePath, unique ? UNIQUE_INDEX_EXT : NOTUNIQUE_INDEX_EXT, keyTypes, pageSize, version);
     this.subIndex = subIndex;
     minPagesToScheduleACompaction = database.getConfiguration().getValueAsInteger(GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE);
   }
@@ -76,8 +78,8 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
    * Called at load time (1st page only).
    */
   protected LSMTreeIndexMutable(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name, final boolean unique, final String filePath,
-      final int id, final PaginatedFile.MODE mode, final int pageSize) throws IOException {
-    super(mainIndex, database, name, unique, filePath, id, mode, pageSize);
+      final int id, final PaginatedFile.MODE mode, final int pageSize, final int version) throws IOException {
+    super(mainIndex, database, name, unique, filePath, id, mode, pageSize, version);
     onAfterLoad();
   }
 
@@ -153,7 +155,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     int last_ = name.lastIndexOf('_');
     final String newName = name.substring(0, last_) + "_" + System.nanoTime();
 
-    return new LSMTreeIndexCompacted(mainIndex, database, newName, unique, database.getDatabasePath() + "/" + newName, keyTypes, pageSize);
+    return new LSMTreeIndexCompacted(mainIndex, database, newName, unique, database.getDatabasePath() + "/" + newName, keyTypes, pageSize, version);
   }
 
   public IndexCursor iterator(final boolean ascendingOrder, final Object[] fromKeys, final boolean inclusive) throws IOException {
@@ -191,8 +193,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
   }
 
   public IndexCursor get(final Object[] keys, final int limit) throws IOException {
-    if (nullStrategy == NULL_STRATEGY.ERROR)
-      checkForNulls(keys);
+    checkForNulls(keys);
 
     final Object[] convertedKeys = convertKeys(keys, keyTypes);
     if (convertedKeys == null && nullStrategy == NULL_STRATEGY.SKIP)
@@ -398,8 +399,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     if (keys.length != keyTypes.length)
       throw new IllegalArgumentException("Cannot put an entry in the index with a partial key");
 
-    if (nullStrategy == NULL_STRATEGY.ERROR)
-      checkForNulls(keys);
+    checkForNulls(keys);
 
     final Object[] convertedKeys = convertKeys(keys, keyTypes);
     if (convertedKeys == null && nullStrategy == NULL_STRATEGY.SKIP)
@@ -489,8 +489,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     if (keys.length != keyTypes.length)
       throw new IllegalArgumentException("Cannot remove an entry in the index with a partial key");
 
-    if (nullStrategy == NULL_STRATEGY.ERROR)
-      checkForNulls(keys);
+    checkForNulls(keys);
 
     final Object[] convertedKeys = convertKeys(keys, keyTypes);
     if (convertedKeys == null)

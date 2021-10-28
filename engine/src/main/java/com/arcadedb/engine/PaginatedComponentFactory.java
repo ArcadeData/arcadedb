@@ -17,16 +17,16 @@ package com.arcadedb.engine;
 
 import com.arcadedb.database.DatabaseInternal;
 
-import java.io.IOException;
-import java.util.HashMap;
-import java.util.Map;
+import java.io.*;
+import java.util.*;
 
 public class PaginatedComponentFactory {
   private final Map<String, PaginatedComponentFactoryHandler> map = new HashMap<>();
   private final DatabaseInternal                              database;
 
   public interface PaginatedComponentFactoryHandler {
-    PaginatedComponent createOnLoad(DatabaseInternal database, String name, String filePath, int id, PaginatedFile.MODE mode, int pageSize) throws IOException;
+    PaginatedComponent createOnLoad(final DatabaseInternal database, final String name, final String filePath, final int id, final PaginatedFile.MODE mode,
+        final int pageSize, final int version) throws IOException;
   }
 
   public PaginatedComponentFactory(final DatabaseInternal database) {
@@ -42,10 +42,11 @@ public class PaginatedComponentFactory {
     final int fileId = file.getFileId();
     final String fileExt = file.getFileExtension();
     final int pageSize = file.getPageSize();
+    final int version = file.getVersion();
 
     final PaginatedComponentFactoryHandler handler = map.get(fileExt);
     if (handler != null)
-      return handler.createOnLoad(database, fileName, file.getFilePath(), fileId, mode, pageSize);
+      return handler.createOnLoad(database, fileName, file.getFilePath(), fileId, mode, pageSize, version);
 
     return null;
   }

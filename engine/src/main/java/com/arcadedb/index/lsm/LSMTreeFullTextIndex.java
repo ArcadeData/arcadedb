@@ -74,8 +74,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   public static class PaginatedComponentFactoryHandlerNotUnique implements PaginatedComponentFactory.PaginatedComponentFactoryHandler {
     @Override
     public PaginatedComponent createOnLoad(final DatabaseInternal database, final String name, final String filePath, final int id,
-        final PaginatedFile.MODE mode, final int pageSize) throws IOException {
-      final LSMTreeFullTextIndex mainIndex = new LSMTreeFullTextIndex(database, name, filePath, id, mode, pageSize);
+        final PaginatedFile.MODE mode, final int pageSize, int version) throws IOException {
+      final LSMTreeFullTextIndex mainIndex = new LSMTreeFullTextIndex(database, name, filePath, id, mode, pageSize, version);
       return mainIndex.underlyingIndex.mutable;
     }
   }
@@ -98,9 +98,9 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    * Loading time.
    */
   public LSMTreeFullTextIndex(final DatabaseInternal database, final String name, final String filePath, final int fileId, final PaginatedFile.MODE mode,
-      final int pageSize) {
+      final int pageSize, final int version) {
     try {
-      underlyingIndex = new LSMTreeIndex(database, name, false, filePath, fileId, mode, pageSize);
+      underlyingIndex = new LSMTreeIndex(database, name, false, filePath, fileId, mode, pageSize, version);
     } catch (IOException e) {
       throw new IndexException("Cannot create search engine (error=" + e + ")", e);
     }

@@ -36,6 +36,7 @@ public class PaginatedFile {
   private       FileChannel      channel;
   private       int              fileId;
   private       int              pageSize;
+  private       int              version = 0;      // STARTING FROM 21.10.2 COMPONENTS HAVE VERSION IN THE FILE NAME
   private       String           componentName;
   private       String           fileExtension;
   private       boolean          open;
@@ -189,6 +190,10 @@ public class PaginatedFile {
     return pageSize;
   }
 
+  public int getVersion() {
+    return version;
+  }
+
   @Override
   public String toString() {
     return filePath;
@@ -199,6 +204,13 @@ public class PaginatedFile {
 
     String filePrefix = filePath.substring(0, filePath.lastIndexOf("."));
     this.fileExtension = filePath.substring(filePath.lastIndexOf(".") + 1);
+
+    final int versionPos = filePrefix.lastIndexOf(".");
+    if (filePrefix.charAt(versionPos + 1) == 'v') {
+      // STARTING FROM 21.10.2 COMPONENTS HAVE VERSION IN THE FILE NAME
+      version = Integer.parseInt(filePrefix.substring(versionPos + 2));
+      filePrefix = filePrefix.substring(0, versionPos);
+    }
 
     final int pageSizePos = filePrefix.lastIndexOf(".");
     pageSize = Integer.parseInt(filePrefix.substring(pageSizePos + 1));
