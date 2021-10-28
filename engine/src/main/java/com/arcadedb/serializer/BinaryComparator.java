@@ -383,6 +383,13 @@ public class BinaryComparator {
   }
 
   public int compare(final Object value1, final byte type1, final Object value2, final byte type2) {
+    if (value1 == null) {
+      if (value2 == null)
+        return 0;
+      else
+        return -1;
+    } else if (value1 == null)
+      return 1;
 
     switch (type1) {
     case BinaryTypes.TYPE_INT: {

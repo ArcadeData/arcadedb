@@ -104,6 +104,7 @@ public class LSMTreeIndexPolymorphicTest extends TestHelper {
     }
   }
 
+  // https://github.com/ArcadeData/arcadedb/issues/152
   @Test
   public void testDocumentAfterCreation2() {
     DocumentType typeRoot = database.getSchema().getOrCreateDocumentType("TestRoot2");
@@ -128,6 +129,7 @@ public class LSMTreeIndexPolymorphicTest extends TestHelper {
     database.commit();
   }
 
+  // https://github.com/ArcadeData/arcadedb/issues/152
   @Test
   public void testDocumentAfterCreation2AutoTx() {
     DocumentType typeRoot = database.getSchema().getOrCreateDocumentType("TestRoot2");

@@ -365,12 +365,17 @@ public class DocumentType {
     return result;
   }
 
-  public List<TypeIndex> getIndexesByProperty(final String property) {
+  public List<TypeIndex> getIndexesByProperties(final String property1, final String... propertiesN) {
     final List<TypeIndex> result = new ArrayList<>();
+
+    final Set<String> properties = new HashSet<>(propertiesN.length + 1);
+    properties.add(property1);
+    for (String p : propertiesN)
+      properties.add(p);
 
     for (Map.Entry<List<String>, TypeIndex> entry : indexesByProperties.entrySet()) {
       for (String prop : entry.getKey()) {
-        if (property.equals(prop)) {
+        if (properties.contains(prop)) {
           result.add(entry.getValue());
           break;
         }

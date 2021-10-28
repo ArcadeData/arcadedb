@@ -318,12 +318,13 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
         if (!notNull)
           break;
 
-        if (keyTypes[keyIndex] == BinaryTypes.TYPE_STRING) {
+        final byte keyType = keyTypes[keyIndex];
+        if (keyType == BinaryTypes.TYPE_STRING) {
           // OPTIMIZATION: SPECIAL CASE, LAZY EVALUATE BYTE PER BYTE THE STRING
           result = comparator.compareBytes((byte[]) keys[keyIndex], currentPageBuffer);
         } else {
-          final Object key = serializer.deserializeValue(database, currentPageBuffer, keyTypes[keyIndex], null);
-          result = comparator.compare(keys[keyIndex], keyTypes[keyIndex], key, keyTypes[keyIndex]);
+          final Object key = serializer.deserializeValue(database, currentPageBuffer, keyType, null);
+          result = comparator.compare(keys[keyIndex], keyType, key, keyType);
         }
 
         if (result != 0)
