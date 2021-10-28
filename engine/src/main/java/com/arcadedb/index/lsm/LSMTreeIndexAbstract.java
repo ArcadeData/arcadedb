@@ -87,8 +87,9 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
    * Called at creation time.
    */
   protected LSMTreeIndexAbstract(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name, final boolean unique, String filePath,
-      final String ext, final PaginatedFile.MODE mode, final byte[] keyTypes, final int pageSize, final NULL_STRATEGY nullStrategy) throws IOException {
-    super(database, name, filePath, ext, mode, pageSize);
+      final String ext, final PaginatedFile.MODE mode, final byte[] keyTypes, final int pageSize, final int version, final NULL_STRATEGY nullStrategy)
+      throws IOException {
+    super(database, name, filePath, ext, mode, pageSize, version);
 
     if (nullStrategy == null)
       throw new IllegalArgumentException("Index null strategy is null ");
@@ -106,8 +107,8 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
    * Called at cloning time.
    */
   protected LSMTreeIndexAbstract(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name, final boolean unique, String filePath,
-      final String ext, final byte[] keyTypes, final int pageSize) throws IOException {
-    super(database, name, filePath, TEMP_EXT + ext, PaginatedFile.MODE.READ_WRITE, pageSize);
+      final String ext, final byte[] keyTypes, final int pageSize, final int version) throws IOException {
+    super(database, name, filePath, TEMP_EXT + ext, PaginatedFile.MODE.READ_WRITE, pageSize, version);
     this.mainIndex = mainIndex;
     this.serializer = database.getSerializer();
     this.comparator = serializer.getComparator();
@@ -120,8 +121,8 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
    * Called at load time (1st page only).
    */
   protected LSMTreeIndexAbstract(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name, final boolean unique, String filePath,
-      final int id, final PaginatedFile.MODE mode, final int pageSize) throws IOException {
-    super(database, name, filePath, id, mode, pageSize);
+      final int id, final PaginatedFile.MODE mode, final int pageSize, final int version) throws IOException {
+    super(database, name, filePath, id, mode, pageSize, version);
     this.mainIndex = mainIndex;
     this.serializer = database.getSerializer();
     this.comparator = serializer.getComparator();
@@ -276,21 +277,13 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
 
   protected void writeEntry(final Binary buffer, final Object[] keys, final Object rid) {
     buffer.clear();
-
-    // WRITE KEYS
-    for (int i = 0; i < keyTypes.length; ++i)
-      serializer.serializeValue(database, buffer, keyTypes[i], keys[i]);
-
+    writeKeys(buffer, keys);
     writeEntryValue(buffer, rid);
   }
 
   protected void writeEntry(final Binary buffer, final Object[] keys, final Object[] rids) {
     buffer.clear();
-
-    // WRITE KEYS
-    for (int i = 0; i < keyTypes.length; ++i)
-      serializer.serializeValue(database, buffer, keyTypes[i], keys[i]);
-
+    writeKeys(buffer, keys);
     writeEntryValues(buffer, rids);
   }
 
@@ -299,8 +292,11 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
    */
   protected int getSerializedKeySize(final Binary buffer, final int keyLength) {
     final int startsAt = buffer.position();
-    for (int keyIndex = 0; keyIndex < keyLength; ++keyIndex)
-      serializer.deserializeValue(database, buffer, keyTypes[keyIndex], null);
+    for (int keyIndex = 0; keyIndex < keyLength; ++keyIndex) {
+      final boolean notNull = version < 1 || buffer.getByte() == 1;
+      if (notNull)
+        serializer.deserializeValue(database, buffer, keyTypes[keyIndex], null);
+    }
 
     return buffer.position() - startsAt;
   }
@@ -310,8 +306,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
       final Object[] convertedKeys = new Object[keys.length];
       for (int i = 0; i < keys.length; ++i) {
         if (keys[i] == null)
-          // ONE KEY WAS NULL
-          return null;
+          continue;
 
         convertedKeys[i] = Type.convert(database, keys[i], BinaryTypes.getClassFromType(keyTypes[i]));
 
@@ -342,8 +337,13 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
 
     final Object[] key = new Object[keyTypes.length];
 
-    for (int keyIndex = 0; keyIndex < keyTypes.length; ++keyIndex)
-      key[keyIndex] = serializer.deserializeValue(database, currentPageBuffer, keyTypes[keyIndex], null);
+    for (int keyIndex = 0; keyIndex < keyTypes.length; ++keyIndex) {
+      final boolean notNull = version < 1 || currentPageBuffer.getByte() == 1;
+      if (notNull)
+        key[keyIndex] = serializer.deserializeValue(database, currentPageBuffer, keyTypes[keyIndex], null);
+      else
+        key[keyIndex] = null;
+    }
 
     return key;
   }
@@ -359,6 +359,18 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     for (int keyIndex = 0; keyIndex < keys.length; ++keyIndex) {
       // GET THE KEY
       final Object key = keys[keyIndex];
+
+      final boolean notNull = version < 1 || currentPageBuffer.getByte() == 1;
+      if (!notNull) {
+        if (key == null)
+          // BOTH NULL
+          continue;
+        else
+          return 1;
+      }
+
+      if (key == null)
+        return -1;
 
       if (keyTypes[keyIndex] == BinaryTypes.TYPE_STRING) {
         // OPTIMIZATION: SPECIAL CASE, LAZY EVALUATE BYTE PER BYTE THE STRING
@@ -470,6 +482,9 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   }
 
   protected Object[] checkForNulls(final Object[] keys) {
+    if (nullStrategy != NULL_STRATEGY.ERROR)
+      return keys;
+
     if (keys != null)
       for (int i = 0; i < keys.length; ++i)
         if (keys[i] == null)
@@ -529,5 +544,21 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
 
   protected RID getOriginalRID(final RID rid) {
     return new RID(database, (rid.getBucketId() * -1) - 2, rid.getPosition());
+  }
+
+  private void writeKeys(final Binary buffer, final Object[] keys) {
+    // WRITE KEYS
+    for (int i = 0; i < keyTypes.length; ++i) {
+      final Object value = keys[i];
+
+      if (value == null)
+        // WRITE 0 IF NULL
+        buffer.putByte((byte) 0);
+      else {
+        // WRITE 1 + THE ACTUAL VALUE
+        buffer.putByte((byte) 1);
+        serializer.serializeValue(database, buffer, keyTypes[i], value);
+      }
+    }
   }
 }

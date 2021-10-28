@@ -18,9 +18,8 @@ package com.arcadedb.engine;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.TransactionContext;
 
-import java.io.File;
-import java.io.IOException;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.io.*;
+import java.util.concurrent.atomic.*;
 
 /**
  * HEADER = [recordCount(int:4)] CONTENT-PAGES = [version(long:8),recordCountInPage(short:2),recordOffsetsInPage(512*ushort=2048)]
@@ -31,19 +30,21 @@ public abstract class PaginatedComponent {
   protected final PaginatedFile    file;
   protected final int              id;
   protected final int              pageSize;
+  protected final int              version;
   protected final AtomicInteger    pageCount = new AtomicInteger();
 
   protected PaginatedComponent(final DatabaseInternal database, final String name, String filePath, final String ext, final PaginatedFile.MODE mode,
-      final int pageSize) throws IOException {
-    this(database, name, filePath, ext, database.getFileManager().newFileId(), mode, pageSize);
+      final int pageSize, final int version) throws IOException {
+    this(database, name, filePath, ext, database.getFileManager().newFileId(), mode, pageSize, version);
   }
 
   protected PaginatedComponent(final DatabaseInternal database, final String name, String filePath, final int id, final PaginatedFile.MODE mode,
-      final int pageSize) throws IOException {
+      final int pageSize, final int version) throws IOException {
     this.database = database;
     this.name = name;
     this.id = id;
     this.pageSize = pageSize;
+    this.version = version;
 
     this.file = database.getFileManager().getOrCreateFile(name, filePath, mode);
 
@@ -55,8 +56,8 @@ public abstract class PaginatedComponent {
   }
 
   private PaginatedComponent(final DatabaseInternal database, final String name, String filePath, final String ext, final int id, final PaginatedFile.MODE mode,
-      final int pageSize) throws IOException {
-    this(database, name, filePath + "." + id + "." + pageSize + "." + ext, id, mode, pageSize);
+      final int pageSize, final int version) throws IOException {
+    this(database, name, filePath + "." + id + "." + pageSize + ".v" + version + "." + ext, id, mode, pageSize, version);
   }
 
   public File getOSFile() {
@@ -84,6 +85,10 @@ public abstract class PaginatedComponent {
 
   public int getId() {
     return id;
+  }
+
+  public int getVersion() {
+    return version;
   }
 
   public DatabaseInternal getDatabase() {
