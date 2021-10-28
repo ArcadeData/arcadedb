@@ -62,12 +62,15 @@ public class LSMTreeIndexCursor implements IndexCursor {
     this.ascendingOrder = ascendingOrder;
     this.keyTypes = index.getKeyTypes();
 
-    final Object[] serializedFromKeys = index.convertKeys(index.checkForNulls(fromKeys), keyTypes);
+    index.checkForNulls(fromKeys);
+    index.checkForNulls(toKeys);
+
+    final Object[] serializedFromKeys = index.convertKeys(fromKeys, keyTypes);
 
     this.fromKeys = fromKeys;
 
     this.toKeys = toKeys != null && toKeys.length == 0 ? null : toKeys;
-    this.serializedToKeys = index.convertKeys(index.checkForNulls(this.toKeys), keyTypes);
+    this.serializedToKeys = index.convertKeys(this.toKeys, keyTypes);
     this.toKeysInclusive = endKeysInclusive;
 
     BinarySerializer serializer = index.getDatabase().getSerializer();

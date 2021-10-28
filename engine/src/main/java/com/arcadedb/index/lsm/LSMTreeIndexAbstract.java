@@ -277,21 +277,13 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
 
   protected void writeEntry(final Binary buffer, final Object[] keys, final Object rid) {
     buffer.clear();
-
-    // WRITE KEYS
-    for (int i = 0; i < keyTypes.length; ++i)
-      serializer.serializeValue(database, buffer, keyTypes[i], keys[i]);
-
+    writeKeys(buffer, keys);
     writeEntryValue(buffer, rid);
   }
 
   protected void writeEntry(final Binary buffer, final Object[] keys, final Object[] rids) {
     buffer.clear();
-
-    // WRITE KEYS
-    for (int i = 0; i < keyTypes.length; ++i)
-      serializer.serializeValue(database, buffer, keyTypes[i], keys[i]);
-
+    writeKeys(buffer, keys);
     writeEntryValues(buffer, rids);
   }
 
@@ -300,8 +292,11 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
    */
   protected int getSerializedKeySize(final Binary buffer, final int keyLength) {
     final int startsAt = buffer.position();
-    for (int keyIndex = 0; keyIndex < keyLength; ++keyIndex)
-      serializer.deserializeValue(database, buffer, keyTypes[keyIndex], null);
+    for (int keyIndex = 0; keyIndex < keyLength; ++keyIndex) {
+      final boolean notNull = version < 1 || buffer.getByte() == 1;
+      if (notNull)
+        serializer.deserializeValue(database, buffer, keyTypes[keyIndex], null);
+    }
 
     return buffer.position() - startsAt;
   }
@@ -342,8 +337,13 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
 
     final Object[] key = new Object[keyTypes.length];
 
-    for (int keyIndex = 0; keyIndex < keyTypes.length; ++keyIndex)
-      key[keyIndex] = serializer.deserializeValue(database, currentPageBuffer, keyTypes[keyIndex], null);
+    for (int keyIndex = 0; keyIndex < keyTypes.length; ++keyIndex) {
+      final boolean notNull = version < 1 || currentPageBuffer.getByte() == 1;
+      if (notNull)
+        key[keyIndex] = serializer.deserializeValue(database, currentPageBuffer, keyTypes[keyIndex], null);
+      else
+        key[keyIndex] = null;
+    }
 
     return key;
   }
@@ -359,6 +359,18 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     for (int keyIndex = 0; keyIndex < keys.length; ++keyIndex) {
       // GET THE KEY
       final Object key = keys[keyIndex];
+
+      final boolean notNull = version < 1 || currentPageBuffer.getByte() == 1;
+      if (!notNull) {
+        if (key == null)
+          // BOTH NULL
+          continue;
+        else
+          return 1;
+      }
+
+      if (key == null)
+        return -1;
 
       if (keyTypes[keyIndex] == BinaryTypes.TYPE_STRING) {
         // OPTIMIZATION: SPECIAL CASE, LAZY EVALUATE BYTE PER BYTE THE STRING
@@ -532,5 +544,21 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
 
   protected RID getOriginalRID(final RID rid) {
     return new RID(database, (rid.getBucketId() * -1) - 2, rid.getPosition());
+  }
+
+  private void writeKeys(final Binary buffer, final Object[] keys) {
+    // WRITE KEYS
+    for (int i = 0; i < keyTypes.length; ++i) {
+      final Object value = keys[i];
+
+      if (value == null)
+        // WRITE 0 IF NULL
+        buffer.putByte((byte) 0);
+      else {
+        // WRITE 1 + THE ACTUAL VALUE
+        buffer.putByte((byte) 1);
+        serializer.serializeValue(database, buffer, keyTypes[i], value);
+      }
+    }
   }
 }

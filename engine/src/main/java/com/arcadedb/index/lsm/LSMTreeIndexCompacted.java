@@ -59,8 +59,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
   }
 
   public Set<IndexCursorEntry> get(final Object[] keys, final int limit) {
-    if (nullStrategy == NULL_STRATEGY.ERROR)
-      checkForNulls(keys);
+    checkForNulls(keys);
 
     final Object[] convertedKeys = convertKeys(keys, keyTypes);
     if (convertedKeys == null && nullStrategy == NULL_STRATEGY.SKIP)
@@ -210,7 +209,6 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
       return Collections.emptyList();
     }
 
-    checkForNulls(fromKeys);
     final Object[] convertedFromKeys = convertKeys(fromKeys, keyTypes);
 
     final List<LSMTreeIndexUnderlyingCompactedSeriesCursor> iterators = new ArrayList<>();

@@ -277,6 +277,10 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
 
       result = 1;
       for (int keyIndex = 0; keyIndex < keys.length; ++keyIndex) {
+        final boolean notNull = version < 1 || currentPageBuffer.getByte() == 1;
+        if (!notNull)
+          break;
+
         final byte keyType = keyTypes[keyIndex];
         if (keyType == BinaryTypes.TYPE_STRING) {
           // OPTIMIZATION: SPECIAL CASE, LAZY EVALUATE BYTE PER BYTE THE STRING
@@ -310,6 +314,10 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
 
       result = 1;
       for (int keyIndex = 0; keyIndex < keys.length; ++keyIndex) {
+        final boolean notNull = version < 1 || currentPageBuffer.getByte() == 1;
+        if (!notNull)
+          break;
+
         if (keyTypes[keyIndex] == BinaryTypes.TYPE_STRING) {
           // OPTIMIZATION: SPECIAL CASE, LAZY EVALUATE BYTE PER BYTE THE STRING
           result = comparator.compareBytes((byte[]) keys[keyIndex], currentPageBuffer);

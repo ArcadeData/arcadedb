@@ -65,8 +65,13 @@ public class LSMTreeIndexUnderlyingPageCursor extends LSMTreeIndexUnderlyingAbst
     buffer.position(contentPos);
 
     nextKeys = new Object[keyTypes.length];
-    for (int k = 0; k < keyTypes.length; ++k)
-      nextKeys[k] = index.getDatabase().getSerializer().deserializeValue(index.getDatabase(), buffer, keyTypes[k], null);
+    for (int k = 0; k < keyTypes.length; ++k) {
+      final boolean notNull = index.getVersion() < 1 || buffer.getByte() == 1;
+      if (notNull)
+        nextKeys[k] = index.getDatabase().getSerializer().deserializeValue(index.getDatabase(), buffer, keyTypes[k], null);
+      else
+        nextKeys[k] = null;
+    }
 
     valuePosition = buffer.position();
     nextValue = index.readEntryValues(buffer);
