@@ -18,7 +18,7 @@ public class EventWatcherSubscription {
     this.channel = channel;
   }
 
-  public void Add(final String type, final Set<ChangeEvent.TYPE> changeTypes) {
+  public void add(final String type, final Set<ChangeEvent.TYPE> changeTypes) {
     var key = type == null ? "*" : type; // ConcurrentHashMap can't have null keys, so use * for "all types."
     typeSubscriptions.computeIfAbsent(key, k -> new HashSet<>())
         .addAll(changeTypes == null ? allTypes : changeTypes);

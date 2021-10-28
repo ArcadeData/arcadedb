@@ -29,7 +29,7 @@ public class WebSocketEventBus {
     var databaseSubscribers = this.subscribers.computeIfAbsent(databaseName, k -> new ConcurrentHashMap<>());
 
     databaseSubscribers.computeIfAbsent(channelId, k -> new EventWatcherSubscription(databaseName, channel))
-        .Add(type, changeTypes);
+        .add(type, changeTypes);
     if (!this.databaseWatchers.containsKey(databaseName)) this.startDatabaseWatcher(databaseName);
   }
 

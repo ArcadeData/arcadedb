@@ -37,6 +37,7 @@ public class WebSocketEventBusIT extends BaseGraphServerTest {
     Assertions.assertEquals("create", json.get("changeType"));
 
     // The sending thread should have detected and removed the zombie connection.
+    Thread.sleep(100);
     Assertions.assertEquals(1, this.getServer(0).getHttpServer().getWebSocketEventBus().getDatabaseSubscriptions("graph").size());
   }
 
