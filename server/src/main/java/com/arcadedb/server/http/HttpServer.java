@@ -154,6 +154,10 @@ public class HttpServer implements ServerPlugin {
     return port;
   }
 
+  public WebSocketEventBus getWebSocketEventBus() {
+    return webSocketEventBus;
+  }
+
   @Override
   public void registerAPI(HttpServer httpServer, final PathHandler routes) {
   }

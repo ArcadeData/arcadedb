@@ -6,10 +6,7 @@ import io.undertow.server.DefaultByteBufferPool;
 import io.undertow.util.StringWriteChannelListener;
 import io.undertow.websockets.client.WebSocketClient;
 import io.undertow.websockets.client.WebSocketClientNegotiation;
-import io.undertow.websockets.core.AbstractReceiveListener;
-import io.undertow.websockets.core.BufferedTextMessage;
-import io.undertow.websockets.core.WebSocketChannel;
-import io.undertow.websockets.core.WebSocketFrameType;
+import io.undertow.websockets.core.*;
 import org.xnio.OptionMap;
 import org.xnio.Options;
 import org.xnio.Xnio;
@@ -90,6 +87,11 @@ public class WebSocketClientHelper {
   }
 
   public void close() throws IOException {
-    this.channel.sendClose();
+    WebSockets.sendCloseBlocking(CloseMessage.NORMAL_CLOSURE, null, this.channel);
+    this.channel.close();
+  }
+
+  public void breakConnection() throws IOException {
+    this.channel.close();
   }
 }

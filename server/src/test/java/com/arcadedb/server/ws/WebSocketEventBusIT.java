@@ -8,6 +8,39 @@ import org.junit.jupiter.api.Test;
 public class WebSocketEventBusIT extends BaseGraphServerTest {
 
   @Test
+  public void closeUnsubscribesAll() throws Exception {
+    var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+    var result = new JSONObject(client.send(buildActionMessage("subscribe", "graph", "V1")));
+    Assertions.assertEquals("ok", result.get("result"));
+    result = new JSONObject(client.send(buildActionMessage("subscribe", "graph", "V2")));
+    Assertions.assertEquals("ok", result.get("result"));
+
+    client.close();
+    Thread.sleep(100);
+    Assertions.assertEquals(0, this.getServer(0).getHttpServer().getWebSocketEventBus().getDatabaseSubscriptions("graph").size());
+  }
+
+  @Test
+  public void badCloseIsCleanedUp() throws Exception {
+    var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+    var result = new JSONObject(client.send(buildActionMessage("subscribe", "graph", "V1")));
+    Assertions.assertEquals("ok", result.get("result"));
+
+    client.breakConnection();
+
+    client = new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+    result = new JSONObject(client.send(buildActionMessage("subscribe", "graph", "V1")));
+    Assertions.assertEquals("ok", result.get("result"));
+
+    this.getServerDatabase(0, "graph").newVertex("V1").set("name", "test").save();
+    var json = new JSONObject(client.popMessage());
+    Assertions.assertEquals("create", json.get("changeType"));
+
+    // The sending thread should have detected and removed the zombie connection.
+    Assertions.assertEquals(1, this.getServer(0).getHttpServer().getWebSocketEventBus().getDatabaseSubscriptions("graph").size());
+  }
+
+  @Test
   public void invalidJsonReturnsError() throws Exception {
     var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
@@ -67,6 +100,28 @@ public class WebSocketEventBusIT extends BaseGraphServerTest {
     Assertions.assertEquals("V1", record.get("@type"));
 
     client.close();
+  }
+
+  @Test
+  public void twoSubscribersAreServiced() throws Exception {
+    var clients = new WebSocketClientHelper[]{
+        new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS),
+        new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)};
+
+    for (var client : clients) {
+      var result = client.send(buildActionMessage("subscribe", "graph"));
+      Assertions.assertEquals("ok", new JSONObject(result).get("result"));
+    }
+
+    this.getServerDatabase(0, "graph").newVertex("V1").set("name", "test").save();
+
+    for (var client : clients) {
+      var json = new JSONObject(client.popMessage());
+      Assertions.assertEquals("create", json.get("changeType"));
+      var record = json.getJSONObject("record");
+      Assertions.assertEquals("test", record.get("name"));
+      Assertions.assertEquals("V1", record.get("@type"));
+    }
   }
 
   @Test

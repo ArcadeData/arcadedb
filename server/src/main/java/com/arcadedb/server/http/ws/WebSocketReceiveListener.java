@@ -59,8 +59,9 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
 
   @Override
   protected void onClose(final WebSocketChannel channel, final StreamSourceFrameChannel frameChannel) throws IOException {
-    // TODO: Make sure unsubscribeAll gets called for zombie connections
-    this.webSocketEventBus.unsubscribeAll((UUID) channel.getAttribute(WebSocketEventBus.CHANNEL_ID));
+    final var channelId = (UUID) channel.getAttribute(WebSocketEventBus.CHANNEL_ID);
+    LogManager.instance().log(this, Level.INFO, "Socket disconnected: %s.", null, channelId);
+    this.webSocketEventBus.unsubscribeAll(channelId);
   }
 
   private void sendAck(final WebSocketChannel channel, final ACTION action) {
