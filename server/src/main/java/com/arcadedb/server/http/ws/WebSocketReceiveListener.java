@@ -1,9 +1,11 @@
 package com.arcadedb.server.http.ws;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.http.HttpServer;
 import io.undertow.websockets.core.*;
+import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.IOException;
@@ -53,6 +55,10 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
           }
           break;
       }
+    } catch (JSONException e) {
+      sendError(channel, "Unable to parse JSON", e.getMessage(), e);
+    } catch (DatabaseOperationException e) {
+      sendError(channel, "Database error", e.getMessage(), e);
     } catch (Exception e) {
       LogManager.instance().log(this, getErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
       sendError(channel, "Internal error", e.getMessage(), e);

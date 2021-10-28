@@ -7,6 +7,7 @@ import io.undertow.util.StringWriteChannelListener;
 import io.undertow.websockets.client.WebSocketClient;
 import io.undertow.websockets.client.WebSocketClientNegotiation;
 import io.undertow.websockets.core.*;
+import org.junit.jupiter.api.Assertions;
 import org.xnio.OptionMap;
 import org.xnio.Options;
 import org.xnio.Xnio;
@@ -25,13 +26,15 @@ public class WebSocketClientHelper {
   private static       XnioWorker                 worker;
   private final        WebSocketChannel           channel;
   private static final ByteBufferPool             pool         = new DefaultByteBufferPool(true, BUFFER_SIZE, 1000, 10, 100);
-  private final        ArrayBlockingQueue<String> messageQueue = new ArrayBlockingQueue<>(10);
+  private final        ArrayBlockingQueue<String> messageQueue = new ArrayBlockingQueue<>(20);
+
+  private static final int DEFAULT_DELAY = 5000;
 
   static {
     Xnio xnio = Xnio.getInstance(BaseGraphServerTest.class.getClassLoader());
     try {
       worker = xnio.createWorker(OptionMap.builder()
-          .set(Options.WORKER_IO_THREADS, 2)
+          .set(Options.WORKER_IO_THREADS, 1)
           .set(Options.CONNECTION_HIGH_WATER, 1000000)
           .set(Options.CONNECTION_LOW_WATER, 1000000)
           .set(Options.WORKER_TASK_CORE_THREADS, 30)
@@ -55,8 +58,7 @@ public class WebSocketClientHelper {
       });
     }
     this.channel = builder.connect().get();
-
-    channel.getReceiveSetter().set(new AbstractReceiveListener() {
+    this.channel.getReceiveSetter().set(new AbstractReceiveListener() {
       @Override
       protected void onFullTextMessage(WebSocketChannel channel, BufferedTextMessage message) {
         messageQueue.offer(message.getData());
@@ -65,21 +67,25 @@ public class WebSocketClientHelper {
       @Override
       protected void onError(WebSocketChannel channel, Throwable error) {
         super.onError(channel, error);
-        messageQueue.offer(error.getMessage());
+        Assertions.fail(error.getMessage());
       }
     });
-    channel.resumeReceives();
+    this.channel.resumeReceives();
   }
 
   public String send(String payload) throws URISyntaxException, IOException {
-    var sendChannel = channel.send(WebSocketFrameType.TEXT);
+    var sendChannel = this.channel.send(WebSocketFrameType.TEXT);
     new StringWriteChannelListener(payload).setup(sendChannel);
-    return this.popMessage();
+    return this.popMessage(DEFAULT_DELAY);
   }
 
   public String popMessage() {
+    return this.popMessage(DEFAULT_DELAY);
+  }
+
+  public String popMessage(int delayMS) {
     try {
-      return this.messageQueue.poll(500, TimeUnit.MILLISECONDS);
+      return this.messageQueue.poll(delayMS, TimeUnit.MILLISECONDS);
     } catch (InterruptedException ignored) {
     }
 
