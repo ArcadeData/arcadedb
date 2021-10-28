@@ -97,4 +97,3 @@ public class WebSocketEventBus {
     this.databaseWatchers.remove(database);
   }
 }
-
