@@ -79,7 +79,7 @@ public class WebSocketClientHelper {
 
   public String popMessage() {
     try {
-      return this.messageQueue.poll(100, TimeUnit.MILLISECONDS);
+      return this.messageQueue.poll(500, TimeUnit.MILLISECONDS);
     } catch (InterruptedException ignored) {
     }
 
