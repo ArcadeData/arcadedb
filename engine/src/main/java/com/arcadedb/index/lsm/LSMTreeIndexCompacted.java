@@ -46,15 +46,16 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
    */
   public LSMTreeIndexCompacted(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name, final boolean unique, final String filePath,
       final byte[] keyTypes, final int pageSize) throws IOException {
-    super(mainIndex, database, name, unique, filePath, unique ? UNIQUE_INDEX_EXT : NOTUNIQUE_INDEX_EXT, keyTypes, pageSize);
+    super(mainIndex, database, name, unique, filePath, unique ? UNIQUE_INDEX_EXT : NOTUNIQUE_INDEX_EXT, keyTypes, pageSize,
+        LSMTreeIndexMutable.CURRENT_VERSION);
   }
 
   /**
    * Called at load time (1st page only).
    */
   protected LSMTreeIndexCompacted(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name, final boolean unique, final String filePath,
-      final int id, final PaginatedFile.MODE mode, final int pageSize) throws IOException {
-    super(mainIndex, database, name, unique, filePath, id, mode, pageSize);
+      final int id, final PaginatedFile.MODE mode, final int pageSize, final int version) throws IOException {
+    super(mainIndex, database, name, unique, filePath, id, mode, pageSize, version);
   }
 
   public Set<IndexCursorEntry> get(final Object[] keys, final int limit) {

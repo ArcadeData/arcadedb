@@ -155,7 +155,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     int last_ = name.lastIndexOf('_');
     final String newName = name.substring(0, last_) + "_" + System.nanoTime();
 
-    return new LSMTreeIndexCompacted(mainIndex, database, newName, unique, database.getDatabasePath() + "/" + newName, keyTypes, pageSize, version);
+    return new LSMTreeIndexCompacted(mainIndex, database, newName, unique, database.getDatabasePath() + "/" + newName, keyTypes, pageSize);
   }
 
   public IndexCursor iterator(final boolean ascendingOrder, final Object[] fromKeys, final boolean inclusive) throws IOException {

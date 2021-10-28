@@ -458,6 +458,17 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     currentPage.writeByte(INT_SERIALIZED_SIZE + INT_SERIALIZED_SIZE, (byte) (mutable ? 1 : 0));
   }
 
+  public static boolean isKeyNull(final Object[] keys) {
+    if (keys == null)
+      return true;
+
+    for (int i = 0; i < keys.length; ++i)
+      if (keys[i] == null)
+        return true;
+
+    return false;
+  }
+
   protected Object[] checkForNulls(final Object[] keys) {
     if (nullStrategy != NULL_STRATEGY.ERROR)
       return keys;
