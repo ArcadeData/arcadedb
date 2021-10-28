@@ -54,6 +54,7 @@ public class WebSocketEventBus {
         WebSockets.sendText(event.toJSON(), subscription.getChannel(), new WebSocketCallback<>() {
           @Override
           public void complete(WebSocketChannel webSocketChannel, Void unused) {
+            // ignored
           }
 
           @Override
