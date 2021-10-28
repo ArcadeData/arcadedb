@@ -9,6 +9,7 @@ import org.json.JSONObject;
 import java.io.IOException;
 import java.util.UUID;
 import java.util.logging.Level;
+import java.util.stream.Collectors;
 
 public class WebSocketReceiveListener extends AbstractReceiveListener {
   private final HttpServer        httpServer;
@@ -34,9 +35,10 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
 
       switch (action) {
         case SUBSCRIBE:
-          var changeTypes = message.optJSONArray("changeTypes");
-          this.webSocketEventBus.subscribe(new EventWatcherSubscription(message.getString("database"),
-              message.optString("type", null), changeTypes == null ? null : changeTypes.toList(), channel));
+          var jsonChangeTypes = message.optJSONArray("changeTypes");
+          var changeTypes = jsonChangeTypes == null ? null :
+              jsonChangeTypes.toList().stream().map(t -> ChangeEvent.TYPE.valueOf(t.toString().toUpperCase())).collect(Collectors.toSet());
+          this.webSocketEventBus.subscribe(message.getString("database"), message.optString("type", null), changeTypes, channel);
           this.sendAck(channel, action);
           break;
         case UNSUBSCRIBE:
