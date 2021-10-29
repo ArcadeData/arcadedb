@@ -70,7 +70,7 @@ public class AlterPropertyStatement extends DDLStatement {
       String customName = customPropertyName.getStringValue();
       Object oldValue = property.getCustomValue(customName);
       Object finalValue = customPropertyValue.execute((Identifiable) null, ctx);
-      property.setCustom(customName, finalValue == null ? null : finalValue);
+      property.setCustomValue(customName, finalValue == null ? null : finalValue);
 
       result.setProperty("operation", "alter property custom");
       result.setProperty("customAttribute", customPropertyName.getStringValue());

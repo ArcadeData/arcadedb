@@ -666,7 +666,7 @@ public class DocumentType {
     return custom.get(key);
   }
 
-  public Object setCustom(final String key, final Object value) {
+  public Object setCustomValue(final String key, final Object value) {
     if (value == null)
       return custom.remove(key);
     return custom.put(key, value);

@@ -189,7 +189,7 @@ public class AlterTypeStatement extends DDLStatement {
       if (customValue != null)
         value = customValue.execute((Identifiable) null, ctx);
 
-      type.setCustom(customKey.getStringValue(), value);
+      type.setCustomValue(customKey.getStringValue(), value);
     }
 
     final InternalResultSet resultSet = new InternalResultSet();
