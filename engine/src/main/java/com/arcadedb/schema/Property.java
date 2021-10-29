@@ -17,13 +17,14 @@ package com.arcadedb.schema;
 
 import com.arcadedb.index.Index;
 
-import java.util.Objects;
+import java.util.*;
 
 public class Property {
-  private final DocumentType owner;
-  private final String       name;
-  private final Type         type;
-  private final int          id;
+  private final   DocumentType        owner;
+  private final   String              name;
+  private final   Type                type;
+  private final   int                 id;
+  protected final Map<String, Object> custom = new HashMap<>();
 
   public Property(final DocumentType owner, final String name, final Type type) {
     this.owner = owner;
@@ -66,6 +67,20 @@ public class Property {
 
   public int getId() {
     return id;
+  }
+
+  public Set<String> getCustomKeys() {
+    return Collections.unmodifiableSet(custom.keySet());
+  }
+
+  public Object getCustomValue(final String key) {
+    return custom.get(key);
+  }
+
+  public Object setCustomValue(final String key, final Object value) {
+    if (value == null)
+      return custom.remove(key);
+    return custom.put(key, value);
   }
 
   @Override

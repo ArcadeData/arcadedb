@@ -43,6 +43,7 @@ public class DocumentType {
   protected       Map<Integer, List<IndexInternal>> bucketIndexesByBucket   = new HashMap<>();
   protected       Map<List<String>, TypeIndex>      indexesByProperties     = new HashMap<>();
   protected final RecordEventsRegistry              events                  = new RecordEventsRegistry();
+  protected final Map<String, Object>               custom                  = new HashMap<>();
 
   public DocumentType(final EmbeddedSchema schema, final String name) {
     this.schema = schema;
@@ -655,6 +656,20 @@ public class DocumentType {
         return true;
     }
     return false;
+  }
+
+  public Set<String> getCustomKeys() {
+    return Collections.unmodifiableSet(custom.keySet());
+  }
+
+  public Object getCustomValue(final String key) {
+    return custom.get(key);
+  }
+
+  public Object setCustomValue(final String key, final Object value) {
+    if (value == null)
+      return custom.remove(key);
+    return custom.put(key, value);
   }
 
   protected <RET> RET recordFileChanges(final Callable<Object> callback) {

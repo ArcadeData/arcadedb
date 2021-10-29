@@ -16,6 +16,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import org.json.JSONObject;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -26,7 +27,7 @@ import java.util.stream.*;
  */
 public class AlterTypeExecutionTest extends TestHelper {
   @Test
-  public void alterTypeInheritanceUsingSQL() {
+  public void sqlAlterTypeInheritanceUsing() {
     database.command("sql", "CREATE VERTEX TYPE Car");
 
     Assertions.assertTrue(database.getSchema().getType("Car").getSuperTypes().isEmpty());
@@ -63,5 +64,25 @@ public class AlterTypeExecutionTest extends TestHelper {
     Assertions.assertTrue(database.getSchema().getType("Car").getSubTypes().stream().map(x -> x.getName()).collect(Collectors.toSet()).contains("Suv"));
     Assertions.assertTrue(database.getSchema().getType("Car").isSuperTypeOf("Suv"));
     Assertions.assertTrue(database.getSchema().getType("Vehicle").isSuperTypeOf("Suv"));
+  }
+
+  @Test
+  public void sqlAlterTypeCustom() {
+    database.command("sql", "CREATE VERTEX TYPE Suv");
+
+    database.command("sql", "ALTER TYPE Suv CUSTOM description = 'test'");
+    Assertions.assertEquals("test", database.getSchema().getType("Suv").getCustomValue("description"));
+
+    database.command("sql", "ALTER TYPE Suv CUSTOM age = 3");
+    Assertions.assertEquals(3, database.getSchema().getType("Suv").getCustomValue("age"));
+
+    final JSONObject cfg = database.getSchema().getEmbedded().serializeConfiguration();
+    JSONObject customMap = cfg.getJSONObject("types").getJSONObject("Suv").getJSONObject("custom");
+    Assertions.assertEquals("test", customMap.getString("description"));
+    Assertions.assertEquals(3, customMap.getInt("age"));
+
+    database.command("sql", "ALTER TYPE Suv CUSTOM age = null");
+    Assertions.assertNull(database.getSchema().getType("Suv").getCustomValue("age"));
+    Assertions.assertFalse(database.getSchema().getType("Suv").getCustomKeys().contains("age"));
   }
 }
