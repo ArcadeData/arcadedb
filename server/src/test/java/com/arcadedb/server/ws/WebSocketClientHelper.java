@@ -34,11 +34,9 @@ public class WebSocketClientHelper {
     Xnio xnio = Xnio.getInstance(BaseGraphServerTest.class.getClassLoader());
     try {
       worker = xnio.createWorker(OptionMap.builder()
-          .set(Options.WORKER_IO_THREADS, 1)
+          .set(Options.WORKER_IO_THREADS, 4)
           .set(Options.CONNECTION_HIGH_WATER, 1000000)
           .set(Options.CONNECTION_LOW_WATER, 1000000)
-          .set(Options.WORKER_TASK_CORE_THREADS, 30)
-          .set(Options.WORKER_TASK_MAX_THREADS, 30)
           .set(Options.TCP_NODELAY, true)
           .set(Options.CORK, true)
           .getMap());
