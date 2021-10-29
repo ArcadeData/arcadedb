@@ -17,9 +17,16 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.database.Database;
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.InternalResultSet;
+import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Property;
 
 import java.util.*;
 
@@ -43,58 +50,46 @@ public class AlterPropertyStatement extends DDLStatement {
 
   @Override
   public ResultSet executeDDL(CommandContext ctx) {
+    Database db = ctx.getDatabase();
+    DocumentType typez = db.getSchema().getType(typeName.getStringValue());
 
-    throw new UnsupportedOperationException();
-//    Database db = ctx.getDatabase();
-//    OClass typez = db.getMetadata().getSchema().getClass(className.getStringValue());
-//
-//    if (typez == null) {
-//      throw new PCommandExecutionException("Invalid class name or class not found: " + typez);
-//    }
-//
-//    OProperty property = typez.getProperty(propertyName.getStringValue());
-//    if (property == null) {
-//      throw new PCommandExecutionException("Property " + property + " not found on class " + typez);
-//    }
-//
-//    OResultInternal result = new OResultInternal();
-//    result.setProperty("class", className.getStringValue());
-//    result.setProperty("property", propertyName.getStringValue());
-//
-//    if (customPropertyName != null) {
-//      String customName = customPropertyName.getStringValue();
-//      Object oldValue = property.getCustom(customName);
-//      Object finalValue = customPropertyValue.execute((PIdentifiable) null, ctx);
-//      property.setCustom(customName, finalValue == null ? null : "" + finalValue);
-//
-//      result.setProperty("operation", "alter property custom");
-//      result.setProperty("customAttribute", customPropertyName.getStringValue());
-//      result.setProperty("oldValue", oldValue != null ? oldValue.toString() : null);
-//      result.setProperty("newValue", finalValue != null ? finalValue.toString() : null);
-//    } else {
+    if (typez == null) {
+      throw new CommandExecutionException("Invalid type name or type not found: " + typez);
+    }
+
+    Property property = typez.getProperty(propertyName.getStringValue());
+    if (property == null) {
+      throw new CommandExecutionException("Property " + property + " not found on type " + typez);
+    }
+
+    ResultInternal result = new ResultInternal();
+    result.setProperty("type", typeName.getStringValue());
+    result.setProperty("property", propertyName.getStringValue());
+
+    if (customPropertyName != null) {
+      String customName = customPropertyName.getStringValue();
+      Object oldValue = property.getCustomValue(customName);
+      Object finalValue = customPropertyValue.execute((Identifiable) null, ctx);
+      property.setCustom(customName, finalValue == null ? null : finalValue);
+
+      result.setProperty("operation", "alter property custom");
+      result.setProperty("customAttribute", customPropertyName.getStringValue());
+      result.setProperty("oldValue", oldValue != null ? oldValue : null);
+      result.setProperty("newValue", finalValue != null ? finalValue : null);
+    } else {
+      throw new UnsupportedOperationException();
+
 //      String setting = settingName.getStringValue();
-//      Object finalValue = settingValue.execute((PIdentifiable) null, ctx);
-//
-//      OProperty.ATTRIBUTES attribute;
-//      try {
-//        attribute = OProperty.ATTRIBUTES.valueOf(setting.toUpperCase(Locale.ENGLISH));
-//      } catch (IllegalArgumentException e) {
-//        throw OException.wrapException(new PCommandExecutionException(
-//            "Unknown property attribute '" + setting + "'. Supported attributes are: " + Arrays
-//                .toString(OProperty.ATTRIBUTES.values())), e);
-//      }
-//      Object oldValue = property.get(attribute);
-//      property.set(attribute, finalValue);
-//      finalValue = property.get(attribute);//it makes some conversions...
+//      Object finalValue = settingValue.execute((Identifiable) null, ctx);
 //
 //      result.setProperty("operation", "alter property");
 //      result.setProperty("attribute", setting);
 //      result.setProperty("oldValue", oldValue != null ? oldValue.toString() : null);
 //      result.setProperty("newValue", finalValue != null ? finalValue.toString() : null);
-//    }
-//    OInternalResultSet rs = new OInternalResultSet();
-//    rs.add(result);
-//    return rs;
+    }
+    InternalResultSet rs = new InternalResultSet();
+    rs.add(result);
+    return rs;
   }
 
   @Override
@@ -140,7 +135,7 @@ public class AlterPropertyStatement extends DDLStatement {
     if (o == null || getClass() != o.getClass())
       return false;
 
-    AlterPropertyStatement that = (AlterPropertyStatement) o;
+    final AlterPropertyStatement that = (AlterPropertyStatement) o;
 
     if (typeName != null ? !typeName.equals(that.typeName) : that.typeName != null)
       return false;

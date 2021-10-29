@@ -17,6 +17,7 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
@@ -42,11 +43,8 @@ public class AlterTypeStatement extends DDLStatement {
   protected List<Identifier> identifierListValue     = new ArrayList<>();
   protected PNumber          numberValue;
   protected Boolean          booleanValue;
-
-  // only to manage 'round-robin' as a bucket selection strategy (not a valid identifier)
-  protected String customString;
-
-  protected boolean unsafe;
+  protected Identifier       customKey;
+  protected Expression       customValue;
 
   public AlterTypeStatement(int id) {
     super(id);
@@ -60,8 +58,28 @@ public class AlterTypeStatement extends DDLStatement {
   public void toString(Map<String, Object> params, StringBuilder builder) {
     builder.append("ALTER TYPE ");
     name.toString(params, builder);
-    if (property != null)
+    if (property != null) {
       builder.append(" " + property + " ");
+
+      if (numberValue != null) {
+        numberValue.toString(params, builder); // clusters only
+      } else if (identifierValue != null) {
+        identifierValue.toString(params, builder);
+      } else {
+        builder.append("null");
+      }
+    }
+
+    if (customKey != null) {
+      builder.append(" CUSTOM ");
+      customKey.toString(params, builder);
+      builder.append("=");
+      if (customValue == null) {
+        builder.append("null");
+      } else {
+        customValue.toString(params, builder);
+      }
+    }
   }
 
   public Statement copy() {
@@ -72,8 +90,8 @@ public class AlterTypeStatement extends DDLStatement {
     result.identifierListAddRemove = new ArrayList<>(identifierListAddRemove);
     result.numberValue = numberValue == null ? null : numberValue.copy();
     result.booleanValue = booleanValue;
-    result.customString = customString;
-    result.unsafe = unsafe;
+    result.customKey = customKey == null ? null : customKey.copy();
+    result.customValue = customValue == null ? null : customValue.copy();
     return result;
   }
 
@@ -86,8 +104,6 @@ public class AlterTypeStatement extends DDLStatement {
 
     final AlterTypeStatement that = (AlterTypeStatement) o;
 
-    if (unsafe != that.unsafe)
-      return false;
     if (name != null ? !name.equals(that.name) : that.name != null)
       return false;
     if (property != that.property)
@@ -100,7 +116,11 @@ public class AlterTypeStatement extends DDLStatement {
       return false;
     if (booleanValue != null ? !booleanValue.equals(that.booleanValue) : that.booleanValue != null)
       return false;
-    return customString != null ? customString.equals(that.customString) : that.customString == null;
+    if (customKey != null ? !customKey.equals(that.customKey) : that.customKey != null)
+      return false;
+    if (customValue != null ? !customValue.equals(that.customValue) : that.customValue != null)
+      return false;
+    return true;
   }
 
   @Override
@@ -111,8 +131,8 @@ public class AlterTypeStatement extends DDLStatement {
     result = 31 * result + identifierListAddRemove.hashCode();
     result = 31 * result + (numberValue != null ? numberValue.hashCode() : 0);
     result = 31 * result + (booleanValue != null ? booleanValue.hashCode() : 0);
-    result = 31 * result + (customString != null ? customString.hashCode() : 0);
-    result = 31 * result + (unsafe ? 1 : 0);
+    result = 31 * result + (customKey != null ? customKey.hashCode() : 0);
+    result = 31 * result + (customValue != null ? customValue.hashCode() : 0);
     return result;
   }
 
@@ -164,19 +184,26 @@ public class AlterTypeStatement extends DDLStatement {
       }
     }
 
+    if (customKey != null) {
+      Object value = null;
+      if (customValue != null)
+        value = customValue.execute((Identifiable) null, ctx);
+
+      type.setCustom(customKey.getStringValue(), value);
+    }
+
     final InternalResultSet resultSet = new InternalResultSet();
-    ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal();
     result.setProperty("operation", "ALTER TYPE");
     result.setProperty("typeName", name.getStringValue());
     result.setProperty("result", "OK");
     return resultSet;
   }
 
-  private void doSetSuperType(final CommandContext ctx, final DocumentType oClass) {
+  private void doSetSuperType(final CommandContext ctx, final DocumentType type) {
     if (identifierListValue == null)
       throw new CommandExecutionException("Invalid super type names");
 
-    final List<DocumentType> superclasses = new ArrayList<>();
     for (int i = 0; i < identifierListValue.size(); i++) {
       final Identifier superTypeName = identifierListValue.get(i);
       final Boolean add = identifierListAddRemove.get(i);
@@ -186,9 +213,9 @@ public class AlterTypeStatement extends DDLStatement {
         throw new CommandExecutionException("Super type '" + superTypeName.getStringValue() + "' not found");
 
       if (add)
-        oClass.addSuperType(superclass);
+        type.addSuperType(superclass);
       else
-        oClass.removeSuperType(superclass);
+        type.removeSuperType(superclass);
     }
   }
 }

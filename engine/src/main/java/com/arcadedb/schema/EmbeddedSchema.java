@@ -265,7 +265,8 @@ public class EmbeddedSchema implements Schema {
 
     return recordFileChanges(() -> {
       try {
-        final Bucket bucket = new Bucket(database, bucketName, databasePath + "/" + bucketName, PaginatedFile.MODE.READ_WRITE, pageSize, Bucket.CURRENT_VERSION);
+        final Bucket bucket = new Bucket(database, bucketName, databasePath + "/" + bucketName, PaginatedFile.MODE.READ_WRITE, pageSize,
+            Bucket.CURRENT_VERSION);
         registerFile(bucket);
         bucketMap.put(bucketName, bucket);
 
@@ -1102,6 +1103,10 @@ public class EmbeddedSchema implements Schema {
             }
           }
         }
+
+        type.custom.clear();
+        if (schemaType.has("custom"))
+          type.custom.putAll(schemaType.getJSONObject("custom").toMap());
       }
 
       // ASSOCIATE ORPHAN INDEXES
@@ -1241,6 +1246,8 @@ public class EmbeddedSchema implements Schema {
 
         final Property p = t.getProperty(propName);
         prop.put("type", p.getType());
+
+        prop.put("custom", new JSONObject(p.custom));
       }
 
       final JSONObject indexes = new JSONObject();
@@ -1256,6 +1263,8 @@ public class EmbeddedSchema implements Schema {
           index.put("nullStrategy", entry.getNullStrategy());
         }
       }
+
+      type.put("custom", new JSONObject(t.custom));
     }
     return root;
   }
