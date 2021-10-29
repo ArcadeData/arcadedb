@@ -159,42 +159,40 @@ public class PostCommandHandler extends DatabaseAbstractHandler {
   }
 
   private void analyzeResultContent(final Database database, final JsonGraphSerializer serializerImpl, final Set<Identifiable> includedVertices,
-      final JSONArray vertices, final JSONArray edges, final Result row) {
+    final JSONArray vertices, final JSONArray edges, final Result row) {
     for (String prop : row.getPropertyNames()) {
       final Object value = row.getProperty(prop);
-      if (value instanceof Identifiable) {
-        final RID rid = ((Identifiable) value).getIdentity();
+      if (value == null) {
+        continue;
+      }
+      analyzePropertyValue(database, serializerImpl, includedVertices, vertices, edges, value);
+    }
+  }
 
-        final DocumentType type = database.getSchema().getTypeByBucketId(rid.getBucketId());
-        if (type instanceof VertexType) {
-          includedVertices.add((Identifiable) value);
-          vertices.put(serializerImpl.serializeGraphElement(((Identifiable) value).asVertex(true)));
-        }
-      } else if (value instanceof Result) {
-        analyzeResultContent(database, serializerImpl, includedVertices, vertices, edges, (Result) value);
-      } else if (value instanceof Collection) {
-        for (Iterator<?> it = ((Collection<?>) value).iterator(); it.hasNext(); ) {
-          final Object item = it.next();
+  private void analyzePropertyValue(final Database database, final JsonGraphSerializer serializerImpl, final Set<Identifiable> includedVertices,
+    final JSONArray vertices, final JSONArray edges, final Object value) {
+    if (value instanceof Identifiable) {
+      final RID rid = ((Identifiable) value).getIdentity();
 
-          if (item instanceof Identifiable) {
-            final RID rid = ((Identifiable) item).getIdentity();
+      final DocumentType type = database.getSchema().getTypeByBucketId(rid.getBucketId());
+      if (type instanceof VertexType) {
+        includedVertices.add((Identifiable) value);
+        vertices.put(serializerImpl.serializeGraphElement(((Identifiable) value).asVertex(true)));
+      } else if (type instanceof EdgeType) {
+        final Edge edge = ((Identifiable) value).asEdge(true);
 
-            final DocumentType type = database.getSchema().getTypeByBucketId(rid.getBucketId());
-            if (type instanceof VertexType) {
-              includedVertices.add((Identifiable) item);
-              vertices.put(serializerImpl.serializeGraphElement(((Identifiable) item).asVertex(true)));
-            } else if (type instanceof EdgeType) {
-              final Edge edge = ((Identifiable) item).asEdge(true);
+        edges.put(serializerImpl.serializeGraphElement(edge));
 
-              edges.put(serializerImpl.serializeGraphElement(edge));
-
-              includedVertices.add(edge.getIn());
-              vertices.put(serializerImpl.serializeGraphElement(edge.getInVertex()));
-              includedVertices.add(edge.getOut());
-              vertices.put(serializerImpl.serializeGraphElement(edge.getOutVertex()));
-            }
-          }
-        }
+        includedVertices.add(edge.getIn());
+        vertices.put(serializerImpl.serializeGraphElement(edge.getInVertex()));
+        includedVertices.add(edge.getOut());
+        vertices.put(serializerImpl.serializeGraphElement(edge.getOutVertex()));
+      }
+    } else if (value instanceof Result) {
+      analyzeResultContent(database, serializerImpl, includedVertices, vertices, edges, (Result) value);
+    } else if (value instanceof Collection) {
+      for (Iterator<?> it = ((Collection<?>) value).iterator(); it.hasNext();) {
+        analyzePropertyValue(database, serializerImpl, includedVertices, vertices, edges, it.next());
       }
     }
   }

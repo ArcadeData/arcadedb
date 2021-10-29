@@ -25,19 +25,23 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import java.lang.reflect.InvocationTargetException;
 
-import java.lang.reflect.*;
-import java.util.*;
-import java.util.logging.*;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.logging.Level;
+import java.util.stream.Collectors;
 
 public class CypherQueryEngine implements QueryEngine {
   private static final String ENGINE_NAME = "cypher-engine";
-  private final        Object arcadeGraph;
+  private final Object arcadeGraph;
 
   public static class CypherQueryEngineFactory implements QueryEngineFactory {
     private static Boolean available = null;
-    private static Class   arcadeGraphClass;
-    private static Class   arcadeCypherClass;
+    private static Class<?> arcadeGraphClass;
+    private static Class<?> arcadeCypherClass;
 
     @Override
     public boolean isAvailable() {
@@ -104,30 +108,19 @@ public class CypherQueryEngine implements QueryEngine {
         if (next.isElement())
           result.add(next);
         else {
-          Result row;
-
-          final Set<String> properties = next.getPropertyNames();
-
-          if (properties.size() == 1 && next.getProperty(properties.iterator().next()) instanceof Map) {
-            // ONLY ONE ELEMENT THAT IS A MAP: EXPAND THE MAP INTO A RECORD
-            row = mapToResult(next.getProperty(properties.iterator().next()));
+          // unpack single result projections
+          Map<String, Object> map = next.toMap();
+          Object nextValue = map.values().iterator().next();
+          if (map.size() == 1 && nextValue instanceof Map) {
+            Map<String, Object> transformed = transformMap((Map<?, ?>) nextValue);
+            result.add(new ResultInternal(transformed));
           } else {
-            final Map<String, Object> mapStringObject = new HashMap<>(properties.size());
-            for (String propertyName : properties) {
-              Object propertyValue = next.getProperty(propertyName);
-              if (propertyValue instanceof Map)
-                propertyValue = mapToResult((Map<Object, Object>) propertyValue);
-              mapStringObject.put(propertyName, propertyValue);
-            }
-            row = new ResultInternal(mapStringObject);
+            Map<String, Object> transformed = transformMap(map);
+            result.add(new ResultInternal(transformed));
           }
-
-          result.add(row);
         }
       }
-
       return result;
-
     } catch (InvocationTargetException e) {
       throw new CommandExecutionException("Error on executing cypher command", e.getTargetException());
     } catch (Exception e) {
@@ -135,16 +128,28 @@ public class CypherQueryEngine implements QueryEngine {
     }
   }
 
-  private Result mapToResult(Map<Object, Object> map) {
-    final Map<String, Object> mapStringObject = new HashMap<>(map.size());
+  private Object transformValue(Object value) {
+    if (value instanceof Map) {
+      return new ResultInternal(transformMap((Map<?, ?>) value));
+    } else if (value instanceof List) {
+      List<?> listValue = (List<?>) value;
+      List<Object> transformed = listValue.stream().map(this::transformValue).collect(Collectors.toList());
+      return transformed.size() == 1 ? transformed.iterator().next() : transformed;
+    }
+    return value;
+  }
 
+  private Map<String, Object> transformMap(Map<? extends Object, ? extends Object> map) {
+
+    final Map<String, Object> mapStringObject = new HashMap<>(map.size());
+    Map<Object, Object> internal = new HashMap<>(map);
     if (map.containsKey("  cypher.element")) {
       mapStringObject.put("@in", map.get("  cypher.inv"));
       mapStringObject.put("@out", map.get("  cypher.outv"));
-      map = (Map<Object, Object>) map.get("  cypher.element");
+      internal = (Map) map.get("  cypher.element");
     }
 
-    for (Map.Entry<Object, Object> entry : map.entrySet()) {
+    for (Map.Entry<Object, Object> entry : internal.entrySet()) {
       Object mapKey = entry.getKey();
       Object mapValue = entry.getValue();
 
@@ -158,14 +163,12 @@ public class CypherQueryEngine implements QueryEngine {
           break;
         }
       } else if (mapKey.equals("  cypher.element")) {
-      } else if (mapValue instanceof List && ((List<?>) mapValue).size() == 1) {
-        mapValue = ((List<?>) mapValue).get(0);
+      } else {
+        mapValue = transformValue(mapValue);
       }
-
       mapStringObject.put(mapKey.toString(), mapValue);
     }
-
-    return new ResultInternal(mapStringObject);
+    return mapStringObject;
   }
 
   @Override
