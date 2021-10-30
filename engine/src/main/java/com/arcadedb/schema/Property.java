@@ -25,6 +25,7 @@ public class Property {
   private final   Type                type;
   private final   int                 id;
   protected final Map<String, Object> custom = new HashMap<>();
+  private         Object              defaultValue;
 
   public Property(final DocumentType owner, final String name, final Type type) {
     this.owner = owner;
@@ -69,6 +70,26 @@ public class Property {
     return id;
   }
 
+  public Object getDefaultValue() {
+    return defaultValue;
+  }
+
+  public void setDefaultValue(final Object defaultValue) {
+    if (!Objects.equals(this.defaultValue, defaultValue)) {
+      this.defaultValue = defaultValue;
+
+      // REPLACE THE SET OF PROPERTIES WITH DEFAULT VALUES DEFINED
+      final Set<String> propertiesWithDefaultDefined = new HashSet<>(owner.propertiesWithDefaultDefined);
+      if (defaultValue == null)
+        propertiesWithDefaultDefined.remove(name);
+      else
+        propertiesWithDefaultDefined.add(name);
+      owner.propertiesWithDefaultDefined = Collections.unmodifiableSet(propertiesWithDefaultDefined);
+
+      owner.getSchema().getEmbedded().saveConfiguration();
+    }
+  }
+
   public Set<String> getCustomKeys() {
     return Collections.unmodifiableSet(custom.keySet());
   }
@@ -78,9 +99,16 @@ public class Property {
   }
 
   public Object setCustomValue(final String key, final Object value) {
+    Object prev;
     if (value == null)
-      return custom.remove(key);
-    return custom.put(key, value);
+      prev = custom.remove(key);
+    else
+      prev = custom.put(key, value);
+
+    if (!Objects.equals(prev, value))
+      owner.getSchema().getEmbedded().saveConfiguration();
+
+    return prev;
   }
 
   @Override

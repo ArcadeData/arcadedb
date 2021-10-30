@@ -1068,7 +1068,14 @@ public class EmbeddedSchema implements Schema {
           if (schemaProperties != null) {
             for (String propName : schemaProperties.keySet()) {
               final JSONObject prop = schemaProperties.getJSONObject(propName);
-              type.createProperty(propName, (String) prop.get("type"));
+              final Property p = type.createProperty(propName, (String) prop.get("type"));
+
+              if (prop.has("default"))
+                p.setDefaultValue(prop.get("default"));
+
+              p.custom.clear();
+              if (prop.has("custom"))
+                p.custom.putAll(prop.getJSONObject("custom").toMap());
             }
           }
         }
@@ -1246,6 +1253,10 @@ public class EmbeddedSchema implements Schema {
 
         final Property p = t.getProperty(propName);
         prop.put("type", p.getType());
+
+        final Object defValue = p.getDefaultValue();
+        if (defValue != null)
+          prop.put("default", defValue);
 
         prop.put("custom", new JSONObject(p.custom));
       }

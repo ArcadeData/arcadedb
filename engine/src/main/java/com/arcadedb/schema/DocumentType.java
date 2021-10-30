@@ -35,15 +35,16 @@ import java.util.logging.*;
 public class DocumentType {
   protected final EmbeddedSchema                    schema;
   protected final String                            name;
-  protected final List<DocumentType>                superTypes              = new ArrayList<>();
-  protected final List<DocumentType>                subTypes                = new ArrayList<>();
-  protected final List<Bucket>                      buckets                 = new ArrayList<>();
-  protected       BucketSelectionStrategy           bucketSelectionStrategy = new RoundRobinBucketSelectionStrategy();
-  protected final Map<String, Property>             properties              = new HashMap<>();
-  protected       Map<Integer, List<IndexInternal>> bucketIndexesByBucket   = new HashMap<>();
-  protected       Map<List<String>, TypeIndex>      indexesByProperties     = new HashMap<>();
-  protected final RecordEventsRegistry              events                  = new RecordEventsRegistry();
-  protected final Map<String, Object>               custom                  = new HashMap<>();
+  protected final List<DocumentType>                superTypes                   = new ArrayList<>();
+  protected final List<DocumentType>                subTypes                     = new ArrayList<>();
+  protected final List<Bucket>                      buckets                      = new ArrayList<>();
+  protected       BucketSelectionStrategy           bucketSelectionStrategy      = new RoundRobinBucketSelectionStrategy();
+  protected final Map<String, Property>             properties                   = new HashMap<>();
+  protected       Map<Integer, List<IndexInternal>> bucketIndexesByBucket        = new HashMap<>();
+  protected       Map<List<String>, TypeIndex>      indexesByProperties          = new HashMap<>();
+  protected final RecordEventsRegistry              events                       = new RecordEventsRegistry();
+  protected final Map<String, Object>               custom                       = new HashMap<>();
+  protected       Set<String>                       propertiesWithDefaultDefined = Collections.emptySet();
 
   public DocumentType(final EmbeddedSchema schema, final String name) {
     this.schema = schema;
@@ -60,6 +61,16 @@ public class DocumentType {
 
   public RecordEvents getEvents() {
     return events;
+  }
+
+  public Set<String> getPolymorphicPropertiesWithDefaultDefined() {
+    if (superTypes.isEmpty())
+      return propertiesWithDefaultDefined;
+
+    final HashSet<String> set = new HashSet<>(propertiesWithDefaultDefined);
+    for (DocumentType superType : superTypes)
+      set.addAll(superType.propertiesWithDefaultDefined);
+    return set;
   }
 
   public DocumentType addSuperType(final String superName) {
@@ -159,8 +170,10 @@ public class DocumentType {
   }
 
   public Set<String> getPolymorphicPropertyNames() {
-    final Set<String> allProperties = new HashSet<>();
-    allProperties.addAll(getPropertyNames());
+    if (superTypes.isEmpty())
+      return getPropertyNames();
+
+    final Set<String> allProperties = new HashSet<>(getPropertyNames());
     for (DocumentType p : superTypes)
       allProperties.addAll(p.getPolymorphicPropertyNames());
     return allProperties;
