@@ -32,12 +32,17 @@
     <artifactId>arcadedb-gremlin</artifactId>
     <packaging>jar</packaging>
 
+    <properties>
+        <gremlin.version>3.4.12</gremlin.version>
+        <translation.version>1.0.4</translation.version>
+    </properties>
+
     <dependencies>
         <dependency>
             <groupId>com.arcadedb</groupId>
             <artifactId>arcadedb-engine</artifactId>
             <version>${project.parent.version}</version>
-            <scope>compile</scope>
+            <scope>provided</scope>
         </dependency>
 
         <dependency>
@@ -55,7 +60,7 @@
         <dependency>
             <groupId>org.opencypher.gremlin</groupId>
             <artifactId>translation</artifactId>
-            <version>1.0.4</version>
+            <version>${translation.version}</version>
         </dependency>
 
         <dependency>
@@ -87,6 +92,27 @@
                         </goals>
                     </execution>
                 </executions>
+                <configuration>
+                    <transformers>
+                        <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer" />
+                        <transformer implementation="org.apache.maven.plugins.shade.resource.ApacheLicenseResourceTransformer"/>
+                        <transformer implementation="org.apache.maven.plugins.shade.resource.ApacheNoticeResourceTransformer">
+                            <addHeader>false</addHeader>
+                        </transformer>
+                    </transformers>
+<!--                    <shadeTestJar>true</shadeTestJar>-->
+                    <filters>
+                        <filter>
+                            <artifact>*:*</artifact>
+                            <excludes>
+                                <exclude>META-INF/*.SF</exclude>
+                                <exclude>META-INF/*.DSA</exclude>
+                                <exclude>META-INF/*.RSA</exclude>
+                            </excludes>
+                        </filter>
+                    </filters>
+                    <minimizeJar>false</minimizeJar>
+                </configuration>
             </plugin>
         </plugins>
     </build>
