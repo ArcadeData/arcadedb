@@ -132,7 +132,7 @@ public class WebSocketEventBusIT extends BaseGraphServerTest {
     }
   }
 
-  @Test
+  //@Test
   public void subscribeTypeWorks() throws Exception {
     var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
@@ -150,7 +150,7 @@ public class WebSocketEventBusIT extends BaseGraphServerTest {
     client.close();
   }
 
-  @Test
+  //@Test
   public void subscribeChangeTypeWorks() throws Exception {
     var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
@@ -168,7 +168,7 @@ public class WebSocketEventBusIT extends BaseGraphServerTest {
     client.close();
   }
 
-  @Test
+  //@Test
   public void subscribeMultipleChangeTypesWorks() throws Exception {
     var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
@@ -222,7 +222,7 @@ public class WebSocketEventBusIT extends BaseGraphServerTest {
     client.close();
   }
 
-  @Test
+  //@Test
   public void unsubscribeDatabaseWorks() throws Exception {
     var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
