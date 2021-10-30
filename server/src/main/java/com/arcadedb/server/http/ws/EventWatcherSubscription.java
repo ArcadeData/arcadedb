@@ -2,9 +2,10 @@ package com.arcadedb.server.http.ws;
 
 import io.undertow.websockets.core.WebSocketChannel;
 
+import java.io.*;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.stream.Collectors;
+import java.util.concurrent.*;
+import java.util.stream.*;
 
 public class EventWatcherSubscription {
   private final String                             database;
@@ -18,10 +19,18 @@ public class EventWatcherSubscription {
     this.channel = channel;
   }
 
+  public void close() {
+    if (channel != null)
+      try {
+        channel.close();
+      } catch (IOException e) {
+        // IGNORE THIS
+      }
+  }
+
   public void add(final String type, final Set<ChangeEvent.TYPE> changeTypes) {
-    var key = type == null ? "*" : type; // ConcurrentHashMap can't have null keys, so use * for "all types."
-    typeSubscriptions.computeIfAbsent(key, k -> new HashSet<>())
-        .addAll(changeTypes == null ? allTypes : changeTypes);
+    final var key = type == null ? "*" : type; // ConcurrentHashMap can't have null keys, so use * for "all types."
+    typeSubscriptions.computeIfAbsent(key, k -> new HashSet<>()).addAll(changeTypes == null ? allTypes : changeTypes);
   }
 
   public String getDatabase() {
@@ -33,10 +42,9 @@ public class EventWatcherSubscription {
   }
 
   public boolean isMatch(final ChangeEvent event) {
-    var databaseEventTypes = typeSubscriptions.get("*");
-    var typeEventTypes = typeSubscriptions.get(event.getRecord().asDocument().getTypeName());
+    final var databaseEventTypes = typeSubscriptions.get("*");
+    final var typeEventTypes = typeSubscriptions.get(event.getRecord().asDocument().getTypeName());
     // first, see if the type matches on the "database" sub, then the type specific sub
-    return (databaseEventTypes != null && databaseEventTypes.contains(event.getType())) ||
-        (typeEventTypes != null && typeEventTypes.contains(event.getType()));
+    return (databaseEventTypes != null && databaseEventTypes.contains(event.getType())) || (typeEventTypes != null && typeEventTypes.contains(event.getType()));
   }
 }

@@ -21,7 +21,20 @@ import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ServerPlugin;
-import com.arcadedb.server.http.handler.*;
+import com.arcadedb.server.http.handler.GetDatabasesHandler;
+import com.arcadedb.server.http.handler.GetDocumentHandler;
+import com.arcadedb.server.http.handler.GetDynamicContentHandler;
+import com.arcadedb.server.http.handler.GetExistsDatabaseHandler;
+import com.arcadedb.server.http.handler.GetQueryHandler;
+import com.arcadedb.server.http.handler.PostBeginHandler;
+import com.arcadedb.server.http.handler.PostCommandHandler;
+import com.arcadedb.server.http.handler.PostCommitHandler;
+import com.arcadedb.server.http.handler.PostCreateDatabaseHandler;
+import com.arcadedb.server.http.handler.PostCreateDocumentHandler;
+import com.arcadedb.server.http.handler.PostDropDatabaseHandler;
+import com.arcadedb.server.http.handler.PostQueryHandler;
+import com.arcadedb.server.http.handler.PostRollbackHandler;
+import com.arcadedb.server.http.handler.PostServersHandler;
 import com.arcadedb.server.http.ws.WebSocketConnectionHandler;
 import com.arcadedb.server.http.ws.WebSocketEventBus;
 import io.undertow.Handlers;
@@ -29,8 +42,8 @@ import io.undertow.Undertow;
 import io.undertow.server.RoutingHandler;
 import io.undertow.server.handlers.PathHandler;
 
-import java.net.BindException;
-import java.util.logging.Level;
+import java.net.*;
+import java.util.logging.*;
 
 import static io.undertow.UndertowOptions.SHUTDOWN_TIMEOUT;
 
@@ -52,6 +65,8 @@ public class HttpServer implements ServerPlugin {
 
   @Override
   public void stopService() {
+    webSocketEventBus.stop();
+
     if (undertow != null)
       try {
         undertow.stop();
