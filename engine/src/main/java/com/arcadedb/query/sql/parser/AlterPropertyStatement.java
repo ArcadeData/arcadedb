@@ -57,10 +57,9 @@ public class AlterPropertyStatement extends DDLStatement {
       throw new CommandExecutionException("Invalid type name or type not found: " + typez);
     }
 
-    Property property = typez.getProperty(propertyName.getStringValue());
-    if (property == null) {
-      throw new CommandExecutionException("Property " + property + " not found on type " + typez);
-    }
+    final Property property = typez.getProperty(propertyName.getStringValue());
+    if (property == null)
+      throw new CommandExecutionException("Property '" + property + "' not found on type " + typez);
 
     ResultInternal result = new ResultInternal();
     result.setProperty("type", typeName.getStringValue());
@@ -76,18 +75,29 @@ public class AlterPropertyStatement extends DDLStatement {
       result.setProperty("customAttribute", customPropertyName.getStringValue());
       result.setProperty("oldValue", oldValue != null ? oldValue : null);
       result.setProperty("newValue", finalValue != null ? finalValue : null);
-    } else {
-      throw new UnsupportedOperationException();
+    } else if (settingName != null) {
+      final String setting = settingName.getStringValue().toLowerCase();
+      final Object finalValue = settingValue.execute((Identifiable) null, ctx);
 
-//      String setting = settingName.getStringValue();
-//      Object finalValue = settingValue.execute((Identifiable) null, ctx);
-//
-//      result.setProperty("operation", "alter property");
-//      result.setProperty("attribute", setting);
-//      result.setProperty("oldValue", oldValue != null ? oldValue.toString() : null);
-//      result.setProperty("newValue", finalValue != null ? finalValue.toString() : null);
-    }
-    InternalResultSet rs = new InternalResultSet();
+      final Object oldValue;
+      switch (setting) {
+      case "default":
+        oldValue = property.getDefaultValue();
+        property.setDefaultValue(finalValue);
+        break;
+
+      default:
+        throw new CommandExecutionException("Setting '" + setting + "' not supported");
+      }
+
+      result.setProperty("operation", "alter property");
+      result.setProperty("attribute", setting);
+      result.setProperty("oldValue", oldValue != null ? oldValue : null);
+      result.setProperty("newValue", finalValue != null ? finalValue : null);
+    } else
+      throw new CommandExecutionException("Property '" + property + "' not found on type '" + typez + "'");
+
+    final InternalResultSet rs = new InternalResultSet();
     rs.add(result);
     return rs;
   }
