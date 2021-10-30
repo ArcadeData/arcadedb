@@ -18,7 +18,7 @@ package com.arcadedb.database.async;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.Map;
+import java.util.*;
 
 public class DatabaseAsyncCommand extends DatabaseAsyncAbstractTask {
   public final boolean                idempotent;
@@ -38,8 +38,8 @@ public class DatabaseAsyncCommand extends DatabaseAsyncAbstractTask {
     this.userCallback = userCallback;
   }
 
-  public DatabaseAsyncCommand(final boolean idempotent, final String language, final String command,
-      final Map<String, Object> parametersMap, final AsyncResultsetCallback userCallback) {
+  public DatabaseAsyncCommand(final boolean idempotent, final String language, final String command, final Map<String, Object> parametersMap,
+      final AsyncResultsetCallback userCallback) {
     this.idempotent = idempotent;
     this.language = language;
     this.command = command;
@@ -51,12 +51,15 @@ public class DatabaseAsyncCommand extends DatabaseAsyncAbstractTask {
   @Override
   public void execute(final DatabaseAsyncExecutorImpl.AsyncThread async, final DatabaseInternal database) {
     try {
-      final ResultSet resultset = idempotent ?
-          database.query(language, command, parameters) :
-          database.command(language, command, parameters);
+      final ResultSet resultset = idempotent ? database.query(language, command, parameters) : database.command(language, command, parameters);
 
-      if (userCallback != null)
-        userCallback.onOk(resultset);
+      if (userCallback != null) {
+        userCallback.onStart(resultset);
+        while (resultset.hasNext())
+          if (!userCallback.onNext(resultset.next()))
+            return;
+        userCallback.onComplete();
+      }
 
     } catch (Exception e) {
       if (userCallback != null)

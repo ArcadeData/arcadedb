@@ -17,10 +17,10 @@ package performance;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.database.async.AsyncResultsetCallback;
+import com.arcadedb.database.async.AbstractAsyncResultsetCallback;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.*;
 
 public class PerformanceSQLInsert {
   private static final String TYPE_NAME = "Person";
@@ -50,9 +50,9 @@ public class PerformanceSQLInsert {
       final long begin = System.currentTimeMillis();
 
       for (int i = 0; i < MAX_LOOPS; ++i) {
-        database.async().command("SQL", "insert into " + TYPE_NAME + " set id = " + i + ", name = 'Luca'", new AsyncResultsetCallback() {
+        database.async().command("SQL", "insert into " + TYPE_NAME + " set id = " + i + ", name = 'Luca'", new AbstractAsyncResultsetCallback() {
           @Override
-          public void onOk(ResultSet resultset) {
+          public void onStart(ResultSet resultset) {
             oks.incrementAndGet();
           }
 
@@ -69,8 +69,8 @@ public class PerformanceSQLInsert {
       }
 
       System.out.println(
-          "Inserting " + MAX_LOOPS + " elements in " + (System.currentTimeMillis() - begin) + "ms (Total=" + database.countType(TYPE_NAME, true) + " ok=" + oks
-              .get() + " errors=" + errors.get() + ")");
+          "Inserting " + MAX_LOOPS + " elements in " + (System.currentTimeMillis() - begin) + "ms (Total=" + database.countType(TYPE_NAME, true) + " ok="
+              + oks.get() + " errors=" + errors.get() + ")");
 
       while (oks.get() < MAX_LOOPS) {
         try {
@@ -81,8 +81,8 @@ public class PerformanceSQLInsert {
         }
 
         System.out.println(
-            "Inserted " + MAX_LOOPS + " elements in " + (System.currentTimeMillis() - begin) + "ms (Total=" + database.countType(TYPE_NAME, true) + " ok=" + oks
-                .get() + " errors=" + errors.get() + ")");
+            "Inserted " + MAX_LOOPS + " elements in " + (System.currentTimeMillis() - begin) + "ms (Total=" + database.countType(TYPE_NAME, true) + " ok="
+                + oks.get() + " errors=" + errors.get() + ")");
       }
 
     } finally {
