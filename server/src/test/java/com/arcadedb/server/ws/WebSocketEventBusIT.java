@@ -8,6 +8,8 @@ import org.xnio.http.UpgradeFailedException;
 
 public class WebSocketEventBusIT extends BaseGraphServerTest {
 
+
+
   @Test
   public void closeUnsubscribesAll() throws Exception {
     try (var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
