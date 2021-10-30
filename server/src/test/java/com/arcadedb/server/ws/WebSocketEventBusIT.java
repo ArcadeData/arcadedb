@@ -112,9 +112,8 @@ public class WebSocketEventBusIT extends BaseGraphServerTest {
 
   @Test
   public void twoSubscribersAreServiced() throws Exception {
-    var clients = new WebSocketClientHelper[]{
-        new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS),
-        new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)};
+    var clients = new WebSocketClientHelper[] { new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS),
+        new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS) };
 
     for (var client : clients) {
       var result = client.send(buildActionMessage("subscribe", "graph"));
@@ -132,7 +131,7 @@ public class WebSocketEventBusIT extends BaseGraphServerTest {
     }
   }
 
-  //@Test
+  @Test
   public void subscribeTypeWorks() throws Exception {
     var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
@@ -150,11 +149,11 @@ public class WebSocketEventBusIT extends BaseGraphServerTest {
     client.close();
   }
 
-  //@Test
+  @Test
   public void subscribeChangeTypeWorks() throws Exception {
     var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
-    var result = client.send(buildActionMessage("subscribe", "graph", null, new String[]{"create"}));
+    var result = client.send(buildActionMessage("subscribe", "graph", null, new String[] { "create" }));
     Assertions.assertEquals("ok", new JSONObject(result).get("result"));
 
     this.getServerDatabase(0, "graph").newVertex("V1").set("name", "test").save();
@@ -168,11 +167,11 @@ public class WebSocketEventBusIT extends BaseGraphServerTest {
     client.close();
   }
 
-  //@Test
+  @Test
   public void subscribeMultipleChangeTypesWorks() throws Exception {
     var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
-    var result = client.send(buildActionMessage("subscribe", "graph", null, new String[]{"create", "delete"}));
+    var result = client.send(buildActionMessage("subscribe", "graph", null, new String[] { "create", "delete" }));
     Assertions.assertEquals("ok", new JSONObject(result).get("result"));
 
     var v1 = this.getServerDatabase(0, "graph").newVertex("V1").set("name", "test").save();
@@ -198,7 +197,7 @@ public class WebSocketEventBusIT extends BaseGraphServerTest {
   public void subscribeChangeTypeDoesNotPushOtherChangeTypes() throws Exception {
     var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
-    var result = client.send(buildActionMessage("subscribe", "graph", null, new String[]{"update"}));
+    var result = client.send(buildActionMessage("subscribe", "graph", null, new String[] { "update" }));
     Assertions.assertEquals("ok", new JSONObject(result).get("result"));
 
     this.getServerDatabase(0, "graph").newVertex("V2").save();
@@ -222,7 +221,7 @@ public class WebSocketEventBusIT extends BaseGraphServerTest {
     client.close();
   }
 
-  //@Test
+  @Test
   public void unsubscribeDatabaseWorks() throws Exception {
     var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
