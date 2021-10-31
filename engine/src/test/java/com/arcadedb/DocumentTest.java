@@ -23,8 +23,8 @@ import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.math.BigDecimal;
-import java.text.SimpleDateFormat;
+import java.math.*;
+import java.text.*;
 import java.util.*;
 
 public class DocumentTest extends TestHelper {
@@ -125,27 +125,35 @@ public class DocumentTest extends TestHelper {
       doc.set("embeddedList", embeddedList);
       doc.newEmbeddedDocument("ConversionTest", "embeddedList").set("embeddedList", true);
 
+      final Map<String, EmbeddedDocument> embeddedMap = new HashMap<>();
+      doc.set("embeddedMap", embeddedMap);
+      doc.newEmbeddedDocument("ConversionTest", "embeddedMap", "first").set("embeddedMap", true);
+
       final DetachedDocument detached = doc.detach();
 
       Assertions.assertEquals("Tim", detached.getString("name"));
       Assertions.assertEquals(embeddedObj, detached.get("embeddedObj"));
       Assertions.assertEquals(embeddedList, detached.get("embeddedList"));
+      Assertions.assertEquals(embeddedMap, detached.get("embeddedMap"));
       Assertions.assertNull(detached.getString("lastname"));
 
       Set<String> props = detached.getPropertyNames();
-      Assertions.assertEquals(3, props.size());
+      Assertions.assertEquals(4, props.size());
       Assertions.assertTrue(props.contains("name"));
       Assertions.assertTrue(props.contains("embeddedObj"));
       Assertions.assertTrue(props.contains("embeddedList"));
+      Assertions.assertTrue(props.contains("embeddedMap"));
 
       final Map<String, Object> map = detached.toMap();
-      Assertions.assertEquals(3, map.size());
+      Assertions.assertEquals(4, map.size());
 
       Assertions.assertEquals("Tim", map.get("name"));
       Assertions.assertEquals(embeddedObj, map.get("embeddedObj"));
       Assertions.assertTrue(((DetachedDocument) map.get("embeddedObj")).getBoolean("embeddedObj"));
       Assertions.assertEquals(embeddedList, map.get("embeddedList"));
       Assertions.assertTrue(((List<DetachedDocument>) map.get("embeddedList")).get(0).getBoolean("embeddedList"));
+      Assertions.assertEquals(embeddedMap, map.get("embeddedMap"));
+      Assertions.assertTrue(((Map<String, DetachedDocument>) map.get("embeddedMap")).get("first").getBoolean("embeddedMap"));
 
       Assertions.assertEquals("Tim", detached.toJSON().get("name"));
 

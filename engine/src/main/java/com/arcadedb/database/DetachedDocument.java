@@ -27,7 +27,7 @@ public class DetachedDocument extends ImmutableDocument {
     init(source);
   }
 
-  private void init(Document sourceDocument) {
+  private void init(final Document sourceDocument) {
     this.map = new LinkedHashMap<>();
     final Map<String, Object> sourceMap = sourceDocument.toMap();
     for (Map.Entry<String, Object> entry : sourceMap.entrySet()) {
@@ -39,6 +39,15 @@ public class DetachedDocument extends ImmutableDocument {
           if (embValue instanceof EmbeddedDocument)
             ((List) value).set(i, ((EmbeddedDocument) embValue).detach());
         }
+      } else if (value instanceof Map) {
+        Map<String, Object> map = (Map<String, Object>) value;
+
+        for (String propName : map.keySet()) {
+          final Object embValue = map.get(propName);
+          if (embValue instanceof EmbeddedDocument)
+            map.put(propName, ((EmbeddedDocument) embValue).detach());
+        }
+
       } else if (value instanceof EmbeddedDocument)
         value = ((EmbeddedDocument) value).detach();
 

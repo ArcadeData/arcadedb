@@ -162,6 +162,33 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   }
 
   /**
+   * Creates a new embedded document attached to the current document. If the property name already exists, and it is a map, then the embedded document
+   * is added to the collection.
+   *
+   * @param embeddedTypeName Embedded type name
+   * @param propertyName     Current document's property name where the embedded document is stored
+   * @param mapKey           key for the map to assign the embedded document
+   *
+   * @return MutableEmbeddedDocument instance
+   */
+  public synchronized MutableEmbeddedDocument newEmbeddedDocument(final String embeddedTypeName, final String propertyName, final String mapKey) {
+    final Object old = get(propertyName);
+
+    final MutableEmbeddedDocument emb = database.newEmbeddedDocument(new EmbeddedModifierProperty(this, propertyName), embeddedTypeName);
+
+    if (old == null) {
+      final Map<String, EmbeddedDocument> embMap = new HashMap<>();
+      embMap.put(mapKey, emb);
+      set(propertyName, embMap);
+    } else if (old instanceof Map)
+      ((Map<String, EmbeddedDocument>) old).put(mapKey, emb);
+    else
+      throw new IllegalArgumentException("Property '" + propertyName + "' is '" + old.getClass() + "', but null or Map was expected");
+
+    return emb;
+  }
+
+  /**
    * Creates a new embedded document attached to the current document inside a map that must be previously created and set.
    *
    * @param embeddedTypeName Embedded type name
