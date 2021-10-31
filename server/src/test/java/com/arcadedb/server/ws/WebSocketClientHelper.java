@@ -81,6 +81,12 @@ public class WebSocketClientHelper implements AutoCloseable {
     messageQueue.clear();
   }
 
+  public void breakConnection() throws IOException {
+    this.channel.close();
+    pool.close();
+    messageQueue.clear();
+  }
+
   public String send(String payload) throws URISyntaxException, IOException {
     var sendChannel = this.channel.send(WebSocketFrameType.TEXT);
     new StringWriteChannelListener(payload).setup(sendChannel);
@@ -100,7 +106,4 @@ public class WebSocketClientHelper implements AutoCloseable {
     return null;
   }
 
-  public void breakConnection() throws IOException {
-    this.channel.close();
-  }
 }
