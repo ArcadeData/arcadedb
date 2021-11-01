@@ -64,6 +64,7 @@ final public class DatabaseEventWatcherThread extends Thread {
           .unregisterListener((AfterRecordDeleteListener) listener);
 
       LogManager.instance().log(this, Level.INFO, "Shutting down watcher thread for %s.", null, database);
+      eventQueue.clear();
     }
   }
 }
