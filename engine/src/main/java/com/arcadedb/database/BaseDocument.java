@@ -17,11 +17,13 @@ package com.arcadedb.database;
 
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.JavaBinarySerializer;
 
+import java.io.*;
 import java.math.*;
 import java.util.*;
 
-public abstract class BaseDocument extends BaseRecord implements Document {
+public abstract class BaseDocument extends BaseRecord implements Document, Serializable, Externalizable {
   protected final DocumentType type;
   protected       int          propertiesStartingPosition = 1;
 
@@ -117,5 +119,15 @@ public abstract class BaseDocument extends BaseRecord implements Document {
     super.reload();
     if (buffer != null)
       buffer.position(propertiesStartingPosition);
+  }
+
+  @Override
+  public void writeExternal(final ObjectOutput out) throws IOException {
+    JavaBinarySerializer.writeExternal(this, out);
+  }
+
+  @Override
+  public void readExternal(final ObjectInput in) throws IOException, ClassNotFoundException {
+    JavaBinarySerializer.readExternal(this, in);
   }
 }

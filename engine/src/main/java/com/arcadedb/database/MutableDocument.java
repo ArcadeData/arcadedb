@@ -64,12 +64,13 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     dirty = false;
   }
 
-  public synchronized void fromMap(final Map<String, Object> map) {
+  public synchronized MutableDocument fromMap(final Map<String, Object> map) {
     this.map = new LinkedHashMap<>(map.size());
     for (Map.Entry<String, Object> entry : map.entrySet())
       this.map.put(entry.getKey(), convertValueToSchemaType(entry.getKey(), entry.getValue(), type));
 
     dirty = true;
+    return this;
   }
 
   @Override
