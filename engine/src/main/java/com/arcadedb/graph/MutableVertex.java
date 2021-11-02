@@ -15,7 +15,12 @@
  */
 package com.arcadedb.graph;
 
-import com.arcadedb.database.*;
+import com.arcadedb.database.Binary;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
+import com.arcadedb.database.Transaction;
 import com.arcadedb.schema.DocumentType;
 
 /**
@@ -64,6 +69,10 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
   public MutableVertex set(final String name, final Object value) {
     super.set(name, value);
     return this;
+  }
+
+  public synchronized MutableVertex set(final Object... properties) {
+    return (MutableVertex) super.set(properties);
   }
 
   @Override

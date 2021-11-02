@@ -15,7 +15,11 @@
  */
 package com.arcadedb.graph;
 
-import com.arcadedb.database.*;
+import com.arcadedb.database.Binary;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
+import com.arcadedb.database.Transaction;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.serializer.BinaryTypes;
 
@@ -140,6 +144,14 @@ public class MutableEdge extends MutableDocument implements Edge {
   @Override
   public Edge asEdge(final boolean loadContent) {
     return this;
+  }
+
+  public void setOut(final RID out) {
+    this.out = out;
+  }
+
+  public void setIn(final RID in) {
+    this.in = in;
   }
 
   private void init() {
