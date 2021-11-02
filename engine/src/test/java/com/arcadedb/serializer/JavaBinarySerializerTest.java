@@ -124,6 +124,8 @@ public class JavaBinarySerializerTest extends TestHelper {
         vTest.readExternal(in);
         Assertions.assertEquals(v1, vTest);
         Assertions.assertEquals(v1.toMap(), vTest.toMap());
+        Assertions.assertEquals(v1.getOutEdgesHeadChunk(), vTest.getOutEdgesHeadChunk());
+        Assertions.assertEquals(v1.getInEdgesHeadChunk(), vTest.getInEdgesHeadChunk());
       }
     }
   }
@@ -152,6 +154,8 @@ public class JavaBinarySerializerTest extends TestHelper {
         edgeTest.readExternal(in);
         Assertions.assertEquals(edge1, edgeTest);
         Assertions.assertEquals(edge1.toMap(), edgeTest.toMap());
+        Assertions.assertEquals(edge1.getOut(), edgeTest.getOut());
+        Assertions.assertEquals(edge1.getIn(), edgeTest.getIn());
       }
     }
   }
