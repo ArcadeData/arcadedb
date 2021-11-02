@@ -87,4 +87,8 @@ public class HttpSessionManager extends RWLockContext {
   public HttpSession removeSession(final String iSessionId) {
     return executeInWriteLock(() -> sessions.remove(iSessionId));
   }
+
+  public int getActiveSessions() {
+    return sessions.size();
+  }
 }
