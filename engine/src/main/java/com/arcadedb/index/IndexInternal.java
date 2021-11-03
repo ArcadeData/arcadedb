@@ -33,8 +33,6 @@ public interface IndexInternal extends Index {
 
   void drop();
 
-  String getName();
-
   Map<String, Long> getStats();
 
   int getFileId();
