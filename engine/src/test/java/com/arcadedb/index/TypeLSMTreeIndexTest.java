@@ -814,6 +814,23 @@ public class TypeLSMTreeIndexTest extends TestHelper {
 
   @Test
   public void testRebuildIndex() {
+    final Index typeIndexBefore = database.getSchema().getIndexByName(TYPE_NAME + "[id]");
+    Assertions.assertNotNull(typeIndexBefore);
+    Assertions.assertEquals(1, typeIndexBefore.getPropertyNames().size());
+
     database.command("sql", "rebuild index *");
+
+    final Index typeIndexAfter = database.getSchema().getIndexByName(TYPE_NAME + "[id]");
+    Assertions.assertNotNull(typeIndexAfter);
+    Assertions.assertEquals(1, typeIndexAfter.getPropertyNames().size());
+
+    Assertions.assertEquals(typeIndexBefore.getName(), typeIndexAfter.getName());
+
+    try {
+      typeIndexBefore.get(new Object[] { 0 });
+      Assertions.fail("Rebuilt index should be invalid");
+    } catch (IndexException e) {
+      // EXPECTED
+    }
   }
 }
