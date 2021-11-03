@@ -60,7 +60,7 @@ public class TransactionContext implements Transaction {
   private       boolean                  useWAL;
   private       boolean                  asyncFlush            = true;
   private       WALFile.FLUSH_TYPE       walFlush;
-  private       Collection<Integer>      lockedFiles;
+  private       List<Integer>            lockedFiles;
   private       long                     txId                  = -1;
   private       STATUS                   status                = STATUS.INACTIVE;
   // KEEPS TRACK OF MODIFIED RECORD IN TX. AT 1ST PHASE COMMIT TIME THE RECORD ARE SERIALIZED AND INDEXES UPDATED. THIS DEFERRING IMPROVES SPEED ESPECIALLY

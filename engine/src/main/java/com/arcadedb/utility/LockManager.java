@@ -17,17 +17,16 @@ package com.arcadedb.utility;
 
 import com.arcadedb.log.LogManager;
 
-import java.util.Iterator;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
-import java.util.logging.Level;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.logging.*;
 
 /**
  * Lock manager implementation.
  */
 public class LockManager<RESOURCE, REQUESTER> {
+  public enum LOCK_STATUS {NO, YES, ALREADY_ACQUIRED}
+
   private final ConcurrentHashMap<RESOURCE, ODistributedLock> lockManager = new ConcurrentHashMap<>(256);
 
   private class ODistributedLock {
@@ -42,7 +41,7 @@ public class LockManager<RESOURCE, REQUESTER> {
     }
   }
 
-  public boolean tryLock(final RESOURCE resource, final REQUESTER requester, final long timeout) {
+  public LOCK_STATUS tryLock(final RESOURCE resource, final REQUESTER requester, final long timeout) {
     if (resource == null)
       throw new IllegalArgumentException("Resource to lock is null");
 
@@ -53,7 +52,7 @@ public class LockManager<RESOURCE, REQUESTER> {
       if (currentLock.owner.equals(requester)) {
         // SAME RESOURCE/SERVER, ALREADY LOCKED
         LogManager.instance().log(this, Level.FINE, "Resource '%s' already locked by requester '%s'", null, resource, currentLock.owner);
-        currentLock = null;
+        return LOCK_STATUS.ALREADY_ACQUIRED;
       } else {
         // TRY TO RE-LOCK IT UNTIL TIMEOUT IS EXPIRED
         final long startTime = System.currentTimeMillis();
@@ -75,7 +74,7 @@ public class LockManager<RESOURCE, REQUESTER> {
       }
     }
 
-    return currentLock == null;
+    return currentLock == null ? LOCK_STATUS.YES : LOCK_STATUS.NO;
   }
 
   public void unlock(final RESOURCE resource, final REQUESTER requester) {
@@ -84,9 +83,8 @@ public class LockManager<RESOURCE, REQUESTER> {
 
     final ODistributedLock owner = lockManager.remove(resource);
     if (owner != null) {
-      if (!owner.owner.equals(requester)) {
-        throw new LockException("Cannot unlock resource " + resource + " because owner '" + owner.owner + "' <> requester '" + requester + "'");
-      }
+      if (!owner.owner.equals(requester))
+        throw new LockException("Cannot unlock resource '" + resource + "' because owner '" + owner.owner + "' <> requester '" + requester + "'");
 
       // NOTIFY ANY WAITERS
       owner.lock.countDown();

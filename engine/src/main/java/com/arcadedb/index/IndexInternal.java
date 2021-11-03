@@ -42,4 +42,6 @@ public interface IndexInternal extends Index {
   Type[] getKeyTypes();
 
   byte[] getBinaryKeyTypes();
+
+  List<Integer> getFileIds();
 }

@@ -383,15 +383,24 @@ public class EmbeddedSchema implements Schema {
 
     recordFileChanges(() -> {
       multipleUpdate = true;
-      try {
-        final IndexInternal index = indexMap.remove(indexName);
-        if (index == null)
-          return null;
 
+      final IndexInternal index = indexMap.get(indexName);
+      if (index == null)
+        return null;
+
+      List<Integer> lockedFiles = null;
+      try {
+        lockedFiles = database.getTransactionManager().tryLockFiles(index.getFileIds(), 5_000);
+
+        indexMap.remove(indexName);
         index.drop();
+
       } catch (Exception e) {
         throw new SchemaException("Cannot drop the index '" + indexName + "' (error=" + e + ")", e);
       } finally {
+        if (lockedFiles != null)
+          database.getTransactionManager().unlockFilesInOrder(lockedFiles);
+
         multipleUpdate = false;
       }
       return null;

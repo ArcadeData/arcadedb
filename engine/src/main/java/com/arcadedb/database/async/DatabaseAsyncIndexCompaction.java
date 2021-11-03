@@ -20,7 +20,7 @@ import com.arcadedb.database.EmbeddedDatabase;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.log.LogManager;
 
-import java.util.logging.Level;
+import java.util.logging.*;
 
 public class DatabaseAsyncIndexCompaction extends DatabaseAsyncAbstractTask {
   public final IndexInternal index;
@@ -37,6 +37,11 @@ public class DatabaseAsyncIndexCompaction extends DatabaseAsyncAbstractTask {
     try {
       ((EmbeddedDatabase) database.getEmbedded()).indexCompactions.incrementAndGet();
       index.compact();
+    } catch (IllegalArgumentException e) {
+      if (e.getMessage().contains("File with id ") && e.getMessage().contains("was not found"))
+        LogManager.instance().log(this, Level.SEVERE, "Error on executing compaction of index '%s' (%s)", null, index.getName(), e.getMessage());
+      else
+        LogManager.instance().log(this, Level.SEVERE, "Error on executing compaction of index '%s'", e, index.getName());
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on executing compaction of index '%s'", e, index.getName());
     }

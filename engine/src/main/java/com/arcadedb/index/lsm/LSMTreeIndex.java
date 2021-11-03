@@ -28,6 +28,7 @@ import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.engine.PaginatedComponentFactory;
 import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.exception.DatabaseIsReadOnlyException;
+import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.EmptyIndexCursor;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexCursorEntry;
@@ -129,6 +130,15 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   }
 
   @Override
+  public List<Integer> getFileIds() {
+    final List<Integer> ids = new ArrayList<>(2);
+    ids.add(getFileId());
+    if (mutable.getSubIndex() != null)
+      ids.add(mutable.getSubIndex().getFileId());
+    return ids;
+  }
+
+  @Override
   public Type[] getKeyTypes() {
     return mutable.keyTypes;
   }
@@ -190,6 +200,9 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
     try {
       return LSMTreeIndexCompactor.compact(this);
+    } catch (TimeoutException e) {
+      // IGNORE IT, WILL RETRY LATER
+      return false;
     } finally {
       compactingStatus.set(LSMTreeIndexAbstract.COMPACTING_STATUS.NO);
     }
@@ -260,6 +273,11 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   @Override
   public boolean isAutomatic() {
     return propertyNames != null;
+  }
+
+  @Override
+  public int getPageSize() {
+    return mutable.getPageSize();
   }
 
   @Override
@@ -407,10 +425,9 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
       throw new IllegalStateException("Cannot replace compacted index because a transaction is active");
 
     final int fileId = mutable.getFileId();
-
     database.getTransactionManager().tryLockFile(fileId, 0);
-    try {
 
+    try {
       final LSMTreeIndexMutable prevMutable = mutable;
 
       // COPY MUTABLE PAGES TO THE NEW FILE

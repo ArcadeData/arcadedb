@@ -18,7 +18,6 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.database.Document;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
@@ -57,15 +56,12 @@ public class RebuildIndexStatement extends SimpleExecStatement {
 
     final Database database = ctx.getDatabase();
     database.transaction(() -> {
-      final Index.BuildIndexCallback callback = new Index.BuildIndexCallback() {
-        @Override
-        public void onDocumentIndexed(final Document document, final long totalIndexed) {
-          total.incrementAndGet();
+      final Index.BuildIndexCallback callback = (document, totalIndexed) -> {
+        total.incrementAndGet();
 
-          if (totalIndexed % 100000 == 0) {
-            System.out.print(".");
-            System.out.flush();
-          }
+        if (totalIndexed % 100000 == 0) {
+          System.out.print(".");
+          System.out.flush();
         }
       };
 
@@ -80,13 +76,16 @@ public class RebuildIndexStatement extends SimpleExecStatement {
               final EmbeddedSchema.INDEX_TYPE indexType = idx.getType();
               final boolean unique = idx.isUnique();
               final List<String> propNames = idx.getPropertyNames();
-
               final String typeName = idx.getTypeName();
+              final int pageSize = idx.getPageSize();
+
+              LogManager.instance().log(this, Level.INFO, "START rebuilding of index '%s'", null, idx.getName());
 
               database.getSchema().dropIndex(idx.getName());
-              database.getSchema()
-                  .createTypeIndex(indexType, unique, typeName, propNames.toArray(new String[propNames.size()]), LSMTreeIndexAbstract.DEF_PAGE_SIZE, callback);
+              database.getSchema().createTypeIndex(indexType, unique, typeName, propNames.toArray(new String[propNames.size()]), pageSize, callback);
               indexList.add(idx.getName());
+
+              LogManager.instance().log(this, Level.INFO, "END rebuilding of index '%s'", null, idx.getName());
             }
           } catch (Exception e) {
             LogManager.instance().log(this, Level.SEVERE, "Error on rebuilding index '%s'", e, idx.getName());

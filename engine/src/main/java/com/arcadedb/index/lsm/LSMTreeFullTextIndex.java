@@ -278,6 +278,16 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   }
 
   @Override
+  public int getPageSize() {
+    return underlyingIndex.getPageSize();
+  }
+
+  @Override
+  public List<Integer> getFileIds() {
+    return underlyingIndex.getFileIds();
+  }
+
+  @Override
   public long build(BuildIndexCallback callback) {
     return underlyingIndex.build(callback);
   }

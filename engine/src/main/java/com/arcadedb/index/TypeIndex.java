@@ -240,6 +240,11 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   }
 
   @Override
+  public int getPageSize() {
+    return indexesOnBuckets.get(0).getPageSize();
+  }
+
+  @Override
   public long build(final BuildIndexCallback callback) {
     long total = 0;
     for (Index index : indexesOnBuckets)
@@ -322,6 +327,14 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   @Override
   public byte[] getBinaryKeyTypes() {
     return indexesOnBuckets.get(0).getBinaryKeyTypes();
+  }
+
+  @Override
+  public List<Integer> getFileIds() {
+    final List<Integer> ids = new ArrayList<>(indexesOnBuckets.size() * 2);
+    for (IndexInternal idx : indexesOnBuckets)
+      ids.addAll(idx.getFileIds());
+    return ids;
   }
 
   @Override
