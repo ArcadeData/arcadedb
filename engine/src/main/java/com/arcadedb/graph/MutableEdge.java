@@ -22,6 +22,9 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.Transaction;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.serializer.BinaryTypes;
+import org.json.JSONObject;
+
+import java.util.*;
 
 /**
  * Mutable edge that supports updates. After any changes, call the method {@link #save()} to mark the record as dirty in the current transaction, so the
@@ -111,6 +114,21 @@ public class MutableEdge extends MutableDocument implements Edge {
     super.set(name, value);
     checkForUpgradeLightWeigth();
     return this;
+  }
+
+  @Override
+  public synchronized MutableEdge fromMap(final Map<String, Object> map) {
+    return (MutableEdge) super.fromMap(map);
+  }
+
+  @Override
+  public synchronized MutableEdge fromJSON(final JSONObject json) {
+    return (MutableEdge) super.fromJSON(json);
+  }
+
+  @Override
+  public synchronized MutableEdge set(final Map<String, Object> properties) {
+    return (MutableEdge) super.set(properties);
   }
 
   @Override
