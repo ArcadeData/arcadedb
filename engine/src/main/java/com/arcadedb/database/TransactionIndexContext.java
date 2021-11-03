@@ -22,7 +22,6 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
-import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
@@ -278,10 +277,6 @@ public class TransactionIndexContext {
    */
   private void checkUniqueIndexKeys(final Index index, final IndexKey key) {
     if (!key.addOperation)
-      return;
-
-    if (LSMTreeIndexAbstract.isKeyNull(key.keyValues))
-      // NULL KEYS ARE NO INDEXED, SO HAS NO SENSE TO CHECK FOR DUPLICATES
       return;
 
     final DocumentType type = database.getSchema().getType(index.getTypeName());

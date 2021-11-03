@@ -62,12 +62,16 @@ public class Console {
   private              int              maxMultiValueEntries = 10;
   private              Boolean          expandResultset;
   private              ResultSet        resultSet;
+  private              String           rootDirectory;
+  private              String           databaseDirectory;
 
   private String getPrompt() {
     return String.format(PROMPT, localDatabase != null ? "{" + localDatabase.getName() + "}" : "");
   }
 
   public Console(final boolean interactive) throws IOException {
+    setRootPath("");
+
     GlobalConfiguration.PROFILE.setValue("low-cpu");
 
     terminal = TerminalBuilder.builder().system(system).streams(System.in, System.out).jansi(true).build();
@@ -132,6 +136,22 @@ public class Console {
       databaseFactory.close();
       databaseFactory = null;
     }
+  }
+
+  public Console setRootPath(final String rootDirectory) {
+    this.rootDirectory = rootDirectory;
+
+    if (this.rootDirectory == null || this.rootDirectory.isEmpty())
+      this.rootDirectory = "";
+    else if (this.rootDirectory.endsWith("/"))
+      this.rootDirectory = this.rootDirectory.substring(0, this.rootDirectory.length() - 1);
+
+    if (!new File(this.rootDirectory + "config").exists() && new File(this.rootDirectory + "../config").exists()) {
+      databaseDirectory = new File(this.rootDirectory).getAbsoluteFile().getParentFile().getPath() + "/databases";
+    } else
+      databaseDirectory = this.rootDirectory + "/databases";
+
+    return this;
   }
 
   public void setOutput(final ConsoleOutput output) {
@@ -289,7 +309,7 @@ public class Console {
   }
 
   private void executeCreateDatabase(final String line) {
-    final String url = line.substring("create database".length()).trim();
+    String url = line.substring("create database".length()).trim();
     if (localDatabase != null || remoteDatabase != null)
       terminal.writer().print("Database already connected, to connect to a different database close the current one first\n");
     else if (!url.isEmpty()) {
@@ -301,6 +321,14 @@ public class Console {
         terminal.writer().flush();
 
       } else {
+        if (url.startsWith("file://"))
+          url = url.substring("file://".length());
+
+        if (!databaseDirectory.endsWith("/"))
+          url = databaseDirectory + "/" + url;
+        else
+          url = databaseDirectory + url;
+
         databaseFactory = new DatabaseFactory(url);
         localDatabase = (DatabaseInternal) databaseFactory.setAutoTransaction(true).create();
       }

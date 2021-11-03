@@ -65,7 +65,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   public static class IndexFactoryHandler implements com.arcadedb.index.IndexFactoryHandler {
     @Override
     public IndexInternal create(final DatabaseInternal database, final String name, final boolean unique, final String filePath, final PaginatedFile.MODE mode,
-        final byte[] keyTypes, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, final BuildIndexCallback callback)
+        final Type[] keyTypes, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, final BuildIndexCallback callback)
         throws IOException {
       return new LSMTreeFullTextIndex(database, name, filePath, mode, pageSize, callback);
     }
@@ -74,8 +74,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   public static class PaginatedComponentFactoryHandlerNotUnique implements PaginatedComponentFactory.PaginatedComponentFactoryHandler {
     @Override
     public PaginatedComponent createOnLoad(final DatabaseInternal database, final String name, final String filePath, final int id,
-        final PaginatedFile.MODE mode, final int pageSize) throws IOException {
-      final LSMTreeFullTextIndex mainIndex = new LSMTreeFullTextIndex(database, name, filePath, id, mode, pageSize);
+        final PaginatedFile.MODE mode, final int pageSize, int version) throws IOException {
+      final LSMTreeFullTextIndex mainIndex = new LSMTreeFullTextIndex(database, name, filePath, id, mode, pageSize, version);
       return mainIndex.underlyingIndex.mutable;
     }
   }
@@ -87,8 +87,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
       final BuildIndexCallback callback) {
     try {
       analyzer = new StandardAnalyzer();
-      underlyingIndex = new LSMTreeIndex(database, name, false, filePath, mode, new byte[] { Type.STRING.getBinaryType() }, pageSize,
-          LSMTreeIndexAbstract.NULL_STRATEGY.ERROR);
+      underlyingIndex = new LSMTreeIndex(database, name, false, filePath, mode, new Type[] { Type.STRING }, pageSize, LSMTreeIndexAbstract.NULL_STRATEGY.ERROR);
     } catch (IOException e) {
       throw new IndexException("Cannot create search engine (error=" + e + ")", e);
     }
@@ -98,9 +97,9 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    * Loading time.
    */
   public LSMTreeFullTextIndex(final DatabaseInternal database, final String name, final String filePath, final int fileId, final PaginatedFile.MODE mode,
-      final int pageSize) {
+      final int pageSize, final int version) {
     try {
-      underlyingIndex = new LSMTreeIndex(database, name, false, filePath, fileId, mode, pageSize);
+      underlyingIndex = new LSMTreeIndex(database, name, false, filePath, fileId, mode, pageSize, version);
     } catch (IOException e) {
       throw new IndexException("Cannot create search engine (error=" + e + ")", e);
     }
@@ -254,8 +253,13 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   }
 
   @Override
-  public byte[] getKeyTypes() {
+  public Type[] getKeyTypes() {
     return underlyingIndex.getKeyTypes();
+  }
+
+  @Override
+  public byte[] getBinaryKeyTypes() {
+    return underlyingIndex.getBinaryKeyTypes();
   }
 
   @Override
@@ -271,6 +275,16 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   @Override
   public boolean isAutomatic() {
     return underlyingIndex.propertyNames != null;
+  }
+
+  @Override
+  public int getPageSize() {
+    return underlyingIndex.getPageSize();
+  }
+
+  @Override
+  public List<Integer> getFileIds() {
+    return underlyingIndex.getFileIds();
   }
 
   @Override

@@ -41,6 +41,7 @@ import static com.arcadedb.database.Binary.LONG_SERIALIZED_SIZE;
 public class Bucket extends PaginatedComponent {
   public static final    String BUCKET_EXT                       = "bucket";
   public static final    int    DEF_PAGE_SIZE                    = 65536;
+  public static final    int    CURRENT_VERSION                  = 0;
   protected static final int    PAGE_RECORD_COUNT_IN_PAGE_OFFSET = 0;
   protected static final int    PAGE_RECORD_TABLE_OFFSET         = PAGE_RECORD_COUNT_IN_PAGE_OFFSET + Binary.SHORT_SERIALIZED_SIZE;
   private static final   int    DEF_MAX_RECORDS_IN_PAGE          = 2048;
@@ -51,26 +52,26 @@ public class Bucket extends PaginatedComponent {
   public static class PaginatedComponentFactoryHandler implements PaginatedComponentFactory.PaginatedComponentFactoryHandler {
     @Override
     public PaginatedComponent createOnLoad(final DatabaseInternal database, final String name, final String filePath, final int id,
-        final PaginatedFile.MODE mode, final int pageSize) throws IOException {
-      return new Bucket(database, name, filePath, id, mode, pageSize);
+        final PaginatedFile.MODE mode, final int pageSize, final int version) throws IOException {
+      return new Bucket(database, name, filePath, id, mode, pageSize, version);
     }
   }
 
   /**
    * Called at creation time.
    */
-  public Bucket(final DatabaseInternal database, final String name, final String filePath, final PaginatedFile.MODE mode, final int pageSize)
+  public Bucket(final DatabaseInternal database, final String name, final String filePath, final PaginatedFile.MODE mode, final int pageSize, final int version)
       throws IOException {
-    super(database, name, filePath, BUCKET_EXT, mode, pageSize);
+    super(database, name, filePath, BUCKET_EXT, mode, pageSize, version);
     contentHeaderSize = PAGE_RECORD_TABLE_OFFSET + (maxRecordsInPage * INT_SERIALIZED_SIZE);
   }
 
   /**
    * Called at load time.
    */
-  public Bucket(final DatabaseInternal database, final String name, final String filePath, final int id, final PaginatedFile.MODE mode, final int pageSize)
-      throws IOException {
-    super(database, name, filePath, id, mode, pageSize);
+  public Bucket(final DatabaseInternal database, final String name, final String filePath, final int id, final PaginatedFile.MODE mode, final int pageSize,
+      final int version) throws IOException {
+    super(database, name, filePath, id, mode, pageSize, version);
     contentHeaderSize = PAGE_RECORD_TABLE_OFFSET + (maxRecordsInPage * INT_SERIALIZED_SIZE);
   }
 

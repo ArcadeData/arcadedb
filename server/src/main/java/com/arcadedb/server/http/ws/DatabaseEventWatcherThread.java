@@ -27,7 +27,7 @@ final public class DatabaseEventWatcherThread extends Thread {
 
   public DatabaseEventWatcherThread(final WebSocketEventBus eventBus, final Database database, final int queueSize) {
     this.eventBus = eventBus;
-    this.eventQueue = new ArrayBlockingQueue<>(queueSize, true);
+    this.eventQueue = new ArrayBlockingQueue<>(queueSize);
     this.database = database;
   }
 
@@ -64,6 +64,7 @@ final public class DatabaseEventWatcherThread extends Thread {
           .unregisterListener((AfterRecordDeleteListener) listener);
 
       LogManager.instance().log(this, Level.INFO, "Shutting down watcher thread for %s.", null, database);
+      eventQueue.clear();
     }
   }
 }

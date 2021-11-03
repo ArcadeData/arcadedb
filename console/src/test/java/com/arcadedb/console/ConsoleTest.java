@@ -25,30 +25,31 @@ import org.junit.jupiter.api.Test;
 import java.io.*;
 
 public class ConsoleTest {
-  private static final String  DB_PATH = "target/databases/console";
+  private static final String  DB_NAME = "console";
   private static       Console console;
 
   @BeforeEach
   public void populate() throws IOException {
-    console = new Console(false);
-    Assertions.assertTrue(console.parse("create database " + DB_PATH, false));
+    FileUtils.deleteRecursively(new File("target/databases"));
+    console = new Console(false).setRootPath("target");
+    Assertions.assertTrue(console.parse("create database " + DB_NAME, false));
   }
 
   @AfterEach
   public void drop() {
     console.close();
     Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
-    FileUtils.deleteRecursively(new File(DB_PATH));
+    FileUtils.deleteRecursively(new File(DB_NAME));
   }
 
   @Test
   public void testConnect() throws IOException {
-    Assertions.assertTrue(console.parse("connect " + DB_PATH + ";info types", false));
+    Assertions.assertTrue(console.parse("connect " + DB_NAME + ";info types", false));
   }
 
   @Test
   public void testCreateClass() throws IOException {
-    Assertions.assertTrue(console.parse("connect " + DB_PATH, false));
+    Assertions.assertTrue(console.parse("connect " + DB_NAME, false));
     Assertions.assertTrue(console.parse("create document type Person", false));
 
     final StringBuilder buffer = new StringBuilder();
@@ -64,7 +65,7 @@ public class ConsoleTest {
 
   @Test
   public void testInsertAndSelectRecord() throws IOException {
-    Assertions.assertTrue(console.parse("connect " + DB_PATH, false));
+    Assertions.assertTrue(console.parse("connect " + DB_NAME, false));
     Assertions.assertTrue(console.parse("create document type Person", false));
     Assertions.assertTrue(console.parse("insert into Person set name = 'Jay', lastname='Miner'", false));
 
@@ -81,7 +82,7 @@ public class ConsoleTest {
 
   @Test
   public void testInsertAndRollback() throws IOException {
-    Assertions.assertTrue(console.parse("connect " + DB_PATH, false));
+    Assertions.assertTrue(console.parse("connect " + DB_NAME, false));
     Assertions.assertTrue(console.parse("begin", false));
     Assertions.assertTrue(console.parse("create document type Person", false));
     Assertions.assertTrue(console.parse("insert into Person set name = 'Jay', lastname='Miner'", false));
@@ -113,7 +114,7 @@ public class ConsoleTest {
 
   @Test
   public void testInfoError() throws IOException {
-    Assertions.assertTrue(console.parse("connect " + DB_PATH, false));
+    Assertions.assertTrue(console.parse("connect " + DB_NAME, false));
     try {
       Assertions.assertTrue(console.parse("info blablabla", false));
       Assertions.fail();
@@ -121,9 +122,10 @@ public class ConsoleTest {
       // EXPECTED
     }
   }
+
   @Test
   public void testAllRecordTypes() throws IOException {
-    Assertions.assertTrue(console.parse("connect " + DB_PATH, false));
+    Assertions.assertTrue(console.parse("connect " + DB_NAME, false));
     Assertions.assertTrue(console.parse("create document type D", false));
     Assertions.assertTrue(console.parse("create vertex type V", false));
     Assertions.assertTrue(console.parse("create edge type E", false));

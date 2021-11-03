@@ -18,7 +18,6 @@ package com.arcadedb.database;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.index.Index;
-import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.schema.DocumentType;
 
 import java.util.*;
@@ -101,8 +100,7 @@ public class DocumentIndexer {
         continue;
 
       // REMOVE THE OLD ENTRY KEYS/VALUE AND INSERT THE NEW ONE
-      if (!LSMTreeIndexAbstract.isKeyNull(oldKeyValues))
-        index.remove(oldKeyValues, rid);
+      index.remove(oldKeyValues, rid);
       index.put(newKeyValues, new RID[] { rid });
     }
   }

@@ -13,35 +13,22 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.arcadedb.index;
+package com.arcadedb.database.async;
 
-import com.arcadedb.engine.PaginatedComponent;
-import com.arcadedb.schema.Type;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.io.*;
-import java.util.*;
+public abstract class AbstractAsyncResultsetCallback implements AsyncResultsetCallback {
+  public void onStart(ResultSet resultset) {
+  }
 
-/**
- * Internal Index interface.
- */
-public interface IndexInternal extends Index {
-  boolean compact() throws IOException, InterruptedException;
+  public boolean onNext(Result result) {
+    return false;
+  }
 
-  void setMetadata(String name, String[] propertyNames, int associatedBucketId);
+  public void onComplete() {
+  }
 
-  void close();
-
-  void drop();
-
-  Map<String, Long> getStats();
-
-  int getFileId();
-
-  PaginatedComponent getPaginatedComponent();
-
-  Type[] getKeyTypes();
-
-  byte[] getBinaryKeyTypes();
-
-  List<Integer> getFileIds();
+  public void onError(Exception exception) {
+  }
 }

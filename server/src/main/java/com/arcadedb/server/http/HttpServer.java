@@ -21,7 +21,20 @@ import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ServerPlugin;
-import com.arcadedb.server.http.handler.*;
+import com.arcadedb.server.http.handler.GetDatabasesHandler;
+import com.arcadedb.server.http.handler.GetDocumentHandler;
+import com.arcadedb.server.http.handler.GetDynamicContentHandler;
+import com.arcadedb.server.http.handler.GetExistsDatabaseHandler;
+import com.arcadedb.server.http.handler.GetQueryHandler;
+import com.arcadedb.server.http.handler.PostBeginHandler;
+import com.arcadedb.server.http.handler.PostCommandHandler;
+import com.arcadedb.server.http.handler.PostCommitHandler;
+import com.arcadedb.server.http.handler.PostCreateDatabaseHandler;
+import com.arcadedb.server.http.handler.PostCreateDocumentHandler;
+import com.arcadedb.server.http.handler.PostDropDatabaseHandler;
+import com.arcadedb.server.http.handler.PostQueryHandler;
+import com.arcadedb.server.http.handler.PostRollbackHandler;
+import com.arcadedb.server.http.handler.PostServersHandler;
 import com.arcadedb.server.http.ws.WebSocketConnectionHandler;
 import com.arcadedb.server.http.ws.WebSocketEventBus;
 import io.undertow.Handlers;
@@ -29,14 +42,14 @@ import io.undertow.Undertow;
 import io.undertow.server.RoutingHandler;
 import io.undertow.server.handlers.PathHandler;
 
-import java.net.BindException;
-import java.util.logging.Level;
+import java.net.*;
+import java.util.logging.*;
 
 import static io.undertow.UndertowOptions.SHUTDOWN_TIMEOUT;
 
 public class HttpServer implements ServerPlugin {
   private final ArcadeDBServer     server;
-  private final HttpSessionManager transactionManager;
+  private final HttpSessionManager sessionManager;
   private final JsonSerializer     jsonSerializer = new JsonSerializer();
   private final WebSocketEventBus  webSocketEventBus;
   private       Undertow           undertow;
@@ -46,18 +59,22 @@ public class HttpServer implements ServerPlugin {
 
   public HttpServer(final ArcadeDBServer server) {
     this.server = server;
-    this.transactionManager = new HttpSessionManager(server.getConfiguration().getValueAsInteger(GlobalConfiguration.SERVER_HTTP_TX_EXPIRE_TIMEOUT) * 1000);
+    this.sessionManager = new HttpSessionManager(server.getConfiguration().getValueAsInteger(GlobalConfiguration.SERVER_HTTP_TX_EXPIRE_TIMEOUT) * 1000);
     this.webSocketEventBus = new WebSocketEventBus(this.server);
   }
 
   @Override
   public void stopService() {
+    webSocketEventBus.stop();
+
     if (undertow != null)
       try {
         undertow.stop();
       } catch (Exception e) {
         // IGNORE IT
       }
+
+    sessionManager.close();
   }
 
   @Override
@@ -130,8 +147,8 @@ public class HttpServer implements ServerPlugin {
     } while (httpAutoIncrementPort);
   }
 
-  public HttpSessionManager getTransactionManager() {
-    return transactionManager;
+  public HttpSessionManager getSessionManager() {
+    return sessionManager;
   }
 
   public ArcadeDBServer getServer() {
@@ -152,6 +169,10 @@ public class HttpServer implements ServerPlugin {
 
   public int getPort() {
     return port;
+  }
+
+  public WebSocketEventBus getWebSocketEventBus() {
+    return webSocketEventBus;
   }
 
   @Override

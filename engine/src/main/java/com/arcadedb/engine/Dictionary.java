@@ -23,15 +23,11 @@ import com.arcadedb.exception.SchemaException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.logging.Level;
+import java.io.*;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+import java.util.logging.*;
 
 /**
  * HEADER = [itemCount(int:4),pageSize(int:4)] CONTENT-PAGES = [propertyName(string)]
@@ -40,6 +36,7 @@ import java.util.logging.Level;
 public class Dictionary extends PaginatedComponent {
   public static final  String               DICT_EXT               = "dict";
   public static final  int                  DEF_PAGE_SIZE          = 65536 * 5;
+  private static final int                  CURRENT_VERSION        = 0;
   private              List<String>         dictionary             = new CopyOnWriteArrayList<>();
   private              Map<String, Integer> dictionaryMap          = new ConcurrentHashMap<>();
   // THIS IS LEGACY BECAUSE THE NUMBER OF ITEMS WAS STORED IN THE HEADER. NOW THE DICTIONARY IS POPULATED FROM THE ACTUAL CONTENT IN THE PAGES
@@ -47,9 +44,9 @@ public class Dictionary extends PaginatedComponent {
 
   public static class PaginatedComponentFactoryHandler implements PaginatedComponentFactory.PaginatedComponentFactoryHandler {
     @Override
-    public PaginatedComponent createOnLoad(DatabaseInternal database, String name, String filePath, final int fileId, PaginatedFile.MODE mode, int pageSize)
-        throws IOException {
-      return new Dictionary(database, name, filePath, fileId, mode, pageSize);
+    public PaginatedComponent createOnLoad(final DatabaseInternal database, final String name, final String filePath, final int fileId,
+        final PaginatedFile.MODE mode, final int pageSize, final int version) throws IOException {
+      return new Dictionary(database, name, filePath, fileId, mode, pageSize, version);
     }
   }
 
@@ -57,7 +54,7 @@ public class Dictionary extends PaginatedComponent {
    * Called at creation time.
    */
   public Dictionary(final DatabaseInternal database, final String name, String filePath, final PaginatedFile.MODE mode, final int pageSize) throws IOException {
-    super(database, name, filePath, DICT_EXT, mode, pageSize);
+    super(database, name, filePath, DICT_EXT, mode, pageSize, CURRENT_VERSION);
     if (file.getSize() == 0) {
       // NEW FILE, CREATE HEADER PAGE
       final MutablePage header = database.getTransaction().addPage(new PageId(file.getFileId(), 0), pageSize);
@@ -68,9 +65,9 @@ public class Dictionary extends PaginatedComponent {
   /**
    * Called at load time.
    */
-  public Dictionary(final DatabaseInternal database, final String name, final String filePath, final int id, final PaginatedFile.MODE mode, final int pageSize)
-      throws IOException {
-    super(database, name, filePath, id, mode, pageSize);
+  public Dictionary(final DatabaseInternal database, final String name, final String filePath, final int id, final PaginatedFile.MODE mode, final int pageSize,
+      final int version) throws IOException {
+    super(database, name, filePath, id, mode, pageSize, version);
     reload();
   }
 

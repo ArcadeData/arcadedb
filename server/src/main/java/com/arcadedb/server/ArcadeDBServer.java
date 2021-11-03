@@ -65,7 +65,7 @@ public class ArcadeDBServer implements ServerLogger {
 
     serverRootPath = configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PATH);
     if (serverRootPath == null) {
-      serverRootPath = new File("config").exists() ? "" : "../";
+      serverRootPath = new File("config").exists() ? "" : new File("../config").exists() ? ".." : ".";
       configuration.setValue(GlobalConfiguration.SERVER_ROOT_PATH, serverRootPath);
     }
 

@@ -85,6 +85,8 @@ TOKEN:
 	|
 	< CREATE: ( "c" | "C" ) ( "r" | "R" ) ( "e" | "E" ) ( "a" | "A" ) ( "t" | "T" ) ( "e" | "E" ) >
 	|
+  < CUSTOM: ( "c" | "C" ) ( "u" | "U" ) ( "s" | "S" ) ( "t" | "T" ) ( "o" | "O" ) ( "m" | "M" ) >
+	|
 	< DELETE: ( "d" | "D" ) ( "e" | "E" ) ( "l" | "L" ) ( "e" | "E" ) ( "t" | "T" ) ( "e" | "E" ) >
 	|
 	< DOCUMENT: ( "d" | "D" ) ( "o" | "O" ) ( "c" | "C" ) ( "u" | "U" ) ( "m" | "M" ) ( "e" | "E" ) ( "n" | "N" ) ( "t" | "T" ) >
@@ -746,6 +748,8 @@ Identifier Identifier():
   |
   token = <STORAGE>
   |
+	token = <CUSTOM>
+	|
   token = <ON>
   |
   token = <OFF>
@@ -3745,6 +3749,13 @@ AlterTypeStatement AlterTypeStatement():
         lastIdentifier = Identifier() { jjtThis.identifierListValue.add(lastIdentifier); }
       )*
 		)
+		|
+		(
+			<CUSTOM>
+			jjtThis.customKey = Identifier()
+			<EQ>
+			jjtThis.customValue = Expression()
+		)
 	)
 	{ return jjtThis; }
 }
@@ -3815,8 +3826,16 @@ AlterPropertyStatement AlterPropertyStatement():
   <DOT>
   jjtThis.propertyName = Identifier()
   (
+    LOOKAHEAD(3)
     (
-        jjtThis.settingName = Identifier()
+      <CUSTOM>
+      jjtThis.customPropertyName = Identifier()
+      <EQ>
+      jjtThis.customPropertyValue = Expression()
+    )
+    |
+    (
+      jjtThis.settingName = Identifier()
       jjtThis.settingValue = Expression()
     )
   )

@@ -19,9 +19,10 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
 
-import java.io.IOException;
+import java.io.*;
 import java.util.*;
 
 /**
@@ -59,6 +60,13 @@ public class FetchFromSchemaIndexesStep extends AbstractExecutionStep {
           r.setProperty("typeName", index.getTypeName());
           if (index.getPropertyNames() != null)
             r.setProperty("properties", Arrays.asList(index.getPropertyNames()));
+
+          // KEY TYPES
+          final List<String> keyTypes = new ArrayList<>();
+          for (Type k : ((IndexInternal) index).getKeyTypes())
+            keyTypes.add(k.name());
+          r.setProperty("keyTypes", keyTypes);
+
           r.setProperty("unique", index.isUnique());
           r.setProperty("automatic", index.isAutomatic());
           r.setProperty("compacting", index.isCompacting());

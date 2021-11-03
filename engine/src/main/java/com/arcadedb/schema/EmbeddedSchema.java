@@ -265,7 +265,8 @@ public class EmbeddedSchema implements Schema {
 
     return recordFileChanges(() -> {
       try {
-        final Bucket bucket = new Bucket(database, bucketName, databasePath + "/" + bucketName, PaginatedFile.MODE.READ_WRITE, pageSize);
+        final Bucket bucket = new Bucket(database, bucketName, databasePath + "/" + bucketName, PaginatedFile.MODE.READ_WRITE, pageSize,
+            Bucket.CURRENT_VERSION);
         registerFile(bucket);
         bucketMap.put(bucketName, bucket);
 
@@ -382,15 +383,24 @@ public class EmbeddedSchema implements Schema {
 
     recordFileChanges(() -> {
       multipleUpdate = true;
-      try {
-        final IndexInternal index = indexMap.remove(indexName);
-        if (index == null)
-          return null;
 
+      final IndexInternal index = indexMap.get(indexName);
+      if (index == null)
+        return null;
+
+      List<Integer> lockedFiles = null;
+      try {
+        lockedFiles = database.getTransactionManager().tryLockFiles(index.getFileIds(), 5_000);
+
+        indexMap.remove(indexName);
         index.drop();
+
       } catch (Exception e) {
         throw new SchemaException("Cannot drop the index '" + indexName + "' (error=" + e + ")", e);
       } finally {
+        if (lockedFiles != null)
+          database.getTransactionManager().unlockFilesInOrder(lockedFiles);
+
         multipleUpdate = false;
       }
       return null;
@@ -438,18 +448,18 @@ public class EmbeddedSchema implements Schema {
           "Found the existent index '" + index.getName() + "' defined on the properties '" + Arrays.asList(propertyNames) + "' for type '" + typeName + "'");
 
     // CHECK ALL THE PROPERTIES EXIST
-    final byte[] keyTypes = new byte[propertyNames.length];
+    final Type[] keyTypes = new Type[propertyNames.length];
     int i = 0;
 
     for (String propertyName : propertyNames) {
       if (type instanceof EdgeType && ("@out".equals(propertyName) || "@in".equals(propertyName))) {
-        keyTypes[i++] = Type.LINK.getBinaryType();
+        keyTypes[i++] = Type.LINK;
       } else {
         final Property property = type.getPolymorphicPropertyIfExists(propertyName);
         if (property == null)
           throw new SchemaException("Cannot create the index on type '" + typeName + "." + propertyName + "' because the property does not exist");
 
-        keyTypes[i++] = property.getType().getBinaryType();
+        keyTypes[i++] = property.getType();
       }
     }
 
@@ -524,7 +534,7 @@ public class EmbeddedSchema implements Schema {
     final DocumentType type = getType(typeName);
 
     // CHECK ALL THE PROPERTIES EXIST
-    final byte[] keyTypes = new byte[propertyNames.length];
+    final Type[] keyTypes = new Type[propertyNames.length];
     int i = 0;
 
     for (String propertyName : propertyNames) {
@@ -532,7 +542,7 @@ public class EmbeddedSchema implements Schema {
       if (property == null)
         throw new SchemaException("Cannot create the index on type '" + typeName + "." + propertyName + "' because the property does not exist");
 
-      keyTypes[i++] = property.getType().getBinaryType();
+      keyTypes[i++] = property.getType();
     }
 
     return recordFileChanges(() -> {
@@ -564,7 +574,7 @@ public class EmbeddedSchema implements Schema {
     });
   }
 
-  protected Index createBucketIndex(final DocumentType type, final byte[] keyTypes, final Bucket bucket, final String typeName, final INDEX_TYPE indexType,
+  protected Index createBucketIndex(final DocumentType type, final Type[] keyTypes, final Bucket bucket, final String typeName, final INDEX_TYPE indexType,
       final boolean unique, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, final Index.BuildIndexCallback callback,
       final String[] propertyNames) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
@@ -591,7 +601,7 @@ public class EmbeddedSchema implements Schema {
     });
   }
 
-  public Index createManualIndex(final INDEX_TYPE indexType, final boolean unique, final String indexName, final byte[] keyTypes, final int pageSize,
+  public Index createManualIndex(final INDEX_TYPE indexType, final boolean unique, final String indexName, final Type[] keyTypes, final int pageSize,
       final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
@@ -1067,7 +1077,14 @@ public class EmbeddedSchema implements Schema {
           if (schemaProperties != null) {
             for (String propName : schemaProperties.keySet()) {
               final JSONObject prop = schemaProperties.getJSONObject(propName);
-              type.createProperty(propName, (String) prop.get("type"));
+              final Property p = type.createProperty(propName, (String) prop.get("type"));
+
+              if (prop.has("default"))
+                p.setDefaultValue(prop.get("default"));
+
+              p.custom.clear();
+              if (prop.has("custom"))
+                p.custom.putAll(prop.getJSONObject("custom").toMap());
             }
           }
         }
@@ -1102,6 +1119,10 @@ public class EmbeddedSchema implements Schema {
             }
           }
         }
+
+        type.custom.clear();
+        if (schemaType.has("custom"))
+          type.custom.putAll(schemaType.getJSONObject("custom").toMap());
       }
 
       // ASSOCIATE ORPHAN INDEXES
@@ -1241,6 +1262,12 @@ public class EmbeddedSchema implements Schema {
 
         final Property p = t.getProperty(propName);
         prop.put("type", p.getType());
+
+        final Object defValue = p.getDefaultValue();
+        if (defValue != null)
+          prop.put("default", defValue);
+
+        prop.put("custom", new JSONObject(p.custom));
       }
 
       final JSONObject indexes = new JSONObject();
@@ -1256,6 +1283,8 @@ public class EmbeddedSchema implements Schema {
           index.put("nullStrategy", entry.getNullStrategy());
         }
       }
+
+      type.put("custom", new JSONObject(t.custom));
     }
     return root;
   }

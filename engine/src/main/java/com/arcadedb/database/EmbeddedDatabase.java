@@ -67,6 +67,7 @@ import com.arcadedb.query.sql.parser.Statement;
 import com.arcadedb.query.sql.parser.StatementCache;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EmbeddedSchema;
+import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.security.SecurityDatabaseUser;
@@ -732,6 +733,8 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     if (mode == PaginatedFile.MODE.READ_ONLY)
       throw new DatabaseIsReadOnlyException("Cannot create a new record");
 
+    setDefaultValues(record);
+
     // INVOKE EVENT CALLBACKS
     if (!events.onBeforeCreate(record))
       return;
@@ -745,7 +748,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
       final Bucket bucket;
 
       if (bucketName == null && record instanceof Document) {
-        Document doc = (Document) record;
+        final Document doc = (Document) record;
         bucket = doc.getType().getBucketIdByRecord(doc, DatabaseContext.INSTANCE.getContext(databasePath).asyncMode);
       } else
         bucket = schema.getBucketByName(bucketName);
@@ -1625,5 +1628,24 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
     if (DatabaseContext.INSTANCE.getContext(databasePath) == null)
       DatabaseContext.INSTANCE.init(this);
+  }
+
+  private void setDefaultValues(Record record) {
+    if (record instanceof MutableDocument) {
+      final MutableDocument doc = (MutableDocument) record;
+      final DocumentType type = doc.getType();
+
+      final Set<String> propertiesWithDefaultDefined = type.getPolymorphicPropertiesWithDefaultDefined();
+
+      for (String pName : propertiesWithDefaultDefined) {
+        final Object pValue = doc.get(pName);
+        if (pValue == null) {
+          final Property p = type.getPolymorphicProperty(pName);
+          final Object defValue = p.getDefaultValue();
+          if (defValue != null)
+            doc.set(pName, defValue);
+        }
+      }
+    }
   }
 }

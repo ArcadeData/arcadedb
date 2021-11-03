@@ -35,14 +35,16 @@ import java.util.logging.*;
 public class DocumentType {
   protected final EmbeddedSchema                    schema;
   protected final String                            name;
-  protected final List<DocumentType>                superTypes              = new ArrayList<>();
-  protected final List<DocumentType>                subTypes                = new ArrayList<>();
-  protected final List<Bucket>                      buckets                 = new ArrayList<>();
-  protected       BucketSelectionStrategy           bucketSelectionStrategy = new RoundRobinBucketSelectionStrategy();
-  protected final Map<String, Property>             properties              = new HashMap<>();
-  protected       Map<Integer, List<IndexInternal>> bucketIndexesByBucket   = new HashMap<>();
-  protected       Map<List<String>, TypeIndex>      indexesByProperties     = new HashMap<>();
-  protected final RecordEventsRegistry              events                  = new RecordEventsRegistry();
+  protected final List<DocumentType>                superTypes                   = new ArrayList<>();
+  protected final List<DocumentType>                subTypes                     = new ArrayList<>();
+  protected final List<Bucket>                      buckets                      = new ArrayList<>();
+  protected       BucketSelectionStrategy           bucketSelectionStrategy      = new RoundRobinBucketSelectionStrategy();
+  protected final Map<String, Property>             properties                   = new HashMap<>();
+  protected       Map<Integer, List<IndexInternal>> bucketIndexesByBucket        = new HashMap<>();
+  protected       Map<List<String>, TypeIndex>      indexesByProperties          = new HashMap<>();
+  protected final RecordEventsRegistry              events                       = new RecordEventsRegistry();
+  protected final Map<String, Object>               custom                       = new HashMap<>();
+  protected       Set<String>                       propertiesWithDefaultDefined = Collections.emptySet();
 
   public DocumentType(final EmbeddedSchema schema, final String name) {
     this.schema = schema;
@@ -59,6 +61,16 @@ public class DocumentType {
 
   public RecordEvents getEvents() {
     return events;
+  }
+
+  public Set<String> getPolymorphicPropertiesWithDefaultDefined() {
+    if (superTypes.isEmpty())
+      return propertiesWithDefaultDefined;
+
+    final HashSet<String> set = new HashSet<>(propertiesWithDefaultDefined);
+    for (DocumentType superType : superTypes)
+      set.addAll(superType.propertiesWithDefaultDefined);
+    return set;
   }
 
   public DocumentType addSuperType(final String superName) {
@@ -158,8 +170,10 @@ public class DocumentType {
   }
 
   public Set<String> getPolymorphicPropertyNames() {
-    final Set<String> allProperties = new HashSet<>();
-    allProperties.addAll(getPropertyNames());
+    if (superTypes.isEmpty())
+      return getPropertyNames();
+
+    final Set<String> allProperties = new HashSet<>(getPropertyNames());
     for (DocumentType p : superTypes)
       allProperties.addAll(p.getPolymorphicPropertyNames());
     return allProperties;
@@ -365,12 +379,17 @@ public class DocumentType {
     return result;
   }
 
-  public List<TypeIndex> getIndexesByProperty(final String property) {
+  public List<TypeIndex> getIndexesByProperties(final String property1, final String... propertiesN) {
     final List<TypeIndex> result = new ArrayList<>();
+
+    final Set<String> properties = new HashSet<>(propertiesN.length + 1);
+    properties.add(property1);
+    for (String p : propertiesN)
+      properties.add(p);
 
     for (Map.Entry<List<String>, TypeIndex> entry : indexesByProperties.entrySet()) {
       for (String prop : entry.getKey()) {
-        if (property.equals(prop)) {
+        if (properties.contains(prop)) {
           result.add(entry.getValue());
           break;
         }
@@ -650,6 +669,20 @@ public class DocumentType {
         return true;
     }
     return false;
+  }
+
+  public Set<String> getCustomKeys() {
+    return Collections.unmodifiableSet(custom.keySet());
+  }
+
+  public Object getCustomValue(final String key) {
+    return custom.get(key);
+  }
+
+  public Object setCustomValue(final String key, final Object value) {
+    if (value == null)
+      return custom.remove(key);
+    return custom.put(key, value);
   }
 
   protected <RET> RET recordFileChanges(final Callable<Object> callback) {

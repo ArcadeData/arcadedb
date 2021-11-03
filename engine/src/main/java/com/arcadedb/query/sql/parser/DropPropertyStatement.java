@@ -58,7 +58,7 @@ public class DropPropertyStatement extends DDLStatement {
       }
       throw new CommandExecutionException("Property '" + propertyName + "' not found on class " + typeName);
     }
-    final List<TypeIndex> indexes = sourceClass.getIndexesByProperty(propertyName.getStringValue());
+    final List<TypeIndex> indexes = sourceClass.getIndexesByProperties(propertyName.getStringValue());
     if (!indexes.isEmpty()) {
       if (force) {
         for (final Index index : indexes) {

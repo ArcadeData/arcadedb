@@ -1,14 +1,17 @@
 package com.arcadedb.server.http.ws;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.http.HttpServer;
 import io.undertow.websockets.core.*;
+import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.IOException;
 import java.util.UUID;
 import java.util.logging.Level;
+import java.util.stream.Collectors;
 
 public class WebSocketReceiveListener extends AbstractReceiveListener {
   private final HttpServer        httpServer;
@@ -23,20 +26,21 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
 
   @Override
   protected void onFullTextMessage(WebSocketChannel channel, BufferedTextMessage textMessage) throws IOException {
-    JSONObject message = new JSONObject(textMessage.getData());
-    String rawAction = message.getString("action");
-    ACTION action = ACTION.UNKNOWN;
     try {
-      action = ACTION.valueOf(rawAction.toUpperCase());
-    } catch (IllegalArgumentException ignored) {
-    }
+      var message = new JSONObject(textMessage.getData());
+      var rawAction = message.optString("action");
+      var action = ACTION.UNKNOWN;
+      try {
+        action = ACTION.valueOf(rawAction.toUpperCase());
+      } catch (IllegalArgumentException ignored) {
+      }
 
-    try {
       switch (action) {
         case SUBSCRIBE:
-          var changeTypes = message.optJSONArray("changeTypes");
-          this.webSocketEventBus.subscribe(new EventWatcherSubscription(message.getString("database"),
-              message.optString("type", null), changeTypes == null ? null : changeTypes.toList(), channel));
+          var jsonChangeTypes = message.optJSONArray("changeTypes");
+          var changeTypes = jsonChangeTypes == null ? null :
+              jsonChangeTypes.toList().stream().map(t -> ChangeEvent.TYPE.valueOf(t.toString().toUpperCase())).collect(Collectors.toSet());
+          this.webSocketEventBus.subscribe(message.getString("database"), message.optString("type", null), changeTypes, channel);
           this.sendAck(channel, action);
           break;
         case UNSUBSCRIBE:
@@ -44,9 +48,17 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
           this.sendAck(channel, action);
           break;
         default:
-          sendError(channel, "Unknown action", String.format("%s is not a valid action.", rawAction), null);
+          if (rawAction.equals("")) {
+            sendError(channel, "Message error", "Property 'action' is required.", null);
+          } else {
+            sendError(channel, "Unknown action", String.format("%s is not a valid action.", rawAction), null);
+          }
           break;
       }
+    } catch (JSONException e) {
+      sendError(channel, "Unable to parse JSON", e.getMessage(), e);
+    } catch (DatabaseOperationException e) {
+      sendError(channel, "Database error", e.getMessage(), e);
     } catch (Exception e) {
       LogManager.instance().log(this, getErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
       sendError(channel, "Internal error", e.getMessage(), e);
@@ -55,8 +67,9 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
 
   @Override
   protected void onClose(final WebSocketChannel channel, final StreamSourceFrameChannel frameChannel) throws IOException {
-    // TODO: Make sure unsubscribeAll gets called for zombie connections
-    this.webSocketEventBus.unsubscribeAll((UUID) channel.getAttribute(WebSocketEventBus.CHANNEL_ID));
+    final var channelId = (UUID) channel.getAttribute(WebSocketEventBus.CHANNEL_ID);
+    LogManager.instance().log(this, Level.INFO, "Socket disconnected: %s.", null, channelId);
+    this.webSocketEventBus.unsubscribeAll(channelId);
   }
 
   private void sendAck(final WebSocketChannel channel, final ACTION action) {

@@ -18,14 +18,17 @@ package com.arcadedb;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.DocumentCallback;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.async.AbstractAsyncResultsetCallback;
 import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.database.async.OkCallback;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.*;
 
 public class AsyncTest extends TestHelper {
   private static final int    TOT       = 10000;
@@ -51,7 +54,6 @@ public class AsyncTest extends TestHelper {
       database.async().waitCompletion();
       database.async().waitCompletion();
 
-
     } finally {
       database.commit();
     }
@@ -74,6 +76,136 @@ public class AsyncTest extends TestHelper {
       });
 
       Assertions.assertTrue(callbackInvoked.get() < 20);
+
+    } finally {
+      database.commit();
+    }
+  }
+
+  @Test
+  public void testCommandFetch() {
+    database.begin();
+    try {
+      final AtomicLong startCallbackInvoked = new AtomicLong();
+      final AtomicLong nextCallbackInvoked = new AtomicLong();
+      final AtomicLong completeCallbackInvoked = new AtomicLong();
+      final AtomicLong errorCallbackInvoked = new AtomicLong();
+
+      database.async().command("sql", "select from " + TYPE_NAME, new AbstractAsyncResultsetCallback() {
+        @Override
+        public void onStart(ResultSet resultset) {
+          startCallbackInvoked.incrementAndGet();
+        }
+
+        @Override
+        public boolean onNext(Result result) {
+          nextCallbackInvoked.incrementAndGet();
+          return true;
+        }
+
+        @Override
+        public void onComplete() {
+          completeCallbackInvoked.incrementAndGet();
+        }
+
+        @Override
+        public void onError(Exception exception) {
+          errorCallbackInvoked.incrementAndGet();
+        }
+      });
+
+      database.async().waitCompletion(5_000);
+
+      Assertions.assertEquals(1, startCallbackInvoked.get());
+      Assertions.assertEquals(database.countType(TYPE_NAME, true), nextCallbackInvoked.get());
+      Assertions.assertEquals(1, completeCallbackInvoked.get());
+      Assertions.assertEquals(0, errorCallbackInvoked.get());
+
+    } finally {
+      database.commit();
+    }
+  }
+
+  @Test
+  public void testCommandFetchStop() {
+    database.begin();
+    try {
+      final AtomicLong startCallbackInvoked = new AtomicLong();
+      final AtomicLong nextCallbackInvoked = new AtomicLong();
+      final AtomicLong completeCallbackInvoked = new AtomicLong();
+      final AtomicLong errorCallbackInvoked = new AtomicLong();
+
+      database.async().command("sql", "select from " + TYPE_NAME, new AbstractAsyncResultsetCallback() {
+        @Override
+        public void onStart(ResultSet resultset) {
+          startCallbackInvoked.incrementAndGet();
+        }
+
+        @Override
+        public boolean onNext(Result result) {
+          return nextCallbackInvoked.incrementAndGet() < 3;
+        }
+
+        @Override
+        public void onComplete() {
+          completeCallbackInvoked.incrementAndGet();
+        }
+
+        @Override
+        public void onError(Exception exception) {
+          errorCallbackInvoked.incrementAndGet();
+        }
+      });
+
+      database.async().waitCompletion(5_000);
+
+      Assertions.assertEquals(1, startCallbackInvoked.get());
+      Assertions.assertEquals(3, nextCallbackInvoked.get());
+      Assertions.assertEquals(0, completeCallbackInvoked.get());
+      Assertions.assertEquals(0, errorCallbackInvoked.get());
+
+    } finally {
+      database.commit();
+    }
+  }
+
+  @Test
+  public void testCommandFetchError() {
+    database.begin();
+    try {
+      final AtomicLong startCallbackInvoked = new AtomicLong();
+      final AtomicLong nextCallbackInvoked = new AtomicLong();
+      final AtomicLong completeCallbackInvoked = new AtomicLong();
+      final AtomicLong errorCallbackInvoked = new AtomicLong();
+
+      database.async().command("sql", "select from DSdededde", new AbstractAsyncResultsetCallback() {
+        @Override
+        public void onStart(ResultSet resultset) {
+          startCallbackInvoked.incrementAndGet();
+        }
+
+        @Override
+        public boolean onNext(Result result) {
+          return nextCallbackInvoked.incrementAndGet() < 3;
+        }
+
+        @Override
+        public void onComplete() {
+          completeCallbackInvoked.incrementAndGet();
+        }
+
+        @Override
+        public void onError(Exception exception) {
+          errorCallbackInvoked.incrementAndGet();
+        }
+      });
+
+      database.async().waitCompletion(5_000);
+
+      Assertions.assertEquals(0, startCallbackInvoked.get());
+      Assertions.assertEquals(0, nextCallbackInvoked.get());
+      Assertions.assertEquals(0, completeCallbackInvoked.get());
+      Assertions.assertEquals(1, errorCallbackInvoked.get());
 
     } finally {
       database.commit();

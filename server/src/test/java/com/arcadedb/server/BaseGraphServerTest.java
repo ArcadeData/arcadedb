@@ -214,6 +214,13 @@ public abstract class BaseGraphServerTest {
   }
 
   protected void checkArcadeIsTotallyDown() {
+    if (servers != null)
+      for (ArcadeDBServer server : servers) {
+        Assertions.assertFalse(server.isStarted());
+        Assertions.assertEquals(ArcadeDBServer.STATUS.OFFLINE, server.getStatus());
+        Assertions.assertEquals(0, server.getHttpServer().getSessionManager().getActiveSessions());
+      }
+
     final ByteArrayOutputStream os = new ByteArrayOutputStream();
     final PrintWriter output = new PrintWriter(new BufferedOutputStream(os));
     new Exception().printStackTrace(output);

@@ -39,7 +39,7 @@ public class PostBeginHandler extends DatabaseAbstractHandler {
   public void execute(final HttpServerExchange exchange, ServerSecurityUser user, final Database database) throws IOException {
     final HeaderValues txId = exchange.getRequestHeaders().get(HttpSessionManager.ARCADEDB_SESSION_ID);
     if (txId != null && !txId.isEmpty()) {
-      final HttpSession tx = httpServer.getTransactionManager().getSessionById(user, txId.getFirst());
+      final HttpSession tx = httpServer.getSessionManager().getSessionById(user, txId.getFirst());
       if (tx != null) {
         exchange.setStatusCode(401);
         exchange.getResponseSender().send("{ \"error\" : \"Transaction already started\" }");
@@ -52,7 +52,7 @@ public class PostBeginHandler extends DatabaseAbstractHandler {
     database.begin();
     final TransactionContext tx = ((DatabaseInternal) database).getTransaction();
 
-    final HttpSession session = httpServer.getTransactionManager().createSession(user, tx);
+    final HttpSession session = httpServer.getSessionManager().createSession(user, tx);
 
     DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
 

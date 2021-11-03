@@ -46,22 +46,22 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
    */
   public LSMTreeIndexCompacted(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name, final boolean unique, final String filePath,
       final byte[] keyTypes, final int pageSize) throws IOException {
-    super(mainIndex, database, name, unique, filePath, unique ? UNIQUE_INDEX_EXT : NOTUNIQUE_INDEX_EXT, keyTypes, pageSize);
+    super(mainIndex, database, name, unique, filePath, unique ? UNIQUE_INDEX_EXT : NOTUNIQUE_INDEX_EXT, keyTypes, pageSize,
+        LSMTreeIndexMutable.CURRENT_VERSION);
   }
 
   /**
    * Called at load time (1st page only).
    */
   protected LSMTreeIndexCompacted(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name, final boolean unique, final String filePath,
-      final int id, final PaginatedFile.MODE mode, final int pageSize) throws IOException {
-    super(mainIndex, database, name, unique, filePath, id, mode, pageSize);
+      final int id, final PaginatedFile.MODE mode, final int pageSize, final int version) throws IOException {
+    super(mainIndex, database, name, unique, filePath, id, mode, pageSize, version);
   }
 
   public Set<IndexCursorEntry> get(final Object[] keys, final int limit) {
-    if (nullStrategy == NULL_STRATEGY.ERROR)
-      checkForNulls(keys);
+    checkForNulls(keys);
 
-    final Object[] convertedKeys = convertKeys(keys, keyTypes);
+    final Object[] convertedKeys = convertKeys(keys, binaryKeyTypes);
     if (convertedKeys == null && nullStrategy == NULL_STRATEGY.SKIP)
       return Collections.emptySet();
 
@@ -97,7 +97,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
 
     int pageNum = currentPage.getPageId().getPageNumber();
 
-    final Object[] convertedKeys = convertKeys(keys, keyTypes);
+    final Object[] convertedKeys = convertKeys(keys, binaryKeyTypes);
 
     writeEntry(keyValueContent, convertedKeys, rids);
 
@@ -180,9 +180,9 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
       currentPage.writeInt(pos, -1); // SUB-INDEX FILE ID
       pos += INT_SERIALIZED_SIZE;
 
-      currentPage.writeByte(pos++, (byte) keyTypes.length);
-      for (int i = 0; i < keyTypes.length; ++i)
-        currentPage.writeByte(pos++, keyTypes[i]);
+      currentPage.writeByte(pos++, (byte) binaryKeyTypes.length);
+      for (int i = 0; i < binaryKeyTypes.length; ++i)
+        currentPage.writeByte(pos++, binaryKeyTypes[i]);
     }
 
     setPageCount(txPageCounter + 1);
@@ -209,8 +209,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
       return Collections.emptyList();
     }
 
-    checkForNulls(fromKeys);
-    final Object[] convertedFromKeys = convertKeys(fromKeys, keyTypes);
+    final Object[] convertedFromKeys = convertKeys(fromKeys, binaryKeyTypes);
 
     final List<LSMTreeIndexUnderlyingCompactedSeriesCursor> iterators = new ArrayList<>();
 
@@ -282,11 +281,11 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
               ++posInPage;
           }
 
-          iterator = new LSMTreeIndexUnderlyingCompactedSeriesCursor(this, startingPageNumber, lastPageNumber, keyTypes, ascendingOrder, posInPage);
+          iterator = new LSMTreeIndexUnderlyingCompactedSeriesCursor(this, startingPageNumber, lastPageNumber, binaryKeyTypes, ascendingOrder, posInPage);
         }
 
       } else
-        iterator = new LSMTreeIndexUnderlyingCompactedSeriesCursor(this, startingPageNumber, lastPageNumber, keyTypes, ascendingOrder, -1);
+        iterator = new LSMTreeIndexUnderlyingCompactedSeriesCursor(this, startingPageNumber, lastPageNumber, binaryKeyTypes, ascendingOrder, -1);
 
       if (iterator != null)
         iterators.add(iterator);
