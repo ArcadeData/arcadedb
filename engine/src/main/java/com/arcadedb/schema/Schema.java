@@ -71,7 +71,7 @@ public interface Schema {
   Index createBucketIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String typeName, String bucketName, String[] propertyNames, int pageSize,
       LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, Index.BuildIndexCallback callback);
 
-  Index createManualIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String indexName, byte[] keyTypes, int pageSize,
+  Index createManualIndex(EmbeddedSchema.INDEX_TYPE indexType, boolean unique, String indexName, Type[] keyTypes, int pageSize,
       LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy);
 
   Dictionary getDictionary();

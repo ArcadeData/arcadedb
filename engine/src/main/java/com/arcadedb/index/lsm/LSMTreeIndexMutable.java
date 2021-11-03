@@ -32,6 +32,7 @@ import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryTypes;
 
 import java.io.*;
@@ -56,7 +57,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
    * Called at creation time.
    */
   protected LSMTreeIndexMutable(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name, final boolean unique, final String filePath,
-      final PaginatedFile.MODE mode, final byte[] keyTypes, final int pageSize, final NULL_STRATEGY nullStrategy) throws IOException {
+      final PaginatedFile.MODE mode, final Type[] keyTypes, final int pageSize, final NULL_STRATEGY nullStrategy) throws IOException {
     super(mainIndex, database, name, unique, filePath, unique ? UNIQUE_INDEX_EXT : NOTUNIQUE_INDEX_EXT, mode, keyTypes, pageSize, CURRENT_VERSION,
         nullStrategy);
     database.checkTransactionIsActive(database.isAutoTransaction());
@@ -106,16 +107,16 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
       pos += INT_SERIALIZED_SIZE;
 
       final int len = currentPage.readByte(pos++);
-      this.keyTypes = new byte[len];
+      this.binaryKeyTypes = new byte[len];
       for (int i = 0; i < len; ++i)
-        this.keyTypes[i] = currentPage.readByte(pos++);
+        this.binaryKeyTypes[i] = currentPage.readByte(pos++);
 
       minPagesToScheduleACompaction = database.getConfiguration().getValueAsInteger(GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE);
 
       if (subIndexFileId > 0) {
         subIndex = (LSMTreeIndexCompacted) database.getSchema().getFileById(subIndexFileId);
         subIndex.mainIndex = mainIndex;
-        subIndex.keyTypes = keyTypes;
+        subIndex.binaryKeyTypes = binaryKeyTypes;
 
       }
     } catch (Exception e) {
@@ -155,7 +156,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     int last_ = name.lastIndexOf('_');
     final String newName = name.substring(0, last_) + "_" + System.nanoTime();
 
-    return new LSMTreeIndexCompacted(mainIndex, database, newName, unique, database.getDatabasePath() + "/" + newName, keyTypes, pageSize);
+    return new LSMTreeIndexCompacted(mainIndex, database, newName, unique, database.getDatabasePath() + "/" + newName, binaryKeyTypes, pageSize);
   }
 
   public IndexCursor iterator(final boolean ascendingOrder, final Object[] fromKeys, final boolean inclusive) throws IOException {
@@ -173,7 +174,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     boolean ascending = true;
 
     if (fromKeys != null && toKeys != null)
-      ascending = LSMTreeIndexMutable.compareKeys(comparator, keyTypes, fromKeys, toKeys) <= 0;
+      ascending = LSMTreeIndexMutable.compareKeys(comparator, binaryKeyTypes, fromKeys, toKeys) <= 0;
 
     return new LSMTreeIndexCursor(this, ascending, fromKeys, beginKeysInclusive, toKeys, endKeysInclusive);
   }
@@ -185,7 +186,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
 
   public LSMTreeIndexUnderlyingPageCursor newPageIterator(final int pageId, final int currentEntryInPage, final boolean ascendingOrder) throws IOException {
     final BasePage page = database.getTransaction().getPage(new PageId(file.getFileId(), pageId), pageSize);
-    return new LSMTreeIndexUnderlyingPageCursor(this, page, currentEntryInPage, getHeaderSize(pageId), keyTypes, getCount(page), ascendingOrder);
+    return new LSMTreeIndexUnderlyingPageCursor(this, page, currentEntryInPage, getHeaderSize(pageId), binaryKeyTypes, getCount(page), ascendingOrder);
   }
 
   public LSMTreeIndexCompacted getSubIndex() {
@@ -195,7 +196,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
   public IndexCursor get(final Object[] keys, final int limit) throws IOException {
     checkForNulls(keys);
 
-    final Object[] convertedKeys = convertKeys(keys, keyTypes);
+    final Object[] convertedKeys = convertKeys(keys, binaryKeyTypes);
     if (convertedKeys == null && nullStrategy == NULL_STRATEGY.SKIP)
       return new TempIndexCursor(Collections.emptyList());
 
@@ -255,7 +256,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
       return new LookupResult(true, false, lastKeyPos, positionsArray);
     }
 
-    if (convertedKeys.length < keyTypes.length) {
+    if (convertedKeys.length < binaryKeyTypes.length) {
       // PARTIAL MATCHING
       if (purpose == 2) {
         // ASCENDING ITERATOR: FIND THE MOST LEFT ITEM
@@ -281,7 +282,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
         if (!notNull)
           break;
 
-        final byte keyType = keyTypes[keyIndex];
+        final byte keyType = binaryKeyTypes[keyIndex];
         if (keyType == BinaryTypes.TYPE_STRING) {
           // OPTIMIZATION: SPECIAL CASE, LAZY EVALUATE BYTE PER BYTE THE STRING
           result = comparator.compareBytes((byte[]) keys[keyIndex], currentPageBuffer);
@@ -318,7 +319,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
         if (!notNull)
           break;
 
-        final byte keyType = keyTypes[keyIndex];
+        final byte keyType = binaryKeyTypes[keyIndex];
         if (keyType == BinaryTypes.TYPE_STRING) {
           // OPTIMIZATION: SPECIAL CASE, LAZY EVALUATE BYTE PER BYTE THE STRING
           result = comparator.compareBytes((byte[]) keys[keyIndex], currentPageBuffer);
@@ -366,9 +367,9 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
       currentPage.writeInt(pos, subIndex != null ? subIndex.getId() : -1); // SUB-INDEX FILE ID
       pos += INT_SERIALIZED_SIZE;
 
-      currentPage.writeByte(pos++, (byte) keyTypes.length);
-      for (int i = 0; i < keyTypes.length; ++i)
-        currentPage.writeByte(pos++, keyTypes[i]);
+      currentPage.writeByte(pos++, (byte) binaryKeyTypes.length);
+      for (int i = 0; i < binaryKeyTypes.length; ++i)
+        currentPage.writeByte(pos++, binaryKeyTypes[i]);
     }
 
     ++currentMutablePages;
@@ -405,12 +406,12 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     if (database.getMode() == PaginatedFile.MODE.READ_ONLY)
       throw new DatabaseIsReadOnlyException("Cannot update the index '" + name + "'");
 
-    if (keys.length != keyTypes.length)
+    if (keys.length != binaryKeyTypes.length)
       throw new IllegalArgumentException("Cannot put an entry in the index with a partial key");
 
     checkForNulls(keys);
 
-    final Object[] convertedKeys = convertKeys(keys, keyTypes);
+    final Object[] convertedKeys = convertKeys(keys, binaryKeyTypes);
     if (convertedKeys == null && nullStrategy == NULL_STRATEGY.SKIP)
       // SKIP THIS RECORD
       return;
@@ -495,12 +496,12 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     if (database.getMode() == PaginatedFile.MODE.READ_ONLY)
       throw new DatabaseIsReadOnlyException("Cannot update the index '" + name + "'");
 
-    if (keys.length != keyTypes.length)
+    if (keys.length != binaryKeyTypes.length)
       throw new IllegalArgumentException("Cannot remove an entry in the index with a partial key");
 
     checkForNulls(keys);
 
-    final Object[] convertedKeys = convertKeys(keys, keyTypes);
+    final Object[] convertedKeys = convertKeys(keys, binaryKeyTypes);
     if (convertedKeys == null)
       return;
 

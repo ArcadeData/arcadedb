@@ -65,7 +65,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   public static class IndexFactoryHandler implements com.arcadedb.index.IndexFactoryHandler {
     @Override
     public IndexInternal create(final DatabaseInternal database, final String name, final boolean unique, final String filePath, final PaginatedFile.MODE mode,
-        final byte[] keyTypes, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, final BuildIndexCallback callback)
+        final Type[] keyTypes, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, final BuildIndexCallback callback)
         throws IOException {
       return new LSMTreeIndex(database, name, unique, filePath, mode, keyTypes, pageSize, nullStrategy);
     }
@@ -97,7 +97,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
    * Called at creation time.
    */
   public LSMTreeIndex(final DatabaseInternal database, final String name, final boolean unique, String filePath, final PaginatedFile.MODE mode,
-      final byte[] keyTypes, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy) throws IOException {
+      final Type[] keyTypes, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy) throws IOException {
     this.name = name;
     this.mutable = new LSMTreeIndexMutable(this, database, name, unique, filePath, mode, keyTypes, pageSize, nullStrategy);
   }
@@ -124,7 +124,12 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   }
 
   @Override
-  public byte[] getKeyTypes() {
+  public byte[] getBinaryKeyTypes() {
+    return mutable.binaryKeyTypes;
+  }
+
+  @Override
+  public Type[] getKeyTypes() {
     return mutable.keyTypes;
   }
 
@@ -496,7 +501,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
   private Object[] convertKeys(final Object[] keys) {
     if (keys != null) {
-      final byte[] keyTypes = mutable.keyTypes;
+      final byte[] keyTypes = mutable.binaryKeyTypes;
       final Object[] convertedKeys = new Object[keys.length];
       for (int i = 0; i < keys.length; ++i) {
         if (keys[i] == null)

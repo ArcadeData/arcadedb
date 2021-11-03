@@ -63,8 +63,8 @@ public class FetchFromSchemaIndexesStep extends AbstractExecutionStep {
 
           // KEY TYPES
           final List<String> keyTypes = new ArrayList<>();
-          for (byte k : ((IndexInternal) index).getKeyTypes())
-            keyTypes.add(Type.getById(k).name());
+          for (Type k : ((IndexInternal) index).getKeyTypes())
+            keyTypes.add(k.name());
           r.setProperty("keyTypes", keyTypes);
 
           r.setProperty("unique", index.isUnique());

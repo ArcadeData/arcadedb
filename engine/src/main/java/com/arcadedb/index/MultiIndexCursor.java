@@ -52,7 +52,7 @@ public class MultiIndexCursor implements IndexCursor {
       this.cursors.add(((RangeIndex) i).iterator(ascendingOrder));
     }
     this.ascendingOrder = ascendingOrder;
-    this.keyTypes = indexes.get(0).getKeyTypes();
+    this.keyTypes = indexes.get(0).getBinaryKeyTypes();
     initCursors();
   }
 
@@ -67,7 +67,7 @@ public class MultiIndexCursor implements IndexCursor {
       this.cursors.add(((RangeIndex) i).iterator(ascendingOrder, fromKeys, includeFrom));
     }
     this.ascendingOrder = ascendingOrder;
-    this.keyTypes = indexes.get(0).getKeyTypes();
+    this.keyTypes = indexes.get(0).getBinaryKeyTypes();
     initCursors();
   }
 

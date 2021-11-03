@@ -16,9 +16,10 @@
 package com.arcadedb.index;
 
 import com.arcadedb.engine.PaginatedComponent;
+import com.arcadedb.schema.Type;
 
-import java.io.IOException;
-import java.util.Map;
+import java.io.*;
+import java.util.*;
 
 /**
  * Internal Index interface.
@@ -40,5 +41,7 @@ public interface IndexInternal extends Index {
 
   PaginatedComponent getPaginatedComponent();
 
-  byte[] getKeyTypes();
+  Type[] getKeyTypes();
+
+  byte[] getBinaryKeyTypes();
 }

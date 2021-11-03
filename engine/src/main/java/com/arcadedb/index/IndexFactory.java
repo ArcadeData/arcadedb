@@ -18,6 +18,7 @@ package com.arcadedb.index;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
+import com.arcadedb.schema.Type;
 
 import java.io.*;
 import java.util.*;
@@ -30,7 +31,7 @@ public class IndexFactory {
   }
 
   public IndexInternal createIndex(final String indexType, final DatabaseInternal database, final String indexName, final boolean unique, final String filePath,
-      final PaginatedFile.MODE mode, final byte[] keyTypes, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy,
+      final PaginatedFile.MODE mode, final Type[] keyTypes, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy,
       final Index.BuildIndexCallback callback) throws IOException {
     final IndexFactoryHandler handler = map.get(indexType);
 

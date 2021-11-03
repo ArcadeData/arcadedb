@@ -23,6 +23,7 @@ import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EmbeddedSchema;
+import com.arcadedb.schema.Type;
 
 import java.io.*;
 import java.util.*;
@@ -314,8 +315,13 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   }
 
   @Override
-  public byte[] getKeyTypes() {
+  public Type[] getKeyTypes() {
     return indexesOnBuckets.get(0).getKeyTypes();
+  }
+
+  @Override
+  public byte[] getBinaryKeyTypes() {
+    return indexesOnBuckets.get(0).getBinaryKeyTypes();
   }
 
   @Override
