@@ -15,6 +15,7 @@
  */
 package org.apache.tinkerpop.gremlin.arcadedb;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.RID;
 import org.apache.commons.configuration2.Configuration;
 import org.apache.tinkerpop.gremlin.AbstractGraphProvider;
@@ -80,10 +81,9 @@ public class ArcadeGraphProvider extends AbstractGraphProvider {
     if (testMethodName.contains("graphson"))
       throw new AssumptionViolatedException("graphson support not implemented");
 
-//    if (testMethodName.contains("gryo"))
-//      throw new AssumptionViolatedException("gryo support not implemented");
-
     final String directory = makeTestDirectory(graphName, test, testMethodName);
+
+    GlobalConfiguration.TYPE_DEFAULT_BUCKETS.setValue(1);
 
     return new HashMap<>() {{
       put(Graph.GRAPH, ArcadeGraph.class.getName());
@@ -94,7 +94,6 @@ public class ArcadeGraphProvider extends AbstractGraphProvider {
 
   @Override
   public void clear(Graph graph, Configuration configuration) throws Exception {
-
     if (graph != null)
       ((ArcadeGraph) graph).drop();
 
@@ -103,6 +102,8 @@ public class ArcadeGraphProvider extends AbstractGraphProvider {
       final File graphDirectory = new File(configuration.getString(ArcadeGraph.CONFIG_DIRECTORY));
       deleteDirectory(graphDirectory);
     }
+
+    GlobalConfiguration.resetAll();
   }
 
   @Override

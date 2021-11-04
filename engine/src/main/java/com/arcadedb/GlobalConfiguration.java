@@ -135,6 +135,8 @@ public enum GlobalConfiguration {
 
   FREE_PAGE_RAM("arcadedb.freePageRAM", "Percentage (0-100) of memory to free when Page RAM is full", Integer.class, 50),
 
+  TYPE_DEFAULT_BUCKETS("arcadedb.typeDefaultBuckets", "Default number of buckets to create per type", Integer.class, 8),
+
   BUCKET_DEFAULT_PAGE_SIZE("arcadedb.bucketDefaultPageSize", "Default page size in bytes for buckets. Default is " + Bucket.DEF_PAGE_SIZE, Integer.class,
       Bucket.DEF_PAGE_SIZE),
 
