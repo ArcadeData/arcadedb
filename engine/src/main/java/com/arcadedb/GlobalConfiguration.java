@@ -226,8 +226,8 @@ public enum GlobalConfiguration {
       "Timeout in seconds for a HTTP transaction to expire. This timeout is computed from the latest command against the transaction", Long.class, 30),
 
   // SERVER WS
-  SERVER_WS_EVENT_BUS_QUEUE_SIZE("arcadedb.server.eventBusQueueSize",
-      "Size of the queue used as a buffer for unserviced database change events.", Integer.class, 1000),
+  SERVER_WS_EVENT_BUS_QUEUE_SIZE("arcadedb.server.eventBusQueueSize", "Size of the queue used as a buffer for unserviced database change events.",
+      Integer.class, 1000),
 
   // SERVER SECURITY
   SERVER_SECURITY_ALGORITHM("arcadedb.server.securityAlgorithm", "Default encryption algorithm used for passwords hashing", String.class,
@@ -282,6 +282,9 @@ public enum GlobalConfiguration {
   POSTGRES_PORT("arcadedb.postgres.port", "TCP/IP port number used for incoming connections for Postgres plugin. Default is 5432", Integer.class, 5432),
 
   POSTGRES_HOST("arcadedb.postgres.host", "TCP/IP host name used for incoming connections for Postgres plugin. Default is '0.0.0.0'", String.class, "0.0.0.0"),
+
+  // REDIS
+  REDIS_DATABASE("arcadedb.redis.database", "Database name used for Redis plugin", String.class, "redis"),
   ;
 
   /**

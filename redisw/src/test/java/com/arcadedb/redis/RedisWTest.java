@@ -18,8 +18,10 @@ package com.arcadedb.redis;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import redis.clients.jedis.Jedis;
+import redis.clients.jedis.exceptions.JedisDataException;
 
 public class RedisWTest extends BaseGraphServerTest {
 
@@ -40,26 +42,38 @@ public class RedisWTest extends BaseGraphServerTest {
   }
 
   @Test
-  public void testSet() {
+  public void testDefaultBucket() {
     Jedis jedis = new Jedis("localhost", DEF_PORT);
 
+    // SET
     long beginTime = System.currentTimeMillis();
-
-    for (int i = 0; i < TOTAL; ++i) {
+    for (int i = 0; i < TOTAL; ++i)
       jedis.set("foo" + i, String.valueOf(i));
-    }
+    System.out.println("Inserted " + TOTAL + " items in the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
 
-    System.out.println("Inserted  " + TOTAL + " items. Elapsed" + (System.currentTimeMillis() - beginTime) + "ms");
-
+    // GET
     beginTime = System.currentTimeMillis();
+    for (int i = 0; i < TOTAL; ++i)
+      Assertions.assertEquals(String.valueOf(i), jedis.get("foo" + i));
+    System.out.println("Retrieved " + TOTAL + " items from the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
 
-    for (int i = 0; i < TOTAL; ++i) {
-      jedis.get("foo" + i);
-      //Assertions.assertEquals(String.valueOf(i), jedis.get("foo" + i));
-    }
-
-    System.out.println("Retrieved  " + TOTAL + " items. Elapsed" + (System.currentTimeMillis() - beginTime) + "ms");
-
+    // INCR
+    beginTime = System.currentTimeMillis();
+    for (int i = 0; i < TOTAL; ++i)
+      Assertions.assertEquals(i + 1L, jedis.incr("foo" + i));
+    System.out.println("Incremented " + TOTAL + " items from the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
   }
 
+  @Test
+  public void testCommandNotSupported() {
+    Jedis jedis = new Jedis("localhost", DEF_PORT);
+
+    try {
+      jedis.aclList();
+      Assertions.fail();
+    } catch (JedisDataException e) {
+      // EXPECTED
+      Assertions.assertEquals("Command not found", e.getMessage());
+    }
+  }
 }

@@ -19,23 +19,27 @@ import com.arcadedb.Constants;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.network.binary.ChannelBinaryServer;
+import com.arcadedb.schema.Type;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.utility.NumberUtils;
 
 import java.io.*;
 import java.net.*;
 import java.util.*;
+import java.util.concurrent.*;
 import java.util.logging.*;
 
 public class RedisNetworkExecutor extends Thread {
+  private static final String              DEFAULT_BUCKET = "default";
   private final        ArcadeDBServer      server;
   private final        Database            database;
   private final        ChannelBinaryServer channel;
-  private volatile     boolean             shutdown = false;
-
-  private       int           posInBuffer = 0;
-  private final StringBuilder value       = new StringBuilder();
-  private final byte[]        buffer      = new byte[32 * 1024];
-  private       int           bytesRead   = 0;
+  private volatile     boolean             shutdown       = false;
+  private              int                 posInBuffer    = 0;
+  private final        StringBuilder       value          = new StringBuilder();
+  private final        byte[]              buffer         = new byte[32 * 1024];
+  private              int                 bytesRead      = 0;
+  private final        Map<String, Object> defaultBucket  = new ConcurrentHashMap<>();
 
   public RedisNetworkExecutor(final ArcadeDBServer server, final Socket socket, final Database database) throws IOException {
     setName(Constants.PRODUCT + "-redis/" + socket.getInetAddress());
@@ -77,37 +81,77 @@ public class RedisNetworkExecutor extends Thread {
 
       final String cmdString = (String) cmd;
 
-      if (cmdString.equals("GET")) {
-        value.append("+bar\r\n");
-      } else if (cmdString.equals("SET")) {
-        final String k = (String) list.get(1);
-        final String v = (String) list.get(2);
+      try {
+        switch (cmdString) {
+        case "GET": {
+          final String k = (String) list.get(1);
+          final Object v = defaultBucket.get(k);
+          value.append(v instanceof Number ? ":" : "+");
+          value.append(v);
+          break;
+        }
 
-        insert("_default", k, v);
+        case "SET": {
+          final String k = (String) list.get(1);
+          final String v = (String) list.get(2);
+          defaultBucket.put(k, v);
+          value.append("+");
+          value.append("OK");
+          break;
+        }
 
-        value.append("+OK\r\n");
-      } else if (cmdString.equals("HGET")) {
-        final String bucket = (String) list.get(1);
-        final String k = (String) list.get(2);
+        case "INCR": {
+          final String k = (String) list.get(1);
+          Object number = defaultBucket.get(k);
+          if (!(number instanceof Number)) {
+            if (NumberUtils.isIntegerNumber(number.toString()))
+              number = Long.parseLong(number.toString());
+            else
+              throw new RedisException("Key '" + k + "' is not a number");
+          }
 
-        final String v = read(bucket, k);
+          final Number newValue = Type.increment((Number) number, 1);
+          defaultBucket.put(k, newValue);
+          value.append(":");
+          value.append(newValue);
+          break;
+        }
 
-        value.append("+" + v + "\r\n");
-      } else if (cmdString.equals("HSET")) {
-        final String bucket = (String) list.get(1);
-        final String k = (String) list.get(2);
-        final String v = (String) list.get(3);
+        case "HGET": {
+          final String bucket = (String) list.get(1);
+          final String k = (String) list.get(2);
+          final String v = lookup(bucket, k);
+          value.append("+");
+          value.append(v);
+          break;
+        }
 
-        insert(bucket, k, v);
+        case "HSET": {
+          final String bucket = (String) list.get(1);
+          final String k = (String) list.get(2);
+          final String v = (String) list.get(3);
+          insert(bucket, k, v);
+          value.append("+");
+          value.append("1");
+          break;
+        }
 
-        value.append("+1\r\n");
+        default:
+          value.append("-Command not found");
+        }
+
+      } catch (Exception e) {
+        value.append("-");
+        value.append(e.getMessage());
       }
+
+      value.append("\r\n");
 
     } else
       server.log(this, Level.SEVERE, "Redis wrapper: Invalid command %s", command);
   }
 
-  private String read(final String bucketName, final String key) {
+  private String lookup(final String bucketName, final String key) {
     return "";
   }
 

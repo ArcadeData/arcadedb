@@ -15,6 +15,8 @@
  */
 package com.arcadedb.redis;
 
+import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Database;
 import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
@@ -65,9 +67,12 @@ public class RedisNetworkListener extends Thread {
             socket.setSendBufferSize(socketBufferSize);
             socket.setReceiveBufferSize(socketBufferSize);
           }
+
           // CREATE A NEW PROTOCOL INSTANCE
-          // TODO: OPEN A DATABASE
-          final RedisNetworkExecutor connection = new RedisNetworkExecutor(server, socket, null);
+          final String databaseName = GlobalConfiguration.REDIS_DATABASE.getValueAsString();
+          final Database database = server.getOrCreateDatabase(databaseName);
+
+          final RedisNetworkExecutor connection = new RedisNetworkExecutor(server, socket, database);
           connection.start();
 
           if (callback != null)
