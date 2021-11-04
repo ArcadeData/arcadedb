@@ -17,8 +17,8 @@ package org.apache.tinkerpop.gremlin.arcadedb.process;
 
 import org.apache.tinkerpop.gremlin.AbstractGremlinSuite;
 import org.apache.tinkerpop.gremlin.process.traversal.TraversalEngine;
-import org.apache.tinkerpop.gremlin.process.traversal.step.filter.DedupTest;
 import org.apache.tinkerpop.gremlin.structure.Graph;
+import org.apache.tinkerpop.gremlin.structure.PropertyTest;
 import org.apache.tinkerpop.gremlin.structure.StructureStandardSuite;
 import org.junit.runners.model.InitializationError;
 import org.junit.runners.model.RunnerBuilder;
@@ -38,7 +38,7 @@ public class DebugProcessSuite extends AbstractGremlinSuite {
      * This list of tests in the suite that will be executed as part of this suite.
      */
     private static final Class<?>[] allTests = new Class<?>[]{
-            DedupTest.Traversals.class,
+        PropertyTest.class,
     };
 
     /**
