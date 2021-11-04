@@ -73,7 +73,7 @@ public abstract class BaseGraphServerTest {
 
   @BeforeEach
   public void beginTest() {
-    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
+    checkForActiveDatabases();
 
     setTestConfiguration();
 
@@ -206,7 +206,8 @@ public abstract class BaseGraphServerTest {
         GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(null);
       }
     }
-    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
+
+    checkForActiveDatabases();
   }
 
   protected Database getDatabase(final int serverId) {
@@ -465,5 +466,16 @@ public abstract class BaseGraphServerTest {
     for (int i = 0; i < getServerCount(); i++) {
       callback.call(i);
     }
+  }
+
+  private void checkForActiveDatabases() {
+    final Collection<Database> activeDatabases = DatabaseFactory.getActiveDatabaseInstances();
+    for (Database db : activeDatabases)
+      db.close();
+
+    if (!activeDatabases.isEmpty())
+      LogManager.instance().log(this, Level.SEVERE, "Found active databases: " + activeDatabases + ". Forced close before starting a new test");
+
+    //Assertions.assertTrue(activeDatabases.isEmpty(), "Found active databases: " + activeDatabases);
   }
 }
