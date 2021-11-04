@@ -42,6 +42,8 @@ public class ACIDTransactionTest extends TestHelper {
   protected void beginTest() {
     GlobalConfiguration.TX_RETRIES.setValue(50);
 
+    database.getConfiguration().setValue(GlobalConfiguration.TX_WAL_FLUSH, 2);
+
     database.transaction(() -> {
       if (!database.getSchema().existsType("V")) {
         final DocumentType v = database.getSchema().createDocumentType("V");
