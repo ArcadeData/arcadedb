@@ -39,11 +39,11 @@ public class WebSocketEventBus {
       this.startDatabaseWatcher(databaseName);
   }
 
-  public void unsubscribe(String databaseName, UUID id) {
+  public void unsubscribe(String databaseName, UUID channelId) {
     final var databaseSubscribers = this.subscribers.get(databaseName);
     if (databaseSubscribers == null)
       return;
-    databaseSubscribers.remove(id);
+    databaseSubscribers.remove(channelId);
     if (databaseSubscribers.isEmpty())
       this.stopDatabaseWatcher(databaseName);
   }
@@ -81,9 +81,9 @@ public class WebSocketEventBus {
     return this.subscribers.get(database).values();
   }
 
-  public void unsubscribeAll(final UUID id) {
+  public void unsubscribeAll(final UUID channelId) {
     this.subscribers.forEach((databaseName, subscribers) -> {
-      subscribers.remove(id);
+      subscribers.remove(channelId);
       if (subscribers.isEmpty())
         this.stopDatabaseWatcher(databaseName);
     });

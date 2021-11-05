@@ -1,12 +1,17 @@
 package com.arcadedb.server.ws;
 
 import com.arcadedb.server.BaseGraphServerTest;
+import com.arcadedb.server.StaticBaseServerTest;
 import org.json.JSONObject;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.xnio.http.UpgradeFailedException;
 
+<<<<<<< Updated upstream
 public class WebSocketEventBusIT extends BaseGraphServerTest {
+=======
+public class WebSocketEventBusIT extends StaticBaseServerTest {
+>>>>>>> Stashed changes
 
   @Test
   public void closeUnsubscribesAll() throws Exception {
@@ -41,6 +46,10 @@ public class WebSocketEventBusIT extends BaseGraphServerTest {
       Thread.sleep(100);
       Assertions.assertEquals(1, this.getServer(0).getHttpServer().getWebSocketEventBus().getDatabaseSubscriptions("graph").size());
     }
+
+    Thread.sleep(1000);
+
+    Assertions.assertTrue(getServer(0).getHttpServer().getWebSocketEventBus().getDatabaseSubscriptions(getDatabaseName()).isEmpty());
   }
 
   @Test
