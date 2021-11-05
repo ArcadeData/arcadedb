@@ -62,6 +62,24 @@ public class RedisWTest extends BaseGraphServerTest {
     for (int i = 0; i < TOTAL; ++i)
       Assertions.assertEquals(i + 1L, jedis.incr("foo" + i));
     System.out.println("Incremented " + TOTAL + " items from the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
+
+    // DECR
+    beginTime = System.currentTimeMillis();
+    for (int i = 0; i < TOTAL; ++i)
+      Assertions.assertEquals(i, jedis.decr("foo" + i));
+    System.out.println("Decremented " + TOTAL + " items from the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
+
+    // INCRBY
+    beginTime = System.currentTimeMillis();
+    for (int i = 0; i < TOTAL; ++i)
+      Assertions.assertEquals(i + 3L, jedis.incrBy("foo" + i, 3));
+    System.out.println("Incremented " + TOTAL + " items from the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
+
+    // DECRBY
+    beginTime = System.currentTimeMillis();
+    for (int i = 0; i < TOTAL; ++i)
+      Assertions.assertEquals(i, jedis.decrBy("foo" + i, 3));
+    System.out.println("Decremented " + TOTAL + " items from the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
   }
 
   @Test

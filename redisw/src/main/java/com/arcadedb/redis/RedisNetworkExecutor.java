@@ -86,53 +86,54 @@ public class RedisNetworkExecutor extends Thread {
         case "GET": {
           final String k = (String) list.get(1);
           final Object v = defaultBucket.get(k);
-          value.append(v instanceof Number ? ":" : "+");
-          value.append(v);
+          get(v);
           break;
         }
 
         case "SET": {
           final String k = (String) list.get(1);
           final String v = (String) list.get(2);
-          defaultBucket.put(k, v);
-          value.append("+");
-          value.append("OK");
+          set(k, v);
           break;
         }
 
         case "INCR": {
           final String k = (String) list.get(1);
-          Object number = defaultBucket.get(k);
-          if (!(number instanceof Number)) {
-            if (NumberUtils.isIntegerNumber(number.toString()))
-              number = Long.parseLong(number.toString());
-            else
-              throw new RedisException("Key '" + k + "' is not a number");
-          }
+          incrBy(k, 1);
+          break;
+        }
 
-          final Number newValue = Type.increment((Number) number, 1);
-          defaultBucket.put(k, newValue);
-          value.append(":");
-          value.append(newValue);
+        case "INCRBY": {
+          final String k = (String) list.get(1);
+          final int by = Integer.parseInt((String) list.get(2));
+          incrBy(k, by);
+          break;
+        }
+
+        case "DECR": {
+          final String k = (String) list.get(1);
+          decrBy(k, 1);
+          break;
+        }
+
+        case "DECRBY": {
+          final String k = (String) list.get(1);
+          final int by = Integer.parseInt((String) list.get(2));
+          decrBy(k, by);
           break;
         }
 
         case "HGET": {
           final String bucket = (String) list.get(1);
           final String k = (String) list.get(2);
-          final String v = lookup(bucket, k);
-          value.append("+");
-          value.append(v);
+          hGet(bucket, k);
           break;
         }
 
         case "HSET": {
           final String bucket = (String) list.get(1);
           final String k = (String) list.get(2);
-          final String v = (String) list.get(3);
-          insert(bucket, k, v);
-          value.append("+");
-          value.append("1");
+          hSet(list, bucket, k);
           break;
         }
 
@@ -149,6 +150,60 @@ public class RedisNetworkExecutor extends Thread {
 
     } else
       server.log(this, Level.SEVERE, "Redis wrapper: Invalid command %s", command);
+  }
+
+  private void hSet(final List<Object> list, final String bucket, String k) {
+    final String v = (String) list.get(3);
+    insert(bucket, k, v);
+    value.append("+");
+    value.append("1");
+  }
+
+  private void hGet(final String bucket, final String k) {
+    final String v = lookup(bucket, k);
+    value.append("+");
+    value.append(v);
+  }
+
+  private void get(final Object v) {
+    value.append(v instanceof Number ? ":" : "+");
+    value.append(v);
+  }
+
+  private void set(final String k, final String v) {
+    defaultBucket.put(k, v);
+    value.append("+");
+    value.append("OK");
+  }
+
+  private void incrBy(final String k, final int by) {
+    Object number = defaultBucket.get(k);
+    if (!(number instanceof Number)) {
+      if (NumberUtils.isIntegerNumber(number.toString()))
+        number = Long.parseLong(number.toString());
+      else
+        throw new RedisException("Key '" + k + "' is not a number");
+    }
+
+    final Number newValue = Type.increment((Number) number, by);
+    defaultBucket.put(k, newValue);
+    value.append(":");
+    value.append(newValue);
+  }
+
+  private void decrBy(final String k, final int by) {
+    Object number = defaultBucket.get(k);
+    if (!(number instanceof Number)) {
+      if (NumberUtils.isIntegerNumber(number.toString()))
+        number = Long.parseLong(number.toString());
+      else
+        throw new RedisException("Key '" + k + "' is not a number");
+    }
+
+    final Number newValue = Type.decrement((Number) number, by);
+    defaultBucket.put(k, newValue);
+    value.append(":");
+    value.append(newValue);
   }
 
   private String lookup(final String bucketName, final String key) {
