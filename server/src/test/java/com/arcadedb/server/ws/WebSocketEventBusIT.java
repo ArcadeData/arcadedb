@@ -7,11 +7,7 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.xnio.http.UpgradeFailedException;
 
-<<<<<<< Updated upstream
-public class WebSocketEventBusIT extends BaseGraphServerTest {
-=======
 public class WebSocketEventBusIT extends StaticBaseServerTest {
->>>>>>> Stashed changes
 
   @Test
   public void closeUnsubscribesAll() throws Exception {
