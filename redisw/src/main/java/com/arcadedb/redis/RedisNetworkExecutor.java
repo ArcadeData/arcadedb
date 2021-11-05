@@ -18,10 +18,19 @@ package com.arcadedb.redis;
 import com.arcadedb.Constants;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.MutableDocument;
+import com.arcadedb.graph.MutableEdge;
+import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexCursor;
 import com.arcadedb.network.binary.ChannelBinaryServer;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Type;
+import com.arcadedb.schema.VertexType;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.utility.NumberUtils;
+import org.json.JSONArray;
+import org.json.JSONObject;
 
 import java.io.*;
 import java.net.*;
@@ -32,7 +41,6 @@ import java.util.logging.*;
 public class RedisNetworkExecutor extends Thread {
   private static final String              DEFAULT_BUCKET = "default";
   private final        ArcadeDBServer      server;
-  private final        Database            database;
   private final        ChannelBinaryServer channel;
   private volatile     boolean             shutdown       = false;
   private              int                 posInBuffer    = 0;
@@ -41,11 +49,10 @@ public class RedisNetworkExecutor extends Thread {
   private              int                 bytesRead      = 0;
   private final        Map<String, Object> defaultBucket  = new ConcurrentHashMap<>();
 
-  public RedisNetworkExecutor(final ArcadeDBServer server, final Socket socket, final Database database) throws IOException {
+  public RedisNetworkExecutor(final ArcadeDBServer server, final Socket socket) throws IOException {
     setName(Constants.PRODUCT + "-redis/" + socket.getInetAddress());
     this.server = server;
     this.channel = new ChannelBinaryServer(socket, server.getConfiguration());
-    this.database = database;
   }
 
   @Override
@@ -83,71 +90,49 @@ public class RedisNetworkExecutor extends Thread {
 
       try {
         switch (cmdString) {
-        case "DECR": {
-          final String k = (String) list.get(1);
-          decrBy(k, 1);
+        case "DECR":
+          decrBy(list);
           break;
-        }
 
-        case "DECRBY": {
-          final String k = (String) list.get(1);
-          final int by = Integer.parseInt((String) list.get(2));
-          decrBy(k, by);
+        case "DECRBY":
+          decrBy(list);
           break;
-        }
 
-        case "GET": {
-          final String k = (String) list.get(1);
-          get(k);
+        case "GET":
+          get(list);
           break;
-        }
 
-        case "GETDEL": {
-          final String k = (String) list.get(1);
-          getDel(k);
+        case "GETDEL":
+          getDel(list);
           break;
-        }
 
-        case "HGET": {
-          final String bucket = (String) list.get(1);
-          final String k = (String) list.get(2);
-          hGet(bucket, k);
+        case "HDEL":
+          hDel(list);
           break;
-        }
 
-        case "HSET": {
-          final String bucket = (String) list.get(1);
-          final String k = (String) list.get(2);
-          hSet(list, bucket, k);
+        case "HGET":
+          hGet(list);
           break;
-        }
 
-        case "INCR": {
-          final String k = (String) list.get(1);
-          incrBy(k, 1);
+        case "HSET":
+          hSet(list);
           break;
-        }
 
-        case "INCRBY": {
-          final String k = (String) list.get(1);
-          final int by = Integer.parseInt((String) list.get(2));
-          incrBy(k, by);
+        case "INCR":
+          incrBy(list, false);
           break;
-        }
 
-        case "INCRBYFLOAT": {
-          final String k = (String) list.get(1);
-          final double by = Double.parseDouble((String) list.get(2));
-          incrBy(k, by);
+        case "INCRBY":
+          incrBy(list, false);
           break;
-        }
 
-        case "SET": {
-          final String k = (String) list.get(1);
-          final String v = (String) list.get(2);
-          set(k, v);
+        case "INCRBYFLOAT":
+          incrBy(list, true);
           break;
-        }
+
+        case "SET":
+          set(list);
+          break;
 
         default:
           value.append("-Command not found");
@@ -164,7 +149,10 @@ public class RedisNetworkExecutor extends Thread {
       server.log(this, Level.SEVERE, "Redis wrapper: Invalid command %s", command);
   }
 
-  private void decrBy(final String k, final Number by) {
+  private void decrBy(final List<Object> list) {
+    final String k = (String) list.get(1);
+    final int by = list.size() > 2 ? Integer.parseInt((String) list.get(2)) : 1;
+
     Object number = defaultBucket.get(k);
     if (!(number instanceof Number)) {
       if (NumberUtils.isIntegerNumber(number.toString()))
@@ -179,30 +167,119 @@ public class RedisNetworkExecutor extends Thread {
     value.append(newValue);
   }
 
-  private void get(final String k) {
+  private void get(final List<Object> list) {
+    final String k = (String) list.get(1);
     final Object v = defaultBucket.get(k);
     respondValue(v, true);
   }
 
-  private void getDel(final String k) {
+  private void getDel(final List<Object> list) {
+    final String k = (String) list.get(1);
     final Object v = defaultBucket.remove(k);
     respondValue(v, true);
   }
 
-  private void hSet(final List<Object> list, final String bucket, String k) {
-    final String v = (String) list.get(3);
-    insert(bucket, k, v);
-    value.append("+");
-    value.append("1");
+  private void hDel(final List<Object> list) {
+    final String bucketName = (String) list.get(1);
+
+    final int pos = bucketName.indexOf(".");
+    if (pos < 0)
+      throw new RedisException("Bucket name must be in the format <database>.<index>");
+
+    final String databaseName = bucketName.substring(0, pos);
+    final String indexName = bucketName.substring(pos + 1);
+
+    final Database database = server.getDatabase(databaseName);
+    final Index index = database.getSchema().getIndexByName(indexName);
+
+    int deleted = 0;
+    for (int i = 2; i < list.size(); i++) {
+      final String key = (String) list.get(i);
+
+      final Object[] keys;
+      if (key.startsWith("[")) {
+        keys = new JSONArray(key).toList().toArray();
+      } else if (key.startsWith("\"")) {
+        keys = new String[] { key.substring(1, key.length() - 1) };
+      } else
+        keys = new String[] { key };
+
+      final IndexCursor cursor = index.get(keys);
+      if (cursor.hasNext()) {
+        cursor.next().getRecord().delete();
+        ++deleted;
+      }
+    }
+    value.append(":");
+    value.append(deleted);
   }
 
-  private void hGet(final String bucket, final String k) {
-    final String v = lookup(bucket, k);
-    value.append("+");
-    value.append(v);
+  private void hGet(final List<Object> list) {
+    final String bucketName = (String) list.get(1);
+    final String key = (String) list.get(2);
+
+    final int pos = bucketName.indexOf(".");
+    if (pos < 0)
+      throw new RedisException("Bucket name must be in the format <database>.<index>");
+
+    final String databaseName = bucketName.substring(0, pos);
+    final String indexName = bucketName.substring(pos + 1);
+
+    final Database database = server.getDatabase(databaseName);
+    final Index index = database.getSchema().getIndexByName(indexName);
+
+    final Object[] keys;
+    if (key.startsWith("[")) {
+      keys = new JSONArray(key).toList().toArray();
+    } else if (key.startsWith("\"")) {
+      keys = new String[] { key.substring(1, key.length() - 1) };
+    } else
+      keys = new String[] { key };
+
+    final IndexCursor cursor = index.get(keys);
+    respondValue(cursor.hasNext() ? cursor.next().asDocument().toJSON() : null, true);
   }
 
-  private void incrBy(final String k, final Number by) {
+  private void hSet(final List<Object> list) {
+    final String databaseName = (String) list.get(1);
+    final String typeName = (String) list.get(2);
+
+    final Database database = server.getDatabase(databaseName);
+    database.transaction(() -> {
+      for (int i = 3; i < list.size(); i++) {
+        final JSONObject v = new JSONObject((String) list.get(i));
+
+        final DocumentType type = database.getSchema().getType(typeName);
+
+        final MutableDocument document;
+
+        if (type instanceof VertexType)
+          document = database.newVertex(typeName);
+        else if (type instanceof EdgeType)
+          document = new MutableEdge(database, type, null);
+        else
+          document = database.newDocument(typeName);
+
+        document.fromJSON(v);
+        document.save();
+      }
+    });
+    value.append(":");
+    value.append(list.size() - 3);
+  }
+
+  private void incrBy(final List<Object> list, final boolean decimal) {
+    final String k = (String) list.get(1);
+
+    final Number by;
+    if (list.size() > 2) {
+      if (decimal)
+        by = Double.valueOf((String) list.get(2));
+      else
+        by = Integer.valueOf((String) list.get(2));
+    } else
+      by = 1;
+
     Object number = defaultBucket.get(k);
     if (!(number instanceof Number)) {
       if (NumberUtils.isIntegerNumber(number.toString()))
@@ -217,18 +294,12 @@ public class RedisNetworkExecutor extends Thread {
     value.append(newValue);
   }
 
-  private void set(final String k, final String v) {
+  private void set(final List<Object> list) {
+    final String k = (String) list.get(1);
+    final String v = (String) list.get(2);
     defaultBucket.put(k, v);
     value.append("+");
     value.append("OK");
-  }
-
-  private String lookup(final String bucketName, final String key) {
-    return "";
-  }
-
-  private void insert(final String bucketName, final String key, final String value) {
-
   }
 
   private Object parseNext() throws IOException {

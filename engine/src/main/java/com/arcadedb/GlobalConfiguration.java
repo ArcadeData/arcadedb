@@ -284,7 +284,9 @@ public enum GlobalConfiguration {
   POSTGRES_HOST("arcadedb.postgres.host", "TCP/IP host name used for incoming connections for Postgres plugin. Default is '0.0.0.0'", String.class, "0.0.0.0"),
 
   // REDIS
-  REDIS_DATABASE("arcadedb.redis.database", "Database name used for Redis plugin", String.class, "redis"),
+  REDIS_PORT("arcadedb.redis.port", "TCP/IP port number used for incoming connections for Redis plugin. Default is 6379", Integer.class, 6379),
+
+  REDIS_HOST("arcadedb.redis.host", "TCP/IP host name used for incoming connections for Redis plugin. Default is '0.0.0.0'", String.class, "0.0.0.0"),
   ;
 
   /**
