@@ -137,6 +137,16 @@ public class GremlinTest {
     }
   }
 
+  @Test
+  public void labelExists() {
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testLabel");
+    try {
+      graph.traversal().V().hasLabel("Car").forEachRemaining(System.out::println);
+    } finally {
+      graph.drop();
+    }
+  }
+
   @BeforeEach
   @AfterEach
   public void clean() {

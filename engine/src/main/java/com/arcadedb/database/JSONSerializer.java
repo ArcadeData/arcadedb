@@ -23,7 +23,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.*;
-import java.util.logging.Level;
+import java.util.logging.*;
 
 public class JSONSerializer {
   private final Database database;
@@ -72,8 +72,13 @@ public class JSONSerializer {
       value = array;
     } else if (value instanceof Date)
       value = ((Date) value).getTime();
-    else if (value instanceof Map)
-      value = new JSONObject((Map) value);
+    else if (value instanceof Map) {
+      final Map<String, Object> m = (Map<String, Object>) value;
+      final JSONObject map = new JSONObject();
+      for (Map.Entry<String, Object> entry : m.entrySet())
+        map.put(entry.getKey(), convertToJSONType(entry.getValue()));
+      value = map;
+    }
 
     return value;
   }

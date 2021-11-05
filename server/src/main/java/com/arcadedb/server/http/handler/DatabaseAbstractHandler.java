@@ -137,7 +137,7 @@ public abstract class DatabaseAbstractHandler extends AbstractHandler {
       return null;
     }
 
-    final HttpSession session = httpServer.getTransactionManager().getSessionById(user, sessionId.getFirst());
+    final HttpSession session = httpServer.getSessionManager().getSessionById(user, sessionId.getFirst());
     if (session == null) {
       if (mandatory) {
         exchange.setStatusCode(401);

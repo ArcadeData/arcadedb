@@ -18,7 +18,7 @@ package com.arcadedb.engine;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.SchemaException;
-import com.arcadedb.exception.TransactionException;
+import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.LockManager;
 
@@ -399,6 +399,10 @@ public class TransactionManager {
     return transactionIds.getAndIncrement();
   }
 
+  /**
+   * Returns the locked files only. In case the current thread already locked a resource, no error is thrown but the lock is not returned. In this way only
+   * the new acquired locks are released.
+   */
   public List<Integer> tryLockFiles(final Collection<Integer> fileIds, final long timeout) {
     // ORDER THE FILES TO AVOID DEADLOCK
     final List<Integer> orderedFilesIds = new ArrayList<>(fileIds);
@@ -406,19 +410,25 @@ public class TransactionManager {
 
     final List<Integer> lockedFiles = new ArrayList<>(orderedFilesIds.size());
 
+    boolean error = false;
     Integer attemptFileId = null;
     for (Integer fileId : orderedFilesIds) {
       attemptFileId = fileId;
 
-      if (tryLockFile(fileId, timeout))
+      final LockManager.LOCK_STATUS lock = tryLockFile(fileId, timeout);
+
+      if (lock == LockManager.LOCK_STATUS.YES)
         lockedFiles.add(fileId);
-      else
+      else if (lock == LockManager.LOCK_STATUS.NO) {
+        error = true;
         break;
+      }
     }
 
-    if (lockedFiles.size() == orderedFilesIds.size()) {
+    if (!error) {
       // OK: ALL LOCKED
       LogManager.instance().log(this, Level.FINE, "Locked files %s (threadId=%d)", null, orderedFilesIds, Thread.currentThread().getId());
+      // RETURN ONLY THE LOCKED FILES
       return lockedFiles;
     }
 
@@ -426,14 +436,14 @@ public class TransactionManager {
     unlockFilesInOrder(lockedFiles);
 
     if (attemptFileId != null)
-      throw new TransactionException(
+      throw new TimeoutException(
           "Timeout on locking file " + attemptFileId + " (" + database.getFileManager().getFile(attemptFileId).getFileName() + ") during commit (fileIds="
               + fileIds + ")");
 
-    throw new TransactionException("Timeout on locking files during commit (fileIds=" + fileIds + ")");
+    throw new TimeoutException("Timeout on locking files during commit (fileIds=" + fileIds + ")");
   }
 
-  public void unlockFilesInOrder(final Collection<Integer> lockedFileIds) {
+  public void unlockFilesInOrder(final List<Integer> lockedFileIds) {
     if (lockedFileIds != null && !lockedFileIds.isEmpty()) {
       for (Integer fileId : lockedFileIds)
         unlockFile(fileId);
@@ -442,7 +452,7 @@ public class TransactionManager {
     }
   }
 
-  public boolean tryLockFile(final Integer fileId, final long timeout) {
+  public LockManager.LOCK_STATUS tryLockFile(final Integer fileId, final long timeout) {
     return fileIdsLockManager.tryLock(fileId, Thread.currentThread(), timeout);
   }
 

@@ -65,9 +65,9 @@ public class RedisNetworkListener extends Thread {
             socket.setSendBufferSize(socketBufferSize);
             socket.setReceiveBufferSize(socketBufferSize);
           }
+
           // CREATE A NEW PROTOCOL INSTANCE
-          // TODO: OPEN A DATABASE
-          final RedisNetworkExecutor connection = new RedisNetworkExecutor(server, socket, null);
+          final RedisNetworkExecutor connection = new RedisNetworkExecutor(server, socket);
           connection.start();
 
           if (callback != null)

@@ -388,7 +388,6 @@ public class ArcadeDBServer implements ServerLogger {
   private synchronized Database getDatabase(final String databaseName, final boolean createIfNotExists) {
     DatabaseInternal db = databases.get(databaseName);
     if (db == null || !db.isOpen()) {
-
       final String path = configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + "/" + databaseName;
 
       final DatabaseFactory factory = new DatabaseFactory(path).setAutoTransaction(true);

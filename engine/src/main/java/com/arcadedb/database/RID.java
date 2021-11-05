@@ -187,4 +187,8 @@ public class RID implements Identifiable, Comparable<Identifiable>, Serializable
   public Database getDatabase() {
     return database;
   }
+
+  public boolean isValid() {
+    return bucketId > -1 && offset > -1;
+  }
 }

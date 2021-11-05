@@ -75,6 +75,11 @@ public class ArcadeGraphFeatures implements Graph.Features {
 
   public class ArcadeElementFeatures implements ElementFeatures {
     @Override
+    public boolean supportsNullPropertyValues() {
+      return false;
+    }
+
+    @Override
     public boolean supportsNumericIds() {
       return false;
     }
@@ -111,6 +116,10 @@ public class ArcadeGraphFeatures implements Graph.Features {
   }
 
   public class ArcadeVertexFeatures extends ArcadeElementFeatures implements VertexFeatures {
+    @Override
+    public boolean supportsNullPropertyValues() {
+      return false;
+    }
 
     @Override
     public VertexPropertyFeatures properties() {
@@ -135,12 +144,21 @@ public class ArcadeGraphFeatures implements Graph.Features {
 
   public class ArcadeEdgeFeatures extends ArcadeElementFeatures implements EdgeFeatures {
     @Override
+    public boolean supportsNullPropertyValues() {
+      return false;
+    }
+
+    @Override
     public EdgePropertyFeatures properties() {
       return edgePropertyFeatures;
     }
   }
 
   public class ArcadeVertexPropertyFeatures extends ArcadeDataTypeFeatures implements VertexPropertyFeatures {
+    @Override
+    public boolean supportsNullPropertyValues() {
+      return false;
+    }
 
     @Override
     public boolean supportsAnyIds() {

@@ -135,6 +135,8 @@ public enum GlobalConfiguration {
 
   FREE_PAGE_RAM("arcadedb.freePageRAM", "Percentage (0-100) of memory to free when Page RAM is full", Integer.class, 50),
 
+  TYPE_DEFAULT_BUCKETS("arcadedb.typeDefaultBuckets", "Default number of buckets to create per type", Integer.class, 8),
+
   BUCKET_DEFAULT_PAGE_SIZE("arcadedb.bucketDefaultPageSize", "Default page size in bytes for buckets. Default is " + Bucket.DEF_PAGE_SIZE, Integer.class,
       Bucket.DEF_PAGE_SIZE),
 
@@ -224,8 +226,8 @@ public enum GlobalConfiguration {
       "Timeout in seconds for a HTTP transaction to expire. This timeout is computed from the latest command against the transaction", Long.class, 30),
 
   // SERVER WS
-  SERVER_WS_EVENT_BUS_QUEUE_SIZE("arcadedb.server.eventBusQueueSize",
-      "Size of the queue used as a buffer for unserviced database change events.", Integer.class, 1000),
+  SERVER_WS_EVENT_BUS_QUEUE_SIZE("arcadedb.server.eventBusQueueSize", "Size of the queue used as a buffer for unserviced database change events.",
+      Integer.class, 1000),
 
   // SERVER SECURITY
   SERVER_SECURITY_ALGORITHM("arcadedb.server.securityAlgorithm", "Default encryption algorithm used for passwords hashing", String.class,
@@ -280,6 +282,11 @@ public enum GlobalConfiguration {
   POSTGRES_PORT("arcadedb.postgres.port", "TCP/IP port number used for incoming connections for Postgres plugin. Default is 5432", Integer.class, 5432),
 
   POSTGRES_HOST("arcadedb.postgres.host", "TCP/IP host name used for incoming connections for Postgres plugin. Default is '0.0.0.0'", String.class, "0.0.0.0"),
+
+  // REDIS
+  REDIS_PORT("arcadedb.redis.port", "TCP/IP port number used for incoming connections for Redis plugin. Default is 6379", Integer.class, 6379),
+
+  REDIS_HOST("arcadedb.redis.host", "TCP/IP host name used for incoming connections for Redis plugin. Default is '0.0.0.0'", String.class, "0.0.0.0"),
   ;
 
   /**

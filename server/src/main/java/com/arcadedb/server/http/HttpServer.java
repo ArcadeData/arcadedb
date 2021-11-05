@@ -49,7 +49,7 @@ import static io.undertow.UndertowOptions.SHUTDOWN_TIMEOUT;
 
 public class HttpServer implements ServerPlugin {
   private final ArcadeDBServer     server;
-  private final HttpSessionManager transactionManager;
+  private final HttpSessionManager sessionManager;
   private final JsonSerializer     jsonSerializer = new JsonSerializer();
   private final WebSocketEventBus  webSocketEventBus;
   private       Undertow           undertow;
@@ -59,7 +59,7 @@ public class HttpServer implements ServerPlugin {
 
   public HttpServer(final ArcadeDBServer server) {
     this.server = server;
-    this.transactionManager = new HttpSessionManager(server.getConfiguration().getValueAsInteger(GlobalConfiguration.SERVER_HTTP_TX_EXPIRE_TIMEOUT) * 1000);
+    this.sessionManager = new HttpSessionManager(server.getConfiguration().getValueAsInteger(GlobalConfiguration.SERVER_HTTP_TX_EXPIRE_TIMEOUT) * 1000);
     this.webSocketEventBus = new WebSocketEventBus(this.server);
   }
 
@@ -73,6 +73,8 @@ public class HttpServer implements ServerPlugin {
       } catch (Exception e) {
         // IGNORE IT
       }
+
+    sessionManager.close();
   }
 
   @Override
@@ -145,8 +147,8 @@ public class HttpServer implements ServerPlugin {
     } while (httpAutoIncrementPort);
   }
 
-  public HttpSessionManager getTransactionManager() {
-    return transactionManager;
+  public HttpSessionManager getSessionManager() {
+    return sessionManager;
   }
 
   public ArcadeDBServer getServer() {
