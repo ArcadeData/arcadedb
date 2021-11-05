@@ -19,6 +19,8 @@ import com.arcadedb.Constants;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
@@ -74,6 +76,31 @@ public class RedisNetworkExecutor extends Thread {
     }
   }
 
+  public void replyToClient(final StringBuilder response) throws IOException {
+    server.log(this, Level.FINE, "Redis wrapper: Sending response back to the client '%s'...", response);
+
+    final byte[] buffer = response.toString().getBytes(DatabaseFactory.getDefaultCharset());
+
+    channel.outStream.write(buffer);
+    channel.flush();
+
+    response.setLength(0);
+  }
+
+  public void close() {
+    shutdown = true;
+    if (channel != null)
+      channel.close();
+  }
+
+  public String getURL() {
+    return channel.getLocalSocketAddress();
+  }
+
+  public byte[] receiveResponse() throws IOException {
+    return channel.readBytes();
+  }
+
   private void executeCommand(final Object command) {
     value.setLength(0);
 
@@ -114,7 +141,12 @@ public class RedisNetworkExecutor extends Thread {
           hGet(list);
           break;
 
+        case "HMGET":
+          hMGet(list);
+          break;
+
         case "HSET":
+        case "HMSET": // HMSET IS DEPRECATED IN FAVOUR OF HSET
           hSet(list);
           break;
 
@@ -143,7 +175,7 @@ public class RedisNetworkExecutor extends Thread {
         value.append(e.getMessage());
       }
 
-      value.append("\r\n");
+      appendCrLf();
 
     } else
       server.log(this, Level.SEVERE, "Redis wrapper: Invalid command %s", command);
@@ -187,27 +219,34 @@ public class RedisNetworkExecutor extends Thread {
       throw new RedisException("Bucket name must be in the format <database>.<index>");
 
     final String databaseName = bucketName.substring(0, pos);
-    final String indexName = bucketName.substring(pos + 1);
+    final String keyType = bucketName.substring(pos + 1);
 
     final Database database = server.getDatabase(databaseName);
-    final Index index = database.getSchema().getIndexByName(indexName);
 
     int deleted = 0;
-    for (int i = 2; i < list.size(); i++) {
-      final String key = (String) list.get(i);
 
-      final Object[] keys;
-      if (key.startsWith("[")) {
-        keys = new JSONArray(key).toList().toArray();
-      } else if (key.startsWith("\"")) {
-        keys = new String[] { key.substring(1, key.length() - 1) };
-      } else
-        keys = new String[] { key };
+    if (keyType.startsWith("#")) {
+      new RID(database, keyType).getRecord().delete();
+      ++deleted;
+    } else {
+      final Index index = database.getSchema().getIndexByName(keyType);
 
-      final IndexCursor cursor = index.get(keys);
-      if (cursor.hasNext()) {
-        cursor.next().getRecord().delete();
-        ++deleted;
+      for (int i = 2; i < list.size(); i++) {
+        final String key = (String) list.get(i);
+
+        final Object[] keys;
+        if (key.startsWith("[")) {
+          keys = new JSONArray(key).toList().toArray();
+        } else if (key.startsWith("\"")) {
+          keys = new String[] { key.substring(1, key.length() - 1) };
+        } else
+          keys = new String[] { key };
+
+        final IndexCursor cursor = index.get(keys);
+        if (cursor.hasNext()) {
+          cursor.next().getRecord().delete();
+          ++deleted;
+        }
       }
     }
     value.append(":");
@@ -218,26 +257,24 @@ public class RedisNetworkExecutor extends Thread {
     final String bucketName = (String) list.get(1);
     final String key = (String) list.get(2);
 
-    final int pos = bucketName.indexOf(".");
-    if (pos < 0)
-      throw new RedisException("Bucket name must be in the format <database>.<index>");
+    final Record record = getRecord(bucketName, key);
+    respondValue(record != null ? record.toJSON() : null, true);
+  }
 
-    final String databaseName = bucketName.substring(0, pos);
-    final String indexName = bucketName.substring(pos + 1);
+  private void hMGet(final List<Object> list) {
+    final String bucketName = (String) list.get(1);
+    final List<Object> keys = list.subList(2, list.size());
 
-    final Database database = server.getDatabase(databaseName);
-    final Index index = database.getSchema().getIndexByName(indexName);
+    final List<Record> records = getRecords(bucketName, keys);
 
-    final Object[] keys;
-    if (key.startsWith("[")) {
-      keys = new JSONArray(key).toList().toArray();
-    } else if (key.startsWith("\"")) {
-      keys = new String[] { key.substring(1, key.length() - 1) };
-    } else
-      keys = new String[] { key };
+    value.append("*");
+    value.append(records.size());
 
-    final IndexCursor cursor = index.get(keys);
-    respondValue(cursor.hasNext() ? cursor.next().asDocument().toJSON() : null, true);
+    for (int i = 0; i < records.size(); i++) {
+      appendCrLf();
+      final Record record = records.get(i);
+      respondValue(record != null ? record.toJSON() : null, true);
+    }
   }
 
   private void hSet(final List<Object> list) {
@@ -373,9 +410,13 @@ public class RedisNetworkExecutor extends Thread {
     } else {
       value.append("$");
       value.append(v.toString().length());
-      value.append("\r\n");
+      appendCrLf();
       value.append(v);
     }
+  }
+
+  private void appendCrLf() {
+    value.append("\r\n");
   }
 
   private String parseChars(final int size) throws IOException {
@@ -412,28 +453,78 @@ public class RedisNetworkExecutor extends Thread {
     return buffer[posInBuffer++];
   }
 
-  public void replyToClient(final StringBuilder response) throws IOException {
-    server.log(this, Level.FINE, "Redis wrapper: Sending response back to the client '%s'...", response);
+  private Record getRecord(final String bucketName, final String key) {
+    Record record;
+    final int pos = bucketName.indexOf(".");
+    if (pos < 0) {
+      // BY RID
+      final Database database = server.getDatabase(bucketName);
 
-    final byte[] buffer = response.toString().getBytes(DatabaseFactory.getDefaultCharset());
+      if (key.startsWith("#"))
+        record = new RID(database, key).asDocument();
+      else
+        throw new RedisException("Retrieving a record by RID, the key must be as #<bucket-id>:<bucket-position>. Example: #13:432");
+    } else {
+      // BY INDEX
+      final String databaseName = bucketName.substring(0, pos);
+      final String keyType = bucketName.substring(pos + 1);
 
-    channel.outStream.write(buffer);
-    channel.flush();
+      final Database database = server.getDatabase(databaseName);
 
-    response.setLength(0);
+      final Index index = database.getSchema().getIndexByName(keyType);
+
+      final Object[] keys;
+      if (key.startsWith("[")) {
+        keys = new JSONArray(key).toList().toArray();
+      } else if (key.startsWith("\"")) {
+        keys = new String[] { key.substring(1, key.length() - 1) };
+      } else
+        keys = new String[] { key };
+
+      final IndexCursor cursor = index.get(keys);
+      record = cursor.hasNext() ? cursor.next().asDocument() : null;
+    }
+    return record;
   }
 
-  public void close() {
-    shutdown = true;
-    if (channel != null)
-      channel.close();
-  }
+  private List<Record> getRecords(final String bucketName, final List<Object> keys) {
+    final List<Record> records = new ArrayList<>();
 
-  public String getURL() {
-    return channel.getLocalSocketAddress();
-  }
+    final int pos = bucketName.indexOf(".");
+    if (pos < 0) {
+      // BY RID
+      final Database database = server.getDatabase(bucketName);
 
-  public byte[] receiveResponse() throws IOException {
-    return channel.readBytes();
+      for (Object key : keys) {
+        final String k = key.toString();
+        if (k.startsWith("#"))
+          records.add(new RID(database, k).asDocument());
+        else
+          throw new RedisException("Retrieving a record by RID, the key must be as #<bucket-id>:<bucket-position>. Example: #13:432");
+      }
+    } else {
+      // BY INDEX
+      final String databaseName = bucketName.substring(0, pos);
+      final String keyType = bucketName.substring(pos + 1);
+
+      final Database database = server.getDatabase(databaseName);
+
+      final Index index = database.getSchema().getIndexByName(keyType);
+
+      for (Object key : keys) {
+        final String k = key.toString();
+        final Object[] compositeKey;
+        if (k.startsWith("[")) {
+          compositeKey = new JSONArray(key).toList().toArray();
+        } else if (k.startsWith("\"")) {
+          compositeKey = new String[] { k.substring(1, k.length() - 1) };
+        } else
+          compositeKey = new String[] { k };
+
+        final IndexCursor cursor = index.get(compositeKey);
+        records.add(cursor.hasNext() ? cursor.next().asDocument() : null);
+      }
+    }
+    return records;
   }
 }
