@@ -83,17 +83,42 @@ public class RedisNetworkExecutor extends Thread {
 
       try {
         switch (cmdString) {
-        case "GET": {
+        case "DECR": {
           final String k = (String) list.get(1);
-          final Object v = defaultBucket.get(k);
-          get(v);
+          decrBy(k, 1);
           break;
         }
 
-        case "SET": {
+        case "DECRBY": {
           final String k = (String) list.get(1);
-          final String v = (String) list.get(2);
-          set(k, v);
+          final int by = Integer.parseInt((String) list.get(2));
+          decrBy(k, by);
+          break;
+        }
+
+        case "GET": {
+          final String k = (String) list.get(1);
+          get(k);
+          break;
+        }
+
+        case "GETDEL": {
+          final String k = (String) list.get(1);
+          getDel(k);
+          break;
+        }
+
+        case "HGET": {
+          final String bucket = (String) list.get(1);
+          final String k = (String) list.get(2);
+          hGet(bucket, k);
+          break;
+        }
+
+        case "HSET": {
+          final String bucket = (String) list.get(1);
+          final String k = (String) list.get(2);
+          hSet(list, bucket, k);
           break;
         }
 
@@ -110,30 +135,17 @@ public class RedisNetworkExecutor extends Thread {
           break;
         }
 
-        case "DECR": {
+        case "INCRBYFLOAT": {
           final String k = (String) list.get(1);
-          decrBy(k, 1);
+          final double by = Double.parseDouble((String) list.get(2));
+          incrBy(k, by);
           break;
         }
 
-        case "DECRBY": {
+        case "SET": {
           final String k = (String) list.get(1);
-          final int by = Integer.parseInt((String) list.get(2));
-          decrBy(k, by);
-          break;
-        }
-
-        case "HGET": {
-          final String bucket = (String) list.get(1);
-          final String k = (String) list.get(2);
-          hGet(bucket, k);
-          break;
-        }
-
-        case "HSET": {
-          final String bucket = (String) list.get(1);
-          final String k = (String) list.get(2);
-          hSet(list, bucket, k);
+          final String v = (String) list.get(2);
+          set(k, v);
           break;
         }
 
@@ -152,6 +164,31 @@ public class RedisNetworkExecutor extends Thread {
       server.log(this, Level.SEVERE, "Redis wrapper: Invalid command %s", command);
   }
 
+  private void decrBy(final String k, final Number by) {
+    Object number = defaultBucket.get(k);
+    if (!(number instanceof Number)) {
+      if (NumberUtils.isIntegerNumber(number.toString()))
+        number = Long.parseLong(number.toString());
+      else
+        throw new RedisException("Key '" + k + "' is not a number");
+    }
+
+    final Number newValue = Type.decrement((Number) number, by);
+    defaultBucket.put(k, newValue);
+    value.append(":");
+    value.append(newValue);
+  }
+
+  private void get(final String k) {
+    final Object v = defaultBucket.get(k);
+    respondValue(v, true);
+  }
+
+  private void getDel(final String k) {
+    final Object v = defaultBucket.remove(k);
+    respondValue(v, true);
+  }
+
   private void hSet(final List<Object> list, final String bucket, String k) {
     final String v = (String) list.get(3);
     insert(bucket, k, v);
@@ -165,18 +202,7 @@ public class RedisNetworkExecutor extends Thread {
     value.append(v);
   }
 
-  private void get(final Object v) {
-    value.append(v instanceof Number ? ":" : "+");
-    value.append(v);
-  }
-
-  private void set(final String k, final String v) {
-    defaultBucket.put(k, v);
-    value.append("+");
-    value.append("OK");
-  }
-
-  private void incrBy(final String k, final int by) {
+  private void incrBy(final String k, final Number by) {
     Object number = defaultBucket.get(k);
     if (!(number instanceof Number)) {
       if (NumberUtils.isIntegerNumber(number.toString()))
@@ -187,23 +213,14 @@ public class RedisNetworkExecutor extends Thread {
 
     final Number newValue = Type.increment((Number) number, by);
     defaultBucket.put(k, newValue);
-    value.append(":");
+    value.append(newValue instanceof Long ? ":" : "+");
     value.append(newValue);
   }
 
-  private void decrBy(final String k, final int by) {
-    Object number = defaultBucket.get(k);
-    if (!(number instanceof Number)) {
-      if (NumberUtils.isIntegerNumber(number.toString()))
-        number = Long.parseLong(number.toString());
-      else
-        throw new RedisException("Key '" + k + "' is not a number");
-    }
-
-    final Number newValue = Type.decrement((Number) number, by);
-    defaultBucket.put(k, newValue);
-    value.append(":");
-    value.append(newValue);
+  private void set(final String k, final String v) {
+    defaultBucket.put(k, v);
+    value.append("+");
+    value.append("OK");
   }
 
   private String lookup(final String bucketName, final String key) {
@@ -274,6 +291,20 @@ public class RedisNetworkExecutor extends Thread {
     }
 
     return value.toString();
+  }
+
+  private void respondValue(final Object v, final boolean forceString) {
+    if (v == null)
+      value.append("$-1");
+    else if (!forceString && v instanceof Number) {
+      value.append(":");
+      value.append(v);
+    } else {
+      value.append("$");
+      value.append(v.toString().length());
+      value.append("\r\n");
+      value.append(v);
+    }
   }
 
   private String parseChars(final int size) throws IOException {

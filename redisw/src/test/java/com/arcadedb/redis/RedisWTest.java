@@ -49,37 +49,52 @@ public class RedisWTest extends BaseGraphServerTest {
     long beginTime = System.currentTimeMillis();
     for (int i = 0; i < TOTAL; ++i)
       jedis.set("foo" + i, String.valueOf(i));
-    System.out.println("Inserted " + TOTAL + " items in the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
+    System.out.println("SET " + TOTAL + " items in the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
 
     // GET
     beginTime = System.currentTimeMillis();
     for (int i = 0; i < TOTAL; ++i)
       Assertions.assertEquals(String.valueOf(i), jedis.get("foo" + i));
-    System.out.println("Retrieved " + TOTAL + " items from the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
+    System.out.println("GET " + TOTAL + " items from the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
 
     // INCR
     beginTime = System.currentTimeMillis();
     for (int i = 0; i < TOTAL; ++i)
       Assertions.assertEquals(i + 1L, jedis.incr("foo" + i));
-    System.out.println("Incremented " + TOTAL + " items from the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
+    System.out.println("INCR " + TOTAL + " items from the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
 
     // DECR
     beginTime = System.currentTimeMillis();
     for (int i = 0; i < TOTAL; ++i)
       Assertions.assertEquals(i, jedis.decr("foo" + i));
-    System.out.println("Decremented " + TOTAL + " items from the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
+    System.out.println("DECR " + TOTAL + " items from the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
 
     // INCRBY
     beginTime = System.currentTimeMillis();
     for (int i = 0; i < TOTAL; ++i)
       Assertions.assertEquals(i + 3L, jedis.incrBy("foo" + i, 3));
-    System.out.println("Incremented " + TOTAL + " items from the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
+    System.out.println("INCRBY " + TOTAL + " items from the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
 
     // DECRBY
     beginTime = System.currentTimeMillis();
     for (int i = 0; i < TOTAL; ++i)
       Assertions.assertEquals(i, jedis.decrBy("foo" + i, 3));
-    System.out.println("Decremented " + TOTAL + " items from the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
+    System.out.println("DECRBY " + TOTAL + " items from the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
+
+    // INCRBYFLOAT
+    beginTime = System.currentTimeMillis();
+    for (int i = 0; i < TOTAL; ++i)
+      Assertions.assertEquals(i + 3.3D, jedis.incrByFloat("foo" + i, 3.3));
+    System.out.println("INCRBYFLOAT " + TOTAL + " items from the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
+
+    // GETDEL
+    beginTime = System.currentTimeMillis();
+    for (int i = 0; i < TOTAL; ++i)
+      Assertions.assertEquals(String.valueOf(i + 3.3D), jedis.getDel("foo" + i));
+    System.out.println("GETDEL " + TOTAL + " items from the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
+
+    for (int i = 0; i < TOTAL; ++i)
+      Assertions.assertNull(jedis.get("foo" + i));
   }
 
   @Test
