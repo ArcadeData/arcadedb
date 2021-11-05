@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 import org.xnio.http.UpgradeFailedException;
 
 public class WebSocketEventBusIT extends StaticBaseServerTest {
+  private static final int DELAY_MS = 1000;
 
   @Test
   public void closeUnsubscribesAll() throws Exception {
@@ -17,7 +18,7 @@ public class WebSocketEventBusIT extends StaticBaseServerTest {
       result = new JSONObject(client.send(buildActionMessage("subscribe", "graph", "V2")));
       Assertions.assertEquals("ok", result.get("result"));
     }
-    Thread.sleep(100);
+    Thread.sleep(DELAY_MS);
     Assertions.assertEquals(0, this.getServer(0).getHttpServer().getWebSocketEventBus().getDatabaseSubscriptions("graph").size());
   }
 
@@ -39,12 +40,11 @@ public class WebSocketEventBusIT extends StaticBaseServerTest {
       Assertions.assertEquals("create", json.get("changeType"));
 
       // The sending thread should have detected and removed the zombie connection.
-      Thread.sleep(100);
+      Thread.sleep(DELAY_MS);
       Assertions.assertEquals(1, this.getServer(0).getHttpServer().getWebSocketEventBus().getDatabaseSubscriptions("graph").size());
     }
 
-    Thread.sleep(1000);
-
+    Thread.sleep(DELAY_MS);
     Assertions.assertTrue(getServer(0).getHttpServer().getWebSocketEventBus().getDatabaseSubscriptions(getDatabaseName()).isEmpty());
   }
 
