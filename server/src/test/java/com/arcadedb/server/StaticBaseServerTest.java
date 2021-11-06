@@ -15,7 +15,6 @@
  */
 package com.arcadedb.server;
 
-import com.arcadedb.Constants;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
@@ -30,14 +29,12 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.FileUtils;
-import org.json.JSONObject;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeAll;
 
 import java.io.*;
 import java.net.*;
-import java.nio.charset.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.logging.*;
@@ -230,74 +227,15 @@ public abstract class StaticBaseServerTest {
   }
 
   protected static void startServers() {
-    final int totalServers = getServerCount();
-    servers = new ArcadeDBServer[totalServers];
-
-    int port = 2424;
-    String serverURLs = "";
-    for (int i = 0; i < totalServers; ++i) {
-      if (i > 0)
-        serverURLs += ",";
-
-      try {
-        serverURLs += (InetAddress.getLocalHost().getHostName()) + ":" + (port++);
-      } catch (UnknownHostException e) {
-        e.printStackTrace();
-      }
-    }
-
-    for (int i = 0; i < totalServers; ++i) {
-      final ContextConfiguration config = new ContextConfiguration();
-      config.setValue(GlobalConfiguration.SERVER_NAME, Constants.PRODUCT + "_" + i);
-      config.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, "./target/databases" + i);
-      config.setValue(GlobalConfiguration.HA_SERVER_LIST, serverURLs);
-      config.setValue(GlobalConfiguration.HA_REPLICATION_INCOMING_HOST, "0.0.0.0");
-      config.setValue(GlobalConfiguration.HA_ENABLED, getServerCount() > 1);
-
+    servers = TestServerHelper.startServers(getServerCount(), (config) -> {
       onServerConfiguration(config);
-
-      servers[i] = new ArcadeDBServer(config);
-      onBeforeStarting(servers[i]);
-      servers[i].start();
-
-      try {
-        Thread.sleep(1000);
-      } catch (InterruptedException e) {
-        Thread.currentThread().interrupt();
-        e.printStackTrace();
-      }
-    }
+    }, (server) -> {
+      onBeforeStarting(server);
+    });
   }
 
   protected static void stopServers() {
-    if (servers != null) {
-      // RESTART ANY SERVER IS DOWN TO CHECK INTEGRITY AFTER THE REALIGNMENT
-      for (int i = servers.length - 1; i > -1; --i) {
-        if (servers[i] != null)
-          servers[i].stop();
-      }
-    }
-  }
-
-  protected void formatPost(final HttpURLConnection connection, final String language, final String payloadCommand, final Map<String, Object> params)
-      throws Exception {
-    connection.setDoOutput(true);
-    if (payloadCommand != null) {
-      final JSONObject jsonRequest = new JSONObject();
-      jsonRequest.put("language", language);
-      jsonRequest.put("command", payloadCommand);
-
-      if (params != null) {
-        final JSONObject jsonParams = new JSONObject(params);
-        jsonRequest.put("params", jsonParams);
-      }
-
-      final byte[] postData = jsonRequest.toString().getBytes(StandardCharsets.UTF_8);
-      connection.setRequestProperty("Content-Length", Integer.toString(postData.length));
-      try (DataOutputStream wr = new DataOutputStream(connection.getOutputStream())) {
-        wr.write(postData);
-      }
-    }
+    TestServerHelper.stopServers(servers);
   }
 
   protected static void onServerConfiguration(final ContextConfiguration config) {

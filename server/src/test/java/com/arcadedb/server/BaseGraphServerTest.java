@@ -15,7 +15,6 @@
  */
 package com.arcadedb.server;
 
-import com.arcadedb.Constants;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
@@ -231,53 +230,15 @@ public abstract class BaseGraphServerTest {
   }
 
   protected void startServers() {
-    final int totalServers = getServerCount();
-    servers = new ArcadeDBServer[totalServers];
-
-    int port = 2424;
-    String serverURLs = "";
-    for (int i = 0; i < totalServers; ++i) {
-      if (i > 0)
-        serverURLs += ",";
-
-      try {
-        serverURLs += (InetAddress.getLocalHost().getHostName()) + ":" + (port++);
-      } catch (UnknownHostException e) {
-        e.printStackTrace();
-      }
-    }
-
-    for (int i = 0; i < totalServers; ++i) {
-      final ContextConfiguration config = new ContextConfiguration();
-      config.setValue(GlobalConfiguration.SERVER_NAME, Constants.PRODUCT + "_" + i);
-      config.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, "./target/databases" + i);
-      config.setValue(GlobalConfiguration.HA_SERVER_LIST, serverURLs);
-      config.setValue(GlobalConfiguration.HA_REPLICATION_INCOMING_HOST, "0.0.0.0");
-      config.setValue(GlobalConfiguration.HA_ENABLED, getServerCount() > 1);
-
+    servers = TestServerHelper.startServers(getServerCount(), (config) -> {
       onServerConfiguration(config);
-
-      servers[i] = new ArcadeDBServer(config);
-      onBeforeStarting(servers[i]);
-      servers[i].start();
-
-      try {
-        Thread.sleep(1000);
-      } catch (InterruptedException e) {
-        Thread.currentThread().interrupt();
-        e.printStackTrace();
-      }
-    }
+    }, (server) -> {
+      onBeforeStarting(server);
+    });
   }
 
   protected void stopServers() {
-    if (servers != null) {
-      // RESTART ANY SERVER IS DOWN TO CHECK INTEGRITY AFTER THE REALIGNMENT
-      for (int i = servers.length - 1; i > -1; --i) {
-        if (servers[i] != null)
-          servers[i].stop();
-      }
-    }
+    TestServerHelper.stopServers(servers);
   }
 
   protected void formatPost(final HttpURLConnection connection, final String language, final String payloadCommand, final Map<String, Object> params)
@@ -332,11 +293,7 @@ public abstract class BaseGraphServerTest {
   }
 
   protected ArcadeDBServer getServer(final String name) {
-    for (ArcadeDBServer s : servers) {
-      if (s.getServerName().equals(name))
-        return s;
-    }
-    return null;
+    return TestServerHelper.getServerByName(servers, name);
   }
 
   protected int getServerCount() {
@@ -383,28 +340,11 @@ public abstract class BaseGraphServerTest {
   }
 
   protected ArcadeDBServer getLeaderServer() {
-    for (int i = 0; i < getServerCount(); ++i)
-      if (getServer(i).isStarted()) {
-        final ArcadeDBServer onlineServer = getServer(i);
-        final String leaderName = onlineServer.getHA().getLeaderName();
-        return getServer(leaderName);
-      }
-    return null;
+    return TestServerHelper.getLeaderServer(servers);
   }
 
   protected boolean areAllServersOnline() {
-    final ArcadeDBServer leader = getLeaderServer();
-    if (leader == null)
-      return false;
-
-    final int onlineReplicas = leader.getHA().getOnlineReplicas();
-    if (1 + onlineReplicas < getServerCount()) {
-      // NOT ALL THE SERVERS ARE UP, AVOID A QUORUM ERROR
-      LogManager.instance().log(this, Level.INFO, "TEST: Not all the servers are ONLINE (%d), skip this crash...", null, onlineReplicas);
-      leader.getHA().printClusterConfiguration();
-      return false;
-    }
-    return true;
+    return TestServerHelper.areAllServersOnline(servers);
   }
 
   protected int[] getServerToCheck() {
