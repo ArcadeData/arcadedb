@@ -17,6 +17,7 @@ package com.arcadedb.server.ha;
 
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.BaseGraphServerTest;
+import org.json.JSONObject;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -69,7 +70,6 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
             "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
         formatPost(connection, "sql", "select from VertexType" + serverIndex, new HashMap<>());
         connection.connect();
-
         Assertions.assertEquals(200, connection.getResponseCode());
         Assertions.assertEquals("OK", connection.getResponseMessage());
 
@@ -77,7 +77,6 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
         connection.disconnect();
       }
     });
-
   }
 
   @Test
@@ -93,13 +92,9 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
 
       try {
         final String response = readResponse(connection);
-
         LogManager.instance().log(this, Level.INFO, "TEST: Response: %s", null, response);
-
         Assertions.assertEquals(200, connection.getResponseCode());
-
         Assertions.assertEquals("OK", connection.getResponseMessage());
-
         Assertions.assertTrue(response.contains("V1"));
 
       } finally {
@@ -121,13 +116,9 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
 
       try {
         final String response = readResponse(connection);
-
         LogManager.instance().log(this, Level.INFO, "TEST: Response: %s", null, response);
-
         Assertions.assertEquals(200, connection.getResponseCode());
-
         Assertions.assertEquals("OK", connection.getResponseMessage());
-
         Assertions.assertTrue(response.contains("V1"));
 
       } finally {
@@ -139,37 +130,46 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
   @Test
   public void checkRecordCreate() throws Exception {
     testEachServer((serverIndex) -> {
-      HttpURLConnection connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/document/graph").openConnection();
-
-      connection.setRequestMethod("POST");
-
-      final String payload = "{\"@type\":\"Person\",\"name\":\"Jay\",\"surname\":\"Miner\",\"age\":69}";
-
-      connection.setRequestMethod("POST");
-      connection.setRequestProperty("Authorization",
-          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
-      connection.setDoOutput(true);
-
-      connection.connect();
-
-      PrintWriter pw = new PrintWriter(new OutputStreamWriter(connection.getOutputStream()));
-      pw.write(payload);
-      pw.close();
-
-      try {
-        final String response = readResponse(connection);
-
-        Assertions.assertEquals(200, connection.getResponseCode());
-        Assertions.assertEquals("OK", connection.getResponseMessage());
-
-        LogManager.instance().log(this, Level.INFO, "TEST: Response: %s", null, response);
-
-        Assertions.assertTrue(response.contains("#"));
-
-      } finally {
-        connection.disconnect();
-      }
+      String v1 = createRecord(serverIndex, "{\"@type\":\"Person\",\"name\":\"Jay\",\"surname\":\"Miner\",\"age\":69}");
+      String v2 = createRecord(serverIndex, "{\"@type\":\"Person\",\"name\":\"Elon\",\"surname\":\"Musk\",\"age\":50}");
     });
+  }
 
+  @Test
+  public void checkDeleteGraphElements() throws Exception {
+    testEachServer((serverIndex) -> {
+      createRecord(serverIndex, "{\"@type\":\"Person\",\"name\":\"Jay\",\"surname\":\"Miner\",\"age\":69}");
+    });
+  }
+
+  private String createRecord(final int serverIndex, final String payload) throws IOException {
+    HttpURLConnection connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/document/graph").openConnection();
+    connection.setRequestMethod("POST");
+    connection.setRequestMethod("POST");
+    connection.setRequestProperty("Authorization",
+        "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+    connection.setDoOutput(true);
+
+    connection.connect();
+
+    PrintWriter pw = new PrintWriter(new OutputStreamWriter(connection.getOutputStream()));
+    pw.write(payload);
+    pw.close();
+
+    try {
+      final String response = readResponse(connection);
+
+      Assertions.assertEquals(200, connection.getResponseCode());
+      Assertions.assertEquals("OK", connection.getResponseMessage());
+
+      LogManager.instance().log(this, Level.INFO, "TEST: Response: %s", null, response);
+
+      Assertions.assertTrue(response.contains("#"));
+
+      return new JSONObject(response).toString();
+
+    } finally {
+      connection.disconnect();
+    }
   }
 }
