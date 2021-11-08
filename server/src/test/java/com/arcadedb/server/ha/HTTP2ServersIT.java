@@ -106,7 +106,7 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
   @Test
   public void checkDeleteGraphElements() throws Exception {
     //testEachServer((serverIndex) -> {
-    final int serverIndex = 1;
+    final int serverIndex = 0;
       String v1 = new JSONObject(createRecord(serverIndex, "{\"@type\":\"V1\",\"name\":\"Jay\",\"surname\":\"Miner\",\"age\":69}")).getString("result");
       String v2 = new JSONObject(createRecord(serverIndex, "{\"@type\":\"V1\",\"name\":\"Elon\",\"surname\":\"Musk\",\"age\":50}")).getString("result");
       String e1 = new JSONObject(command(serverIndex, "create edge E1 from " + v1 + " to " + v2)).getJSONArray("result").getJSONObject(0).getString("@rid");
@@ -115,12 +115,14 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
 
       command(serverIndex, "delete from " + v1);
 
-      Assertions.assertTrue(new JSONObject(command(serverIndex, "select from " + v1)).getJSONArray("result").isEmpty());
-      Assertions.assertFalse(new JSONObject(command(serverIndex, "select from " + v2)).getJSONArray("result").isEmpty());
-      Assertions.assertFalse(new JSONObject(command(serverIndex, "select from " + v3)).getJSONArray("result").isEmpty());
-      Assertions.assertTrue(new JSONObject(command(serverIndex, "select from " + e1)).getJSONArray("result").isEmpty());
-      Assertions.assertFalse(new JSONObject(command(serverIndex, "select from " + e2)).getJSONArray("result").isEmpty());
-    //});
+      testEachServer((checkServer) -> {
+        Assertions.assertTrue(new JSONObject(command(checkServer, "select from " + v1)).getJSONArray("result").isEmpty());
+        Assertions.assertFalse(new JSONObject(command(checkServer, "select from " + v2)).getJSONArray("result").isEmpty());
+        Assertions.assertFalse(new JSONObject(command(checkServer, "select from " + v3)).getJSONArray("result").isEmpty());
+        Assertions.assertTrue(new JSONObject(command(checkServer, "select from " + e1)).getJSONArray("result").isEmpty());
+        Assertions.assertFalse(new JSONObject(command(checkServer, "select from " + e2)).getJSONArray("result").isEmpty());
+      });
+//    });
   }
 
   private String createRecord(final int serverIndex, final String payload) throws IOException {
