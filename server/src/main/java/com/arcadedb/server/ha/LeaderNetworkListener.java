@@ -131,6 +131,10 @@ public class LeaderNetworkListener extends Thread {
                   ha.getServerAddress() != null ? ("current host $ANSI{green " + ha.getServerAddress() + "} ") : "") + "(protocol v." + protocolVersion + ")");
 
           port = tryPort;
+
+          // UPDATE THE NAME WITH THE ACTUAL PORT BOUND
+          setName(ha.getServerName() + " replication listen at " + hostName + ":" + port);
+
           return;
         }
       } catch (BindException be) {

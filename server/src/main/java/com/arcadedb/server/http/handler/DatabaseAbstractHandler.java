@@ -83,7 +83,7 @@ public abstract class DatabaseAbstractHandler extends AbstractHandler {
     } finally {
 
       if (activeSession != null)
-        // DETACH CURRENT CONTECT/TRANSACTIONS FROM CURRENT THREAD
+        // DETACH CURRENT CONTEXT/TRANSACTIONS FROM CURRENT THREAD
         DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
       else if (database != null) {
         try {
