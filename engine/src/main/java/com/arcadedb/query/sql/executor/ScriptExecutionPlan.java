@@ -51,7 +51,7 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
 
   @Override
   public ResultSet fetchNext(int n) {
-    dexecute(n);
+    doExecute(n);
     return new ResultSet() {
 
       @Override
@@ -85,7 +85,7 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
     };
   }
 
-  private void dexecute(int n) {
+  private void doExecute(int n) {
     if (!executed) {
       executeUntilReturn();
       executed = true;

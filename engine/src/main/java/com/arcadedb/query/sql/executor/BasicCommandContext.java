@@ -30,11 +30,12 @@ import java.util.concurrent.atomic.*;
  */
 public class BasicCommandContext implements CommandContext {
   protected DatabaseInternal    database;
-  protected boolean             recordMetrics = false;
+  protected boolean             recordMetrics           = false;
   protected CommandContext      parent;
   protected CommandContext      child;
   protected Map<String, Object> variables;
   protected Map<String, Object> inputParameters;
+  protected Set<String>         declaredScriptVariables = new HashSet<>();
 
   protected final AtomicLong resultsProcessed = new AtomicLong(0);
 
@@ -404,5 +405,27 @@ public class BasicCommandContext implements CommandContext {
         lowest = index;
     }
     return lowest;
+  }
+
+  @Override
+  public void declareScriptVariable(String varName) {
+    this.declaredScriptVariables.add(varName);
+  }
+
+  @Override
+  public boolean isScriptVariableDeclared(String varName) {
+    if (varName == null || varName.length() == 0) {
+      return false;
+    }
+    String dollarVar = varName;
+    if (!dollarVar.startsWith("$")) {
+      dollarVar = "$" + varName;
+    }
+    varName = dollarVar.substring(1);
+    if (variables != null && (variables.containsKey(varName) || variables.containsKey(dollarVar))) {
+      return true;
+    }
+    return declaredScriptVariables.contains(varName) || declaredScriptVariables.contains(dollarVar) || (parent != null && parent.isScriptVariableDeclared(
+        varName));
   }
 }

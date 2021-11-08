@@ -61,6 +61,7 @@ import com.arcadedb.query.sql.executor.ScriptExecutionPlan;
 import com.arcadedb.query.sql.parser.BeginStatement;
 import com.arcadedb.query.sql.parser.CommitStatement;
 import com.arcadedb.query.sql.parser.ExecutionPlanCache;
+import com.arcadedb.query.sql.parser.LetStatement;
 import com.arcadedb.query.sql.parser.LocalResultSet;
 import com.arcadedb.query.sql.parser.LocalResultSetLifecycleDecorator;
 import com.arcadedb.query.sql.parser.Statement;
@@ -86,6 +87,7 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 import java.util.concurrent.locks.*;
 import java.util.logging.*;
+import java.util.stream.*;
 
 public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal {
   public static final  int                                       EDGE_LIST_INITIAL_CHUNK_SIZE         = 64;
@@ -1212,20 +1214,23 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   private ResultSet executeInternal(final List<Statement> statements, final CommandContext scriptContext) {
     ScriptExecutionPlan plan = new ScriptExecutionPlan(scriptContext);
 
+    plan.setStatement(statements.stream().map(Statement::toString).collect(Collectors.joining(";")));
+
     List<Statement> lastRetryBlock = new ArrayList<>();
     int nestedTxLevel = 0;
 
     for (Statement stm : statements) {
-      if (stm instanceof BeginStatement) {
+      if (stm.getOriginalStatement() == null)
+        stm.setOriginalStatement(stm.toString());
+
+      if (stm instanceof BeginStatement)
         nestedTxLevel++;
-      }
 
       if (nestedTxLevel <= 0) {
         InternalExecutionPlan sub = stm.createExecutionPlan(scriptContext);
         plan.chain(sub, false);
-      } else {
+      } else
         lastRetryBlock.add(stm);
-      }
 
       if (stm instanceof CommitStatement && nestedTxLevel > 0) {
         nestedTxLevel--;
@@ -1239,6 +1244,8 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
         }
       }
 
+      if (stm instanceof LetStatement)
+        scriptContext.declareScriptVariable(((LetStatement) stm).getName().getStringValue());
     }
 
     return new LocalResultSet(plan);

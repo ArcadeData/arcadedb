@@ -165,6 +165,10 @@ public class Statement extends SimpleNode {
     return originalStatement;
   }
 
+  public void setOriginalStatement(String originalStatement) {
+    this.originalStatement = originalStatement;
+  }
+
   public Limit getLimit() {
     return limit;
   }
