@@ -113,7 +113,7 @@ public class RedisNetworkExecutor extends Thread {
       if (!(cmd instanceof String))
         server.log(this, Level.SEVERE, "Redis wrapper: Invalid command[0] %s (type=%s)", command, cmd.getClass());
 
-      final String cmdString = (String) cmd;
+      final String cmdString = ((String) cmd).toUpperCase();
 
       try {
         switch (cmdString) {
