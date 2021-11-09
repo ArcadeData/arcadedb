@@ -37,7 +37,6 @@ import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.database.async.OkCallback;
 import com.arcadedb.engine.FileManager;
-import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.engine.TransactionManager;
@@ -63,7 +62,6 @@ import com.arcadedb.server.ha.message.CommandForwardRequest;
 import com.arcadedb.server.ha.message.DatabaseChangeStructureRequest;
 import com.arcadedb.server.ha.message.TxForwardRequest;
 import com.arcadedb.server.ha.message.TxRequest;
-import com.arcadedb.utility.Pair;
 import org.json.JSONObject;
 
 import java.io.*;
@@ -101,14 +99,14 @@ public class ReplicatedDatabase implements DatabaseInternal {
       final TransactionContext tx = current.getLastTransaction();
       try {
 
-        final Pair<Binary, List<MutablePage>> changes = tx.commit1stPhase(isLeader);
+        final TransactionContext.TransactionPhase1 phase1 = tx.commit1stPhase(isLeader);
 
         try {
-          if (changes != null) {
-            final Binary bufferChanges = changes.getFirst();
+          if (phase1 != null) {
+            final Binary bufferChanges = phase1.result;
 
             if (isLeader)
-              replicateTx(tx, changes, bufferChanges);
+              replicateTx(tx, phase1, bufferChanges);
             else {
               // USE A BIGGER TIMEOUT CONSIDERING THE DOUBLE LATENCY
               final TxForwardRequest command = new TxForwardRequest(ReplicatedDatabase.this, bufferChanges, tx.getIndexChanges().toMap());
@@ -137,7 +135,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
     });
   }
 
-  public void replicateTx(final TransactionContext tx, final Pair<Binary, List<MutablePage>> changes, final Binary bufferChanges) {
+  public void replicateTx(final TransactionContext tx, final TransactionContext.TransactionPhase1 phase1, final Binary bufferChanges) {
     final int configuredServers = server.getHA().getConfiguredServers();
 
     final int reqQuorum;
@@ -177,7 +175,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
     server.getHA().sendCommandToReplicasWithQuorum(req, reqQuorum, timeout);
 
     // COMMIT 2ND PHASE ONLY IF THE QUORUM HAS BEEN REACHED
-    tx.commit2ndPhase(changes);
+    tx.commit2ndPhase(phase1);
   }
 
   public long getTimeout() {
