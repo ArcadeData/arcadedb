@@ -38,11 +38,36 @@ public class RedisWTest extends BaseGraphServerTest {
   public void testRAMCommands() {
     Jedis jedis = new Jedis("localhost", DEF_PORT);
 
+    // PING
+    Assertions.assertEquals("PONG", jedis.ping());
+    Assertions.assertEquals("This is a test", jedis.ping("This is a test"));
+
     // SET
     long beginTime = System.currentTimeMillis();
     for (int i = 0; i < TOTAL_RAM; ++i)
       jedis.set("foo" + i, String.valueOf(i));
     System.out.println("SET " + TOTAL_RAM + " items in the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
+
+    // EXISTS
+    Assertions.assertFalse(jedis.exists("fooNotFound"));
+
+    beginTime = System.currentTimeMillis();
+    for (int i = 0; i < TOTAL_RAM; ++i)
+      Assertions.assertTrue(jedis.exists("foo" + i));
+    System.out.println("EXISTS " + TOTAL_RAM + " items in the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
+
+    Assertions.assertEquals(0, jedis.exists("fooNotFound", "eitherThis"));
+
+    beginTime = System.currentTimeMillis();
+    for (int i = 0; i < TOTAL_RAM; i += 10) {
+      final String[] keyChunk = new String[10];
+      for (int k = 0; k < 10; ++k)
+        keyChunk[k] = "foo" + (i + k);
+      Long result = jedis.exists(keyChunk);
+      Assertions.assertEquals(10, result);
+    }
+    System.out.println(
+        "MULTI EXISTS (chunk of 10 keys) " + TOTAL_RAM + " items in the default bucket. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
 
     // GET
     beginTime = System.currentTimeMillis();
@@ -91,18 +116,6 @@ public class RedisWTest extends BaseGraphServerTest {
   }
 
   @Test
-  public void testCommandNotSupported() {
-    Jedis jedis = new Jedis("localhost", DEF_PORT);
-    try {
-      jedis.aclList();
-      Assertions.fail();
-    } catch (JedisDataException e) {
-      // EXPECTED
-      Assertions.assertEquals("Command not found", e.getMessage());
-    }
-  }
-
-  @Test
   public void testPersistentCommands() {
     Jedis jedis = new Jedis("localhost", DEF_PORT);
 
@@ -119,6 +132,15 @@ public class RedisWTest extends BaseGraphServerTest {
     for (int i = 0; i < TOTAL_PERSISTENT; ++i)
       jedis.hset(getDatabaseName(), "Account", "{'id':" + i + ",'email':'jay.miner" + i + "@commodore.com','firstName':'Jay','lastName':'Miner'}");
     System.out.println("HSET " + TOTAL_PERSISTENT + " items to the database. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
+
+    // HEXISTS
+    beginTime = System.currentTimeMillis();
+    for (int i = 0; i < TOTAL_PERSISTENT; ++i) {
+      // RETRIEVE BY ID (LONG)
+      Assertions.assertTrue(jedis.hexists(getDatabaseName() + ".Account[id]", String.valueOf(i)));
+      Assertions.assertTrue(jedis.hexists(getDatabaseName() + ".Account[email]", "jay.miner" + i + "@commodore.com"));
+    }
+    System.out.println("HEXISTS " + TOTAL_PERSISTENT + " items to the database. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
 
     // HGET
     beginTime = System.currentTimeMillis();
@@ -176,9 +198,8 @@ public class RedisWTest extends BaseGraphServerTest {
     beginTime = System.currentTimeMillis();
     for (int i = 0; i < TOTAL_PERSISTENT; i += 10) {
       final String[] ridChunk = new String[10];
-      for (int k = 0; k < 10; ++k) {
+      for (int k = 0; k < 10; ++k)
         ridChunk[k] = rids.get(i + k).toString();
-      }
 
       // RETRIEVE BY CHUNK OF 10 RIDS
       final List<String> result = jedis.hmget(getDatabaseName(), ridChunk);
@@ -201,6 +222,18 @@ public class RedisWTest extends BaseGraphServerTest {
       Assertions.assertEquals(2, jedis.hdel(getDatabaseName() + ".Account[id]", String.valueOf(i), String.valueOf(i + 1)));
     }
     System.out.println("HDEL " + TOTAL_PERSISTENT + " items from the database. Elapsed " + (System.currentTimeMillis() - beginTime) + "ms");
+  }
+
+  @Test
+  public void testCommandNotSupported() {
+    Jedis jedis = new Jedis("localhost", DEF_PORT);
+    try {
+      jedis.aclList();
+      Assertions.fail();
+    } catch (JedisDataException e) {
+      // EXPECTED
+      Assertions.assertEquals("Command not found", e.getMessage());
+    }
   }
 
   @Override

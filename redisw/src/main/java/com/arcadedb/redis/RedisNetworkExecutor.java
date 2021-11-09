@@ -133,8 +133,16 @@ public class RedisNetworkExecutor extends Thread {
           getDel(list);
           break;
 
+        case "EXISTS":
+          exists(list);
+          break;
+
         case "HDEL":
           hDel(list);
+          break;
+
+        case "HEXISTS":
+          hExists(list);
           break;
 
         case "HGET":
@@ -160,6 +168,10 @@ public class RedisNetworkExecutor extends Thread {
 
         case "INCRBYFLOAT":
           incrBy(list, true);
+          break;
+
+        case "PING":
+          ping(list);
           break;
 
         case "SET":
@@ -197,6 +209,15 @@ public class RedisNetworkExecutor extends Thread {
     defaultBucket.put(k, newValue);
     value.append(":");
     value.append(newValue);
+  }
+
+  private void exists(final List<Object> list) {
+    final String k = (String) list.get(1);
+    int total = 0;
+    for (int i = 1; i < list.size(); i++)
+      total += defaultBucket.containsKey(list.get(i)) ? 1 : 0;
+
+    respondValue(total, false);
   }
 
   private void get(final List<Object> list) {
@@ -251,6 +272,14 @@ public class RedisNetworkExecutor extends Thread {
     }
     value.append(":");
     value.append(deleted);
+  }
+
+  private void hExists(final List<Object> list) {
+    final String bucketName = (String) list.get(1);
+    final String key = (String) list.get(2);
+
+    final Record record = getRecord(bucketName, key);
+    respondValue(record != null ? 1 : 0, false);
   }
 
   private void hGet(final List<Object> list) {
@@ -337,6 +366,12 @@ public class RedisNetworkExecutor extends Thread {
     defaultBucket.put(k, v);
     value.append("+");
     value.append("OK");
+  }
+
+  private void ping(final List<Object> list) {
+    final String response = list.size() > 1 ? (String) list.get(1) : "PONG";
+    value.append("+");
+    value.append(response);
   }
 
   private Object parseNext() throws IOException {
