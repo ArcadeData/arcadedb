@@ -25,21 +25,18 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
-import java.lang.reflect.InvocationTargetException;
 
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.logging.Level;
-import java.util.stream.Collectors;
+import java.lang.reflect.*;
+import java.util.*;
+import java.util.logging.*;
+import java.util.stream.*;
 
 public class CypherQueryEngine implements QueryEngine {
   private static final String ENGINE_NAME = "cypher-engine";
-  private final Object arcadeGraph;
+  private final        Object arcadeGraph;
 
   public static class CypherQueryEngineFactory implements QueryEngineFactory {
-    private static Boolean available = null;
+    private static Boolean  available = null;
     private static Class<?> arcadeGraphClass;
     private static Class<?> arcadeCypherClass;
 
@@ -82,6 +79,21 @@ public class CypherQueryEngine implements QueryEngine {
 
   protected CypherQueryEngine(final Object arcadeGraph) {
     this.arcadeGraph = arcadeGraph;
+  }
+
+  @Override
+  public AnalyzedQuery analyze(String query) {
+    return new AnalyzedQuery() {
+      @Override
+      public boolean isIdempotent() {
+        return false;
+      }
+
+      @Override
+      public boolean isDDL() {
+        return false;
+      }
+    };
   }
 
   @Override

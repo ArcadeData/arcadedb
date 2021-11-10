@@ -1444,6 +1444,10 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
       this.wrappers.put(name, instance);
   }
 
+  public QueryEngineManager getQueryEngineManager() {
+    return queryEngineManager;
+  }
+
   public void saveConfiguration() throws IOException {
     FileUtils.writeFile(configurationFile, configuration.toJSON());
   }

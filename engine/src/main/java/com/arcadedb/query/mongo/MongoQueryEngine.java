@@ -74,6 +74,21 @@ public class MongoQueryEngine implements QueryEngine {
   }
 
   @Override
+  public AnalyzedQuery analyze(String query) {
+    return new AnalyzedQuery() {
+      @Override
+      public boolean isIdempotent() {
+        return false;
+      }
+
+      @Override
+      public boolean isDDL() {
+        return false;
+      }
+    };
+  }
+
+  @Override
   public ResultSet query(final String query, final Map<String, Object> parameters) {
     try {
       return (ResultSet) MongoQueryEngineFactory.arcadeDatabaseClass.getMethod("query", String.class).invoke(mongoDBWrapper, query);

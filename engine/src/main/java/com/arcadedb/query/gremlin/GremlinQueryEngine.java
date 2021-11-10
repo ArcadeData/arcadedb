@@ -107,4 +107,20 @@ public class GremlinQueryEngine implements QueryEngine {
       map.put((String) parameters[i], parameters[i + 1]);
     return command(query, map);
   }
+
+  @Override
+  public AnalyzedQuery analyze(String query) {
+    return new AnalyzedQuery() {
+      @Override
+      public boolean isIdempotent() {
+        return false;
+      }
+
+      @Override
+      public boolean isDDL() {
+        return false;
+      }
+    };
+  }
+
 }

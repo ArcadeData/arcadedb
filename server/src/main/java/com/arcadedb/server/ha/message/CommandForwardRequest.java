@@ -23,8 +23,7 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.ha.ReplicationException;
 
-import java.util.LinkedHashMap;
-import java.util.Map;
+import java.util.*;
 
 /**
  * Forward a command to the Leader server to be executed.
@@ -132,6 +131,6 @@ public class CommandForwardRequest extends HAAbstractCommand {
 
   @Override
   public String toString() {
-    return "command-forward-request(" + databaseName + ")";
+    return "command-forward-request(" + databaseName + "," + language + "," + command + ")";
   }
 }

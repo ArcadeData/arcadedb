@@ -69,6 +69,11 @@ public class InternalResultSet implements ResultSet {
     this.next = 0;
   }
 
+  @Override
+  public long estimateSize() {
+    return content.size();
+  }
+
   public InternalResultSet copy() {
     final InternalResultSet copy = new InternalResultSet();
     copy.content = this.content;

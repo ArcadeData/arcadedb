@@ -611,20 +611,16 @@ public class EmbeddedSchema implements Schema {
       final AtomicReference<IndexInternal> result = new AtomicReference<>();
       database.transaction(() -> {
 
-        try {
-          final IndexInternal index = indexFactory.createIndex(indexType.name(), database, FileUtils.encode(indexName, ENCODING), unique,
-              databasePath + "/" + indexName, PaginatedFile.MODE.READ_WRITE, keyTypes, pageSize, nullStrategy, null);
+        final IndexInternal index = indexFactory.createIndex(indexType.name(), database, FileUtils.encode(indexName, ENCODING), unique,
+            databasePath + "/" + indexName, PaginatedFile.MODE.READ_WRITE, keyTypes, pageSize, nullStrategy, null);
 
-          result.set(index);
+        result.set(index);
 
-          if (index instanceof PaginatedComponent)
-            registerFile((PaginatedComponent) index);
+        if (index instanceof PaginatedComponent)
+          registerFile((PaginatedComponent) index);
 
-          indexMap.put(indexName, index);
+        indexMap.put(indexName, index);
 
-        } catch (IOException e) {
-          throw new SchemaException("Cannot create index '" + indexName + "' (error=" + e + ")", e);
-        }
       }, false, 1, null, (error) -> {
         final IndexInternal indexToRemove = result.get();
         if (indexToRemove != null) {
