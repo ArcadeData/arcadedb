@@ -69,12 +69,14 @@ public class DefaultLogger implements Logger {
     }
   }
 
-  public void log(final Object requester, final Level level, String message, final Throwable exception, final String context, final Object arg1,
+  public void log(final Object requester, Level level, String message, final Throwable exception, final String context, final Object arg1,
       final Object arg2, final Object arg3, final Object arg4, final Object arg5, final Object arg6, final Object arg7, final Object arg8, final Object arg9,
       final Object arg10, final Object arg11, final Object arg12, final Object arg13, final Object arg14, final Object arg15, final Object arg16,
       final Object arg17) {
     if (message == null)
       return;
+
+    //level = Level.SEVERE;
 
     final String requesterName;
     if (requester instanceof String)

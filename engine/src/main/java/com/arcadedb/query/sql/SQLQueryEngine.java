@@ -89,4 +89,20 @@ public class SQLQueryEngine implements QueryEngine {
 
     return statement.execute(database, parameters);
   }
+
+  @Override
+  public AnalyzedQuery analyze(final String query) {
+    final Statement statement = SQLEngine.parse(query, database);
+    return new AnalyzedQuery() {
+      @Override
+      public boolean isIdempotent() {
+        return statement.isIdempotent();
+      }
+
+      @Override
+      public boolean isDDL() {
+        return statement.isDDL();
+      }
+    };
+  }
 }

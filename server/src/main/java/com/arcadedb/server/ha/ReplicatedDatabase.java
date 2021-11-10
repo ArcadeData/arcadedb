@@ -44,13 +44,14 @@ import com.arcadedb.engine.WALFile;
 import com.arcadedb.engine.WALFileFactory;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.NeedRetryException;
-import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
+import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
+import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.ExecutionPlanCache;
 import com.arcadedb.query.sql.parser.StatementCache;
@@ -548,9 +549,13 @@ public class ReplicatedDatabase implements DatabaseInternal {
   @Override
   public ResultSet command(final String language, final String query, final Object... args) {
     if (!server.getHA().isLeader()) {
-      // USE A BIGGER TIMEOUT CONSIDERING THE DOUBLE LATENCY
-      final CommandForwardRequest command = new CommandForwardRequest(ReplicatedDatabase.this, language, query, null, args);
-      return (ResultSet) server.getHA().forwardCommandToLeader(command, timeout * 2);
+      final QueryEngine.AnalyzedQuery analyzed = proxied.getQueryEngineManager().getInstance(language, this).analyze(query);
+      if (analyzed.isDDL()) {
+        // USE A BIGGER TIMEOUT CONSIDERING THE DOUBLE LATENCY
+        final CommandForwardRequest command = new CommandForwardRequest(ReplicatedDatabase.this, language, query, null, args);
+        return (ResultSet) server.getHA().forwardCommandToLeader(command, timeout * 2);
+      }
+      return proxied.command(language, query, args);
     }
 
     return recordFileChanges(() -> proxied.command(language, query, args));
@@ -559,9 +564,13 @@ public class ReplicatedDatabase implements DatabaseInternal {
   @Override
   public ResultSet command(final String language, final String query, final Map<String, Object> args) {
     if (!server.getHA().isLeader()) {
-      // USE A BIGGER TIMEOUT CONSIDERING THE DOUBLE LATENCY
-      final CommandForwardRequest command = new CommandForwardRequest(ReplicatedDatabase.this, language, query, args, null);
-      return (ResultSet) server.getHA().forwardCommandToLeader(command, timeout * 2);
+      final QueryEngine.AnalyzedQuery analyzed = proxied.getQueryEngineManager().getInstance(language, this).analyze(query);
+      if (analyzed.isDDL()) {
+        // USE A BIGGER TIMEOUT CONSIDERING THE DOUBLE LATENCY
+        final CommandForwardRequest command = new CommandForwardRequest(ReplicatedDatabase.this, language, query, args, null);
+        return (ResultSet) server.getHA().forwardCommandToLeader(command, timeout * 2);
+      }
+      return proxied.command(language, query, args);
     }
 
     return recordFileChanges(() -> proxied.command(language, query, args));
@@ -652,7 +661,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
       if (!ha.isLeader()) {
         // NOT THE LEADER: NOT RESPONSIBLE TO SEND CHANGES TO OTHER SERVERS
         // TODO: Issue #118SchemaException
-        throw new SchemaException("Changes to the schema must be executed on the leader server");
+        throw new ServerIsNotTheLeaderException("Changes to the schema must be executed on the leader server", ha.getLeaderName());
 //        result.set(callback.call());
 //        return null;
       }

@@ -413,8 +413,7 @@ public class TransactionContext implements Transaction {
           dictionaryModified = true;
       }
 
-      // USE THE UNDERLYING DATABASE TO AVOID A REPLICATION
-      database.getEmbedded().commit();
+      database.commit();
 
       if (dictionaryModified)
         database.getSchema().getDictionary().reload();
@@ -516,6 +515,9 @@ public class TransactionContext implements Transaction {
   }
 
   public void commit2ndPhase(final TransactionContext.TransactionPhase1 changes) {
+    if (changes == null)
+      return;
+
     if (database.getMode() == PaginatedFile.MODE.READ_ONLY)
       throw new TransactionException("Cannot commit changes because the database is open in read-only mode");
 

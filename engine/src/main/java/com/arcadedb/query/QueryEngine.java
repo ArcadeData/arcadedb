@@ -21,6 +21,12 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import java.util.*;
 
 public interface QueryEngine {
+  interface AnalyzedQuery {
+    boolean isIdempotent();
+
+    boolean isDDL();
+  }
+
   interface QueryEngineFactory {
     boolean isAvailable();
 
@@ -28,6 +34,8 @@ public interface QueryEngine {
 
     QueryEngine getInstance(DatabaseInternal database);
   }
+
+  AnalyzedQuery analyze(String query);
 
   ResultSet query(String query, Map<String, Object> parameters);
 

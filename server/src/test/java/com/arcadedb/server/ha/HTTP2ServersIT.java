@@ -105,70 +105,71 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
 
   @Test
   public void checkDeleteGraphElements() throws Exception {
-    //testEachServer((serverIndex) -> {
-    final int serverIndex = 0;
+    testEachServer((serverIndex) -> {
+      LogManager.instance().log(this, Level.INFO, "TESTS SERVER " + serverIndex);
 
-    String v1 = new JSONObject(createRecord(serverIndex, "{\"@type\":\"V1\",\"name\":\"Jay\",\"surname\":\"Miner\",\"age\":69}")).getString("result");
-    testEachServer((checkServer) -> {
-      try {
-        Assertions.assertFalse(new JSONObject(command(checkServer, "select from " + v1)).getJSONArray("result").isEmpty(), "server " + serverIndex);
-      } catch (Exception e) {
-        LogManager.instance().log(this, Level.SEVERE, "Error on checking for V1 on server " + checkServer);
-        throw e;
-      }
-    });
 
-    String v2 = new JSONObject(createRecord(serverIndex, "{\"@type\":\"V1\",\"name\":\"Elon\",\"surname\":\"Musk\",\"age\":50}")).getString("result");
-    testEachServer((checkServer) -> {
-      try {
-        Assertions.assertFalse(new JSONObject(command(checkServer, "select from " + v2)).getJSONArray("result").isEmpty(), "server " + serverIndex);
-      } catch (Exception e) {
-        LogManager.instance().log(this, Level.SEVERE, "Error on checking for V2 on server " + checkServer);
-        throw e;
-      }
-    });
+      String v1 = new JSONObject(createRecord(serverIndex, "{\"@type\":\"V1\",\"name\":\"Jay\",\"surname\":\"Miner\",\"age\":69}")).getString("result");
+      testEachServer((checkServer) -> {
+        try {
+          Assertions.assertFalse(new JSONObject(command(checkServer, "select from " + v1)).getJSONArray("result").isEmpty(), "server " + serverIndex);
+        } catch (Exception e) {
+          LogManager.instance().log(this, Level.SEVERE, "Error on checking for V1 on server " + checkServer);
+          throw e;
+        }
+      });
 
-    String e1 = new JSONObject(command(serverIndex, "create edge E1 from " + v1 + " to " + v2)).getJSONArray("result").getJSONObject(0).getString("@rid");
-    testEachServer((checkServer) -> {
-      try {
-        Assertions.assertFalse(new JSONObject(command(checkServer, "select from " + e1)).getJSONArray("result").isEmpty(), "server " + serverIndex);
-      } catch (Exception e) {
-        LogManager.instance().log(this, Level.SEVERE, "Error on checking on E1 on server " + checkServer);
-        throw e;
-      }
-    });
+      String v2 = new JSONObject(createRecord(serverIndex, "{\"@type\":\"V1\",\"name\":\"Elon\",\"surname\":\"Musk\",\"age\":50}")).getString("result");
+      testEachServer((checkServer) -> {
+        try {
+          Assertions.assertFalse(new JSONObject(command(checkServer, "select from " + v2)).getJSONArray("result").isEmpty(), "server " + serverIndex);
+        } catch (Exception e) {
+          LogManager.instance().log(this, Level.SEVERE, "Error on checking for V2 on server " + checkServer);
+          throw e;
+        }
+      });
 
-    String v3 = new JSONObject(createRecord(serverIndex, "{\"@type\":\"V1\",\"name\":\"Nikola\",\"surname\":\"Tesla\",\"age\":150}")).getString("result");
-    testEachServer((checkServer) -> {
-      try {
-        Assertions.assertFalse(new JSONObject(command(checkServer, "select from " + v3)).getJSONArray("result").isEmpty(), "server " + serverIndex);
-      } catch (Exception e) {
-        LogManager.instance().log(this, Level.SEVERE, "Error on checking for V3 on server " + checkServer);
-        throw e;
-      }
-    });
+      String e1 = new JSONObject(command(serverIndex, "create edge E1 from " + v1 + " to " + v2)).getJSONArray("result").getJSONObject(0).getString("@rid");
+      testEachServer((checkServer) -> {
+        try {
+          Assertions.assertFalse(new JSONObject(command(checkServer, "select from " + e1)).getJSONArray("result").isEmpty(), "server " + serverIndex);
+        } catch (Exception e) {
+          LogManager.instance().log(this, Level.SEVERE, "Error on checking on E1 on server " + checkServer);
+          throw e;
+        }
+      });
 
-    String e2 = new JSONObject(command(serverIndex, "create edge E2 from " + v2 + " to " + v3)).getJSONArray("result").getJSONObject(0).getString("@rid");
-    testEachServer((checkServer) -> {
-      try {
-        Assertions.assertFalse(new JSONObject(command(checkServer, "select from " + e2)).getJSONArray("result").isEmpty(), "server " + serverIndex);
-      } catch (Exception e) {
-        LogManager.instance().log(this, Level.SEVERE, "Error on checking for E2 on server " + checkServer);
-        throw e;
-      }
-    });
+      String v3 = new JSONObject(createRecord(serverIndex, "{\"@type\":\"V1\",\"name\":\"Nikola\",\"surname\":\"Tesla\",\"age\":150}")).getString("result");
+      testEachServer((checkServer) -> {
+        try {
+          Assertions.assertFalse(new JSONObject(command(checkServer, "select from " + v3)).getJSONArray("result").isEmpty(), "server " + serverIndex);
+        } catch (Exception e) {
+          LogManager.instance().log(this, Level.SEVERE, "Error on checking for V3 on server " + checkServer);
+          throw e;
+        }
+      });
 
-    command(serverIndex, "delete from " + v1);
-    testEachServer((checkServer) -> {
-      try {
-        Assertions.assertTrue(new JSONObject(command(checkServer, "select from " + v1)).getJSONArray("result").isEmpty(), "server " + serverIndex);
-        Assertions.assertTrue(new JSONObject(command(checkServer, "select from " + e1)).getJSONArray("result").isEmpty(), "server " + serverIndex);
-      } catch (Exception e) {
-        LogManager.instance().log(this, Level.SEVERE, "Error on checking for right deletion on server " + checkServer);
-        throw e;
-      }
+      String e2 = new JSONObject(command(serverIndex, "create edge E2 from " + v2 + " to " + v3)).getJSONArray("result").getJSONObject(0).getString("@rid");
+      testEachServer((checkServer) -> {
+        try {
+          Assertions.assertFalse(new JSONObject(command(checkServer, "select from " + e2)).getJSONArray("result").isEmpty(), "server " + serverIndex);
+        } catch (Exception e) {
+          LogManager.instance().log(this, Level.SEVERE, "Error on checking for E2 on server " + checkServer);
+          throw e;
+        }
+      });
+
+      command(serverIndex, "delete from " + v1);
+      testEachServer((checkServer) -> {
+        try {
+          Assertions.assertTrue(new JSONObject(command(checkServer, "select from " + v1)).getJSONArray("result").isEmpty(), "server " + serverIndex);
+          Assertions.assertTrue(new JSONObject(command(checkServer, "select from " + e1)).getJSONArray("result").isEmpty(), "server " + serverIndex);
+        } catch (Exception e) {
+          LogManager.instance().log(this, Level.SEVERE, "Error on checking for right deletion on server " + checkServer);
+          throw e;
+        }
+      });
     });
-//    });
   }
 
   private String createRecord(final int serverIndex, final String payload) throws IOException {
