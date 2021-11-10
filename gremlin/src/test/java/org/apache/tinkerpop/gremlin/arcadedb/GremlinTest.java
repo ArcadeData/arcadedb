@@ -22,6 +22,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
 import org.apache.tinkerpop.gremlin.arcadedb.structure.ArcadeGraph;
+import org.apache.tinkerpop.gremlin.arcadedb.structure.ArcadeGremlin;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
@@ -131,6 +132,27 @@ public class GremlinTest {
       } catch (CommandExecutionException e) {
         // EXPECTED
       }
+
+    } finally {
+      graph.drop();
+    }
+  }
+
+  @Test
+  public void testGremlinParse() throws ExecutionException, InterruptedException {
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testcypher");
+    try {
+
+      final ArcadeGremlin gremlinReadOnly = graph.gremlin(
+          "g.V().as('p').hasLabel('Person').where(__.choose(__.constant(25), __.constant(25), __.constant('  cypher.null')).is(neq('  cypher.null')).as('  GENERATED1').select('p').values('age').where(gte('  GENERATED1'))).select('p').project('p.name', 'p.age').by(__.choose(neq('  cypher.null'), __.choose(__.values('name'), __.values('name'), __.constant('  cypher.null')))).by(__.choose(neq('  cypher.null'), __.choose(__.values('age'), __.values('age'), __.constant('  cypher.null')))).order().by(__.select('p.age'), asc)");
+
+      Assertions.assertTrue(gremlinReadOnly.parse().isIdempotent());
+      Assertions.assertFalse(gremlinReadOnly.parse().isDDL());
+
+      final ArcadeGremlin gremlinWrite = graph.gremlin("g.V().addV('Person')");
+
+      Assertions.assertFalse(gremlinWrite.parse().isIdempotent());
+      Assertions.assertFalse(gremlinWrite.parse().isDDL());
 
     } finally {
       graph.drop();

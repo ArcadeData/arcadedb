@@ -17,6 +17,10 @@ package com.arcadedb.server.http.handler;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.graph.MutableEdge;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.VertexType;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
@@ -35,8 +39,8 @@ public class PostCreateDocumentHandler extends DatabaseAbstractHandler {
 
     final JSONObject json = new JSONObject(payload);
 
-    final String type = (String) json.remove("@type");
-    if (type == null) {
+    final String typeName = (String) json.remove("@type");
+    if (typeName == null) {
       exchange.setStatusCode(400);
       exchange.getResponseSender().send("{ \"error\" : \"@type attribute not found in the record payload\"}");
       return;
@@ -44,7 +48,16 @@ public class PostCreateDocumentHandler extends DatabaseAbstractHandler {
 
     httpServer.getServer().getServerMetrics().meter("http.create-record").mark();
 
-    final MutableDocument document = database.newDocument(type);
+    final DocumentType type = database.getSchema().getType(typeName);
+
+    final MutableDocument document;
+    if (type instanceof VertexType)
+      document = database.newVertex(typeName);
+    else if (type instanceof EdgeType)
+      document = new MutableEdge(database, type, null);
+    else
+      document = database.newDocument(typeName);
+
     document.fromJSON(json);
     document.save();
 

@@ -363,9 +363,10 @@ public abstract class BaseGraphServerTest {
 
     if (servers != null)
       for (int i = 0; i < getServerCount(); ++i)
-        for (String dbName : getServer(i).getDatabaseNames())
-          if (getServer(i).existsDatabase(dbName))
-            ((DatabaseInternal) getServer(i).getDatabase(dbName)).getWrappedDatabaseInstance().drop();
+        if (getServer(i) != null)
+          for (String dbName : getServer(i).getDatabaseNames())
+            if (getServer(i).existsDatabase(dbName))
+              ((DatabaseInternal) getServer(i).getDatabase(dbName)).getWrappedDatabaseInstance().drop();
 
     Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
 

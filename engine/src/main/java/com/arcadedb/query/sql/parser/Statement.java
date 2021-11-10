@@ -137,6 +137,10 @@ public class Statement extends SimpleNode {
     return false;
   }
 
+  public boolean isDDL() {
+    return this instanceof DDLStatement;
+  }
+
   public static Statement deserializeFromOResult(final Result doc) {
     try {
       Statement result = (Statement) Class.forName(doc.getProperty("__class")).getConstructor(Integer.class).newInstance(-1);
@@ -163,6 +167,10 @@ public class Statement extends SimpleNode {
 
   public String getOriginalStatement() {
     return originalStatement;
+  }
+
+  public void setOriginalStatement(String originalStatement) {
+    this.originalStatement = originalStatement;
   }
 
   public Limit getLimit() {

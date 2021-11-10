@@ -327,8 +327,6 @@ public class GraphEngine {
   }
 
   public void deleteVertex(final VertexInternal vertex) {
-    final Database database = vertex.getDatabase();
-
     final EdgeLinkedList outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
     if (outEdges != null) {
       final Iterator<Edge> outIterator = outEdges.edgeIterator();
@@ -348,7 +346,7 @@ public class GraphEngine {
 
             if (nextEdge.getIdentity().getPosition() > -1)
               // NON LIGHTWEIGHT
-              database.getSchema().getBucketById(nextEdge.getIdentity().getBucketId()).deleteRecord(nextEdge.getIdentity());
+              nextEdge.delete();
           }
         } catch (RecordNotFoundException e) {
           // ALREADY DELETED, IGNORE THIS
@@ -358,7 +356,7 @@ public class GraphEngine {
       }
 
       final RID outRID = vertex.getOutEdgesHeadChunk();
-      database.getSchema().getBucketById(outRID.getIdentity().getBucketId()).deleteRecord(outRID.getIdentity());
+      outRID.getRecord(false).delete();
     }
 
     final EdgeLinkedList inEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.IN);
@@ -380,7 +378,7 @@ public class GraphEngine {
 
             if (nextEdge.getIdentity().getPosition() > -1)
               // NON LIGHTWEIGHT
-              database.getSchema().getBucketById(nextEdge.getIdentity().getBucketId()).deleteRecord(nextEdge.getIdentity());
+              nextEdge.delete();
           }
         } catch (RecordNotFoundException e) {
           // ALREADY DELETED, IGNORE THIS
@@ -389,7 +387,7 @@ public class GraphEngine {
       }
 
       final RID inRID = vertex.getInEdgesHeadChunk();
-      database.getSchema().getBucketById(inRID.getIdentity().getBucketId()).deleteRecord(inRID.getIdentity());
+      inRID.getRecord(false).delete();
     }
 
     // DELETE VERTEX RECORD

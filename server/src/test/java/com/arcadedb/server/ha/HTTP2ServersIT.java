@@ -17,6 +17,7 @@ package com.arcadedb.server.ha;
 
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.BaseGraphServerTest;
+import org.json.JSONObject;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -33,51 +34,18 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
 
   @Test
   public void propagationOfSchema() throws Exception {
-    // CREATE THE SCHEMA ON BOTH SERVER, ONE TYPE PER SERVER
     testEachServer((serverIndex) -> {
-      final HttpURLConnection initialConnection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").openConnection();
-      try {
-
-        initialConnection.setRequestMethod("POST");
-        initialConnection.setRequestProperty("Authorization",
-            "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
-        formatPost(initialConnection, "sql", "create vertex type VertexType" + serverIndex, new HashMap<>());
-        initialConnection.connect();
-
-        final String response = readResponse(initialConnection);
-
-        LogManager.instance().log(this, Level.INFO, "Response: %s", null, response);
-
-        Assertions.assertEquals(200, initialConnection.getResponseCode());
-        Assertions.assertEquals("OK", initialConnection.getResponseMessage());
-        Assertions.assertTrue(response.contains("VertexType" + serverIndex), "Type " + (("VertexType" + serverIndex) + " not found on server " + serverIndex));
-
-      } finally {
-        initialConnection.disconnect();
-      }
+      // CREATE THE SCHEMA ON BOTH SERVER, ONE TYPE PER SERVER
+      String response = command(serverIndex, "create vertex type VertexType" + serverIndex);
+      Assertions.assertTrue(response.contains("VertexType" + serverIndex), "Type " + (("VertexType" + serverIndex) + " not found on server " + serverIndex));
     });
 
     Thread.sleep(1000);
 
     // CHECK THE SCHEMA HAS BEEN PROPAGATED
     testEachServer((serverIndex) -> {
-      final HttpURLConnection connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").openConnection();
-
-      try {
-        connection.setRequestMethod("POST");
-        connection.setRequestProperty("Authorization",
-            "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
-        formatPost(connection, "sql", "select from VertexType" + serverIndex, new HashMap<>());
-        connection.connect();
-
-        Assertions.assertEquals(200, connection.getResponseCode());
-        Assertions.assertEquals("OK", connection.getResponseMessage());
-
-      } finally {
-        connection.disconnect();
-      }
+      command(serverIndex, "select from VertexType" + serverIndex);
     });
-
   }
 
   @Test
@@ -93,13 +61,9 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
 
       try {
         final String response = readResponse(connection);
-
         LogManager.instance().log(this, Level.INFO, "TEST: Response: %s", null, response);
-
         Assertions.assertEquals(200, connection.getResponseCode());
-
         Assertions.assertEquals("OK", connection.getResponseMessage());
-
         Assertions.assertTrue(response.contains("V1"));
 
       } finally {
@@ -121,13 +85,9 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
 
       try {
         final String response = readResponse(connection);
-
         LogManager.instance().log(this, Level.INFO, "TEST: Response: %s", null, response);
-
         Assertions.assertEquals(200, connection.getResponseCode());
-
         Assertions.assertEquals("OK", connection.getResponseMessage());
-
         Assertions.assertTrue(response.contains("V1"));
 
       } finally {
@@ -139,37 +99,127 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
   @Test
   public void checkRecordCreate() throws Exception {
     testEachServer((serverIndex) -> {
-      HttpURLConnection connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/document/graph").openConnection();
-
-      connection.setRequestMethod("POST");
-
-      final String payload = "{\"@type\":\"Person\",\"name\":\"Jay\",\"surname\":\"Miner\",\"age\":69}";
-
-      connection.setRequestMethod("POST");
-      connection.setRequestProperty("Authorization",
-          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
-      connection.setDoOutput(true);
-
-      connection.connect();
-
-      PrintWriter pw = new PrintWriter(new OutputStreamWriter(connection.getOutputStream()));
-      pw.write(payload);
-      pw.close();
-
-      try {
-        final String response = readResponse(connection);
-
-        Assertions.assertEquals(200, connection.getResponseCode());
-        Assertions.assertEquals("OK", connection.getResponseMessage());
-
-        LogManager.instance().log(this, Level.INFO, "TEST: Response: %s", null, response);
-
-        Assertions.assertTrue(response.contains("#"));
-
-      } finally {
-        connection.disconnect();
-      }
+      createRecord(serverIndex, "{\"@type\":\"Person\",\"name\":\"Jay\",\"surname\":\"Miner\",\"age\":69}");
     });
+  }
 
+  @Test
+  public void checkDeleteGraphElements() throws Exception {
+    testEachServer((serverIndex) -> {
+      LogManager.instance().log(this, Level.INFO, "TESTS SERVER " + serverIndex);
+
+
+      String v1 = new JSONObject(createRecord(serverIndex, "{\"@type\":\"V1\",\"name\":\"Jay\",\"surname\":\"Miner\",\"age\":69}")).getString("result");
+      testEachServer((checkServer) -> {
+        try {
+          Assertions.assertFalse(new JSONObject(command(checkServer, "select from " + v1)).getJSONArray("result").isEmpty(), "server " + serverIndex);
+        } catch (Exception e) {
+          LogManager.instance().log(this, Level.SEVERE, "Error on checking for V1 on server " + checkServer);
+          throw e;
+        }
+      });
+
+      String v2 = new JSONObject(createRecord(serverIndex, "{\"@type\":\"V1\",\"name\":\"Elon\",\"surname\":\"Musk\",\"age\":50}")).getString("result");
+      testEachServer((checkServer) -> {
+        try {
+          Assertions.assertFalse(new JSONObject(command(checkServer, "select from " + v2)).getJSONArray("result").isEmpty(), "server " + serverIndex);
+        } catch (Exception e) {
+          LogManager.instance().log(this, Level.SEVERE, "Error on checking for V2 on server " + checkServer);
+          throw e;
+        }
+      });
+
+      String e1 = new JSONObject(command(serverIndex, "create edge E1 from " + v1 + " to " + v2)).getJSONArray("result").getJSONObject(0).getString("@rid");
+      testEachServer((checkServer) -> {
+        try {
+          Assertions.assertFalse(new JSONObject(command(checkServer, "select from " + e1)).getJSONArray("result").isEmpty(), "server " + serverIndex);
+        } catch (Exception e) {
+          LogManager.instance().log(this, Level.SEVERE, "Error on checking on E1 on server " + checkServer);
+          throw e;
+        }
+      });
+
+      String v3 = new JSONObject(createRecord(serverIndex, "{\"@type\":\"V1\",\"name\":\"Nikola\",\"surname\":\"Tesla\",\"age\":150}")).getString("result");
+      testEachServer((checkServer) -> {
+        try {
+          Assertions.assertFalse(new JSONObject(command(checkServer, "select from " + v3)).getJSONArray("result").isEmpty(), "server " + serverIndex);
+        } catch (Exception e) {
+          LogManager.instance().log(this, Level.SEVERE, "Error on checking for V3 on server " + checkServer);
+          throw e;
+        }
+      });
+
+      String e2 = new JSONObject(command(serverIndex, "create edge E2 from " + v2 + " to " + v3)).getJSONArray("result").getJSONObject(0).getString("@rid");
+      testEachServer((checkServer) -> {
+        try {
+          Assertions.assertFalse(new JSONObject(command(checkServer, "select from " + e2)).getJSONArray("result").isEmpty(), "server " + serverIndex);
+        } catch (Exception e) {
+          LogManager.instance().log(this, Level.SEVERE, "Error on checking for E2 on server " + checkServer);
+          throw e;
+        }
+      });
+
+      command(serverIndex, "delete from " + v1);
+      testEachServer((checkServer) -> {
+        try {
+          Assertions.assertTrue(new JSONObject(command(checkServer, "select from " + v1)).getJSONArray("result").isEmpty(), "server " + serverIndex);
+          Assertions.assertTrue(new JSONObject(command(checkServer, "select from " + e1)).getJSONArray("result").isEmpty(), "server " + serverIndex);
+        } catch (Exception e) {
+          LogManager.instance().log(this, Level.SEVERE, "Error on checking for right deletion on server " + checkServer);
+          throw e;
+        }
+      });
+    });
+  }
+
+  private String createRecord(final int serverIndex, final String payload) throws IOException {
+    HttpURLConnection connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/document/graph").openConnection();
+    connection.setRequestMethod("POST");
+    connection.setRequestMethod("POST");
+    connection.setRequestProperty("Authorization",
+        "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+    connection.setDoOutput(true);
+
+    connection.connect();
+
+    PrintWriter pw = new PrintWriter(new OutputStreamWriter(connection.getOutputStream()));
+    pw.write(payload);
+    pw.close();
+
+    try {
+      final String response = readResponse(connection);
+
+      Assertions.assertEquals(200, connection.getResponseCode());
+      Assertions.assertEquals("OK", connection.getResponseMessage());
+      LogManager.instance().log(this, Level.INFO, "TEST: Response: %s", null, response);
+      Assertions.assertTrue(response.contains("#"));
+
+      return response;
+
+    } finally {
+      connection.disconnect();
+    }
+  }
+
+  private String command(final int serverIndex, final String command) throws Exception {
+    final HttpURLConnection initialConnection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").openConnection();
+    try {
+
+      initialConnection.setRequestMethod("POST");
+      initialConnection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      formatPost(initialConnection, "sql", command, new HashMap<>());
+      initialConnection.connect();
+
+      final String response = readResponse(initialConnection);
+
+      LogManager.instance().log(this, Level.INFO, "Response: %s", null, response);
+      Assertions.assertEquals(200, initialConnection.getResponseCode());
+      Assertions.assertEquals("OK", initialConnection.getResponseMessage());
+      return response;
+
+    } finally {
+      initialConnection.disconnect();
+    }
   }
 }

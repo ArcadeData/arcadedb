@@ -18,8 +18,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 
-import java.util.Optional;
-import java.util.Set;
+import java.util.*;
 
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
@@ -28,12 +27,12 @@ public class UpdatableResult extends ResultInternal {
   protected     ResultInternal  previousValue = null;
   private final MutableDocument element;
 
-  public UpdatableResult(MutableDocument element) {
+  public UpdatableResult(final MutableDocument element) {
     this.element = element;
   }
 
   @Override
-  public <T> T getProperty(String name) {
+  public <T> T getProperty(final String name) {
     return (T) element.get(name);
   }
 
@@ -42,7 +41,7 @@ public class UpdatableResult extends ResultInternal {
     return element.getPropertyNames();
   }
 
-  public boolean hasProperty(String propName) {
+  public boolean hasProperty(final String propName) {
     return element != null && element.getPropertyNames().contains(propName);
   }
 
@@ -62,11 +61,11 @@ public class UpdatableResult extends ResultInternal {
   }
 
   @Override
-  public void setProperty(String name, Object value) {
+  public void setProperty(final String name, final Object value) {
     element.set(name, value);
   }
 
-  public void removeProperty(String name) {
+  public void removeProperty(final String name) {
     element.set(name, null);
   }
 }
