@@ -21,7 +21,9 @@ import com.arcadedb.exception.QueryParsingException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
+import org.apache.tinkerpop.gremlin.arcadedb.structure.ArcadeCypher;
 import org.apache.tinkerpop.gremlin.arcadedb.structure.ArcadeGraph;
+import org.apache.tinkerpop.gremlin.arcadedb.structure.ArcadeGremlin;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
@@ -123,6 +125,26 @@ public class CypherTest {
         database.commit();
 
       database.drop();
+    }
+  }
+
+  @Test
+  public void testCypherParse() throws ExecutionException, InterruptedException {
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testcypher");
+    try {
+
+      final ArcadeCypher cypherReadOnly = graph.cypher("MATCH (p:Person) WHERE p.age >= 25 RETURN p.name, p.age ORDER BY p.age");
+
+      Assertions.assertTrue(cypherReadOnly.parse().isIdempotent());
+      Assertions.assertFalse(cypherReadOnly.parse().isDDL());
+
+      final ArcadeGremlin cypherWrite = graph.cypher("CREATE (n:Person)");
+
+      Assertions.assertFalse(cypherWrite.parse().isIdempotent());
+      Assertions.assertFalse(cypherWrite.parse().isDDL());
+
+    } finally {
+      graph.drop();
     }
   }
 
