@@ -804,6 +804,21 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
         // THE PAGE IS EARLY LOADED IN TX CACHE TO USE THE PAGE MVCC IN CASE OF CONCURRENT OPERATIONS ON THE MODIFIED RECORD
         try {
           getTransaction().addUpdatedRecord(record);
+
+          if (record instanceof Document) {
+            // UPDATE THE INDEX IN MEMORY BEFORE UPDATING THE PAGE
+            final List<Index> indexes = indexer.getInvolvedIndexes((Document) record);
+            if (!indexes.isEmpty()) {
+              // UPDATE THE INDEXES TOO
+              final Binary originalBuffer = ((RecordInternal) record).getBuffer();
+              if (originalBuffer == null)
+                throw new IllegalStateException("Cannot read original buffer for indexing");
+              originalBuffer.rewind();
+              final Document originalRecord = (Document) recordFactory.newImmutableRecord(this, ((Document) record).getType(), record.getIdentity(),
+                  originalBuffer, null);
+              indexer.updateDocument(originalRecord, (Document) record, indexes);
+            }
+          }
         } catch (IOException e) {
           throw new DatabaseOperationException("Error on update the record " + record.getIdentity() + " in transaction", e);
         }

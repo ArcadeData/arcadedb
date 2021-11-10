@@ -20,9 +20,12 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
 import org.apache.tinkerpop.gremlin.arcadedb.structure.ArcadeGraph;
 import org.apache.tinkerpop.gremlin.arcadedb.structure.ArcadeGremlin;
+import org.apache.tinkerpop.gremlin.structure.Vertex;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
@@ -154,6 +157,25 @@ public class GremlinTest {
       Assertions.assertFalse(gremlinWrite.parse().isIdempotent());
       Assertions.assertFalse(gremlinWrite.parse().isDDL());
 
+    } finally {
+      graph.drop();
+    }
+  }
+
+  @Test
+  public void testUseIndex() throws ExecutionException, InterruptedException {
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testcypher");
+    try {
+      graph.getDatabase().getSchema().getOrCreateVertexType("Person").getOrCreateProperty("id", Type.STRING).getOrCreateIndex(Schema.INDEX_TYPE.LSM_TREE, true);
+
+      final String uuid = UUID.randomUUID().toString();
+      final Vertex v = graph.addVertex("Person");
+      v.property("id", uuid);
+
+      final ArcadeGremlin gremlinReadOnly = graph.gremlin("g.V().as('p').hasLabel('Person').has( 'id', eq('" + uuid + "'))");
+      final ResultSet result = gremlinReadOnly.execute();
+
+      Assertions.assertTrue(result.hasNext());
     } finally {
       graph.drop();
     }
