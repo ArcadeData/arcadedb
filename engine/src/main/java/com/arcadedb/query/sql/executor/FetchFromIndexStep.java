@@ -381,7 +381,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     Object value = nextElementInKey.execute(new ResultInternal(), ctx);
     if (value instanceof Iterable && !(value instanceof Identifiable)) {
       List<PCollection> result = new ArrayList<>();
-      for (Object elemInKey : (java.util.Collection) value) {
+      for (Object elemInKey : (Iterable<?>) value) {
         PCollection newHead = new PCollection(-1);
         for (Expression exp : head.getExpressions()) {
           newHead.add(exp.copy());
