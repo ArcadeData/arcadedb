@@ -26,28 +26,23 @@ import java.util.concurrent.*;
 import static org.apache.lucene.store.BufferedIndexInput.BUFFER_SIZE;
 
 public class WebSocketClientHelper implements AutoCloseable {
-  private static XnioWorker                 WORKER;
-  private final  ByteBufferPool             pool         = new DefaultByteBufferPool(true, BUFFER_SIZE, 1000, 10, 100);
-  private final  WebSocketChannel           channel;
-  private final  ArrayBlockingQueue<String> messageQueue = new ArrayBlockingQueue<>(20);
+  private final XnioWorker                 WORKER;
+  private final ByteBufferPool             pool         = new DefaultByteBufferPool(true, BUFFER_SIZE, 1000, 10, 100);
+  private final WebSocketChannel           channel;
+  private final ArrayBlockingQueue<String> messageQueue = new ArrayBlockingQueue<>(20);
 
   private static final int DEFAULT_DELAY = 5_000;
 
-  static {
-    final Xnio xnio = Xnio.getInstance(BaseGraphServerTest.class.getClassLoader());
-    try {
-      WORKER = xnio.createWorker(OptionMap.builder()//
-          .set(Options.WORKER_IO_THREADS, 4)//
-          .set(Options.CONNECTION_HIGH_WATER, 1000000)//
-          .set(Options.CONNECTION_LOW_WATER, 1000000)//
-          .set(Options.TCP_NODELAY, true)//
-          .set(Options.CORK, true)//
-          .getMap());
-    } catch (IOException ignored) {
-    }
-  }
-
   public WebSocketClientHelper(String uri, String user, String pass) throws URISyntaxException, IOException {
+    final Xnio xnio = Xnio.getInstance(BaseGraphServerTest.class.getClassLoader());
+    WORKER = xnio.createWorker(OptionMap.builder()//
+        .set(Options.WORKER_IO_THREADS, 4)//
+        .set(Options.CONNECTION_HIGH_WATER, 1000000)//
+        .set(Options.CONNECTION_LOW_WATER, 1000000)//
+        .set(Options.TCP_NODELAY, true)//
+        .set(Options.CORK, true)//
+        .getMap());
+
     var builder = WebSocketClient.connectionBuilder(WORKER, pool, new URI(uri));
     if (user != null) {
       builder.setClientNegotiation(new WebSocketClientNegotiation(new ArrayList<>(), new ArrayList<>()) {

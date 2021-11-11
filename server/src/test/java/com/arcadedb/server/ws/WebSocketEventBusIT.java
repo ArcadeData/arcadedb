@@ -10,7 +10,7 @@ import org.xnio.http.UpgradeFailedException;
 public class WebSocketEventBusIT extends StaticBaseServerTest {
   private static final int DELAY_MS = 1000;
 
-//  @Test
+  @Test
   public void closeUnsubscribesAll() throws Exception {
     try (var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
       var result = new JSONObject(client.send(buildActionMessage("subscribe", "graph", "V1")));
@@ -22,7 +22,7 @@ public class WebSocketEventBusIT extends StaticBaseServerTest {
     Assertions.assertEquals(0, this.getServer(0).getHttpServer().getWebSocketEventBus().getDatabaseSubscriptions("graph").size());
   }
 
-//  @Test
+  @Test
   public void badCloseIsCleanedUp() throws Exception {
     {
       var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
@@ -48,7 +48,7 @@ public class WebSocketEventBusIT extends StaticBaseServerTest {
     Assertions.assertTrue(getServer(0).getHttpServer().getWebSocketEventBus().getDatabaseSubscriptions(getDatabaseName()).isEmpty());
   }
 
-//  @Test
+  @Test
   public void invalidJsonReturnsError() throws Exception {
     try (var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
       var result = new JSONObject(client.send("42"));
@@ -57,13 +57,13 @@ public class WebSocketEventBusIT extends StaticBaseServerTest {
     }
   }
 
-//  @Test
+  @Test
   public void authenticationFailureReturns403() {
     var thrown = Assertions.assertThrows(UpgradeFailedException.class, () -> new WebSocketClientHelper("ws://localhost:2480/ws", "root", "bad"));
     Assertions.assertTrue(thrown.getMessage().contains("403"));
   }
 
-//  @Test
+  @Test
   public void invalidDatabaseReturnsError() throws Exception {
     try (var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
       var result = new JSONObject(client.send(buildActionMessage("subscribe", "invalid")));
@@ -72,7 +72,7 @@ public class WebSocketEventBusIT extends StaticBaseServerTest {
     }
   }
 
-//  @Test
+  @Test
   public void unsubscribeWithoutSubscribeDoesNothing() throws Exception {
     try (var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
       var result = new JSONObject(client.send(buildActionMessage("unsubscribe", "graph")));
@@ -80,7 +80,7 @@ public class WebSocketEventBusIT extends StaticBaseServerTest {
     }
   }
 
-//  @Test
+  @Test
   public void invalidActionReturnsError() throws Exception {
     try (var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
       var result = new JSONObject(client.send(buildActionMessage("invalid", "graph")));
@@ -89,7 +89,7 @@ public class WebSocketEventBusIT extends StaticBaseServerTest {
     }
   }
 
-//  @Test
+  @Test
   public void missingActionReturnsError() throws Exception {
     try (var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
       var result = new JSONObject(client.send("{\"database\": \"graph\"}"));
@@ -205,7 +205,7 @@ public class WebSocketEventBusIT extends StaticBaseServerTest {
     }
   }
 
-//  @Test
+  @Test
   public void subscribeTypeDoesNotPushOtherTypes() throws Exception {
     try (var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
       var result = client.send(buildActionMessage("subscribe", "graph", "V1"));
@@ -217,7 +217,7 @@ public class WebSocketEventBusIT extends StaticBaseServerTest {
     }
   }
 
-//  @Test
+  @Test
   public void unsubscribeDatabaseWorks() throws Exception {
     try (var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
       var result = client.send(buildActionMessage("subscribe", "graph"));
