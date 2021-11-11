@@ -303,12 +303,11 @@ public class PostgresNetworkExecutor extends Thread {
           }
         }
 
-        if (portal.isExpectingResult)
+        if (portal.isExpectingResult) {
           writeDataRows(portal.cachedResultset, portal.columns);
-        else
+          writeCommandComplete(portal.query, portal.cachedResultset == null ? 0 : portal.cachedResultset.size());
+        } else
           writeNoData();
-
-        writeCommandComplete(portal.query, portal.cachedResultset == null ? 0 : portal.cachedResultset.size());
       }
     } catch (QueryParsingException | CommandSQLParsingException e) {
       if (database.isTransactionActive())
@@ -745,7 +744,7 @@ public class PostgresNetworkExecutor extends Thread {
         }
       }
 
-      if (portal.query.equalsIgnoreCase("BEGIN")) {
+      if (portal.query.equalsIgnoreCase("BEGIN") || portal.query.equalsIgnoreCase("COMMIT")) {
         explicitTransactionStarted = true;
         portal.isExpectingResult = false;
       }
@@ -766,7 +765,6 @@ public class PostgresNetworkExecutor extends Thread {
 
       writeError(ERROR_SEVERITY.ERROR, "Error on parsing query: " + e.getMessage(), "XX000");
     }
-
   }
 
   private void sendServerParameter(final String name, final String value) {
