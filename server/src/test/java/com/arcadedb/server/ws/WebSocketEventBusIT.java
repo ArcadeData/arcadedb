@@ -22,7 +22,7 @@ public class WebSocketEventBusIT extends StaticBaseServerTest {
     Assertions.assertEquals(0, this.getServer(0).getHttpServer().getWebSocketEventBus().getDatabaseSubscriptions("graph").size());
   }
 
-  @Test
+  //@Test
   public void badCloseIsCleanedUp() throws Exception {
     {
       var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
