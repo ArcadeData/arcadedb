@@ -37,7 +37,6 @@ import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.database.async.OkCallback;
 import com.arcadedb.engine.FileManager;
-import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.engine.TransactionManager;
@@ -45,13 +44,14 @@ import com.arcadedb.engine.WALFile;
 import com.arcadedb.engine.WALFileFactory;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.NeedRetryException;
-import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
+import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
+import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.ExecutionPlanCache;
 import com.arcadedb.query.sql.parser.StatementCache;
@@ -63,7 +63,6 @@ import com.arcadedb.server.ha.message.CommandForwardRequest;
 import com.arcadedb.server.ha.message.DatabaseChangeStructureRequest;
 import com.arcadedb.server.ha.message.TxForwardRequest;
 import com.arcadedb.server.ha.message.TxRequest;
-import com.arcadedb.utility.Pair;
 import org.json.JSONObject;
 
 import java.io.*;
@@ -101,14 +100,14 @@ public class ReplicatedDatabase implements DatabaseInternal {
       final TransactionContext tx = current.getLastTransaction();
       try {
 
-        final Pair<Binary, List<MutablePage>> changes = tx.commit1stPhase(isLeader);
+        final TransactionContext.TransactionPhase1 phase1 = tx.commit1stPhase(isLeader);
 
         try {
-          if (changes != null) {
-            final Binary bufferChanges = changes.getFirst();
+          if (phase1 != null) {
+            final Binary bufferChanges = phase1.result;
 
             if (isLeader)
-              replicateTx(tx, changes, bufferChanges);
+              replicateTx(tx, phase1, bufferChanges);
             else {
               // USE A BIGGER TIMEOUT CONSIDERING THE DOUBLE LATENCY
               final TxForwardRequest command = new TxForwardRequest(ReplicatedDatabase.this, bufferChanges, tx.getIndexChanges().toMap());
@@ -137,7 +136,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
     });
   }
 
-  public void replicateTx(final TransactionContext tx, final Pair<Binary, List<MutablePage>> changes, final Binary bufferChanges) {
+  public void replicateTx(final TransactionContext tx, final TransactionContext.TransactionPhase1 phase1, final Binary bufferChanges) {
     final int configuredServers = server.getHA().getConfiguredServers();
 
     final int reqQuorum;
@@ -177,7 +176,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
     server.getHA().sendCommandToReplicasWithQuorum(req, reqQuorum, timeout);
 
     // COMMIT 2ND PHASE ONLY IF THE QUORUM HAS BEEN REACHED
-    tx.commit2ndPhase(changes);
+    tx.commit2ndPhase(phase1);
   }
 
   public long getTimeout() {
@@ -550,9 +549,13 @@ public class ReplicatedDatabase implements DatabaseInternal {
   @Override
   public ResultSet command(final String language, final String query, final Object... args) {
     if (!server.getHA().isLeader()) {
-      // USE A BIGGER TIMEOUT CONSIDERING THE DOUBLE LATENCY
-      final CommandForwardRequest command = new CommandForwardRequest(ReplicatedDatabase.this, language, query, null, args);
-      return (ResultSet) server.getHA().forwardCommandToLeader(command, timeout * 2);
+      final QueryEngine.AnalyzedQuery analyzed = proxied.getQueryEngineManager().getInstance(language, this).analyze(query);
+      if (analyzed.isDDL()) {
+        // USE A BIGGER TIMEOUT CONSIDERING THE DOUBLE LATENCY
+        final CommandForwardRequest command = new CommandForwardRequest(ReplicatedDatabase.this, language, query, null, args);
+        return (ResultSet) server.getHA().forwardCommandToLeader(command, timeout * 2);
+      }
+      return proxied.command(language, query, args);
     }
 
     return recordFileChanges(() -> proxied.command(language, query, args));
@@ -561,9 +564,13 @@ public class ReplicatedDatabase implements DatabaseInternal {
   @Override
   public ResultSet command(final String language, final String query, final Map<String, Object> args) {
     if (!server.getHA().isLeader()) {
-      // USE A BIGGER TIMEOUT CONSIDERING THE DOUBLE LATENCY
-      final CommandForwardRequest command = new CommandForwardRequest(ReplicatedDatabase.this, language, query, args, null);
-      return (ResultSet) server.getHA().forwardCommandToLeader(command, timeout * 2);
+      final QueryEngine.AnalyzedQuery analyzed = proxied.getQueryEngineManager().getInstance(language, this).analyze(query);
+      if (analyzed.isDDL()) {
+        // USE A BIGGER TIMEOUT CONSIDERING THE DOUBLE LATENCY
+        final CommandForwardRequest command = new CommandForwardRequest(ReplicatedDatabase.this, language, query, args, null);
+        return (ResultSet) server.getHA().forwardCommandToLeader(command, timeout * 2);
+      }
+      return proxied.command(language, query, args);
     }
 
     return recordFileChanges(() -> proxied.command(language, query, args));
@@ -654,7 +661,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
       if (!ha.isLeader()) {
         // NOT THE LEADER: NOT RESPONSIBLE TO SEND CHANGES TO OTHER SERVERS
         // TODO: Issue #118SchemaException
-        throw new SchemaException("Changes to the schema must be executed on the leader server");
+        throw new ServerIsNotTheLeaderException("Changes to the schema must be executed on the leader server", ha.getLeaderName());
 //        result.set(callback.call());
 //        return null;
       }

@@ -16,6 +16,7 @@
 package com.arcadedb.redis;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.ha.network.DefaultServerSocketFactory;
@@ -23,10 +24,9 @@ import com.arcadedb.server.http.HttpServer;
 import io.undertow.server.handlers.PathHandler;
 
 public class RedisProtocolPlugin implements ServerPlugin {
-  private              ArcadeDBServer       server;
-  private              ContextConfiguration configuration;
-  private final static int                  DEF_PORT = 6379;
-  private              RedisNetworkListener listener;
+  private ArcadeDBServer       server;
+  private ContextConfiguration configuration;
+  private RedisNetworkListener listener;
 
   @Override
   public void configure(final ArcadeDBServer arcadeDBServer, final ContextConfiguration configuration) {
@@ -36,7 +36,8 @@ public class RedisProtocolPlugin implements ServerPlugin {
 
   @Override
   public void startService() {
-    listener = new RedisNetworkListener(server, new DefaultServerSocketFactory(), "localhost", "" + DEF_PORT);
+    listener = new RedisNetworkListener(server, new DefaultServerSocketFactory(), GlobalConfiguration.REDIS_HOST.getValueAsString(),
+        GlobalConfiguration.REDIS_PORT.getValueAsString());
   }
 
   @Override

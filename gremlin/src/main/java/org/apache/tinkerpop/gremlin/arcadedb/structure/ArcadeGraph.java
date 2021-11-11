@@ -28,8 +28,8 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.FileUtils;
-import org.apache.commons.configuration.BaseConfiguration;
-import org.apache.commons.configuration.Configuration;
+import org.apache.commons.configuration2.BaseConfiguration;
+import org.apache.commons.configuration2.Configuration;
 import org.apache.tinkerpop.gremlin.arcadedb.structure.io.ArcadeIoRegistry;
 import org.apache.tinkerpop.gremlin.groovy.engine.GremlinExecutor;
 import org.apache.tinkerpop.gremlin.jsr223.ConcurrentBindings;
@@ -58,7 +58,7 @@ import java.util.*;
 @Graph.OptIn(Graph.OptIn.SUITE_PROCESS_COMPUTER)
 @Graph.OptIn("org.apache.tinkerpop.gremlin.arcadedb.process.DebugProcessSuite")
 @Graph.OptIn("org.apache.tinkerpop.gremlin.arcadedb.structure.DebugStructureSuite")
-public class ArcadeGraph implements Graph {
+public class ArcadeGraph implements Graph, Closeable {
 
   //private final   ArcadeVariableFeatures graphVariables = new ArcadeVariableFeatures();
   private final   ArcadeGraphTransaction transaction;

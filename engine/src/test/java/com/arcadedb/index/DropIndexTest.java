@@ -26,7 +26,7 @@ import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.List;
+import java.util.*;
 
 public class DropIndexTest extends TestHelper {
   private static final int    TOT        = 10;
@@ -51,8 +51,7 @@ public class DropIndexTest extends TestHelper {
 
         final Index typeIndex = database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
         final Index typeIndex2 = database.getSchema()
-            .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "name" }, PAGE_SIZE, LSMTreeIndexAbstract.NULL_STRATEGY.SKIP,
-                null);
+            .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "name" }, PAGE_SIZE, LSMTreeIndexAbstract.NULL_STRATEGY.SKIP, null);
 
         for (int i = 0; i < TOT; ++i) {
           final MutableDocument v = database.newDocument(TYPE_NAME2);
@@ -138,8 +137,7 @@ public class DropIndexTest extends TestHelper {
 
         final Index typeIndex = database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
         final Index typeIndex2 = database.getSchema()
-            .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "name" }, PAGE_SIZE, LSMTreeIndexAbstract.NULL_STRATEGY.SKIP,
-                null);
+            .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "name" }, PAGE_SIZE, LSMTreeIndexAbstract.NULL_STRATEGY.SKIP, null);
 
         for (int i = 0; i < TOT; ++i) {
           final MutableDocument v = database.newDocument(TYPE_NAME2);
@@ -165,18 +163,21 @@ public class DropIndexTest extends TestHelper {
             database.getSchema().getBucketById(b.getId());
             Assertions.fail();
           } catch (SchemaException e) {
+            // EXPECTED
           }
 
           try {
             database.getSchema().getBucketByName(b.getName());
             Assertions.fail();
           } catch (SchemaException e) {
+            // EXPECTED
           }
 
           try {
             database.getSchema().getFileById(b.getId());
             Assertions.fail();
           } catch (SchemaException e) {
+            // EXPECTED
           }
         }
 
@@ -185,27 +186,29 @@ public class DropIndexTest extends TestHelper {
           database.getSchema().getIndexByName(typeIndex.getName());
           Assertions.fail();
         } catch (SchemaException e) {
+          // EXPECTED
         }
 
         try {
           database.getSchema().getIndexByName(typeIndex2.getName());
           Assertions.fail();
         } catch (SchemaException e) {
+          // EXPECTED
         }
 
-        for (IndexInternal idx : ((TypeIndex) typeIndex).getIndexesOnBuckets())
-          try {
-            database.getSchema().getIndexByName(idx.getName());
-            Assertions.fail();
-          } catch (SchemaException e) {
-          }
+        try {
+          ((TypeIndex) typeIndex).getIndexesOnBuckets();
+          Assertions.fail();
+        } catch (IndexException e) {
+          // EXPECTED
+        }
 
-        for (IndexInternal idx : ((TypeIndex) typeIndex2).getIndexesOnBuckets())
-          try {
-            database.getSchema().getIndexByName(idx.getName());
-            Assertions.fail();
-          } catch (SchemaException e) {
-          }
+        try {
+          ((TypeIndex) typeIndex2).getIndexesOnBuckets();
+          Assertions.fail();
+        } catch (IndexException e) {
+          // EXPECTED
+        }
 
         // CHECK TYPE HAS BEEN REMOVED FROM INHERITANCE
         for (DocumentType parent : type2.getSuperTypes())

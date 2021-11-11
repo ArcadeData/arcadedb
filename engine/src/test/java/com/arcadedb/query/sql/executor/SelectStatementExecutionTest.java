@@ -31,7 +31,7 @@ import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.lang.reflect.Array;
+import java.lang.reflect.*;
 import java.util.*;
 
 public class SelectStatementExecutionTest extends TestHelper {
@@ -1007,6 +1007,7 @@ public class SelectStatementExecutionTest extends TestHelper {
       Assertions.assertTrue(result.hasNext());
       Result item = result.next();
       Assertions.assertNotNull(item.getProperty("name"));
+      Assertions.assertEquals("STRING", ((List<String>) item.getProperty("keyTypes")).get(0));
     }
     Assertions.assertFalse(result.hasNext());
     result.close();

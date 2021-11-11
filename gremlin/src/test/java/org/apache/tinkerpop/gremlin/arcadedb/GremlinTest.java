@@ -20,8 +20,12 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
 import org.apache.tinkerpop.gremlin.arcadedb.structure.ArcadeGraph;
+import org.apache.tinkerpop.gremlin.arcadedb.structure.ArcadeGremlin;
+import org.apache.tinkerpop.gremlin.structure.Vertex;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
@@ -132,6 +136,56 @@ public class GremlinTest {
         // EXPECTED
       }
 
+    } finally {
+      graph.drop();
+    }
+  }
+
+  @Test
+  public void testGremlinParse() throws ExecutionException, InterruptedException {
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testcypher");
+    try {
+
+      final ArcadeGremlin gremlinReadOnly = graph.gremlin(
+          "g.V().as('p').hasLabel('Person').where(__.choose(__.constant(25), __.constant(25), __.constant('  cypher.null')).is(neq('  cypher.null')).as('  GENERATED1').select('p').values('age').where(gte('  GENERATED1'))).select('p').project('p.name', 'p.age').by(__.choose(neq('  cypher.null'), __.choose(__.values('name'), __.values('name'), __.constant('  cypher.null')))).by(__.choose(neq('  cypher.null'), __.choose(__.values('age'), __.values('age'), __.constant('  cypher.null')))).order().by(__.select('p.age'), asc)");
+
+      Assertions.assertTrue(gremlinReadOnly.parse().isIdempotent());
+      Assertions.assertFalse(gremlinReadOnly.parse().isDDL());
+
+      final ArcadeGremlin gremlinWrite = graph.gremlin("g.V().addV('Person')");
+
+      Assertions.assertFalse(gremlinWrite.parse().isIdempotent());
+      Assertions.assertFalse(gremlinWrite.parse().isDDL());
+
+    } finally {
+      graph.drop();
+    }
+  }
+
+  @Test
+  public void testUseIndex() throws ExecutionException, InterruptedException {
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testcypher");
+    try {
+      graph.getDatabase().getSchema().getOrCreateVertexType("Person").getOrCreateProperty("id", Type.STRING).getOrCreateIndex(Schema.INDEX_TYPE.LSM_TREE, true);
+
+      final String uuid = UUID.randomUUID().toString();
+      final Vertex v = graph.addVertex("Person");
+      v.property("id", uuid);
+
+      final ArcadeGremlin gremlinReadOnly = graph.gremlin("g.V().as('p').hasLabel('Person').has( 'id', eq('" + uuid + "'))");
+      final ResultSet result = gremlinReadOnly.execute();
+
+      Assertions.assertTrue(result.hasNext());
+    } finally {
+      graph.drop();
+    }
+  }
+
+  @Test
+  public void labelExists() {
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testLabel");
+    try {
+      graph.traversal().V().hasLabel("Car").forEachRemaining(System.out::println);
     } finally {
       graph.drop();
     }

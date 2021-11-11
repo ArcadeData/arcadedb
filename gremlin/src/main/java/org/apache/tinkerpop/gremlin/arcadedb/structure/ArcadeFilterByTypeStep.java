@@ -63,6 +63,9 @@ public class ArcadeFilterByTypeStep<S, E extends Element> extends AbstractStep<S
     if (typeName == null)
       throw new IllegalArgumentException("Type is null");
 
+    if (!graph.getDatabase().getSchema().existsType(typeName))
+      return;
+
     final DocumentType type = graph.getDatabase().getSchema().getType(typeName);
 
     if (Vertex.class.isAssignableFrom(this.returnClass)) {

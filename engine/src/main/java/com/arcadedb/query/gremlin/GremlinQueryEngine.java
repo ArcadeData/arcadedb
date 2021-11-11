@@ -94,7 +94,7 @@ public class GremlinQueryEngine implements QueryEngine {
       GremlinQueryEngineFactory.arcadeGremlinClass.getMethod("setParameters", Map.class).invoke(arcadeGremlin, parameters);
       return (ResultSet) GremlinQueryEngineFactory.arcadeGremlinClass.getMethod("execute").invoke(arcadeGremlin);
     } catch (InvocationTargetException e) {
-      throw new CommandExecutionException("Error on executing gremlin command", e.getTargetException());
+      throw new CommandExecutionException("Error on executing gremlin query", e.getTargetException());
     } catch (Exception e) {
       throw new QueryParsingException("Error on executing Gremlin query", e);
     }
@@ -106,5 +106,18 @@ public class GremlinQueryEngine implements QueryEngine {
     for (int i = 0; i < parameters.length; i += 2)
       map.put((String) parameters[i], parameters[i + 1]);
     return command(query, map);
+  }
+
+  @Override
+  public AnalyzedQuery analyze(final String query) {
+    try {
+      final Object arcadeGremlin = GremlinQueryEngineFactory.arcadeGraphClass.getMethod("gremlin", String.class).invoke(arcadeGraph, query);
+      return (AnalyzedQuery) GremlinQueryEngineFactory.arcadeGremlinClass.getMethod("parse").invoke(arcadeGremlin);
+
+    } catch (InvocationTargetException e) {
+      throw new CommandExecutionException("Error on parsing gremlin query", e.getTargetException());
+    } catch (Exception e) {
+      throw new QueryParsingException("Error on parsing Gremlin query", e);
+    }
   }
 }

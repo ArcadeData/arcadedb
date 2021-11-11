@@ -65,8 +65,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   public static class IndexFactoryHandler implements com.arcadedb.index.IndexFactoryHandler {
     @Override
     public IndexInternal create(final DatabaseInternal database, final String name, final boolean unique, final String filePath, final PaginatedFile.MODE mode,
-        final byte[] keyTypes, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, final BuildIndexCallback callback)
-        throws IOException {
+        final Type[] keyTypes, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, final BuildIndexCallback callback) {
       return new LSMTreeFullTextIndex(database, name, filePath, mode, pageSize, callback);
     }
   }
@@ -85,13 +84,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    */
   public LSMTreeFullTextIndex(final DatabaseInternal database, final String name, final String filePath, final PaginatedFile.MODE mode, final int pageSize,
       final BuildIndexCallback callback) {
-    try {
-      analyzer = new StandardAnalyzer();
-      underlyingIndex = new LSMTreeIndex(database, name, false, filePath, mode, new byte[] { Type.STRING.getBinaryType() }, pageSize,
-          LSMTreeIndexAbstract.NULL_STRATEGY.ERROR);
-    } catch (IOException e) {
-      throw new IndexException("Cannot create search engine (error=" + e + ")", e);
-    }
+    analyzer = new StandardAnalyzer();
+    underlyingIndex = new LSMTreeIndex(database, name, false, filePath, mode, new Type[] { Type.STRING }, pageSize, LSMTreeIndexAbstract.NULL_STRATEGY.ERROR);
   }
 
   /**
@@ -254,8 +248,13 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   }
 
   @Override
-  public byte[] getKeyTypes() {
+  public Type[] getKeyTypes() {
     return underlyingIndex.getKeyTypes();
+  }
+
+  @Override
+  public byte[] getBinaryKeyTypes() {
+    return underlyingIndex.getBinaryKeyTypes();
   }
 
   @Override
@@ -271,6 +270,16 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   @Override
   public boolean isAutomatic() {
     return underlyingIndex.propertyNames != null;
+  }
+
+  @Override
+  public int getPageSize() {
+    return underlyingIndex.getPageSize();
+  }
+
+  @Override
+  public List<Integer> getFileIds() {
+    return underlyingIndex.getFileIds();
   }
 
   @Override

@@ -61,6 +61,7 @@ import com.arcadedb.query.sql.executor.ScriptExecutionPlan;
 import com.arcadedb.query.sql.parser.BeginStatement;
 import com.arcadedb.query.sql.parser.CommitStatement;
 import com.arcadedb.query.sql.parser.ExecutionPlanCache;
+import com.arcadedb.query.sql.parser.LetStatement;
 import com.arcadedb.query.sql.parser.LocalResultSet;
 import com.arcadedb.query.sql.parser.LocalResultSetLifecycleDecorator;
 import com.arcadedb.query.sql.parser.Statement;
@@ -86,6 +87,7 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 import java.util.concurrent.locks.*;
 import java.util.logging.*;
+import java.util.stream.*;
 
 public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal {
   public static final  int                                       EDGE_LIST_INITIAL_CHUNK_SIZE         = 64;
@@ -802,6 +804,21 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
         // THE PAGE IS EARLY LOADED IN TX CACHE TO USE THE PAGE MVCC IN CASE OF CONCURRENT OPERATIONS ON THE MODIFIED RECORD
         try {
           getTransaction().addUpdatedRecord(record);
+
+          if (record instanceof Document) {
+            // UPDATE THE INDEX IN MEMORY BEFORE UPDATING THE PAGE
+            final List<Index> indexes = indexer.getInvolvedIndexes((Document) record);
+            if (!indexes.isEmpty()) {
+              // UPDATE THE INDEXES TOO
+              final Binary originalBuffer = ((RecordInternal) record).getBuffer();
+              if (originalBuffer == null)
+                throw new IllegalStateException("Cannot read original buffer for indexing");
+              originalBuffer.rewind();
+              final Document originalRecord = (Document) recordFactory.newImmutableRecord(this, ((Document) record).getType(), record.getIdentity(),
+                  originalBuffer, null);
+              indexer.updateDocument(originalRecord, (Document) record, indexes);
+            }
+          }
         } catch (IOException e) {
           throw new DatabaseOperationException("Error on update the record " + record.getIdentity() + " in transaction", e);
         }
@@ -1212,20 +1229,23 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   private ResultSet executeInternal(final List<Statement> statements, final CommandContext scriptContext) {
     ScriptExecutionPlan plan = new ScriptExecutionPlan(scriptContext);
 
+    plan.setStatement(statements.stream().map(Statement::toString).collect(Collectors.joining(";")));
+
     List<Statement> lastRetryBlock = new ArrayList<>();
     int nestedTxLevel = 0;
 
     for (Statement stm : statements) {
-      if (stm instanceof BeginStatement) {
+      if (stm.getOriginalStatement() == null)
+        stm.setOriginalStatement(stm.toString());
+
+      if (stm instanceof BeginStatement)
         nestedTxLevel++;
-      }
 
       if (nestedTxLevel <= 0) {
         InternalExecutionPlan sub = stm.createExecutionPlan(scriptContext);
         plan.chain(sub, false);
-      } else {
+      } else
         lastRetryBlock.add(stm);
-      }
 
       if (stm instanceof CommitStatement && nestedTxLevel > 0) {
         nestedTxLevel--;
@@ -1239,6 +1259,8 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
         }
       }
 
+      if (stm instanceof LetStatement)
+        scriptContext.declareScriptVariable(((LetStatement) stm).getName().getStringValue());
     }
 
     return new LocalResultSet(plan);
@@ -1435,6 +1457,10 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
       this.wrappers.remove(name);
     else
       this.wrappers.put(name, instance);
+  }
+
+  public QueryEngineManager getQueryEngineManager() {
+    return queryEngineManager;
   }
 
   public void saveConfiguration() throws IOException {

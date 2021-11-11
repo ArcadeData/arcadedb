@@ -25,18 +25,18 @@ import java.util.concurrent.*;
 
 import static org.apache.lucene.store.BufferedIndexInput.BUFFER_SIZE;
 
-public class WebSocketClientHelper {
-  private static       XnioWorker                 worker;
-  private final        WebSocketChannel           channel;
-  private static final ByteBufferPool             pool         = new DefaultByteBufferPool(true, BUFFER_SIZE, 1000, 10, 100);
-  private final        ArrayBlockingQueue<String> messageQueue = new ArrayBlockingQueue<>(20);
+public class WebSocketClientHelper implements AutoCloseable {
+  private static XnioWorker                 WORKER;
+  private final  ByteBufferPool             pool         = new DefaultByteBufferPool(true, BUFFER_SIZE, 1000, 10, 100);
+  private final  WebSocketChannel           channel;
+  private final  ArrayBlockingQueue<String> messageQueue = new ArrayBlockingQueue<>(20);
 
-  private static final int DEFAULT_DELAY = 10_000;
+  private static final int DEFAULT_DELAY = 5_000;
 
   static {
-    Xnio xnio = Xnio.getInstance(BaseGraphServerTest.class.getClassLoader());
+    final Xnio xnio = Xnio.getInstance(BaseGraphServerTest.class.getClassLoader());
     try {
-      worker = xnio.createWorker(OptionMap.builder()//
+      WORKER = xnio.createWorker(OptionMap.builder()//
           .set(Options.WORKER_IO_THREADS, 4)//
           .set(Options.CONNECTION_HIGH_WATER, 1000000)//
           .set(Options.CONNECTION_LOW_WATER, 1000000)//
@@ -48,7 +48,7 @@ public class WebSocketClientHelper {
   }
 
   public WebSocketClientHelper(String uri, String user, String pass) throws URISyntaxException, IOException {
-    var builder = WebSocketClient.connectionBuilder(worker, pool, new URI(uri));
+    var builder = WebSocketClient.connectionBuilder(WORKER, pool, new URI(uri));
     if (user != null) {
       builder.setClientNegotiation(new WebSocketClientNegotiation(new ArrayList<>(), new ArrayList<>()) {
         @Override
@@ -73,6 +73,20 @@ public class WebSocketClientHelper {
     this.channel.resumeReceives();
   }
 
+  @Override
+  public void close() throws IOException {
+    WebSockets.sendCloseBlocking(CloseMessage.NORMAL_CLOSURE, null, this.channel);
+    this.channel.close();
+    pool.close();
+    messageQueue.clear();
+  }
+
+  public void breakConnection() throws IOException {
+    this.channel.close();
+    pool.close();
+    messageQueue.clear();
+  }
+
   public String send(String payload) throws URISyntaxException, IOException {
     var sendChannel = this.channel.send(WebSocketFrameType.TEXT);
     new StringWriteChannelListener(payload).setup(sendChannel);
@@ -92,12 +106,4 @@ public class WebSocketClientHelper {
     return null;
   }
 
-  public void close() throws IOException {
-    WebSockets.sendCloseBlocking(CloseMessage.NORMAL_CLOSURE, null, this.channel);
-    this.channel.close();
-  }
-
-  public void breakConnection() throws IOException {
-    this.channel.close();
-  }
 }

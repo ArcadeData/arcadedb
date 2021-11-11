@@ -73,7 +73,7 @@ public abstract class BaseGraphServerTest {
 
   @BeforeEach
   public void beginTest() {
-    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
+    checkForActiveDatabases();
 
     setTestConfiguration();
 
@@ -206,7 +206,8 @@ public abstract class BaseGraphServerTest {
         GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(null);
       }
     }
-    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
+
+    checkForActiveDatabases();
   }
 
   protected Database getDatabase(final int serverId) {
@@ -214,6 +215,13 @@ public abstract class BaseGraphServerTest {
   }
 
   protected void checkArcadeIsTotallyDown() {
+    if (servers != null)
+      for (ArcadeDBServer server : servers) {
+        Assertions.assertFalse(server.isStarted());
+        Assertions.assertEquals(ArcadeDBServer.STATUS.OFFLINE, server.getStatus());
+        Assertions.assertEquals(0, server.getHttpServer().getSessionManager().getActiveSessions());
+      }
+
     final ByteArrayOutputStream os = new ByteArrayOutputStream();
     final PrintWriter output = new PrintWriter(new BufferedOutputStream(os));
     new Exception().printStackTrace(output);
@@ -415,9 +423,10 @@ public abstract class BaseGraphServerTest {
 
     if (servers != null)
       for (int i = 0; i < getServerCount(); ++i)
-        for (String dbName : getServer(i).getDatabaseNames())
-          if (getServer(i).existsDatabase(dbName))
-            ((DatabaseInternal) getServer(i).getDatabase(dbName)).getWrappedDatabaseInstance().drop();
+        if (getServer(i) != null)
+          for (String dbName : getServer(i).getDatabaseNames())
+            if (getServer(i).existsDatabase(dbName))
+              ((DatabaseInternal) getServer(i).getDatabase(dbName)).getWrappedDatabaseInstance().drop();
 
     Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
 
@@ -458,5 +467,16 @@ public abstract class BaseGraphServerTest {
     for (int i = 0; i < getServerCount(); i++) {
       callback.call(i);
     }
+  }
+
+  private void checkForActiveDatabases() {
+    final Collection<Database> activeDatabases = DatabaseFactory.getActiveDatabaseInstances();
+    for (Database db : activeDatabases)
+      db.close();
+
+    if (!activeDatabases.isEmpty())
+      LogManager.instance().log(this, Level.SEVERE, "Found active databases: " + activeDatabases + ". Forced close before starting a new test");
+
+    //Assertions.assertTrue(activeDatabases.isEmpty(), "Found active databases: " + activeDatabases);
   }
 }

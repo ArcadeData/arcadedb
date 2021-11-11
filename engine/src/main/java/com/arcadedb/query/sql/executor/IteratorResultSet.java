@@ -17,10 +17,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Document;
 
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.Map;
-import java.util.Optional;
+import java.util.*;
 
 /**
  * Created by luigidellaquila on 07/07/16.
@@ -55,7 +52,6 @@ public class IteratorResultSet implements ResultSet {
 
   @Override
   public void close() {
-
   }
 
   @Override

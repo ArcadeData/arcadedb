@@ -20,6 +20,7 @@ import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.index.Index;
+import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -65,7 +66,7 @@ public class ReplicationChangeSchemaIT extends ReplicationServerIT {
     try {
       databases[1].getSchema().createVertexType("RuntimeVertex1");
       Assertions.fail();
-    } catch (SchemaException e) {
+    } catch (ServerIsNotTheLeaderException e) {
       // EXPECTED
     }
 

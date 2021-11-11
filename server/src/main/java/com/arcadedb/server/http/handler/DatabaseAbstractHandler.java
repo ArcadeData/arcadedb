@@ -83,7 +83,7 @@ public abstract class DatabaseAbstractHandler extends AbstractHandler {
     } finally {
 
       if (activeSession != null)
-        // DETACH CURRENT CONTECT/TRANSACTIONS FROM CURRENT THREAD
+        // DETACH CURRENT CONTEXT/TRANSACTIONS FROM CURRENT THREAD
         DatabaseContext.INSTANCE.removeContext(database.getDatabasePath());
       else if (database != null) {
         try {
@@ -137,7 +137,7 @@ public abstract class DatabaseAbstractHandler extends AbstractHandler {
       return null;
     }
 
-    final HttpSession session = httpServer.getTransactionManager().getSessionById(user, sessionId.getFirst());
+    final HttpSession session = httpServer.getSessionManager().getSessionById(user, sessionId.getFirst());
     if (session == null) {
       if (mandatory) {
         exchange.setStatusCode(401);

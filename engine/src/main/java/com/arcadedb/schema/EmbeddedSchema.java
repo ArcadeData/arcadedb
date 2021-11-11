@@ -54,33 +54,32 @@ import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
 public class EmbeddedSchema implements Schema {
-  public static final  String                     DEFAULT_DATE_FORMAT      = "yyyy-MM-dd";
-  public static final  String                     DEFAULT_DATETIME_FORMAT  = "yyyy-MM-dd HH:mm:ss";
-  public static final  String                     DEFAULT_ENCODING         = "UTF-8";
-  public static final  String                     SCHEMA_FILE_NAME         = "schema.json";
-  public static final  String                     SCHEMA_PREV_FILE_NAME    = "schema.prev.json";
-  private static final String                     ENCODING                 = DEFAULT_ENCODING;
-  private static final int                        EDGE_DEF_PAGE_SIZE       = Bucket.DEF_PAGE_SIZE / 3;
-  private static final int                        DEFAULT_BUCKETS_PER_TYPE = 8;
+  public static final  String                     DEFAULT_DATE_FORMAT     = "yyyy-MM-dd";
+  public static final  String                     DEFAULT_DATETIME_FORMAT = "yyyy-MM-dd HH:mm:ss";
+  public static final  String                     DEFAULT_ENCODING        = "UTF-8";
+  public static final  String                     SCHEMA_FILE_NAME        = "schema.json";
+  public static final  String                     SCHEMA_PREV_FILE_NAME   = "schema.prev.json";
+  private static final String                     ENCODING                = DEFAULT_ENCODING;
+  private static final int                        EDGE_DEF_PAGE_SIZE      = Bucket.DEF_PAGE_SIZE / 3;
   private final        DatabaseInternal           database;
   private final        SecurityManager            security;
-  private final        List<PaginatedComponent>   files                    = new ArrayList<>();
-  private final        Map<String, DocumentType>  types                    = new HashMap<>();
-  private final        Map<String, Bucket>        bucketMap                = new HashMap<>();
-  protected final      Map<String, IndexInternal> indexMap                 = new HashMap<>();
+  private final        List<PaginatedComponent>   files                   = new ArrayList<>();
+  private final        Map<String, DocumentType>  types                   = new HashMap<>();
+  private final        Map<String, Bucket>        bucketMap               = new HashMap<>();
+  protected final      Map<String, IndexInternal> indexMap                = new HashMap<>();
   private final        String                     databasePath;
   private final        File                       configurationFile;
   private final        PaginatedComponentFactory  paginatedComponentFactory;
-  private final        IndexFactory               indexFactory             = new IndexFactory();
+  private final        IndexFactory               indexFactory            = new IndexFactory();
   private              Dictionary                 dictionary;
-  private              String                     dateFormat               = DEFAULT_DATE_FORMAT;
-  private              String                     dateTimeFormat           = DEFAULT_DATETIME_FORMAT;
-  private              TimeZone                   timeZone                 = TimeZone.getDefault();
-  private              boolean                    readingFromFile          = false;
-  private              boolean                    dirtyConfiguration       = false;
-  private              boolean                    loadInRamCompleted       = false;
-  private              boolean                    multipleUpdate           = false;
-  private              AtomicLong                 versionSerial            = new AtomicLong();
+  private              String                     dateFormat              = DEFAULT_DATE_FORMAT;
+  private              String                     dateTimeFormat          = DEFAULT_DATETIME_FORMAT;
+  private              TimeZone                   timeZone                = TimeZone.getDefault();
+  private              boolean                    readingFromFile         = false;
+  private              boolean                    dirtyConfiguration      = false;
+  private              boolean                    loadInRamCompleted      = false;
+  private              boolean                    multipleUpdate          = false;
+  private              AtomicLong                 versionSerial           = new AtomicLong();
 
   public EmbeddedSchema(final DatabaseInternal database, final String databasePath, final SecurityManager security) {
     this.database = database;
@@ -383,15 +382,24 @@ public class EmbeddedSchema implements Schema {
 
     recordFileChanges(() -> {
       multipleUpdate = true;
-      try {
-        final IndexInternal index = indexMap.remove(indexName);
-        if (index == null)
-          return null;
 
+      final IndexInternal index = indexMap.get(indexName);
+      if (index == null)
+        return null;
+
+      List<Integer> lockedFiles = null;
+      try {
+        lockedFiles = database.getTransactionManager().tryLockFiles(index.getFileIds(), 5_000);
+
+        indexMap.remove(indexName);
         index.drop();
+
       } catch (Exception e) {
         throw new SchemaException("Cannot drop the index '" + indexName + "' (error=" + e + ")", e);
       } finally {
+        if (lockedFiles != null)
+          database.getTransactionManager().unlockFilesInOrder(lockedFiles);
+
         multipleUpdate = false;
       }
       return null;
@@ -439,18 +447,18 @@ public class EmbeddedSchema implements Schema {
           "Found the existent index '" + index.getName() + "' defined on the properties '" + Arrays.asList(propertyNames) + "' for type '" + typeName + "'");
 
     // CHECK ALL THE PROPERTIES EXIST
-    final byte[] keyTypes = new byte[propertyNames.length];
+    final Type[] keyTypes = new Type[propertyNames.length];
     int i = 0;
 
     for (String propertyName : propertyNames) {
       if (type instanceof EdgeType && ("@out".equals(propertyName) || "@in".equals(propertyName))) {
-        keyTypes[i++] = Type.LINK.getBinaryType();
+        keyTypes[i++] = Type.LINK;
       } else {
         final Property property = type.getPolymorphicPropertyIfExists(propertyName);
         if (property == null)
           throw new SchemaException("Cannot create the index on type '" + typeName + "." + propertyName + "' because the property does not exist");
 
-        keyTypes[i++] = property.getType().getBinaryType();
+        keyTypes[i++] = property.getType();
       }
     }
 
@@ -525,7 +533,7 @@ public class EmbeddedSchema implements Schema {
     final DocumentType type = getType(typeName);
 
     // CHECK ALL THE PROPERTIES EXIST
-    final byte[] keyTypes = new byte[propertyNames.length];
+    final Type[] keyTypes = new Type[propertyNames.length];
     int i = 0;
 
     for (String propertyName : propertyNames) {
@@ -533,7 +541,7 @@ public class EmbeddedSchema implements Schema {
       if (property == null)
         throw new SchemaException("Cannot create the index on type '" + typeName + "." + propertyName + "' because the property does not exist");
 
-      keyTypes[i++] = property.getType().getBinaryType();
+      keyTypes[i++] = property.getType();
     }
 
     return recordFileChanges(() -> {
@@ -565,7 +573,7 @@ public class EmbeddedSchema implements Schema {
     });
   }
 
-  protected Index createBucketIndex(final DocumentType type, final byte[] keyTypes, final Bucket bucket, final String typeName, final INDEX_TYPE indexType,
+  protected Index createBucketIndex(final DocumentType type, final Type[] keyTypes, final Bucket bucket, final String typeName, final INDEX_TYPE indexType,
       final boolean unique, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, final Index.BuildIndexCallback callback,
       final String[] propertyNames) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
@@ -592,7 +600,7 @@ public class EmbeddedSchema implements Schema {
     });
   }
 
-  public Index createManualIndex(final INDEX_TYPE indexType, final boolean unique, final String indexName, final byte[] keyTypes, final int pageSize,
+  public Index createManualIndex(final INDEX_TYPE indexType, final boolean unique, final String indexName, final Type[] keyTypes, final int pageSize,
       final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
@@ -603,20 +611,16 @@ public class EmbeddedSchema implements Schema {
       final AtomicReference<IndexInternal> result = new AtomicReference<>();
       database.transaction(() -> {
 
-        try {
-          final IndexInternal index = indexFactory.createIndex(indexType.name(), database, FileUtils.encode(indexName, ENCODING), unique,
-              databasePath + "/" + indexName, PaginatedFile.MODE.READ_WRITE, keyTypes, pageSize, nullStrategy, null);
+        final IndexInternal index = indexFactory.createIndex(indexType.name(), database, FileUtils.encode(indexName, ENCODING), unique,
+            databasePath + "/" + indexName, PaginatedFile.MODE.READ_WRITE, keyTypes, pageSize, nullStrategy, null);
 
-          result.set(index);
+        result.set(index);
 
-          if (index instanceof PaginatedComponent)
-            registerFile((PaginatedComponent) index);
+        if (index instanceof PaginatedComponent)
+          registerFile((PaginatedComponent) index);
 
-          indexMap.put(indexName, index);
+        indexMap.put(indexName, index);
 
-        } catch (IOException e) {
-          throw new SchemaException("Cannot create index '" + indexName + "' (error=" + e + ")", e);
-        }
       }, false, 1, null, (error) -> {
         final IndexInternal indexToRemove = result.get();
         if (indexToRemove != null) {
@@ -766,7 +770,7 @@ public class EmbeddedSchema implements Schema {
   }
 
   public DocumentType createDocumentType(final String typeName) {
-    return createDocumentType(typeName, DEFAULT_BUCKETS_PER_TYPE);
+    return createDocumentType(typeName, database.getConfiguration().getValueAsInteger(GlobalConfiguration.TYPE_DEFAULT_BUCKETS));
   }
 
   public DocumentType createDocumentType(final String typeName, final int buckets) {
@@ -817,7 +821,7 @@ public class EmbeddedSchema implements Schema {
 
   @Override
   public DocumentType getOrCreateDocumentType(final String typeName) {
-    return getOrCreateDocumentType(typeName, DEFAULT_BUCKETS_PER_TYPE);
+    return getOrCreateDocumentType(typeName, database.getConfiguration().getValueAsInteger(GlobalConfiguration.TYPE_DEFAULT_BUCKETS));
   }
 
   @Override
@@ -838,7 +842,8 @@ public class EmbeddedSchema implements Schema {
 
   @Override
   public VertexType createVertexType(final String typeName) {
-    return createVertexType(typeName, DEFAULT_BUCKETS_PER_TYPE, database.getConfiguration().getValueAsInteger(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE));
+    return createVertexType(typeName, database.getConfiguration().getValueAsInteger(GlobalConfiguration.TYPE_DEFAULT_BUCKETS),
+        database.getConfiguration().getValueAsInteger(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE));
   }
 
   @Override
@@ -890,7 +895,7 @@ public class EmbeddedSchema implements Schema {
 
   @Override
   public VertexType getOrCreateVertexType(final String typeName) {
-    return getOrCreateVertexType(typeName, DEFAULT_BUCKETS_PER_TYPE);
+    return getOrCreateVertexType(typeName, database.getConfiguration().getValueAsInteger(GlobalConfiguration.TYPE_DEFAULT_BUCKETS));
   }
 
   @Override
@@ -911,7 +916,7 @@ public class EmbeddedSchema implements Schema {
 
   @Override
   public EdgeType createEdgeType(final String typeName) {
-    return createEdgeType(typeName, DEFAULT_BUCKETS_PER_TYPE);
+    return createEdgeType(typeName, database.getConfiguration().getValueAsInteger(GlobalConfiguration.TYPE_DEFAULT_BUCKETS));
   }
 
   @Override
@@ -961,7 +966,7 @@ public class EmbeddedSchema implements Schema {
 
   @Override
   public EdgeType getOrCreateEdgeType(final String typeName) {
-    return getOrCreateEdgeType(typeName, DEFAULT_BUCKETS_PER_TYPE);
+    return getOrCreateEdgeType(typeName, database.getConfiguration().getValueAsInteger(GlobalConfiguration.TYPE_DEFAULT_BUCKETS));
   }
 
   @Override

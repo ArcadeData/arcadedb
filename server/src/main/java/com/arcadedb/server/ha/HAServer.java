@@ -708,8 +708,8 @@ public class HAServer implements ServerPlugin {
 
               checkCurrentNodeIsTheLeader();
 
-              server.log(this, Level.WARNING, "Timeout waiting for quorum to be reached for request " + opNumber);
-              throw new QuorumNotReachedException("Timeout waiting for quorum to be reached for request " + opNumber);
+              server.log(this, Level.WARNING, "Timeout waiting for quorum (%d) to be reached for request %d", quorum, opNumber);
+              throw new QuorumNotReachedException("Timeout waiting for quorum (" + quorum + ") to be reached for request " + opNumber);
             }
 
           } catch (InterruptedException e) {

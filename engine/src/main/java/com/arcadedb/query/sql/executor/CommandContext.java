@@ -17,13 +17,12 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.DatabaseInternal;
 
-import java.util.Map;
+import java.util.*;
 
 /**
  * Basic interface for commands. Manages the context variables during execution.
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
- *
  */
 public interface CommandContext {
   enum TIMEOUT_STRATEGY {
@@ -49,10 +48,9 @@ public interface CommandContext {
   /**
    * Updates a counter. Used to record metrics.
    *
-   * @param iName
-   *          Metric's name
-   * @param iValue
-   *          delta to add or subtract
+   * @param iName  Metric's name
+   * @param iValue delta to add or subtract
+   *
    * @return
    */
   long updateMetric(String iName, long iValue);
@@ -67,7 +65,7 @@ public interface CommandContext {
    * Check if timeout is elapsed, if defined.
    *
    * @return false if it the timeout is elapsed and strategy is "return"
-   *              if the strategy is "exception" (default)
+   * if the strategy is "exception" (default)
    */
   boolean checkTimeout();
 
@@ -82,4 +80,7 @@ public interface CommandContext {
 
   DatabaseInternal getDatabase();
 
+  void declareScriptVariable(String varName);
+
+  boolean isScriptVariableDeclared(String varName);
 }

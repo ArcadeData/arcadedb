@@ -74,9 +74,17 @@ public class CreateEdgeExecutionPlanner {
     handleGlobalLet(result, new Identifier("$__ARCADEDB_CREATE_EDGE_fromV"), leftExpression, ctx, enableProfiling);
     handleGlobalLet(result, new Identifier("$__ARCADEDB_CREATE_EDGE_toV"), rightExpression, ctx, enableProfiling);
 
-    result.chain(
-        new CreateEdgesStep(targetClass, targetClusterName, new Identifier("$__ARCADEDB_CREATE_EDGE_fromV"), new Identifier("$__ARCADEDB_CREATE_EDGE_toV"),
-            ifNotExists, wait, retry, ctx, enableProfiling));
+    final String uniqueIndexName;
+//    if (ctx.getDatabase().getSchema().existsType(targetClass.getStringValue())) {
+//      final EdgeType clazz = (EdgeType) ctx.getDatabase().getSchema().getType(targetClass.getStringValue());
+//      uniqueIndexName = clazz.getAllIndexes(true).stream().filter(x -> x.isUnique())
+//          .filter(x -> x.getPropertyNames().size() == 2 && x.getPropertyNames().contains("@out") && x.getPropertyNames().contains("@in")).map(x -> x.getName())
+//          .findFirst().orElse(null);
+//    } else
+      uniqueIndexName = null;
+
+    result.chain(new CreateEdgesStep(targetClass, targetClusterName, uniqueIndexName, new Identifier("$__ARCADEDB_CREATE_EDGE_fromV"),
+        new Identifier("$__ARCADEDB_CREATE_EDGE_toV"), ifNotExists, wait, retry, ctx, enableProfiling));
 
     handleSetFields(result, body, ctx, enableProfiling);
     handleSave(result, targetClusterName, ctx, enableProfiling);

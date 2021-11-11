@@ -42,9 +42,6 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
 
   @Override
   public void apply(final Traversal.Admin<?, ?> traversal) {
-    if (!(traversal.getGraph().orElseThrow(IllegalStateException::new) instanceof ArcadeGraph))
-      return;
-
     final List<Step> steps = traversal.getSteps();
     for (int i = 1; i < steps.size(); i++) {
       final Step step = steps.get(i);

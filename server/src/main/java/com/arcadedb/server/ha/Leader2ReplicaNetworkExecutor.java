@@ -19,6 +19,7 @@ import com.arcadedb.Constants;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
+import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ChannelBinaryServer;
 import com.arcadedb.network.binary.ConnectionException;
@@ -161,7 +162,8 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
 
             switch (status) {
             case ONLINE:
-              server.getServer().log(this, Level.FINE, "Sending message to replica '%s' (buffered=%d)...", remoteServerName, senderQueue.size());
+              server.getServer().log(this, Level.FINE, "Sending message to replica '%s' (msgSize=%d buffered=%d)...", remoteServerName, lastMessage.size(),
+                  senderQueue.size());
 
               sendMessage(lastMessage);
               lastMessage = null;
@@ -230,8 +232,9 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
     final Binary buffer = new Binary(8192);
 
     while (!shutdownCommunication) {
+      Pair<ReplicationMessage, HACommand> request = null;
       try {
-        final Pair<ReplicationMessage, HACommand> request = server.getMessageFactory().deserializeCommand(buffer, readRequest());
+        request = server.getMessageFactory().deserializeCommand(buffer, readRequest());
 
         if (request == null) {
           channel.clearInput();
@@ -244,6 +247,8 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
         else
           executeMessage(buffer, request);
 
+      } catch (TimeoutException e) {
+        server.getServer().log(this, Level.FINE, "Request %s in timeout (cause=%s)", request, e.getCause());
       } catch (IOException e) {
         server.getServer().log(this, Level.FINE, "IO Error from reading requests (cause=%s)", e.getCause());
         server.setReplicaStatus(remoteServerName, false);

@@ -132,7 +132,7 @@ public class CRUDTest extends TestHelper {
       final AtomicReference<RID> rid = new AtomicReference<>();
       db.transaction(() -> {
         final MutableDocument doc = database.newDocument("V").set("id", "is a test").save();
-        doc.set("id", "is an update").save();
+        doc.set("id", "is an update again").save();
         rid.set(doc.getIdentity());
       });
 

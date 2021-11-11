@@ -15,8 +15,16 @@
  */
 package com.arcadedb.graph;
 
-import com.arcadedb.database.*;
+import com.arcadedb.database.Binary;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
+import com.arcadedb.database.Transaction;
 import com.arcadedb.schema.DocumentType;
+import org.json.JSONObject;
+
+import java.util.*;
 
 /**
  * Mutable vertex that supports updates. After any changes, call the method {@link #save()} to mark the record as dirty in the current transaction, so the
@@ -61,9 +69,22 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
   }
 
   @Override
+  public synchronized MutableVertex fromMap(Map<String, Object> map) {
+    return (MutableVertex) super.fromMap(map);
+  }
+
+  @Override
+  public synchronized MutableVertex fromJSON(JSONObject json) {
+    return (MutableVertex) super.fromJSON(json);
+  }
+
+  @Override
   public MutableVertex set(final String name, final Object value) {
-    super.set(name, value);
-    return this;
+    return (MutableVertex) super.set(name, value);
+  }
+
+  public synchronized MutableVertex set(final Object... properties) {
+    return (MutableVertex) super.set(properties);
   }
 
   @Override

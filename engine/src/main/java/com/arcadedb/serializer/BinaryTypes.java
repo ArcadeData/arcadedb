@@ -18,16 +18,12 @@ package com.arcadedb.serializer;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
-import com.arcadedb.engine.MurmurHash;
 import com.arcadedb.exception.DatabaseMetadataException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.Type;
 
-import java.math.BigDecimal;
-import java.util.Collection;
-import java.util.Date;
-import java.util.Map;
-import java.util.UUID;
+import java.math.*;
+import java.util.*;
 
 public class BinaryTypes {
   public final static byte TYPE_NULL              = 0;
@@ -227,53 +223,5 @@ public class BinaryTypes {
       // UNKNOWN
       return null;
     }
-  }
-
-  public static int getHash32(final Object[] keys) {
-    return getHash32(keys, keys.length);
-  }
-
-  public static int getHash32(final Object[] keys, final int keyCount) {
-    int hash = 0;
-
-    for (int i = 0; i < keyCount; ++i)
-      hash += getHash32(keys[i]);
-
-    return hash;
-  }
-
-  public static int getHash32(final Object key) {
-    final Class<? extends Object> typez = key.getClass();
-
-    if (typez == String.class)
-      return MurmurHash.hash32((String) key);
-    else if (typez == byte[].class)
-      return MurmurHash.hash32(((byte[]) key), ((byte[]) key).length);
-
-    return key.hashCode();
-  }
-
-  public static long getHash64(final Object[] keys) {
-    return getHash64(keys, keys.length);
-  }
-
-  public static long getHash64(final Object[] keys, final int keyCount) {
-    long hash = 0;
-
-    for (int i = 0; i < keyCount; ++i)
-      hash += getHash64(keys[i]);
-
-    return hash;
-  }
-
-  public static long getHash64(final Object key) {
-    final Class<? extends Object> typez = key.getClass();
-
-    if (typez == String.class)
-      return MurmurHash.hash64((String) key);
-    else if (typez == byte[].class)
-      return MurmurHash.hash64(((byte[]) key), 0, ((byte[]) key).length);
-
-    return key.hashCode();
   }
 }
