@@ -58,12 +58,15 @@ public class WebSocketEventBus {
           @Override
           public void complete(final WebSocketChannel webSocketChannel, final Void unused) {
             // ignored
+            LogManager.instance().log(this, Level.INFO, "async flushing (database=%s)", null, databaseName);
             webSocketChannel.flush();
           }
 
           @Override
           public void onError(final WebSocketChannel webSocketChannel, final Void unused, final Throwable throwable) {
             final var channelId = (UUID) webSocketChannel.getAttribute(CHANNEL_ID);
+            LogManager.instance().log(this, Level.INFO, "async error (database=%s channel=%s, exc=%s)", null, databaseName, channelId, throwable);
+
             if (throwable instanceof IOException) {
               LogManager.instance().log(this, Level.INFO, "Closing zombie connection: %s", null, channelId);
               zombieConnections.add(channelId);
