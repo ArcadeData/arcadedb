@@ -82,10 +82,15 @@ public class WebSocketEventBus {
   }
 
   public void unsubscribeAll(final UUID channelId) {
-    this.subscribers.forEach((databaseName, subscribers) -> {
-      subscribers.remove(channelId);
-      if (subscribers.isEmpty())
+    this.subscribers.forEach((databaseName, channels) -> {
+      if (channels.remove(channelId) != null)
+        // REMOVE ME
+        LogManager.instance().log(this, Level.INFO, "Removed channel %s from database %s", null, channelId, databaseName);
+
+      if (channels.isEmpty()) {
+        LogManager.instance().log(this, Level.INFO, "channel list empty for database %s", null, channelId, databaseName);
         this.stopDatabaseWatcher(databaseName);
+      }
     });
   }
 
@@ -97,6 +102,7 @@ public class WebSocketEventBus {
   }
 
   private void stopDatabaseWatcher(final String database) {
+    LogManager.instance().log(this, Level.INFO, "Stop database watchers for database %s", null, database);
     var watcher = this.databaseWatchers.remove(database);
     if (watcher != null)
       watcher.shutdown();

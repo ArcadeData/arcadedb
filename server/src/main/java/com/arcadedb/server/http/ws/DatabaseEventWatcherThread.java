@@ -23,7 +23,11 @@ final public class DatabaseEventWatcherThread extends Thread {
     this.database = database;
   }
 
-  public void push(ChangeEvent event) {
+  public void push(final ChangeEvent event) {
+    if (!running)
+      // NOT RUNNING
+      return;
+
     if (!this.eventQueue.offer(event)) {
       LogManager.instance().log(this, Level.WARNING, "Skipping event for database %s as eventQueue is full. Consider increasing eventBusQueueSize", null,
           this.database.getName());
@@ -38,12 +42,14 @@ final public class DatabaseEventWatcherThread extends Thread {
    * Sends the shutdown signal to the thread and waits for termination.
    */
   public void shutdown() {
+    LogManager.instance().log(this, Level.INFO, "Shutting down database %s event watcher", null, database.getName());
     this.running = false;
     try {
       runningLock.await();
     } catch (InterruptedException e) {
       // IGNORE IT
     }
+    LogManager.instance().log(this, Level.INFO, "Shut down database %s event watcher", null, database.getName());
   }
 
   @Override
