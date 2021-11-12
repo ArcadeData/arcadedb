@@ -58,6 +58,7 @@ public class WebSocketEventBus {
           @Override
           public void complete(final WebSocketChannel webSocketChannel, final Void unused) {
             // ignored
+            webSocketChannel.flush();
           }
 
           @Override
