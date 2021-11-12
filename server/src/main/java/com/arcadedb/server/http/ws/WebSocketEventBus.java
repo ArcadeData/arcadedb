@@ -84,7 +84,7 @@ public class WebSocketEventBus {
 
   public void unsubscribeAll(final UUID channelId) {
     this.subscribers.forEach((databaseName, channels) -> {
-      LogManager.instance().log(this, Level.INFO, "unsubscribeAll channels for database %s: %s", null, databaseName, channels);
+      LogManager.instance().log(this, Level.INFO, "unsubscribeAll channel %s for database %s: %s", null, channelId, databaseName, channels);
 
       if (channels.remove(channelId) != null)
         // REMOVE ME

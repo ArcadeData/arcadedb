@@ -29,4 +29,9 @@ public class ChangeEvent {
     jsonObject.put("database", this.record.getDatabase().getName());
     return jsonObject.toString();
   }
+
+  @Override
+  public String toString() {
+    return toJSON();
+  }
 }

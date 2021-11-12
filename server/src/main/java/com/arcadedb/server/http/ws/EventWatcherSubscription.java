@@ -53,4 +53,9 @@ public class EventWatcherSubscription {
     // first, see if the type matches on the "database" sub, then the type specific sub
     return (databaseEventTypes != null && databaseEventTypes.contains(event.getType())) || (typeEventTypes != null && typeEventTypes.contains(event.getType()));
   }
+
+  @Override
+  public String toString() {
+    return "EventWatcherSubscription{" + "database='" + database + '\'' + ", typeSubscriptions=" + typeSubscriptions + '}';
+  }
 }
