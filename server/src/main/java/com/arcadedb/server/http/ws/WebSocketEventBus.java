@@ -13,11 +13,10 @@ import java.util.concurrent.*;
 import java.util.logging.*;
 
 public class WebSocketEventBus {
-  private final ConcurrentHashMap<String, ConcurrentHashMap<UUID, EventWatcherSubscription>> subscribers      = new ConcurrentHashMap<>();
-  private final ConcurrentHashMap<String, DatabaseEventWatcherThread>                        databaseWatchers = new ConcurrentHashMap<>();
-  private final ArcadeDBServer                                                               arcadeServer;
-
-  public static final String CHANNEL_ID = "ID";
+  private final       ConcurrentHashMap<String, ConcurrentHashMap<UUID, EventWatcherSubscription>> subscribers      = new ConcurrentHashMap<>();
+  private final       ConcurrentHashMap<String, DatabaseEventWatcherThread>                        databaseWatchers = new ConcurrentHashMap<>();
+  private final       ArcadeDBServer                                                               arcadeServer;
+  public static final String                                                                       CHANNEL_ID       = "ID";
 
   public WebSocketEventBus(final ArcadeDBServer server) {
     this.arcadeServer = server;

@@ -1,5 +1,6 @@
 package com.arcadedb.server.ws;
 
+import com.arcadedb.log.LogManager;
 import com.arcadedb.server.BaseGraphServerTest;
 import io.undertow.connector.ByteBufferPool;
 import io.undertow.server.DefaultByteBufferPool;
@@ -22,6 +23,7 @@ import java.io.*;
 import java.net.*;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.logging.*;
 
 import static org.apache.lucene.store.BufferedIndexInput.BUFFER_SIZE;
 
@@ -61,6 +63,7 @@ public class WebSocketClientHelper implements AutoCloseable {
 
       @Override
       protected void onError(WebSocketChannel channel, Throwable error) {
+        LogManager.instance().log(this, Level.INFO, "WS client error: " + error);
         super.onError(channel, error);
         Assertions.fail(error.getMessage());
       }
@@ -70,6 +73,7 @@ public class WebSocketClientHelper implements AutoCloseable {
 
   @Override
   public void close() throws IOException {
+    LogManager.instance().log(this, Level.INFO, "WS client send close");
     WebSockets.sendCloseBlocking(CloseMessage.NORMAL_CLOSURE, null, this.channel);
     this.channel.close();
     pool.close();
@@ -77,6 +81,7 @@ public class WebSocketClientHelper implements AutoCloseable {
   }
 
   public void breakConnection() throws IOException {
+    LogManager.instance().log(this, Level.INFO, "WS client break connection");
     this.channel.close();
     pool.close();
     messageQueue.clear();
