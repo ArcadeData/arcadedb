@@ -42,6 +42,9 @@ final public class DatabaseEventWatcherThread extends Thread {
    * Sends the shutdown signal to the thread and waits for termination.
    */
   public void shutdown() {
+    if (!running)
+      return;
+
     LogManager.instance().log(this, Level.INFO, "Shutting down database %s event watcher", null, database.getName());
     this.running = false;
     try {

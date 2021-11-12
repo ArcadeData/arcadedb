@@ -39,7 +39,9 @@ public class WebSocketEventBus {
       this.startDatabaseWatcher(databaseName);
   }
 
-  public void unsubscribe(String databaseName, UUID channelId) {
+  public void unsubscribe(final String databaseName, final UUID channelId) {
+    LogManager.instance().log(this, Level.INFO, "unsubscribe channel %s from database %s (subscribers=%s)", null, channelId, databaseName, subscribers);
+
     final var databaseSubscribers = this.subscribers.get(databaseName);
     if (databaseSubscribers == null)
       return;
@@ -83,6 +85,8 @@ public class WebSocketEventBus {
 
   public void unsubscribeAll(final UUID channelId) {
     this.subscribers.forEach((databaseName, channels) -> {
+      LogManager.instance().log(this, Level.INFO, "unsubscribeAll channels for database %s: %s", null, databaseName, channels);
+
       if (channels.remove(channelId) != null)
         // REMOVE ME
         LogManager.instance().log(this, Level.INFO, "Removed channel %s from database %s", null, channelId, databaseName);
@@ -99,10 +103,11 @@ public class WebSocketEventBus {
     final var watcherThread = new DatabaseEventWatcherThread(this, this.arcadeServer.getDatabase(database), queueSize);
     watcherThread.start();
     this.databaseWatchers.put(database, watcherThread);
+    LogManager.instance().log(this, Level.INFO, "Start database watchers for database %s (databaseWatchers=%s)", null, database, databaseWatchers);
   }
 
   private void stopDatabaseWatcher(final String database) {
-    LogManager.instance().log(this, Level.INFO, "Stop database watchers for database %s", null, database);
+    LogManager.instance().log(this, Level.INFO, "Stop database watchers for database %s (databaseWatchers=%s)", null, database, databaseWatchers);
     var watcher = this.databaseWatchers.remove(database);
     if (watcher != null)
       watcher.shutdown();
