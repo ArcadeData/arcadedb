@@ -32,11 +32,6 @@
     <artifactId>arcadedb-gremlin</artifactId>
     <packaging>jar</packaging>
 
-    <properties>
-        <gremlin.version>3.5.1</gremlin.version>
-        <junit5.version>5.8.1</junit5.version>
-    </properties>
-
     <dependencies>
         <dependency>
             <groupId>com.arcadedb</groupId>
@@ -73,7 +68,7 @@
         <dependency>
             <groupId>org.junit.vintage</groupId>
             <artifactId>junit-vintage-engine</artifactId>
-            <version>${junit5.version}</version>
+            <version>${junit.jupiter.version}</version>
             <scope>test</scope>
         </dependency>
     </dependencies>
