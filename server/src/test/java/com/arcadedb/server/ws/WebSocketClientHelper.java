@@ -2,6 +2,7 @@ package com.arcadedb.server.ws;
 
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.BaseGraphServerTest;
+import com.arcadedb.utility.CodeUtils;
 import io.undertow.connector.ByteBufferPool;
 import io.undertow.server.DefaultByteBufferPool;
 import io.undertow.util.StringWriteChannelListener;
@@ -28,7 +29,7 @@ import java.util.logging.*;
 import static org.apache.lucene.store.BufferedIndexInput.BUFFER_SIZE;
 
 public class WebSocketClientHelper implements AutoCloseable {
-  private final XnioWorker                 WORKER;
+  private final XnioWorker                 worker;
   private final ByteBufferPool             pool         = new DefaultByteBufferPool(true, BUFFER_SIZE, 1000, 10, 100);
   private final WebSocketChannel           channel;
   private final ArrayBlockingQueue<String> messageQueue = new ArrayBlockingQueue<>(20);
@@ -37,7 +38,7 @@ public class WebSocketClientHelper implements AutoCloseable {
 
   public WebSocketClientHelper(String uri, String user, String pass) throws URISyntaxException, IOException {
     final Xnio xnio = Xnio.getInstance(BaseGraphServerTest.class.getClassLoader());
-    WORKER = xnio.createWorker(OptionMap.builder()//
+    worker = xnio.createWorker(OptionMap.builder()//
         .set(Options.WORKER_IO_THREADS, 4)//
         .set(Options.CONNECTION_HIGH_WATER, 1000000)//
         .set(Options.CONNECTION_LOW_WATER, 1000000)//
@@ -45,7 +46,7 @@ public class WebSocketClientHelper implements AutoCloseable {
         .set(Options.CORK, true)//
         .getMap());
 
-    var builder = WebSocketClient.connectionBuilder(WORKER, pool, new URI(uri));
+    var builder = WebSocketClient.connectionBuilder(worker, pool, new URI(uri));
     if (user != null) {
       builder.setClientNegotiation(new WebSocketClientNegotiation(new ArrayList<>(), new ArrayList<>()) {
         @Override
@@ -74,17 +75,32 @@ public class WebSocketClientHelper implements AutoCloseable {
   @Override
   public void close() throws IOException {
     LogManager.instance().log(this, Level.INFO, "WS client send close");
-    WebSockets.sendCloseBlocking(CloseMessage.NORMAL_CLOSURE, null, this.channel);
-    this.channel.flush();
-    this.channel.close();
-    pool.close();
+    CodeUtils.executeIgnoringExceptions(() -> {
+      WebSockets.sendCloseBlocking(CloseMessage.NORMAL_CLOSURE, null, this.channel);
+    });
+    CodeUtils.executeIgnoringExceptions(() -> {
+      this.channel.flush();
+    });
+    CodeUtils.executeIgnoringExceptions(() -> {
+      this.channel.close();
+    });
+    CodeUtils.executeIgnoringExceptions(() -> {
+      pool.close();
+    });
+    CodeUtils.executeIgnoringExceptions(() -> {
+      worker.shutdown();
+    });
     messageQueue.clear();
   }
 
   public void breakConnection() throws IOException {
     LogManager.instance().log(this, Level.INFO, "WS client break connection");
-    this.channel.close();
-    pool.close();
+    CodeUtils.executeIgnoringExceptions(() -> {
+      this.channel.close();
+    });
+    CodeUtils.executeIgnoringExceptions(() -> {
+      pool.close();
+    });
     messageQueue.clear();
   }
 

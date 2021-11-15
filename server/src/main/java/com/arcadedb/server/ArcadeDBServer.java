@@ -33,7 +33,7 @@ import com.arcadedb.server.log.ServerLogger;
 import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
-import com.arcadedb.utility.CallableNoReturn;
+import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.FileUtils;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -213,25 +213,25 @@ public class ArcadeDBServer implements ServerLogger {
 
     for (Map.Entry<String, ServerPlugin> pEntry : plugins.entrySet()) {
       log(this, Level.INFO, "- Stop %s plugin", pEntry.getKey());
-      execIgnoreExceptions(() -> {
+      CodeUtils.executeIgnoringExceptions(() -> {
         pEntry.getValue().stopService();
       }, "Error on halting '" + pEntry.getKey() + "' plugin");
     }
 
     if (haServer != null)
-      execIgnoreExceptions(haServer::stopService, "Error on stopping HA service");
+      CodeUtils.executeIgnoringExceptions(haServer::stopService, "Error on stopping HA service");
 
     if (httpServer != null)
-      execIgnoreExceptions(httpServer::stopService, "Error on stopping HTTP service");
+      CodeUtils.executeIgnoringExceptions(httpServer::stopService, "Error on stopping HTTP service");
 
     if (security != null)
-      execIgnoreExceptions(security::stopService, "Error on stopping Security service");
+      CodeUtils.executeIgnoringExceptions(security::stopService, "Error on stopping Security service");
 
     for (Database db : databases.values())
-      execIgnoreExceptions(db::close, "Error closing database '" + db.getName() + "'");
+      CodeUtils.executeIgnoringExceptions(db::close, "Error closing database '" + db.getName() + "'");
     databases.clear();
 
-    execIgnoreExceptions(() -> {
+    CodeUtils.executeIgnoringExceptions(() -> {
       log(this, Level.INFO, "- Stop JMX Metrics");
       serverMetrics.stop();
       serverMetrics = new NoServerMetrics();
@@ -545,13 +545,4 @@ public class ArcadeDBServer implements ServerLogger {
       }
     }
   }
-
-  private void execIgnoreExceptions(final CallableNoReturn callback, final String errorMessage) {
-    try {
-      callback.call();
-    } catch (Throwable e) {
-      LogManager.instance().log(this, Level.SEVERE, errorMessage);
-    }
-  }
-
 }
