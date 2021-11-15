@@ -20,7 +20,7 @@ ArcadeDB supports the following models:
 ArcadeDB understands multiple languages:
 - [SQL](https://docs.arcadedb.com#SQL) (from OrientDB SQL)
 - Neo4j [Cypher (Open Cypher)](https://docs.arcadedb.com#Cypher)
-- [Apache Gremlin (Apache Tinkerpop v3.4.x)](https://docs.arcadedb.com#Gremlin-API)
+- [Apache Gremlin (Apache Tinkerpop v3.5.x)](https://docs.arcadedb.com#Gremlin-API)
 - [MongoDB Query Language](https://docs.arcadedb.com#MongoDB-API)
 
 ArcadeDB can be used as:
