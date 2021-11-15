@@ -34,6 +34,10 @@ public class WebSocketEventBus {
     final var databaseSubscribers = this.subscribers.computeIfAbsent(databaseName, k -> new ConcurrentHashMap<>());
 
     databaseSubscribers.computeIfAbsent(channelId, k -> new EventWatcherSubscription(databaseName, channel)).add(type, changeTypes);
+
+    LogManager.instance()
+        .log(this, Level.INFO, "subscribe channel %s from database %s (type=%s changeTypes=%s)", null, channelId, databaseName, type, changeTypes);
+
     if (!this.databaseWatchers.containsKey(databaseName))
       this.startDatabaseWatcher(databaseName);
   }

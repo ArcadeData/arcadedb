@@ -14,13 +14,19 @@ final public class DatabaseEventWatcherThread extends Thread {
   private final    ArrayBlockingQueue<ChangeEvent> eventQueue;
   private final    Database                        database;
   private volatile boolean                         running = true;
-  private          CountDownLatch                  runningLock;
+  private final    CountDownLatch                  runningLock;
+  private final    WebSocketEventListener          listener;
 
   public DatabaseEventWatcherThread(final WebSocketEventBus eventBus, final Database database, final int queueSize) {
     super("WS-Events-" + database.getName());
     this.eventBus = eventBus;
     this.eventQueue = new ArrayBlockingQueue<>(queueSize);
     this.database = database;
+    this.listener = new WebSocketEventListener(this);
+    this.runningLock = new CountDownLatch(1);
+
+    this.database.getEvents().registerListener((AfterRecordCreateListener) listener).registerListener((AfterRecordUpdateListener) listener)
+        .registerListener((AfterRecordDeleteListener) listener);
   }
 
   public void push(final ChangeEvent event) {
@@ -57,14 +63,8 @@ final public class DatabaseEventWatcherThread extends Thread {
 
   @Override
   public void run() {
-    var listener = new WebSocketEventListener(this);
-
-    runningLock = new CountDownLatch(1);
     try {
       LogManager.instance().log(this, Level.INFO, "Starting up watcher thread for %s.", null, database);
-
-      this.database.getEvents().registerListener((AfterRecordCreateListener) listener).registerListener((AfterRecordUpdateListener) listener)
-          .registerListener((AfterRecordDeleteListener) listener);
 
       while (this.running) {
         var event = this.eventQueue.poll(500, TimeUnit.MILLISECONDS);
