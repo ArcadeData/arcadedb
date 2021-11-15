@@ -75,6 +75,7 @@ public class WebSocketClientHelper implements AutoCloseable {
   public void close() throws IOException {
     LogManager.instance().log(this, Level.INFO, "WS client send close");
     WebSockets.sendCloseBlocking(CloseMessage.NORMAL_CLOSURE, null, this.channel);
+    this.channel.flush();
     this.channel.close();
     pool.close();
     messageQueue.clear();
