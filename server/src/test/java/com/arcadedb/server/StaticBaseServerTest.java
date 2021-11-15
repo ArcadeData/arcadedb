@@ -29,22 +29,20 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.FileUtils;
-import org.json.JSONObject;
-import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Assertions;
-import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.BeforeAll;
 
 import java.io.*;
 import java.net.*;
-import java.nio.charset.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.logging.*;
 
 /**
- * This class has been copied under Console project to avoid complex dependencies.
+ * Executes all the tests while the server is up and running.
  */
-public abstract class BaseGraphServerTest {
+public abstract class StaticBaseServerTest {
   public static final    String DEFAULT_PASSWORD_FOR_TESTS = "DefaultPasswordForTests";
   protected static final String VERTEX1_TYPE_NAME          = "V1";
   protected static final String VERTEX2_TYPE_NAME          = "V2";
@@ -53,32 +51,32 @@ public abstract class BaseGraphServerTest {
   private static final   int    PARALLEL_LEVEL             = 4;
 
   protected static RID              root;
-  private          ArcadeDBServer[] servers;
-  private          Database[]       databases;
+  private static   ArcadeDBServer[] servers;
+  private static   Database[]       databases;
 
   protected interface Callback {
     void call(int serverIndex) throws Exception;
   }
 
-  protected BaseGraphServerTest() {
+  protected StaticBaseServerTest() {
   }
 
-  public void setTestConfiguration() {
+  public static void setTestConfiguration() {
     GlobalConfiguration.resetAll();
     GlobalConfiguration.TEST.setValue(true);
     GlobalConfiguration.SERVER_ROOT_PATH.setValue("./target");
     GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(DEFAULT_PASSWORD_FOR_TESTS);
   }
 
-  @BeforeEach
-  public void beginTest() {
+  @BeforeAll
+  public static void beginTest() {
     checkForActiveDatabases();
-
     setTestConfiguration();
-
     checkArcadeIsTotallyDown();
 
-    LogManager.instance().log(this, Level.INFO, "Starting test %s...", null, getClass().getName());
+    LogManager.instance().log(StaticBaseServerTest.class, Level.INFO, "Starting test...", null);
+
+    deleteDatabaseFolders();
 
     if (isCreateDatabases()) {
       deleteDatabaseFolders();
@@ -152,17 +150,16 @@ public abstract class BaseGraphServerTest {
     }
 
     // CLOSE ALL DATABASES BEFORE STARTING THE SERVERS
-    LogManager.instance().log(this, Level.INFO, "TEST: Closing databases before starting");
+    LogManager.instance().log(StaticBaseServerTest.class, Level.INFO, "TEST: Closing databases before starting");
     for (int i = 0; i < databases.length; ++i) {
       databases[i].close();
       databases[i] = null;
     }
-
     startServers();
   }
 
-  @AfterEach
-  public void endTest() {
+  @AfterAll
+  public static void endTest() {
     boolean anyServerRestarted = false;
     try {
       if (servers != null) {
@@ -188,14 +185,14 @@ public abstract class BaseGraphServerTest {
     } finally {
 
       try {
-        LogManager.instance().log(this, Level.INFO, "END OF THE TEST: Check DBS are identical...");
+        LogManager.instance().log(StaticBaseServerTest.class, Level.INFO, "END OF THE TEST: Check DBS are identical...");
         checkDatabasesAreIdentical();
       } finally {
 
-        LogManager.instance().log(this, Level.INFO, "TEST: Stopping servers...");
+        LogManager.instance().log(StaticBaseServerTest.class, Level.INFO, "TEST: Stopping servers...");
         stopServers();
 
-        LogManager.instance().log(this, Level.INFO, "END OF THE TEST: Cleaning test %s...", null, getClass().getName());
+        LogManager.instance().log(StaticBaseServerTest.class, Level.INFO, "END OF THE TEST: Cleaning test...");
         if (dropDatabasesAtTheEnd())
           deleteDatabaseFolders();
 
@@ -213,7 +210,7 @@ public abstract class BaseGraphServerTest {
     return databases[serverId];
   }
 
-  protected void checkArcadeIsTotallyDown() {
+  protected static void checkArcadeIsTotallyDown() {
     if (servers != null)
       for (ArcadeDBServer server : servers) {
         Assertions.assertFalse(server.isStarted());
@@ -229,7 +226,7 @@ public abstract class BaseGraphServerTest {
     Assertions.assertFalse(out.contains("ArcadeDB"), "Some thread is still up & running: \n" + out);
   }
 
-  protected void startServers() {
+  protected static void startServers() {
     servers = TestServerHelper.startServers(getServerCount(), (config) -> {
       onServerConfiguration(config);
     }, (server) -> {
@@ -237,46 +234,25 @@ public abstract class BaseGraphServerTest {
     });
   }
 
-  protected void stopServers() {
+  protected static void stopServers() {
     TestServerHelper.stopServers(servers);
   }
 
-  protected void formatPost(final HttpURLConnection connection, final String language, final String payloadCommand, final Map<String, Object> params)
-      throws Exception {
-    connection.setDoOutput(true);
-    if (payloadCommand != null) {
-      final JSONObject jsonRequest = new JSONObject();
-      jsonRequest.put("language", language);
-      jsonRequest.put("command", payloadCommand);
-
-      if (params != null) {
-        final JSONObject jsonParams = new JSONObject(params);
-        jsonRequest.put("params", jsonParams);
-      }
-
-      final byte[] postData = jsonRequest.toString().getBytes(StandardCharsets.UTF_8);
-      connection.setRequestProperty("Content-Length", Integer.toString(postData.length));
-      try (DataOutputStream wr = new DataOutputStream(connection.getOutputStream())) {
-        wr.write(postData);
-      }
-    }
+  protected static void onServerConfiguration(final ContextConfiguration config) {
   }
 
-  protected void onServerConfiguration(final ContextConfiguration config) {
+  protected static void onBeforeStarting(ArcadeDBServer server) {
   }
 
-  protected void onBeforeStarting(ArcadeDBServer server) {
-  }
-
-  protected boolean isCreateDatabases() {
+  protected static boolean isCreateDatabases() {
     return true;
   }
 
-  protected boolean isPopulateDatabase() {
+  protected static boolean isPopulateDatabase() {
     return true;
   }
 
-  protected ArcadeDBServer getServer(final int i) {
+  protected static ArcadeDBServer getServer(final int i) {
     return servers[i];
   }
 
@@ -288,27 +264,31 @@ public abstract class BaseGraphServerTest {
     return databases;
   }
 
-  protected Database getServerDatabase(final int i, final String name) {
+  protected static Database getServerDatabase(final int i, final String name) {
     return servers[i].getDatabase(name);
   }
 
   protected ArcadeDBServer getServer(final String name) {
-    return TestServerHelper.getServerByName(servers, name);
+    for (ArcadeDBServer s : servers) {
+      if (s.getServerName().equals(name))
+        return s;
+    }
+    return null;
   }
 
-  protected int getServerCount() {
+  protected static int getServerCount() {
     return 1;
   }
 
-  protected boolean dropDatabasesAtTheEnd() {
+  protected static boolean dropDatabasesAtTheEnd() {
     return true;
   }
 
-  protected String getDatabaseName() {
+  protected static String getDatabaseName() {
     return "graph";
   }
 
-  protected String getDatabasePath(final int serverId) {
+  protected static String getDatabasePath(final int serverId) {
     return GlobalConfiguration.SERVER_DATABASE_DIRECTORY.getValueAsString() + serverId + "/" + getDatabaseName();
   }
 
@@ -340,21 +320,38 @@ public abstract class BaseGraphServerTest {
   }
 
   protected ArcadeDBServer getLeaderServer() {
-    return TestServerHelper.getLeaderServer(servers);
+    for (int i = 0; i < getServerCount(); ++i)
+      if (getServer(i).isStarted()) {
+        final ArcadeDBServer onlineServer = getServer(i);
+        final String leaderName = onlineServer.getHA().getLeaderName();
+        return getServer(leaderName);
+      }
+    return null;
   }
 
   protected boolean areAllServersOnline() {
-    return TestServerHelper.areAllServersOnline(servers);
+    final ArcadeDBServer leader = getLeaderServer();
+    if (leader == null)
+      return false;
+
+    final int onlineReplicas = leader.getHA().getOnlineReplicas();
+    if (1 + onlineReplicas < getServerCount()) {
+      // NOT ALL THE SERVERS ARE UP, AVOID A QUORUM ERROR
+      LogManager.instance().log(this, Level.INFO, "TEST: Not all the servers are ONLINE (%d), skip this crash...", null, onlineReplicas);
+      leader.getHA().printClusterConfiguration();
+      return false;
+    }
+    return true;
   }
 
-  protected int[] getServerToCheck() {
+  protected static int[] getServerToCheck() {
     final int[] result = new int[getServerCount()];
     for (int i = 0; i < result.length; ++i)
       result[i] = i;
     return result;
   }
 
-  protected void deleteDatabaseFolders() {
+  protected static void deleteDatabaseFolders() {
     if (databases != null)
       for (int i = 0; i < databases.length; ++i) {
         if (databases[i] != null && databases[i].isOpen())
@@ -363,10 +360,9 @@ public abstract class BaseGraphServerTest {
 
     if (servers != null)
       for (int i = 0; i < getServerCount(); ++i)
-        if (getServer(i) != null)
-          for (String dbName : getServer(i).getDatabaseNames())
-            if (getServer(i).existsDatabase(dbName))
-              ((DatabaseInternal) getServer(i).getDatabase(dbName)).getWrappedDatabaseInstance().drop();
+        for (String dbName : getServer(i).getDatabaseNames())
+          if (getServer(i).existsDatabase(dbName))
+            ((DatabaseInternal) getServer(i).getDatabase(dbName)).getWrappedDatabaseInstance().drop();
 
     Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
 
@@ -375,11 +371,11 @@ public abstract class BaseGraphServerTest {
     FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_ROOT_PATH.getValueAsString() + "/replication"));
   }
 
-  protected void checkDatabasesAreIdentical() {
+  protected static void checkDatabasesAreIdentical() {
     final int[] servers2Check = getServerToCheck();
 
     if (servers2Check.length > 1) {
-      LogManager.instance().log(this, Level.INFO, "END OF THE TEST: Check DBS are identical...");
+      LogManager.instance().log(StaticBaseServerTest.class, Level.INFO, "END OF THE TEST: Check DBS are identical...");
 
       for (int i = 1; i < servers2Check.length; ++i) {
         final DatabaseInternal db1 = (DatabaseInternal) getServerDatabase(servers2Check[0], getDatabaseName());
@@ -395,12 +391,12 @@ public abstract class BaseGraphServerTest {
     }
   }
 
-  protected void testLog(final String msg, final Object... args) {
-    LogManager.instance()
-        .log(this, Level.INFO, "****************************************************************************************************************");
-    LogManager.instance().log(this, Level.INFO, "TEST: " + msg, null, args);
-    LogManager.instance()
-        .log(this, Level.INFO, "****************************************************************************************************************");
+  protected static void testLog(final String msg, final Object... args) {
+    LogManager.instance().log(StaticBaseServerTest.class, Level.INFO,
+        "****************************************************************************************************************");
+    LogManager.instance().log(StaticBaseServerTest.class, Level.INFO, "TEST: " + msg, null, args);
+    LogManager.instance().log(StaticBaseServerTest.class, Level.INFO,
+        "****************************************************************************************************************");
   }
 
   protected void testEachServer(Callback callback) throws Exception {
@@ -409,13 +405,14 @@ public abstract class BaseGraphServerTest {
     }
   }
 
-  private void checkForActiveDatabases() {
+  private static void checkForActiveDatabases() {
     final Collection<Database> activeDatabases = DatabaseFactory.getActiveDatabaseInstances();
     for (Database db : activeDatabases)
       db.close();
 
     if (!activeDatabases.isEmpty())
-      LogManager.instance().log(this, Level.SEVERE, "Found active databases: " + activeDatabases + ". Forced close before starting a new test");
+      LogManager.instance()
+          .log(StaticBaseServerTest.class, Level.SEVERE, "Found active databases: " + activeDatabases + ". Forced close before starting a new test");
 
     //Assertions.assertTrue(activeDatabases.isEmpty(), "Found active databases: " + activeDatabases);
   }

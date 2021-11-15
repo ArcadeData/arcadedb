@@ -193,7 +193,6 @@
                         <exclude>**/*TwoServersIT.java</exclude>
                         <exclude>**/*FullBackupIT.java</exclude>
                         <exclude>**/*RemoteConsoleIT.java</exclude>
-                        <exclude>**/*WebSocketEventBusIT.java</exclude>
                         <exclude>**/ArcadeGraphProcessDebugTest.java</exclude>
                         <exclude>**/ArcadeGraphStructureDebugTest.java</exclude>
                         <exclude>${exclude.tests}</exclude>

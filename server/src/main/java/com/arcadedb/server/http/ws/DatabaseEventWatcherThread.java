@@ -6,65 +6,79 @@ import com.arcadedb.event.AfterRecordDeleteListener;
 import com.arcadedb.event.AfterRecordUpdateListener;
 import com.arcadedb.log.LogManager;
 
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.TimeUnit;
-import java.util.logging.Level;
+import java.util.concurrent.*;
+import java.util.logging.*;
 
 final public class DatabaseEventWatcherThread extends Thread {
-  private final WebSocketEventBus               eventBus;
-  private final ArrayBlockingQueue<ChangeEvent> eventQueue;
-  private final Database                        database;
+  private final    WebSocketEventBus               eventBus;
+  private final    ArrayBlockingQueue<ChangeEvent> eventQueue;
+  private final    Database                        database;
+  private volatile boolean                         running = true;
+  private final    CountDownLatch                  runningLock;
+  private final    WebSocketEventListener          listener;
 
-  volatile boolean running = true;
+  public DatabaseEventWatcherThread(final WebSocketEventBus eventBus, final Database database, final int queueSize) {
+    super("WS-Events-" + database.getName());
+    this.eventBus = eventBus;
+    this.eventQueue = new ArrayBlockingQueue<>(queueSize);
+    this.database = database;
+    this.listener = new WebSocketEventListener(this);
+    this.runningLock = new CountDownLatch(1);
+
+    this.database.getEvents().registerListener((AfterRecordCreateListener) listener).registerListener((AfterRecordUpdateListener) listener)
+        .registerListener((AfterRecordDeleteListener) listener);
+  }
+
+  public void push(final ChangeEvent event) {
+    if (!running)
+      // NOT RUNNING
+      return;
+
+    if (!this.eventQueue.offer(event)) {
+      LogManager.instance().log(this, Level.WARNING, "Skipping event for database %s as eventQueue is full. Consider increasing eventBusQueueSize", null,
+          this.database.getName());
+    }
+  }
 
   public boolean isRunning() {
     return running;
   }
 
+  /**
+   * Sends the shutdown signal to the thread and waits for termination.
+   */
   public void shutdown() {
+    if (!running)
+      return;
+
     this.running = false;
-  }
-
-  public DatabaseEventWatcherThread(final WebSocketEventBus eventBus, final Database database, final int queueSize) {
-    this.eventBus = eventBus;
-    this.eventQueue = new ArrayBlockingQueue<>(queueSize);
-    this.database = database;
-  }
-
-  public void push(ChangeEvent event) {
-    if (!this.eventQueue.offer(event)) {
-      LogManager.instance().log(this, Level.WARNING, "Skipping event for database %s as eventQueue is full. Consider increasing eventBusQueueSize.",
-          null, this.database.getName());
+    try {
+      runningLock.await();
+    } catch (InterruptedException e) {
+      // IGNORE IT
     }
   }
 
   @Override
   public void run() {
-    var listener = new WebSocketEventListener(this);
-
     try {
-      LogManager.instance().log(this, Level.INFO, "Starting up watcher thread for %s.", null, database);
-
-      this.database.getEvents()
-          .registerListener((AfterRecordCreateListener) listener)
-          .registerListener((AfterRecordUpdateListener) listener)
-          .registerListener((AfterRecordDeleteListener) listener);
-
       while (this.running) {
         var event = this.eventQueue.poll(500, TimeUnit.MILLISECONDS);
-        if (event == null) continue;
+        if (event == null)
+          continue;
         this.eventBus.publish(event);
       }
 
     } catch (InterruptedException ignored) {
     } finally {
-      this.database.getEvents()
-          .unregisterListener((AfterRecordCreateListener) listener)
-          .unregisterListener((AfterRecordUpdateListener) listener)
-          .unregisterListener((AfterRecordDeleteListener) listener);
+      try {
+        this.database.getEvents().unregisterListener((AfterRecordCreateListener) listener).unregisterListener((AfterRecordUpdateListener) listener)
+            .unregisterListener((AfterRecordDeleteListener) listener);
 
-      LogManager.instance().log(this, Level.INFO, "Shutting down watcher thread for %s.", null, database);
-      eventQueue.clear();
+        eventQueue.clear();
+      } finally {
+        runningLock.countDown();
+      }
     }
   }
 }

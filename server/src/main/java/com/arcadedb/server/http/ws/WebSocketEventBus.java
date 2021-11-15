@@ -13,11 +13,10 @@ import java.util.concurrent.*;
 import java.util.logging.*;
 
 public class WebSocketEventBus {
-  private final ConcurrentHashMap<String, ConcurrentHashMap<UUID, EventWatcherSubscription>> subscribers      = new ConcurrentHashMap<>();
-  private final ConcurrentHashMap<String, DatabaseEventWatcherThread>                        databaseWatchers = new ConcurrentHashMap<>();
-  private final ArcadeDBServer                                                               arcadeServer;
-
-  public static final String CHANNEL_ID = "ID";
+  private final       ConcurrentHashMap<String, ConcurrentHashMap<UUID, EventWatcherSubscription>> subscribers      = new ConcurrentHashMap<>();
+  private final       ConcurrentHashMap<String, DatabaseEventWatcherThread>                        databaseWatchers = new ConcurrentHashMap<>();
+  private final       ArcadeDBServer                                                               arcadeServer;
+  public static final String                                                                       CHANNEL_ID       = "ID";
 
   public WebSocketEventBus(final ArcadeDBServer server) {
     this.arcadeServer = server;
@@ -35,15 +34,16 @@ public class WebSocketEventBus {
     final var databaseSubscribers = this.subscribers.computeIfAbsent(databaseName, k -> new ConcurrentHashMap<>());
 
     databaseSubscribers.computeIfAbsent(channelId, k -> new EventWatcherSubscription(databaseName, channel)).add(type, changeTypes);
+
     if (!this.databaseWatchers.containsKey(databaseName))
       this.startDatabaseWatcher(databaseName);
   }
 
-  public void unsubscribe(String databaseName, UUID id) {
+  public void unsubscribe(final String databaseName, final UUID channelId) {
     final var databaseSubscribers = this.subscribers.get(databaseName);
     if (databaseSubscribers == null)
       return;
-    databaseSubscribers.remove(id);
+    databaseSubscribers.remove(channelId);
     if (databaseSubscribers.isEmpty())
       this.stopDatabaseWatcher(databaseName);
   }
@@ -56,14 +56,14 @@ public class WebSocketEventBus {
         WebSockets.sendText(event.toJSON(), subscription.getChannel(), new WebSocketCallback<>() {
           @Override
           public void complete(final WebSocketChannel webSocketChannel, final Void unused) {
-            // ignored
+            webSocketChannel.flush();
           }
 
           @Override
           public void onError(final WebSocketChannel webSocketChannel, final Void unused, final Throwable throwable) {
             final var channelId = (UUID) webSocketChannel.getAttribute(CHANNEL_ID);
             if (throwable instanceof IOException) {
-              LogManager.instance().log(this, Level.INFO, "Closing zombie connection: %s", null, channelId);
+              LogManager.instance().log(this, Level.FINE, "Closing zombie connection: %s", null, channelId);
               zombieConnections.add(channelId);
             } else {
               LogManager.instance().log(this, Level.SEVERE, "Unexpected error while sending message.", throwable);
@@ -81,10 +81,10 @@ public class WebSocketEventBus {
     return this.subscribers.get(database).values();
   }
 
-  public void unsubscribeAll(final UUID id) {
-    this.subscribers.forEach((databaseName, subscribers) -> {
-      subscribers.remove(id);
-      if (subscribers.isEmpty())
+  public void unsubscribeAll(final UUID channelId) {
+    this.subscribers.forEach((databaseName, channels) -> {
+      channels.remove(channelId);
+      if (channels.isEmpty())
         this.stopDatabaseWatcher(databaseName);
     });
   }

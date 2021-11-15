@@ -26,6 +26,8 @@ public class EventWatcherSubscription {
       } catch (IOException e) {
         // IGNORE THIS
       }
+
+    typeSubscriptions.clear();
   }
 
   public void add(final String type, final Set<ChangeEvent.TYPE> changeTypes) {
@@ -46,5 +48,10 @@ public class EventWatcherSubscription {
     final var typeEventTypes = typeSubscriptions.get(event.getRecord().asDocument().getTypeName());
     // first, see if the type matches on the "database" sub, then the type specific sub
     return (databaseEventTypes != null && databaseEventTypes.contains(event.getType())) || (typeEventTypes != null && typeEventTypes.contains(event.getType()));
+  }
+
+  @Override
+  public String toString() {
+    return "EventWatcherSubscription{" + "database='" + database + '\'' + ", typeSubscriptions=" + typeSubscriptions + '}';
   }
 }
