@@ -4,14 +4,18 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.http.HttpServer;
-import io.undertow.websockets.core.*;
+import io.undertow.websockets.core.AbstractReceiveListener;
+import io.undertow.websockets.core.BufferedTextMessage;
+import io.undertow.websockets.core.StreamSourceFrameChannel;
+import io.undertow.websockets.core.WebSocketChannel;
+import io.undertow.websockets.core.WebSockets;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-import java.io.IOException;
-import java.util.UUID;
-import java.util.logging.Level;
-import java.util.stream.Collectors;
+import java.io.*;
+import java.util.*;
+import java.util.logging.*;
+import java.util.stream.*;
 
 public class WebSocketReceiveListener extends AbstractReceiveListener {
   private final HttpServer        httpServer;
@@ -36,24 +40,25 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
       }
 
       switch (action) {
-        case SUBSCRIBE:
-          var jsonChangeTypes = message.optJSONArray("changeTypes");
-          var changeTypes = jsonChangeTypes == null ? null :
-              jsonChangeTypes.toList().stream().map(t -> ChangeEvent.TYPE.valueOf(t.toString().toUpperCase())).collect(Collectors.toSet());
-          this.webSocketEventBus.subscribe(message.getString("database"), message.optString("type", null), changeTypes, channel);
-          this.sendAck(channel, action);
-          break;
-        case UNSUBSCRIBE:
-          this.webSocketEventBus.unsubscribe(message.getString("database"), (UUID) channel.getAttribute(WebSocketEventBus.CHANNEL_ID));
-          this.sendAck(channel, action);
-          break;
-        default:
-          if (rawAction.equals("")) {
-            sendError(channel, "Message error", "Property 'action' is required.", null);
-          } else {
-            sendError(channel, "Unknown action", String.format("%s is not a valid action.", rawAction), null);
-          }
-          break;
+      case SUBSCRIBE:
+        var jsonChangeTypes = message.optJSONArray("changeTypes");
+        var changeTypes = jsonChangeTypes == null ?
+            null :
+            jsonChangeTypes.toList().stream().map(t -> ChangeEvent.TYPE.valueOf(t.toString().toUpperCase())).collect(Collectors.toSet());
+        this.webSocketEventBus.subscribe(message.getString("database"), message.optString("type", null), changeTypes, channel);
+        this.sendAck(channel, action);
+        break;
+      case UNSUBSCRIBE:
+        this.webSocketEventBus.unsubscribe(message.getString("database"), (UUID) channel.getAttribute(WebSocketEventBus.CHANNEL_ID));
+        this.sendAck(channel, action);
+        break;
+      default:
+        if (rawAction.equals("")) {
+          sendError(channel, "Message error", "Property 'action' is required.", null);
+        } else {
+          sendError(channel, "Unknown action", String.format("%s is not a valid action.", rawAction), null);
+        }
+        break;
       }
     } catch (JSONException e) {
       sendError(channel, "Unable to parse JSON", e.getMessage(), e);
@@ -68,7 +73,6 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
   @Override
   protected void onClose(final WebSocketChannel channel, final StreamSourceFrameChannel frameChannel) throws IOException {
     final var channelId = (UUID) channel.getAttribute(WebSocketEventBus.CHANNEL_ID);
-    LogManager.instance().log(this, Level.INFO, "Socket disconnected: %s.", null, channelId);
     this.webSocketEventBus.unsubscribeAll(channelId);
   }
 
@@ -81,8 +85,10 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
   private void sendError(final WebSocketChannel channel, final String error, final String detail, final Throwable exception) {
     final var json = new JSONObject("{\"result\": \"error\"}");
     json.put("error", error);
-    if (detail != null) json.put("detail", encodeError(detail));
-    if (exception != null) json.put("exception", exception.getClass().getName());
+    if (detail != null)
+      json.put("detail", encodeError(detail));
+    if (exception != null)
+      json.put("exception", exception.getClass().getName());
     WebSockets.sendText(json.toString(), channel, null);
   }
 

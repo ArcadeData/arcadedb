@@ -35,16 +35,11 @@ public class WebSocketEventBus {
 
     databaseSubscribers.computeIfAbsent(channelId, k -> new EventWatcherSubscription(databaseName, channel)).add(type, changeTypes);
 
-    LogManager.instance()
-        .log(this, Level.INFO, "subscribe channel %s from database %s (type=%s changeTypes=%s)", null, channelId, databaseName, type, changeTypes);
-
     if (!this.databaseWatchers.containsKey(databaseName))
       this.startDatabaseWatcher(databaseName);
   }
 
   public void unsubscribe(final String databaseName, final UUID channelId) {
-    LogManager.instance().log(this, Level.INFO, "unsubscribe channel %s from database %s (subscribers=%s)", null, channelId, databaseName, subscribers);
-
     final var databaseSubscribers = this.subscribers.get(databaseName);
     if (databaseSubscribers == null)
       return;
@@ -61,18 +56,14 @@ public class WebSocketEventBus {
         WebSockets.sendText(event.toJSON(), subscription.getChannel(), new WebSocketCallback<>() {
           @Override
           public void complete(final WebSocketChannel webSocketChannel, final Void unused) {
-            // ignored
-            LogManager.instance().log(this, Level.INFO, "async flushing (database=%s)", null, databaseName);
             webSocketChannel.flush();
           }
 
           @Override
           public void onError(final WebSocketChannel webSocketChannel, final Void unused, final Throwable throwable) {
             final var channelId = (UUID) webSocketChannel.getAttribute(CHANNEL_ID);
-            LogManager.instance().log(this, Level.INFO, "async error (database=%s channel=%s, exc=%s)", null, databaseName, channelId, throwable);
-
             if (throwable instanceof IOException) {
-              LogManager.instance().log(this, Level.INFO, "Closing zombie connection: %s", null, channelId);
+              LogManager.instance().log(this, Level.FINE, "Closing zombie connection: %s", null, channelId);
               zombieConnections.add(channelId);
             } else {
               LogManager.instance().log(this, Level.SEVERE, "Unexpected error while sending message.", throwable);
@@ -92,16 +83,9 @@ public class WebSocketEventBus {
 
   public void unsubscribeAll(final UUID channelId) {
     this.subscribers.forEach((databaseName, channels) -> {
-      LogManager.instance().log(this, Level.INFO, "unsubscribeAll channel %s for database %s: %s", null, channelId, databaseName, channels);
-
-      if (channels.remove(channelId) != null)
-        // REMOVE ME
-        LogManager.instance().log(this, Level.INFO, "Removed channel %s from database %s", null, channelId, databaseName);
-
-      if (channels.isEmpty()) {
-        LogManager.instance().log(this, Level.INFO, "channel list empty for database %s", null, channelId, databaseName);
+      channels.remove(channelId);
+      if (channels.isEmpty())
         this.stopDatabaseWatcher(databaseName);
-      }
     });
   }
 
@@ -110,11 +94,9 @@ public class WebSocketEventBus {
     final var watcherThread = new DatabaseEventWatcherThread(this, this.arcadeServer.getDatabase(database), queueSize);
     watcherThread.start();
     this.databaseWatchers.put(database, watcherThread);
-    LogManager.instance().log(this, Level.INFO, "Start database watchers for database %s (databaseWatchers=%s)", null, database, databaseWatchers);
   }
 
   private void stopDatabaseWatcher(final String database) {
-    LogManager.instance().log(this, Level.INFO, "Stop database watchers for database %s (databaseWatchers=%s)", null, database, databaseWatchers);
     var watcher = this.databaseWatchers.remove(database);
     if (watcher != null)
       watcher.shutdown();

@@ -1,12 +1,10 @@
 package com.arcadedb.server.http.ws;
 
-import com.arcadedb.log.LogManager;
 import io.undertow.websockets.core.WebSocketChannel;
 
 import java.io.*;
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.logging.*;
 import java.util.stream.*;
 
 public class EventWatcherSubscription {
@@ -22,8 +20,6 @@ public class EventWatcherSubscription {
   }
 
   public void close() {
-    LogManager.instance().log(this, Level.INFO, "EventWatcherSubscription close database %s, typeSubscriptions=%s", null, database, typeSubscriptions);
-
     if (channel != null)
       try {
         channel.close();

@@ -51,21 +51,17 @@ final public class DatabaseEventWatcherThread extends Thread {
     if (!running)
       return;
 
-    LogManager.instance().log(this, Level.INFO, "Shutting down database %s event watcher", null, database.getName());
     this.running = false;
     try {
       runningLock.await();
     } catch (InterruptedException e) {
       // IGNORE IT
     }
-    LogManager.instance().log(this, Level.INFO, "Shut down database %s event watcher", null, database.getName());
   }
 
   @Override
   public void run() {
     try {
-      LogManager.instance().log(this, Level.INFO, "Starting up watcher thread for %s.", null, database);
-
       while (this.running) {
         var event = this.eventQueue.poll(500, TimeUnit.MILLISECONDS);
         if (event == null)
@@ -79,7 +75,6 @@ final public class DatabaseEventWatcherThread extends Thread {
         this.database.getEvents().unregisterListener((AfterRecordCreateListener) listener).unregisterListener((AfterRecordUpdateListener) listener)
             .unregisterListener((AfterRecordDeleteListener) listener);
 
-        LogManager.instance().log(this, Level.INFO, "Shutting down watcher thread for %s.", null, database);
         eventQueue.clear();
       } finally {
         runningLock.countDown();

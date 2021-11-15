@@ -64,7 +64,7 @@ public class WebSocketClientHelper implements AutoCloseable {
 
       @Override
       protected void onError(WebSocketChannel channel, Throwable error) {
-        LogManager.instance().log(this, Level.INFO, "WS client error: " + error);
+        LogManager.instance().log(this, Level.SEVERE, "WS client error: " + error);
         super.onError(channel, error);
         Assertions.fail(error.getMessage());
       }
@@ -74,7 +74,7 @@ public class WebSocketClientHelper implements AutoCloseable {
 
   @Override
   public void close() throws IOException {
-    LogManager.instance().log(this, Level.INFO, "WS client send close");
+    LogManager.instance().log(this, Level.FINE, "WS client send close");
     CodeUtils.executeIgnoringExceptions(() -> {
       WebSockets.sendCloseBlocking(CloseMessage.NORMAL_CLOSURE, null, this.channel);
     });
@@ -93,8 +93,8 @@ public class WebSocketClientHelper implements AutoCloseable {
     messageQueue.clear();
   }
 
-  public void breakConnection() throws IOException {
-    LogManager.instance().log(this, Level.INFO, "WS client break connection");
+  public void breakConnection() {
+    LogManager.instance().log(this, Level.FINE, "WS client break connection");
     CodeUtils.executeIgnoringExceptions(() -> {
       this.channel.close();
     });

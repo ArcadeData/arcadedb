@@ -292,14 +292,14 @@ public class WebSocketEventBusIT extends StaticBaseServerTest {
   }
 
   private void execute(final CallableNoReturn callback, final String testName) throws Throwable {
-    LogManager.instance().log(this, Level.INFO, "BEGIN " + testName);
+    LogManager.instance().log(this, Level.FINE, "BEGIN " + testName);
     try {
       callback.call();
     } catch (Throwable e) {
       LogManager.instance().log(this, Level.SEVERE, "ERROR in " + testName, e);
       throw e;
     } finally {
-      LogManager.instance().log(this, Level.INFO, "END " + testName);
+      LogManager.instance().log(this, Level.FINE, "END " + testName);
     }
   }
 }
