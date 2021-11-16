@@ -53,18 +53,18 @@ public class CreateVertexTypeStatement extends DDLStatement {
 
   protected boolean abstractType = false;
 
-  public CreateVertexTypeStatement(int id) {
+  public CreateVertexTypeStatement(final int id) {
     super(id);
   }
 
-  public CreateVertexTypeStatement(SqlParser p, int id) {
+  public CreateVertexTypeStatement(final SqlParser p, final int id) {
     super(p, id);
   }
 
   @Override
-  public ResultSet executeDDL(CommandContext ctx) {
+  public ResultSet executeDDL(final CommandContext ctx) {
 
-    Schema schema = ctx.getDatabase().getSchema();
+    final Schema schema = ctx.getDatabase().getSchema();
     if (schema.existsType(name.getStringValue())) {
       if (ifNotExists) {
         return new InternalResultSet();
@@ -74,18 +74,17 @@ public class CreateVertexTypeStatement extends DDLStatement {
     }
     checkSuperTypes(schema, ctx);
 
-    ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal();
     result.setProperty("operation", "create vertex type");
     result.setProperty("typeName", name.getStringValue());
 
-    VertexType type;
     final VertexType[] superclasses = getSuperTypes(schema);
 
-    if (totalBucketNo != null) {
+    final VertexType type;
+    if (totalBucketNo != null)
       type = schema.createVertexType(name.getStringValue(), totalBucketNo.getValue().intValue());
-    } else {
+    else
       type = schema.createVertexType(name.getStringValue());
-    }
 
     for (VertexType c : superclasses)
       type.addSuperType(c);
@@ -93,14 +92,14 @@ public class CreateVertexTypeStatement extends DDLStatement {
     return new InternalResultSet(result);
   }
 
-  private VertexType[] getSuperTypes(Schema schema) {
-    if (supertypes == null) {
+  private VertexType[] getSuperTypes(final Schema schema) {
+    if (supertypes == null)
       return new VertexType[] {};
-    }
+
     return supertypes.stream().map(x -> schema.getType(x.getStringValue())).filter(x -> x != null).collect(Collectors.toList()).toArray(new VertexType[] {});
   }
 
-  private void checkSuperTypes(Schema schema, CommandContext ctx) {
+  private void checkSuperTypes(final Schema schema, final CommandContext ctx) {
     if (supertypes != null) {
       for (Identifier superType : supertypes) {
         if (!schema.existsType(superType.value)) {
@@ -111,7 +110,7 @@ public class CreateVertexTypeStatement extends DDLStatement {
   }
 
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("CREATE VERTEX TYPE ");
     name.toString(params, builder);
     if (ifNotExists) {
@@ -150,7 +149,7 @@ public class CreateVertexTypeStatement extends DDLStatement {
 
   @Override
   public CreateVertexTypeStatement copy() {
-    CreateVertexTypeStatement result = new CreateVertexTypeStatement(-1);
+    final CreateVertexTypeStatement result = new CreateVertexTypeStatement(-1);
     result.name = name == null ? null : name.copy();
     result.supertypes = supertypes == null ? null : supertypes.stream().map(x -> x.copy()).collect(Collectors.toList());
     result.buckets = buckets == null ? null : buckets.stream().map(x -> x.copy()).collect(Collectors.toList());
@@ -161,13 +160,13 @@ public class CreateVertexTypeStatement extends DDLStatement {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    CreateVertexTypeStatement that = (CreateVertexTypeStatement) o;
+    final CreateVertexTypeStatement that = (CreateVertexTypeStatement) o;
 
     if (abstractType != that.abstractType)
       return false;
