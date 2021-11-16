@@ -23,6 +23,7 @@ import com.arcadedb.database.bucketselectionstrategy.RoundRobinBucketSelectionSt
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
@@ -98,16 +99,26 @@ public class DocumentType {
       final List<TypeIndex> indexes = getAllIndexes(true);
       indexes.removeAll(indexesByProperties.values());
 
-      schema.getDatabase().transaction(() -> {
-        for (TypeIndex index : indexes) {
-          for (int i = 0; i < buckets.size(); i++) {
-            final Bucket bucket = buckets.get(i);
-            schema.createBucketIndex(schema.getType(index.getTypeName()), index.getKeyTypes(), bucket, name, index.getType(), index.isUnique(),
-                LSMTreeIndexAbstract.DEF_PAGE_SIZE, index.getNullStrategy(), null,
-                index.getPropertyNames().toArray(new String[index.getPropertyNames().size()]));
+      try {
+        schema.getDatabase().transaction(() -> {
+          for (TypeIndex index : indexes) {
+            if (index.getType() == null) {
+              LogManager.instance()
+                  .log(this, Level.WARNING, "Error on creating implicit indexes from super type '" + superType.getName() + "': key types is null");
+            } else {
+              for (int i = 0; i < buckets.size(); i++) {
+                final Bucket bucket = buckets.get(i);
+                schema.createBucketIndex(schema.getType(index.getTypeName()), index.getKeyTypes(), bucket, name, index.getType(), index.isUnique(),
+                    LSMTreeIndexAbstract.DEF_PAGE_SIZE, index.getNullStrategy(), null,
+                    index.getPropertyNames().toArray(new String[index.getPropertyNames().size()]));
+              }
+            }
           }
-        }
-      }, false);
+        }, false);
+      } catch (IndexException e) {
+        LogManager.instance().log(this, Level.WARNING, "Error on creating implicit indexes from super type '" + superType.getName() + "'", e);
+        throw e;
+      }
 
       return null;
     });
