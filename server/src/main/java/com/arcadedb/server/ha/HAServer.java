@@ -27,6 +27,7 @@ import com.arcadedb.network.binary.ChannelBinaryClient;
 import com.arcadedb.network.binary.ConnectionException;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
+import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerPlugin;
@@ -550,6 +551,15 @@ public class HAServer implements ServerPlugin {
       this.configuredServers = 1;
   }
 
+  /**
+   * Forward a command to the leader server. This occurs with transactions and DDL commands. If the timeout is 0, then the request is asynchronous and the
+   * response is a Resultset containing `{"operation", "forwarded to the leader"}`
+   *
+   * @param command HACommand to forward
+   * @param timeout Timeout in milliseconds. 0 for asynchronous commands
+   *
+   * @return the result from the command if synchronous, otherwise a result set containing `{"operation", "forwarded to the leader"}`
+   */
   public Object forwardCommandToLeader(final HACommand command, final long timeout) {
     final Binary buffer = new Binary();
 
@@ -562,44 +572,45 @@ public class HAServer implements ServerPlugin {
     // REGISTER THE REQUEST TO WAIT FOR
     final ForwardedMessage forwardedMessage = new ForwardedMessage();
 
-    forwardMessagesWaitingForResponse.put(opNumber, forwardedMessage);
-
     if (leaderConnection == null)
       throw new ReplicationException("Leader not available");
 
+    forwardMessagesWaitingForResponse.put(opNumber, forwardedMessage);
     try {
       leaderConnection.sendCommandToLeader(buffer, command, opNumber);
+      if (timeout > 0) {
+        try {
+          if (forwardedMessage.semaphore.await(timeout, TimeUnit.MILLISECONDS)) {
 
-      try {
-        if (forwardedMessage.semaphore.await(timeout, TimeUnit.MILLISECONDS)) {
+            if (forwardedMessage.error != null) {
+              // EXCEPTION
+              if (forwardedMessage.error.exceptionClass.equals(ConcurrentModificationException.class.getName()))
+                throw new ConcurrentModificationException(forwardedMessage.error.exceptionMessage);
+              else if (forwardedMessage.error.exceptionClass.equals(TransactionException.class.getName()))
+                throw new TransactionException(forwardedMessage.error.exceptionMessage);
+              else if (forwardedMessage.error.exceptionClass.equals(QuorumNotReachedException.class.getName()))
+                throw new QuorumNotReachedException(forwardedMessage.error.exceptionMessage);
 
-          if (forwardedMessage.error != null) {
-            // EXCEPTION
-            if (forwardedMessage.error.exceptionClass.equals(ConcurrentModificationException.class.getName()))
-              throw new ConcurrentModificationException(forwardedMessage.error.exceptionMessage);
-            else if (forwardedMessage.error.exceptionClass.equals(TransactionException.class.getName()))
-              throw new TransactionException(forwardedMessage.error.exceptionMessage);
-            else if (forwardedMessage.error.exceptionClass.equals(QuorumNotReachedException.class.getName()))
-              throw new QuorumNotReachedException(forwardedMessage.error.exceptionMessage);
+              server.log(this, Level.WARNING, "Unexpected error received from forwarding a transaction to the Leader");
+              throw new ReplicationException("Unexpected error received from forwarding a transaction to the Leader");
+            }
 
-            server.log(this, Level.WARNING, "Unexpected error received from forwarding a transaction to the Leader");
-            throw new ReplicationException("Unexpected error received from forwarding a transaction to the Leader");
+          } else {
+            throw new TimeoutException("Error on forwarding transaction to the Leader server");
           }
 
-        } else {
-          throw new TimeoutException("Error on forwarding transaction to the Leader server");
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+          throw new ReplicationException("No response received from the Leader for request " + opNumber + " because the thread was interrupted");
         }
-
-      } catch (InterruptedException e) {
-        Thread.currentThread().interrupt();
-        throw new ReplicationException("No response received from the Leader for request " + opNumber + " because the thread was interrupted");
-      } finally {
-        forwardMessagesWaitingForResponse.remove(opNumber);
-      }
+      } else
+        forwardedMessage.result = new InternalResultSet(new ResultInternal(Map.of("operation", "forwarded to the leader")));
 
     } catch (IOException | TimeoutException e) {
       server.log(this, Level.SEVERE, "Leader server '%s' does not respond, starting election...", leaderName);
       startElection();
+    } finally {
+      forwardMessagesWaitingForResponse.remove(opNumber);
     }
 
     return forwardedMessage.result;

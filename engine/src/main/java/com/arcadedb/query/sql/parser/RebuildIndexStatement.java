@@ -33,7 +33,7 @@ import java.util.*;
 import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
-public class RebuildIndexStatement extends SimpleExecStatement {
+public class RebuildIndexStatement extends DDLStatement {
 
   protected            boolean   all      = false;
   protected            IndexName name;
@@ -48,7 +48,7 @@ public class RebuildIndexStatement extends SimpleExecStatement {
   }
 
   @Override
-  public ResultSet executeSimple(final CommandContext ctx) {
+  public ResultSet executeDDL(final CommandContext ctx) {
     final ResultInternal result = new ResultInternal();
     result.setProperty("operation", "rebuild index");
 
