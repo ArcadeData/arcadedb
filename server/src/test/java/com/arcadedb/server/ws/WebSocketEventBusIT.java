@@ -1,5 +1,6 @@
 package com.arcadedb.server.ws;
 
+import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.StaticBaseServerTest;
@@ -125,7 +126,7 @@ public class WebSocketEventBusIT extends StaticBaseServerTest {
         var result = client.send(buildActionMessage("subscribe", "graph"));
         Assertions.assertEquals("ok", new JSONObject(result).get("result"));
 
-        this.getServerDatabase(0, "graph").newVertex("V1").set("name", "test").save();
+        final MutableVertex v = this.getServerDatabase(0, "graph").newVertex("V1").set("name", "test").save();
 
         var json = getJsonMessageOrFail(client);
         Assertions.assertEquals("create", json.get("changeType"));
@@ -201,7 +202,7 @@ public class WebSocketEventBusIT extends StaticBaseServerTest {
   public void subscribeMultipleChangeTypesWorks() throws Throwable {
     execute(() -> {
       try (var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
-        var result = client.send(buildActionMessage("subscribe", "graph", null, new String[] { "create", "delete" }));
+        var result = client.send(buildActionMessage("subscribe", "graph", null, new String[] { "create", "update", "delete" }));
         Assertions.assertEquals("ok", new JSONObject(result).get("result"));
 
         var v1 = this.getServerDatabase(0, "graph").newVertex("V1").set("name", "test").save();
@@ -211,6 +212,14 @@ public class WebSocketEventBusIT extends StaticBaseServerTest {
         var record = json.getJSONObject("record");
         Assertions.assertEquals("test", record.get("name"));
         Assertions.assertEquals("V1", record.get("@type"));
+
+        v1.set("updated", true).save();
+
+        json = getJsonMessageOrFail(client);
+        Assertions.assertEquals("update", json.get("changeType"));
+        record = json.getJSONObject("record");
+        Assertions.assertEquals(v1.getIdentity().toString(), record.get("@rid"));
+        Assertions.assertTrue(record.getBoolean("updated"));
 
         v1.delete();
 

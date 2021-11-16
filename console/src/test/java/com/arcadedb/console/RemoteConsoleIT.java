@@ -35,7 +35,7 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
 
   public void setTestConfiguration() {
     super.setTestConfiguration();
-    GlobalConfiguration.SERVER_HTTP_TX_EXPIRE_TIMEOUT.setValue(3);
+    GlobalConfiguration.SERVER_HTTP_TX_EXPIRE_TIMEOUT.setValue(1);
   }
 
   @Test
