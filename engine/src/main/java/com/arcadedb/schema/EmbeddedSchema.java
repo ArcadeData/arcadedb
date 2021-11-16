@@ -704,7 +704,7 @@ public class EmbeddedSchema implements Schema {
         for (DocumentType sub : type.subTypes) {
           sub.superTypes.remove(type);
           for (DocumentType parent : type.superTypes)
-            sub.addSuperType(parent);
+            sub.addSuperType(parent, false);
         }
 
         final List<Bucket> buckets = new ArrayList<>(type.getBuckets(false));
@@ -1085,32 +1085,35 @@ public class EmbeddedSchema implements Schema {
           }
         }
 
-        final JSONObject schemaIndexes = schemaType.getJSONObject("indexes");
-        if (schemaIndexes != null) {
+        final JSONObject typeIndexesJSON = schemaType.getJSONObject("indexes");
+        if (typeIndexesJSON != null) {
 
-          final List<String> orderedIndexes = new ArrayList<>(schemaIndexes.keySet());
+          final List<String> orderedIndexes = new ArrayList<>(typeIndexesJSON.keySet());
           orderedIndexes.sort(Comparator.naturalOrder());
 
           for (String indexName : orderedIndexes) {
-            final JSONObject index = schemaIndexes.getJSONObject(indexName);
+            final JSONObject indexJSON = typeIndexesJSON.getJSONObject(indexName);
 
-            final JSONArray schemaIndexProperties = index.getJSONArray("properties");
+            if (!indexName.startsWith(typeName))
+              continue;
+
+            final JSONArray schemaIndexProperties = indexJSON.getJSONArray("properties");
             final String[] properties = new String[schemaIndexProperties.length()];
             for (int i = 0; i < properties.length; ++i)
               properties[i] = schemaIndexProperties.getString(i);
 
-            final IndexInternal idx = indexMap.get(indexName);
-            if (idx != null) {
-              final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy = index.has("nullStrategy") ?
-                  LSMTreeIndexAbstract.NULL_STRATEGY.valueOf(index.getString("nullStrategy")) :
+            final IndexInternal index = indexMap.get(indexName);
+            if (index != null) {
+              final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy = indexJSON.has("nullStrategy") ?
+                  LSMTreeIndexAbstract.NULL_STRATEGY.valueOf(indexJSON.getString("nullStrategy")) :
                   LSMTreeIndexAbstract.NULL_STRATEGY.ERROR;
 
-              idx.setNullStrategy(nullStrategy);
+              index.setNullStrategy(nullStrategy);
 
-              type.addIndexInternal(idx, bucketMap.get(index.getString("bucket")).getId(), properties);
+              type.addIndexInternal(index, bucketMap.get(indexJSON.getString("bucket")).getId(), properties);
             } else {
-              orphanIndexes.put(indexName, index);
-              index.put("type", typeName);
+              orphanIndexes.put(indexName, indexJSON);
+              indexJSON.put("type", typeName);
               LogManager.instance().log(this, Level.WARNING, "Cannot find index '%s' defined in type '%s'. Ignoring it", null, indexName, type);
             }
           }
@@ -1174,7 +1177,7 @@ public class EmbeddedSchema implements Schema {
       for (Map.Entry<String, String[]> entry : parentTypes.entrySet()) {
         final DocumentType type = getType(entry.getKey());
         for (String p : entry.getValue())
-          type.addSuperType(getType(p));
+          type.addSuperType(getType(p), false);
       }
 
       loadInRamCompleted = true;
@@ -1269,8 +1272,8 @@ public class EmbeddedSchema implements Schema {
       final JSONObject indexes = new JSONObject();
       type.put("indexes", indexes);
 
-      for (Index i : t.getAllIndexes(false)) {
-        for (Index entry : ((TypeIndex) i).getIndexesOnBuckets()) {
+      for (TypeIndex i : t.getAllIndexes(false)) {
+        for (Index entry : i.getIndexesOnBuckets()) {
           final JSONObject index = new JSONObject();
           indexes.put(entry.getName(), index);
 

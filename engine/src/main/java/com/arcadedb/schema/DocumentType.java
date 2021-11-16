@@ -79,6 +79,10 @@ public class DocumentType {
   }
 
   public DocumentType addSuperType(final DocumentType superType) {
+    return addSuperType(superType, true);
+  }
+
+  protected DocumentType addSuperType(final DocumentType superType, final boolean createIndexes) {
     if (superTypes.indexOf(superType) > -1)
       // ALREADY PARENT
       return this;
@@ -99,25 +103,27 @@ public class DocumentType {
       final List<TypeIndex> indexes = getAllIndexes(true);
       indexes.removeAll(indexesByProperties.values());
 
-      try {
-        schema.getDatabase().transaction(() -> {
-          for (TypeIndex index : indexes) {
-            if (index.getType() == null) {
-              LogManager.instance()
-                  .log(this, Level.WARNING, "Error on creating implicit indexes from super type '" + superType.getName() + "': key types is null");
-            } else {
-              for (int i = 0; i < buckets.size(); i++) {
-                final Bucket bucket = buckets.get(i);
-                schema.createBucketIndex(schema.getType(index.getTypeName()), index.getKeyTypes(), bucket, name, index.getType(), index.isUnique(),
-                    LSMTreeIndexAbstract.DEF_PAGE_SIZE, index.getNullStrategy(), null,
-                    index.getPropertyNames().toArray(new String[index.getPropertyNames().size()]));
+      if (createIndexes) {
+        try {
+          schema.getDatabase().transaction(() -> {
+            for (TypeIndex index : indexes) {
+              if (index.getType() == null) {
+                LogManager.instance()
+                    .log(this, Level.WARNING, "Error on creating implicit indexes from super type '" + superType.getName() + "': key types is null");
+              } else {
+                for (int i = 0; i < buckets.size(); i++) {
+                  final Bucket bucket = buckets.get(i);
+                  schema.createBucketIndex(schema.getType(index.getTypeName()), index.getKeyTypes(), bucket, name, index.getType(), index.isUnique(),
+                      LSMTreeIndexAbstract.DEF_PAGE_SIZE, index.getNullStrategy(), null,
+                      index.getPropertyNames().toArray(new String[index.getPropertyNames().size()]));
+                }
               }
             }
-          }
-        }, false);
-      } catch (IndexException e) {
-        LogManager.instance().log(this, Level.WARNING, "Error on creating implicit indexes from super type '" + superType.getName() + "'", e);
-        throw e;
+          }, false);
+        } catch (IndexException e) {
+          LogManager.instance().log(this, Level.WARNING, "Error on creating implicit indexes from super type '" + superType.getName() + "'", e);
+          throw e;
+        }
       }
 
       return null;
