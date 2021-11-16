@@ -49,6 +49,14 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
   }
 
   @Test
+  public void rebuildIndex() throws Exception {
+    testEachServer((serverIndex) -> {
+      String response = command(serverIndex, "rebuild index *");
+      Thread.sleep(2000);
+    });
+  }
+
+  @Test
   public void checkQuery() throws Exception {
     testEachServer((serverIndex) -> {
       HttpURLConnection connection = (HttpURLConnection) new URL(
@@ -107,7 +115,6 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
   public void checkDeleteGraphElements() throws Exception {
     testEachServer((serverIndex) -> {
       LogManager.instance().log(this, Level.INFO, "TESTS SERVER " + serverIndex);
-
 
       String v1 = new JSONObject(createRecord(serverIndex, "{\"@type\":\"V1\",\"name\":\"Jay\",\"surname\":\"Miner\",\"age\":69}")).getString("result");
       testEachServer((checkServer) -> {

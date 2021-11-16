@@ -553,7 +553,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
       if (analyzed.isDDL()) {
         // USE A BIGGER TIMEOUT CONSIDERING THE DOUBLE LATENCY
         final CommandForwardRequest command = new CommandForwardRequest(ReplicatedDatabase.this, language, query, null, args);
-        return (ResultSet) server.getHA().forwardCommandToLeader(command, timeout * 2);
+        return (ResultSet) server.getHA().forwardCommandToLeader(command, 0);
       }
       return proxied.command(language, query, args);
     }
@@ -568,7 +568,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
       if (analyzed.isDDL()) {
         // USE A BIGGER TIMEOUT CONSIDERING THE DOUBLE LATENCY
         final CommandForwardRequest command = new CommandForwardRequest(ReplicatedDatabase.this, language, query, args, null);
-        return (ResultSet) server.getHA().forwardCommandToLeader(command, timeout * 2);
+        return (ResultSet) server.getHA().forwardCommandToLeader(command, 0);
       }
       return proxied.command(language, query, args);
     }
