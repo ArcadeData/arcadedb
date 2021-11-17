@@ -40,13 +40,26 @@ ENV PATH ./bin:$PATH
 
 VOLUME [ "/home/arcadedb/databases"]
 
-EXPOSE 2424
-
+# ArcadeDB HTTP API & STUDIO
 EXPOSE 2480
 
-#JMX
-EXPOSE 9999
+# ArcadeDB Binary Protocol (replication)
+EXPOSE 2424
 
+# Gremlin Server (Apache TinkerPop)
+EXPOSE 8182
+
+# Postgres protocol
+EXPOSE 5432
+
+# Redis protocol
+EXPOSE 6379
+
+# MongoDB Protocol
+EXPOSE 27017
+
+# JMX for monitoring
+EXPOSE 9999
 EXPOSE 9998
 
 CMD ["server.sh"]
