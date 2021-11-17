@@ -50,7 +50,7 @@ public class GremlinServerTest extends BaseGraphServerTest {
     super.setTestConfiguration();
 
     // COPY GREMLIN SERVER FILES BEFORE STARTING THE GREMLIN SERVER
-    new File("./config").mkdirs();
+    new File("./target/config").mkdirs();
 
     try {
       FileUtils.writeFile(new File("./target/config/gremlin-server.yaml"),
