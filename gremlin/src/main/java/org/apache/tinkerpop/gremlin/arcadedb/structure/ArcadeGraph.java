@@ -61,12 +61,11 @@ import java.util.*;
 public class ArcadeGraph implements Graph, Closeable {
 
   //private final   ArcadeVariableFeatures graphVariables = new ArcadeVariableFeatures();
-  private final   ArcadeGraphTransaction transaction;
-  protected final Database               database;
-  protected final BaseConfiguration      configuration = new BaseConfiguration();
-
-  private final static Iterator<Vertex> EMPTY_VERTICES = Collections.emptyIterator();
-  private final static Iterator<Edge>   EMPTY_EDGES    = Collections.emptyIterator();
+  private final        ArcadeGraphTransaction transaction;
+  protected final      Database               database;
+  protected final      BaseConfiguration      configuration  = new BaseConfiguration();
+  private final static Iterator<Vertex>       EMPTY_VERTICES = Collections.emptyIterator();
+  private final static Iterator<Edge>         EMPTY_EDGES    = Collections.emptyIterator();
 
   static {
     TraversalStrategies.GlobalCache.registerStrategies(ArcadeGraph.class, TraversalStrategies.GlobalCache.getStrategies(Graph.class).clone()//
@@ -82,12 +81,17 @@ public class ArcadeGraph implements Graph, Closeable {
   protected ArcadeGraph(final Configuration configuration) {
     this.configuration.copy(configuration);
     final String directory = this.configuration.getString(CONFIG_DIRECTORY);
-    final DatabaseFactory factory = new DatabaseFactory(directory);
 
-    if (!factory.exists())
-      this.database = factory.create();
-    else
-      this.database = factory.open();
+    Database db = DatabaseFactory.getActiveDatabaseInstance(directory);
+    if (db == null) {
+      final DatabaseFactory factory = new DatabaseFactory(directory);
+      if (!factory.exists())
+        db = factory.create();
+      else
+        db = factory.open();
+    }
+
+    this.database = db;
 
     this.transaction = new ArcadeGraphTransaction(this);
     init();

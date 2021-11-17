@@ -17,9 +17,11 @@ package org.apache.tinkerpop.gremlin.arcadedb.structure.io;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
+import org.apache.tinkerpop.gremlin.arcadedb.structure.io.binary.RIDBinarySerializer;
 import org.apache.tinkerpop.gremlin.arcadedb.structure.io.graphson.ArcadeGraphSONV3;
 import org.apache.tinkerpop.gremlin.arcadedb.structure.io.gryo.RIDGyroSerializer;
 import org.apache.tinkerpop.gremlin.structure.io.AbstractIoRegistry;
+import org.apache.tinkerpop.gremlin.structure.io.binary.GraphBinaryIo;
 import org.apache.tinkerpop.gremlin.structure.io.graphson.GraphSONIo;
 import org.apache.tinkerpop.gremlin.structure.io.gryo.GryoIo;
 
@@ -34,15 +36,14 @@ public class ArcadeIoRegistry extends AbstractIoRegistry {
   private final Database database;
 
   public ArcadeIoRegistry() {
-    database = null;
-    register(GryoIo.class, RID.class, new RIDGyroSerializer());
-    register(GraphSONIo.class, RID.class, new ArcadeGraphSONV3(null));
+    this(null);
   }
 
   public ArcadeIoRegistry(final Database database) {
     this.database = database;
     register(GryoIo.class, RID.class, new RIDGyroSerializer());
     register(GraphSONIo.class, RID.class, new ArcadeGraphSONV3(database));
+    register(GraphBinaryIo.class, RID.class, new RIDBinarySerializer());
   }
 
   public Database getDatabase() {
