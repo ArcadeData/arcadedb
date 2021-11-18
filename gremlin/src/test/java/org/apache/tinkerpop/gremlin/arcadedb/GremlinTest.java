@@ -163,6 +163,25 @@ public class GremlinTest {
   }
 
   @Test
+  public void testGremlinLists() throws ExecutionException, InterruptedException {
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testlist");
+    try {
+      final ResultSet result = graph.gremlin("g.addV('Person').property( 'list', ['a', 'b'] )").execute();
+
+      Assertions.assertTrue(result.hasNext());
+      final Result v = result.next();
+      Assertions.assertTrue(v.isVertex());
+      final List list = (List) v.getVertex().get().get("list");
+      Assertions.assertEquals(2, list.size());
+      Assertions.assertTrue(list.contains("a"));
+      Assertions.assertTrue(list.contains("b"));
+
+    } finally {
+      graph.drop();
+    }
+  }
+
+  @Test
   public void testUseIndex() throws ExecutionException, InterruptedException {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testcypher");
     try {
