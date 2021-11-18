@@ -47,6 +47,8 @@
             <includes>
                 <include>*.yaml</include>
                 <include>*.json</include>
+                <include>*.groovy</include>
+                <include>*.properties</include>
             </includes>
             <fileMode>755</fileMode>
             <filtered>true</filtered>

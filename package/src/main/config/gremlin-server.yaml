@@ -1,0 +1,20 @@
+host: 0.0.0.0
+graphs:
+  graph: config/gremlin-server.properties
+scriptEngines:
+  gremlin-groovy:
+    plugins:
+      org.apache.tinkerpop.gremlin.server.jsr223.GremlinServerGremlinPlugin: {}
+      org.apache.tinkerpop.gremlin.jsr223.ImportGremlinPlugin:
+        classImports:
+          - java.lang.Math
+        methodImports:
+          - 'java.lang.Math#*'
+      org.apache.tinkerpop.gremlin.jsr223.ScriptFileGremlinPlugin:
+        files:
+          - config/gremlin-server.groovy
+serializers:
+  - className: org.apache.tinkerpop.gremlin.driver.ser.GraphBinaryMessageSerializerV1
+    config:
+      ioRegistries:
+        - org.apache.tinkerpop.gremlin.arcadedb.structure.io.ArcadeIoRegistry
