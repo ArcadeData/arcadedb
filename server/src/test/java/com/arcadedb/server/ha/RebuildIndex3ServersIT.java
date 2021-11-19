@@ -65,24 +65,24 @@ public class RebuildIndex3ServersIT extends BaseGraphServerTest {
 
     LogManager.instance().log(this, Level.INFO, "Rebuild index Person[id]...");
 
-//    testEachServer((serverIndex) -> {
-    final int serverIndex = Arrays.asList(getServers()).indexOf(getLeaderServer());
+    testEachServer((serverIndex) -> {
+//    final int serverIndex = Arrays.asList(getServers()).indexOf(getLeaderServer());
 
-    String response1 = command(serverIndex, "rebuild index `Person[id]`");
-    if (getServer(serverIndex).getHA().isLeader())
-      Assertions.assertEquals(TOTAL_RECORDS, new JSONObject(response1).getJSONArray("result").getJSONObject(0).getLong("totalIndexed"));
+      String response1 = command(serverIndex, "rebuild index `Person[id]`");
+      if (getServer(serverIndex).getHA().isLeader())
+        Assertions.assertEquals(TOTAL_RECORDS, new JSONObject(response1).getJSONArray("result").getJSONObject(0).getLong("totalIndexed"));
 
-    LogManager.instance().log(this, Level.INFO, "Rebuild index Person[uuid]...");
+      LogManager.instance().log(this, Level.INFO, "Rebuild index Person[uuid]...");
 
-    String response2 = command(serverIndex, "rebuild index `Person[uuid]`");
-    if (getServer(serverIndex).getHA().isLeader())
-      Assertions.assertEquals(TOTAL_RECORDS, new JSONObject(response2).getJSONArray("result").getJSONObject(0).getLong("totalIndexed"));
+      String response2 = command(serverIndex, "rebuild index `Person[uuid]`");
+      if (getServer(serverIndex).getHA().isLeader())
+        Assertions.assertEquals(TOTAL_RECORDS, new JSONObject(response2).getJSONArray("result").getJSONObject(0).getLong("totalIndexed"));
 
-    LogManager.instance().log(this, Level.INFO, "Rebuild index *...");
+      LogManager.instance().log(this, Level.INFO, "Rebuild index *...");
 
-    String response3 = command(serverIndex, "rebuild index *");
-    if (getServer(serverIndex).getHA().isLeader())
-      Assertions.assertEquals(TOTAL_RECORDS * 2, new JSONObject(response3).getJSONArray("result").getJSONObject(0).getLong("totalIndexed"));
-//  });
+      String response3 = command(serverIndex, "rebuild index *");
+      if (getServer(serverIndex).getHA().isLeader())
+        Assertions.assertEquals(TOTAL_RECORDS * 2, new JSONObject(response3).getJSONArray("result").getJSONObject(0).getLong("totalIndexed"));
+    });
   }
 }
