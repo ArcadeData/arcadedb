@@ -222,8 +222,8 @@ public abstract class ChannelBinary extends Channel implements ChannelDataInput,
     in.readFully(tmp);
 
     if (debug)
-      LogManager.instance().log(this, Level.INFO, "%s - Read %d bytes: %s", null, socket.getRemoteSocketAddress(), len, new String(tmp,
-          DatabaseFactory.getDefaultCharset()));
+      LogManager.instance()
+          .log(this, Level.INFO, "%s - Read %d bytes: %s", null, socket.getRemoteSocketAddress(), len, new String(tmp, DatabaseFactory.getDefaultCharset()));
 
     return tmp;
   }
@@ -334,8 +334,8 @@ public abstract class ChannelBinary extends Channel implements ChannelDataInput,
       updateMetricTransmittedBytes(Binary.INT_SERIALIZED_SIZE);
     } else {
       if (iLength > maxChunkSize) {
-        throw new IOException("Impossible to write a chunk of length:" + iLength + " max allowed chunk length:" + maxChunkSize
-            + " see NETWORK_BINARY_MAX_CONTENT_LENGTH settings ");
+        throw new IOException("Impossible to write a chunk of " + iLength + " bytes. Max allowed chunk is " + maxChunkSize
+            + " bytes. See NETWORK_BINARY_MAX_CONTENT_LENGTH settings ");
       }
 
       out.writeInt(iLength);
@@ -353,8 +353,8 @@ public abstract class ChannelBinary extends Channel implements ChannelDataInput,
 
     if (content != null) {
       if (length > maxChunkSize) {
-        throw new IOException("Impossible to write a chunk of length:" + length + " max allowed chunk length:" + maxChunkSize
-            + " see NETWORK_BINARY_MAX_CONTENT_LENGTH settings ");
+        throw new IOException("Impossible to write a chunk of " + length + " bytes. Max allowed chunk is " + maxChunkSize
+            + " bytes. See NETWORK_BINARY_MAX_CONTENT_LENGTH settings ");
       }
 
       out.write(content, 0, length);
@@ -449,8 +449,8 @@ public abstract class ChannelBinary extends Channel implements ChannelDataInput,
       LogManager.instance().log(this, Level.INFO, "%s - Writing bytes (%d bytes) from DirectBuffer", null, socket.getRemoteSocketAddress(), length);
 
     if (length > maxChunkSize)
-      throw new IOException(
-          "Impossible to write a chunk of length:" + length + " max allowed chunk length:" + maxChunkSize + " see NETWORK_BINARY_MAX_CONTENT_LENGTH settings ");
+      throw new IOException("Impossible to write a chunk of " + length + " bytes max allowed chunk is " + maxChunkSize
+          + " bytes. See NETWORK_BINARY_MAX_CONTENT_LENGTH settings ");
 
     out.write(buffer.array(), buffer.arrayOffset(), length);
     updateMetricTransmittedBytes(length);

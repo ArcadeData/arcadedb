@@ -79,7 +79,7 @@ public class JsonlExporterFormat extends AbstractExporterFormat {
       final long now = System.currentTimeMillis();
       writeJsonLine("db", new JSONObject().put("name", database.getName()).put("executedOn", dateFormat.format(now)).put("executedOnTimestamp", now));
 
-      writeJsonLine("schema", ((EmbeddedSchema) database.getSchema()).serializeConfiguration());
+      writeJsonLine("schema", ((EmbeddedSchema) database.getSchema()).toJSON());
 
       final List<String> vertexTypes = new ArrayList<>();
       final List<String> edgeTypes = new ArrayList<>();

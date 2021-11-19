@@ -133,7 +133,8 @@ public class DatabaseComparator {
     for (DocumentType entry1 : types1) {
       final DocumentType entry2 = types2Map.get(entry1.getName());
       if (!entry1.isTheSameAs(entry2))
-        throw new DatabaseAreNotIdentical("Types '%s' is configured differently in two databases", entry2.getName());
+        throw new DatabaseAreNotIdentical("Types '%s' is configured differently in two databases 1:\n%s\n2:\n%s", entry2.getName(), entry1.toJSON(),
+            entry2.toJSON());
     }
   }
 }

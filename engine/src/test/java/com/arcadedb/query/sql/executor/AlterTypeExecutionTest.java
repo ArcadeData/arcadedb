@@ -76,7 +76,7 @@ public class AlterTypeExecutionTest extends TestHelper {
     database.command("sql", "ALTER TYPE Suv CUSTOM age = 3");
     Assertions.assertEquals(3, database.getSchema().getType("Suv").getCustomValue("age"));
 
-    final JSONObject cfg = database.getSchema().getEmbedded().serializeConfiguration();
+    final JSONObject cfg = database.getSchema().getEmbedded().toJSON();
     JSONObject customMap = cfg.getJSONObject("types").getJSONObject("Suv").getJSONObject("custom");
     Assertions.assertEquals("test", customMap.getString("description"));
     Assertions.assertEquals(3, customMap.getInt("age"));

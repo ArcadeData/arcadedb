@@ -28,6 +28,7 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
+import org.json.JSONObject;
 
 import java.util.*;
 import java.util.concurrent.*;
@@ -700,6 +701,65 @@ public class DocumentType {
     if (value == null)
       return custom.remove(key);
     return custom.put(key, value);
+  }
+
+  public JSONObject toJSON() {
+    final JSONObject type = new JSONObject();
+
+    final String kind;
+    if (this instanceof VertexType)
+      kind = "v";
+    else if (this instanceof EdgeType)
+      kind = "e";
+    else
+      kind = "d";
+    type.put("type", kind);
+
+    final String[] parents = new String[getSuperTypes().size()];
+    for (int i = 0; i < parents.length; ++i)
+      parents[i] = getSuperTypes().get(i).getName();
+    type.put("parents", parents);
+
+    final List<Bucket> originalBuckets = getBuckets(false);
+    final String[] buckets = new String[originalBuckets.size()];
+    for (int i = 0; i < buckets.length; ++i)
+      buckets[i] = originalBuckets.get(i).getName();
+
+    type.put("buckets", buckets);
+
+    final JSONObject properties = new JSONObject();
+    type.put("properties", properties);
+
+    for (String propName : getPropertyNames()) {
+      final JSONObject prop = new JSONObject();
+      properties.put(propName, prop);
+
+      final Property p = getProperty(propName);
+      prop.put("type", p.getType());
+
+      final Object defValue = p.getDefaultValue();
+      if (defValue != null)
+        prop.put("default", defValue);
+
+      prop.put("custom", new JSONObject(p.custom));
+    }
+
+    final JSONObject indexes = new JSONObject();
+    type.put("indexes", indexes);
+
+    for (TypeIndex i : getAllIndexes(false)) {
+      for (Index entry : i.getIndexesOnBuckets()) {
+        final JSONObject index = new JSONObject();
+        indexes.put(entry.getName(), index);
+
+        index.put("bucket", schema.getBucketById(entry.getAssociatedBucketId()).getName());
+        index.put("properties", entry.getPropertyNames());
+        index.put("nullStrategy", entry.getNullStrategy());
+      }
+    }
+
+    type.put("custom", new JSONObject(custom));
+    return type;
   }
 
   protected <RET> RET recordFileChanges(final Callable<Object> callback) {

@@ -54,6 +54,7 @@ import java.util.logging.*;
  */
 public class LSMTreeIndex implements RangeIndex, IndexInternal {
   private static final IndexCursor                                             EMPTY_CURSOR       = new EmptyIndexCursor();
+  private static final int                                                     TX_CHUNK_RECORDS   = 100_000;
   private final        String                                                  name;
   private final        RWLockContext                                           lock               = new RWLockContext();
   private              int                                                     associatedBucketId = -1;
@@ -531,6 +532,12 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
       if (callback != null)
         callback.onDocumentIndexed((Document) record, total.get());
+
+      if (total.get() % TX_CHUNK_RECORDS == 0) {
+        // CHUNK OF 100K
+        db.commit();
+        db.begin();
+      }
 
       return true;
     });

@@ -41,7 +41,7 @@ public class AlterPropertyExecutionTest extends TestHelper {
     database.command("sql", "ALTER PROPERTY Car.name CUSTOM age = 3");
     Assertions.assertEquals(3, database.getSchema().getType("Car").getProperty("name").getCustomValue("age"));
 
-    final JSONObject cfg = database.getSchema().getEmbedded().serializeConfiguration();
+    final JSONObject cfg = database.getSchema().getEmbedded().toJSON();
     JSONObject customMap = cfg.getJSONObject("types").getJSONObject("Car").getJSONObject("properties").getJSONObject("name").getJSONObject("custom");
     Assertions.assertEquals("test", customMap.getString("description"));
     Assertions.assertEquals(3, customMap.getInt("age"));
@@ -79,7 +79,7 @@ public class AlterPropertyExecutionTest extends TestHelper {
     database.command("sql", "ALTER PROPERTY Suv.weight DEFAULT 1");
     Assertions.assertEquals(1, database.getSchema().getType("Suv").getProperty("weight").getDefaultValue());
 
-    final JSONObject cfg = database.getSchema().getEmbedded().serializeConfiguration();
+    final JSONObject cfg = database.getSchema().getEmbedded().toJSON();
     String def1 = cfg.getJSONObject("types").getJSONObject("Car").getJSONObject("properties").getJSONObject("name").getString("default");
     Assertions.assertEquals("test", def1);
     Float def2 = cfg.getJSONObject("types").getJSONObject("Suv").getJSONObject("properties").getJSONObject("weight").getFloat("default");

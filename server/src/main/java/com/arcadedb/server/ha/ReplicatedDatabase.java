@@ -721,7 +721,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
     final String serializedSchema;
     if (schemaChanged) {
       // SEND THE SCHEMA CONFIGURATION WITH NEXT VERSION (ON CURRENT SERVER WILL BE INCREMENTED + SAVED AT COMMIT TIME)
-      final JSONObject schemaJson = proxied.getSchema().getEmbedded().serializeConfiguration();
+      final JSONObject schemaJson = proxied.getSchema().getEmbedded().toJSON();
       schemaJson.put("schemaVersion", schemaJson.getLong("schemaVersion") + 1);
       serializedSchema = schemaJson.toString();
     } else

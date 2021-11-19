@@ -21,7 +21,6 @@ import org.json.JSONObject;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
 import java.net.*;
 import java.util.*;
 import java.util.logging.*;
@@ -37,7 +36,11 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
     testEachServer((serverIndex) -> {
       // CREATE THE SCHEMA ON BOTH SERVER, ONE TYPE PER SERVER
       String response = command(serverIndex, "create vertex type VertexType" + serverIndex);
-      Assertions.assertTrue(response.contains("VertexType" + serverIndex), "Type " + (("VertexType" + serverIndex) + " not found on server " + serverIndex));
+      if (getServer(serverIndex).getHA().isLeader())
+        Assertions.assertTrue(response.contains("VertexType" + serverIndex), "Type " + (("VertexType" + serverIndex) + " not found on server " + serverIndex));
+      else
+        Assertions.assertTrue(response.contains("forwarded"),
+            "Type " + (("VertexType" + serverIndex) + " creation was not forwarded from server " + serverIndex));
     });
 
     Thread.sleep(1000);
@@ -45,14 +48,6 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
     // CHECK THE SCHEMA HAS BEEN PROPAGATED
     testEachServer((serverIndex) -> {
       command(serverIndex, "select from VertexType" + serverIndex);
-    });
-  }
-
-  @Test
-  public void rebuildIndex() throws Exception {
-    testEachServer((serverIndex) -> {
-      String response = command(serverIndex, "rebuild index *");
-      Thread.sleep(2000);
     });
   }
 
@@ -177,56 +172,5 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
         }
       });
     });
-  }
-
-  private String createRecord(final int serverIndex, final String payload) throws IOException {
-    HttpURLConnection connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/document/graph").openConnection();
-    connection.setRequestMethod("POST");
-    connection.setRequestMethod("POST");
-    connection.setRequestProperty("Authorization",
-        "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
-    connection.setDoOutput(true);
-
-    connection.connect();
-
-    PrintWriter pw = new PrintWriter(new OutputStreamWriter(connection.getOutputStream()));
-    pw.write(payload);
-    pw.close();
-
-    try {
-      final String response = readResponse(connection);
-
-      Assertions.assertEquals(200, connection.getResponseCode());
-      Assertions.assertEquals("OK", connection.getResponseMessage());
-      LogManager.instance().log(this, Level.INFO, "TEST: Response: %s", null, response);
-      Assertions.assertTrue(response.contains("#"));
-
-      return response;
-
-    } finally {
-      connection.disconnect();
-    }
-  }
-
-  private String command(final int serverIndex, final String command) throws Exception {
-    final HttpURLConnection initialConnection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").openConnection();
-    try {
-
-      initialConnection.setRequestMethod("POST");
-      initialConnection.setRequestProperty("Authorization",
-          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
-      formatPost(initialConnection, "sql", command, new HashMap<>());
-      initialConnection.connect();
-
-      final String response = readResponse(initialConnection);
-
-      LogManager.instance().log(this, Level.INFO, "Response: %s", null, response);
-      Assertions.assertEquals(200, initialConnection.getResponseCode());
-      Assertions.assertEquals("OK", initialConnection.getResponseMessage());
-      return response;
-
-    } finally {
-      initialConnection.disconnect();
-    }
   }
 }

@@ -586,18 +586,16 @@ public class EmbeddedSchema implements Schema {
     if (indexMap.containsKey(indexName))
       throw new DatabaseMetadataException("Cannot create index '" + indexName + "' on type '" + typeName + "' because it already exists");
 
-    return recordFileChanges(() -> {
-      final IndexInternal index = indexFactory.createIndex(indexType.name(), database, indexName, unique, databasePath + "/" + indexName,
-          PaginatedFile.MODE.READ_WRITE, keyTypes, pageSize, nullStrategy, callback);
+    final IndexInternal index = indexFactory.createIndex(indexType.name(), database, indexName, unique, databasePath + "/" + indexName,
+        PaginatedFile.MODE.READ_WRITE, keyTypes, pageSize, nullStrategy, callback);
 
-      registerFile(index.getPaginatedComponent());
+    registerFile(index.getPaginatedComponent());
 
-      indexMap.put(indexName, index);
+    indexMap.put(indexName, index);
 
-      type.addIndexInternal(index, bucket.getId(), propertyNames);
-      index.build(callback);
-      return index;
-    });
+    type.addIndexInternal(index, bucket.getId(), propertyNames);
+    index.build(callback);
+    return index;
   }
 
   public Index createManualIndex(final INDEX_TYPE indexType, final boolean unique, final String indexName, final Type[] keyTypes, final int pageSize,
@@ -1202,7 +1200,7 @@ public class EmbeddedSchema implements Schema {
     try {
       versionSerial.incrementAndGet();
 
-      update(serializeConfiguration());
+      update(toJSON());
 
       dirtyConfiguration = false;
 
@@ -1211,7 +1209,7 @@ public class EmbeddedSchema implements Schema {
     }
   }
 
-  public synchronized JSONObject serializeConfiguration() {
+  public synchronized JSONObject toJSON() {
     final JSONObject root = new JSONObject();
     root.put("schemaVersion", versionSerial.get());
     root.put("dbmsVersion", Constants.getRawVersion());
@@ -1227,64 +1225,9 @@ public class EmbeddedSchema implements Schema {
     final JSONObject types = new JSONObject();
     root.put("types", types);
 
-    for (DocumentType t : this.types.values()) {
-      final JSONObject type = new JSONObject();
-      types.put(t.getName(), type);
+    for (DocumentType t : this.types.values())
+      types.put(t.getName(), t.toJSON());
 
-      final String kind;
-      if (t instanceof VertexType)
-        kind = "v";
-      else if (t instanceof EdgeType)
-        kind = "e";
-      else
-        kind = "d";
-      type.put("type", kind);
-
-      final String[] parents = new String[t.getSuperTypes().size()];
-      for (int i = 0; i < parents.length; ++i)
-        parents[i] = t.getSuperTypes().get(i).getName();
-      type.put("parents", parents);
-
-      final List<Bucket> originalBuckets = t.getBuckets(false);
-      final String[] buckets = new String[originalBuckets.size()];
-      for (int i = 0; i < buckets.length; ++i)
-        buckets[i] = originalBuckets.get(i).getName();
-
-      type.put("buckets", buckets);
-
-      final JSONObject properties = new JSONObject();
-      type.put("properties", properties);
-
-      for (String propName : t.getPropertyNames()) {
-        final JSONObject prop = new JSONObject();
-        properties.put(propName, prop);
-
-        final Property p = t.getProperty(propName);
-        prop.put("type", p.getType());
-
-        final Object defValue = p.getDefaultValue();
-        if (defValue != null)
-          prop.put("default", defValue);
-
-        prop.put("custom", new JSONObject(p.custom));
-      }
-
-      final JSONObject indexes = new JSONObject();
-      type.put("indexes", indexes);
-
-      for (TypeIndex i : t.getAllIndexes(false)) {
-        for (Index entry : i.getIndexesOnBuckets()) {
-          final JSONObject index = new JSONObject();
-          indexes.put(entry.getName(), index);
-
-          index.put("bucket", getBucketById(entry.getAssociatedBucketId()).getName());
-          index.put("properties", entry.getPropertyNames());
-          index.put("nullStrategy", entry.getNullStrategy());
-        }
-      }
-
-      type.put("custom", new JSONObject(t.custom));
-    }
     return root;
   }
 
