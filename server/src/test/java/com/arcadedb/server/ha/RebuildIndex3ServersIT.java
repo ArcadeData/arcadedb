@@ -16,14 +16,21 @@
 package com.arcadedb.server.ha;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.server.BaseGraphServerTest;
+import org.json.JSONObject;
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
+import java.util.logging.*;
 
 public class RebuildIndex3ServersIT extends BaseGraphServerTest {
+
+  private static final int TOTAL_RECORDS = 1_000_000;
+
   @Override
   protected int getServerCount() {
     return 3;
@@ -43,9 +50,10 @@ public class RebuildIndex3ServersIT extends BaseGraphServerTest {
     v.createProperty("uuid", String.class);
     database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Person", "uuid");
 
+    LogManager.instance().log(this, Level.INFO, "Inserting 1M records with 2 indexes...");
     // CREATE 1M RECORD IN 10 TX CHUNKS OF 100K EACH
     database.transaction(() -> {
-      for (int i = 0; i < 1_000_000; i++) {
+      for (int i = 0; i < TOTAL_RECORDS; i++) {
         database.newVertex("Person").set("id", i, "uuid", UUID.randomUUID().toString()).save();
 
         if (i % 100_000 == 0) {
@@ -55,10 +63,25 @@ public class RebuildIndex3ServersIT extends BaseGraphServerTest {
       }
     });
 
+    LogManager.instance().log(this, Level.INFO, "Rebuild index Person[id]...");
+
 //    testEachServer((serverIndex) -> {
     final int serverIndex = 0;
     String response1 = command(serverIndex, "rebuild index `Person[id]`");
+    if (getServer(serverIndex).getHA().isLeader())
+      Assertions.assertEquals(TOTAL_RECORDS, new JSONObject(response1).getJSONArray("result").getJSONObject(0).getLong("totalIndexed"));
+
+    LogManager.instance().log(this, Level.INFO, "Rebuild index Person[uuid]...");
+
     String response2 = command(serverIndex, "rebuild index `Person[uuid]`");
+    if (getServer(serverIndex).getHA().isLeader())
+      Assertions.assertEquals(TOTAL_RECORDS, new JSONObject(response2).getJSONArray("result").getJSONObject(0).getLong("totalIndexed"));
+
+    LogManager.instance().log(this, Level.INFO, "Rebuild index *...");
+
+    String response3 = command(serverIndex, "rebuild index *");
+    if (getServer(serverIndex).getHA().isLeader())
+      Assertions.assertEquals(TOTAL_RECORDS * 2, new JSONObject(response3).getJSONArray("result").getJSONObject(0).getLong("totalIndexed"));
 //    });
   }
 }

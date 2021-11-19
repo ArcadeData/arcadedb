@@ -79,13 +79,9 @@ public class RebuildIndexStatement extends DDLStatement {
               final String typeName = idx.getTypeName();
               final int pageSize = idx.getPageSize();
 
-              LogManager.instance().log(this, Level.INFO, "START rebuilding of index '%s'", null, idx.getName());
-
               database.getSchema().dropIndex(idx.getName());
               database.getSchema().createTypeIndex(indexType, unique, typeName, propNames.toArray(new String[propNames.size()]), pageSize, callback);
               indexList.add(idx.getName());
-
-              LogManager.instance().log(this, Level.INFO, "END rebuilding of index '%s'", null, idx.getName());
             }
           } catch (Exception e) {
             LogManager.instance().log(this, Level.SEVERE, "Error on rebuilding index '%s'", e, idx.getName());
