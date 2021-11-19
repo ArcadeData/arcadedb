@@ -535,8 +535,8 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
       if (total.get() % TX_CHUNK_RECORDS == 0) {
         // CHUNK OF 100K
-        db.commit();
-        db.begin();
+        db.getWrappedDatabaseInstance().commit();
+        db.getWrappedDatabaseInstance().begin();
       }
 
       return true;

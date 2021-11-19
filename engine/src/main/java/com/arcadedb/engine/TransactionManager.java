@@ -298,8 +298,8 @@ public class TransactionManager {
 
         if (txPage.currentPageVersion > page.getVersion() + 1) {
           LogManager.instance().log(this, Level.WARNING,
-              "Cannot apply changes to the database because modified page version in WAL (" + txPage.currentPageVersion
-                  + ") does not match with existent version (" + page.getVersion() + ") fileId=" + txPage.fileId);
+              "Cannot apply changes to the database because modified page %s version in WAL (" + txPage.currentPageVersion
+                  + ") does not match with existent version (" + page.getVersion() + ") fileId=" + txPage.fileId, null, pageId);
           continue;
         }
 //          throw new WALException("Cannot apply changes to the database because modified page version in WAL (" + txPage.currentPageVersion

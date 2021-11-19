@@ -132,8 +132,11 @@ public class DatabaseChangeStructureRequest extends HAAbstractCommand {
       db.getFileManager().getOrCreateFile(entry.getKey(), databasePath + "/" + entry.getValue());
 
     // REMOVE FILES
-    for (Map.Entry<Integer, String> entry : filesToRemove.entrySet())
+    for (Map.Entry<Integer, String> entry : filesToRemove.entrySet()) {
+      db.getPageManager().deleteFile(entry.getKey());
       db.getFileManager().dropFile(entry.getKey());
+      db.getSchema().getEmbedded().removeFile(entry.getKey());
+    }
 
     if (!schemaJson.isEmpty())
       // REPLACE SCHEMA FILE

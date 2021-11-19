@@ -558,7 +558,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
       return proxied.command(language, query, args);
     }
 
-    return recordFileChanges(() -> proxied.command(language, query, args));
+    return proxied.command(language, query, args);
   }
 
   @Override
@@ -573,7 +573,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
       return proxied.command(language, query, args);
     }
 
-    return recordFileChanges(() -> proxied.command(language, query, args));
+    return proxied.command(language, query, args);
   }
 
   @Override
