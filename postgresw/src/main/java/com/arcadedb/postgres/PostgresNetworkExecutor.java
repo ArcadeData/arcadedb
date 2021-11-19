@@ -466,10 +466,11 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   private void writeDataRows(final List<Result> resultSet, final Map<String, PostgresType> columns) throws IOException {
-    final ByteBuffer bufferData = ByteBuffer.allocate(64 * 1024);
-    final ByteBuffer bufferValues = ByteBuffer.allocate(64 * 1024);
+    final ByteBuffer bufferData = ByteBuffer.allocate(128 * 1024);
+    final ByteBuffer bufferValues = ByteBuffer.allocate(128 * 1024);
 
     for (Result row : resultSet) {
+      bufferData.clear();
       bufferValues.clear();
       bufferValues.putShort((short) columns.size()); // Int16 The number of column values that follow (possibly zero).
 
@@ -484,10 +485,11 @@ public class PostgresNetworkExecutor extends Thread {
       bufferData.put((byte) 'D');
       bufferData.putInt(4 + bufferValues.limit());
       bufferData.put(bufferValues);
+
+      bufferData.flip();
+      channel.writeBuffer(bufferData);
     }
 
-    bufferData.flip();
-    channel.writeBuffer(bufferData);
     channel.flush();
 
     if (DEBUG)

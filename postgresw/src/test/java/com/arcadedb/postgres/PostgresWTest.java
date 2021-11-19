@@ -55,41 +55,45 @@ public class PostgresWTest extends BaseGraphServerTest {
 
   @Test
   public void queryVertices() throws Exception {
+    final int TOTAL = 10000;
     try (final Connection conn = getConnection()) {
       try (Statement st = conn.createStatement()) {
         st.execute("create vertex type V");
-        st.execute("create vertex V set name = 'Jay', lastName = 'Miner'");
+        for (int i = 0; i < TOTAL; i++) {
+          st.execute("create vertex V set id = " + i + ", name = 'Jay', lastName = 'Miner'");
+        }
 
-        PreparedStatement pst = conn.prepareStatement("create vertex V set name = ?, lastName = ?");
+        PreparedStatement pst = conn.prepareStatement("create vertex V set id = -1, name = ?, lastName = ?");
         pst.setString(1, "Rocky");
         pst.setString(2, "Balboa");
         pst.execute();
         pst.close();
 
-        ResultSet rs = st.executeQuery("SELECT * FROM V");
+        ResultSet rs = st.executeQuery("SELECT id, name, lastName FROM V order by id");
 
         Assertions.assertTrue(!rs.isAfterLast());
 
         int i = 0;
         while (rs.next()) {
-          if (rs.getString(1).equalsIgnoreCase("Jay")) {
-            Assertions.assertEquals("Jay", rs.getString(1));
-            Assertions.assertEquals("Miner", rs.getString(2));
+          if (rs.getString(2).equalsIgnoreCase("Jay")) {
+            Assertions.assertEquals("Jay", rs.getString(2));
+            Assertions.assertEquals("Miner", rs.getString(3));
             ++i;
-          } else if (rs.getString(1).equalsIgnoreCase("Rocky")) {
-            Assertions.assertEquals("Rocky", rs.getString(1));
-            Assertions.assertEquals("Balboa", rs.getString(2));
+          } else if (rs.getString(2).equalsIgnoreCase("Rocky")) {
+            Assertions.assertEquals("Rocky", rs.getString(2));
+            Assertions.assertEquals("Balboa", rs.getString(3));
             ++i;
           } else
             Assertions.fail("Unknown value");
         }
 
-        Assertions.assertEquals(2, i);
+        Assertions.assertEquals(TOTAL + 1, i);
 
         rs.close();
       }
     }
   }
+
 
   //@Test
   public void queryTransaction() throws Exception {
