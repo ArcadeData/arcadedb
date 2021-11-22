@@ -261,6 +261,9 @@ public abstract class BaseGraphServerTest {
       onBeforeStarting(servers[i]);
       servers[i].start();
 
+      LogManager.instance().log(this, Level.INFO, "Server %d database directory: %s", null, i,
+          servers[i].getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY));
+
       try {
         Thread.sleep(1000);
       } catch (InterruptedException e) {

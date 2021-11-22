@@ -36,14 +36,10 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
     testEachServer((serverIndex) -> {
       // CREATE THE SCHEMA ON BOTH SERVER, ONE TYPE PER SERVER
       String response = command(serverIndex, "create vertex type VertexType" + serverIndex);
-      if (getServer(serverIndex).getHA().isLeader())
-        Assertions.assertTrue(response.contains("VertexType" + serverIndex), "Type " + (("VertexType" + serverIndex) + " not found on server " + serverIndex));
-      else
-        Assertions.assertTrue(response.contains("forwarded"),
-            "Type " + (("VertexType" + serverIndex) + " creation was not forwarded from server " + serverIndex));
+      Assertions.assertTrue(response.contains("VertexType" + serverIndex), "Type " + (("VertexType" + serverIndex) + " not found on server " + serverIndex));
     });
 
-    Thread.sleep(1000);
+    Thread.sleep(300);
 
     // CHECK THE SCHEMA HAS BEEN PROPAGATED
     testEachServer((serverIndex) -> {
@@ -112,6 +108,10 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
       LogManager.instance().log(this, Level.INFO, "TESTS SERVER " + serverIndex);
 
       String v1 = new JSONObject(createRecord(serverIndex, "{\"@type\":\"V1\",\"name\":\"Jay\",\"surname\":\"Miner\",\"age\":69}")).getString("result");
+
+      if (!getServer(serverIndex).getHA().isLeader())
+        Thread.sleep(300);
+
       testEachServer((checkServer) -> {
         try {
           Assertions.assertFalse(new JSONObject(command(checkServer, "select from " + v1)).getJSONArray("result").isEmpty(), "server " + serverIndex);
@@ -122,6 +122,10 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
       });
 
       String v2 = new JSONObject(createRecord(serverIndex, "{\"@type\":\"V1\",\"name\":\"Elon\",\"surname\":\"Musk\",\"age\":50}")).getString("result");
+
+      if (!getServer(serverIndex).getHA().isLeader())
+        Thread.sleep(300);
+
       testEachServer((checkServer) -> {
         try {
           Assertions.assertFalse(new JSONObject(command(checkServer, "select from " + v2)).getJSONArray("result").isEmpty(), "server " + serverIndex);
@@ -132,6 +136,10 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
       });
 
       String e1 = new JSONObject(command(serverIndex, "create edge E1 from " + v1 + " to " + v2)).getJSONArray("result").getJSONObject(0).getString("@rid");
+
+      if (!getServer(serverIndex).getHA().isLeader())
+        Thread.sleep(300);
+
       testEachServer((checkServer) -> {
         try {
           Assertions.assertFalse(new JSONObject(command(checkServer, "select from " + e1)).getJSONArray("result").isEmpty(), "server " + serverIndex);
@@ -142,6 +150,10 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
       });
 
       String v3 = new JSONObject(createRecord(serverIndex, "{\"@type\":\"V1\",\"name\":\"Nikola\",\"surname\":\"Tesla\",\"age\":150}")).getString("result");
+
+      if (!getServer(serverIndex).getHA().isLeader())
+        Thread.sleep(300);
+
       testEachServer((checkServer) -> {
         try {
           Assertions.assertFalse(new JSONObject(command(checkServer, "select from " + v3)).getJSONArray("result").isEmpty(), "server " + serverIndex);
@@ -152,6 +164,10 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
       });
 
       String e2 = new JSONObject(command(serverIndex, "create edge E2 from " + v2 + " to " + v3)).getJSONArray("result").getJSONObject(0).getString("@rid");
+
+      if (!getServer(serverIndex).getHA().isLeader())
+        Thread.sleep(300);
+
       testEachServer((checkServer) -> {
         try {
           Assertions.assertFalse(new JSONObject(command(checkServer, "select from " + e2)).getJSONArray("result").isEmpty(), "server " + serverIndex);
@@ -162,6 +178,10 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
       });
 
       command(serverIndex, "delete from " + v1);
+
+      if (!getServer(serverIndex).getHA().isLeader())
+        Thread.sleep(300);
+
       testEachServer((checkServer) -> {
         try {
           Assertions.assertTrue(new JSONObject(command(checkServer, "select from " + v1)).getJSONArray("result").isEmpty(), "server " + serverIndex);

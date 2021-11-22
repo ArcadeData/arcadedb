@@ -145,6 +145,6 @@ public class DatabaseChangeStructureRequest extends HAAbstractCommand {
 
   @Override
   public String toString() {
-    return "dbchangestructure add=" + filesToAdd + " remote=" + filesToRemove;
+    return "dbchangestructure add=" + filesToAdd + " remove=" + filesToRemove;
   }
 }

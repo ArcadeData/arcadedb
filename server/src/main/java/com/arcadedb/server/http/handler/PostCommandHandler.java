@@ -150,8 +150,10 @@ public class PostCommandHandler extends DatabaseAbstractHandler {
       }
       }
 
+      final String responseAsString = response.toString();
+
       exchange.setStatusCode(200);
-      exchange.getResponseSender().send(response.toString());
+      exchange.getResponseSender().send(responseAsString);
 
     } finally {
       timer.stop();
@@ -159,7 +161,7 @@ public class PostCommandHandler extends DatabaseAbstractHandler {
   }
 
   private void analyzeResultContent(final Database database, final JsonGraphSerializer serializerImpl, final Set<Identifiable> includedVertices,
-    final JSONArray vertices, final JSONArray edges, final Result row) {
+      final JSONArray vertices, final JSONArray edges, final Result row) {
     for (String prop : row.getPropertyNames()) {
       final Object value = row.getProperty(prop);
       if (value == null) {
@@ -170,7 +172,7 @@ public class PostCommandHandler extends DatabaseAbstractHandler {
   }
 
   private void analyzePropertyValue(final Database database, final JsonGraphSerializer serializerImpl, final Set<Identifiable> includedVertices,
-    final JSONArray vertices, final JSONArray edges, final Object value) {
+      final JSONArray vertices, final JSONArray edges, final Object value) {
     if (value instanceof Identifiable) {
       final RID rid = ((Identifiable) value).getIdentity();
 
@@ -191,7 +193,7 @@ public class PostCommandHandler extends DatabaseAbstractHandler {
     } else if (value instanceof Result) {
       analyzeResultContent(database, serializerImpl, includedVertices, vertices, edges, (Result) value);
     } else if (value instanceof Collection) {
-      for (Iterator<?> it = ((Collection<?>) value).iterator(); it.hasNext();) {
+      for (Iterator<?> it = ((Collection<?>) value).iterator(); it.hasNext(); ) {
         analyzePropertyValue(database, serializerImpl, includedVertices, vertices, edges, it.next());
       }
     }

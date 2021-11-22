@@ -98,7 +98,8 @@ public abstract class AbstractHandler implements HttpHandler {
         final String[] authPair = authPairClear.split(":");
 
         if (authPair.length != 2) {
-          exchange.setStatusCode(403);
+          if (!exchange.isResponseStarted())
+            exchange.setStatusCode(403);
           exchange.getResponseSender().send("{ \"error\" : \"Basic authentication error\"}");
           return;
         }
@@ -116,19 +117,23 @@ public abstract class AbstractHandler implements HttpHandler {
 
     } catch (ServerSecurityException e) {
       LogManager.instance().log(this, getErrorLogLevel(), "Security error on command execution (%s)", e, getClass().getSimpleName());
-      exchange.setStatusCode(403);
+      if (!exchange.isResponseStarted())
+        exchange.setStatusCode(403);
       exchange.getResponseSender().send(error2json("Security error", e.getMessage(), e, null, null));
     } catch (ServerIsNotTheLeaderException e) {
       LogManager.instance().log(this, getErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
-      exchange.setStatusCode(400);
+      if (!exchange.isResponseStarted())
+        exchange.setStatusCode(400);
       exchange.getResponseSender().send(error2json("Cannot execute command", e.getMessage(), e, e.getLeaderAddress(), null));
     } catch (NeedRetryException e) {
       LogManager.instance().log(this, getErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
-      exchange.setStatusCode(503);
+      if (!exchange.isResponseStarted())
+        exchange.setStatusCode(503);
       exchange.getResponseSender().send(error2json("Cannot execute command", e.getMessage(), e, null, null));
     } catch (DuplicatedKeyException e) {
       LogManager.instance().log(this, getErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
-      exchange.setStatusCode(503);
+      if (!exchange.isResponseStarted())
+        exchange.setStatusCode(503);
       exchange.getResponseSender()
           .send(error2json("Found duplicate key in index", e.getMessage(), e, e.getIndexName() + "|" + e.getKeys() + "|" + e.getCurrentIndexedRID(), null));
     } catch (CommandExecutionException | CommandSQLParsingException e) {
@@ -137,7 +142,8 @@ public abstract class AbstractHandler implements HttpHandler {
         realException = e.getCause();
 
       LogManager.instance().log(this, getErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
-      exchange.setStatusCode(500);
+      if (!exchange.isResponseStarted())
+        exchange.setStatusCode(500);
       exchange.getResponseSender().send(error2json("Cannot execute command", realException.getMessage(), realException, null, null));
     } catch (TransactionException e) {
       Throwable realException = e;
@@ -145,11 +151,13 @@ public abstract class AbstractHandler implements HttpHandler {
         realException = e.getCause();
 
       LogManager.instance().log(this, getErrorLogLevel(), "Error on transaction execution (%s)", e, getClass().getSimpleName());
-      exchange.setStatusCode(500);
+      if (!exchange.isResponseStarted())
+        exchange.setStatusCode(500);
       exchange.getResponseSender().send(error2json("Error on transaction commit", realException.getMessage(), realException, null, null));
     } catch (Exception e) {
       LogManager.instance().log(this, getErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
-      exchange.setStatusCode(500);
+      if (!exchange.isResponseStarted())
+        exchange.setStatusCode(500);
       exchange.getResponseSender().send(error2json("Internal error", e.getMessage(), e, null, null));
     } finally {
       LogManager.instance().setContext(null);

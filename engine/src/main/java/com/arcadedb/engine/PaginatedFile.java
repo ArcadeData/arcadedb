@@ -52,7 +52,7 @@ public class PaginatedFile {
 
   public void close() {
     try {
-      LogManager.instance().log(this, Level.FINE, "DEBUG - closing file %s (id=%d)", null, filePath, fileId);
+      LogManager.instance().log(this, Level.FINE, "Closing file %s (id=%d)...", null, filePath, fileId);
 
       if (channel != null) {
         channel.close();
@@ -72,6 +72,7 @@ public class PaginatedFile {
 
   public void rename(final String newFileName) throws IOException {
     close();
+    LogManager.instance().log(this, Level.FINE, "Renaming file %s (id=%d) to %s...", null, filePath, fileId, newFileName);
     final File newFile = new File(newFileName);
     new File(filePath).renameTo(newFile);
     open(newFile.getAbsolutePath(), mode);
@@ -79,6 +80,7 @@ public class PaginatedFile {
 
   public void drop() throws IOException {
     close();
+    LogManager.instance().log(this, Level.FINE, "Deleting file %s (id=%d) to %s...", null, filePath, fileId);
     Files.delete(Paths.get(getFilePath()));
   }
 

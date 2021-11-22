@@ -23,6 +23,7 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ChannelBinaryServer;
 import com.arcadedb.network.binary.ConnectionException;
+import com.arcadedb.server.ha.message.CommandForwardRequest;
 import com.arcadedb.server.ha.message.HACommand;
 import com.arcadedb.server.ha.message.ReplicaConnectHotResyncResponse;
 import com.arcadedb.server.ha.message.TxForwardRequest;
@@ -241,7 +242,11 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
           continue;
         }
 
-        if (request.getSecond() instanceof TxForwardRequest)
+        final HACommand command = request.getSecond();
+
+        server.getServer().log(this, Level.FINE, "Leader received message %d from replica %s: %s", request.getFirst().messageNumber, remoteServerName, command);
+
+        if (command instanceof TxForwardRequest || command instanceof CommandForwardRequest)
           // EXECUTE IT AS ASYNC
           forwarderQueue.put(request);
         else

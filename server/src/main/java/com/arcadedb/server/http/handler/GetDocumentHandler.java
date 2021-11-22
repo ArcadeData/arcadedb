@@ -44,8 +44,10 @@ public class GetDocumentHandler extends DatabaseAbstractHandler {
 
     final Document record = (Document) database.lookupByRID(new RID(database, Integer.parseInt(ridParts[0]), Long.parseLong(ridParts[1])), true);
 
+    final String response = "{ \"result\" : " + httpServer.getJsonSerializer().serializeDocument(record).toString() + "}";
+
     exchange.setStatusCode(200);
-    exchange.getResponseSender().send("{ \"result\" : " + httpServer.getJsonSerializer().serializeDocument(record).toString() + "}");
+    exchange.getResponseSender().send(response);
   }
 
   @Override
