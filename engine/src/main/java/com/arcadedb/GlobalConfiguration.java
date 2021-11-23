@@ -217,10 +217,9 @@ public enum GlobalConfiguration {
   // SERVER HTTP
   SERVER_HTTP_INCOMING_HOST("arcadedb.server.httpIncomingHost", "TCP/IP host name used for incoming HTTP connections", String.class, "0.0.0.0"),
 
-  SERVER_HTTP_INCOMING_PORT("arcadedb.server.httpIncomingPort", "TCP/IP port number used for incoming HTTP connections", Integer.class, 2480),
-
-  SERVER_HTTP_AUTOINCREMENT_PORT("arcadedb.server.httpAutoIncrementPort",
-      "True to increment the TCP/IP port number used for incoming HTTP in case the configured is not available", Boolean.class, true),
+  SERVER_HTTP_INCOMING_PORT("arcadedb.server.httpIncomingPort",
+      "TCP/IP port number used for incoming HTTP connections. Specify a single port or a range `<from-<to>`. Default is 2480-2489 to accept a range of ports in case they are occupied.",
+      String.class, "2480-2489"),
 
   SERVER_HTTP_TX_EXPIRE_TIMEOUT("arcadedb.server.httpTxExpireTimeout",
       "Timeout in seconds for a HTTP transaction to expire. This timeout is computed from the latest command against the transaction", Long.class, 30),

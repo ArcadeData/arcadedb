@@ -20,8 +20,7 @@ import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.io.File;
-import java.io.IOException;
+import java.io.*;
 
 import static com.arcadedb.GlobalConfiguration.TX_WAL;
 
@@ -41,15 +40,18 @@ public class ServerConfigurationIT extends BaseGraphServerTest {
       file.delete();
 
     FileUtils.writeFile(file, cfg.toJSON());
-    try {
 
-      final ArcadeDBServer server = new ArcadeDBServer();
+    final ArcadeDBServer server = new ArcadeDBServer();
+
+    try {
       server.start();
 
       Assertions.assertFalse(server.getConfiguration().getValueAsBoolean(TX_WAL));
     } finally {
       if (file.exists())
         file.delete();
+
+      server.stop();
     }
   }
 }

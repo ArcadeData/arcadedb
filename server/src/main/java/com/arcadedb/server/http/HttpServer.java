@@ -55,7 +55,9 @@ public class HttpServer implements ServerPlugin {
   private       Undertow           undertow;
   private       String             listeningAddress;
   private       String             host;
-  private       int                port;
+  private       int                portListening;
+  private       int                portFrom;
+  private       int                portTo;
 
   public HttpServer(final ArcadeDBServer server) {
     this.server = server;
@@ -85,12 +87,23 @@ public class HttpServer implements ServerPlugin {
   public void startService() {
     final ContextConfiguration configuration = server.getConfiguration();
 
-    final boolean httpAutoIncrementPort = configuration.getValueAsBoolean(GlobalConfiguration.SERVER_HTTP_AUTOINCREMENT_PORT);
-
     host = configuration.getValueAsString(GlobalConfiguration.SERVER_HTTP_INCOMING_HOST);
-    port = configuration.getValueAsInteger(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT);
+    final Object configuredPort = configuration.getValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT);
+    if (configuredPort instanceof Number)
+      portFrom = portTo = ((Number) configuredPort).intValue();
+    else {
+      final String[] parts = configuredPort.toString().split("-");
+      if (parts.length > 2)
+        throw new IllegalArgumentException("Invalid format for http server port range");
+      else if (parts.length == 1)
+        portFrom = portTo = Integer.parseInt(parts[0]);
+      else {
+        portFrom = Integer.parseInt(parts[0]);
+        portTo = Integer.parseInt(parts[1]);
+      }
+    }
 
-    server.log(this, Level.INFO, "- Starting HTTP Server (host=%s port=%d)...", host, port);
+    server.log(this, Level.INFO, "- Starting HTTP Server (host=%s port=%s)...", host, configuredPort.toString());
 
     final PathHandler routes = new PathHandler();
 
@@ -123,28 +136,32 @@ public class HttpServer implements ServerPlugin {
     for (ServerPlugin plugin : server.getPlugins())
       plugin.registerAPI(this, routes);
 
-    do {
+    for (portListening = portFrom; portListening <= portTo; ++portListening) {
       try {
-        undertow = Undertow.builder().addHttpListener(port, host).setHandler(routes).setServerOption(SHUTDOWN_TIMEOUT, 1000).build();
+        undertow = Undertow.builder().addHttpListener(portListening, host).setHandler(routes).setServerOption(SHUTDOWN_TIMEOUT, 1000).build();
         undertow.start();
 
-        server.log(this, Level.INFO, "- HTTP Server started (host=%s port=%d)", host, port);
-        listeningAddress = host + ":" + port;
-        break;
+        server.log(this, Level.INFO, "- HTTP Server started (host=%s port=%d)", host, portListening);
+        listeningAddress = host + ":" + portListening;
+        return;
 
       } catch (Exception e) {
         undertow = null;
 
         if (e.getCause() instanceof BindException) {
           // RETRY
-          server.log(this, Level.WARNING, "- HTTP Port %s not available", port);
-          ++port;
+          server.log(this, Level.WARNING, "- HTTP Port %s not available", portListening);
           continue;
         }
 
         throw new ServerException("Error on starting HTTP Server", e);
       }
-    } while (httpAutoIncrementPort);
+    }
+
+    portListening = -1;
+    final String msg = String.format("Unable to listen to a HTTP port in the configured port range %d - %d", portFrom, portTo);
+    server.log(this, Level.SEVERE, msg);
+    throw new ServerException("Error on starting HTTP Server: " + msg);
   }
 
   public HttpSessionManager getSessionManager() {
@@ -168,7 +185,7 @@ public class HttpServer implements ServerPlugin {
   }
 
   public int getPort() {
-    return port;
+    return portListening;
   }
 
   public WebSocketEventBus getWebSocketEventBus() {

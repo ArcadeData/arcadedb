@@ -29,9 +29,7 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.Assertions;
-import org.junit.jupiter.api.Test;
 
-import java.io.*;
 import java.util.*;
 import java.util.logging.*;
 
@@ -56,8 +54,8 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
     GlobalConfiguration.HA_REPLICATION_INCOMING_PORTS.setValue("2424-2500");
   }
 
-  @Test
-  public void testReplication() throws IOException, Exception {
+  //@Test
+  public void testReplication() throws Exception {
     testReplication(0);
   }
 

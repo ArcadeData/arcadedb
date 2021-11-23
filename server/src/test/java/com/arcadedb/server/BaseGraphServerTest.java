@@ -171,6 +171,8 @@ public abstract class BaseGraphServerTest {
         for (int i = servers.length - 1; i > -1; --i) {
           if (servers[i] != null && !servers[i].isStarted()) {
             testLog(" Restarting server %d to force re-alignment", i);
+            final int oldPort = servers[i].getHttpServer().getPort();
+            servers[i].getConfiguration().setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT, oldPort);
             servers[i].start();
             anyServerRestarted = true;
           }
@@ -523,6 +525,9 @@ public abstract class BaseGraphServerTest {
       Assertions.assertEquals("OK", initialConnection.getResponseMessage());
       return response;
 
+    } catch (Exception e) {
+      LogManager.instance().log(this, Level.SEVERE, "Error on connecting to server %s", e, "http://127.0.0.1:248" + serverIndex);
+      throw e;
     } finally {
       initialConnection.disconnect();
     }
