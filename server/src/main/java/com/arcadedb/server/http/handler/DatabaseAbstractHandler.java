@@ -55,9 +55,6 @@ public abstract class DatabaseAbstractHandler extends AbstractHandler {
 
       database = httpServer.getServer().getDatabase(databaseName.getFirst());
 
-      LogManager.instance().log(this, Level.INFO, "Found database %s from %s on server %s", null, database.getDatabasePath(), databaseName.getFirst(),
-          httpServer.getServer().getHA() != null ? httpServer.getServer().getHA().getServerName() : "?");
-
       final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(database.getDatabasePath());
       if (current != null && !current.transactions.isEmpty()) {
         LogManager.instance().log(this, Level.WARNING, "Found pending transaction from a previous operation. Rolling back it...");
