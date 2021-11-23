@@ -318,6 +318,9 @@ public class ReplicationLogFile extends LockContext {
 
   public ReplicationMessage getLastMessage() {
     return (ReplicationMessage) executeInLock(() -> {
+      if (lastChunkChannel == null)
+        return null;
+
       final long pos = lastChunkChannel.size();
       if (pos == 0)
         // EMPTY FILE

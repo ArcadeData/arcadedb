@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.EmbeddedDatabase;
 import com.arcadedb.exception.ConfigurationException;
+import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.integration.restore.Restore;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngineManager;
@@ -258,11 +259,11 @@ public class ArcadeDBServer implements ServerLogger {
   }
 
   public Database getDatabase(final String databaseName) {
-    return getDatabase(databaseName, false);
+    return getDatabase(databaseName, false, true);
   }
 
   public Database getOrCreateDatabase(final String databaseName) {
-    return getDatabase(databaseName, true);
+    return getDatabase(databaseName, true, true);
   }
 
   public boolean isStarted() {
@@ -385,9 +386,13 @@ public class ArcadeDBServer implements ServerLogger {
     return getServerName();
   }
 
-  private synchronized Database getDatabase(final String databaseName, final boolean createIfNotExists) {
+  public synchronized Database getDatabase(final String databaseName, final boolean createIfNotExists, final boolean allowLoad) {
     DatabaseInternal db = databases.get(databaseName);
+
     if (db == null || !db.isOpen()) {
+      if (!allowLoad)
+        throw new DatabaseIsClosedException("Database '" + databaseName + "' is not available");
+
       final String path = configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + "/" + databaseName;
 
       final DatabaseFactory factory = new DatabaseFactory(path).setAutoTransaction(true);

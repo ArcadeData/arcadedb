@@ -23,6 +23,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
+import com.arcadedb.remote.RemoteException;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.Assertions;
@@ -155,7 +156,7 @@ public class HARandomCrashIT extends ReplicationServerIT {
           }
           break;
 
-        } catch (TransactionException | NeedRetryException e) {
+        } catch (TransactionException | NeedRetryException | RemoteException e) {
           LogManager.instance().log(this, Level.INFO, "TEST: - RECEIVED ERROR: %s (RETRY %d/%d)", null, e.toString(), retry, getMaxRetry());
           if (retry >= getMaxRetry() - 1)
             throw e;
@@ -211,7 +212,7 @@ public class HARandomCrashIT extends ReplicationServerIT {
 
   @Override
   protected int getTxs() {
-    return 3000;
+    return 1500;
   }
 
   @Override

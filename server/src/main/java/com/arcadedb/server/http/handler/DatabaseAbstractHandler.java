@@ -53,7 +53,7 @@ public abstract class DatabaseAbstractHandler extends AbstractHandler {
         return;
       }
 
-      database = httpServer.getServer().getDatabase(databaseName.getFirst());
+      database = httpServer.getServer().getDatabase(databaseName.getFirst(), false, false);
 
       final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(database.getDatabasePath());
       if (current != null && !current.transactions.isEmpty()) {

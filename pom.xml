@@ -177,7 +177,6 @@
                 <configuration>
                     <excludes>
                         <exclude>**/*HASplitBrainIT.java</exclude>
-                        <exclude>**/*HARandomCrashIT.java</exclude>
                         <exclude>**/*ReplicationServerLeaderDownNoTransactionsToForwardIT.java</exclude>
                         <exclude>**/*ReplicationServerLeaderChanges3TimesIT.java</exclude>
                         <exclude>**/*ReplicationServerLeaderDownIT.java</exclude>

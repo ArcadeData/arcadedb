@@ -17,6 +17,8 @@ package com.arcadedb.server.ha;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseContext;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
@@ -158,6 +160,10 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
 
   protected void checkEntriesOnServer(final int s) {
     final Database db = getServerDatabase(s, getDatabaseName());
+
+    // RESET ANY PREVIOUS TRANSACTION IN TL. IN CASE OF STOP/CRASH THE TL COULD HAVE AN OLD INSTANCE THAT POINT TO AN OLD SERVER
+    DatabaseContext.INSTANCE.init((DatabaseInternal) db);
+
     db.transaction(() -> {
       try {
         final long recordInDb = db.countType(VERTEX1_TYPE_NAME, true);
