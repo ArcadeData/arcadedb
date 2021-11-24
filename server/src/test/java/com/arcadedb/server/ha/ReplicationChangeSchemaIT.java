@@ -43,7 +43,8 @@ public class ReplicationChangeSchemaIT extends ReplicationServerIT {
 
     for (int i = 0; i < getServerCount(); i++) {
       databases[i] = getServer(i).getDatabase(getDatabaseName());
-      databases[i].commit();
+      if (databases[i].isTransactionActive())
+        databases[i].commit();
     }
 
     // CREATE NEW TYPE
