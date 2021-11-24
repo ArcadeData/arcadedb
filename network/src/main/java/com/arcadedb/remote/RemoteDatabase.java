@@ -235,19 +235,16 @@ public class RemoteDatabase extends RWLockContext {
   public ResultSet query(final String language, final String command, final Object... args) {
     Map<String, Object> params = mapArgs(args);
 
-    return (ResultSet) databaseCommand("query", language, command, params, false, new Callback() {
-      @Override
-      public Object call(final HttpURLConnection connection, final JSONObject response) {
-        final ResultSet resultSet = new InternalResultSet();
+    return (ResultSet) databaseCommand("query", language, command, params, false, (connection, response) -> {
+      final ResultSet resultSet = new InternalResultSet();
 
-        final JSONArray resultArray = response.getJSONArray("result");
-        for (int i = 0; i < resultArray.length(); ++i) {
-          final JSONObject result = resultArray.getJSONObject(i);
-          ((InternalResultSet) resultSet).add(new ResultInternal(result.toMap()));
-        }
-
-        return resultSet;
+      final JSONArray resultArray = response.getJSONArray("result");
+      for (int i = 0; i < resultArray.length(); ++i) {
+        final JSONObject result = resultArray.getJSONObject(i);
+        ((InternalResultSet) resultSet).add(new ResultInternal(result.toMap()));
       }
+
+      return resultSet;
     });
   }
 
@@ -420,14 +417,14 @@ public class RemoteDatabase extends RWLockContext {
       } catch (NeedRetryException | DuplicatedKeyException | TransactionException | TimeoutException e) {
         throw e;
       } catch (Exception e) {
-        throw new RemoteException("Error on executing remote operation " + operation, e);
+        throw new RemoteException("Error on executing remote operation " + operation + " (cause: " + e.getMessage() + ")", e);
       }
     }
 
     if (lastException instanceof RuntimeException)
       throw (RuntimeException) lastException;
 
-    throw new RemoteException("Error on executing remote operation " + operation, lastException);
+    throw new RemoteException("Error on executing remote operation " + operation + " (retry=" + maxRetry + ")", lastException);
   }
 
   public int getApiVersion() {
