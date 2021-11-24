@@ -176,9 +176,10 @@ public class FullBackupIT {
         }
       }
 
-      Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
     } finally {
       importedDatabase.close();
+
+      Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
 
       for (int i = 0; i < CONCURRENT_THREADS; i++) {
         new File(FILE + "_" + i).delete();
