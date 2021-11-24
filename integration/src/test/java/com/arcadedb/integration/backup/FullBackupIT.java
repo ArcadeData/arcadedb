@@ -126,12 +126,17 @@ public class FullBackupIT {
           public void run() {
             final AtomicInteger totalPerThread = new AtomicInteger();
             for (int j = 0; j < 500; j++) {
-              importedDatabase.transaction(() -> {
-                for (int k = 0; k < 500; k++) {
-                  MutableVertex v = importedDatabase.newVertex("BackupTest").set("thread", threadId).set("id", totalPerThread.getAndIncrement()).save();
-                  Assertions.assertEquals(threadBucket.getId(), v.getIdentity().getBucketId());
+              importedDatabase.begin();
+              for (int k = 0; k < 500; k++) {
+                MutableVertex v = importedDatabase.newVertex("BackupTest").set("thread", threadId).set("id", totalPerThread.getAndIncrement()).save();
+                Assertions.assertEquals(threadBucket.getId(), v.getIdentity().getBucketId());
+
+                if (k + 1 % 100 == 0) {
+                  importedDatabase.commit();
+                  importedDatabase.begin();
                 }
-              });
+              }
+              importedDatabase.commit();
             }
 
           }
