@@ -101,8 +101,9 @@ public class FullBackupIT {
     }
 
     final Thread[] threads = new Thread[CONCURRENT_THREADS];
+
+    final Database importedDatabase = importDatabase();
     try {
-      final Database importedDatabase = importDatabase();
 
       final VertexType type = importedDatabase.getSchema().createVertexType("BackupTest", CONCURRENT_THREADS);
 
@@ -177,6 +178,8 @@ public class FullBackupIT {
 
       Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
     } finally {
+      importedDatabase.close();
+
       for (int i = 0; i < CONCURRENT_THREADS; i++) {
         new File(FILE + "_" + i).delete();
         FileUtils.deleteRecursively(new File(DATABASE_PATH + "_restored_" + i));
