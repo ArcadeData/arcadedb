@@ -394,6 +394,11 @@
                                 <goals>
                                     <goal>prepare-agent</goal>
                                 </goals>
+                                <configuration>
+                                    <excludes>
+                                        <exclude>com/arcadedb/query/sql/parser/SqlParserTokenManager.class</exclude>
+                                    </excludes>
+                                </configuration>
                             </execution>
                             <!-- prepare agent before integration tests -->
                             <execution>
@@ -404,6 +409,9 @@
                                 <phase>pre-integration-test</phase>
                                 <configuration>
                                     <propertyName>itCoverageAgent</propertyName>
+                                    <excludes>
+                                        <exclude>com/arcadedb/query/sql/parser/SqlParserTokenManager.class</exclude>
+                                    </excludes>
                                 </configuration>
                             </execution>
                             <execution>
@@ -412,6 +420,11 @@
                                 <goals>
                                     <goal>report</goal>
                                 </goals>
+                                <configuration>
+                                    <excludes>
+                                        <exclude>com/arcadedb/query/sql/parser/SqlParserTokenManager.class</exclude>
+                                    </excludes>
+                                </configuration>
                             </execution>
                         </executions>
                     </plugin>
