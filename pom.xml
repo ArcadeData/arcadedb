@@ -377,7 +377,7 @@
                         <version>${jacoco-maven-plugin.version}</version>
                         <configuration>
                             <excludes>
-                                <exclude>com/arcadedb/query/sql/parser/SqlParserTokenManager.class</exclude>
+                                <exclude>**/SqlParserTokenManager.class</exclude>
                                 <exclude>**/static/*</exclude>
                                 <exclude>**/*.bat</exclude>
                                 <exclude>**/*.sh</exclude>
@@ -396,7 +396,7 @@
                                 </goals>
                                 <configuration>
                                     <excludes>
-                                        <exclude>com/arcadedb/query/sql/parser/SqlParserTokenManager.class</exclude>
+                                        <exclude>**/SqlParserTokenManager.class</exclude>
                                     </excludes>
                                 </configuration>
                             </execution>
@@ -410,7 +410,7 @@
                                 <configuration>
                                     <propertyName>itCoverageAgent</propertyName>
                                     <excludes>
-                                        <exclude>com/arcadedb/query/sql/parser/SqlParserTokenManager.class</exclude>
+                                        <exclude>**/SqlParserTokenManager.class</exclude>
                                     </excludes>
                                 </configuration>
                             </execution>
@@ -422,7 +422,7 @@
                                 </goals>
                                 <configuration>
                                     <excludes>
-                                        <exclude>com/arcadedb/query/sql/parser/SqlParserTokenManager.class</exclude>
+                                        <exclude>**/SqlParserTokenManager.class</exclude>
                                     </excludes>
                                 </configuration>
                             </execution>
