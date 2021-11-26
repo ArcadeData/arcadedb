@@ -94,7 +94,7 @@ public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT 
 
         } catch (Exception e) {
           // IGNORE IT
-          LogManager.instance().log(this, Level.SEVERE, "Generic Exception", e);
+          LogManager.instance().log(this, Level.SEVERE, "Generic Exception: %s", null, e.getMessage());
         }
 
         break;
