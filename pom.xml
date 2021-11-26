@@ -377,7 +377,7 @@
                         <version>${jacoco-maven-plugin.version}</version>
                         <configuration>
                             <excludes>
-                                <exclude>**/SqlParserTokenManager.*</exclude>
+                                <exclude>com/arcadedb/query/sql/parser/SqlParserTokenManager.class</exclude>
                                 <exclude>**/static/*</exclude>
                                 <exclude>**/*.bat</exclude>
                                 <exclude>**/*.sh</exclude>
