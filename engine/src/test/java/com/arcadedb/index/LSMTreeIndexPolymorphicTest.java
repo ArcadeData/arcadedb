@@ -18,6 +18,7 @@ package com.arcadedb.index;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
@@ -63,6 +64,20 @@ public class LSMTreeIndexPolymorphicTest extends TestHelper {
       docChild.save();
     });
     Assertions.assertEquals("Child", docChild.get("name"));
+
+    try {
+      MutableDocument docChildDuplicated = database.newDocument("TestChild");
+      database.transaction(() -> {
+        docChildDuplicated.set("name", "Root");
+        Assertions.assertEquals("Root", docChildDuplicated.get("name"));
+        docChildDuplicated.save();
+      }, true, 0);
+
+      Assertions.fail("Duplicated shouldn't be allowed by unique index on sub type");
+
+    } catch (DuplicatedKeyException e) {
+      // EXPECTED
+    }
 
     try (ResultSet rs = database.query("sql", "select from TestRoot where name <> :name", Map.of("arg0", "Test2", "name", "Nonsense"))) {
       Assertions.assertTrue(rs.hasNext());
