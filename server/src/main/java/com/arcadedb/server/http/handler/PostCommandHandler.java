@@ -90,6 +90,7 @@ public class PostCommandHandler extends DatabaseAbstractHandler {
       switch (serializer) {
       case "graph": {
         final JsonGraphSerializer serializerImpl = new JsonGraphSerializer().setExpandVertexEdges(false);
+        final Set<Identifiable> includedRecords = new HashSet<>();
         final Set<Identifiable> includedVertices = new HashSet<>();
         final JSONArray vertices = new JSONArray();
         final JSONArray edges = new JSONArray();
@@ -98,19 +99,25 @@ public class PostCommandHandler extends DatabaseAbstractHandler {
         while (qResult.hasNext()) {
           final Result row = qResult.next();
 
-          records.put(serializerImpl.serializeResult(row));
+          final RID rid = row.getIdentity().get();
+          final boolean justIncluded = includedRecords.add(rid);
+          if (justIncluded)
+            records.put(serializerImpl.serializeResult(row));
 
           if (row.isVertex()) {
-            final Vertex v = row.getVertex().get();
-            includedVertices.add(v.getIdentity());
-            vertices.put(serializerImpl.serializeGraphElement(v));
+            if (justIncluded) {
+              final Vertex v = row.getVertex().get();
+              includedVertices.add(v.getIdentity());
+              vertices.put(serializerImpl.serializeGraphElement(v));
+            }
           } else if (row.isEdge()) {
             final Edge e = row.getEdge().get();
-            edges.put(serializerImpl.serializeGraphElement(e));
-            includedVertices.add(e.getIn());
-            vertices.put(serializerImpl.serializeGraphElement(e.getInVertex()));
-            includedVertices.add(e.getOut());
-            vertices.put(serializerImpl.serializeGraphElement(e.getOutVertex()));
+            if (justIncluded)
+              edges.put(serializerImpl.serializeGraphElement(e));
+            if (includedVertices.add(e.getIn()))
+              vertices.put(serializerImpl.serializeGraphElement(e.getInVertex()));
+            if (includedVertices.add(e.getOut()))
+              vertices.put(serializerImpl.serializeGraphElement(e.getOutVertex()));
           } else
             analyzeResultContent(database, serializerImpl, includedVertices, vertices, edges, row);
         }
@@ -121,13 +128,13 @@ public class PostCommandHandler extends DatabaseAbstractHandler {
 
           final Iterable<Edge> vEdgesOut = vertex.getEdges(Vertex.DIRECTION.OUT);
           for (Edge e : vEdgesOut) {
-            if (includedVertices.contains(e.getIn()))
+            if (includedVertices.contains(e.getIn()) && !includedRecords.contains(e.getIdentity()))
               edges.put(serializerImpl.serializeGraphElement(e));
           }
 
           final Iterable<Edge> vEdgesIn = vertex.getEdges(Vertex.DIRECTION.IN);
           for (Edge e : vEdgesIn) {
-            if (includedVertices.contains(e.getOut()))
+            if (includedVertices.contains(e.getOut()) && !includedRecords.contains(e.getIdentity()))
               edges.put(serializerImpl.serializeGraphElement(e));
           }
         }
