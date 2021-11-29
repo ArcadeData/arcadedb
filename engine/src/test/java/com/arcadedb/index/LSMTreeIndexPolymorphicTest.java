@@ -30,23 +30,93 @@ import java.util.*;
 
 public class LSMTreeIndexPolymorphicTest extends TestHelper {
 
+  private DocumentType typeChild;
+  private DocumentType typeRoot;
+
   @Test
   public void testPolymorphic() {
-    testPolymorphic(Schema.INDEX_TYPE.LSM_TREE);
+    populate(Schema.INDEX_TYPE.LSM_TREE);
+
+    try {
+      MutableDocument docChildDuplicated = database.newDocument("TestChild");
+      database.transaction(() -> {
+        docChildDuplicated.set("name", "Root");
+        Assertions.assertEquals("Root", docChildDuplicated.get("name"));
+        docChildDuplicated.save();
+      }, true, 0);
+
+      Assertions.fail("Duplicated shouldn't be allowed by unique index on sub type");
+
+    } catch (DuplicatedKeyException e) {
+      // EXPECTED
+    }
+
+    checkQueries();
   }
 
   @Test
   public void testPolymorphicFullText() {
-    testPolymorphic(Schema.INDEX_TYPE.FULL_TEXT);
+    populate(Schema.INDEX_TYPE.FULL_TEXT);
+    checkQueries();
   }
 
-  private void testPolymorphic(Schema.INDEX_TYPE indexType) {
-    DocumentType typeRoot = database.getSchema().getOrCreateDocumentType("TestRoot");
+  // https://github.com/ArcadeData/arcadedb/issues/152
+  @Test
+  public void testDocumentAfterCreation2() {
+    DocumentType typeRoot2 = database.getSchema().getOrCreateDocumentType("TestRoot2");
+    typeRoot2.getOrCreateProperty("name", String.class);
+    typeRoot2.getOrCreateProperty("parent", Type.LINK);
+    typeRoot2.getOrCreateTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "name", "parent");
+    database.command("sql", "delete from TestRoot2");
+    database.begin();
+    DocumentType testChild2 = database.getSchema().getOrCreateDocumentType("TestChild2");
+    testChild2.setSuperTypes(Arrays.asList(typeRoot2));
+    MutableDocument doc = database.newDocument("TestChild2");
+    doc.set("name", "Document Name");
+    Assertions.assertEquals("Document Name", doc.get("name"));
+    doc.save();
+    Assertions.assertEquals("Document Name", doc.get("name"));
+    try (ResultSet rs = database.query("sql", "select from TestChild2 where name = :name", Map.of("arg0", "Test2", "name", "Document Name"))) {
+      Assertions.assertTrue(rs.hasNext());
+      Document docRetrieved = rs.next().getElement().orElse(null);
+      Assertions.assertEquals("Document Name", docRetrieved.get("name"));
+      Assertions.assertFalse(rs.hasNext());
+    }
+    database.commit();
+  }
+
+  // https://github.com/ArcadeData/arcadedb/issues/152
+  @Test
+  public void testDocumentAfterCreation2AutoTx() {
+    DocumentType typeRoot2 = database.getSchema().getOrCreateDocumentType("TestRoot2");
+    typeRoot2.getOrCreateProperty("name", String.class);
+    typeRoot2.getOrCreateProperty("parent", Type.LINK);
+    typeRoot2.getOrCreateTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "name", "parent");
+    database.command("sql", "delete from TestRoot2");
+    DocumentType typeChild2 = database.getSchema().getOrCreateDocumentType("TestChild2");
+    typeChild2.setSuperTypes(Arrays.asList(typeRoot2));
+
+    database.setAutoTransaction(true);
+    MutableDocument doc = database.newDocument("TestChild2");
+    doc.set("name", "Document Name");
+    Assertions.assertEquals("Document Name", doc.get("name"));
+    doc.save();
+    Assertions.assertEquals("Document Name", doc.get("name"));
+    try (ResultSet rs = database.query("sql", "select from TestChild2 where name = :name", Map.of("arg0", "Test2", "name", "Document Name"))) {
+      Assertions.assertTrue(rs.hasNext());  //<<<<<<----------FAILING HERE
+      Document docRetrieved = rs.next().getElement().orElse(null);
+      Assertions.assertEquals("Document Name", docRetrieved.get("name"));
+      Assertions.assertFalse(rs.hasNext());
+    }
+  }
+
+  private void populate(Schema.INDEX_TYPE indexType) {
+    typeRoot = database.getSchema().getOrCreateDocumentType("TestRoot");
     typeRoot.getOrCreateProperty("name", String.class);
     typeRoot.getOrCreateTypeIndex(indexType, true, "name");
     database.command("sql", "delete from TestRoot");
 
-    DocumentType typeChild = database.getSchema().getOrCreateDocumentType("TestChild");
+    typeChild = database.getSchema().getOrCreateDocumentType("TestChild");
     typeChild.setSuperTypes(Arrays.asList(typeRoot));
 
     MutableDocument docRoot = database.newDocument("TestRoot");
@@ -64,21 +134,9 @@ public class LSMTreeIndexPolymorphicTest extends TestHelper {
       docChild.save();
     });
     Assertions.assertEquals("Child", docChild.get("name"));
+  }
 
-    try {
-      MutableDocument docChildDuplicated = database.newDocument("TestChild");
-      database.transaction(() -> {
-        docChildDuplicated.set("name", "Root");
-        Assertions.assertEquals("Root", docChildDuplicated.get("name"));
-        docChildDuplicated.save();
-      }, true, 0);
-
-      Assertions.fail("Duplicated shouldn't be allowed by unique index on sub type");
-
-    } catch (DuplicatedKeyException e) {
-      // EXPECTED
-    }
-
+  private void checkQueries() {
     try (ResultSet rs = database.query("sql", "select from TestRoot where name <> :name", Map.of("arg0", "Test2", "name", "Nonsense"))) {
       Assertions.assertTrue(rs.hasNext());
       Document doc1Retrieved = rs.next().getElement().orElse(null);
@@ -115,56 +173,6 @@ public class LSMTreeIndexPolymorphicTest extends TestHelper {
       Assertions.assertTrue(rs.hasNext());
       Document doc1Retrieved = rs.next().getElement().orElse(null);
       Assertions.assertEquals("Root", doc1Retrieved.get("name"));
-      Assertions.assertFalse(rs.hasNext());
-    }
-  }
-
-  // https://github.com/ArcadeData/arcadedb/issues/152
-  @Test
-  public void testDocumentAfterCreation2() {
-    DocumentType typeRoot = database.getSchema().getOrCreateDocumentType("TestRoot2");
-    typeRoot.getOrCreateProperty("name", String.class);
-    typeRoot.getOrCreateProperty("parent", Type.LINK);
-    typeRoot.getOrCreateTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "name", "parent");
-    database.command("sql", "delete from TestRoot2");
-    database.begin();
-    DocumentType typeChild = database.getSchema().getOrCreateDocumentType("TestChild2");
-    typeChild.setSuperTypes(Arrays.asList(typeRoot));
-    MutableDocument doc = database.newDocument("TestChild2");
-    doc.set("name", "Document Name");
-    Assertions.assertEquals("Document Name", doc.get("name"));
-    doc.save();
-    Assertions.assertEquals("Document Name", doc.get("name"));
-    try (ResultSet rs = database.query("sql", "select from TestChild2 where name = :name", Map.of("arg0", "Test2", "name", "Document Name"))) {
-      Assertions.assertTrue(rs.hasNext());
-      Document docRetrieved = rs.next().getElement().orElse(null);
-      Assertions.assertEquals("Document Name", docRetrieved.get("name"));
-      Assertions.assertFalse(rs.hasNext());
-    }
-    database.commit();
-  }
-
-  // https://github.com/ArcadeData/arcadedb/issues/152
-  @Test
-  public void testDocumentAfterCreation2AutoTx() {
-    DocumentType typeRoot = database.getSchema().getOrCreateDocumentType("TestRoot2");
-    typeRoot.getOrCreateProperty("name", String.class);
-    typeRoot.getOrCreateProperty("parent", Type.LINK);
-    typeRoot.getOrCreateTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "name", "parent");
-    database.command("sql", "delete from TestRoot2");
-    DocumentType typeChild = database.getSchema().getOrCreateDocumentType("TestChild2");
-    typeChild.setSuperTypes(Arrays.asList(typeRoot));
-
-    database.setAutoTransaction(true);
-    MutableDocument doc = database.newDocument("TestChild2");
-    doc.set("name", "Document Name");
-    Assertions.assertEquals("Document Name", doc.get("name"));
-    doc.save();
-    Assertions.assertEquals("Document Name", doc.get("name"));
-    try (ResultSet rs = database.query("sql", "select from TestChild2 where name = :name", Map.of("arg0", "Test2", "name", "Document Name"))) {
-      Assertions.assertTrue(rs.hasNext());  //<<<<<<----------FAILING HERE
-      Document docRetrieved = rs.next().getElement().orElse(null);
-      Assertions.assertEquals("Document Name", docRetrieved.get("name"));
       Assertions.assertFalse(rs.hasNext());
     }
   }
