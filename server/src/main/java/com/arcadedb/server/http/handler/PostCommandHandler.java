@@ -114,10 +114,18 @@ public class PostCommandHandler extends DatabaseAbstractHandler {
             final Edge e = row.getEdge().get();
             if (justIncluded)
               edges.put(serializerImpl.serializeGraphElement(e));
-            if (includedVertices.add(e.getIn()))
+            if (includedVertices.add(e.getIn())) {
+              if (includedRecords.add(e.getIn()))
+                records.put(serializerImpl.serializeDocument(e.getInVertex()));
+
               vertices.put(serializerImpl.serializeGraphElement(e.getInVertex()));
-            if (includedVertices.add(e.getOut()))
+            }
+            if (includedVertices.add(e.getOut())) {
+              if (includedRecords.add(e.getOut()))
+                records.put(serializerImpl.serializeDocument(e.getOutVertex()));
+
               vertices.put(serializerImpl.serializeGraphElement(e.getOutVertex()));
+            }
           } else
             analyzeResultContent(database, serializerImpl, includedVertices, vertices, edges, row);
         }

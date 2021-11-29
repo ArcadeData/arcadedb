@@ -285,13 +285,15 @@ public abstract class BaseGraphServerTest {
     }
   }
 
-  protected void formatPost(final HttpURLConnection connection, final String language, final String payloadCommand, final Map<String, Object> params)
-      throws Exception {
+  protected void formatPost(final HttpURLConnection connection, final String language, final String payloadCommand, final String serializer,
+      final Map<String, Object> params) throws Exception {
     connection.setDoOutput(true);
     if (payloadCommand != null) {
       final JSONObject jsonRequest = new JSONObject();
       jsonRequest.put("language", language);
       jsonRequest.put("command", payloadCommand);
+      if (serializer != null)
+        jsonRequest.put("serializer", serializer);
 
       if (params != null) {
         final JSONObject jsonParams = new JSONObject(params);
@@ -515,7 +517,7 @@ public abstract class BaseGraphServerTest {
       initialConnection.setRequestMethod("POST");
       initialConnection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
-      formatPost(initialConnection, "sql", command, new HashMap<>());
+      formatPost(initialConnection, "sql", command, null, new HashMap<>());
       initialConnection.connect();
 
       final String response = readResponse(initialConnection);

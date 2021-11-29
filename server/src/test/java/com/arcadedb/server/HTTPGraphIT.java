@@ -119,7 +119,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
-      formatPost(connection, "sql", "select from V1 limit 1", new HashMap<>());
+      formatPost(connection, "sql", "select from V1 limit 1", null, new HashMap<>());
       connection.connect();
 
       try {
@@ -142,7 +142,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
-      formatPost(connection, "sql", "select from V1 limit 1", new HashMap<>());
+      formatPost(connection, "sql", "select from V1 limit 1", null, new HashMap<>());
       connection.connect();
 
       try {
@@ -165,7 +165,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
-      formatPost(connection, "sql", "SELECT FROM :rid", Collections.singletonMap("rid", "#1:0"));
+      formatPost(connection, "sql", "SELECT FROM :rid", null, Collections.singletonMap("rid", "#1:0"));
       connection.connect();
 
       try {
@@ -174,6 +174,46 @@ public class HTTPGraphIT extends BaseGraphServerTest {
         Assertions.assertEquals(200, connection.getResponseCode());
         Assertions.assertEquals("OK", connection.getResponseMessage());
         Assertions.assertTrue(response.contains("V1"));
+      } finally {
+        connection.disconnect();
+      }
+    });
+  }
+
+  @Test
+  public void checkCommandNoDuplication() throws Exception {
+    testEachServer((serverIndex) -> {
+      HttpURLConnection connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").openConnection();
+
+      connection.setRequestMethod("POST");
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      formatPost(connection, "sql", "SELECT FROM E1", "graph", Collections.emptyMap());
+      connection.connect();
+
+      try {
+        final String response = readResponse(connection);
+        LogManager.instance().log(this, Level.INFO, "Response: ", null, response);
+        Assertions.assertEquals(200, connection.getResponseCode());
+        Assertions.assertEquals("OK", connection.getResponseMessage());
+
+        final JSONObject responseAsJson = new JSONObject(response);
+
+        final List<Object> vertices = responseAsJson.getJSONObject("result").getJSONArray("vertices").toList();
+        Assertions.assertEquals(2, vertices.size());
+        for (Object o : vertices)
+          Assertions.assertTrue(((Map) o).get("t").equals("V1") || ((Map) o).get("t").equals("V2"));
+
+        final List<Object> records = responseAsJson.getJSONObject("result").getJSONArray("records").toList();
+        Assertions.assertEquals(3, records.size());
+        for (Object o : records)
+          Assertions.assertTrue(((Map) o).get("@type").equals("V1") || ((Map) o).get("@type").equals("V2") || ((Map) o).get("@type").equals("E1"));
+
+        final List<Object> edges = responseAsJson.getJSONObject("result").getJSONArray("edges").toList();
+        Assertions.assertEquals(1, edges.size());
+        for (Object o : edges)
+          Assertions.assertTrue(((Map) o).get("t").equals("E1"));
+
       } finally {
         connection.disconnect();
       }
