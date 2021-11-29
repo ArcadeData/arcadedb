@@ -132,10 +132,26 @@ public class DocumentType {
     return this;
   }
 
+  /**
+   * Removes a super type (by its name) from the current type.
+   *
+   * @see #removeSuperType(DocumentType)
+   * @see #addSuperType(DocumentType)
+   * @see #addSuperType(String)
+   * @see #addSuperType(DocumentType, boolean)
+   */
   public void removeSuperType(final String superTypeName) {
     removeSuperType(schema.getType(superTypeName));
   }
 
+  /**
+   * Removes a super type from the current type.
+   *
+   * @see #removeSuperType(String)
+   * @see #addSuperType(DocumentType)
+   * @see #addSuperType(String)
+   * @see #addSuperType(DocumentType, boolean)
+   */
   public void removeSuperType(final DocumentType superType) {
     recordFileChanges(() -> {
       if (!superTypes.remove(superType))
@@ -147,6 +163,15 @@ public class DocumentType {
     });
   }
 
+  /**
+   * Returns true if the current type is the same or a subtype of `type` parameter.
+   *
+   * @param type the type name to check
+   *
+   * @see #addSuperType(DocumentType)
+   * @see #addSuperType(String)
+   * @see #addSuperType(DocumentType, boolean)
+   */
   public boolean instanceOf(final String type) {
     if (name.equals(type))
       return true;
@@ -159,10 +184,26 @@ public class DocumentType {
     return false;
   }
 
+  /**
+   * Returns the list of super types if any, otherwise an empty collection.
+   *
+   * @see #addSuperType(DocumentType)
+   * @see #addSuperType(String)
+   * @see #addSuperType(DocumentType, boolean)
+   */
   public List<DocumentType> getSuperTypes() {
     return Collections.unmodifiableList(superTypes);
   }
 
+  /**
+   * Set the type super types. Any previous configuration about supertypes will be replaced with this new list.
+   *
+   * @param newSuperTypes List of super types to assign
+   *
+   * @see #addSuperType(DocumentType)
+   * @see #addSuperType(String)
+   * @see #addSuperType(DocumentType, boolean)
+   */
   public void setSuperTypes(List<DocumentType> newSuperTypes) {
     if (newSuperTypes == null)
       newSuperTypes = Collections.emptyList();
@@ -179,14 +220,35 @@ public class DocumentType {
     toAdd.forEach(this::addSuperType);
   }
 
+  /**
+   * Returns the list of subtypes, in any, or an empty list in case the type has not subtypes defined.
+   *
+   * @see #addSuperType(DocumentType)
+   * @see #addSuperType(String)
+   * @see #addSuperType(DocumentType, boolean)
+   */
   public List<DocumentType> getSubTypes() {
     return Collections.unmodifiableList(subTypes);
   }
 
+  /**
+   * Returns all the properties defined in the type, not considering the ones inherited from subtypes.
+   *
+   * @return Set containing all the names
+   *
+   * @see #getPolymorphicPropertyNames()
+   */
   public Set<String> getPropertyNames() {
     return properties.keySet();
   }
 
+  /**
+   * Returns all the properties defined in the type and subtypes.
+   *
+   * @return Set containing all the names
+   *
+   * @see #getPropertyNames()
+   */
   public Set<String> getPolymorphicPropertyNames() {
     if (superTypes.isEmpty())
       return getPropertyNames();
@@ -197,14 +259,32 @@ public class DocumentType {
     return allProperties;
   }
 
+  /**
+   * Creates a new property with type `propertyType`.
+   *
+   * @param propertyName Property name to remove
+   * @param propertyType Property type by type name @{@link String}
+   */
   public Property createProperty(final String propertyName, final String propertyType) {
     return createProperty(propertyName, Type.getTypeByName(propertyType));
   }
 
+  /**
+   * Creates a new property with type `propertyType`.
+   *
+   * @param propertyName Property name to remove
+   * @param propertyType Property type as Java @{@link Class}
+   */
   public Property createProperty(final String propertyName, final Class<?> propertyType) {
     return createProperty(propertyName, Type.getTypeByClass(propertyType));
   }
 
+  /**
+   * Creates a new property with type `propertyType`.
+   *
+   * @param propertyName Property name to remove
+   * @param propertyType Property type as @{@link Type}
+   */
   public Property createProperty(final String propertyName, final Type propertyType) {
     if (properties.containsKey(propertyName))
       throw new SchemaException("Cannot create the property '" + propertyName + "' in type '" + name + "' because it already exists");
@@ -221,14 +301,32 @@ public class DocumentType {
     return property;
   }
 
+  /**
+   * Returns a property by its name. If the property does not exist, it is created with type `propertyType`.
+   *
+   * @param propertyName Property name to remove
+   * @param propertyType Property type, by type name @{@link String}, to use in case the property does not exist and will be created
+   */
   public Property getOrCreateProperty(final String propertyName, final String propertyType) {
     return getOrCreateProperty(propertyName, Type.getTypeByName(propertyType));
   }
 
+  /**
+   * Returns a property by its name. If the property does not exist, it is created with type `propertyType`.
+   *
+   * @param propertyName Property name to remove
+   * @param propertyType Property type, as Java @{@link Class}, to use in case the property does not exist and will be created
+   */
   public Property getOrCreateProperty(final String propertyName, final Class<?> propertyType) {
     return getOrCreateProperty(propertyName, Type.getTypeByClass(propertyType));
   }
 
+  /**
+   * Returns a property by its name. If the property does not exist, it is created with type `propertyType`.
+   *
+   * @param propertyName Property name to remove
+   * @param propertyType Property type, as @{@link Type}, to use in case the property does not exist and will be created
+   */
   public Property getOrCreateProperty(final String propertyName, final Type propertyType) {
     Property p = properties.get(propertyName);
     if (p != null) {
@@ -241,7 +339,17 @@ public class DocumentType {
     return createProperty(propertyName, propertyType);
   }
 
+  /**
+   * Drops a property from the type. If there is any index on the property a @{@link SchemaException} is thrown.
+   *
+   * @param propertyName Property name to remove
+   */
   public void dropProperty(final String propertyName) {
+    for (TypeIndex index : getAllIndexes(true)) {
+      if (index.getPropertyNames().contains(propertyName))
+        throw new SchemaException("Error on dropping property '" + propertyName + "' because used by index '" + index.getName() + "'");
+    }
+
     recordFileChanges(() -> {
       properties.remove(propertyName);
       return null;
