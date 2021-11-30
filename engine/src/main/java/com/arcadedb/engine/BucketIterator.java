@@ -21,10 +21,12 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.io.*;
 import java.util.*;
+import java.util.logging.*;
 
 import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
 
@@ -77,38 +79,41 @@ public class BucketIterator implements Iterator<Record> {
         }
 
         if (recordCountInCurrentPage > 0 && currentRecordInPage < recordCountInCurrentPage) {
-          int recordPositionInPage = (int) currentPage.readUnsignedInt(Bucket.PAGE_RECORD_TABLE_OFFSET + currentRecordInPage * INT_SERIALIZED_SIZE);
-          final long[] recordSize = currentPage.readNumberAndSize(recordPositionInPage);
-          if (recordSize[0] > 0) {
-            // NOT DELETED
-            final RID rid = new RID(database, bucket.id, ((long) nextPageNumber) * bucket.getMaxRecordsInPage() + currentRecordInPage);
+          try {
+            int recordPositionInPage = (int) currentPage.readUnsignedInt(Bucket.PAGE_RECORD_TABLE_OFFSET + currentRecordInPage * INT_SERIALIZED_SIZE);
+            final long[] recordSize = currentPage.readNumberAndSize(recordPositionInPage);
+            if (recordSize[0] > 0) {
+              // NOT DELETED
+              final RID rid = new RID(database, bucket.id, ((long) nextPageNumber) * bucket.getMaxRecordsInPage() + currentRecordInPage);
 
+              if (!bucket.existsRecord(rid))
+                continue;
+
+              next = rid.getRecord(false);
+              return null;
+
+            } else if (recordSize[0] == -1) {
+              // PLACEHOLDER
+              final RID rid = new RID(database, bucket.id, ((long) nextPageNumber) * bucket.getMaxRecordsInPage() + currentRecordInPage);
+
+              final Binary view = bucket.getRecordInternal(new RID(database, bucket.id, currentPage.readLong((int) (recordPositionInPage + recordSize[1]))),
+                  true);
+
+              if (view == null)
+                continue;
+
+              next = database.getRecordFactory()
+                  .newImmutableRecord(database, database.getSchema().getType(database.getSchema().getTypeNameByBucketId(rid.getBucketId())), rid, view, null);
+              return null;
+            }
+
+          } catch (Exception e) {
+            final String msg = String.format("Error on loading record #%d:%d (error: %s)", currentPage.pageId.getFileId(),
+                (nextPageNumber * bucket.getMaxRecordsInPage()) + currentRecordInPage, e.getMessage());
+            LogManager.instance().log(this, Level.SEVERE, msg);
+          } finally {
             currentRecordInPage++;
-
-            if (!bucket.existsRecord(rid))
-              continue;
-
-            next = rid.getRecord(false);
-            return null;
-
-          } else if (recordSize[0] == -1) {
-            // PLACEHOLDER
-            final RID rid = new RID(database, bucket.id, ((long) nextPageNumber) * bucket.getMaxRecordsInPage() + currentRecordInPage);
-
-            currentRecordInPage++;
-
-            final Binary view = bucket.getRecordInternal(new RID(database, bucket.id, currentPage.readLong((int) (recordPositionInPage + recordSize[1]))),
-                true);
-
-            if (view == null)
-              continue;
-
-            next = database.getRecordFactory()
-                .newImmutableRecord(database, database.getSchema().getType(database.getSchema().getTypeNameByBucketId(rid.getBucketId())), rid, view, null);
-            return null;
           }
-
-          currentRecordInPage++;
 
         } else if (currentRecordInPage == recordCountInCurrentPage) {
           currentRecordInPage = 0;
