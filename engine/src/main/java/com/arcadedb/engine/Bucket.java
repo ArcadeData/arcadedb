@@ -20,6 +20,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.RecordInternal;
+import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
@@ -172,6 +173,8 @@ public class Bucket extends PaginatedComponent {
                 if (view != null && !callback.onRecord(rid, view))
                   return;
               }
+            } catch (ArcadeDBException e) {
+              throw e;
             } catch (Exception e) {
               final String msg = String.format("Error on loading record #%d:%d (error: %s)", file.getFileId(), (pageId * maxRecordsInPage) + recordIdInPage,
                   e.getMessage());

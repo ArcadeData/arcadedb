@@ -18,10 +18,12 @@ package com.arcadedb.server.ha;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.index.IndexException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.server.BaseGraphServerTest;
+import com.arcadedb.server.TestServerHelper;
 import org.json.JSONObject;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -56,14 +58,7 @@ public class IndexOperations3ServersIT extends BaseGraphServerTest {
     LogManager.instance().log(this, Level.INFO, "Inserting 1M records with 2 indexes...");
     // CREATE 1M RECORD IN 10 TX CHUNKS OF 100K EACH
     database.transaction(() -> {
-      for (int i = 0; i < TOTAL_RECORDS; i++) {
-        database.newVertex("Person").set("id", i, "uuid", UUID.randomUUID().toString()).save();
-
-        if (i % TX_CHUNK == 0) {
-          database.commit();
-          database.begin();
-        }
-      }
+      insertRecords(database);
     });
 
     testEachServer((serverIndex) -> {
@@ -89,14 +84,7 @@ public class IndexOperations3ServersIT extends BaseGraphServerTest {
     LogManager.instance().log(this, Level.INFO, "Inserting 1M records without indexes first...");
     // CREATE 1M RECORD IN 10 TX CHUNKS OF 100K EACH
     database.transaction(() -> {
-      for (int i = 0; i < TOTAL_RECORDS; i++) {
-        database.newVertex("Person").set("id", i, "uuid", UUID.randomUUID().toString()).save();
-
-        if (i % TX_CHUNK == 0) {
-          database.commit();
-          database.begin();
-        }
-      }
+      insertRecords(database);
     });
 
     v.createProperty("id", Long.class);
@@ -128,14 +116,7 @@ public class IndexOperations3ServersIT extends BaseGraphServerTest {
       LogManager.instance().log(this, Level.INFO, "Inserting 1M records without indexes first...");
       // CREATE 1M RECORD IN 10 TX CHUNKS OF 100K EACH
       database.transaction(() -> {
-        for (int i = 0; i < TOTAL_RECORDS; i++) {
-          database.newVertex("Person").set("id", i, "uuid", UUID.randomUUID().toString()).save();
-
-          if (i % TX_CHUNK == 0) {
-            database.commit();
-            database.begin();
-          }
-        }
+        insertRecords(database);
       });
 
       v.createProperty("id", Long.class);
@@ -144,36 +125,73 @@ public class IndexOperations3ServersIT extends BaseGraphServerTest {
       database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Person", "uuid");
 
       // TRY CREATING A DUPLICATE
-      try {
+      TestServerHelper.expectException(() -> {
         database.newVertex("Person").set("id", 0, "uuid", UUID.randomUUID().toString()).save();
-        Assertions.fail();
-      } catch (DuplicatedKeyException e) {
-        // EXPECTED
-      }
+      }, DuplicatedKeyException.class);
 
       // TRY DROPPING A PROPERTY WITH AN INDEX
-      try {
+      TestServerHelper.expectException(() -> {
         database.getSchema().getType("Person").dropProperty("id");
-        Assertions.fail();
-      } catch (SchemaException e) {
-        // EXPECTED
-      }
+      }, SchemaException.class);
 
       database.getSchema().dropIndex("Person[id]");
       database.getSchema().getType("Person").dropProperty("id");
 
       // TRY DROPPING A PROPERTY WITH AN INDEX
-      try {
+      TestServerHelper.expectException(() -> {
         database.getSchema().getType("Person").dropProperty("uuid");
-        Assertions.fail();
-      } catch (SchemaException e) {
-        // EXPECTED
-      }
+      }, SchemaException.class);
 
       database.getSchema().dropIndex("Person[uuid]");
       database.getSchema().getType("Person").dropProperty("uuid");
 
       database.command("sql", "delete from Person");
     });
+  }
+
+  @Test
+  public void createIndexErrorDistributed() throws Exception {
+    final Database database = getServerDatabase(0, getDatabaseName());
+    VertexType v = database.getSchema().createVertexType("Person", 3);
+
+    testEachServer((serverIndex) -> {
+      LogManager.instance().log(this, Level.INFO, "Inserting 1M records without indexes first...");
+      // CREATE 2M RECORD WITH ID DUPLICATED
+      database.transaction(() -> {
+        insertRecords(database);
+        insertRecords(database);
+      });
+
+      v.createProperty("id", Long.class);
+
+      // TRY CREATING INDEX WITH DUPLICATES
+      TestServerHelper.expectException(() -> {
+        database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Person", "id");
+      }, IndexException.class);
+
+      TestServerHelper.expectException(() -> {
+        database.getSchema().getIndexByName("Person[id]");
+      }, SchemaException.class);
+
+      // TRY CREATING INDEX WITH DUPLICATES
+      v.createProperty("uuid", String.class);
+      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Person", "uuid");
+
+      database.getSchema().getType("Person").dropProperty("id");
+      database.getSchema().dropIndex("Person[uuid]");
+      database.getSchema().getType("Person").dropProperty("uuid");
+      database.command("sql", "delete from Person");
+    });
+  }
+
+  private void insertRecords(Database database) {
+    for (int i = 0; i < TOTAL_RECORDS; i++) {
+      database.newVertex("Person").set("id", i, "uuid", UUID.randomUUID().toString()).save();
+
+      if (i % TX_CHUNK == 0) {
+        database.commit();
+        database.begin();
+      }
+    }
   }
 }

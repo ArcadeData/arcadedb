@@ -43,6 +43,21 @@ public class FileManager {
       this.fileId = fileId;
       this.fileName = fileName;
     }
+
+    @Override
+    public boolean equals(final Object o) {
+      if (this == o)
+        return true;
+      if (!(o instanceof FileChange))
+        return false;
+      final FileChange that = (FileChange) o;
+      return fileId == that.fileId;
+    }
+
+    @Override
+    public int hashCode() {
+      return Objects.hash(fileId);
+    }
   }
 
   public static class FileManagerStats {
@@ -111,8 +126,14 @@ public class FileManager {
       files.set(fileId, null);
       file.drop();
 
-      if (recordedChanges != null)
-        recordedChanges.add(new FileChange(false, fileId, file.getFileName()));
+      final FileChange entry = new FileChange(false, fileId, file.getFileName());
+      if (recordedChanges != null) {
+        if (recordedChanges.remove(entry))
+          // JUST ADDED: REMOVE THE ENTRY
+          return;
+
+        recordedChanges.add(entry);
+      }
     }
   }
 

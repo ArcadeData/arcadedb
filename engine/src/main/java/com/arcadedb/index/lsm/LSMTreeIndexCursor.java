@@ -407,10 +407,10 @@ public class LSMTreeIndexCursor implements IndexCursor {
     if (index.getDatabase().getTransaction().getStatus() == TransactionContext.STATUS.BEGUN) {
       Set<IndexCursorEntry> txChanges = null;
 
-      final TreeMap<TransactionIndexContext.ComparableKey, Set<TransactionIndexContext.IndexKey>> indexChanges = index.getDatabase().getTransaction()
-          .getIndexChanges().getIndexKeys(index.getName());
+      final TreeMap<TransactionIndexContext.ComparableKey, Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey>> indexChanges = index.getDatabase()
+          .getTransaction().getIndexChanges().getIndexKeys(index.getName());
       if (indexChanges != null) {
-        final Map.Entry<TransactionIndexContext.ComparableKey, Set<TransactionIndexContext.IndexKey>> entry;
+        final Map.Entry<TransactionIndexContext.ComparableKey, Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey>> entry;
         if (ascendingOrder) {
           if (keys == null)
             entry = indexChanges.firstEntry();
@@ -427,9 +427,9 @@ public class LSMTreeIndexCursor implements IndexCursor {
             entry = indexChanges.lowerEntry(new TransactionIndexContext.ComparableKey(keys));
         }
 
-        final Set<TransactionIndexContext.IndexKey> values = entry != null ? entry.getValue() : null;
+        final Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey> values = entry != null ? entry.getValue() : null;
         if (values != null) {
-          for (final TransactionIndexContext.IndexKey value : values) {
+          for (final TransactionIndexContext.IndexKey value : values.values()) {
             if (value != null) {
               if (!value.addOperation)
                 // REMOVED

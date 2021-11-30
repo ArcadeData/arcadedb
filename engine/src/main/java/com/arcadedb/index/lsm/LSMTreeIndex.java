@@ -36,6 +36,7 @@ import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.RangeIndex;
 import com.arcadedb.index.TempIndexCursor;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.schema.Schema;
@@ -57,6 +58,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   private static final int                                                     TX_CHUNK_RECORDS   = 100_000;
   private final        String                                                  name;
   private final        RWLockContext                                           lock               = new RWLockContext();
+  private              TypeIndex                                               typeIndex;
   private              int                                                     associatedBucketId = -1;
   private              String                                                  typeName;
   protected            List<String>                                            propertyNames;
@@ -146,6 +148,16 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   }
 
   @Override
+  public TypeIndex getTypeIndex() {
+    return typeIndex;
+  }
+
+  @Override
+  public void setTypeIndex(final TypeIndex typeIndex) {
+    this.typeIndex = typeIndex;
+  }
+
+  @Override
   public Type[] getKeyTypes() {
     return mutable.keyTypes;
   }
@@ -232,7 +244,9 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   }
 
   public void drop() {
-    checkIsValid();
+    if (mutable == null)
+      return;
+
     lock.executeInWriteLock(() -> {
       final LSMTreeIndexCompacted subIndex = mutable.getSubIndex();
       if (subIndex != null)
@@ -309,12 +323,13 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     if (mutable.getDatabase().getTransaction().getStatus() == TransactionContext.STATUS.BEGUN) {
       Set<IndexCursorEntry> txChanges = null;
 
-      final Map<TransactionIndexContext.ComparableKey, Set<TransactionIndexContext.IndexKey>> indexChanges = mutable.getDatabase().getTransaction()
-          .getIndexChanges().getIndexKeys(getName());
+      final Map<TransactionIndexContext.ComparableKey, Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey>> indexChanges = mutable.getDatabase()
+          .getTransaction().getIndexChanges().getIndexKeys(getName());
       if (indexChanges != null) {
-        final Set<TransactionIndexContext.IndexKey> values = indexChanges.get(new TransactionIndexContext.ComparableKey(convertedKeys));
+        final Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey> values = indexChanges.get(
+            new TransactionIndexContext.ComparableKey(convertedKeys));
         if (values != null) {
-          for (final TransactionIndexContext.IndexKey value : values) {
+          for (final TransactionIndexContext.IndexKey value : values.values()) {
             if (value != null) {
               if (!value.addOperation)
                 // REMOVED

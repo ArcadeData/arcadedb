@@ -466,6 +466,11 @@ public abstract class BaseGraphServerTest {
 
   protected void testEachServer(Callback callback) throws Exception {
     for (int i = 0; i < getServerCount(); i++) {
+      LogManager.instance()
+          .log(this, Level.INFO, "****************************************************************************************************************");
+      LogManager.instance().log(this, Level.INFO, "EXECUTING TEST ON SERVER %d/%d...", null, i, getServerCount());
+      LogManager.instance()
+          .log(this, Level.INFO, "****************************************************************************************************************");
       callback.call(i);
     }
   }
@@ -534,5 +539,4 @@ public abstract class BaseGraphServerTest {
       initialConnection.disconnect();
     }
   }
-
 }

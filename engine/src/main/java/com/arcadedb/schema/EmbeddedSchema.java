@@ -32,6 +32,7 @@ import com.arcadedb.exception.DatabaseMetadataException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexFactory;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
@@ -391,8 +392,18 @@ public class EmbeddedSchema implements Schema {
       try {
         lockedFiles = database.getTransactionManager().tryLockFiles(index.getFileIds(), 5_000);
 
+        if (index.getTypeIndex() != null)
+          index.getTypeIndex().removeIndexOnBucket(index);
+
         indexMap.remove(indexName);
         index.drop();
+
+        if (index.getTypeName() != null) {
+          if (index instanceof TypeIndex)
+            getType(index.getTypeName()).removeTypeIndexInternal((TypeIndex) index);
+          else
+            getType(index.getTypeName()).removeBucketIndexInternal(index);
+        }
 
       } catch (Exception e) {
         throw new SchemaException("Cannot drop the index '" + indexName + "' (error=" + e + ")", e);
@@ -465,27 +476,32 @@ public class EmbeddedSchema implements Schema {
     final List<Bucket> buckets = type.getBuckets(true);
     final Index[] indexes = new Index[buckets.size()];
 
-    recordFileChanges(() -> {
-      database.transaction(() -> {
+    try {
+      recordFileChanges(() -> {
+        database.transaction(() -> {
 
-        for (int idx = 0; idx < buckets.size(); ++idx) {
-          final Bucket bucket = buckets.get(idx);
-          indexes[idx] = createBucketIndex(type, keyTypes, bucket, typeName, indexType, unique, pageSize, nullStrategy, callback, propertyNames);
-        }
+          for (int idx = 0; idx < buckets.size(); ++idx) {
+            final Bucket bucket = buckets.get(idx);
+            indexes[idx] = createBucketIndex(type, keyTypes, bucket, typeName, indexType, unique, pageSize, nullStrategy, callback, propertyNames);
+          }
 
-        saveConfiguration();
+          saveConfiguration();
 
-      }, false, 1, null, (error) -> {
-        for (int j = 0; j < indexes.length; j++) {
-          final IndexInternal indexToRemove = (IndexInternal) indexes[j];
-          if (indexToRemove != null)
-            indexToRemove.drop();
-        }
+        }, false, 1, null, (error) -> {
+          for (int j = 0; j < indexes.length; j++) {
+            final IndexInternal indexToRemove = (IndexInternal) indexes[j];
+            if (indexToRemove != null)
+              indexToRemove.drop();
+          }
+        });
+        return null;
       });
-      return null;
-    });
 
-    return type.getPolymorphicIndexByProperties(propertyNames);
+      return type.getPolymorphicIndexByProperties(propertyNames);
+    } catch (Throwable e) {
+      dropIndex(typeName + Arrays.toString(propertyNames));
+      throw new IndexException("Error on creating index on type '" + typeName + "', properties " + Arrays.toString(propertyNames), e);
+    }
   }
 
   @Override
@@ -589,13 +605,20 @@ public class EmbeddedSchema implements Schema {
     final IndexInternal index = indexFactory.createIndex(indexType.name(), database, indexName, unique, databasePath + "/" + indexName,
         PaginatedFile.MODE.READ_WRITE, keyTypes, pageSize, nullStrategy, callback);
 
-    registerFile(index.getPaginatedComponent());
+    try {
+      registerFile(index.getPaginatedComponent());
 
-    indexMap.put(indexName, index);
+      indexMap.put(indexName, index);
 
-    type.addIndexInternal(index, bucket.getId(), propertyNames);
-    index.build(callback);
-    return index;
+      type.addIndexInternal(index, bucket.getId(), propertyNames);
+      index.build(callback);
+
+      return index;
+
+    } catch (Exception e) {
+      dropIndex(indexName);
+      throw new IndexException("Error on creating index '" + indexName + "'", e);
+    }
   }
 
   public Index createManualIndex(final INDEX_TYPE indexType, final boolean unique, final String indexName, final Type[] keyTypes, final int pageSize,

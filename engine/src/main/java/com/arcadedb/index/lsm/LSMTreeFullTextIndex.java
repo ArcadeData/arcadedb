@@ -27,6 +27,7 @@ import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TempIndexCursor;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -61,6 +62,7 @@ import java.util.concurrent.atomic.*;
 public class LSMTreeFullTextIndex implements Index, IndexInternal {
   private final LSMTreeIndex underlyingIndex;
   private final Analyzer     analyzer;
+  private       TypeIndex    typeIndex;
 
   public static class IndexFactoryHandler implements com.arcadedb.index.IndexFactoryHandler {
     @Override
@@ -280,6 +282,16 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   @Override
   public List<Integer> getFileIds() {
     return underlyingIndex.getFileIds();
+  }
+
+  @Override
+  public void setTypeIndex(final TypeIndex typeIndex) {
+    this.typeIndex = typeIndex;
+  }
+
+  @Override
+  public TypeIndex getTypeIndex() {
+    return typeIndex;
   }
 
   @Override

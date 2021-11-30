@@ -20,6 +20,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.utility.CallableNoReturn;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
@@ -175,5 +176,21 @@ public abstract class TestHelper {
 
   protected String getPerformanceProfile() {
     return "default";
+  }
+
+  public static void expectException(final CallableNoReturn callback, final Class<? extends Throwable> expectedException) throws Exception {
+    try {
+      callback.call();
+      Assertions.fail();
+    } catch (Throwable e) {
+      if (e.getClass().equals(expectedException))
+        // EXPECTED
+        return;
+
+      if (e instanceof Exception)
+        throw (Exception) e;
+
+      throw new Exception(e);
+    }
   }
 }

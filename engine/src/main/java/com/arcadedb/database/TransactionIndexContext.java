@@ -32,8 +32,8 @@ import java.util.*;
 import java.util.logging.*;
 
 public class TransactionIndexContext {
-  private final DatabaseInternal                                   database;
-  private       Map<String, TreeMap<ComparableKey, Set<IndexKey>>> indexEntries = new LinkedHashMap<>(); // MOST COMMON USE CASE INSERTION IS ORDERED, USE AN ORDERED MAP TO OPTIMIZE THE INDEX
+  private final DatabaseInternal                                             database;
+  private       Map<String, TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> indexEntries = new LinkedHashMap<>(); // MOST COMMON USE CASE INSERTION IS ORDERED, USE AN ORDERED MAP TO OPTIMIZE THE INDEX
 
   public static class IndexKey {
     public final boolean  addOperation;
@@ -141,14 +141,14 @@ public class TransactionIndexContext {
 
   public int getTotalEntries() {
     int total = 0;
-    for (Map<ComparableKey, Set<IndexKey>> entry : indexEntries.values()) {
+    for (Map<ComparableKey, Map<IndexKey, IndexKey>> entry : indexEntries.values()) {
       total += entry.values().size();
     }
     return total;
   }
 
   public int getTotalEntriesByIndex(final String indexName) {
-    final Map<ComparableKey, Set<IndexKey>> entries = indexEntries.get(indexName);
+    final Map<ComparableKey, Map<IndexKey, IndexKey>> entries = indexEntries.get(indexName);
     if (entries == null)
       return 0;
     return entries.size();
@@ -157,12 +157,12 @@ public class TransactionIndexContext {
   public void commit() {
     checkUniqueIndexKeys();
 
-    for (Map.Entry<String, TreeMap<ComparableKey, Set<IndexKey>>> entry : indexEntries.entrySet()) {
+    for (Map.Entry<String, TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> entry : indexEntries.entrySet()) {
       final Index index = database.getSchema().getIndexByName(entry.getKey());
-      final Map<ComparableKey, Set<IndexKey>> keys = entry.getValue();
+      final Map<ComparableKey, Map<IndexKey, IndexKey>> keys = entry.getValue();
 
-      for (Map.Entry<ComparableKey, Set<IndexKey>> keyValueEntries : keys.entrySet()) {
-        final Set<IndexKey> values = keyValueEntries.getValue();
+      for (Map.Entry<ComparableKey, Map<IndexKey, IndexKey>> keyValueEntries : keys.entrySet()) {
+        final Collection<IndexKey> values = keyValueEntries.getValue().values();
 
         if (values.size() > 1) {
           // BATCH MODE. USE SET TO SKIP DUPLICATES
@@ -225,11 +225,11 @@ public class TransactionIndexContext {
     }
   }
 
-  public Map<String, TreeMap<ComparableKey, Set<IndexKey>>> toMap() {
+  public Map<String, TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> toMap() {
     return indexEntries;
   }
 
-  public void setKeys(final Map<String, TreeMap<ComparableKey, Set<IndexKey>>> keysTx) {
+  public void setKeys(final Map<String, TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> keysTx) {
     indexEntries = keysTx;
   }
 
@@ -237,38 +237,69 @@ public class TransactionIndexContext {
     return indexEntries.isEmpty();
   }
 
-  public void addIndexKeyLock(final String indexName, final boolean addOperation, final Object[] keysValues, final RID rid) {
-    TreeMap<ComparableKey, Set<IndexKey>> keys = indexEntries.get(indexName);
+  public void addIndexKeyLock(final IndexInternal index, final boolean addOperation, final Object[] keysValues, final RID rid) {
+    final String indexName = index.getName();
+
+    TreeMap<ComparableKey, Map<IndexKey, IndexKey>> keys = indexEntries.get(indexName);
 
     final ComparableKey k = new ComparableKey(keysValues);
     final IndexKey v = new IndexKey(addOperation, keysValues, rid);
 
-    Set<IndexKey> values;
+    Map<IndexKey, IndexKey> values;
     if (keys == null) {
       keys = new TreeMap<>(); // ORDERED TO KEEP INSERTION ORDER
       indexEntries.put(indexName, keys);
 
-      values = new HashSet<>();
+      values = new HashMap<>();
       keys.put(k, values);
     } else {
       values = keys.get(k);
       if (values == null) {
-        values = new HashSet<>();
+        values = new HashMap<>();
         keys.put(k, values);
       } else {
-        // CHECK FOR REMOVING ENTRIES WITH THE SAME KEY IN TX CONTEXT
+        if (addOperation && index.isUnique()) {
+          // CHECK IMMEDIATELY (INSTEAD OF AT COMMIT TIME) FOR DUPLICATED KEY IN CASE 2 ENTRIES WITH THE SAME KEY ARE SAVED IN TX.
+          final IndexKey entry = values.get(v);
+          if (entry != null && entry.addOperation && !entry.rid.equals(rid))
+            throw new DuplicatedKeyException(indexName, Arrays.toString(keysValues), null);
+        }
+
+        // REPLACE EXISTENT WITH THIS
         values.remove(v);
       }
     }
 
-    values.add(v);
+    if (addOperation && index.isUnique()) {
+      // CHECK FOR UNIQUE ON OTHER SUB-INDEXES
+      final TypeIndex typeIndex = index.getTypeIndex();
+      if (typeIndex != null) {
+        for (IndexInternal idx : typeIndex.getIndexesOnBuckets()) {
+          if (index.equals(idx))
+            // ALREADY CHECKED ABOVE
+            continue;
+
+          final TreeMap<ComparableKey, Map<IndexKey, IndexKey>> entries = indexEntries.get(idx.getName());
+          if (entries != null) {
+            final Map<IndexKey, IndexKey> otherIndexValues = entries.get(k);
+            if (otherIndexValues != null)
+              for (IndexKey e : otherIndexValues.values()) {
+                if (e.addOperation)
+                  throw new DuplicatedKeyException(indexName, Arrays.toString(keysValues), null);
+              }
+          }
+        }
+      }
+    }
+
+    values.put(v, v);
   }
 
   public void reset() {
     indexEntries.clear();
   }
 
-  public TreeMap<ComparableKey, Set<IndexKey>> getIndexKeys(final String indexName) {
+  public TreeMap<ComparableKey, Map<IndexKey, IndexKey>> getIndexKeys(final String indexName) {
     return indexEntries.get(indexName);
   }
 
@@ -308,13 +339,16 @@ public class TransactionIndexContext {
   }
 
   private void checkUniqueIndexKeys() {
-    for (Map.Entry<String, TreeMap<ComparableKey, Set<IndexKey>>> indexEntry : indexEntries.entrySet()) {
-      final Index index = database.getSchema().getIndexByName(indexEntry.getKey());
+    for (Map.Entry<String, TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> indexEntries : indexEntries.entrySet()) {
+      final Index index = database.getSchema().getIndexByName(indexEntries.getKey());
       if (index.isUnique()) {
-        final Map<ComparableKey, Set<IndexKey>> entries = indexEntry.getValue();
-        for (Set<IndexKey> keys : entries.values())
-          for (IndexKey entry : keys)
+        final Map<ComparableKey, Map<IndexKey, IndexKey>> txEntriesPerIndex = indexEntries.getValue();
+        for (Map.Entry<ComparableKey, Map<IndexKey, IndexKey>> txEntriesPerKey : txEntriesPerIndex.entrySet()) {
+          final Map<IndexKey, IndexKey> valuesPerKey = txEntriesPerKey.getValue();
+
+          for (IndexKey entry : valuesPerKey.values())
             checkUniqueIndexKeys(index, entry);
+        }
       }
     }
   }

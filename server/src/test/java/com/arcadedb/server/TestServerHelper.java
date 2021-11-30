@@ -18,7 +18,9 @@ package com.arcadedb.server;
 import com.arcadedb.Constants;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.utility.CallableNoReturn;
 import com.arcadedb.utility.CallableParameterNoReturn;
+import org.junit.jupiter.api.Assertions;
 
 import java.net.*;
 
@@ -105,4 +107,19 @@ public abstract class TestServerHelper {
     return true;
   }
 
+  public static void expectException(final CallableNoReturn callback, final Class<? extends Throwable> expectedException) throws Exception {
+    try {
+      callback.call();
+      Assertions.fail();
+    } catch (Throwable e) {
+      if (e.getClass().equals(expectedException))
+        // EXPECTED
+        return;
+
+      if (e instanceof Exception)
+        throw (Exception) e;
+
+      throw new Exception(e);
+    }
+  }
 }

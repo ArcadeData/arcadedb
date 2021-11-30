@@ -187,11 +187,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
 
   @Override
   public String getTypeName() {
-    checkIsValid();
-    if (indexesOnBuckets.isEmpty())
-      return null;
-
-    return indexesOnBuckets.get(0).getTypeName();
+    return type.getName();
   }
 
   @Override
@@ -212,7 +208,6 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     checkIsValid();
 
     final DocumentType t = type.getSchema().getType(getTypeName());
-    t.removeIndexInternal(this);
 
     for (Index index : new ArrayList<>(indexesOnBuckets))
       type.getSchema().dropIndex(index.getName());
@@ -368,6 +363,16 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   }
 
   @Override
+  public void setTypeIndex(final TypeIndex typeIndex) {
+    throw new UnsupportedOperationException("setTypeIndex");
+  }
+
+  @Override
+  public TypeIndex getTypeIndex() {
+    return null;
+  }
+
+  @Override
   public int getAssociatedBucketId() {
     return -1;
   }
@@ -378,6 +383,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
       throw new IllegalArgumentException("Invalid subIndex " + index);
 
     indexesOnBuckets.add(index);
+    index.setTypeIndex(this);
   }
 
   public void removeIndexOnBucket(final IndexInternal index) {
@@ -386,10 +392,10 @@ public class TypeIndex implements RangeIndex, IndexInternal {
       throw new IllegalArgumentException("Invalid subIndex " + index);
 
     indexesOnBuckets.remove(index);
+    index.setTypeIndex(null);
   }
 
   public IndexInternal[] getIndexesOnBuckets() {
-    checkIsValid();
     return indexesOnBuckets.toArray(new IndexInternal[indexesOnBuckets.size()]);
   }
 

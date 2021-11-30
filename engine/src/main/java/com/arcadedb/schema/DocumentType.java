@@ -707,7 +707,7 @@ public class DocumentType {
     this.bucketSelectionStrategy.setType(this);
   }
 
-  public void removeIndexInternal(final TypeIndex index) {
+  public void removeTypeIndexInternal(final TypeIndex index) {
     for (Iterator<TypeIndex> it = indexesByProperties.values().iterator(); it.hasNext(); ) {
       final TypeIndex idx = it.next();
       if (idx == index) {
@@ -716,17 +716,20 @@ public class DocumentType {
       }
     }
 
-    for (IndexInternal idx : index.getIndexesOnBuckets()) {
-      final List<IndexInternal> list = bucketIndexesByBucket.get(idx.getAssociatedBucketId());
-      if (list != null) {
-        list.remove(idx);
-        if (list.isEmpty())
-          bucketIndexesByBucket.remove(idx.getAssociatedBucketId());
-      }
-    }
+    for (IndexInternal idx : index.getIndexesOnBuckets())
+      removeBucketIndexInternal(idx);
 
     for (DocumentType superType : superTypes)
-      superType.removeIndexInternal(index);
+      superType.removeTypeIndexInternal(index);
+  }
+
+  public void removeBucketIndexInternal(final Index index) {
+    final List<IndexInternal> list = bucketIndexesByBucket.get(index.getAssociatedBucketId());
+    if (list != null) {
+      list.remove(index);
+      if (list.isEmpty())
+        bucketIndexesByBucket.remove(index.getAssociatedBucketId());
+    }
   }
 
   protected void addBucketInternal(final Bucket bucket) {

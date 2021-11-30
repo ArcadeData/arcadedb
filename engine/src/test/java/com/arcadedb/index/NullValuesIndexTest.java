@@ -16,7 +16,6 @@
 package com.arcadedb.index;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.database.Database;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
@@ -32,60 +31,17 @@ public class NullValuesIndexTest extends TestHelper {
 
   @Test
   public void testNullStrategyError() {
+    Assertions.assertFalse(database.getSchema().existsType(TYPE_NAME));
+
+    final DocumentType type = database.getSchema().createDocumentType(TYPE_NAME, 3);
+    type.createProperty("id", Integer.class);
+    type.createProperty("name", String.class);
+    final Index indexes = database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
+    final Index indexes2 = database.getSchema()
+        .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, TYPE_NAME, new String[] { "name" }, PAGE_SIZE, LSMTreeIndexAbstract.NULL_STRATEGY.ERROR, null);
+
     try {
-      database.transaction(new Database.TransactionScope() {
-        @Override
-        public void execute() {
-          Assertions.assertFalse(database.getSchema().existsType(TYPE_NAME));
-
-          final DocumentType type = database.getSchema().createDocumentType(TYPE_NAME, 3);
-          type.createProperty("id", Integer.class);
-          type.createProperty("name", String.class);
-          final Index indexes = database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
-          final Index indexes2 = database.getSchema()
-              .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "name" }, PAGE_SIZE, LSMTreeIndexAbstract.NULL_STRATEGY.ERROR, null);
-
-          for (int i = 0; i < TOT; ++i) {
-            final MutableDocument v = database.newDocument(TYPE_NAME);
-            v.set("id", i);
-            v.set("name", "Jay");
-            v.set("surname", "Miner");
-            v.save();
-          }
-
-          final MutableDocument v = database.newDocument(TYPE_NAME);
-          v.set("id", TOT);
-          v.save();
-
-          database.commit();
-          database.begin();
-
-          for (Index index : ((TypeIndex) indexes).getIndexesOnBuckets()) {
-            Assertions.assertTrue(((IndexInternal) index).getStats().get("pages") > 1);
-          }
-        }
-      });
-      Assertions.fail();
-    } catch (TransactionException e) {
-      Assertions.assertTrue(e.getCause() instanceof IllegalArgumentException);
-      Assertions.assertTrue(e.getCause().getMessage().startsWith("Indexed key V[name] cannot be NULL"));
-    }
-  }
-
-  @Test
-  public void testNullStrategySkip() {
-    database.transaction(new Database.TransactionScope() {
-      @Override
-      public void execute() {
-        Assertions.assertFalse(database.getSchema().existsType(TYPE_NAME));
-
-        final DocumentType type = database.getSchema().createDocumentType(TYPE_NAME, 3);
-        type.createProperty("id", Integer.class);
-        type.createProperty("name", String.class);
-        final Index indexes = database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
-        final Index indexes2 = database.getSchema()
-            .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "name" }, PAGE_SIZE, LSMTreeIndexAbstract.NULL_STRATEGY.SKIP, null);
-
+      database.transaction(() -> {
         for (int i = 0; i < TOT; ++i) {
           final MutableDocument v = database.newDocument(TYPE_NAME);
           v.set("id", i);
@@ -100,7 +56,44 @@ public class NullValuesIndexTest extends TestHelper {
 
         database.commit();
         database.begin();
+
+        for (Index index : ((TypeIndex) indexes).getIndexesOnBuckets()) {
+          Assertions.assertTrue(((IndexInternal) index).getStats().get("pages") > 1);
+        }
+      });
+      Assertions.fail();
+    } catch (TransactionException e) {
+      Assertions.assertTrue(e.getCause() instanceof IllegalArgumentException);
+      Assertions.assertTrue(e.getCause().getMessage().startsWith("Indexed key V[name] cannot be NULL"));
+    }
+  }
+
+  @Test
+  public void testNullStrategySkip() {
+    Assertions.assertFalse(database.getSchema().existsType(TYPE_NAME));
+
+    final DocumentType type = database.getSchema().createDocumentType(TYPE_NAME, 3);
+    type.createProperty("id", Integer.class);
+    type.createProperty("name", String.class);
+    final Index indexes = database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
+    final Index indexes2 = database.getSchema()
+        .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, TYPE_NAME, new String[] { "name" }, PAGE_SIZE, LSMTreeIndexAbstract.NULL_STRATEGY.SKIP, null);
+
+    database.transaction(() -> {
+      for (int i = 0; i < TOT; ++i) {
+        final MutableDocument v = database.newDocument(TYPE_NAME);
+        v.set("id", i);
+        v.set("name", "Jay");
+        v.set("surname", "Miner");
+        v.save();
       }
+
+      final MutableDocument v = database.newDocument(TYPE_NAME);
+      v.set("id", TOT);
+      v.save();
+
+      database.commit();
+      database.begin();
     });
 
     database.transaction(() -> {
@@ -111,26 +104,23 @@ public class NullValuesIndexTest extends TestHelper {
     database = factory.open();
 
     // TRY AGAIN WITH A RE-OPEN DATABASE
-    database.transaction(new Database.TransactionScope() {
-      @Override
-      public void execute() {
-        Assertions.assertTrue(database.getSchema().existsType(TYPE_NAME));
+    database.transaction(() -> {
+      Assertions.assertTrue(database.getSchema().existsType(TYPE_NAME));
 
-        for (int i = TOT + 2; i < TOT + TOT; ++i) {
-          final MutableDocument v = database.newDocument(TYPE_NAME);
-          v.set("id", i);
-          v.set("name", "Jay" + i);
-          v.set("surname", "Miner");
-          v.save();
-        }
-
+      for (int i = TOT + 2; i < TOT + TOT; ++i) {
         final MutableDocument v = database.newDocument(TYPE_NAME);
-        v.set("id", TOT + TOT + 1);
+        v.set("id", i);
+        v.set("name", "Jay" + i);
+        v.set("surname", "Miner");
         v.save();
-
-        database.commit();
-        database.begin();
       }
+
+      final MutableDocument v = database.newDocument(TYPE_NAME);
+      v.set("id", TOT + TOT + 1);
+      v.save();
+
+      database.commit();
+      database.begin();
     });
 
     database.transaction(() -> {

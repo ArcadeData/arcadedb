@@ -30,7 +30,7 @@ import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TransactionException;
-import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 
@@ -367,7 +367,8 @@ public class TransactionContext implements Transaction {
    * Executes 1st phase from a replica.
    */
   public void commitFromReplica(final WALFile.WALTransaction buffer,
-      final Map<String, TreeMap<TransactionIndexContext.ComparableKey, Set<TransactionIndexContext.IndexKey>>> keysTx) throws TransactionException {
+      final Map<String, TreeMap<TransactionIndexContext.ComparableKey, Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey>>> keysTx)
+      throws TransactionException {
 
     final int totalImpactedPages = buffer.pages.length;
     if (totalImpactedPages == 0 && keysTx.isEmpty()) {
@@ -568,8 +569,8 @@ public class TransactionContext implements Transaction {
     }
   }
 
-  public void addIndexOperation(final Index index, final boolean addOperation, final Object[] keys, final RID rid) {
-    indexChanges.addIndexKeyLock(index.getName(), addOperation, keys, rid);
+  public void addIndexOperation(final IndexInternal index, final boolean addOperation, final Object[] keys, final RID rid) {
+    indexChanges.addIndexKeyLock(index, addOperation, keys, rid);
   }
 
   @Override
