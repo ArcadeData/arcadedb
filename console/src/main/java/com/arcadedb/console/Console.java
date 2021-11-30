@@ -21,7 +21,6 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.TransactionContext;
-import com.arcadedb.engine.DatabaseChecker;
 import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.graph.Edge;
@@ -162,8 +161,6 @@ public class Console {
     if (line != null && !line.isEmpty()) {
       if (line.startsWith("begin"))
         executeBegin();
-      else if (line.startsWith("check database"))
-        executeCheckDatabase();
       else if (line.startsWith("close"))
         executeClose();
       else if (line.startsWith("commit"))
@@ -269,16 +266,6 @@ public class Console {
       remoteDatabase.close();
       remoteDatabase = null;
     }
-  }
-
-  private void executeCheckDatabase() {
-    if (localDatabase == null)
-      throw new ConsoleException("Database is closed");
-
-    if (localDatabase.isTransactionActive())
-      localDatabase.commit();
-
-    new DatabaseChecker().check(localDatabase, 1);
   }
 
   private void executeConnect(final String line) {

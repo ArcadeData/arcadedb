@@ -24,6 +24,9 @@ import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.VertexType;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.utility.FileUtils;
 
@@ -341,6 +344,12 @@ public class Bucket extends PaginatedComponent {
     stats.put("totalSurrogateRecords", totalSurrogateRecords);
     stats.put("totalDeletedRecords", totalDeletedRecords);
     stats.put("totalMaxOffset", totalMaxOffset);
+
+    DocumentType type = database.getSchema().getTypeByBucketId(id);
+    if (type instanceof VertexType)
+      stats.put("totalVertices", totalRecords);
+    else if (type instanceof EdgeType)
+      stats.put("totalEdges", totalRecords);
 
     return stats;
   }
