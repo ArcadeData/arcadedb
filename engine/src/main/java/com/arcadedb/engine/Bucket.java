@@ -148,28 +148,34 @@ public class Bucket extends PaginatedComponent {
 
         if (recordCountInPage > 0) {
           for (int recordIdInPage = 0; recordIdInPage < recordCountInPage; ++recordIdInPage) {
-            final int recordPositionInPage = (int) page.readUnsignedInt(PAGE_RECORD_TABLE_OFFSET + recordIdInPage * INT_SERIALIZED_SIZE);
-            final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
+            try {
+              final int recordPositionInPage = (int) page.readUnsignedInt(PAGE_RECORD_TABLE_OFFSET + recordIdInPage * INT_SERIALIZED_SIZE);
+              final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
 
-            if (recordSize[0] > 0) {
-              // NOT DELETED
-              final int recordContentPositionInPage = recordPositionInPage + (int) recordSize[1];
+              if (recordSize[0] > 0) {
+                // NOT DELETED
+                final int recordContentPositionInPage = recordPositionInPage + (int) recordSize[1];
 
-              final RID rid = new RID(database, id, ((long) pageId) * maxRecordsInPage + recordIdInPage);
+                final RID rid = new RID(database, id, ((long) pageId) * maxRecordsInPage + recordIdInPage);
 
-              final Binary view = page.getImmutableView(recordContentPositionInPage, (int) recordSize[0]);
+                final Binary view = page.getImmutableView(recordContentPositionInPage, (int) recordSize[0]);
 
-              if (!callback.onRecord(rid, view))
-                return;
+                if (!callback.onRecord(rid, view))
+                  return;
 
-            } else if (recordSize[0] == -1) {
-              // PLACEHOLDER
-              final RID rid = new RID(database, id, ((long) pageId) * maxRecordsInPage + recordIdInPage);
+              } else if (recordSize[0] == -1) {
+                // PLACEHOLDER
+                final RID rid = new RID(database, id, ((long) pageId) * maxRecordsInPage + recordIdInPage);
 
-              final Binary view = getRecordInternal(new RID(database, id, page.readLong((int) (recordPositionInPage + recordSize[1]))), true);
+                final Binary view = getRecordInternal(new RID(database, id, page.readLong((int) (recordPositionInPage + recordSize[1]))), true);
 
-              if (view != null && !callback.onRecord(rid, view))
-                return;
+                if (view != null && !callback.onRecord(rid, view))
+                  return;
+              }
+            } catch (Exception e) {
+              final String msg = String.format("Error on loading record #%d:%d (error: %s)", file.getFileId(), (pageId * maxRecordsInPage) + recordIdInPage,
+                  e.getMessage());
+              LogManager.instance().log(this, Level.SEVERE, msg);
             }
           }
         }

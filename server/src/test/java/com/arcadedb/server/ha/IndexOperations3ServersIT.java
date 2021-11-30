@@ -120,7 +120,7 @@ public class IndexOperations3ServersIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void createIndexOnLaterDistributed() throws Exception {
+  public void createIndexLaterDistributed() throws Exception {
     final Database database = getServerDatabase(0, getDatabaseName());
     VertexType v = database.getSchema().createVertexType("Person", 3);
 
@@ -159,6 +159,9 @@ public class IndexOperations3ServersIT extends BaseGraphServerTest {
         // EXPECTED
       }
 
+      database.getSchema().dropIndex("Person[id]");
+      database.getSchema().getType("Person").dropProperty("id");
+
       // TRY DROPPING A PROPERTY WITH AN INDEX
       try {
         database.getSchema().getType("Person").dropProperty("uuid");
@@ -168,10 +171,8 @@ public class IndexOperations3ServersIT extends BaseGraphServerTest {
       }
 
       database.getSchema().dropIndex("Person[uuid]");
-      database.getSchema().dropIndex("Person[id]");
-
-      database.getSchema().getType("Person").dropProperty("id");
       database.getSchema().getType("Person").dropProperty("uuid");
+
       database.command("sql", "delete from Person");
     });
   }
