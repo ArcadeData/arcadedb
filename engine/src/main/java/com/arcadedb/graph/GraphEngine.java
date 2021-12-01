@@ -29,6 +29,7 @@ import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.Pair;
 
 import java.util.*;
+import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
 /**
@@ -37,8 +38,13 @@ import java.util.logging.*;
  * @author Luca Garulli (l.garulli@arcadedata.it)
  */
 public class GraphEngine {
-  public static final String OUT_EDGES_SUFFIX = "_out_edges";
-  public static final String IN_EDGES_SUFFIX  = "_in_edges";
+  public static final String           OUT_EDGES_SUFFIX = "_out_edges";
+  public static final String           IN_EDGES_SUFFIX  = "_in_edges";
+  private final       DatabaseInternal database;
+
+  public GraphEngine(final DatabaseInternal database) {
+    this.database = database;
+  }
 
   public static class CreateEdgeOperation {
     final String       edgeTypeName;
@@ -52,7 +58,7 @@ public class GraphEngine {
     }
   }
 
-  public void createVertexType(DatabaseInternal database, final VertexType type) {
+  public void createVertexType(final VertexType type) {
     for (Bucket b : type.getBuckets(false)) {
       if (!database.getSchema().existsBucket(b.getName() + OUT_EDGES_SUFFIX))
         database.getSchema().createBucket(b.getName() + OUT_EDGES_SUFFIX);
@@ -61,7 +67,7 @@ public class GraphEngine {
     }
   }
 
-  public void dropVertexType(DatabaseInternal database, final VertexType type) {
+  public void dropVertexType(final VertexType type) {
     for (Bucket b : type.getBuckets(false)) {
       if (database.getSchema().existsBucket(b.getName() + OUT_EDGES_SUFFIX))
         database.getSchema().dropBucket(b.getName() + OUT_EDGES_SUFFIX);
@@ -88,7 +94,7 @@ public class GraphEngine {
     final ImmutableLightEdge edge = new ImmutableLightEdge(database, database.getSchema().getType(edgeTypeName), edgeRID, fromVertexRID,
         toVertex.getIdentity());
 
-    connectEdge(database, fromVertex, toVertex, edge, bidirectional);
+    connectEdge(fromVertex, toVertex, edge, bidirectional);
 
     return edge;
   }
@@ -113,49 +119,46 @@ public class GraphEngine {
 
     edge.save();
 
-    connectEdge(database, fromVertex, toVertex, edge, bidirectional);
+    connectEdge(fromVertex, toVertex, edge, bidirectional);
 
     return edge;
   }
 
-  public void connectEdge(final DatabaseInternal database, VertexInternal fromVertex, final Identifiable toVertex, final Edge edge,
-      final boolean bidirectional) {
+  public void connectEdge(VertexInternal fromVertex, final Identifiable toVertex, final Edge edge, final boolean bidirectional) {
     fromVertex = fromVertex.modify();
 
-    final EdgeSegment outChunk = createOutEdgeChunk(database, (MutableVertex) fromVertex);
+    final EdgeSegment outChunk = createOutEdgeChunk((MutableVertex) fromVertex);
 
     final EdgeLinkedList outLinkedList = new EdgeLinkedList(fromVertex, Vertex.DIRECTION.OUT, outChunk);
 
     outLinkedList.add(edge.getIdentity(), toVertex.getIdentity());
 
     if (bidirectional)
-      connectIncomingEdge(database, toVertex, fromVertex.getIdentity(), edge.getIdentity());
+      connectIncomingEdge(toVertex, fromVertex.getIdentity(), edge.getIdentity());
   }
 
-  public void upgradeEdge(final DatabaseInternal database, VertexInternal fromVertex, final Identifiable toVertex, final MutableEdge edge,
-      final boolean bidirectional) {
+  public void upgradeEdge(VertexInternal fromVertex, final Identifiable toVertex, final MutableEdge edge, final boolean bidirectional) {
     fromVertex = fromVertex.modify();
-    final EdgeSegment outChunk = createOutEdgeChunk(database, (MutableVertex) fromVertex);
+    final EdgeSegment outChunk = createOutEdgeChunk((MutableVertex) fromVertex);
 
     final EdgeLinkedList outLinkedList = new EdgeLinkedList(fromVertex, Vertex.DIRECTION.OUT, outChunk);
 
     outLinkedList.upgrade(edge.getIdentity(), toVertex.getIdentity());
 
     if (bidirectional)
-      upgradeIncomingEdge(database, toVertex, fromVertex.getIdentity(), edge.getIdentity());
+      upgradeIncomingEdge(toVertex, fromVertex.getIdentity(), edge.getIdentity());
   }
 
-  public void upgradeIncomingEdge(final DatabaseInternal database, final Identifiable toVertex, final RID fromVertexRID, final RID edgeRID) {
+  public void upgradeIncomingEdge(final Identifiable toVertex, final RID fromVertexRID, final RID edgeRID) {
     final MutableVertex toVertexRecord = toVertex.asVertex().modify();
 
-    final EdgeSegment inChunk = createInEdgeChunk(database, toVertexRecord);
+    final EdgeSegment inChunk = createInEdgeChunk(toVertexRecord);
 
     final EdgeLinkedList inLinkedList = new EdgeLinkedList(toVertexRecord, Vertex.DIRECTION.IN, inChunk);
     inLinkedList.upgrade(edgeRID, fromVertexRID);
   }
 
-  public List<Edge> newEdges(final DatabaseInternal database, VertexInternal sourceVertex, final List<CreateEdgeOperation> connections,
-      final boolean bidirectional) {
+  public List<Edge> newEdges(VertexInternal sourceVertex, final List<CreateEdgeOperation> connections, final boolean bidirectional) {
 
     if (connections == null || connections.isEmpty())
       return Collections.EMPTY_LIST;
@@ -186,7 +189,7 @@ public class GraphEngine {
 
     sourceVertex = sourceVertex.modify();
 
-    final EdgeSegment outChunk = createOutEdgeChunk(database, (MutableVertex) sourceVertex);
+    final EdgeSegment outChunk = createOutEdgeChunk((MutableVertex) sourceVertex);
 
     final EdgeLinkedList outLinkedList = new EdgeLinkedList(sourceVertex, Vertex.DIRECTION.OUT, outChunk);
     outLinkedList.addAll(outEdgePairs);
@@ -194,23 +197,23 @@ public class GraphEngine {
     if (bidirectional) {
       for (int i = 0; i < outEdgePairs.size(); ++i) {
         final Pair<Identifiable, Identifiable> edge = outEdgePairs.get(i);
-        connectIncomingEdge(database, edge.getSecond(), edge.getFirst().getIdentity(), sourceVertexRID);
+        connectIncomingEdge(edge.getSecond(), edge.getFirst().getIdentity(), sourceVertexRID);
       }
     }
 
     return edges;
   }
 
-  public void connectIncomingEdge(final DatabaseInternal database, final Identifiable toVertex, final RID fromVertexRID, final RID edgeRID) {
+  public void connectIncomingEdge(final Identifiable toVertex, final RID fromVertexRID, final RID edgeRID) {
     final MutableVertex toVertexRecord = toVertex.asVertex().modify();
 
-    final EdgeSegment inChunk = createInEdgeChunk(database, toVertexRecord);
+    final EdgeSegment inChunk = createInEdgeChunk(toVertexRecord);
 
     final EdgeLinkedList inLinkedList = new EdgeLinkedList(toVertexRecord, Vertex.DIRECTION.IN, inChunk);
     inLinkedList.add(edgeRID, fromVertexRID);
   }
 
-  public EdgeSegment createInEdgeChunk(final DatabaseInternal database, final MutableVertex toVertex) {
+  public EdgeSegment createInEdgeChunk(final MutableVertex toVertex) {
     RID inEdgesHeadChunk = toVertex.getInEdgesHeadChunk();
 
     EdgeSegment inChunk = null;
@@ -225,7 +228,7 @@ public class GraphEngine {
 
     if (inEdgesHeadChunk == null) {
       inChunk = new MutableEdgeSegment(database, database.getEdgeListSize(0));
-      database.createRecord(inChunk, getEdgesBucketName(database, toVertex.getIdentity().getBucketId(), Vertex.DIRECTION.IN));
+      database.createRecord(inChunk, getEdgesBucketName(toVertex.getIdentity().getBucketId(), Vertex.DIRECTION.IN));
       inEdgesHeadChunk = inChunk.getIdentity();
 
       toVertex.setInEdgesHeadChunk(inEdgesHeadChunk);
@@ -235,7 +238,7 @@ public class GraphEngine {
     return inChunk;
   }
 
-  public EdgeSegment createOutEdgeChunk(final DatabaseInternal database, final MutableVertex fromVertex) {
+  public EdgeSegment createOutEdgeChunk(final MutableVertex fromVertex) {
     RID outEdgesHeadChunk = fromVertex.getOutEdgesHeadChunk();
 
     EdgeSegment outChunk = null;
@@ -250,7 +253,7 @@ public class GraphEngine {
 
     if (outEdgesHeadChunk == null) {
       outChunk = new MutableEdgeSegment(database, database.getEdgeListSize(0));
-      database.createRecord(outChunk, getEdgesBucketName(database, fromVertex.getIdentity().getBucketId(), Vertex.DIRECTION.OUT));
+      database.createRecord(outChunk, getEdgesBucketName(fromVertex.getIdentity().getBucketId(), Vertex.DIRECTION.OUT));
       outEdgesHeadChunk = outChunk.getIdentity();
 
       fromVertex.setOutEdgesHeadChunk(outEdgesHeadChunk);
@@ -323,7 +326,11 @@ public class GraphEngine {
     final RID edgeRID = edge.getIdentity();
     if (edgeRID != null && !(edge instanceof LightEdge))
       // DELETE EDGE RECORD TOO
-      database.getSchema().getBucketById(edge.getIdentity().getBucketId()).deleteRecord(edge.getIdentity());
+      try {
+        database.getSchema().getBucketById(edge.getIdentity().getBucketId()).deleteRecord(edge.getIdentity());
+      } catch (RecordNotFoundException e) {
+        // ALREADY DELETED: IGNORE IT
+      }
   }
 
   public void deleteVertex(final VertexInternal vertex) {
@@ -566,7 +573,7 @@ public class GraphEngine {
     return false;
   }
 
-  public static String getEdgesBucketName(final Database database, final int bucketId, final Vertex.DIRECTION direction) {
+  public String getEdgesBucketName(final int bucketId, final Vertex.DIRECTION direction) {
     final Bucket vertexBucket = database.getSchema().getBucketById(bucketId);
 
     if (direction == Vertex.DIRECTION.OUT)
@@ -615,4 +622,353 @@ public class GraphEngine {
 
     return null;
   }
+
+  public Map<String, Object> checkVertices(final String typeName, final boolean fix, final int verboseLevel) {
+    final AtomicLong autoFix = new AtomicLong();
+    final AtomicLong edgesToRemove = new AtomicLong();
+    final AtomicLong invalidLinks = new AtomicLong();
+    final List<RID> corruptedRecords = new ArrayList<>();
+    final List<String> warnings = new ArrayList<>();
+
+    final Map<String, Object> stats = new HashMap<>();
+
+    database.begin();
+
+    try {
+      database.scanType(typeName, false, (record) -> {
+        try {
+          final Vertex vertex = record.asVertex(true);
+
+          final EdgeLinkedList outEdges = getEdgeHeadChunk((VertexInternal) vertex, Vertex.DIRECTION.OUT);
+          if (outEdges != null) {
+            final Iterator<Pair<RID, RID>> out = outEdges.entryIterator();
+            while (out.hasNext()) {
+              String warning = null;
+              boolean removeEdge = false;
+
+              Edge edge = null;
+              final Pair<RID, RID> current = out.next();
+              final RID edgeRID = current.getFirst();
+              final RID vertexRID = current.getSecond();
+
+              if (edgeRID == null) {
+                warning = "outgoing edge null from vertex " + vertex.getIdentity();
+                invalidLinks.incrementAndGet();
+                removeEdge = true;
+              } else if (vertexRID == null) {
+                warning = "outgoing vertex null from vertex " + vertex.getIdentity();
+                invalidLinks.incrementAndGet();
+                removeEdge = true;
+              } else {
+                try {
+                  edge = edgeRID.asEdge(true);
+
+                  if (edge.getIn() == null || !edge.getIn().isValid()) {
+                    warning = "edge " + edgeRID + " has an invalid incoming link " + edge.getIn();
+                    invalidLinks.incrementAndGet();
+                    removeEdge = true;
+                  } else {
+                    try {
+                      edge.getInVertex().asVertex(true);
+                    } catch (RecordNotFoundException e) {
+                      warning = "edge " + edgeRID + " points to the incoming vertex " + edge.getIn() + " that is not found (deleted?)";
+                      invalidLinks.incrementAndGet();
+                      removeEdge = true;
+                    } catch (Exception e) {
+                      // UNKNOWN ERROR ON LOADING
+                      warning =
+                          "edge " + edgeRID + " points to the incoming vertex " + edge.getIn() + " which cannot be loaded (error: " + e.getMessage() + ")";
+                      corruptedRecords.add(edge.getIn());
+                      if (fix) {
+                        autoFix.incrementAndGet();
+                        database.getSchema().getBucketById(edge.getIn().getBucketId()).deleteRecord(edge.getIn());
+                      }
+                    }
+                  }
+
+                  if (!edge.getOut().equals(vertex.getIdentity())) {
+                    warning = "edge " + edgeRID + " has an outgoing link " + edge.getOut() + " different from expected " + vertex.getIdentity();
+                    invalidLinks.incrementAndGet();
+                    removeEdge = true;
+                  } else if (!edge.getIn().equals(vertexRID)) {
+                    warning = "edge " + edgeRID + " has an incoming link " + edge.getIn() + " different from expected " + vertexRID;
+                    invalidLinks.incrementAndGet();
+                    removeEdge = true;
+                  }
+
+                } catch (RecordNotFoundException e) {
+                  warning = "edge " + edgeRID + " not found";
+                  invalidLinks.incrementAndGet();
+                  removeEdge = true;
+                } catch (Exception e) {
+                  // UNKNOWN ERROR ON LOADING
+                  warning = "edge " + edgeRID + " error on loading (error: " + e.getMessage() + ")";
+                  corruptedRecords.add(edgeRID);
+                  if (fix) {
+                    autoFix.incrementAndGet();
+                    database.getSchema().getBucketById(edgeRID.getBucketId()).deleteRecord(edgeRID);
+                  }
+                }
+              }
+
+              if (warning != null) {
+                warnings.add(warning);
+                if (verboseLevel > 0)
+                  LogManager.instance().log(this, Level.WARNING, "- " + warning);
+              }
+
+              if (removeEdge) {
+                edgesToRemove.incrementAndGet();
+                if (fix) {
+                  autoFix.incrementAndGet();
+                  out.remove();
+                }
+              }
+            }
+          }
+
+          final EdgeLinkedList inEdges = getEdgeHeadChunk((VertexInternal) vertex, Vertex.DIRECTION.IN);
+          if (inEdges != null) {
+            final Iterator<Pair<RID, RID>> in = inEdges.entryIterator();
+            while (in.hasNext()) {
+              String warning = null;
+              boolean removeEdge = false;
+
+              Edge edge = null;
+              final Pair<RID, RID> current = in.next();
+              final RID edgeRID = current.getFirst();
+              final RID vertexRID = current.getSecond();
+
+              if (edgeRID == null) {
+                warning = "outgoing edge null from vertex " + vertex.getIdentity();
+                invalidLinks.incrementAndGet();
+                removeEdge = true;
+              } else if (vertexRID == null) {
+                warning = "outgoing vertex null from vertex " + vertex.getIdentity();
+                invalidLinks.incrementAndGet();
+                removeEdge = true;
+              } else {
+                try {
+                  edge = edgeRID.asEdge(true);
+
+                  if (edge.getOut() == null || !edge.getOut().isValid()) {
+                    warning = "edge " + edgeRID + " has an invalid outgoing link " + edge.getIn();
+                    invalidLinks.incrementAndGet();
+                    removeEdge = true;
+                  } else {
+                    try {
+                      edge.getOutVertex().asVertex(true);
+                    } catch (RecordNotFoundException e) {
+                      warning = "edge " + edgeRID + " points to the outgoing vertex " + edge.getOut() + " that is not found (deleted?)";
+                      invalidLinks.incrementAndGet();
+                      removeEdge = true;
+                    } catch (Exception e) {
+                      // UNKNOWN ERROR ON LOADING
+                      warning =
+                          "edge " + edgeRID + " points to the outgoing vertex " + edge.getOut() + " which cannot be loaded (error: " + e.getMessage() + ")";
+                      corruptedRecords.add(edge.getOut());
+                      if (fix) {
+                        autoFix.incrementAndGet();
+                        database.getSchema().getBucketById(edge.getOut().getBucketId()).deleteRecord(edge.getOut());
+                      }
+                    }
+                  }
+
+                  if (!edge.getIn().equals(vertex.getIdentity())) {
+                    warning = "edge " + edgeRID + " has an incoming link " + edge.getIn() + " different from expected " + vertex.getIdentity();
+                    invalidLinks.incrementAndGet();
+                    removeEdge = true;
+                  } else if (!edge.getOut().equals(vertexRID)) {
+                    warning = "edge " + edgeRID + " has an outgoing link " + edge.getOut() + " different from expected " + vertexRID;
+                    invalidLinks.incrementAndGet();
+                    removeEdge = true;
+                  }
+                } catch (RecordNotFoundException e) {
+                  warning = "edge " + edgeRID + " not found";
+                  invalidLinks.incrementAndGet();
+                  removeEdge = true;
+                } catch (Exception e) {
+                  // UNKNOWN ERROR ON LOADING
+                  warning = "edge " + edgeRID + " error on loading (error: " + e.getMessage() + ")";
+                  corruptedRecords.add(edgeRID);
+                  if (fix) {
+                    autoFix.incrementAndGet();
+                    database.getSchema().getBucketById(edgeRID.getBucketId()).deleteRecord(edgeRID);
+                  }
+                }
+              }
+
+              if (warning != null) {
+                warnings.add(warning);
+                if (verboseLevel > 0)
+                  LogManager.instance().log(this, Level.WARNING, "- " + warning);
+              }
+
+              if (removeEdge) {
+                edgesToRemove.incrementAndGet();
+                if (fix) {
+                  autoFix.incrementAndGet();
+                  in.remove();
+                }
+              }
+            }
+          }
+
+        } catch (Throwable e) {
+          final String warning = "vertex " + record.getIdentity() + " cannot be loaded (error: " + e.getMessage() + ")";
+          warnings.add(warning);
+          corruptedRecords.add(record.getIdentity());
+          if (fix) {
+            autoFix.incrementAndGet();
+            database.getSchema().getBucketById(record.getIdentity().getBucketId()).deleteRecord(record.getIdentity());
+          }
+        }
+
+        return true;
+      });
+
+      database.commit();
+
+    } finally {
+      stats.put("autoFix", autoFix.get());
+      stats.put("edgesToRemove", edgesToRemove.get());
+      stats.put("invalidLinks", invalidLinks.get());
+      stats.put("corruptedRecords", corruptedRecords);
+      stats.put("warnings", warnings);
+    }
+
+    return stats;
+  }
+
+  public Map<String, Object> checkEdges(final String typeName, final boolean fix, final int verboseLevel) {
+    final AtomicLong autoFix = new AtomicLong();
+    final AtomicLong edgesToRemove = new AtomicLong();
+    final AtomicLong invalidLinks = new AtomicLong();
+    final AtomicLong missingReferenceBack = new AtomicLong();
+    final List<RID> corruptedRecords = new ArrayList<>();
+    final List<String> warnings = new ArrayList<>();
+
+    final Map<String, Object> stats = new HashMap<>();
+
+    database.begin();
+
+    try {
+      database.scanType(typeName, false, (record) -> {
+        try {
+          final Edge edge = record.asEdge(true);
+
+          String warning = null;
+          boolean removeEdge = false;
+
+          if (edge == null) {
+            warning = "edge " + edge.getIdentity() + " cannot be loaded";
+            corruptedRecords.add(edge.getIdentity());
+            removeEdge = true;
+
+          } else if (edge.getIn() == null || !edge.getIn().isValid()) {
+            warning = "edge " + edge.getIdentity() + " has an invalid incoming link " + edge.getIn();
+            invalidLinks.incrementAndGet();
+            removeEdge = true;
+
+          } else if (edge.getOut() == null || !edge.getOut().isValid()) {
+            warning = "edge " + edge.getIdentity() + " has an invalid outgoing link " + edge.getOut();
+            invalidLinks.incrementAndGet();
+            removeEdge = true;
+
+          } else {
+            try {
+              final Vertex vertex = edge.getInVertex().asVertex(true);
+
+              final EdgeLinkedList inEdges = getEdgeHeadChunk((VertexInternal) vertex, Vertex.DIRECTION.IN);
+              if (inEdges == null || !inEdges.containsEdge(edge.getIdentity())) {
+                warning = "edge " + edge.getIdentity() + " incoming link to vertex " + edge.getIn() + " has no reference back";
+                missingReferenceBack.incrementAndGet();
+                //UNI DIRECTIONAL LINKS?
+                //removeEdge = true;
+              }
+
+            } catch (RecordNotFoundException e) {
+              warning = "edge " + edge.getIdentity() + " points to the incoming vertex " + edge.getIn() + " that is not found (deleted?)";
+              invalidLinks.incrementAndGet();
+              removeEdge = true;
+            } catch (Exception e) {
+              // UNKNOWN ERROR ON LOADING
+              warning =
+                  "edge " + edge.getIdentity() + " points to the incoming vertex " + edge.getIn() + " which cannot be loaded (error: " + e.getMessage() + ")";
+              corruptedRecords.add(edge.getIn());
+
+              if (fix) {
+                autoFix.incrementAndGet();
+                database.getSchema().getBucketById(edge.getIn().getBucketId()).deleteRecord(edge.getIn());
+              }
+            }
+
+            if (!removeEdge)
+              try {
+                final Vertex vertex = edge.getOutVertex().asVertex(true);
+
+                final EdgeLinkedList outEdges = getEdgeHeadChunk((VertexInternal) vertex, Vertex.DIRECTION.OUT);
+                if (outEdges == null || !outEdges.containsEdge(edge.getIdentity())) {
+                  warning = "edge " + edge.getIdentity() + " outgoing link to vertex " + edge.getOut() + " has no reference back";
+                  missingReferenceBack.incrementAndGet();
+                  //UNI DIRECTIONAL LINKS?
+                  //removeEdge = true;
+                }
+
+              } catch (RecordNotFoundException e) {
+                warning = "edge " + edge.getIdentity() + " points to the outgoing vertex " + edge.getOut() + " that is not found (deleted?)";
+                invalidLinks.incrementAndGet();
+                removeEdge = true;
+              } catch (Exception e) {
+                // UNKNOWN ERROR ON LOADING
+                warning = "edge " + edge.getIdentity() + " points to the outgoing vertex " + edge.getOut() + " which cannot be loaded (error: " + e.getMessage()
+                    + ")";
+                corruptedRecords.add(edge.getOut());
+
+                if (fix) {
+                  autoFix.incrementAndGet();
+                  database.getSchema().getBucketById(edge.getOut().getBucketId()).deleteRecord(edge.getOut());
+                }
+              }
+          }
+
+          if (warning != null) {
+            warnings.add(warning);
+            if (verboseLevel > 0)
+              LogManager.instance().log(this, Level.WARNING, "- " + warning);
+          }
+
+          if (removeEdge) {
+            edgesToRemove.incrementAndGet();
+            if (fix) {
+              autoFix.incrementAndGet();
+              edge.delete();
+            }
+          }
+
+        } catch (Throwable e) {
+          corruptedRecords.add(record.getIdentity());
+          if (fix) {
+            autoFix.incrementAndGet();
+            database.getSchema().getBucketById(record.getIdentity().getBucketId()).deleteRecord(record.getIdentity());
+          }
+        }
+
+        return true;
+      });
+
+      database.commit();
+
+    } finally {
+      stats.put("autoFix", autoFix.get());
+      stats.put("edgesToRemove", edgesToRemove.get());
+      stats.put("invalidLinks", invalidLinks.get());
+      stats.put("missingReferenceBack", missingReferenceBack.get());
+      stats.put("corruptedRecords", corruptedRecords);
+      stats.put("warnings", warnings);
+    }
+
+    return stats;
+  }
+
 }

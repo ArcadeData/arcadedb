@@ -14,6 +14,7 @@ import java.util.stream.*;
 public class CheckDatabaseStatement extends SimpleExecStatement {
   protected Set<BucketIdentifier> buckets = new HashSet<>();
   protected Set<String>           types   = new HashSet<>();
+  protected boolean               fix     = false;
 
   public CheckDatabaseStatement(int id) {
     super(id);
@@ -35,6 +36,7 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
     checker.setVerboseLevel(0);
     checker.setBuckets(buckets.stream().map(x -> x.getValue()).collect(Collectors.toSet()));
     checker.setTypes(types.stream().map(x -> (x.startsWith("\"") || x.startsWith("'")) ? x.substring(1, x.length() - 1) : x).collect(Collectors.toSet()));
+    checker.setFix(fix);
 
     final Map<String, Object> checkResult = checker.check();
 

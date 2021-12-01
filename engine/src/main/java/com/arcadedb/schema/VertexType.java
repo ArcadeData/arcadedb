@@ -31,6 +31,6 @@ public class VertexType extends DocumentType {
 
   protected void addBucketInternal(final Bucket bucket) {
     super.addBucketInternal(bucket);
-    ((DatabaseInternal) schema.getDatabase()).getGraphEngine().createVertexType((DatabaseInternal) schema.getDatabase(), this);
+    ((DatabaseInternal) schema.getDatabase()).getGraphEngine().createVertexType(this);
   }
 }

@@ -25,6 +25,8 @@ public class CheckDatabaseStatementTest extends ParserTestAbstract {
     checkRightSyntax("check database");
     checkRightSyntax("check database bucket 3");
     checkRightSyntax("check database bucket 'Test'");
+    checkRightSyntax("check database bucket 3 FIX");
+    checkRightSyntax("check database bucket 'Test' fix");
 
     checkWrongSyntax("check database file:///foo/bar/ foo bar");
   }

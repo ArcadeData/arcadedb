@@ -311,6 +311,8 @@ TOKEN:
   |
   < FAIL: ( "F" | "f") ( "A" | "a") ( "I" | "i") ( "L" | "l") >
   |
+  < FIX: ( "F" | "f") ( "I" | "i") ( "X" | "x") >
+  |
   < ISOLATION: ( "I" | "i") ( "S" | "s") ( "O" | "o") ( "L" | "l") ( "A" | "a") ( "T" | "t") ( "I" | "i") ( "O" | "o") ( "N" | "n") >
   |
   < SLEEP: ( "S" | "s") ( "L" | "l") ( "E" | "e") ( "E" | "e") ( "P" | "p")  >
@@ -4281,6 +4283,7 @@ CheckDatabaseStatement CheckDatabaseStatement():
       lastBucket = BucketIdentifier() { jjtThis.buckets.add(lastBucket); }
       ( <COMMA> lastBucket = BucketIdentifier() { jjtThis.buckets.add(lastBucket); } )*
     ]
+    [ <FIX> { jjtThis.fix = true; } ]
   )
   {return jjtThis; }
 }

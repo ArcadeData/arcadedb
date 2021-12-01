@@ -21,17 +21,15 @@ import com.arcadedb.engine.Bucket;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.EdgeType;
 
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Set;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.logging.Level;
+import java.util.*;
+import java.util.concurrent.atomic.*;
+import java.util.logging.*;
 
 public abstract class IteratorFilterBase<T> implements Iterator<T>, Iterable<T> {
   protected final DatabaseInternal database;
   protected       EdgeSegment      currentContainer;
-  protected final AtomicInteger    currentPosition = new AtomicInteger(MutableEdgeSegment.CONTENT_START_POSITION);
+  protected final AtomicInteger    currentPosition     = new AtomicInteger(MutableEdgeSegment.CONTENT_START_POSITION);
+  private         int              lastElementPosition = currentPosition.get();
   protected       RID              nextEdge;
   protected       RID              nextVertex;
   protected       RID              next;
@@ -63,6 +61,8 @@ public abstract class IteratorFilterBase<T> implements Iterator<T>, Iterable<T> 
 
     while (true) {
       if (currentPosition.get() < currentContainer.getUsed()) {
+        lastElementPosition = currentPosition.get();
+
         if (edge) {
           nextEdge = next = currentContainer.getRID(currentPosition);
           nextVertex = currentContainer.getRID(currentPosition); // SKIP VERTEX
@@ -95,6 +95,7 @@ public abstract class IteratorFilterBase<T> implements Iterator<T>, Iterable<T> 
         currentContainer = currentContainer.getNext();
         if (currentContainer != null) {
           currentPosition.set(MutableEdgeSegment.CONTENT_START_POSITION);
+          lastElementPosition = currentPosition.get();
         } else
           // END
           break;
@@ -110,7 +111,10 @@ public abstract class IteratorFilterBase<T> implements Iterator<T>, Iterable<T> 
 
   @Override
   public void remove() {
-    currentContainer.removeEntry(currentPosition.get());
+    currentContainer.removeEntry(lastElementPosition, currentPosition.get());
+    database.updateRecord(currentContainer);
+
+    currentPosition.set(lastElementPosition);
   }
 
   public RID getNextVertex() {

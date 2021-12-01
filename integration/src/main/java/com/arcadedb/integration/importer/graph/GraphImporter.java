@@ -116,8 +116,8 @@ public class GraphImporter {
         public void call(final Record newDocument) {
           // PRE-CREATE OUT/IN CHUNKS TO SPEEDUP EDGE CREATION
           final DatabaseInternal db = database;
-          db.getGraphEngine().createOutEdgeChunk(db, sourceVertex);
-          db.getGraphEngine().createInEdgeChunk(db, sourceVertex);
+          db.getGraphEngine().createOutEdgeChunk(sourceVertex);
+          db.getGraphEngine().createInEdgeChunk(sourceVertex);
 
           verticesIndex.put(transformedVertexId, newDocument.getIdentity());
         }

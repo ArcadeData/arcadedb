@@ -102,7 +102,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   protected final      String                                    databasePath;
   protected final      BinarySerializer                          serializer                           = new BinarySerializer();
   protected final      RecordFactory                             recordFactory                        = new RecordFactory();
-  protected final      GraphEngine                               graphEngine                          = new GraphEngine();
+  protected final      GraphEngine                               graphEngine;
   protected final      WALFileFactory                            walFactory;
   protected final      DocumentIndexer                           indexer;
   protected final      QueryEngineManager                        queryEngineManager;
@@ -158,6 +158,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
       indexer = new DocumentIndexer(this);
       queryEngineManager = new QueryEngineManager();
+      graphEngine = new GraphEngine(this);
 
     } catch (Exception e) {
       if (e instanceof DatabaseOperationException)

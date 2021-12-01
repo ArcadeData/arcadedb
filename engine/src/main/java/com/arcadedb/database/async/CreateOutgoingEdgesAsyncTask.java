@@ -40,7 +40,7 @@ public class CreateOutgoingEdgesAsyncTask extends DatabaseAsyncAbstractTask {
   }
 
   public void execute(final DatabaseAsyncExecutorImpl.AsyncThread async, final DatabaseInternal database) {
-    final List<Edge> edges = database.getGraphEngine().newEdges(database, sourceVertex, connections, edgeBidirectional);
+    final List<Edge> edges = database.getGraphEngine().newEdges(sourceVertex, connections, edgeBidirectional);
 
     if (callback != null)
       callback.call(edges);

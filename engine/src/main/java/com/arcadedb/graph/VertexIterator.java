@@ -16,10 +16,10 @@
 package com.arcadedb.graph;
 
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.RecordNotFoundException;
 
-import java.util.Iterator;
-import java.util.NoSuchElementException;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.*;
+import java.util.concurrent.atomic.*;
 
 public class VertexIterator implements Iterator<Vertex>, Iterable<Vertex> {
   private       EdgeSegment   currentContainer;
@@ -49,13 +49,19 @@ public class VertexIterator implements Iterator<Vertex>, Iterable<Vertex> {
 
   @Override
   public Vertex next() {
-    if (!hasNext())
-      throw new NoSuchElementException();
+    while (true) {
+      if (!hasNext())
+        throw new NoSuchElementException();
 
-    currentContainer.getRID(currentPosition); // SKIP EDGE
-    final RID rid = currentContainer.getRID(currentPosition);
+      currentContainer.getRID(currentPosition); // SKIP EDGE
+      final RID rid = currentContainer.getRID(currentPosition);
 
-    return rid.asVertex();
+      try {
+        return rid.asVertex();
+      } catch (RecordNotFoundException e) {
+        // SKIP
+      }
+    }
   }
 
   @Override

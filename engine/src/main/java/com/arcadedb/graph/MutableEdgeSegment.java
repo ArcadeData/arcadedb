@@ -81,8 +81,6 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
 
       // UPDATE USED BYTES
       buffer.putInt(Binary.BYTE_SERIALIZED_SIZE, used + ridSerialized.size());
-      // TODO save()
-
       return true;
     }
 
@@ -169,23 +167,22 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
   }
 
   @Override
-  public boolean removeEntry(final int index) {
+  public boolean removeEntry(final int currentPosition, final int nextItemPosition) {
     int used = getUsed();
     if (used == 0)
       return false;
 
-    if (index > used)
+    if (currentPosition > used)
       return false;
 
-    buffer.position(index);
-
     // MOVE THE ENTIRE BUFFER FROM THE NEXT ITEM TO THE CURRENT ONE
-    buffer.move(buffer.position(), index, used - buffer.position());
+    buffer.move(nextItemPosition, currentPosition, used - buffer.position());
 
-    used -= (buffer.position() - index);
+    used -= nextItemPosition - currentPosition;
     setUsed(used);
 
-    buffer.position(index);
+    buffer.position(currentPosition);
+
     return true;
   }
 

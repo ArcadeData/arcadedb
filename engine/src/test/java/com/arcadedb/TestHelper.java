@@ -19,6 +19,8 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.PaginatedFile;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.CallableNoReturn;
 import com.arcadedb.utility.FileUtils;
@@ -59,6 +61,10 @@ public abstract class TestHelper {
 
     if (autoStartTx)
       database.begin();
+  }
+
+  protected boolean isCheckingDatabaseIntegrity() {
+    return true;
   }
 
   public static void executeInNewDatabase(final DatabaseTest<Database> callback) throws Exception {
@@ -157,6 +163,9 @@ public abstract class TestHelper {
     if (database.isTransactionActive())
       database.commit();
 
+    if (isCheckingDatabaseIntegrity())
+      checkDatabaseIntegrity();
+
     if (database != null && database.isOpen()) {
       if (database.getMode() == PaginatedFile.MODE.READ_ONLY)
         reopenDatabase();
@@ -191,6 +200,20 @@ public abstract class TestHelper {
         throw (Exception) e;
 
       throw new Exception(e);
+    }
+  }
+
+  protected void checkDatabaseIntegrity() {
+    ResultSet result = database.command("sql", "check database");
+    while (result.hasNext()) {
+      final Result row = result.next();
+
+      Assertions.assertEquals("check database", row.getProperty("operation"));
+      Assertions.assertEquals(0, (Long) row.getProperty("autoFix"));
+      Assertions.assertEquals(0, (Long) row.getProperty("edgesToRemove"));
+      Assertions.assertEquals(0, (Long) row.getProperty("missingReferenceBack"));
+      Assertions.assertEquals(0, (Long) row.getProperty("invalidLinks"));
+      Assertions.assertEquals(0, ((Collection) row.getProperty("warnings")).size());
     }
   }
 }
