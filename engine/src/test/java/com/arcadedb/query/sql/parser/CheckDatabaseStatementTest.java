@@ -13,24 +13,21 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.arcadedb.schema;
+package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.engine.Bucket;
-import com.arcadedb.graph.Vertex;
+import org.junit.jupiter.api.Test;
 
-public class VertexType extends DocumentType {
+public class CheckDatabaseStatementTest extends ParserTestAbstract {
 
-  public VertexType(final EmbeddedSchema schema, final String name) {
-    super(schema, name);
-  }
+  @Test
+  public void testPlain() {
+    checkRightSyntax("CHECK DATABASE");
+    checkRightSyntax("check database");
+    checkRightSyntax("check database bucket 3");
+    checkRightSyntax("check database bucket 'Test'");
+    checkRightSyntax("check database bucket 3 FIX");
+    checkRightSyntax("check database bucket 'Test' fix");
 
-  public byte getType() {
-    return Vertex.RECORD_TYPE;
-  }
-
-  protected void addBucketInternal(final Bucket bucket) {
-    super.addBucketInternal(bucket);
-    ((DatabaseInternal) schema.getDatabase()).getGraphEngine().createVertexType(this);
+    checkWrongSyntax("check database file:///foo/bar/ foo bar");
   }
 }

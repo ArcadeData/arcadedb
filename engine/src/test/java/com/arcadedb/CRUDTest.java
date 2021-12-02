@@ -72,7 +72,7 @@ public class CRUDTest extends TestHelper {
       });
 
     } finally {
-      new DatabaseChecker().check(database, 0);
+      new DatabaseChecker(database).setVerboseLevel(0).check();
     }
   }
 
@@ -109,7 +109,7 @@ public class CRUDTest extends TestHelper {
       });
 
     } finally {
-      new DatabaseChecker().check(database, 0);
+      new DatabaseChecker(database).setVerboseLevel(0).check();
     }
   }
 
@@ -145,7 +145,7 @@ public class CRUDTest extends TestHelper {
 
     } finally {
       db.getSchema().dropIndex("V[id]");
-      new DatabaseChecker().check(database, 0);
+      new DatabaseChecker(database).setVerboseLevel(0).check();
     }
   }
 
@@ -201,7 +201,7 @@ public class CRUDTest extends TestHelper {
       }
 
     } finally {
-      new DatabaseChecker().check(database, 0);
+      new DatabaseChecker(database).setVerboseLevel(0).check();
     }
   }
 

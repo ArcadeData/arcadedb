@@ -15,20 +15,22 @@
  */
 package com.arcadedb.graph;
 
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 
-import java.util.Iterator;
-import java.util.NoSuchElementException;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.logging.Level;
+import java.util.*;
+import java.util.concurrent.atomic.*;
+import java.util.logging.*;
 
 public class EdgeIterator implements Iterator<Edge>, Iterable<Edge> {
   private final RID              vertex;
   private final Vertex.DIRECTION direction;
   private       EdgeSegment      currentContainer;
-  private final AtomicInteger    currentPosition = new AtomicInteger(MutableEdgeSegment.CONTENT_START_POSITION);
+  private final AtomicInteger    currentPosition     = new AtomicInteger(MutableEdgeSegment.CONTENT_START_POSITION);
+  private       int              lastElementPosition = currentPosition.get();
   private       RID              nextEdgeRID;
   private       RID              nextVertexRID;
 
@@ -59,24 +61,31 @@ public class EdgeIterator implements Iterator<Edge>, Iterable<Edge> {
 
   @Override
   public Edge next() {
-    if (!hasNext())
-      throw new NoSuchElementException();
+    while (true) {
+      if (!hasNext())
+        throw new NoSuchElementException();
 
-    nextEdgeRID = currentContainer.getRID(currentPosition);
-    // SKIP VERTEX
-    nextVertexRID = currentContainer.getRID(currentPosition);
+      lastElementPosition = currentPosition.get();
 
-    if (nextEdgeRID.getPosition() < 0) {
-      // CREATE LIGHTWEIGHT EDGE
-      final DocumentType edgeType = currentContainer.getDatabase().getSchema().getTypeByBucketId(nextEdgeRID.getBucketId());
+      nextEdgeRID = currentContainer.getRID(currentPosition);
+      nextVertexRID = currentContainer.getRID(currentPosition);
 
-      if (direction == Vertex.DIRECTION.OUT)
-        return new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdgeRID, vertex, nextVertexRID);
-      else
-        return new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdgeRID, nextVertexRID, vertex);
+      if (nextEdgeRID.getPosition() < 0) {
+        // CREATE LIGHTWEIGHT EDGE
+        final DocumentType edgeType = currentContainer.getDatabase().getSchema().getTypeByBucketId(nextEdgeRID.getBucketId());
+
+        if (direction == Vertex.DIRECTION.OUT)
+          return new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdgeRID, vertex, nextVertexRID);
+        else
+          return new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdgeRID, nextVertexRID, vertex);
+      }
+
+      try {
+        return nextEdgeRID.asEdge();
+      } catch (RecordNotFoundException e) {
+        // SKIP
+      }
     }
-
-    return nextEdgeRID.asEdge();
   }
 
   @Override
@@ -95,11 +104,16 @@ public class EdgeIterator implements Iterator<Edge>, Iterable<Edge> {
           new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdgeRID, nextVertexRID, vertex).delete();
       } else
         nextEdgeRID.asEdge().delete();
+    } catch (RecordNotFoundException e) {
+      // IGNORE IT
     } catch (Exception e) {
       LogManager.instance().log(this, Level.WARNING, "Error on deleting edge record %s", e, nextEdgeRID);
     }
 
-    currentContainer.removeEntry(currentPosition.get());
+    currentContainer.removeEntry(lastElementPosition, currentPosition.get());
+    ((DatabaseInternal) vertex.getDatabase()).updateRecord(currentContainer);
+
+    currentPosition.set(lastElementPosition);
   }
 
   @Override

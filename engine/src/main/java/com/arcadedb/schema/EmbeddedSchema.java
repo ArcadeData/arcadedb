@@ -744,7 +744,7 @@ public class EmbeddedSchema implements Schema {
         }
 
         if (type instanceof VertexType)
-          database.getGraphEngine().dropVertexType(database, (VertexType) type);
+          database.getGraphEngine().dropVertexType((VertexType) type);
 
         if (types.remove(typeName) == null)
           throw new SchemaException("Type '" + typeName + "' not found");
@@ -905,7 +905,7 @@ public class EmbeddedSchema implements Schema {
           c.addBucket(createBucket(bucketName, pageSize));
       }
 
-      database.getGraphEngine().createVertexType(database, c);
+      database.getGraphEngine().createVertexType(c);
 
       saveConfiguration();
       updateSecurity();

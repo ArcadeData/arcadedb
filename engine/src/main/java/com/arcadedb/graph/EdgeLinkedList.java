@@ -40,7 +40,7 @@ public class EdgeLinkedList {
 
   public Iterator<Pair<RID, RID>> entryIterator(final String... edgeTypes) {
     if (edgeTypes == null || edgeTypes.length == 0)
-      return new EdgeVertexIterator(first);
+      return new EdgeVertexIterator(first, vertex.getIdentity(), direction);
     return new EdgeVertexIteratorFilter((DatabaseInternal) vertex.getDatabase(), first, edgeTypes);
   }
 

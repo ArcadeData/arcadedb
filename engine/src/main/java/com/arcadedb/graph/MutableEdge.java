@@ -189,7 +189,7 @@ public class MutableEdge extends MutableDocument implements Edge {
       save();
 
       // UPDATE BOTH REFERENCES WITH THE NEW RID
-      database.getGraphEngine().connectEdge(database, (VertexInternal) out.asVertex(true), in, this, true);
+      database.getGraphEngine().connectEdge((VertexInternal) out.asVertex(true), in, this, true);
     }
   }
 }

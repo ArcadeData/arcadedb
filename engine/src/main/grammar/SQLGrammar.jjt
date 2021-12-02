@@ -173,6 +173,8 @@ TOKEN:
   |
   < CACHE: ( "c" | "C" ) ( "a" | "A" ) ( "c" | "C" ) ( "h" | "H" ) ( "e" | "E" ) >
   |
+  < CHECK: ( "c" | "C" ) ( "h" | "H" ) ( "e" | "E" ) ( "c" | "C" ) ( "k" | "K" ) >
+  |
   < CYCLE: ( "c" | "C" ) ( "y" | "Y" ) ( "c" | "C" ) ( "l" | "L" ) ( "e" | "E" ) >
   |
   < NOLIMIT: ( "n" | "N" ) ( "o" | "O" ) ( "l" | "L" ) ( "i" | "I" ) ( "m" | "M" ) ( "i" | "I" ) ( "t" | "T" ) >
@@ -308,6 +310,8 @@ TOKEN:
   < CONTINUE: ( "C" | "c") ( "O" | "o") ( "N" | "n") ( "T" | "t") ( "I" | "i") ( "N" | "n") ( "U" | "u") ( "E" | "e") >
   |
   < FAIL: ( "F" | "f") ( "A" | "a") ( "I" | "i") ( "L" | "l") >
+  |
+  < FIX: ( "F" | "f") ( "I" | "i") ( "X" | "x") >
   |
   < ISOLATION: ( "I" | "i") ( "S" | "s") ( "O" | "o") ( "L" | "l") ( "A" | "a") ( "T" | "t") ( "I" | "i") ( "O" | "o") ( "N" | "n") >
   |
@@ -648,6 +652,19 @@ Rid Rid():
   { return jjtThis; }
 }
 
+
+BucketIdentifier BucketIdentifier():
+{}
+{
+  (
+    jjtThis.bucketId = PInteger()
+    |
+    jjtThis.bucketName = PString()
+  )
+  { return jjtThis; }
+}
+
+
 /** Root productions. */
 Statement parse() :
 {Statement result;}
@@ -750,6 +767,8 @@ Identifier Identifier():
   |
 	token = <CUSTOM>
 	|
+  token = <CHECK>
+  |
   token = <ON>
   |
   token = <OFF>
@@ -928,8 +947,6 @@ PInteger PInteger():
   { return jjtThis; }
 }
 
-
-
 FloatingPoint FloatingPoint():
 {
   String stringValue;
@@ -1082,6 +1099,8 @@ Statement StatementInternal():
         result = ExportDatabaseStatement()
         |
         result = BackupDatabaseStatement()
+        |
+        result = CheckDatabaseStatement()
       )
     )
     |
@@ -4244,6 +4263,27 @@ BackupDatabaseStatement BackupDatabaseStatement():
 {
   (
     <BACKUP> <DATABASE> [ jjtThis.url = Url() ]
+  )
+  {return jjtThis; }
+}
+
+CheckDatabaseStatement CheckDatabaseStatement():
+{
+  BucketIdentifier lastBucket;
+  String lastType;
+}
+{
+  (
+    <CHECK> <DATABASE>
+    [ <TYPE>
+      lastType = PString() { jjtThis.types.add(lastType); }
+      ( <COMMA> lastType = PString() { jjtThis.types.add(lastType); } )*
+    ]
+    [ <BUCKET>
+      lastBucket = BucketIdentifier() { jjtThis.buckets.add(lastBucket); }
+      ( <COMMA> lastBucket = BucketIdentifier() { jjtThis.buckets.add(lastBucket); } )*
+    ]
+    [ <FIX> { jjtThis.fix = true; } ]
   )
   {return jjtThis; }
 }

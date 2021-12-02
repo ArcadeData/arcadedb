@@ -126,7 +126,7 @@ public class CreateEdgeFromImportTask extends DatabaseAsyncAbstractTask {
         // RELOAD IT
         threadContext.lastSourceVertex = (VertexInternal) threadContext.lastSourceVertex.getIdentity().asVertex();
 
-      final List<Edge> newEdges = database.getGraphEngine().newEdges(database, threadContext.lastSourceVertex, connections, false);
+      final List<Edge> newEdges = database.getGraphEngine().newEdges(threadContext.lastSourceVertex, connections, false);
 
       context.createdEdges.addAndGet(newEdges.size());
 
@@ -195,7 +195,7 @@ public class CreateEdgeFromImportTask extends DatabaseAsyncAbstractTask {
 
     final MutableVertex toVertexRecord = ((Vertex) toVertex.getRecord()).modify();
 
-    final EdgeSegment inChunk = database.getGraphEngine().createInEdgeChunk(database, toVertexRecord);
+    final EdgeSegment inChunk = database.getGraphEngine().createInEdgeChunk(toVertexRecord);
 
     final EdgeLinkedList inLinkedList = new EdgeLinkedList(toVertexRecord, Vertex.DIRECTION.IN, inChunk);
     inLinkedList.addAll(connections);

@@ -24,6 +24,9 @@ import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.VertexType;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.utility.FileUtils;
 
@@ -271,7 +274,7 @@ public class Bucket extends PaginatedComponent {
       LogManager.instance().log(this, Level.INFO, "- Checking bucket '%s' (totalPages=%d spaceOnDisk=%s pageSize=%s)...", null, name, totalPages,
           FileUtils.getSizeAsString(totalPages * pageSize), FileUtils.getSizeAsString(pageSize));
 
-    long totalRecords = 0;
+    long totalAllocatedRecords = 0;
     long totalActiveRecords = 0;
     long totalPlaceholderRecords = 0;
     long totalSurrogateRecords = 0;
@@ -293,7 +296,7 @@ public class Bucket extends PaginatedComponent {
           final int recordPositionInPage = (int) page.readUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE);
           final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
 
-          totalRecords++;
+          totalAllocatedRecords++;
 
           if (recordSize[0] == 0) {
             pageDeletedRecords++;
@@ -330,17 +333,30 @@ public class Bucket extends PaginatedComponent {
 
     if (verboseLevel > 1)
       LogManager.instance()
-          .log(this, Level.INFO, "-- Total records=%d (actives=%d deleted=%d placeholders=%d surrogates=%d) avgPageUsed=%.2f%%", null, totalRecords,
+          .log(this, Level.INFO, "-- Total records=%d (actives=%d deleted=%d placeholders=%d surrogates=%d) avgPageUsed=%.2f%%", null, totalAllocatedRecords,
               totalActiveRecords, totalDeletedRecords, totalPlaceholderRecords, totalSurrogateRecords, avgPageUsed);
 
     stats.put("pageSize", (long) pageSize);
-    stats.put("totalRecords", totalRecords);
     stats.put("totalPages", (long) totalPages);
+    stats.put("totalAllocatedRecords", totalAllocatedRecords);
     stats.put("totalActiveRecords", totalActiveRecords);
     stats.put("totalPlaceholderRecords", totalPlaceholderRecords);
     stats.put("totalSurrogateRecords", totalSurrogateRecords);
     stats.put("totalDeletedRecords", totalDeletedRecords);
     stats.put("totalMaxOffset", totalMaxOffset);
+
+    DocumentType type = database.getSchema().getTypeByBucketId(id);
+    if (type instanceof VertexType) {
+      stats.put("totalAllocatedVertices", totalAllocatedRecords);
+      stats.put("totalActiveVertices", totalActiveRecords);
+    } else if (type instanceof EdgeType) {
+      stats.put("totalAllocatedEdges", totalAllocatedRecords);
+      stats.put("totalActiveEdges", totalActiveRecords);
+    }
+
+    stats.put("warnings", 0L);
+    stats.put("autoFix", 0L);
+    stats.put("errors", 0L);
 
     return stats;
   }

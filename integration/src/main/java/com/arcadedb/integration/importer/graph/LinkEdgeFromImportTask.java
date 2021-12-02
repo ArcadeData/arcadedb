@@ -46,7 +46,7 @@ public class LinkEdgeFromImportTask extends DatabaseAsyncAbstractTask {
 
     final MutableVertex toVertexRecord = ((Vertex) destinationVertex.getRecord()).modify();
 
-    final EdgeSegment inChunk = database.getGraphEngine().createInEdgeChunk(database, toVertexRecord);
+    final EdgeSegment inChunk = database.getGraphEngine().createInEdgeChunk(toVertexRecord);
 
     final EdgeLinkedList inLinkedList = new EdgeLinkedList(toVertexRecord, Vertex.DIRECTION.IN, inChunk);
     inLinkedList.addAll(connections);

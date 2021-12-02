@@ -94,7 +94,7 @@ public class MVCCTest extends TestHelper {
         database.async().waitCompletion();
 
       } finally {
-        new DatabaseChecker().check(database, 0);
+        new DatabaseChecker(database).setVerboseLevel(0).check();
 
         Assertions.assertTrue(mvccErrors.get() > 0);
         Assertions.assertEquals(0, otherErrors.get());
