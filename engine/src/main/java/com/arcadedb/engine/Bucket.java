@@ -274,12 +274,13 @@ public class Bucket extends PaginatedComponent {
       LogManager.instance().log(this, Level.INFO, "- Checking bucket '%s' (totalPages=%d spaceOnDisk=%s pageSize=%s)...", null, name, totalPages,
           FileUtils.getSizeAsString(totalPages * pageSize), FileUtils.getSizeAsString(pageSize));
 
-    long totalAllocatedRecords = 0;
-    long totalActiveRecords = 0;
-    long totalPlaceholderRecords = 0;
-    long totalSurrogateRecords = 0;
-    long totalDeletedRecords = 0;
-    long totalMaxOffset = 0;
+    long totalAllocatedRecords = 0L;
+    long totalActiveRecords = 0L;
+    long totalPlaceholderRecords = 0L;
+    long totalSurrogateRecords = 0L;
+    long totalDeletedRecords = 0L;
+    long totalMaxOffset = 0L;
+    long errors = 0L;
 
     for (int pageId = 0; pageId < totalPages; ++pageId) {
       try {
@@ -324,7 +325,8 @@ public class Bucket extends PaginatedComponent {
           LogManager.instance().log(this, Level.FINE, "-- Page %d records=%d (actives=%d deleted=%d placeholders=%d surrogates=%d) maxOffset=%d", null, pageId,
               recordCountInPage, pageActiveRecords, pageDeletedRecords, pagePlaceholderRecords, pageSurrogateRecords, pageMaxOffset);
 
-      } catch (IOException e) {
+      } catch (Exception e) {
+        ++errors;
         LogManager.instance().log(this, Level.SEVERE, "- Unknown error on checking page %d: %s", null, pageId, e.toString());
       }
     }
@@ -356,7 +358,7 @@ public class Bucket extends PaginatedComponent {
 
     stats.put("warnings", 0L);
     stats.put("autoFix", 0L);
-    stats.put("errors", 0L);
+    stats.put("errors", errors);
 
     return stats;
   }

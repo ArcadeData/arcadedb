@@ -63,39 +63,6 @@ public class DatabaseChecker {
 
     final Set<RID> corruptedRecords = new HashSet<>();
 
-    if (verboseLevel > 0)
-      LogManager.instance().log(this, Level.INFO, "Checking buckets...", null);
-
-    for (Bucket b : database.getSchema().getBuckets()) {
-      if (buckets != null && !buckets.isEmpty())
-        if (!buckets.contains(b.name))
-          continue;
-
-      if (types != null && !types.isEmpty()) {
-        final DocumentType type = database.getSchema().getTypeByBucketId(b.id);
-        if (type == null || !types.contains(type.getName()))
-          continue;
-      }
-
-      final Map<String, Long> stats = b.check(verboseLevel);
-
-      pageSize += stats.get("pageSize");
-      totalPages += stats.get("totalPages");
-      totalAllocatedRecords += stats.get("totalAllocatedRecords");
-      totalActiveRecords += stats.get("totalActiveRecords");
-      totalAllocatedVertices += stats.containsKey("totalAllocatedVertices") ? stats.get("totalAllocatedVertices") : 0L;
-      totalActiveVertices += stats.containsKey("totalActiveVertices") ? stats.get("totalActiveVertices") : 0L;
-      totalAllocatedEdges += stats.containsKey("totalAllocatedEdges") ? stats.get("totalAllocatedEdges") : 0L;
-      totalActiveEdges += stats.containsKey("totalActiveEdges") ? stats.get("totalActiveEdges") : 0L;
-      totalPlaceholderRecords += stats.get("totalPlaceholderRecords");
-      totalSurrogateRecords += stats.get("totalSurrogateRecords");
-      totalDeletedRecords += stats.get("totalDeletedRecords");
-      totalMaxOffset += stats.get("totalMaxOffset");
-
-      autoFix += stats.get("autoFix");
-      errors += stats.get("errors");
-    }
-
     long edgesToRemove = 0L;
     long invalidLinks = 0L;
 
@@ -141,6 +108,39 @@ public class DatabaseChecker {
     result.put("edgesToRemove", edgesToRemove);
     result.put("invalidLinks", invalidLinks);
     result.put("missingReferenceBack", missingReferenceBack);
+
+    if (verboseLevel > 0)
+      LogManager.instance().log(this, Level.INFO, "Checking buckets...", null);
+
+    for (Bucket b : database.getSchema().getBuckets()) {
+      if (buckets != null && !buckets.isEmpty())
+        if (!buckets.contains(b.name))
+          continue;
+
+      if (types != null && !types.isEmpty()) {
+        final DocumentType type = database.getSchema().getTypeByBucketId(b.id);
+        if (type == null || !types.contains(type.getName()))
+          continue;
+      }
+
+      final Map<String, Long> stats = b.check(verboseLevel);
+
+      pageSize += stats.get("pageSize");
+      totalPages += stats.get("totalPages");
+      totalAllocatedRecords += stats.get("totalAllocatedRecords");
+      totalActiveRecords += stats.get("totalActiveRecords");
+      totalAllocatedVertices += stats.containsKey("totalAllocatedVertices") ? stats.get("totalAllocatedVertices") : 0L;
+      totalActiveVertices += stats.containsKey("totalActiveVertices") ? stats.get("totalActiveVertices") : 0L;
+      totalAllocatedEdges += stats.containsKey("totalAllocatedEdges") ? stats.get("totalAllocatedEdges") : 0L;
+      totalActiveEdges += stats.containsKey("totalActiveEdges") ? stats.get("totalActiveEdges") : 0L;
+      totalPlaceholderRecords += stats.get("totalPlaceholderRecords");
+      totalSurrogateRecords += stats.get("totalSurrogateRecords");
+      totalDeletedRecords += stats.get("totalDeletedRecords");
+      totalMaxOffset += stats.get("totalMaxOffset");
+
+      autoFix += stats.get("autoFix");
+      errors += stats.get("errors");
+    }
 
     final float avgPageUsed = totalPages > 0 ? ((float) totalMaxOffset) / totalPages * 100F / pageSize : 0;
 
