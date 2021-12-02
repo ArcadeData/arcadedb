@@ -163,10 +163,10 @@ public abstract class TestHelper {
     if (database.isTransactionActive())
       database.commit();
 
-    if (isCheckingDatabaseIntegrity())
-      checkDatabaseIntegrity();
-
     if (database != null && database.isOpen()) {
+      if (isCheckingDatabaseIntegrity())
+        checkDatabaseIntegrity();
+
       if (database.getMode() == PaginatedFile.MODE.READ_ONLY)
         reopenDatabase();
 
