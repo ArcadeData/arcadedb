@@ -64,11 +64,7 @@ public class ArcadeDBServer implements ServerLogger {
   public ArcadeDBServer() {
     this.configuration = new ContextConfiguration();
 
-    serverRootPath = configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PATH);
-    if (serverRootPath == null) {
-      serverRootPath = new File("config").exists() ? "" : new File("../config").exists() ? ".." : ".";
-      configuration.setValue(GlobalConfiguration.SERVER_ROOT_PATH, serverRootPath);
-    }
+    setRootPath(configuration);
 
     loadConfiguration();
 
@@ -81,9 +77,7 @@ public class ArcadeDBServer implements ServerLogger {
     this.serverName = configuration.getValueAsString(GlobalConfiguration.SERVER_NAME);
     this.testEnabled = configuration.getValueAsBoolean(GlobalConfiguration.TEST);
 
-    serverRootPath = configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PATH);
-    if (serverRootPath == null)
-      serverRootPath = new File("config").exists() ? "" : "../";
+    setRootPath(configuration);
   }
 
   public static void main(final String[] args) {
@@ -548,6 +542,14 @@ public class ArcadeDBServer implements ServerLogger {
       } catch (IOException e) {
         LogManager.instance().log(this, Level.SEVERE, "Error on loading configuration from file '%s'", e, file);
       }
+    }
+  }
+
+  private void setRootPath(final ContextConfiguration configuration) {
+    serverRootPath = configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PATH);
+    if (serverRootPath == null) {
+      serverRootPath = new File("config").exists() ? "." : new File("../config").exists() ? ".." : ".";
+      configuration.setValue(GlobalConfiguration.SERVER_ROOT_PATH, serverRootPath);
     }
   }
 }

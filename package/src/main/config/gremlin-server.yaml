@@ -1,6 +1,6 @@
 host: 0.0.0.0
 graphs:
-  graph: config/gremlin-server.properties
+  graph: ../config/gremlin-server.properties
 scriptEngines:
   gremlin-groovy:
     plugins:
@@ -12,7 +12,7 @@ scriptEngines:
           - 'java.lang.Math#*'
       org.apache.tinkerpop.gremlin.jsr223.ScriptFileGremlinPlugin:
         files:
-          - config/gremlin-server.groovy
+          - ../config/gremlin-server.groovy
 serializers:
   - className: org.apache.tinkerpop.gremlin.driver.ser.GraphBinaryMessageSerializerV1
     config:

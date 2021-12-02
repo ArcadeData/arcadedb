@@ -31,12 +31,9 @@ import java.util.logging.*;
  */
 public enum GlobalConfiguration {
   // ENVIRONMENT
-  DUMP_CONFIG_AT_STARTUP("arcadedb.dumpConfigAtStartup", "Dumps the configuration at startup", Boolean.class, false, new Callable<>() {
-    @Override
-    public Object call(final Object value) {
-      dumpConfiguration(System.out);
-      return value;
-    }
+  DUMP_CONFIG_AT_STARTUP("arcadedb.dumpConfigAtStartup", "Dumps the configuration at startup", Boolean.class, false, value -> {
+    dumpConfiguration(System.out);
+    return value;
   }),
 
   DUMP_METRICS_EVERY("arcadedb.dumpMetricsEvery", "Dumps the metrics at startup, shutdown and every configurable amount of time (in seconds)", Long.class, 0,
