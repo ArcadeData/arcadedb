@@ -211,7 +211,6 @@ public abstract class TestHelper {
       Assertions.assertEquals("check database", row.getProperty("operation"));
       Assertions.assertEquals(0, (Long) row.getProperty("autoFix"));
       Assertions.assertEquals(0, (Long) row.getProperty("edgesToRemove"));
-      Assertions.assertEquals(0, (Long) row.getProperty("missingReferenceBack"));
       Assertions.assertEquals(0, (Long) row.getProperty("invalidLinks"));
       Assertions.assertEquals(0, ((Collection) row.getProperty("warnings")).size());
     }

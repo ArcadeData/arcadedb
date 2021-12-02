@@ -646,7 +646,6 @@ public class GraphEngine {
               String warning = null;
               boolean removeEdge = false;
 
-              Edge edge = null;
               final Pair<RID, RID> current = out.next();
               final RID edgeRID = current.getFirst();
               final RID vertexRID = current.getSecond();
@@ -661,7 +660,11 @@ public class GraphEngine {
                 removeEdge = true;
               } else {
                 try {
-                  edge = edgeRID.asEdge(true);
+                  if (edgeRID.getPosition() < 0)
+                    // LIGHTWEIGHT EDGE
+                    continue;
+
+                  final Edge edge = edgeRID.asEdge(true);
 
                   if (edge.getIn() == null || !edge.getIn().isValid()) {
                     warning = "edge " + edgeRID + " has an invalid incoming link " + edge.getIn();
@@ -734,7 +737,6 @@ public class GraphEngine {
               String warning = null;
               boolean removeEdge = false;
 
-              Edge edge = null;
               final Pair<RID, RID> current = in.next();
               final RID edgeRID = current.getFirst();
               final RID vertexRID = current.getSecond();
@@ -748,8 +750,12 @@ public class GraphEngine {
                 invalidLinks.incrementAndGet();
                 removeEdge = true;
               } else {
+                if (edgeRID.getPosition() < 0)
+                  // LIGHTWEIGHT EDGE
+                  continue;
+
                 try {
-                  edge = edgeRID.asEdge(true);
+                  final Edge edge = edgeRID.asEdge(true);
 
                   if (edge.getOut() == null || !edge.getOut().isValid()) {
                     warning = "edge " + edgeRID + " has an invalid outgoing link " + edge.getIn();
@@ -881,10 +887,8 @@ public class GraphEngine {
 
               final EdgeLinkedList inEdges = getEdgeHeadChunk((VertexInternal) vertex, Vertex.DIRECTION.IN);
               if (inEdges == null || !inEdges.containsEdge(edge.getIdentity())) {
-                warning = "edge " + edge.getIdentity() + " incoming link to vertex " + edge.getIn() + " has no reference back";
+                // UNI DIRECTIONAL EDGE
                 missingReferenceBack.incrementAndGet();
-                //UNI DIRECTIONAL LINKS?
-                //removeEdge = true;
               }
 
             } catch (RecordNotFoundException e) {
@@ -909,10 +913,8 @@ public class GraphEngine {
 
                 final EdgeLinkedList outEdges = getEdgeHeadChunk((VertexInternal) vertex, Vertex.DIRECTION.OUT);
                 if (outEdges == null || !outEdges.containsEdge(edge.getIdentity())) {
-                  warning = "edge " + edge.getIdentity() + " outgoing link to vertex " + edge.getOut() + " has no reference back";
+                  // UNI DIRECTIONAL EDGE
                   missingReferenceBack.incrementAndGet();
-                  //UNI DIRECTIONAL LINKS?
-                  //removeEdge = true;
                 }
 
               } catch (RecordNotFoundException e) {
