@@ -123,23 +123,30 @@ public class DatabaseChecker {
           continue;
       }
 
-      final Map<String, Long> stats = b.check(verboseLevel);
+      if (fix)
+        database.begin();
 
-      pageSize += stats.get("pageSize");
-      totalPages += stats.get("totalPages");
-      totalAllocatedRecords += stats.get("totalAllocatedRecords");
-      totalActiveRecords += stats.get("totalActiveRecords");
-      totalAllocatedVertices += stats.containsKey("totalAllocatedVertices") ? stats.get("totalAllocatedVertices") : 0L;
-      totalActiveVertices += stats.containsKey("totalActiveVertices") ? stats.get("totalActiveVertices") : 0L;
-      totalAllocatedEdges += stats.containsKey("totalAllocatedEdges") ? stats.get("totalAllocatedEdges") : 0L;
-      totalActiveEdges += stats.containsKey("totalActiveEdges") ? stats.get("totalActiveEdges") : 0L;
-      totalPlaceholderRecords += stats.get("totalPlaceholderRecords");
-      totalSurrogateRecords += stats.get("totalSurrogateRecords");
-      totalDeletedRecords += stats.get("totalDeletedRecords");
-      totalMaxOffset += stats.get("totalMaxOffset");
+      final Map<String, Object> stats = b.check(verboseLevel, fix);
 
-      autoFix += stats.get("autoFix");
-      errors += stats.get("errors");
+      if (fix)
+        database.commit();
+
+      pageSize += (Long) stats.get("pageSize");
+      totalPages += (Long) stats.get("totalPages");
+      totalAllocatedRecords += (Long) stats.get("totalAllocatedRecords");
+      totalActiveRecords += (Long) stats.get("totalActiveRecords");
+      totalAllocatedVertices += (Long) (stats.containsKey("totalAllocatedVertices") ? stats.get("totalAllocatedVertices") : 0L);
+      totalActiveVertices += (Long) (stats.containsKey("totalActiveVertices") ? stats.get("totalActiveVertices") : 0L);
+      totalAllocatedEdges += (Long) (stats.containsKey("totalAllocatedEdges") ? stats.get("totalAllocatedEdges") : 0L);
+      totalActiveEdges += (Long) (stats.containsKey("totalActiveEdges") ? stats.get("totalActiveEdges") : 0L);
+      totalPlaceholderRecords += (Long) stats.get("totalPlaceholderRecords");
+      totalSurrogateRecords += (Long) stats.get("totalSurrogateRecords");
+      totalDeletedRecords += (Long) stats.get("totalDeletedRecords");
+      totalMaxOffset += (Long) stats.get("totalMaxOffset");
+
+      autoFix += (Long) stats.get("autoFix");
+      errors += (Long) stats.get("errors");
+      warnings.addAll((Collection<String>) stats.get("warnings"));
     }
 
     final float avgPageUsed = totalPages > 0 ? ((float) totalMaxOffset) / totalPages * 100F / pageSize : 0;

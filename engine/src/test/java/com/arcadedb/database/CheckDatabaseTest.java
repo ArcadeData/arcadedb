@@ -269,7 +269,7 @@ public class CheckDatabaseTest extends TestHelper {
       final Result row = result.next();
 
       Assertions.assertEquals("check database", row.getProperty("operation"));
-      Assertions.assertEquals(1, (Long) row.getProperty("errors"));
+      Assertions.assertTrue((Long) row.getProperty("errors") > 0);
       Assertions.assertEquals(0, (Long) row.getProperty("autoFix"));
       Assertions.assertTrue((Long) row.getProperty("totalActiveVertices") < TOTAL);
       Assertions.assertEquals(TOTAL - 1, (Long) row.getProperty("totalAllocatedEdges"));
@@ -283,8 +283,13 @@ public class CheckDatabaseTest extends TestHelper {
 
     result = database.command("sql", "check database fix");
     Assertions.assertTrue(result.hasNext());
-    final Result row = result.next();
+    Result row = result.next();
     Assertions.assertTrue((Long) row.getProperty("autoFix") > 0);
+
+    result = database.command("sql", "check database");
+    Assertions.assertTrue(result.hasNext());
+    row = result.next();
+    Assertions.assertEquals(0, (Long) row.getProperty("autoFix"));
   }
 
   @Override

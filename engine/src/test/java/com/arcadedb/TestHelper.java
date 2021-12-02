@@ -212,7 +212,7 @@ public abstract class TestHelper {
       Assertions.assertEquals(0, (Long) row.getProperty("autoFix"));
       Assertions.assertEquals(0, (Long) row.getProperty("edgesToRemove"));
       Assertions.assertEquals(0, (Long) row.getProperty("invalidLinks"));
-      Assertions.assertEquals(0, ((Collection) row.getProperty("warnings")).size());
+      Assertions.assertEquals(0, ((Collection) row.getProperty("warnings")).size(), "Warnings" + row.getProperty("warnings"));
     }
   }
 }

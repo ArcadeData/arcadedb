@@ -80,7 +80,11 @@ public class BucketIterator implements Iterator<Record> {
 
         if (recordCountInCurrentPage > 0 && currentRecordInPage < recordCountInCurrentPage) {
           try {
-            int recordPositionInPage = (int) currentPage.readUnsignedInt(Bucket.PAGE_RECORD_TABLE_OFFSET + currentRecordInPage * INT_SERIALIZED_SIZE);
+            final int recordPositionInPage = (int) currentPage.readUnsignedInt(Bucket.PAGE_RECORD_TABLE_OFFSET + currentRecordInPage * INT_SERIALIZED_SIZE);
+            if (recordPositionInPage == 0)
+              // CLEANED CORRUPTED RECORD
+              continue;
+
             final long[] recordSize = currentPage.readNumberAndSize(recordPositionInPage);
             if (recordSize[0] > 0) {
               // NOT DELETED

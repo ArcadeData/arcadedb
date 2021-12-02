@@ -85,13 +85,11 @@ public class Bucket extends PaginatedComponent {
 
   public RID createRecord(final Record record) {
     database.checkPermissionsOnFile(id, SecurityDatabaseUser.ACCESS.CREATE_RECORD);
-
     return createRecordInternal(record, false);
   }
 
   public void updateRecord(final Record record) {
     database.checkPermissionsOnFile(id, SecurityDatabaseUser.ACCESS.UPDATE_RECORD);
-
     updateRecordInternal(record, record.getIdentity(), false);
   }
 
@@ -125,6 +123,10 @@ public class Bucket extends PaginatedComponent {
         return false;
 
       final int recordPositionInPage = (int) page.readUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE);
+      if (recordPositionInPage == 0)
+        // CLEANED CORRUPTED RECORD
+        return false;
+
       final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
 
       return recordSize[0] > 0 || recordSize[0] == -1;
@@ -136,7 +138,6 @@ public class Bucket extends PaginatedComponent {
 
   public void deleteRecord(final RID rid) {
     database.checkPermissionsOnFile(id, SecurityDatabaseUser.ACCESS.DELETE_RECORD);
-
     deleteRecordInternal(rid, false);
   }
 
@@ -154,6 +155,10 @@ public class Bucket extends PaginatedComponent {
           for (int recordIdInPage = 0; recordIdInPage < recordCountInPage; ++recordIdInPage) {
             try {
               final int recordPositionInPage = (int) page.readUnsignedInt(PAGE_RECORD_TABLE_OFFSET + recordIdInPage * INT_SERIALIZED_SIZE);
+              if (recordPositionInPage == 0)
+                // CLEANED CORRUPTED RECORD
+                continue;
+
               final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
 
               if (recordSize[0] > 0) {
@@ -251,6 +256,10 @@ public class Bucket extends PaginatedComponent {
         if (recordCountInPage > 0) {
           for (int recordIdInPage = 0; recordIdInPage < recordCountInPage; ++recordIdInPage) {
             final int recordPositionInPage = (int) page.readUnsignedInt(PAGE_RECORD_TABLE_OFFSET + recordIdInPage * INT_SERIALIZED_SIZE);
+            if (recordPositionInPage == 0)
+              // CLEANED CORRUPTED RECORD
+              continue;
+
             final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
 
             if (recordSize[0] > 0 || recordSize[0] == -1)
@@ -265,8 +274,8 @@ public class Bucket extends PaginatedComponent {
     return total;
   }
 
-  protected Map<String, Long> check(final int verboseLevel) {
-    final Map<String, Long> stats = new HashMap<>();
+  protected Map<String, Object> check(final int verboseLevel, final boolean fix) {
+    final Map<String, Object> stats = new HashMap<>();
 
     final int totalPages = getTotalPages();
 
@@ -281,6 +290,9 @@ public class Bucket extends PaginatedComponent {
     long totalDeletedRecords = 0L;
     long totalMaxOffset = 0L;
     long errors = 0L;
+    final List<String> warnings = new ArrayList<>();
+
+    String warning = null;
 
     for (int pageId = 0; pageId < totalPages; ++pageId) {
       try {
@@ -294,29 +306,70 @@ public class Bucket extends PaginatedComponent {
         int pageMaxOffset = 0;
 
         for (int positionInPage = 0; positionInPage < recordCountInPage; ++positionInPage) {
+          final RID rid = new RID(database, file.getFileId(), positionInPage);
+
           final int recordPositionInPage = (int) page.readUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE);
-          final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
 
-          totalAllocatedRecords++;
-
-          if (recordSize[0] == 0) {
+          if (recordPositionInPage == 0) {
+            // CLEANED CORRUPTED RECORD
             pageDeletedRecords++;
             totalDeletedRecords++;
-          } else if (recordSize[0] < -1) {
-            pageSurrogateRecords++;
-            totalSurrogateRecords++;
-            recordSize[0] *= -1;
-          } else if (recordSize[0] == -1) {
-            pagePlaceholderRecords++;
-            totalPlaceholderRecords++;
-            recordSize[0] = 5;
+
+          } else if (recordPositionInPage > page.getContentSize()) {
+            ++errors;
+            warning = String.format("invalid record offset %d in page for record %s", recordPositionInPage, rid);
+            if (fix) {
+              deleteRecord(rid);
+              ++totalDeletedRecords;
+            }
           } else {
-            pageActiveRecords++;
-            totalActiveRecords++;
+
+            try {
+              final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
+
+              totalAllocatedRecords++;
+
+              if (recordSize[0] == 0) {
+                pageDeletedRecords++;
+                totalDeletedRecords++;
+              } else if (recordSize[0] < -1) {
+                pageSurrogateRecords++;
+                totalSurrogateRecords++;
+                recordSize[0] *= -1;
+              } else if (recordSize[0] == -1) {
+                pagePlaceholderRecords++;
+                totalPlaceholderRecords++;
+                recordSize[0] = 5;
+              } else {
+                pageActiveRecords++;
+                totalActiveRecords++;
+              }
+
+              final long endPosition = recordPositionInPage + recordSize[1] + recordSize[0];
+              if (endPosition > file.getPageSize()) {
+                ++errors;
+                warning = String.format("wrong record size %d found for record %s", recordSize[1] + recordSize[0], rid);
+                if (fix) {
+                  deleteRecord(rid);
+                  ++totalDeletedRecords;
+                }
+              }
+
+              if (endPosition > pageMaxOffset)
+                pageMaxOffset = (int) endPosition;
+
+            } catch (Exception e) {
+              ++errors;
+              warning = String.format("unknown error on loading record %s: %s", rid, e.getMessage());
+            }
           }
 
-          if (recordPositionInPage + recordSize[1] + recordSize[0] > pageMaxOffset)
-            pageMaxOffset = (int) (recordPositionInPage + recordSize[1] + recordSize[0]);
+          if (warning != null) {
+            warnings.add(warning);
+            if (verboseLevel > 0)
+              LogManager.instance().log(this, Level.SEVERE, "- " + warning);
+            warning = null;
+          }
         }
 
         totalMaxOffset += pageMaxOffset;
@@ -327,7 +380,14 @@ public class Bucket extends PaginatedComponent {
 
       } catch (Exception e) {
         ++errors;
-        LogManager.instance().log(this, Level.SEVERE, "- Unknown error on checking page %d: %s", null, pageId, e.toString());
+        warning = String.format("unknown error on checking page %d: %s", pageId, e.getMessage());
+      }
+
+      if (warning != null) {
+        warnings.add(warning);
+        if (verboseLevel > 0)
+          LogManager.instance().log(this, Level.SEVERE, "- " + warning);
+        warning = null;
       }
     }
 
@@ -356,7 +416,7 @@ public class Bucket extends PaginatedComponent {
       stats.put("totalActiveEdges", totalActiveRecords);
     }
 
-    stats.put("warnings", 0L);
+    stats.put("warnings", warnings);
     stats.put("autoFix", 0L);
     stats.put("errors", errors);
 
@@ -381,6 +441,10 @@ public class Bucket extends PaginatedComponent {
         throw new RecordNotFoundException("Record " + rid + " not found", rid);
 
       final int recordPositionInPage = (int) page.readUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE);
+      if (recordPositionInPage == 0)
+        // CLEANED CORRUPTED RECORD
+        return null;
+
       final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
 
       if (recordSize[0] == 0)
@@ -439,6 +503,10 @@ public class Bucket extends PaginatedComponent {
         else if (recordCountInPage > 0) {
           // GET FIRST EMPTY POSITION
           final int lastRecordPositionInPage = (int) lastPage.readUnsignedInt(PAGE_RECORD_TABLE_OFFSET + (recordCountInPage - 1) * INT_SERIALIZED_SIZE);
+          if (lastRecordPositionInPage == 0)
+            // CLEANED CORRUPTED RECORD
+            createNewPage = true;
+
           final long[] lastRecordSize = lastPage.readNumberAndSize(lastRecordPositionInPage);
 
           if (lastRecordSize[0] > 0)
@@ -509,7 +577,11 @@ public class Bucket extends PaginatedComponent {
       if (positionInPage >= recordCountInPage)
         throw new RecordNotFoundException("Record " + rid + " not found", rid);
 
-      int recordPositionInPage = (int) page.readUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE);
+      final int recordPositionInPage = (int) page.readUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE);
+      if (recordPositionInPage == 0)
+        // CLEANED CORRUPTED RECORD
+        throw new RecordNotFoundException("Record " + rid + " not found", rid);
+
       final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
       if (recordSize[0] == 0)
         // DELETED
@@ -639,21 +711,32 @@ public class Bucket extends PaginatedComponent {
       if (positionInPage >= recordCountInPage)
         throw new RecordNotFoundException("Record " + rid + " not found", rid);
 
-      int recordPositionInPage = (int) page.readUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE);
-      final long[] removedRecordSize = page.readNumberAndSize(recordPositionInPage);
-      if (removedRecordSize[0] == 0)
-        // ALREADY DELETED
+      final int recordPositionInPage = (int) page.readUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE);
+      if (recordPositionInPage == 0)
+        // CLEANED CORRUPTED RECORD
         throw new RecordNotFoundException("Record " + rid + " not found", rid);
 
-      if (removedRecordSize[0] < -1) {
-        if (!deletePlaceholder)
-          // CANNOT DELETE A PLACEHOLDER DIRECTLY
+      // AVOID DELETION OF CONTENT IN CORRUPTED RECORD
+      if (recordPositionInPage > 0 && recordPositionInPage < page.getContentSize()) {
+        final long[] removedRecordSize = page.readNumberAndSize(recordPositionInPage);
+        if (removedRecordSize[0] == 0)
+          // ALREADY DELETED
           throw new RecordNotFoundException("Record " + rid + " not found", rid);
-        removedRecordSize[0] *= -1;
-      }
 
-      // CONTENT SIZE = 0 MEANS DELETED
-      page.writeNumber(recordPositionInPage, 0);
+        if (removedRecordSize[0] < -1) {
+          if (!deletePlaceholder)
+            // CANNOT DELETE A PLACEHOLDER DIRECTLY
+            throw new RecordNotFoundException("Record " + rid + " not found", rid);
+          removedRecordSize[0] *= -1;
+        }
+
+        // CONTENT SIZE = 0 MEANS DELETED
+        page.writeNumber(recordPositionInPage, 0);
+
+      } else {
+        // CORRUPTED RECORD: WRITE ZERO AS POINTER TO RECORD
+        page.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE, 0);
+      }
 
 //      recordPositionInPage++;
 //
