@@ -55,7 +55,7 @@ public class PostgresWTest extends BaseGraphServerTest {
 
   @Test
   public void queryVertices() throws Exception {
-    final int TOTAL = 10000;
+    final int TOTAL = 1000;
     try (final Connection conn = getConnection()) {
       try (Statement st = conn.createStatement()) {
         st.execute("create vertex type V");
@@ -63,25 +63,36 @@ public class PostgresWTest extends BaseGraphServerTest {
           st.execute("create vertex V set id = " + i + ", name = 'Jay', lastName = 'Miner'");
         }
 
-        PreparedStatement pst = conn.prepareStatement("create vertex V set id = -1, name = ?, lastName = ?");
+        PreparedStatement pst = conn.prepareStatement("create vertex V set name = ?, lastName = ?, short = ?, int = ?, long = ?, float = ?, double = ?, boolean = ?");
         pst.setString(1, "Rocky");
         pst.setString(2, "Balboa");
+        pst.setShort(3, (short) 3);
+        pst.setInt(4, 4);
+        pst.setLong(5, 5L);
+        pst.setFloat(6, 6F);
+        pst.setDouble(7, 7D);
+        pst.setBoolean(8, false);
         pst.execute();
         pst.close();
 
-        ResultSet rs = st.executeQuery("SELECT id, name, lastName FROM V order by id");
+        ResultSet rs = st.executeQuery("SELECT id, name, lastName, short, int, long, float, double, date FROM V order by id");
 
         Assertions.assertTrue(!rs.isAfterLast());
 
         int i = 0;
         while (rs.next()) {
-          if (rs.getString(2).equalsIgnoreCase("Jay")) {
-            Assertions.assertEquals("Jay", rs.getString(2));
-            Assertions.assertEquals("Miner", rs.getString(3));
+          if (rs.getString(1).equalsIgnoreCase("Jay")) {
+            Assertions.assertEquals("Jay", rs.getString(1));
+            Assertions.assertEquals("Miner", rs.getString(2));
             ++i;
-          } else if (rs.getString(2).equalsIgnoreCase("Rocky")) {
-            Assertions.assertEquals("Rocky", rs.getString(2));
-            Assertions.assertEquals("Balboa", rs.getString(3));
+          } else if (rs.getString(1).equalsIgnoreCase("Rocky")) {
+            Assertions.assertEquals("Balboa", rs.getString(2));
+            Assertions.assertEquals((short) 3, rs.getShort(3));
+            Assertions.assertEquals(4, rs.getInt(4));
+            Assertions.assertEquals(5L, rs.getLong(5));
+            Assertions.assertEquals(6F, rs.getFloat(6));
+            Assertions.assertEquals(7D, rs.getDouble(7));
+            Assertions.assertEquals(false, rs.getBoolean(8));
             ++i;
           } else
             Assertions.fail("Unknown value");
@@ -94,8 +105,8 @@ public class PostgresWTest extends BaseGraphServerTest {
     }
   }
 
-
-  //@Test
+  @Test
+  @Disabled
   public void queryTransaction() throws Exception {
     try (final Connection conn = getConnection()) {
       conn.setAutoCommit(false);

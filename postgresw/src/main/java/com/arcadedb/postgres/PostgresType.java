@@ -112,7 +112,9 @@ public enum PostgresType {
     switch (formatCode) {
     case 0:
       final String str = new String(valueAsBytes, DatabaseFactory.getDefaultCharset());
-      if (code == VARCHAR.code)
+      if (code == 0) // UNSPECIFIED
+        return str;
+      else if (code == VARCHAR.code)
         return str;
       else if (code == SMALLINT.code)
         return Short.parseShort(str);

@@ -439,7 +439,7 @@ public class PostgresNetworkExecutor extends Thread {
     if (columns == null)
       return;
 
-    final ByteBuffer bufferDescription = ByteBuffer.allocate(64 * 1024);
+    final ByteBuffer bufferDescription = ByteBuffer.allocate(64 * 1024).order(ByteOrder.BIG_ENDIAN);
 
     for (Map.Entry<String, PostgresType> col : columns.entrySet()) {
       final String columnName = col.getKey();
@@ -466,8 +466,8 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   private void writeDataRows(final List<Result> resultSet, final Map<String, PostgresType> columns) throws IOException {
-    final ByteBuffer bufferData = ByteBuffer.allocate(128 * 1024);
-    final ByteBuffer bufferValues = ByteBuffer.allocate(128 * 1024);
+    final ByteBuffer bufferData = ByteBuffer.allocate(128 * 1024).order(ByteOrder.BIG_ENDIAN);
+    final ByteBuffer bufferValues = ByteBuffer.allocate(128 * 1024).order(ByteOrder.BIG_ENDIAN);
 
     for (Result row : resultSet) {
       bufferData.clear();
