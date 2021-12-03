@@ -205,13 +205,13 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
           }
 
           if (record == null) {
-            LogManager.instance().log(this, Level.INFO, "TEST: - Cannot find record %s in database even if it's present in the index (null)", null, rid);
+            LogManager.instance().log(this, Level.FINE, "TEST: - Cannot find record %s in database even if it's present in the index (null)", null, rid);
             missingsCount++;
           }
 
         }
 
-        Assertions.assertEquals(recordInDb, ridsFoundInIndex.size(), "TEST: Found " + ridsFoundInIndex + " missing records");
+        Assertions.assertEquals(recordInDb, ridsFoundInIndex.size(), "TEST: Found " + ridsFoundInIndex.size() + " missing records");
         Assertions.assertEquals(0, missingsCount);
         Assertions.assertEquals(total, total2);
 
