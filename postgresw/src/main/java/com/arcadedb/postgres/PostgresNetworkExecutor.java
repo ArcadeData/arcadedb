@@ -16,6 +16,7 @@
 package com.arcadedb.postgres;
 
 import com.arcadedb.Constants;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseFactory;
@@ -64,7 +65,7 @@ public class PostgresNetworkExecutor extends Thread {
   private              long                                           processIdSequence          = 0;
   private static final Map<Long, Pair<Long, PostgresNetworkExecutor>> ACTIVE_SESSIONS            = new ConcurrentHashMap<>();
   private final        Map<String, PostgresPortal>                    portals                    = new HashMap<>();
-  private final        boolean                                        DEBUG                      = false;
+  private final        boolean                                        DEBUG                      = GlobalConfiguration.POSTGRES_DEBUG.getValueAsBoolean();
   private final        Map<String, Object>                            connectionProperties       = new HashMap<>();
   private              boolean                                        explicitTransactionStarted = false;
   private              boolean                                        errorInTransaction         = false;
