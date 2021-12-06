@@ -25,6 +25,7 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.graph.Vertex;
@@ -317,6 +318,11 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
   @Override
   public void scanType(final String typeName, final boolean polymorphic, final DocumentCallback callback) {
+    scanType(typeName, polymorphic, callback, null);
+  }
+
+  @Override
+  public void scanType(final String typeName, final boolean polymorphic, final DocumentCallback callback, final ErrorRecordCallback errorRecordCallback) {
     try {
       final DocumentType type = database.getSchema().getType(typeName);
 
@@ -325,7 +331,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
       for (Bucket b : buckets) {
         final int slot = getSlot(b.getId());
-        scheduleTask(slot, new DatabaseAsyncScanBucket(semaphore, callback, b), true, backPressurePercentage);
+        scheduleTask(slot, new DatabaseAsyncScanBucket(semaphore, callback, errorRecordCallback, b), true, backPressurePercentage);
       }
 
       semaphore.await();

@@ -23,6 +23,7 @@ import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.database.async.OkCallback;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.Dictionary;
+import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.engine.PaginatedFile;
@@ -435,6 +436,11 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
   @Override
   public void scanType(final String typeName, final boolean polymorphic, final DocumentCallback callback) {
+    scanType(typeName, polymorphic, callback, null);
+  }
+
+  @Override
+  public void scanType(final String typeName, final boolean polymorphic, final DocumentCallback callback, final ErrorRecordCallback errorRecordCallback) {
     stats.scanType.incrementAndGet();
 
     executeInReadLock(() -> {
@@ -450,7 +456,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
             final Document record = (Document) recordFactory.newImmutableRecord(wrappedDatabaseInstance, type, rid, view, null);
             continueScan.set(callback.onRecord(record));
             return continueScan.get();
-          });
+          }, errorRecordCallback);
 
           if (!continueScan.get())
             break;
@@ -471,6 +477,11 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
   @Override
   public void scanBucket(final String bucketName, final RecordCallback callback) {
+    scanBucket(bucketName, callback, null);
+  }
+
+  @Override
+  public void scanBucket(final String bucketName, final RecordCallback callback, final ErrorRecordCallback errorRecordCallback) {
     stats.scanBucket.incrementAndGet();
 
     executeInReadLock(() -> {
@@ -481,7 +492,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
       schema.getBucketByName(bucketName).scan((rid, view) -> {
         final Record record = recordFactory.newImmutableRecord(wrappedDatabaseInstance, schema.getType(typeName), rid, view, null);
         return callback.onRecord(record);
-      });
+      }, errorRecordCallback);
       return null;
     });
   }

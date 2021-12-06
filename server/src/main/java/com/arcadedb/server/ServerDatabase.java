@@ -33,6 +33,7 @@ import com.arcadedb.database.TransactionContext;
 import com.arcadedb.database.async.DatabaseAsyncExecutor;
 import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.database.async.OkCallback;
+import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.engine.PaginatedFile;
@@ -144,8 +145,18 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
+  public void scanType(String typeName, boolean polymorphic, DocumentCallback callback, ErrorRecordCallback errorRecordCallback) {
+    wrapped.scanType(typeName, polymorphic, callback, errorRecordCallback);
+  }
+
+  @Override
   public void scanBucket(String bucketName, RecordCallback callback) {
     wrapped.scanBucket(bucketName, callback);
+  }
+
+  @Override
+  public void scanBucket(String bucketName, RecordCallback callback, ErrorRecordCallback errorRecordCallback) {
+    wrapped.scanBucket(bucketName, callback, errorRecordCallback);
   }
 
   @Override

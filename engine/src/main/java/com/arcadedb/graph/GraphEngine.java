@@ -625,9 +625,8 @@ public class GraphEngine {
 
   public Map<String, Object> checkVertices(final String typeName, final boolean fix, final int verboseLevel) {
     final AtomicLong autoFix = new AtomicLong();
-    final AtomicLong edgesToRemove = new AtomicLong();
     final AtomicLong invalidLinks = new AtomicLong();
-    final List<RID> corruptedRecords = new ArrayList<>();
+    final LinkedHashSet<RID> corruptedRecords = new LinkedHashSet<>();
     final List<String> warnings = new ArrayList<>();
 
     final Map<String, Object> stats = new HashMap<>();
@@ -643,21 +642,21 @@ public class GraphEngine {
           if (outEdges != null) {
             final Iterator<Pair<RID, RID>> out = outEdges.entryIterator();
             while (out.hasNext()) {
-              String warning = null;
-              boolean removeEdge = false;
-
               final Pair<RID, RID> current = out.next();
               final RID edgeRID = current.getFirst();
               final RID vertexRID = current.getSecond();
 
+              boolean removeEntry = false;
+
               if (edgeRID == null) {
-                warning = "outgoing edge null from vertex " + vertex.getIdentity();
+                warnings.add("outgoing edge null from vertex " + vertex.getIdentity());
+                removeEntry = true;
                 invalidLinks.incrementAndGet();
-                removeEdge = true;
               } else if (vertexRID == null) {
-                warning = "outgoing vertex null from vertex " + vertex.getIdentity();
+                warnings.add("outgoing vertex null from vertex " + vertex.getIdentity());
+                corruptedRecords.add(edgeRID);
+                removeEntry = true;
                 invalidLinks.incrementAndGet();
-                removeEdge = true;
               } else {
                 try {
                   if (edgeRID.getPosition() < 0)
@@ -667,66 +666,56 @@ public class GraphEngine {
                   final Edge edge = edgeRID.asEdge(true);
 
                   if (edge.getIn() == null || !edge.getIn().isValid()) {
-                    warning = "edge " + edgeRID + " has an invalid incoming link " + edge.getIn();
+                    warnings.add("edge " + edgeRID + " has an invalid incoming link " + edge.getIn());
+                    corruptedRecords.add(edgeRID);
+                    removeEntry = true;
                     invalidLinks.incrementAndGet();
-                    removeEdge = true;
                   } else {
                     try {
                       edge.getInVertex().asVertex(true);
                     } catch (RecordNotFoundException e) {
-                      warning = "edge " + edgeRID + " points to the incoming vertex " + edge.getIn() + " that is not found (deleted?)";
+                      warnings.add("edge " + edgeRID + " points to the incoming vertex " + edge.getIn() + " that is not found (deleted?)");
+                      corruptedRecords.add(edgeRID);
+                      removeEntry = true;
+                      corruptedRecords.add(edge.getIn());
                       invalidLinks.incrementAndGet();
-                      removeEdge = true;
                     } catch (Exception e) {
                       // UNKNOWN ERROR ON LOADING
-                      warning =
-                          "edge " + edgeRID + " points to the incoming vertex " + edge.getIn() + " which cannot be loaded (error: " + e.getMessage() + ")";
+                      warnings.add(
+                          "edge " + edgeRID + " points to the incoming vertex " + edge.getIn() + " which cannot be loaded (error: " + e.getMessage() + ")");
+                      corruptedRecords.add(edgeRID);
+                      removeEntry = true;
                       corruptedRecords.add(edge.getIn());
-                      if (fix) {
-                        autoFix.incrementAndGet();
-                        database.getSchema().getBucketById(edge.getIn().getBucketId()).deleteRecord(edge.getIn());
-                      }
                     }
                   }
 
                   if (!edge.getOut().equals(vertex.getIdentity())) {
-                    warning = "edge " + edgeRID + " has an outgoing link " + edge.getOut() + " different from expected " + vertex.getIdentity();
+                    warnings.add("edge " + edgeRID + " has an outgoing link " + edge.getOut() + " different from expected " + vertex.getIdentity());
+                    corruptedRecords.add(edgeRID);
+                    removeEntry = true;
                     invalidLinks.incrementAndGet();
-                    removeEdge = true;
                   } else if (!edge.getIn().equals(vertexRID)) {
-                    warning = "edge " + edgeRID + " has an incoming link " + edge.getIn() + " different from expected " + vertexRID;
+                    warnings.add("edge " + edgeRID + " has an incoming link " + edge.getIn() + " different from expected " + vertexRID);
+                    corruptedRecords.add(edgeRID);
+                    removeEntry = true;
                     invalidLinks.incrementAndGet();
-                    removeEdge = true;
                   }
 
                 } catch (RecordNotFoundException e) {
-                  warning = "edge " + edgeRID + " not found";
+                  warnings.add("edge " + edgeRID + " not found");
+                  corruptedRecords.add(edgeRID);
+                  removeEntry = true;
                   invalidLinks.incrementAndGet();
-                  removeEdge = true;
                 } catch (Exception e) {
                   // UNKNOWN ERROR ON LOADING
-                  warning = "edge " + edgeRID + " error on loading (error: " + e.getMessage() + ")";
+                  warnings.add("edge " + edgeRID + " error on loading (error: " + e.getMessage() + ")");
                   corruptedRecords.add(edgeRID);
-                  if (fix) {
-                    autoFix.incrementAndGet();
-                    database.getSchema().getBucketById(edgeRID.getBucketId()).deleteRecord(edgeRID);
-                  }
+                  removeEntry = true;
                 }
               }
 
-              if (warning != null) {
-                warnings.add(warning);
-                if (verboseLevel > 0)
-                  LogManager.instance().log(this, Level.WARNING, "- " + warning);
-              }
-
-              if (removeEdge) {
-                edgesToRemove.incrementAndGet();
-                if (fix) {
-                  autoFix.incrementAndGet();
-                  out.remove();
-                }
-              }
+              if (fix && removeEntry)
+                out.remove();
             }
           }
 
@@ -734,21 +723,21 @@ public class GraphEngine {
           if (inEdges != null) {
             final Iterator<Pair<RID, RID>> in = inEdges.entryIterator();
             while (in.hasNext()) {
-              String warning = null;
-              boolean removeEdge = false;
-
               final Pair<RID, RID> current = in.next();
               final RID edgeRID = current.getFirst();
               final RID vertexRID = current.getSecond();
 
+              boolean removeEntry = false;
+
               if (edgeRID == null) {
-                warning = "outgoing edge null from vertex " + vertex.getIdentity();
+                warnings.add("outgoing edge null from vertex " + vertex.getIdentity());
+                removeEntry = true;
                 invalidLinks.incrementAndGet();
-                removeEdge = true;
               } else if (vertexRID == null) {
-                warning = "outgoing vertex null from vertex " + vertex.getIdentity();
+                warnings.add("outgoing vertex null from vertex " + vertex.getIdentity());
+                corruptedRecords.add(edgeRID);
+                removeEntry = true;
                 invalidLinks.incrementAndGet();
-                removeEdge = true;
               } else {
                 if (edgeRID.getPosition() < 0)
                   // LIGHTWEIGHT EDGE
@@ -758,88 +747,93 @@ public class GraphEngine {
                   final Edge edge = edgeRID.asEdge(true);
 
                   if (edge.getOut() == null || !edge.getOut().isValid()) {
-                    warning = "edge " + edgeRID + " has an invalid outgoing link " + edge.getIn();
+                    warnings.add("edge " + edgeRID + " has an invalid outgoing link " + edge.getIn());
+                    corruptedRecords.add(edgeRID);
+                    removeEntry = true;
                     invalidLinks.incrementAndGet();
-                    removeEdge = true;
                   } else {
                     try {
                       edge.getOutVertex().asVertex(true);
                     } catch (RecordNotFoundException e) {
-                      warning = "edge " + edgeRID + " points to the outgoing vertex " + edge.getOut() + " that is not found (deleted?)";
+                      warnings.add("edge " + edgeRID + " points to the outgoing vertex " + edge.getOut() + " that is not found (deleted?)");
+                      corruptedRecords.add(edgeRID);
+                      removeEntry = true;
+                      corruptedRecords.add(edge.getOut());
                       invalidLinks.incrementAndGet();
-                      removeEdge = true;
                     } catch (Exception e) {
                       // UNKNOWN ERROR ON LOADING
-                      warning =
-                          "edge " + edgeRID + " points to the outgoing vertex " + edge.getOut() + " which cannot be loaded (error: " + e.getMessage() + ")";
+                      warnings.add(
+                          "edge " + edgeRID + " points to the outgoing vertex " + edge.getOut() + " which cannot be loaded (error: " + e.getMessage() + ")");
+                      corruptedRecords.add(edgeRID);
+                      removeEntry = true;
                       corruptedRecords.add(edge.getOut());
-                      if (fix) {
-                        autoFix.incrementAndGet();
-                        database.getSchema().getBucketById(edge.getOut().getBucketId()).deleteRecord(edge.getOut());
-                      }
                     }
                   }
 
                   if (!edge.getIn().equals(vertex.getIdentity())) {
-                    warning = "edge " + edgeRID + " has an incoming link " + edge.getIn() + " different from expected " + vertex.getIdentity();
+                    warnings.add("edge " + edgeRID + " has an incoming link " + edge.getIn() + " different from expected " + vertex.getIdentity());
+                    corruptedRecords.add(edgeRID);
+                    removeEntry = true;
                     invalidLinks.incrementAndGet();
-                    removeEdge = true;
                   } else if (!edge.getOut().equals(vertexRID)) {
-                    warning = "edge " + edgeRID + " has an outgoing link " + edge.getOut() + " different from expected " + vertexRID;
+                    warnings.add("edge " + edgeRID + " has an outgoing link " + edge.getOut() + " different from expected " + vertexRID);
+                    corruptedRecords.add(edgeRID);
+                    removeEntry = true;
                     invalidLinks.incrementAndGet();
-                    removeEdge = true;
                   }
                 } catch (RecordNotFoundException e) {
-                  warning = "edge " + edgeRID + " not found";
+                  warnings.add("edge " + edgeRID + " not found");
+                  corruptedRecords.add(edgeRID);
+                  removeEntry = true;
                   invalidLinks.incrementAndGet();
-                  removeEdge = true;
                 } catch (Exception e) {
                   // UNKNOWN ERROR ON LOADING
-                  warning = "edge " + edgeRID + " error on loading (error: " + e.getMessage() + ")";
+                  warnings.add("edge " + edgeRID + " error on loading (error: " + e.getMessage() + ")");
                   corruptedRecords.add(edgeRID);
-                  if (fix) {
-                    autoFix.incrementAndGet();
-                    database.getSchema().getBucketById(edgeRID.getBucketId()).deleteRecord(edgeRID);
-                  }
+                  removeEntry = true;
                 }
               }
 
-              if (warning != null) {
-                warnings.add(warning);
-                if (verboseLevel > 0)
-                  LogManager.instance().log(this, Level.WARNING, "- " + warning);
-              }
-
-              if (removeEdge) {
-                edgesToRemove.incrementAndGet();
-                if (fix) {
-                  autoFix.incrementAndGet();
-                  in.remove();
-                }
-              }
+              if (fix && removeEntry)
+                in.remove();
             }
           }
 
         } catch (Throwable e) {
-          final String warning = "vertex " + record.getIdentity() + " cannot be loaded (error: " + e.getMessage() + ")";
-          warnings.add(warning);
+          warnings.add("vertex " + record.getIdentity() + " cannot be loaded (error: " + e.getMessage() + ")");
           corruptedRecords.add(record.getIdentity());
-          if (fix) {
-            autoFix.incrementAndGet();
-            database.getSchema().getBucketById(record.getIdentity().getBucketId()).deleteRecord(record.getIdentity());
-          }
         }
 
         return true;
+      }, (rid, exception) -> {
+        warnings.add("vertex " + rid + " cannot be loaded (error: " + exception.getMessage() + ")");
+        corruptedRecords.add(rid);
+        return true;
       });
+
+      if (fix) {
+        for (RID rid : corruptedRecords) {
+          autoFix.incrementAndGet();
+          try {
+            database.getSchema().getBucketById(rid.getBucketId()).deleteRecord(rid);
+          } catch (RecordNotFoundException e) {
+            // IGNORE IT
+          } catch (Throwable e) {
+            warnings.add("Cannot fix the record " + rid + ": error on delete (error: " + e.getMessage() + ")");
+          }
+        }
+      }
+
+      if (verboseLevel > 0)
+        for (String warning : warnings)
+          LogManager.instance().log(this, Level.WARNING, "- " + warning);
 
       database.commit();
 
     } finally {
       stats.put("autoFix", autoFix.get());
-      stats.put("edgesToRemove", edgesToRemove.get());
-      stats.put("invalidLinks", invalidLinks.get());
       stats.put("corruptedRecords", corruptedRecords);
+      stats.put("invalidLinks", invalidLinks.get());
       stats.put("warnings", warnings);
     }
 
@@ -848,7 +842,6 @@ public class GraphEngine {
 
   public Map<String, Object> checkEdges(final String typeName, final boolean fix, final int verboseLevel) {
     final AtomicLong autoFix = new AtomicLong();
-    final AtomicLong edgesToRemove = new AtomicLong();
     final AtomicLong invalidLinks = new AtomicLong();
     final AtomicLong missingReferenceBack = new AtomicLong();
     final List<RID> corruptedRecords = new ArrayList<>();
@@ -860,113 +853,102 @@ public class GraphEngine {
 
     try {
       database.scanType(typeName, false, (record) -> {
+        final RID edgeRID = record.getIdentity();
+
         try {
           final Edge edge = record.asEdge(true);
 
-          String warning = null;
-          boolean removeEdge = false;
-
           if (edge == null) {
-            warning = "edge " + edge.getIdentity() + " cannot be loaded";
-            corruptedRecords.add(edge.getIdentity());
-            removeEdge = true;
+            warnings.add("edge " + edgeRID + " cannot be loaded");
+            corruptedRecords.add(edgeRID);
 
           } else if (edge.getIn() == null || !edge.getIn().isValid()) {
-            warning = "edge " + edge.getIdentity() + " has an invalid incoming link " + edge.getIn();
+            warnings.add("edge " + edgeRID + " has an invalid incoming link " + edge.getIn());
+            corruptedRecords.add(edgeRID);
             invalidLinks.incrementAndGet();
-            removeEdge = true;
 
           } else if (edge.getOut() == null || !edge.getOut().isValid()) {
-            warning = "edge " + edge.getIdentity() + " has an invalid outgoing link " + edge.getOut();
+            warnings.add("edge " + edgeRID + " has an invalid outgoing link " + edge.getOut());
+            corruptedRecords.add(edgeRID);
             invalidLinks.incrementAndGet();
-            removeEdge = true;
 
           } else {
             try {
               final Vertex vertex = edge.getInVertex().asVertex(true);
 
               final EdgeLinkedList inEdges = getEdgeHeadChunk((VertexInternal) vertex, Vertex.DIRECTION.IN);
-              if (inEdges == null || !inEdges.containsEdge(edge.getIdentity())) {
+              if (inEdges == null || !inEdges.containsEdge(edgeRID))
                 // UNI DIRECTIONAL EDGE
                 missingReferenceBack.incrementAndGet();
-              }
 
             } catch (RecordNotFoundException e) {
-              warning = "edge " + edge.getIdentity() + " points to the incoming vertex " + edge.getIn() + " that is not found (deleted?)";
+              warnings.add("edge " + edgeRID + " points to the incoming vertex " + edge.getIn() + " that is not found (deleted?)");
+              corruptedRecords.add(edgeRID);
+              corruptedRecords.add(edge.getIn());
               invalidLinks.incrementAndGet();
-              removeEdge = true;
             } catch (Exception e) {
               // UNKNOWN ERROR ON LOADING
-              warning =
-                  "edge " + edge.getIdentity() + " points to the incoming vertex " + edge.getIn() + " which cannot be loaded (error: " + e.getMessage() + ")";
+              warnings.add("edge " + edgeRID + " points to the incoming vertex " + edge.getIn() + " which cannot be loaded (error: " + e.getMessage() + ")");
+              corruptedRecords.add(edgeRID);
               corruptedRecords.add(edge.getIn());
-
-              if (fix) {
-                autoFix.incrementAndGet();
-                database.getSchema().getBucketById(edge.getIn().getBucketId()).deleteRecord(edge.getIn());
-              }
             }
 
-            if (!removeEdge)
-              try {
-                final Vertex vertex = edge.getOutVertex().asVertex(true);
+            try {
+              final Vertex vertex = edge.getOutVertex().asVertex(true);
 
-                final EdgeLinkedList outEdges = getEdgeHeadChunk((VertexInternal) vertex, Vertex.DIRECTION.OUT);
-                if (outEdges == null || !outEdges.containsEdge(edge.getIdentity())) {
-                  // UNI DIRECTIONAL EDGE
-                  missingReferenceBack.incrementAndGet();
-                }
+              final EdgeLinkedList outEdges = getEdgeHeadChunk((VertexInternal) vertex, Vertex.DIRECTION.OUT);
+              if (outEdges == null || !outEdges.containsEdge(edgeRID))
+                // UNI DIRECTIONAL EDGE
+                missingReferenceBack.incrementAndGet();
 
-              } catch (RecordNotFoundException e) {
-                warning = "edge " + edge.getIdentity() + " points to the outgoing vertex " + edge.getOut() + " that is not found (deleted?)";
-                invalidLinks.incrementAndGet();
-                removeEdge = true;
-              } catch (Exception e) {
-                // UNKNOWN ERROR ON LOADING
-                warning = "edge " + edge.getIdentity() + " points to the outgoing vertex " + edge.getOut() + " which cannot be loaded (error: " + e.getMessage()
-                    + ")";
-                corruptedRecords.add(edge.getOut());
-
-                if (fix) {
-                  autoFix.incrementAndGet();
-                  database.getSchema().getBucketById(edge.getOut().getBucketId()).deleteRecord(edge.getOut());
-                }
-              }
-          }
-
-          if (warning != null) {
-            warnings.add(warning);
-            if (verboseLevel > 0)
-              LogManager.instance().log(this, Level.WARNING, "- " + warning);
-          }
-
-          if (removeEdge) {
-            edgesToRemove.incrementAndGet();
-            if (fix) {
-              autoFix.incrementAndGet();
-              edge.delete();
+            } catch (RecordNotFoundException e) {
+              warnings.add("edge " + edgeRID + " points to the outgoing vertex " + edge.getOut() + " that is not found (deleted?)");
+              corruptedRecords.add(edgeRID);
+              invalidLinks.incrementAndGet();
+            } catch (Exception e) {
+              // UNKNOWN ERROR ON LOADING
+              warnings.add("edge " + edgeRID + " points to the outgoing vertex " + edge.getOut() + " which cannot be loaded (error: " + e.getMessage() + ")");
+              corruptedRecords.add(edgeRID);
+              corruptedRecords.add(edge.getOut());
             }
           }
 
         } catch (Throwable e) {
-          corruptedRecords.add(record.getIdentity());
-          if (fix) {
-            autoFix.incrementAndGet();
-            database.getSchema().getBucketById(record.getIdentity().getBucketId()).deleteRecord(record.getIdentity());
-          }
+          warnings.add("edge " + record.getIdentity() + " cannot be loaded (error: " + e.getMessage() + ")");
+          corruptedRecords.add(edgeRID);
         }
 
         return true;
+      }, (rid, exception) -> {
+        warnings.add("edge " + rid + " cannot be loaded (error: " + exception.getMessage() + ")");
+        corruptedRecords.add(rid);
+        return true;
       });
+
+      if (fix) {
+        for (RID rid : corruptedRecords) {
+          autoFix.incrementAndGet();
+          try {
+            database.getSchema().getBucketById(rid.getBucketId()).deleteRecord(rid);
+          } catch (RecordNotFoundException e) {
+            // IGNORE IT
+          } catch (Throwable e) {
+            warnings.add("Cannot fix the record " + rid + ": error on delete (error: " + e.getMessage() + ")");
+          }
+        }
+      }
+
+      if (verboseLevel > 0)
+        for (String warning : warnings)
+          LogManager.instance().log(this, Level.WARNING, "- " + warning);
 
       database.commit();
 
     } finally {
       stats.put("autoFix", autoFix.get());
-      stats.put("edgesToRemove", edgesToRemove.get());
+      stats.put("corruptedRecords", corruptedRecords);
       stats.put("invalidLinks", invalidLinks.get());
       stats.put("missingReferenceBack", missingReferenceBack.get());
-      stats.put("corruptedRecords", corruptedRecords);
       stats.put("warnings", warnings);
     }
 

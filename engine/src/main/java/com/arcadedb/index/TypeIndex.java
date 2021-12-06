@@ -269,7 +269,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   public long build(final BuildIndexCallback callback) {
     checkIsValid();
     long total = 0;
-    for (Index index : indexesOnBuckets)
+    for (IndexInternal index : indexesOnBuckets)
       total += index.build(callback);
     return total;
   }

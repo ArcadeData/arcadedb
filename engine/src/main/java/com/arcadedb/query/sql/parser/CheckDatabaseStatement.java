@@ -32,7 +32,7 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
     if (ctx.getDatabase().isTransactionActive())
       ctx.getDatabase().rollback();
 
-    final DatabaseChecker checker = new DatabaseChecker(ctx.getDatabase());
+    final DatabaseChecker checker = new DatabaseChecker(ctx.getDatabase().getWrappedDatabaseInstance());
     checker.setVerboseLevel(0);
     checker.setBuckets(buckets.stream().map(x -> x.getValue()).collect(Collectors.toSet()));
     checker.setTypes(types.stream().map(x -> (x.startsWith("\"") || x.startsWith("'")) ? x.substring(1, x.length() - 1) : x).collect(Collectors.toSet()));

@@ -141,7 +141,7 @@ public class Bucket extends PaginatedComponent {
     deleteRecordInternal(rid, false);
   }
 
-  public void scan(final RawRecordCallback callback) {
+  public void scan(final RawRecordCallback callback, final ErrorRecordCallback errorRecordCallback) {
     database.checkPermissionsOnFile(id, SecurityDatabaseUser.ACCESS.READ_RECORD);
 
     final int txPageCount = getTotalPages();
@@ -153,6 +153,8 @@ public class Bucket extends PaginatedComponent {
 
         if (recordCountInPage > 0) {
           for (int recordIdInPage = 0; recordIdInPage < recordCountInPage; ++recordIdInPage) {
+            final RID rid = new RID(database, id, ((long) pageId) * maxRecordsInPage + recordIdInPage);
+
             try {
               final int recordPositionInPage = (int) page.readUnsignedInt(PAGE_RECORD_TABLE_OFFSET + recordIdInPage * INT_SERIALIZED_SIZE);
               if (recordPositionInPage == 0)
@@ -165,8 +167,6 @@ public class Bucket extends PaginatedComponent {
                 // NOT DELETED
                 final int recordContentPositionInPage = recordPositionInPage + (int) recordSize[1];
 
-                final RID rid = new RID(database, id, ((long) pageId) * maxRecordsInPage + recordIdInPage);
-
                 final Binary view = page.getImmutableView(recordContentPositionInPage, (int) recordSize[0]);
 
                 if (!callback.onRecord(rid, view))
@@ -174,19 +174,17 @@ public class Bucket extends PaginatedComponent {
 
               } else if (recordSize[0] == -1) {
                 // PLACEHOLDER
-                final RID rid = new RID(database, id, ((long) pageId) * maxRecordsInPage + recordIdInPage);
-
                 final Binary view = getRecordInternal(new RID(database, id, page.readLong((int) (recordPositionInPage + recordSize[1]))), true);
-
                 if (view != null && !callback.onRecord(rid, view))
                   return;
               }
             } catch (ArcadeDBException e) {
               throw e;
             } catch (Exception e) {
-              final String msg = String.format("Error on loading record #%d:%d (error: %s)", file.getFileId(), (pageId * maxRecordsInPage) + recordIdInPage,
-                  e.getMessage());
-              LogManager.instance().log(this, Level.SEVERE, msg);
+              if (errorRecordCallback == null)
+                LogManager.instance().log(this, Level.SEVERE, String.format("Error on loading record #%s (error: %s)", rid, e.getMessage()));
+              else if (!errorRecordCallback.onErrorLoading(rid, e))
+                return;
             }
           }
         }
@@ -291,6 +289,7 @@ public class Bucket extends PaginatedComponent {
     long totalMaxOffset = 0L;
     long errors = 0L;
     final List<String> warnings = new ArrayList<>();
+    final List<RID> deletedRecords = new ArrayList<>();
 
     String warning = null;
 
@@ -320,6 +319,7 @@ public class Bucket extends PaginatedComponent {
             warning = String.format("invalid record offset %d in page for record %s", recordPositionInPage, rid);
             if (fix) {
               deleteRecord(rid);
+              deletedRecords.add(rid);
               ++totalDeletedRecords;
             }
           } else {
@@ -351,6 +351,7 @@ public class Bucket extends PaginatedComponent {
                 warning = String.format("wrong record size %d found for record %s", recordSize[1] + recordSize[0], rid);
                 if (fix) {
                   deleteRecord(rid);
+                  deletedRecords.add(rid);
                   ++totalDeletedRecords;
                 }
               }
@@ -416,6 +417,7 @@ public class Bucket extends PaginatedComponent {
       stats.put("totalActiveEdges", totalActiveRecords);
     }
 
+    stats.put("deletedRecords", deletedRecords);
     stats.put("warnings", warnings);
     stats.put("autoFix", 0L);
     stats.put("errors", errors);

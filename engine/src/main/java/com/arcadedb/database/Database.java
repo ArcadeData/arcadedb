@@ -19,6 +19,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.async.DatabaseAsyncExecutor;
 import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.database.async.OkCallback;
+import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.graph.Edge;
@@ -138,7 +139,11 @@ public interface Database extends AutoCloseable {
 
   void scanType(String typeName, boolean polymorphic, DocumentCallback callback);
 
+  void scanType(String typeName, boolean polymorphic, DocumentCallback callback, ErrorRecordCallback errorRecordCallback);
+
   void scanBucket(String bucketName, RecordCallback callback);
+
+  void scanBucket(String bucketName, RecordCallback callback, ErrorRecordCallback errorRecordCallback);
 
   Record lookupByRID(RID rid, boolean loadContent);
 

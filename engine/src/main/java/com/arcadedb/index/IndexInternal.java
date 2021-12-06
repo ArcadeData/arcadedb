@@ -25,6 +25,8 @@ import java.util.*;
  * Internal Index interface.
  */
 public interface IndexInternal extends Index {
+  long build(BuildIndexCallback callback);
+
   boolean compact() throws IOException, InterruptedException;
 
   void setMetadata(String name, String[] propertyNames, int associatedBucketId);

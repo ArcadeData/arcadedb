@@ -17,6 +17,7 @@ package com.arcadedb.database.async;
 
 import com.arcadedb.database.Record;
 import com.arcadedb.database.*;
+import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.graph.Vertex;
 
@@ -58,6 +59,8 @@ public interface DatabaseAsyncExecutor {
   void command(String language, String query, AsyncResultsetCallback callback, Map<String, Object> parameters);
 
   void scanType(String typeName, boolean polymorphic, DocumentCallback callback);
+
+  void scanType(String typeName, boolean polymorphic, DocumentCallback callback, ErrorRecordCallback errorRecordCallback);
 
   void transaction(Database.TransactionScope txBlock);
 

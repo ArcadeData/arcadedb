@@ -87,7 +87,5 @@ public interface Index {
 
   boolean isAutomatic();
 
-  long build(BuildIndexCallback callback);
-
   int getPageSize();
 }

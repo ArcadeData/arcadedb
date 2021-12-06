@@ -18,10 +18,8 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.database.Document;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
-import com.arcadedb.index.Index;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
@@ -98,16 +96,13 @@ public class CreateIndexStatement extends DDLStatement {
 
     final AtomicLong total = new AtomicLong();
 
-    database.getSchema().createTypeIndex(indexType, unique, typeName.getStringValue(), fields, LSMTreeIndexAbstract.DEF_PAGE_SIZE, nullStrategy,
-        new Index.BuildIndexCallback() {
-          @Override
-          public void onDocumentIndexed(final Document document, final long totalIndexed) {
-            total.incrementAndGet();
+    database.getSchema()
+        .createTypeIndex(indexType, unique, typeName.getStringValue(), fields, LSMTreeIndexAbstract.DEF_PAGE_SIZE, nullStrategy, (document, totalIndexed) -> {
+          total.incrementAndGet();
 
-            if (totalIndexed % 100000 == 0) {
-              System.out.print(".");
-              System.out.flush();
-            }
+          if (totalIndexed % 100000 == 0) {
+            System.out.print(".");
+            System.out.flush();
           }
         });
 

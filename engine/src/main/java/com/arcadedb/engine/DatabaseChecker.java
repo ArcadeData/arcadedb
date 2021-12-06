@@ -18,54 +18,86 @@ package com.arcadedb.engine;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.index.Index;
+import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.schema.VertexType;
+import org.json.JSONObject;
 
 import java.util.*;
 import java.util.logging.*;
+import java.util.stream.*;
 
 public class DatabaseChecker {
-  private final DatabaseInternal database;
-  private       int              verboseLevel = 1;
-  private       boolean          fix          = false;
-  private       Set<Object>      buckets      = Collections.emptySet();
-  private       Set<String>      types        = Collections.emptySet();
+  private final DatabaseInternal    database;
+  private       int                 verboseLevel = 1;
+  private       boolean             fix          = false;
+  private       Set<Object>         buckets      = Collections.emptySet();
+  private       Set<String>         types        = Collections.emptySet();
+  private final Map<String, Object> result       = new HashMap<>();
 
   public DatabaseChecker(final Database database) {
     this.database = (DatabaseInternal) database;
   }
 
   public Map<String, Object> check() {
-    final Map<String, Object> result = new LinkedHashMap<>();
+    result.clear();
 
     if (verboseLevel > 0)
       LogManager.instance().log(this, Level.INFO, "Integrity check of database '%s' started", null, database.getName());
 
-    final LinkedHashSet<String> warnings = new LinkedHashSet<>();
-    long autoFix = 0;
-    long errors = 0;
+    result.put("autoFix", 0L);
+    result.put("invalidLinks", 0L);
+    result.put("warnings", new LinkedHashSet<>());
+    result.put("deletedRecords", new LinkedHashSet<>());
+    result.put("corruptedRecords", new LinkedHashSet<>());
 
-    long pageSize = 0;
-    long totalPages = 0;
-    long totalAllocatedRecords = 0;
-    long totalActiveRecords = 0;
-    long totalAllocatedVertices = 0;
-    long totalActiveVertices = 0;
-    long totalAllocatedEdges = 0;
-    long totalActiveEdges = 0;
-    long totalPlaceholderRecords = 0;
-    long totalSurrogateRecords = 0;
-    long totalDeletedRecords = 0;
-    long totalMaxOffset = 0;
-    long missingReferenceBack = 0;
+    checkEdges();
 
-    final Set<RID> corruptedRecords = new HashSet<>();
+    checkVertices();
 
-    long edgesToRemove = 0L;
-    long invalidLinks = 0L;
+    checkBuckets(result);
 
+    final Set<Integer> affectedBuckets = new HashSet<>();
+    for (RID rid : (Collection<RID>) result.get("corruptedRecords"))
+      affectedBuckets.add(rid.getBucketId());
+
+    final Set<Index> affectedIndexes = new HashSet<Index>();
+    for (Index index : database.getSchema().getIndexes())
+      if (affectedBuckets.contains(index.getAssociatedBucketId()))
+        affectedIndexes.add(index);
+
+    final Set<String> rebuildIndexes = affectedIndexes.stream().map(x -> x.getName()).collect(Collectors.toSet());
+    result.put("rebuiltIndexes", rebuildIndexes);
+
+    if (verboseLevel > 0)
+      LogManager.instance().log(this, Level.INFO, "Rebuilding indexes %s...", null, rebuildIndexes);
+
+    if (fix)
+      for (Index idx : affectedIndexes) {
+        final String bucketName = database.getSchema().getBucketById(idx.getAssociatedBucketId()).getName();
+        final EmbeddedSchema.INDEX_TYPE indexType = idx.getType();
+        final boolean unique = idx.isUnique();
+        final List<String> propNames = idx.getPropertyNames();
+        final String typeName = idx.getTypeName();
+        final int pageSize = idx.getPageSize();
+        final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy = idx.getNullStrategy();
+
+        database.getSchema().dropIndex(idx.getName());
+        database.getSchema()
+            .createBucketIndex(indexType, unique, typeName, bucketName, propNames.toArray(new String[propNames.size()]), pageSize, nullStrategy, null);
+      }
+
+    if (verboseLevel > 0)
+      LogManager.instance().log(this, Level.INFO, "Result:\n%s", null, new JSONObject(result).toString(2));
+
+    return result;
+  }
+
+  private void checkEdges() {
     if (verboseLevel > 0)
       LogManager.instance().log(this, Level.INFO, "Checking edges...", null);
 
@@ -77,15 +109,15 @@ public class DatabaseChecker {
       if (type instanceof EdgeType) {
         final Map<String, Object> stats = database.getGraphEngine().checkEdges(type.getName(), fix, verboseLevel);
 
-        autoFix += (Long) stats.get("autoFix");
-        edgesToRemove += (Long) stats.get("edgesToRemove");
-        invalidLinks += (Long) stats.get("invalidLinks");
-        missingReferenceBack += (Long) stats.get("missingReferenceBack");
-        corruptedRecords.addAll((Collection<RID>) stats.get("corruptedRecords"));
-        warnings.addAll((Collection<String>) stats.get("warnings"));
+        updateStats(stats);
+
+        ((LinkedHashSet<String>) result.get("warnings")).addAll((Collection<String>) stats.get("warnings"));
+        ((LinkedHashSet<RID>) result.get("corruptedRecords")).addAll((Collection<RID>) stats.get("corruptedRecords"));
       }
     }
+  }
 
+  private void checkVertices() {
     if (verboseLevel > 0)
       LogManager.instance().log(this, Level.INFO, "Checking vertices...", null);
 
@@ -97,90 +129,12 @@ public class DatabaseChecker {
       if (type instanceof VertexType) {
         final Map<String, Object> stats = database.getGraphEngine().checkVertices(type.getName(), fix, verboseLevel);
 
-        autoFix += (Long) stats.get("autoFix");
-        edgesToRemove += (Long) stats.get("edgesToRemove");
-        invalidLinks += (Long) stats.get("invalidLinks");
-        corruptedRecords.addAll((Collection<RID>) stats.get("corruptedRecords"));
-        warnings.addAll((Collection<String>) stats.get("warnings"));
+        updateStats(stats);
+
+        ((LinkedHashSet<String>) result.get("warnings")).addAll((Collection<String>) stats.get("warnings"));
+        ((LinkedHashSet<RID>) result.get("corruptedRecords")).addAll((Collection<RID>) stats.get("corruptedRecords"));
       }
     }
-
-    result.put("edgesToRemove", edgesToRemove);
-    result.put("invalidLinks", invalidLinks);
-    result.put("missingReferenceBack", missingReferenceBack);
-
-    if (verboseLevel > 0)
-      LogManager.instance().log(this, Level.INFO, "Checking buckets...", null);
-
-    for (Bucket b : database.getSchema().getBuckets()) {
-      if (buckets != null && !buckets.isEmpty())
-        if (!buckets.contains(b.name))
-          continue;
-
-      if (types != null && !types.isEmpty()) {
-        final DocumentType type = database.getSchema().getTypeByBucketId(b.id);
-        if (type == null || !types.contains(type.getName()))
-          continue;
-      }
-
-      if (fix)
-        database.begin();
-
-      final Map<String, Object> stats = b.check(verboseLevel, fix);
-
-      if (fix)
-        database.commit();
-
-      pageSize += (Long) stats.get("pageSize");
-      totalPages += (Long) stats.get("totalPages");
-      totalAllocatedRecords += (Long) stats.get("totalAllocatedRecords");
-      totalActiveRecords += (Long) stats.get("totalActiveRecords");
-      totalAllocatedVertices += (Long) (stats.containsKey("totalAllocatedVertices") ? stats.get("totalAllocatedVertices") : 0L);
-      totalActiveVertices += (Long) (stats.containsKey("totalActiveVertices") ? stats.get("totalActiveVertices") : 0L);
-      totalAllocatedEdges += (Long) (stats.containsKey("totalAllocatedEdges") ? stats.get("totalAllocatedEdges") : 0L);
-      totalActiveEdges += (Long) (stats.containsKey("totalActiveEdges") ? stats.get("totalActiveEdges") : 0L);
-      totalPlaceholderRecords += (Long) stats.get("totalPlaceholderRecords");
-      totalSurrogateRecords += (Long) stats.get("totalSurrogateRecords");
-      totalDeletedRecords += (Long) stats.get("totalDeletedRecords");
-      totalMaxOffset += (Long) stats.get("totalMaxOffset");
-
-      autoFix += (Long) stats.get("autoFix");
-      errors += (Long) stats.get("errors");
-      warnings.addAll((Collection<String>) stats.get("warnings"));
-    }
-
-    final float avgPageUsed = totalPages > 0 ? ((float) totalMaxOffset) / totalPages * 100F / pageSize : 0;
-
-    result.put("warnings", warnings);
-    result.put("autoFix", autoFix);
-    result.put("errors", errors);
-
-    result.put("pageSize", pageSize);
-    result.put("totalPages", totalPages);
-    result.put("totalAllocatedRecords", totalAllocatedRecords);
-    result.put("totalActiveRecords", totalActiveRecords);
-    result.put("totalAllocatedVertices", totalAllocatedVertices);
-    result.put("totalActiveVertices", totalActiveVertices);
-    result.put("totalAllocatedEdges", totalAllocatedEdges);
-    result.put("totalActiveEdges", totalActiveEdges);
-    result.put("totalPlaceholderRecords", totalPlaceholderRecords);
-    result.put("totalSurrogateRecords", totalSurrogateRecords);
-    result.put("totalDeletedRecords", totalDeletedRecords);
-    result.put("totalMaxOffset", totalMaxOffset);
-    result.put("avgPageUsed", avgPageUsed);
-
-    if (verboseLevel > 0) {
-      LogManager.instance()
-          .log(this, Level.INFO, "Total records=%d (actives=%d deleted=%d placeholders=%d surrogates=%d) avgPageUsed=%.2f%%", null, totalAllocatedRecords,
-              totalActiveRecords, totalDeletedRecords, totalPlaceholderRecords, totalSurrogateRecords, avgPageUsed);
-
-      LogManager.instance().log(this, Level.INFO, "Completed checking of database '%s':", null, database.getName());
-      LogManager.instance().log(this, Level.INFO, "- warning %d", null, warnings);
-      LogManager.instance().log(this, Level.INFO, "- auto-fix %d", null, autoFix);
-      LogManager.instance().log(this, Level.INFO, "- errors %d", null, errors);
-    }
-
-    return result;
   }
 
   public DatabaseChecker setVerboseLevel(final int verboseLevel) {
@@ -201,5 +155,64 @@ public class DatabaseChecker {
   public DatabaseChecker setFix(final boolean fix) {
     this.fix = fix;
     return this;
+  }
+
+  private void checkBuckets(Map<String, Object> result) {
+    if (verboseLevel > 0)
+      LogManager.instance().log(this, Level.INFO, "Checking buckets...", null);
+
+    result.put("pageSize", 0L);
+    result.put("totalPages", 0L);
+    result.put("totalAllocatedRecords", 0L);
+    result.put("totalActiveRecords", 0L);
+    result.put("totalPlaceholderRecords", 0L);
+    result.put("totalSurrogateRecords", 0L);
+    result.put("totalDeletedRecords", 0L);
+    result.put("totalMaxOffset", 0L);
+    result.put("totalAllocatedVertices", 0L);
+    result.put("totalActiveVertices", 0L);
+    result.put("totalAllocatedEdges", 0L);
+    result.put("totalActiveEdges", 0L);
+
+    for (Bucket bucket : database.getSchema().getBuckets()) {
+      if (buckets != null && !buckets.isEmpty())
+        if (!buckets.contains(bucket.name))
+          continue;
+
+      if (types != null && !types.isEmpty()) {
+        final DocumentType type = database.getSchema().getTypeByBucketId(bucket.id);
+        if (type == null || !types.contains(type.getName()))
+          continue;
+      }
+
+      if (fix)
+        database.begin();
+
+      final Map<String, Object> stats = bucket.check(verboseLevel, fix);
+
+      if (fix)
+        database.commit();
+
+      updateStats(stats);
+
+      ((LinkedHashSet<String>) result.get("warnings")).addAll((Collection<String>) stats.get("warnings"));
+      ((LinkedHashSet<RID>) result.get("deletedRecords")).addAll((Collection<RID>) stats.get("deletedRecords"));
+    }
+
+    result.put("avgPageUsed", (Long) result.get("totalPages") > 0 ?
+        ((float) (Long) result.get("totalMaxOffset")) / (Long) result.get("totalPages") * 100F / (Long) result.get("pageSize") :
+        0F);
+  }
+
+  private void updateStats(final Map<String, Object> stats) {
+    for (Map.Entry<String, Object> entry : stats.entrySet()) {
+      final Object value = entry.getValue();
+      if (value instanceof Long) {
+        Long current = (Long) result.get(entry.getKey());
+        if (current == null)
+          current = 0L;
+        result.put(entry.getKey(), current + (Long) value);
+      }
+    }
   }
 }

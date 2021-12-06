@@ -36,6 +36,7 @@ import com.arcadedb.database.TransactionContext;
 import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.database.async.OkCallback;
+import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.engine.PaginatedFile;
@@ -408,8 +409,18 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
+  public void scanType(String typeName, boolean polymorphic, DocumentCallback callback, ErrorRecordCallback errorRecordCallback) {
+    proxied.scanType(typeName, polymorphic, callback, errorRecordCallback);
+  }
+
+  @Override
   public void scanBucket(final String bucketName, final RecordCallback callback) {
     proxied.scanBucket(bucketName, callback);
+  }
+
+  @Override
+  public void scanBucket(String bucketName, RecordCallback callback, ErrorRecordCallback errorRecordCallback) {
+    proxied.scanBucket(bucketName, callback, errorRecordCallback);
   }
 
   @Override

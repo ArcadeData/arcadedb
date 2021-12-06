@@ -20,17 +20,21 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.DocumentCallback;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.engine.ErrorRecordCallback;
 
-import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.*;
 
 public class DatabaseAsyncScanBucket extends DatabaseAsyncAbstractTask {
-  public final CountDownLatch   semaphore;
-  public final DocumentCallback userCallback;
-  public final Bucket           bucket;
+  public final CountDownLatch      semaphore;
+  public final DocumentCallback    userCallback;
+  public final ErrorRecordCallback errorRecordCallback;
+  public final Bucket              bucket;
 
-  public DatabaseAsyncScanBucket(final CountDownLatch semaphore, final DocumentCallback userCallback, final Bucket bucket) {
+  public DatabaseAsyncScanBucket(final CountDownLatch semaphore, final DocumentCallback userCallback, final ErrorRecordCallback errorRecordCallback,
+      final Bucket bucket) {
     this.semaphore = semaphore;
     this.userCallback = userCallback;
+    this.errorRecordCallback = errorRecordCallback;
     this.bucket = bucket;
   }
 
@@ -45,7 +49,8 @@ public class DatabaseAsyncScanBucket extends DatabaseAsyncAbstractTask {
             .newImmutableRecord(database, database.getSchema().getType(database.getSchema().getTypeNameByBucketId(rid.getBucketId())), rid, view, null);
 
         return userCallback.onRecord((Document) record);
-      });
+      }, errorRecordCallback);
+
     } finally {
       // UNLOCK THE CALLER THREAD
       semaphore.countDown();
