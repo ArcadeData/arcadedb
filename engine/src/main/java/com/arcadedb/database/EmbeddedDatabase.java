@@ -1302,12 +1302,11 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   public boolean equals(final Object o) {
     if (this == o)
       return true;
-    if (o == null || getClass() != o.getClass())
+    if (o == null || !(o instanceof Database))
       return false;
 
-    final EmbeddedDatabase pDatabase = (EmbeddedDatabase) o;
-
-    return Objects.equals(databasePath, pDatabase.databasePath);
+    final Database other = (Database) o;
+    return Objects.equals(getDatabasePath(), other.getDatabasePath());
   }
 
   public DatabaseContext.DatabaseContextTL getContext() {

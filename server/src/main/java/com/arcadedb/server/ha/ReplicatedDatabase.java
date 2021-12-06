@@ -543,18 +543,17 @@ public class ReplicatedDatabase implements DatabaseInternal {
 
   @Override
   public int hashCode() {
-    return Objects.hash(proxied);
+    return proxied.hashCode();
   }
 
   public boolean equals(final Object o) {
     if (this == o)
       return true;
-    if (o == null || getClass() != o.getClass())
+    if (o == null || !(o instanceof Database))
       return false;
 
-    final ReplicatedDatabase pDatabase = (ReplicatedDatabase) o;
-
-    return getDatabasePath() != null ? getDatabasePath().equals(pDatabase.getDatabasePath()) : pDatabase.getDatabasePath() == null;
+    final Database other = (Database) o;
+    return Objects.equals(getDatabasePath(), other.getDatabasePath());
   }
 
   @Override

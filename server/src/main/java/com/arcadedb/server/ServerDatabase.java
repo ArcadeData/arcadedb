@@ -411,7 +411,7 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     return wrapped.equals(o);
   }
 
