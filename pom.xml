@@ -440,7 +440,11 @@
             <id>integration</id>
             <properties>
                 <skipIntegration>false</skipIntegration>
-                <exclude.tests>com/arcadedb/server/ha/**/*.java</exclude.tests>
+                <exclude.tests>com/arcadedb/server/ha/HASplitBrainIT.java</exclude.tests>
+                <exclude.tests>com/arcadedb/server/ha/ReplicationServerLeaderChanges3TimesIT.java</exclude.tests>
+                <exclude.tests>com/arcadedb/server/ha/ReplicationServerLeaderDownIT.java</exclude.tests>
+                <exclude.tests>com/arcadedb/server/ha/HARandomCrashIT.java</exclude.tests>
+                <exclude.tests>com/arcadedb/server/ha/ReplicationServerQuorumMajority2ServersOutIT.java</exclude.tests>
             </properties>
         </profile>
         <profile>
