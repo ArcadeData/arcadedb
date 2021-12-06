@@ -159,7 +159,6 @@
                 <configuration>
                     <forkedProcessExitTimeoutInSeconds>60</forkedProcessExitTimeoutInSeconds>
                     <forkCount>1</forkCount>
-                    <forkCount>1</forkCount>
                 </configuration>
             </plugin>
             <plugin>
@@ -431,11 +430,17 @@
                 </plugins>
             </build>
         </profile>
-
+        <profile>
+            <id>full</id>
+            <properties>
+                <skipIntegration>false</skipIntegration>
+            </properties>
+        </profile>
         <profile>
             <id>integration</id>
             <properties>
                 <skipIntegration>false</skipIntegration>
+                <exclude.tests>com/arcadedb/server/ha/**/*.java</exclude.tests>
             </properties>
         </profile>
         <profile>
