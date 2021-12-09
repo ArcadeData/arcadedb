@@ -1,3 +1,27 @@
+/*
+ * Copyright (c) 2016, Christoph Engelbert (aka noctarius) and
+ * contributors. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/**
+* The original grammar comes from Christoph Engelbert (aka noctarius) on repository
+* https://github.com/noctarius/graphquul/blob/master/src/main/javacc/graphql.jj licensed as Apache 2.0. ArcadeDB project forked that
+* grammar, so any changes from the original version are kept in the ArcadeDB project repository and not synchronized back to the
+* original repository.
+*/
+
 options {
 	TRACK_TOKENS = true;
   	JDK_VERSION = "1.11";
@@ -119,9 +143,6 @@ TOKEN: {
     | < NAME_LITERAL            : ( "_" | ["A"-"Z"] | ["a"-"z"] ) ( "_" | ["0"-"9"] | ["A"-"Z"] | ["a"-"z"] )* >
 }
 
-
-
-
 // Document structure
 Document Document(): {
     int tokenId = tokenId();
@@ -232,9 +253,6 @@ DefaultValue DefaultValue(): {
     }
 }
 
-
-
-
 // Operations
 SelectionSet SelectionSet(): {
     int tokenId = tokenId();
@@ -339,9 +357,6 @@ Argument Argument(): {
     }
 }
 
-
-
-
 // Fragments
 FragmentSpread FragmentSpread(int line, int column, int tokenId): {
 
@@ -405,9 +420,6 @@ TypeCondition TypeCondition(): {
     }
 }
 
-
-
-
 // Values
 Name Name(): {
     Token t;
@@ -433,11 +445,9 @@ Name Name(): {
         jjtThis.value = t.image;
         return jjtThis;
     }
-
 }
 
 Value Value(): {
-
 }
 {
     (
@@ -499,9 +509,6 @@ EnumValue EnumValue(): {
     }
 }
 
-
-
-
 // List Value
 ListValue ListValue(): {
     int tokenId = tokenId();
@@ -537,9 +544,6 @@ ListValueWithVariable ListValueWithVariable(): {
         return jjtThis;
     }
 }
-
-
-
 
 // Object Value
 ObjectValue ObjectValue(): {
@@ -610,9 +614,6 @@ ObjectFieldWithValue ObjectFieldWithValue(): {
     }
 }
 
-
-
-
 // Directives
 Directives Directives(): {
     int tokenId = tokenId();
@@ -650,9 +651,6 @@ Directive Directive(): {
     }
 }
 
-
-
-
 // Types
 Type Type(): {
     int tokenId = tokenId();
@@ -669,7 +667,6 @@ Type Type(): {
     {
         return jjtThis;
     }
-
 }
 
 TypeName TypeName(): {
@@ -697,9 +694,6 @@ ListType ListType(): {
         return jjtThis;
     }
 }
-
-
-
 
 // Type System
 TypeSystemDefinition TypeSystemDefinition(): {}
@@ -1070,9 +1064,6 @@ DirectiveLocations DirectiveLocations(): {
         return jjtThis;
     }
 }
-
-
-
 
 // Tokens
 BooleanValue BooleanValue(): {

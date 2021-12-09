@@ -2,12 +2,9 @@
 /* ParserGeneratorCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_CLASS_VISIBILITY_PUBLIC=true */
 package com.arcadedb.graphql.parser;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
 
-public
-class ListValueWithVariable extends SimpleNode {
-
+public class ListValueWithVariable extends SimpleNode {
   protected List<ValueWithVariable> values = new ArrayList<>();
 
   public ListValueWithVariable(int id) {
@@ -18,11 +15,16 @@ class ListValueWithVariable extends SimpleNode {
     super(p, id);
   }
 
-
-  /** Accept the visitor. **/
+  /**
+   * Accept the visitor.
+   **/
   public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
-    return
-    visitor.visit(this, data);
+    return visitor.visit(this, data);
+  }
+
+  @Override
+  public String toString() {
+    return "ListValueWithVariable{" + values + '}';
   }
 }
 /* ParserGeneratorCC - OriginalChecksum=672edbff41d8e3737c5653f4b48b9d12 (do not edit this line) */

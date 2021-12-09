@@ -3,9 +3,7 @@
 package com.arcadedb.graphql.parser;
 
 public class Argument extends SimpleNode {
-
-  protected Name name;
-
+  protected Name              name;
   protected ValueWithVariable valueWithVariable;
 
   public Argument(int id) {

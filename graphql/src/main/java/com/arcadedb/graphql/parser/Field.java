@@ -4,15 +4,16 @@ package com.arcadedb.graphql.parser;
 
 public class Field extends SimpleNode {
 
-  protected Name name;
+  protected Name         name;
   protected Arguments    arguments;
   protected Directives   directives;
   protected SelectionSet selectionSet;
 
-  public Field(Name name, int line, int column, int tokenId){
+  public Field(Name name, int line, int column, int tokenId) {
     this(-1);
     this.name = name;
   }
+
   public Field(int id) {
     super(id);
   }

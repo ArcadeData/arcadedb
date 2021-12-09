@@ -4,16 +4,14 @@ package com.arcadedb.graphql.parser;
 
 import com.arcadedb.query.sql.parser.SqlParserVisitor;
 
-public
-class SimpleNode
-   implements Node {
-  protected Node parent;
-  protected Node[] children;
-  protected int id;
-  protected Object value;
+public class SimpleNode implements Node {
+  protected Node          parent;
+  protected Node[]        children;
+  protected int           id;
+  protected Object        value;
   protected GraphQLParser parser;
-  protected Token     firstToken;
-  protected Token     lastToken;
+  protected Token         firstToken;
+  protected Token         lastToken;
 
   public SimpleNode(final int i) {
     id = i;
@@ -30,8 +28,13 @@ class SimpleNode
   public void jjtClose() {
   }
 
-  public void jjtSetParent(final Node n) { parent = n; }
-  public Node jjtGetParent() { return parent; }
+  public void jjtSetParent(final Node n) {
+    parent = n;
+  }
+
+  public Node jjtGetParent() {
+    return parent;
+  }
 
   public void jjtAddChild(final Node n, final int i) {
     if (children == null) {
@@ -52,8 +55,13 @@ class SimpleNode
     return children == null ? 0 : children.length;
   }
 
-  public void jjtSetValue(final Object aValue) { value = aValue; }
-  public Object jjtGetValue() { return value; }
+  public void jjtSetValue(final Object aValue) {
+    value = aValue;
+  }
+
+  public Object jjtGetValue() {
+    return value;
+  }
 
   /* You can override these two methods in subclasses of SimpleNode to
      customize the way the node appears when the tree is dumped.  If
@@ -69,9 +77,9 @@ class SimpleNode
     return prefix + toString();
   }
 
-  protected void dumpString (String s) {
+  protected void dumpString(String s) {
     // TODO get rid of this
-    System.out.println (s);
+    System.out.println(s);
   }
 
   /* Override this method if you want to customize how the node dumps
@@ -80,7 +88,7 @@ class SimpleNode
     dumpString(toString(prefix));
     if (children != null) {
       for (int i = 0; i < children.length; ++i) {
-        SimpleNode n = (SimpleNode)children[i];
+        SimpleNode n = (SimpleNode) children[i];
         if (n != null)
           n.dump(prefix + " ");
       }

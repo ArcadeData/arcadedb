@@ -4,13 +4,10 @@ package com.arcadedb.graphql.parser;
 
 public class Selection extends SimpleNode {
 
-  protected Name name;
-
+  protected Name           name;
   protected FieldWithAlias fieldWithAlias;
-
-  protected Field field;
-
-  protected boolean ellipsis = false;
+  protected Field          field;
+  protected boolean        ellipsis = false;
 
   protected FragmentSpread fragmentSpread;
 

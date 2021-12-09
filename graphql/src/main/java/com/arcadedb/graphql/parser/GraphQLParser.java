@@ -3,6 +3,7 @@
 package com.arcadedb.graphql.parser;
 
 import java.io.*;
+import com.arcadedb.query.sql.parser.JavaCharStream;
 
 class GraphQLParser/*@bgen(jjtree)*/implements GraphQLParserTreeConstants, GraphQLParserConstants {/*@bgen(jjtree)*/
   protected JJTGraphQLParserState jjtree = new JJTGraphQLParserState();private int tokenId = 0;
@@ -1109,7 +1110,7 @@ if (jjtc000) {
       switch (jj_ntk == -1 ? jj_ntk_f() : jj_ntk) {
       case INTEGER_LITERAL:{
         //TODO class hierarchy here instead?
-        
+
                 jjtn000.intValue = IntValue();
         break;
         }

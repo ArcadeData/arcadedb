@@ -3,7 +3,6 @@
 package com.arcadedb.graphql.parser;
 
 public class VariableLiteral extends SimpleNode {
-
   protected Name name;
 
   public VariableLiteral(int id) {
@@ -19,6 +18,11 @@ public class VariableLiteral extends SimpleNode {
    **/
   public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
     return visitor.visit(this, data);
+  }
+
+  @Override
+  public String toString() {
+    return "VariableLiteral{" + name + '}';
   }
 }
 /* ParserGeneratorCC - OriginalChecksum=1d24a436d5861d19357de949dd126579 (do not edit this line) */

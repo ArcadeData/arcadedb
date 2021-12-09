@@ -3,13 +3,11 @@
 package com.arcadedb.graphql.parser;
 
 public class OperationDefinition extends Definition {
-
   protected SelectionSet        selectionSet;
   protected OperationType       operationType;
   protected Name                name;
   protected VariableDefinitions variableDefinitions;
   protected Directives          directives;
-
 
   public OperationDefinition(int id) {
     super(id);
