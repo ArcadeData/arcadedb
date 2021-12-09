@@ -1,0 +1,1146 @@
+options {
+	TRACK_TOKENS = true;
+  	JDK_VERSION = "1.11";
+  	MULTI=true;
+  	VISITOR=true;
+  	STATIC=false;
+  	USER_CHAR_STREAM = true ;
+  	JAVA_UNICODE_ESCAPE=false;
+  	NODE_PREFIX="";
+}
+PARSER_BEGIN(GraphQLParser)
+package com.arcadedb.graphql.parser;
+
+import java.io.*;
+import com.arcadedb.query.sql.parser.JavaCharStream;
+
+class GraphQLParser {
+    private int tokenId = 0;
+
+
+    public static Document parse(String query) throws ParseException {
+      return new GraphQLParser(new SimpleCharStream(new StringReader(query))).Document();
+    }
+
+
+    private int line() {
+        return token_source.input_stream.getBeginLine();
+    }
+
+    private int column() {
+        return token_source.input_stream.getBeginColumn();
+    }
+
+    private int tokenId() {
+        return tokenId++;
+    }
+}
+PARSER_END(GraphQLParser)
+
+TOKEN: {
+      < COMMA                   : "," >
+    | < HASH                    : "#" >
+    | < BANG                    : "!" >
+    | < DOLLAR                  : "$" >
+    | < OPAR                    : "(" >
+    | < CPAR                    : ")" >
+    | < ELLIPSIS                : "..." >
+    | < COLON                   : ":" >
+    | < EQ                      : "=" >
+    | < AT                      : "@" >
+    | < OBRA                    : "[" >
+    | < CBRA                    : "]" >
+    | < OCBR                    : "{" >
+    | < PIPE                    : "|" >
+    | < CCBR                    : "}" >
+    | < PLUS                    : "+" >
+    | < MINUS                   : "-" >
+    | < SIGN                    : <PLUS> | <MINUS> >
+}
+
+TOKEN: {
+      < FRAGMENT                : "fragment" >
+    | < QUERY                   : "query" >
+    | < MUTATION                : "mutation" >
+    | < SCHEMA                  : "schema" >
+    | < SCALAR                  : "scalar" >
+    | < TYPE                    : "type" >
+    | < INTERFACE               : "interface" >
+    | < IMPLEMENTS              : "implements" >
+    | < ENUM                    : "enum" >
+    | < UNION                   : "union" >
+    | < INPUT                   : "input" >
+    | < EXTEND                  : "extend" >
+    | < DIRECTIVE               : "directive" >
+
+    | < TRUE                    : "true" >
+    | < FALSE                   : "false" >
+    | < NULL                    : "null" >
+    | < ON                      : "on" >
+}
+
+TOKEN: {
+      < DIGIT                   : [ "0"-"9" ] >
+    | < NON_ZERO_DIGIT          : [ "1"-"9" ] >
+}
+
+SKIP: {
+      "\t"
+    | "\u0020"
+    | "\ufeff" // Unicode BOM
+    | < SKIP_NEW_LINE            : <LINE_TERMINATOR> >
+    | < SKIP_INSIGN_COMMA        : <COMMA> >
+    | < SKIP_COMMENT             : <HASH> (~["\n", "\r", "\u2028", "\u2029"])* >
+}
+
+TOKEN: {
+      < #LINE_TERMINATOR        : ( ["\n", "\r", "\u2028", "\u2029"] ) >
+    | < #WHITESPACE             : ["\t", "\u000b", "\f", "\u0020", "\u00a0"] >
+    | < #LETTER                 : ["\t", "\r", "\n", "\u0020"-"\uffff"] >
+    | < #EXPONENT_IDENFITIER    : "e" | "E" >
+    | < #INTEGER_PART           : "0" | <NON_ZERO_DIGIT> (<DIGIT>)* >
+    | < #FRACTIONAL_PART        : "." (<DIGIT>)* >
+    | < #EXPONENT_PART          : <EXPONENT_IDENFITIER> (<SIGN>)? (<DIGIT>)+ >
+    | < INTEGER_LITERAL         : (<MINUS>)? <INTEGER_PART> >
+    | < FLOAT_LITERAL           : (<MINUS>)?
+                                  (
+                                      <INTEGER_PART> <FRACTIONAL_PART>
+                                    | <INTEGER_PART> <EXPONENT_PART>
+                                    | <INTEGER_PART> <FRACTIONAL_PART> <EXPONENT_PART>
+                                  ) >
+    | < STRING_LITERAL          : "\""
+                                  (
+                                        ~["\"", "\\", "\u2028", "\u2029"]
+                                      | "\\u" ( ["0"-"9"] | ["A"-"F"] | ["a"-"f"] ){4} // Escaped Unicode
+                                      | "\\" ( "\"" | "\\" | "/" | "b" | "f" | "n" | "r" | "t" ) // Escaped Character
+                                      | (<LETTER>)+
+                                  )*
+                                  "\"" >
+    | < NAME_LITERAL            : ( "_" | ["A"-"Z"] | ["a"-"z"] ) ( "_" | ["0"-"9"] | ["A"-"Z"] | ["a"-"z"] )* >
+}
+
+
+
+
+// Document structure
+Document Document(): {
+    int tokenId = tokenId();
+    int line = line();
+    int column = column();
+    Definition lastDef;
+}
+{
+    (
+       lastDef = Definition() { jjtThis.definitions.add(lastDef); }
+    )+
+
+    {return jjtThis;}
+}
+
+Definition Definition(): {
+  Definition def;
+}
+{
+    (
+      def = OperationDefinition()
+      |
+      def = FragmentDefinition()
+      |
+      def = TypeSystemDefinition()
+    )
+    {return def;}
+}
+
+OperationDefinition OperationDefinition(): {
+    int tokenId = tokenId();
+    int line = line();
+    int column = column();
+}
+{
+    (
+        (
+            jjtThis.selectionSet = SelectionSet()
+        )
+        |
+        (
+            jjtThis.operationType = OperationType()
+            (jjtThis.name = Name())?
+            (jjtThis.variableDefinitions = VariableDefinitions())?
+            (jjtThis.directives = Directives())?
+            jjtThis.selectionSet = SelectionSet()
+        )
+    ) {
+        return jjtThis;
+    }
+}
+
+VariableDefinitions VariableDefinitions(): {
+    int tokenId = tokenId();
+    int line = line();
+    int column = column();
+    VariableDefinition lastDef;
+}
+{
+    <OPAR>
+    ( lastDef = VariableDefinition() { jjtThis.variableDefinitions.add(lastDef); } )+
+    <CPAR>
+    {
+        return jjtThis;
+    }
+}
+
+VariableDefinition VariableDefinition(): {
+    int tokenId = tokenId();
+    int line = line();
+    int column = column();
+
+}
+{
+    (
+        jjtThis.variableLiteral = VariableLiteral()
+        <COLON>
+        jjtThis.type = Type()
+        (jjtThis.defaultValue = DefaultValue())?
+    )
+    {
+        return jjtThis;
+    }
+}
+
+VariableLiteral VariableLiteral(): {
+    int tokenId = tokenId();
+    int line = line();
+    int column = column();
+}
+{
+    <DOLLAR> jjtThis.name = Name()
+    {
+        return jjtThis;
+    }
+}
+
+DefaultValue DefaultValue(): {
+    int tokenId = tokenId();
+    int line = line();
+    int column = column();
+
+}
+{
+    <EQ> jjtThis.value = Value()
+    {
+        return jjtThis;
+    }
+}
+
+
+
+
+// Operations
+SelectionSet SelectionSet(): {
+    int tokenId = tokenId();
+    int line = line();
+    int column = column();
+
+    Selection lastSelection;
+
+}
+{
+    <OCBR>
+    (lastSelection = Selection() { jjtThis.selections.add(lastSelection); })+
+    <CCBR>
+    {
+        return jjtThis;
+    }
+}
+
+Selection Selection(): {
+    int tokenId = tokenId();
+    int line = line();
+    int column = column();
+}
+{
+    (
+        (
+            jjtThis.name = Name()
+            (
+                jjtThis.fieldWithAlias = FieldWithAlias(jjtThis.name, line, column, tokenId)
+                |
+                jjtThis.field = Field(jjtThis.name, line, column, tokenId)
+            )
+        )
+        |
+        (
+            <ELLIPSIS> {jjtThis.ellipsis = true;}
+            (
+                jjtThis.fragmentSpread = FragmentSpread(line, column, tokenId)
+                |
+                jjtThis.inlineFragment = InlineFragment(line, column, tokenId)
+            )
+        )
+    ) {return jjtThis;}
+}
+
+Field Field(Name name, int line, int column, int tokenId): {
+
+}
+{
+    (
+        (jjtThis.arguments = Arguments())?
+        (jjtThis.directives = Directives())?
+        (jjtThis.selectionSet = SelectionSet())?
+    )
+    {
+        return jjtThis;
+    }
+}
+
+FieldWithAlias FieldWithAlias(Name alias, int line, int column, int tokenId): {
+}
+{
+    (
+        <COLON>
+        jjtThis.name = Name()
+        (jjtThis.arguments = Arguments())?
+        (jjtThis.directives = Directives())?
+        (jjtThis.selectionSet = SelectionSet())?
+    ){
+        return jjtThis;
+    }
+}
+
+Arguments Arguments(): {
+    int tokenId = tokenId();
+    int line = line();
+    int column = column();
+    Argument lastArg;
+}
+{
+    <OPAR>
+    (lastArg = Argument() { jjtThis.arguments.add(lastArg); })+
+    <CPAR>
+    {
+        return jjtThis;
+    }
+}
+
+Argument Argument(): {
+    int tokenId = tokenId();
+    int line = line();
+    int column = column();
+}
+{
+    (
+        jjtThis.name = Name()
+        <COLON>
+        jjtThis.valueWithVariable = ValueWithVariable()
+    )
+    {
+        return jjtThis;
+    }
+}
+
+
+
+
+// Fragments
+FragmentSpread FragmentSpread(int line, int column, int tokenId): {
+
+}
+{
+    (
+        jjtThis.name = FragmentName()
+        (jjtThis.directives = Directives())?
+    ){
+        return jjtThis;
+    }
+}
+
+InlineFragment InlineFragment(int line, int column, int tokenId): {
+
+}
+{
+    (
+        (jjtThis.typeCondition = TypeCondition())?
+        (jjtThis.directives = Directives())?
+        jjtThis.selectionSet = SelectionSet()
+    ){
+        return jjtThis;
+    }
+}
+
+FragmentDefinition FragmentDefinition(): {
+    int tokenId = tokenId();
+    int line = line();
+    int column = column();
+}
+{
+    (
+        <FRAGMENT>
+        jjtThis.name = FragmentName()
+        jjtThis.type = TypeCondition()
+        (jjtThis.directives = Directives())?
+        jjtThis.selectionSet = SelectionSet()
+    )
+    {
+        return jjtThis;
+    }
+}
+
+FragmentName FragmentName(): {
+}
+{
+    (jjtThis.name = Name())
+    {
+        // TODO if ("on".equals(name.image)) throw new ParseException("on is not allowed at a name");
+        return jjtThis;
+    }
+}
+
+TypeCondition TypeCondition(): {
+}
+{
+    <ON>
+    jjtThis.name = TypeName() {
+        return jjtThis;
+    }
+}
+
+
+
+
+// Values
+Name Name(): {
+    Token t;
+}
+{
+    (
+        t = <NAME_LITERAL> |
+        t = <FRAGMENT> |
+        t = <QUERY> |
+        t = <MUTATION> |
+        t = <SCHEMA> |
+        t = <SCALAR> |
+        t = <TYPE> |
+        t = <INTERFACE> |
+        t = <IMPLEMENTS> |
+        t = <ENUM> |
+        t = <UNION> |
+        t = <INPUT> |
+        t = <EXTEND> |
+        t = <DIRECTIVE>
+    )
+    {
+        jjtThis.value = t.image;
+        return jjtThis;
+    }
+
+}
+
+Value Value(): {
+
+}
+{
+    (
+        //TODO class hierarchy here instead?
+
+        jjtThis.intValue = IntValue()
+        |
+        jjtThis.floatValue = FloatValue()
+        |
+        jjtThis.stringValue = StringValue()
+        |
+        jjtThis.booleanValue = BooleanValue()
+        |
+        jjtThis.enumValue = EnumValue()
+        |
+        jjtThis.listValue = ListValue()
+        |
+        jjtThis.objectValue = ObjectValue()
+    )
+    {
+        return jjtThis;
+    }
+}
+
+ValueWithVariable ValueWithVariable(): {}
+{
+    (
+        jjtThis.variableLiteral = VariableLiteral()
+        |
+        jjtThis.intValue = IntValue()
+        |
+        jjtThis.floatValue = FloatValue()
+        |
+        jjtThis.stringValue = StringValue()
+        |
+        jjtThis.booleanValue = BooleanValue()
+        |
+        jjtThis.enumValue = EnumValue()
+        |
+        jjtThis.listValueWithVariable = ListValueWithVariable()
+        |
+        jjtThis.objectValueWithVariable = ObjectValueWithVariable()
+    )
+    {return jjtThis;}
+}
+
+EnumValue EnumValue(): {
+    int tokenId = tokenId();
+    int line = line();
+    int column = column();
+}
+{
+    jjtThis.name = Name() {
+        //TODO if ("true".equals(name.image)
+        //TODO      || "false".equals(name.image)
+        //TODO      || "null".equals(name.image)) throw new ParseException("true, false, null are not allowed as names");
+
+        return jjtThis;
+    }
+}
+
+
+
+
+// List Value
+ListValue ListValue(): {
+    int tokenId = tokenId();
+    int line = line();
+    int column = column();
+
+    Value lastVal;
+
+}
+{
+    <OBRA>
+    (
+        lastVal = Value() { jjtThis.values.add(lastVal); }
+    )*
+    <CBRA> {
+        return jjtThis;
+    }
+}
+
+ListValueWithVariable ListValueWithVariable(): {
+    int tokenId = tokenId();
+    int line = line();
+    int column = column();
+
+    ValueWithVariable lastVal;
+}
+{
+    <OBRA>
+    (
+        lastVal = ValueWithVariable() { jjtThis.values.add(lastVal); }
+    )*
+    <CBRA> {
+        return jjtThis;
+    }
+}
+
+
+
+
+// Object Value
+ObjectValue ObjectValue(): {
+    int tokenId = tokenId();
+    int line = line();
+    int column = column();
+
+    ObjectField lastVal;
+
+}
+{
+    <OCBR>
+    (
+        lastVal = ObjectField() { jjtThis.values.add(lastVal); }
+    )*
+    <CCBR> {
+        return jjtThis;
+    }
+}
+
+ObjectValueWithVariable ObjectValueWithVariable(): {
+    int tokenId = tokenId();
+    int line = line();
+    int column = column();
+
+    ObjectFieldWithValue lastVal;
+}
+{
+    <OCBR>
+    (
+        lastVal = ObjectFieldWithValue() { jjtThis.values.add(lastVal); }
+    )*
+    <CCBR> {
+        return jjtThis;
+    }
+}
+
+ObjectField ObjectField(): {
+    int tokenId = tokenId();
+    int line = line();
+    int column = column();
+
+}
+{
+    (
+        jjtThis.name = Name()
+        <COLON>
+        jjtThis.value = Value()
+    )
+    {
+        return jjtThis;
+    }
+}
+
+ObjectFieldWithValue ObjectFieldWithValue(): {
+    int tokenId = tokenId();
+    int line = line();
+    int column = column();
+
+}
+{
+    (
+        jjtThis.name = Name()
+        <COLON>
+        jjtThis.value = ValueWithVariable()
+    ){
+        return jjtThis;
+    }
+}
+
+
+
+
+// Directives
+Directives Directives(): {
+    int tokenId = tokenId();
+    int line = line();
+    int column = column();
+
+    Directive lastDirective;
+}
+{
+    (
+        <AT>
+        lastDirective = Directive() { jjtThis.directives.add(lastDirective); }
+        (
+            <AT>
+            lastDirective = Directive() { jjtThis.directives.add(lastDirective); }
+        )*
+    ){
+
+    }
+}
+
+Directive Directive(): {
+    int tokenId = tokenId();
+    int line = line();
+    int column = column();
+
+}
+{
+    (
+        jjtThis.name = Name()
+        (jjtThis.arguments = Arguments())?
+    )
+    {
+        return jjtThis;
+    }
+}
+
+
+
+
+// Types
+Type Type(): {
+    int tokenId = tokenId();
+    int line = line();
+    int column = column();
+}
+{
+    (
+        jjtThis.typeName = TypeName()
+        [<BANG> { jjtThis.bang = true; }]
+        |
+        jjtThis.listType = ListType()
+    )
+    {
+        return jjtThis;
+    }
+
+}
+
+TypeName TypeName(): {
+}
+{
+    jjtThis.name = Name() {
+        return jjtThis;
+    }
+}
+
+ListType ListType(): {
+    int tokenId = tokenId();
+    int line = line();
+    int column = column();
+
+}
+{
+    (
+        <OBRA>
+        jjtThis.type = Type()
+        <CBRA>
+        [ <BANG> { jjtThis.bang = true; }]
+    )
+    {
+        return jjtThis;
+    }
+}
+
+
+
+
+// Type System
+TypeSystemDefinition TypeSystemDefinition(): {}
+{
+    (
+        jjtThis.schemaDefinition = SchemaDefinition()
+        |
+        jjtThis.typeDefinition = TypeDefinition()
+        |
+        jjtThis.typeExtensionDefinition = TypeExtensionDefinition()
+        |
+        jjtThis.directiveDefinition = DirectiveDefinition()
+    )
+    {
+        return jjtThis;
+    }
+}
+
+SchemaDefinition SchemaDefinition(): {
+    int tokenId = tokenId();
+    int line = line();
+    int column = column();
+    OperationTypeDefinition lastOpTypeDef;
+}
+{
+    (
+    <SCHEMA>
+    (jjtThis.directives = Directives())?
+    <OCBR>
+    (
+        lastOpTypeDef = OperationTypeDefinition() { jjtThis.operationTypeDefinitions.add(lastOpTypeDef); }
+    )+
+    <CCBR>
+    )
+    {
+        return jjtThis;
+    }
+}
+
+OperationTypeDefinition OperationTypeDefinition(): {
+    int tokenId = tokenId();
+    int line = line();
+    int column = column();
+
+}
+{
+    (
+        jjtThis.operationType = OperationType()
+        <COLON>
+        jjtThis.typeName = TypeName()
+    )
+    {
+        return jjtThis;
+    }
+}
+
+TypeDefinition TypeDefinition(): {
+    TypeDefinition result;
+}
+{
+    (
+        result = ScalarTypeDefinition()
+        |
+        result = ObjectTypeDefinition()
+        |
+        result = InterfaceTypeDefinition()
+        |
+        result = UnionTypeDefinition()
+        |
+        result = EnumTypeDefinition()
+        |
+        result = InputObjectTypeDefinition()
+    )
+    {
+        return result;
+    }
+}
+
+ScalarTypeDefinition ScalarTypeDefinition(): {
+    int tokenId = tokenId();
+    int line = line();
+    int column = column();
+}
+{
+    (
+        <SCALAR>
+        jjtThis.name = Name()
+        (jjtThis.directives = Directives())?
+    )
+    {
+        return jjtThis;
+    }
+}
+
+ObjectTypeDefinition ObjectTypeDefinition(): {
+    int tokenId = tokenId();
+    int line = line();
+    int column = column();
+    FieldDefinition lastFieldDef;
+}
+{
+    (
+        <TYPE>
+        jjtThis.name = Name() {
+
+        }
+        ( jjtThis.implementsInterface = ImplementsInterface() )?
+        ( jjtThis.directives = Directives() )?
+        <OCBR>
+        ( lastFieldDef = FieldDefinition() {jjtThis.fieldDefinitions.add(lastFieldDef); })+
+        <CCBR>
+    )
+    {
+        return jjtThis;
+    }
+}
+
+ImplementsInterface ImplementsInterface(): {
+    TypeName lastTypeName;
+}
+{
+    (
+        <IMPLEMENTS>
+        (
+            lastTypeName = TypeName() { jjtThis.typeNames.add(lastTypeName); }
+        )+
+    )
+    {
+        return jjtThis;
+    }
+}
+
+FieldDefinition FieldDefinition(): {
+    int tokenId = tokenId();
+    int line = line();
+    int column = column();
+
+}
+{
+    (
+        jjtThis.name = Name()
+        (jjtThis.argumentsDefinition = ArgumentsDefinition())?
+        <COLON>
+        jjtThis.type = Type()
+        (jjtThis.directives = Directives())?
+    )
+    {
+        return jjtThis;
+    }
+}
+
+ArgumentsDefinition ArgumentsDefinition(): {
+    int tokenId = tokenId();
+    int line = line();
+    int column = column();
+
+    InputValueDefinition lastVal;
+
+}
+{
+    (
+        <OPAR>
+        (lastVal = InputValueDefinition() { jjtThis.inputValueDefinitions.add(lastVal); } )+
+        <CPAR>
+    )
+    {
+        return jjtThis;
+    }
+}
+
+InputValueDefinition InputValueDefinition(): {
+    int tokenId = tokenId();
+    int line = line();
+    int column = column();
+}
+{
+    (
+        jjtThis.name = Name()
+        <COLON>
+        jjtThis.type = Type()
+        (jjtThis.defaultValue = DefaultValue())?
+        (jjtThis.directives = Directives())?
+    )
+    {
+        return jjtThis;
+    }
+}
+
+InterfaceTypeDefinition InterfaceTypeDefinition(): {
+    int tokenId = tokenId();
+    int line = line();
+    int column = column();
+    FieldDefinition lastFieldDef;
+}
+{
+    (
+        <INTERFACE>
+        jjtThis.name = Name()
+        (jjtThis.directives = Directives())?
+        <OCBR>
+        (lastFieldDef = FieldDefinition() { jjtThis.fieldDefinitions.add(lastFieldDef); } )+
+        <CCBR>
+    )
+    {
+        return jjtThis;
+    }
+}
+
+UnionTypeDefinition UnionTypeDefinition(): {
+    int tokenId = tokenId();
+    int line = line();
+    int column = column();
+}
+{
+    (
+        <UNION>
+        jjtThis.name = Name()
+        (jjtThis.directives = Directives())?
+        <EQ>
+        jjtThis.unionMembers = UnionMembers()
+    )
+    {
+        return jjtThis;
+    }
+}
+
+UnionMembers UnionMembers(): {
+    int tokenId = tokenId();
+    int line = line();
+    int column = column();
+
+    TypeName lastTypeName;
+}
+{
+    lastTypeName = TypeName() {
+        jjtThis.typeNames.add(lastTypeName);
+    }
+    (
+        <PIPE>
+        lastTypeName = TypeName() {
+            jjtThis.typeNames.add(lastTypeName);
+        }
+    )*
+}
+
+EnumTypeDefinition EnumTypeDefinition(): {
+    int tokenId = tokenId();
+    int line = line();
+    int column = column();
+    EnumValueDefinition lastEnumValDef;
+}
+{
+    (
+        <ENUM>
+        jjtThis.name = Name() {
+
+        }
+        (jjtThis.directives = Directives())?
+        <OCBR>
+        (lastEnumValDef = EnumValueDefinition() { jjtThis.enumValueDefinitions.add(lastEnumValDef); } )+
+        <CCBR>
+    )
+    {
+        return jjtThis;
+    }
+}
+
+EnumValueDefinition EnumValueDefinition(): {
+    int tokenId = tokenId();
+    int line = line();
+    int column = column();
+
+}
+{
+    (
+        jjtThis.enumValue = EnumValue()
+        ( jjtThis.directives = Directives() )?
+    )
+    {
+        return jjtThis;
+    }
+}
+
+InputObjectTypeDefinition InputObjectTypeDefinition(): {
+    int tokenId = tokenId();
+    int line = line();
+    int column = column();
+
+    InputValueDefinition lastInputValDef;
+}
+{
+    (
+        <INPUT>
+        jjtThis.name = Name()
+        (jjtThis.directives = Directives())?
+        <OCBR>
+        ( lastInputValDef = InputValueDefinition() { jjtThis.inputValueDefinitions.add(lastInputValDef); } )+
+        <CCBR>
+    )
+    {
+        return jjtThis;
+    }
+}
+
+TypeExtensionDefinition TypeExtensionDefinition(): {
+    int tokenId = tokenId();
+    int line = line();
+    int column = column();
+
+}
+{
+    (
+        <EXTEND>
+        jjtThis.objectTypeDefinition = ObjectTypeDefinition()
+    )
+    {
+        return jjtThis;
+    }
+}
+
+DirectiveDefinition DirectiveDefinition(): {
+    int tokenId = tokenId();
+    int line = line();
+    int column = column();
+}
+{
+    (
+        <DIRECTIVE> <AT>
+        jjtThis.name = Name()
+        (jjtThis.argumentsDefinition = ArgumentsDefinition())?
+        <ON>
+        jjtThis.directiveLocations = DirectiveLocations()
+    )
+    {
+        return jjtThis;
+    }
+}
+
+DirectiveLocation DirectiveLocation(): {
+    int tokenId = tokenId();
+    int line = line();
+    int column = column();
+}
+{
+    jjtThis.name = Name()
+    {
+        return jjtThis;
+    }
+}
+
+DirectiveLocations DirectiveLocations(): {
+    int tokenId = tokenId();
+    int line = line();
+    int column = column();
+    DirectiveLocation lastDirLocation;
+}
+{
+    (
+        lastDirLocation = DirectiveLocation()
+        { jjtThis.directiveLocations.add(lastDirLocation); }
+        (
+            <PIPE>
+            lastDirLocation = DirectiveLocation()
+            { jjtThis.directiveLocations.add(lastDirLocation); }
+        )*
+    )
+    {
+        return jjtThis;
+    }
+}
+
+
+
+
+// Tokens
+BooleanValue BooleanValue(): {
+    int tokenId = tokenId();
+    int line = line();
+    int column = column();
+
+}
+{
+    (
+        ( <TRUE> { jjtThis.val = true;} )
+        |
+        ( <FALSE> { jjtThis.val = false;} )
+    )
+    {
+        return jjtThis;
+    }
+}
+
+IntValue IntValue(): {
+    int tokenId = tokenId();
+    int line = line();
+    int column = column();
+    Token literal;
+}
+{
+    literal = <INTEGER_LITERAL> {
+        jjtThis.val = Integer.parseInt(literal.image);
+        return jjtThis;
+    }
+}
+
+FloatValue FloatValue(): {
+    int tokenId = tokenId();
+    int line = line();
+    int column = column();
+    Token literal;
+}
+{
+    literal = <FLOAT_LITERAL> {
+        jjtThis.stringValue = literal.image;
+        //TODO parse!
+        return jjtThis;
+    }
+}
+
+StringValue StringValue(): {
+    int tokenId = tokenId();
+    int line = line();
+    int column = column();
+    Token literal;
+}
+{
+    literal = <STRING_LITERAL> {
+        jjtThis.val = literal.image;
+        return jjtThis;
+    }
+}
+
+OperationType OperationType(): {
+}
+{
+    (
+        ( <MUTATION> {jjtThis.mutation = true;} )
+        |
+        ( <QUERY> {jjtThis.query = true;} )
+    )
+    {
+        return jjtThis;
+    }
+}
