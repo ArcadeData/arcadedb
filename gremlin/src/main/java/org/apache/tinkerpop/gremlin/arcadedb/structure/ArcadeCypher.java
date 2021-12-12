@@ -16,9 +16,15 @@
 package org.apache.tinkerpop.gremlin.arcadedb.structure;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.query.cypher.CypherQueryEngine;
+import com.arcadedb.query.sql.executor.InternalResultSet;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.ResultSet;
 import org.opencypher.gremlin.translation.TranslationFacade;
 
 import java.util.*;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 
 /**
@@ -41,6 +47,32 @@ public class ArcadeCypher extends ArcadeGremlin {
       this.cypher = cypher;
       this.gremlin = gremlin;
     }
+  }
+
+  @Override
+  public ResultSet execute() throws ExecutionException, InterruptedException {
+    final ResultSet resultSet = super.execute();
+
+    final InternalResultSet result = new InternalResultSet();
+
+    while (resultSet.hasNext()) {
+      final Result next = resultSet.next();
+      if (next.isElement())
+        result.add(next);
+      else {
+        // unpack single result projections
+        Map<String, Object> map = next.toMap();
+        Object nextValue = map.values().iterator().next();
+        if (map.size() == 1 && nextValue instanceof Map) {
+          Map<String, Object> transformed = CypherQueryEngine.transformMap((Map<?, ?>) nextValue);
+          result.add(new ResultInternal(transformed));
+        } else {
+          Map<String, Object> transformed = CypherQueryEngine.transformMap(map);
+          result.add(new ResultInternal(transformed));
+        }
+      }
+    }
+    return result;
   }
 
   protected ArcadeCypher(final ArcadeGraph graph, final String cypherQuery) {

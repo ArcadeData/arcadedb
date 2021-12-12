@@ -148,6 +148,27 @@ public class CypherTest {
     }
   }
 
+  @Test
+  public void testVertexCreationIdentity() throws ExecutionException, InterruptedException {
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testcypher");
+    try {
+
+      final ArcadeCypher cypherReadOnly = graph.cypher("CREATE (i:User {name: 'RAMS'}) return i");
+
+      Assertions.assertFalse(cypherReadOnly.parse().isIdempotent());
+      Assertions.assertFalse(cypherReadOnly.parse().isDDL());
+
+      final ResultSet result = cypherReadOnly.execute();
+
+      Assertions.assertTrue(result.hasNext());
+      final Result row = result.next();
+      Assertions.assertNotNull(row.getIdentity().get());
+
+    } finally {
+      graph.drop();
+    }
+  }
+
   @BeforeEach
   @AfterEach
   public void clean() {

@@ -21,8 +21,6 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.QueryParsingException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngine;
-import com.arcadedb.query.sql.executor.InternalResultSet;
-import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
@@ -111,28 +109,8 @@ public class CypherQueryEngine implements QueryEngine {
     try {
       final Object arcadeGremlin = CypherQueryEngineFactory.arcadeGraphClass.getMethod("cypher", String.class).invoke(arcadeGraph, query);
       CypherQueryEngineFactory.arcadeCypherClass.getMethod("setParameters", Map.class).invoke(arcadeGremlin, parameters);
-      final ResultSet resultSet = (ResultSet) CypherQueryEngineFactory.arcadeCypherClass.getMethod("execute").invoke(arcadeGremlin);
+      return (ResultSet) CypherQueryEngineFactory.arcadeCypherClass.getMethod("execute").invoke(arcadeGremlin);
 
-      final InternalResultSet result = new InternalResultSet();
-
-      while (resultSet.hasNext()) {
-        final Result next = resultSet.next();
-        if (next.isElement())
-          result.add(next);
-        else {
-          // unpack single result projections
-          Map<String, Object> map = next.toMap();
-          Object nextValue = map.values().iterator().next();
-          if (map.size() == 1 && nextValue instanceof Map) {
-            Map<String, Object> transformed = transformMap((Map<?, ?>) nextValue);
-            result.add(new ResultInternal(transformed));
-          } else {
-            Map<String, Object> transformed = transformMap(map);
-            result.add(new ResultInternal(transformed));
-          }
-        }
-      }
-      return result;
     } catch (InvocationTargetException e) {
       throw new CommandExecutionException("Error on executing cypher command", e.getTargetException());
     } catch (Exception e) {
@@ -140,18 +118,18 @@ public class CypherQueryEngine implements QueryEngine {
     }
   }
 
-  private Object transformValue(Object value) {
+  public static Object transformValue(Object value) {
     if (value instanceof Map) {
       return new ResultInternal(transformMap((Map<?, ?>) value));
     } else if (value instanceof List) {
       List<?> listValue = (List<?>) value;
-      List<Object> transformed = listValue.stream().map(this::transformValue).collect(Collectors.toList());
+      List<Object> transformed = listValue.stream().map(CypherQueryEngine::transformValue).collect(Collectors.toList());
       return transformed.size() == 1 ? transformed.iterator().next() : transformed;
     }
     return value;
   }
 
-  private Map<String, Object> transformMap(Map<? extends Object, ? extends Object> map) {
+  public static Map<String, Object> transformMap(Map<? extends Object, ? extends Object> map) {
 
     final Map<String, Object> mapStringObject = new HashMap<>(map.size());
     Map<Object, Object> internal = new HashMap<>(map);
