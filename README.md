@@ -7,7 +7,7 @@
 
 ![ArcadeDB Logo](https://arcadedb.com/assets/images/arcadedb-logo.png)
 
-ArcadeDB is a Multi-Model DBMS (created originally as a fork from [OrientDB Open Source project](https://github.com/orientechnologies/orientdb) after the acquisition by SAP) with a brand new engine made of Alien Technology, able to crunch millions of records per second on common hardware with the usage of
+ArcadeDB is a Multi-Model DBMS (created originally as a fork from [OrientDB Open Source project](https://github.com/orientechnologies/orientdb) after the acquisition by SAP) with a brand-new engine made of Alien Technology, able to crunch millions of records per second on common hardware with the usage of
 minimal resources. ArcadeDB is written in LLJ: Low Level Java. It's still Java11+ but only using low level API to use advanced
 mechanical sympathy techniques and a reduced pressure of the Garbage Collector.
 
@@ -30,7 +30,7 @@ ArcadeDB can be used as:
 - Remotely by using a [MongoDB driver](https://docs.arcadedb.com#MongoDB-API) (only a subset of the operations are implemented)
 - Remotely by using a [Redis driver](https://docs.arcadedb.com#Redis-API) (only a subset of the operations are implemented)
 
-ArcadeDB is Free for any usage and licensed under the liberal [Open Source Apache 2 license](LICENSE). To contribute to the project check [CONTRIBUTING](CONTRIBUTING.md). If you need commercial support or you need to have an issue fixed ASAP, check our [GitHub Sponsor page](https://github.com/sponsors/ArcadeData) on both Recurrent and One-Time tiers. All the sponsorship received will be distributed to the active contributors of this project.
+ArcadeDB is Free for any usage and licensed under the liberal [Open Source Apache 2 license](LICENSE). To contribute to the project check [CONTRIBUTING](CONTRIBUTING.md). If you need commercial support, or you need to have an issue fixed ASAP, check our [GitHub Sponsor page](https://github.com/sponsors/ArcadeData) on both Recurrent and One-Time tiers. All the sponsorship received will be distributed to the active contributors of this project.
 
 
 ## Getting started in 5 minuted
