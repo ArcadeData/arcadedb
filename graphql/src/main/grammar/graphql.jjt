@@ -38,7 +38,7 @@ package com.arcadedb.graphql.parser;
 import java.io.*;
 import com.arcadedb.query.sql.parser.JavaCharStream;
 
-class GraphQLParser {
+public class GraphQLParser {
     private int tokenId = 0;
 
 
@@ -334,7 +334,8 @@ Arguments Arguments(): {
 }
 {
     <OPAR>
-    (lastArg = Argument() { jjtThis.arguments.add(lastArg); })+
+    lastArg = Argument() { jjtThis.arguments.add(lastArg); }
+    (<COMMA> lastArg = Argument() { jjtThis.arguments.add(lastArg); })*
     <CPAR>
     {
         return jjtThis;
@@ -609,7 +610,8 @@ ObjectFieldWithValue ObjectFieldWithValue(): {
         jjtThis.name = Name()
         <COLON>
         jjtThis.value = ValueWithVariable()
-    ){
+    )
+    {
         return jjtThis;
     }
 }
@@ -632,6 +634,9 @@ Directives Directives(): {
         )*
     ){
 
+    }
+    {
+        return jjtThis;
     }
 }
 

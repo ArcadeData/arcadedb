@@ -2,15 +2,18 @@
 /* ParserGeneratorCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_CLASS_VISIBILITY_PUBLIC=true */
 package com.arcadedb.graphql.parser;
 
-public class VariableLiteral extends SimpleNode {
-  protected Name name;
-
+public class VariableLiteral extends AbstractValue {
   public VariableLiteral(int id) {
     super(id);
   }
 
   public VariableLiteral(GraphQLParser p, int id) {
     super(p, id);
+  }
+
+  @Override
+  public Object getValue() {
+    return value;
   }
 
   /**

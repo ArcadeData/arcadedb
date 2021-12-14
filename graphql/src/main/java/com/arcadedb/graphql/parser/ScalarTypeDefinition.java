@@ -15,6 +15,10 @@ public class ScalarTypeDefinition extends TypeDefinition {
     super(p, id);
   }
 
+  public String getName() {
+    return name != null ? name.value : null;
+  }
+
   /**
    * Accept the visitor.
    **/

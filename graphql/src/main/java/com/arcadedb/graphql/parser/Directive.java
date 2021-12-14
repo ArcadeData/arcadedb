@@ -21,5 +21,13 @@ public class Directive extends SimpleNode {
   public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
     return visitor.visit(this, data);
   }
+
+  public String getName() {
+    return name != null ? name.value : null;
+  }
+
+  public Arguments getArguments() {
+    return arguments;
+  }
 }
 /* ParserGeneratorCC - OriginalChecksum=2ab2407d8f843d5e31ff6480a48183d5 (do not edit this line) */

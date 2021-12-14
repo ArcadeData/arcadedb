@@ -4,7 +4,7 @@ package com.arcadedb.graphql.parser;
 
 public class InputValueDefinition extends SimpleNode {
 
-  protected Name name;
+  protected Name         name;
   protected Type         type;
   protected DefaultValue defaultValue;
   protected Directives   directives;
@@ -22,6 +22,18 @@ public class InputValueDefinition extends SimpleNode {
    **/
   public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
     return visitor.visit(this, data);
+  }
+
+  public Name getName() {
+    return name;
+  }
+
+  public Type getType() {
+    return type;
+  }
+
+  public DefaultValue getDefaultValue() {
+    return defaultValue;
   }
 }
 /* ParserGeneratorCC - OriginalChecksum=3e7ab536d8fa5aeec277185038c0a682 (do not edit this line) */

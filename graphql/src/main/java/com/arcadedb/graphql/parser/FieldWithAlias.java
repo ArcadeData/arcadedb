@@ -10,7 +10,7 @@ public class FieldWithAlias extends SimpleNode {
   protected Directives   directives;
   protected SelectionSet selectionSet;
 
-  public FieldWithAlias(Name alias, int line, int column, int tokenId){
+  public FieldWithAlias(Name alias, int line, int column, int tokenId) {
     this(-1);
     this.alias = alias;
   }
@@ -21,6 +21,10 @@ public class FieldWithAlias extends SimpleNode {
 
   public FieldWithAlias(GraphQLParser p, int id) {
     super(p, id);
+  }
+
+  public String getName() {
+    return name != null ? name.value : null;
   }
 
   /**

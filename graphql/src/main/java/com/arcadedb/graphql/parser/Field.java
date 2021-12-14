@@ -28,5 +28,17 @@ public class Field extends SimpleNode {
   public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
     return visitor.visit(this, data);
   }
+
+  public Arguments getArguments() {
+    return arguments;
+  }
+
+  public String getName() {
+    return name != null ? name.value : null;
+  }
+
+  public SelectionSet getSelectionSet() {
+    return selectionSet;
+  }
 }
 /* ParserGeneratorCC - OriginalChecksum=2b182b10a025776d444c1f179f3e7ff4 (do not edit this line) */

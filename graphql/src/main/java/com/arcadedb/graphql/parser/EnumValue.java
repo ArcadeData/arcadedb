@@ -2,9 +2,7 @@
 /* ParserGeneratorCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_CLASS_VISIBILITY_PUBLIC=true */
 package com.arcadedb.graphql.parser;
 
-public
-class EnumValue extends SimpleNode {
-  protected Name name;
+public class EnumValue extends AbstractValue {
   public EnumValue(int id) {
     super(id);
   }
@@ -13,11 +11,16 @@ class EnumValue extends SimpleNode {
     super(p, id);
   }
 
+  @Override
+  public Object getValue() {
+    return children.length > 0 ? ((Name) children[0]).value : null;
+  }
 
-  /** Accept the visitor. **/
+  /**
+   * Accept the visitor.
+   **/
   public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
-    return
-    visitor.visit(this, data);
+    return visitor.visit(this, data);
   }
 }
 /* ParserGeneratorCC - OriginalChecksum=30feac3e906da5a960df63eb165a4a50 (do not edit this line) */

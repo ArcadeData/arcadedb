@@ -4,8 +4,8 @@ package com.arcadedb.graphql.parser;
 
 public class UnionTypeDefinition extends TypeDefinition {
 
-  protected Name       name;
-  protected Directives directives;
+  protected Name         name;
+  protected Directives   directives;
   protected UnionMembers unionMembers;
 
   public UnionTypeDefinition(int id) {
@@ -14,6 +14,10 @@ public class UnionTypeDefinition extends TypeDefinition {
 
   public UnionTypeDefinition(GraphQLParser p, int id) {
     super(p, id);
+  }
+
+  public String getName() {
+    return name != null ? name.value : null;
   }
 
   /**

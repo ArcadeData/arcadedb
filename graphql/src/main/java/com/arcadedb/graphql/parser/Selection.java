@@ -8,9 +8,7 @@ public class Selection extends SimpleNode {
   protected FieldWithAlias fieldWithAlias;
   protected Field          field;
   protected boolean        ellipsis = false;
-
   protected FragmentSpread fragmentSpread;
-
   protected InlineFragment inlineFragment;
 
   public Selection(int id) {
@@ -26,6 +24,18 @@ public class Selection extends SimpleNode {
    **/
   public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
     return visitor.visit(this, data);
+  }
+
+  public String getName() {
+    return name != null ? name.value : null;
+  }
+
+  public Field getField() {
+    return field;
+  }
+
+  public FieldWithAlias getFieldWithAlias() {
+    return fieldWithAlias;
   }
 }
 /* ParserGeneratorCC - OriginalChecksum=aac9a2d576730b830f5ef7c02bdf7951 (do not edit this line) */

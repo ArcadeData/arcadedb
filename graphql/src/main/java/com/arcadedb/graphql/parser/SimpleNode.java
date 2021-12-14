@@ -115,6 +115,10 @@ public class SimpleNode implements Node {
     }
     return data;
   }
+
+  public Node[] getChildren() {
+    return children;
+  }
 }
 
 /* ParserGeneratorCC - OriginalChecksum=a932dd6e6d33187f6cbda5ebe13d5edb (do not edit this line) */

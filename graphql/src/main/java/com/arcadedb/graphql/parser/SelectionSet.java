@@ -5,7 +5,6 @@ package com.arcadedb.graphql.parser;
 import java.util.*;
 
 public class SelectionSet extends SimpleNode {
-
   List<Selection> selections = new ArrayList<>();
 
   public SelectionSet(int id) {
@@ -21,6 +20,10 @@ public class SelectionSet extends SimpleNode {
    **/
   public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
     return visitor.visit(this, data);
+  }
+
+  public List<Selection> getSelections() {
+    return selections;
   }
 }
 /* ParserGeneratorCC - OriginalChecksum=1bfe30b29b4f429aad0444a9219ce976 (do not edit this line) */

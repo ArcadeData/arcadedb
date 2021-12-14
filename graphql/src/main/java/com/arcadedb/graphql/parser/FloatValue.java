@@ -2,7 +2,7 @@
 /* ParserGeneratorCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_CLASS_VISIBILITY_PUBLIC=true */
 package com.arcadedb.graphql.parser;
 
-public class FloatValue extends SimpleNode {
+public class FloatValue extends AbstractValue {
   protected String stringValue;
 
   public FloatValue(int id) {
@@ -11,6 +11,11 @@ public class FloatValue extends SimpleNode {
 
   public FloatValue(GraphQLParser p, int id) {
     super(p, id);
+  }
+
+  @Override
+  public Object getValue() {
+    return stringValue;
   }
 
   /**

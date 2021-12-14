@@ -2,13 +2,12 @@
 /* ParserGeneratorCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_CLASS_VISIBILITY_PUBLIC=true */
 package com.arcadedb.graphql.parser;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
 
 public class InputObjectTypeDefinition extends TypeDefinition {
 
-  protected Name       name;
-  protected Directives directives;
+  protected Name                       name;
+  protected Directives                 directives;
   protected List<InputValueDefinition> inputValueDefinitions = new ArrayList<>();
 
   public InputObjectTypeDefinition(int id) {
@@ -17,6 +16,10 @@ public class InputObjectTypeDefinition extends TypeDefinition {
 
   public InputObjectTypeDefinition(GraphQLParser p, int id) {
     super(p, id);
+  }
+
+  public String getName() {
+    return name != null ? name.value : null;
   }
 
   /**

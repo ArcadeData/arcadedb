@@ -4,8 +4,7 @@ package com.arcadedb.graphql.parser;
 
 import java.util.*;
 
-public class ObjectValueWithVariable extends SimpleNode {
-
+public class ObjectValueWithVariable extends AbstractValue {
   protected List<ObjectFieldWithValue> values = new ArrayList<>();
 
   public ObjectValueWithVariable(int id) {
@@ -14,6 +13,11 @@ public class ObjectValueWithVariable extends SimpleNode {
 
   public ObjectValueWithVariable(GraphQLParser p, int id) {
     super(p, id);
+  }
+
+  @Override
+  public Object getValue() {
+    return values;
   }
 
   /**

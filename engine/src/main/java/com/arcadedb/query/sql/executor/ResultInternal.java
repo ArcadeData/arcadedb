@@ -221,7 +221,7 @@ public class ResultInternal implements Result {
 
   @Override
   public Map<String, Object> toMap() {
-    return content;
+    return element != null ? element.toMap() : content;
   }
 
   @Override

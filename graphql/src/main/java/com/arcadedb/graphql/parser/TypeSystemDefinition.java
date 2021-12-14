@@ -23,5 +23,9 @@ public class TypeSystemDefinition extends Definition {
   public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
     return visitor.visit(this, data);
   }
+
+  public TypeDefinition getTypeDefinition() {
+    return typeDefinition;
+  }
 }
 /* ParserGeneratorCC - OriginalChecksum=005bc98eb4088c1be28f3ba6eab61937 (do not edit this line) */

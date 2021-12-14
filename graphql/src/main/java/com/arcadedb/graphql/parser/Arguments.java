@@ -5,7 +5,7 @@ package com.arcadedb.graphql.parser;
 import java.util.*;
 
 public class Arguments extends SimpleNode {
-  List<Argument> arguments = new ArrayList<>();
+  protected final List<Argument> arguments = new ArrayList<>();
 
   public Arguments(int id) {
     super(id);
@@ -20,6 +20,10 @@ public class Arguments extends SimpleNode {
    **/
   public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
     return visitor.visit(this, data);
+  }
+
+  public List<Argument> getList() {
+    return arguments;
   }
 }
 /* ParserGeneratorCC - OriginalChecksum=262d81780905472eac1cf2b9e5525261 (do not edit this line) */

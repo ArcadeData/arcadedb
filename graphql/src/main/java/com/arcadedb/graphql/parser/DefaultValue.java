@@ -2,8 +2,7 @@
 /* ParserGeneratorCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_CLASS_VISIBILITY_PUBLIC=true */
 package com.arcadedb.graphql.parser;
 
-public
-class DefaultValue extends SimpleNode {
+public class DefaultValue extends SimpleNode {
   protected Value value;
 
   public DefaultValue(int id) {
@@ -14,11 +13,15 @@ class DefaultValue extends SimpleNode {
     super(p, id);
   }
 
-
-  /** Accept the visitor. **/
+  /**
+   * Accept the visitor.
+   **/
   public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
-    return
-    visitor.visit(this, data);
+    return visitor.visit(this, data);
+  }
+
+  public Value getValue() {
+    return value;
   }
 }
 /* ParserGeneratorCC - OriginalChecksum=6e1bd5273dd69cf0cfa990d710b46276 (do not edit this line) */

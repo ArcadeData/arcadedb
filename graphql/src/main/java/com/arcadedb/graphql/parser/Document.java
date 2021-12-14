@@ -23,5 +23,8 @@ public class Document extends SimpleNode {
     return visitor.visit(this, data);
   }
 
+  public List<Definition> getDefinitions() {
+    return definitions;
+  }
 }
 /* ParserGeneratorCC - OriginalChecksum=8ab9229334dc0c8cb1aec80c77abf8f6 (do not edit this line) */

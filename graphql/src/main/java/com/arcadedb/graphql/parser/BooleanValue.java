@@ -2,7 +2,7 @@
 /* ParserGeneratorCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_CLASS_VISIBILITY_PUBLIC=true */
 package com.arcadedb.graphql.parser;
 
-public class BooleanValue extends SimpleNode {
+public class BooleanValue extends AbstractValue {
   protected boolean val;
 
   public BooleanValue(int id) {
@@ -11,6 +11,11 @@ public class BooleanValue extends SimpleNode {
 
   public BooleanValue(GraphQLParser p, int id) {
     super(p, id);
+  }
+
+  @Override
+  public Object getValue() {
+    return null;
   }
 
   /**

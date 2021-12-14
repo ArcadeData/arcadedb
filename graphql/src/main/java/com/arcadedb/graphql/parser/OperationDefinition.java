@@ -23,5 +23,21 @@ public class OperationDefinition extends Definition {
   public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
     return visitor.visit(this, data);
   }
+
+  public SelectionSet getSelectionSet() {
+    return selectionSet;
+  }
+
+  public Directives getDirectives() {
+    return directives;
+  }
+
+  public boolean isQuery() {
+    return operationType == null || operationType.isQuery();
+  }
+
+  public String getName() {
+    return name != null ? name.value : null;
+  }
 }
 /* ParserGeneratorCC - OriginalChecksum=e02cbdbebbb7227a93ebc862dcd13871 (do not edit this line) */

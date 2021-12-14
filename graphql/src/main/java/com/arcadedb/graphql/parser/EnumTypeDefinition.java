@@ -2,14 +2,12 @@
 /* ParserGeneratorCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_CLASS_VISIBILITY_PUBLIC=true */
 package com.arcadedb.graphql.parser;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
 
-public
-class EnumTypeDefinition extends TypeDefinition {
+public class EnumTypeDefinition extends TypeDefinition {
 
-  protected Name name;
-  protected Directives directives;
+  protected Name                      name;
+  protected Directives                directives;
   protected List<EnumValueDefinition> enumValueDefinitions = new ArrayList<>();
 
   public EnumTypeDefinition(int id) {
@@ -20,11 +18,15 @@ class EnumTypeDefinition extends TypeDefinition {
     super(p, id);
   }
 
-
-  /** Accept the visitor. **/
+  /**
+   * Accept the visitor.
+   **/
   public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
-    return
-    visitor.visit(this, data);
+    return visitor.visit(this, data);
+  }
+
+  public String getName() {
+    return name != null ? name.value : null;
   }
 }
 /* ParserGeneratorCC - OriginalChecksum=5f52973b5c235ea0e825b12676a56e38 (do not edit this line) */

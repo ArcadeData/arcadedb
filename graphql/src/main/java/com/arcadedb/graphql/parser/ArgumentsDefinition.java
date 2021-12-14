@@ -2,11 +2,9 @@
 /* ParserGeneratorCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_CLASS_VISIBILITY_PUBLIC=true */
 package com.arcadedb.graphql.parser;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
 
 public class ArgumentsDefinition extends SimpleNode {
-
   protected List<InputValueDefinition> inputValueDefinitions = new ArrayList<>();
 
   public ArgumentsDefinition(int id) {
@@ -22,6 +20,10 @@ public class ArgumentsDefinition extends SimpleNode {
    **/
   public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
     return visitor.visit(this, data);
+  }
+
+  public List<InputValueDefinition> getInputValueDefinitions() {
+    return inputValueDefinitions;
   }
 }
 /* ParserGeneratorCC - OriginalChecksum=70669c0b366fb4254a0d1083b0949a0c (do not edit this line) */

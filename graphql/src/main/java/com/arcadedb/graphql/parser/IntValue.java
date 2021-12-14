@@ -2,7 +2,7 @@
 /* ParserGeneratorCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_CLASS_VISIBILITY_PUBLIC=true */
 package com.arcadedb.graphql.parser;
 
-public class IntValue extends SimpleNode {
+public class IntValue extends AbstractValue {
 
   protected int val;
 
@@ -12,6 +12,11 @@ public class IntValue extends SimpleNode {
 
   public IntValue(GraphQLParser p, int id) {
     super(p, id);
+  }
+
+  @Override
+  public Object getValue() {
+    return val;
   }
 
   /**

@@ -2,8 +2,7 @@
 /* ParserGeneratorCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_CLASS_VISIBILITY_PUBLIC=true */
 package com.arcadedb.graphql.parser;
 
-public
-class DirectiveLocation extends SimpleNode {
+public class DirectiveLocation extends SimpleNode {
   protected Name name;
 
   public DirectiveLocation(int id) {
@@ -14,11 +13,15 @@ class DirectiveLocation extends SimpleNode {
     super(p, id);
   }
 
-
-  /** Accept the visitor. **/
+  /**
+   * Accept the visitor.
+   **/
   public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
-    return
-    visitor.visit(this, data);
+    return visitor.visit(this, data);
+  }
+
+  public String getName() {
+    return name != null ? name.value : null;
   }
 }
 /* ParserGeneratorCC - OriginalChecksum=ab5441899f62bc88ebd8e05a4fb75d82 (do not edit this line) */

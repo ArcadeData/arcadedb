@@ -6,8 +6,8 @@ public class FieldDefinition extends SimpleNode {
 
   protected Name                name;
   protected ArgumentsDefinition argumentsDefinition;
-  protected Type       type;
-  protected Directives directives;
+  protected Type                type;
+  protected Directives          directives;
 
   public FieldDefinition(int id) {
     super(id);
@@ -22,6 +22,22 @@ public class FieldDefinition extends SimpleNode {
    **/
   public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
     return visitor.visit(this, data);
+  }
+
+  public String getName() {
+    return name != null ? name.value : null;
+  }
+
+  public Type getType() {
+    return type;
+  }
+
+  public Directives getDirectives() {
+    return directives;
+  }
+
+  public ArgumentsDefinition getArgumentsDefinition() {
+    return argumentsDefinition;
   }
 }
 /* ParserGeneratorCC - OriginalChecksum=6128650aa4801ab60df8105dc264845f (do not edit this line) */

@@ -2,8 +2,7 @@
 /* ParserGeneratorCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_CLASS_VISIBILITY_PUBLIC=true */
 package com.arcadedb.graphql.parser;
 
-public class StringValue extends SimpleNode {
-
+public class StringValue extends AbstractValue {
   protected String val;
 
   public StringValue(int id) {
@@ -24,6 +23,12 @@ public class StringValue extends SimpleNode {
   @Override
   public String toString() {
     return "StringValue{" + val + '}';
+  }
+
+  public String getValue() {
+//    if (val != null && val.startsWith("\""))
+//      return val.substring(1, val.length() - 1);
+    return val;
   }
 }
 /* ParserGeneratorCC - OriginalChecksum=20e0a8fec30917a1654cd45e385fe65f (do not edit this line) */

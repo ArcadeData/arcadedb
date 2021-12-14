@@ -27,5 +27,26 @@ public class ValueWithVariable extends SimpleNode {
   public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
     return visitor.visit(this, data);
   }
+
+  public AbstractValue getValue() {
+    if (variableLiteral != null)
+      return variableLiteral;
+    else if (intValue != null)
+      return intValue;
+    else if (floatValue != null)
+      return floatValue;
+    else if (stringValue != null)
+      return stringValue;
+    else if (booleanValue != null)
+      return booleanValue;
+    else if (enumValue != null)
+      return enumValue;
+    else if (listValueWithVariable != null)
+      return listValueWithVariable;
+    else if (objectValueWithVariable != null)
+      return objectValueWithVariable;
+
+    return null;
+  }
 }
 /* ParserGeneratorCC - OriginalChecksum=7d715420456ed7cdb3c0875b52f6a13a (do not edit this line) */

@@ -20,5 +20,13 @@ public class Argument extends SimpleNode {
   public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
     return visitor.visit(this, data);
   }
+
+  public String getName() {
+    return name != null ? name.value : null;
+  }
+
+  public ValueWithVariable getValueWithVariable() {
+    return valueWithVariable;
+  }
 }
 /* ParserGeneratorCC - OriginalChecksum=5812dd8322af831327adf8100aeb4693 (do not edit this line) */
