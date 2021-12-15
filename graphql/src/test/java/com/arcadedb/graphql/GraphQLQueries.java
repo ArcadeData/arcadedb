@@ -2,6 +2,7 @@ package com.arcadedb.graphql;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -39,7 +40,9 @@ public class GraphQLQueries {
 
       database.command("graphql", types);
 
+      RID rid = null;
       try (ResultSet resultSet = database.query("graphql", "{ bookById(id: \"book-1\"){" +//
+          "  rid @rid" +//
           "  id" +//
           "  name" +//
           "  pageCount" +//
@@ -52,10 +55,16 @@ public class GraphQLQueries {
         Assertions.assertTrue(resultSet.hasNext());
         final Result record = resultSet.next();
 
-        System.out.println( record.toJSON() );
+        System.out.println(record.toJSON());
+
+        rid = record.getIdentity().get();
+        Assertions.assertNotNull(rid);
+
+        Assertions.assertEquals(5, record.getPropertyNames().size());
 
         Assertions.assertFalse(resultSet.hasNext());
       }
+
       return null;
     });
   }

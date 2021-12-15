@@ -40,5 +40,9 @@ public class Field extends SimpleNode {
   public SelectionSet getSelectionSet() {
     return selectionSet;
   }
+
+  public Directives getDirectives() {
+    return directives;
+  }
 }
 /* ParserGeneratorCC - OriginalChecksum=2b182b10a025776d444c1f179f3e7ff4 (do not edit this line) */

@@ -67,35 +67,44 @@ public class GraphQLResultSet implements ResultSet {
     return mapSelectionSet(resultSet.next(), projections.getSelections());
   }
 
-  private ResultInternal mapSelectionSet(final Result current, final List<Selection> selections) {
+  private GraphQLResult mapSelectionSet(final Result current, final List<Selection> selections) {
     final Map<String, Object> map = new HashMap<>();
+
+    if (current.getElement().isPresent()) {
+      final Document element = current.getElement().get();
+      map.put("@rid", element.getIdentity());
+    }
+
     for (Selection sel : selections) {
       final String projName = sel.getName();
+      final Field field = sel.getField();
 
       Object projection = current.getProperty(projName);
 
       if (projection == null) {
         // SEARCH IN THE SCHEMA
         final FieldDefinition fieldDefinition = returnType.getFieldDefinitionByName(projName);
-        final Directives directives = fieldDefinition.getDirectives();
-        if (directives != null) {
-          for (Directive directive : directives.getDirectives()) {
-            if ("relationship".equals(directive.getName())) {
-              if (directive.getArguments() != null) {
-                String type = null;
-                Vertex.DIRECTION direction = Vertex.DIRECTION.BOTH;
-                for (Argument argument : directive.getArguments().getList()) {
-                  if ("type".equals(argument.getName())) {
-                    type = argument.getValueWithVariable().getValue().getValue().toString();
-                  } else if ("direction".equals(argument.getName())) {
-                    direction = Vertex.DIRECTION.valueOf(argument.getValueWithVariable().getValue().getValue().toString());
+        if (fieldDefinition != null) {
+          final Directives directives = fieldDefinition.getDirectives();
+          if (directives != null) {
+            for (Directive directive : directives.getDirectives()) {
+              if ("relationship".equals(directive.getName())) {
+                if (directive.getArguments() != null) {
+                  String type = null;
+                  Vertex.DIRECTION direction = Vertex.DIRECTION.BOTH;
+                  for (Argument argument : directive.getArguments().getList()) {
+                    if ("type".equals(argument.getName())) {
+                      type = argument.getValueWithVariable().getValue().getValue().toString();
+                    } else if ("direction".equals(argument.getName())) {
+                      direction = Vertex.DIRECTION.valueOf(argument.getValueWithVariable().getValue().getValue().toString());
+                    }
                   }
-                }
 
-                if (current.getElement().isPresent()) {
-                  Vertex vertex = current.getElement().get().asVertex();
-                  final Iterable<Vertex> connected = type != null ? vertex.getVertices(direction, type) : vertex.getVertices(direction);
-                  projection = connected;
+                  if (current.getElement().isPresent()) {
+                    Vertex vertex = current.getElement().get().asVertex();
+                    final Iterable<Vertex> connected = type != null ? vertex.getVertices(direction, type) : vertex.getVertices(direction);
+                    projection = connected;
+                  }
                 }
               }
             }
@@ -103,7 +112,20 @@ public class GraphQLResultSet implements ResultSet {
         }
       }
 
-      final Field field = sel.getField();
+      if (projection == null) {
+        if (field.getDirectives() != null) {
+          for (Directive directive : field.getDirectives().getDirectives()) {
+            if ("rid".equals(directive.getName())) {
+              if (current.getElement().isPresent())
+                projection = current.getElement().get().getIdentity();
+            } else if ("type".equals(directive.getName())) {
+              if (current.getElement().isPresent())
+                projection = current.getElement().get().getTypeName();
+            }
+          }
+        }
+      }
+
       if (field.getSelectionSet() != null) {
         if (projection instanceof Map)
           projection = mapSelectionSet(new ResultInternal((Map<String, Object>) projection), field.getSelectionSet().getSelections());
@@ -130,7 +152,7 @@ public class GraphQLResultSet implements ResultSet {
       map.put(projName, projection);
     }
 
-    return new ResultInternal(map);
+    return new GraphQLResult(map);
   }
 
   @Override
