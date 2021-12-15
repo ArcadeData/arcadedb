@@ -237,8 +237,8 @@ public class ResultInternal implements Result {
     if (element != null)
       return Optional.of(element.getIdentity());
 
-    if (content.containsKey("@rid"))
-      return Optional.of((RID) content.get("@rid"));
+    if (hasProperty("@rid"))
+      return Optional.of(getProperty("@rid"));
 
     return Optional.empty();
   }
