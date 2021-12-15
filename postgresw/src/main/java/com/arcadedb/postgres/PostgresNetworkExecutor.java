@@ -1085,6 +1085,9 @@ public class PostgresNetworkExecutor extends Thread {
     } else if (queryText.startsWith("{mongo}")) {
       language = "mongo";
       queryText = queryText.substring("{mongo}".length());
+    } else if (queryText.startsWith("{graphql}")) {
+      language = "graphql";
+      queryText = queryText.substring("{graphql}".length());
     }
     return new String[] { language, queryText };
   }
