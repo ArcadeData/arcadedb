@@ -110,6 +110,7 @@
         <module>integration</module>
         <module>console</module>
         <module>gremlin</module>
+        <module>graphql</module>
         <module>mongodbw</module>
         <module>redisw</module>
         <module>postgresw</module>

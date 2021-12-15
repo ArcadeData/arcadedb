@@ -409,4 +409,35 @@ public class FileUtils {
     }
     return out.toString();
   }
+
+  public static String printWithLineNumbers(final String text) {
+    // COUNT TOTAL LINES FIRST
+    int totalLines = 1;
+    for (int i = 0; i < text.length(); i++) {
+      final Character current = text.charAt(i);
+      if (current == '\n')
+        ++totalLines;
+    }
+
+    final int maxLineDigits = String.valueOf(totalLines).length();
+
+    final StringBuilder result = new StringBuilder("1: ");
+
+    int line = 1;
+    for (int i = 0; i < text.length(); i++) {
+      final Character current = text.charAt(i);
+      final Character next = i + 1 < text.length() ? text.charAt(i) : null;
+      if (current == '\n') {
+        ++line;
+        result.append(String.format("\n%-" + maxLineDigits + "d: ", line));
+      } else if (current == '\r' && (next == null || next == '\n')) {
+        ++line;
+        result.append(String.format("\n%-" + maxLineDigits + "d: ", line));
+        ++i;
+      } else
+        result.append(current);
+    }
+
+    return result.toString();
+  }
 }

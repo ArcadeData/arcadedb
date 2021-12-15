@@ -17,14 +17,12 @@ package com.arcadedb.query;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.cypher.CypherQueryEngine;
+import com.arcadedb.query.graphql.GraphQLQueryEngine;
 import com.arcadedb.query.gremlin.GremlinQueryEngine;
 import com.arcadedb.query.mongo.MongoQueryEngine;
 import com.arcadedb.query.sql.SQLQueryEngine;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 public class QueryEngineManager {
   private final Map<String, QueryEngine.QueryEngineFactory> implementations = new HashMap<>();
@@ -34,6 +32,7 @@ public class QueryEngineManager {
     register(new GremlinQueryEngine.GremlinQueryEngineFactory());
     register(new CypherQueryEngine.CypherQueryEngineFactory());
     register(new MongoQueryEngine.MongoQueryEngineFactory());
+    register(new GraphQLQueryEngine.GraphQLQueryEngineFactory());
   }
 
   public void register(final QueryEngine.QueryEngineFactory impl) {
