@@ -6,7 +6,7 @@ package com.arcadedb.graphql.parser;
  * Describes the input token stream.
  */
 
-public class Token 
+public class Token
 implements java.io.Serializable {
   /**
    * The version identifier for this Serializable class.

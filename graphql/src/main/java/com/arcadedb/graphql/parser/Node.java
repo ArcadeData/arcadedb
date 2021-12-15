@@ -16,34 +16,34 @@ interface Node extends java.io.Serializable {
     added. */
   void jjtClose();
 
-  /** 
+  /**
    * Set the parent node of this node
    * @param n parent node to set
    */
   void jjtSetParent(Node n);
-  
+
   /**
    * @return parent node
    */
   Node jjtGetParent();
 
-  /** 
+  /**
    * This method tells the node to add its argument to the node's
    * list of children.
    * @param n node to add as a child
-   * @param i zero-based index where to add the child  
+   * @param i zero-based index where to add the child
    */
   void jjtAddChild(Node n, int i);
 
-  /** 
+  /**
    * This method returns a child node. The children are numbered
    * from zero, left to right.
    * @param i zero-baeed child index
    */
   Node jjtGetChild(int i);
 
-  /** 
-   * @return the number of children the node has. Always &ge; 0. 
+  /**
+   * @return the number of children the node has. Always &ge; 0.
    */
   int jjtGetNumChildren();
 

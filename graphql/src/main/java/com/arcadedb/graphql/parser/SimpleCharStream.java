@@ -14,7 +14,7 @@ class SimpleCharStream extends AbstractCharStream
   /** Constructor. */
   public SimpleCharStream(final java.io.Reader dstream,
                           final int startline,
-                          final int startcolumn, 
+                          final int startcolumn,
                           final int buffersize)
   {
     super (startline, startcolumn, buffersize);
@@ -36,9 +36,9 @@ class SimpleCharStream extends AbstractCharStream
   }
 
   /** Reinitialise. */
-  public void reInit(final java.io.Reader dstream, 
+  public void reInit(final java.io.Reader dstream,
                      final int startline,
-                     final int startcolumn, 
+                     final int startcolumn,
                      final int buffersize)
   {
     m_aIS = dstream;
@@ -46,7 +46,7 @@ class SimpleCharStream extends AbstractCharStream
   }
 
   /** Reinitialise. */
-  public void reInit(final java.io.Reader dstream, 
+  public void reInit(final java.io.Reader dstream,
                      final int startline,
                      final int startcolumn)
   {
@@ -58,20 +58,20 @@ class SimpleCharStream extends AbstractCharStream
   {
     reInit(dstream, 1, 1, DEFAULT_BUF_SIZE);
   }
-  
+
   /** Constructor. */
-  public SimpleCharStream(final java.io.InputStream dstream, 
-                          final java.nio.charset.Charset encoding, 
+  public SimpleCharStream(final java.io.InputStream dstream,
+                          final java.nio.charset.Charset encoding,
                           final int startline,
                           final int startcolumn,
-                          final int buffersize) 
+                          final int buffersize)
   {
     this(new java.io.InputStreamReader(dstream, encoding), startline, startcolumn, buffersize);
   }
 
   /** Constructor. */
   public SimpleCharStream(final java.io.InputStream dstream,
-                          final java.nio.charset.Charset encoding, 
+                          final java.nio.charset.Charset encoding,
                           final int startline,
                           final int startcolumn)
   {
@@ -79,22 +79,22 @@ class SimpleCharStream extends AbstractCharStream
   }
 
   /** Constructor. */
-  public SimpleCharStream(final java.io.InputStream dstream, 
+  public SimpleCharStream(final java.io.InputStream dstream,
                           final java.nio.charset.Charset encoding)
   {
     this(dstream, encoding, 1, 1, DEFAULT_BUF_SIZE);
   }
 
   /** Reinitialise. */
-  public void reInit(final java.io.InputStream dstream, 
+  public void reInit(final java.io.InputStream dstream,
                      final java.nio.charset.Charset encoding)
   {
     reInit(dstream, encoding, 1, 1, DEFAULT_BUF_SIZE);
   }
 
   /** Reinitialise. */
-  public void reInit(final java.io.InputStream dstream, 
-                     final java.nio.charset.Charset encoding, 
+  public void reInit(final java.io.InputStream dstream,
+                     final java.nio.charset.Charset encoding,
                      final int startline,
                      final int startcolumn)
   {
@@ -102,10 +102,10 @@ class SimpleCharStream extends AbstractCharStream
   }
 
   /** Reinitialise. */
-  public void reInit(final java.io.InputStream dstream, 
-                     final java.nio.charset.Charset encoding, 
+  public void reInit(final java.io.InputStream dstream,
+                     final java.nio.charset.Charset encoding,
                      final int startline,
-                     final int startcolumn, 
+                     final int startcolumn,
                      final int buffersize)
   {
     reInit(new java.io.InputStreamReader(dstream, encoding), startline, startcolumn, buffersize);
@@ -114,14 +114,14 @@ class SimpleCharStream extends AbstractCharStream
   @Override
   protected int streamRead (final char[] aBuf, final int nOfs, final int nLen) throws java.io.IOException
   {
-    return m_aIS.read (aBuf, nOfs, nLen); 
+    return m_aIS.read (aBuf, nOfs, nLen);
   }
-  
+
   @Override
   protected void streamClose () throws java.io.IOException
   {
     if (m_aIS != null)
-      m_aIS.close (); 
+      m_aIS.close ();
   }
 }
 /* ParserGeneratorCC - OriginalChecksum=288df214d89d601f3bd87b0d29305baf (do not edit this line) */

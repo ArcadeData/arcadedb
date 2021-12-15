@@ -92,7 +92,7 @@ public class ParseException extends Exception {
         maxSize = expectedTokenSequences[i].length;
       for (int j = 0; j < expectedTokenSequences[i].length; j++)
         expected.append(tokenImage[expectedTokenSequences[i][j]]).append(' ');
-      
+
       if (expectedTokenSequences[i][expectedTokenSequences[i].length - 1] != 0)
         expected.append("...");
       expected.append(EOL).append("    ");
@@ -105,7 +105,7 @@ public class ParseException extends Exception {
     for (int i = 0; i < maxSize; i++) {
       String tokenText = tok.image;
   	  String escapedTokenText = add_escapes(tokenText);
-      if (i != 0) 
+      if (i != 0)
         sb.append (' ');
       if (tok.kind == 0) {
       	sb.append(tokenImage[0]);
@@ -122,7 +122,7 @@ public class ParseException extends Exception {
       .append (", column ")
       .append (currentToken.next.beginColumn);
 	  sb.append(".").append(EOL);
-    
+
     if (expectedTokenSequences.length == 0) {
         // Nothing to add here
     } else {
@@ -133,7 +133,7 @@ public class ParseException extends Exception {
         .append (EOL)
         .append (expected);
     }
-    
+
     return sb.toString ();
   }
 
