@@ -23,7 +23,6 @@ package com.arcadedb.graphql.schema;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.QueryParsingException;
-import com.arcadedb.graphql.parser.AbstractValue;
 import com.arcadedb.graphql.parser.Argument;
 import com.arcadedb.graphql.parser.Arguments;
 import com.arcadedb.graphql.parser.Definition;
@@ -55,7 +54,7 @@ public class GraphQLSchema {
   public ResultSet execute(final String query) throws ParseException {
     final Document ast = GraphQLParser.parse(query);
 
-    ast.dump("");
+    //ast.dump("");
 
     final List<Definition> definitions = ast.getDefinitions();
     if (!definitions.isEmpty()) {
@@ -114,13 +113,20 @@ public class GraphQLSchema {
           final Arguments arguments = field.getArguments();
           for (Argument argument : arguments.getList()) {
             final String argName = argument.getName();
-            final AbstractValue argValue = argument.getValueWithVariable().getValue();
+            final Object argValue = argument.getValueWithVariable().getValue().getValue();
 
             if (where.length() > 0)
               where += " and ";
             where += argName;
             where += " = ";
-            where += argValue.getValue();
+
+            if (argValue instanceof String)
+              where += "\"";
+
+            where += argValue;
+
+            if (argValue instanceof String)
+              where += "\"";
           }
 
           projection = field.getSelectionSet();

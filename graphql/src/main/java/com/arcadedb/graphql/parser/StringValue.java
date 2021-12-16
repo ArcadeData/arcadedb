@@ -26,8 +26,8 @@ public class StringValue extends AbstractValue {
   }
 
   public String getValue() {
-//    if (val != null && val.startsWith("\""))
-//      return val.substring(1, val.length() - 1);
+    if (val != null && val.startsWith("\""))
+      return val.substring(1, val.length() - 1);
     return val;
   }
 }

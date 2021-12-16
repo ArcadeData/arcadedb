@@ -15,6 +15,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
+import java.util.*;
 
 public class GraphQLQueries {
 
@@ -61,6 +62,7 @@ public class GraphQLQueries {
         Assertions.assertNotNull(rid);
 
         Assertions.assertEquals(5, record.getPropertyNames().size());
+        Assertions.assertEquals(1, ((Collection) record.getProperty("authors")).size());
 
         Assertions.assertFalse(resultSet.hasNext());
       }
