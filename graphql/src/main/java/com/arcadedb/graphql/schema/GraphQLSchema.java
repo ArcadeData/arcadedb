@@ -98,12 +98,9 @@ public class GraphQLSchema {
         if (queryDefinition != null) {
           for (FieldDefinition f : queryDefinition.getFieldDefinitions()) {
             if (queryName.equals(f.getName())) {
-              final String returnTypeName = f.getType().getTypeName().getName();
-              returnType = objectTypeDefinitionMap.get(returnTypeName);
-              if (returnType == null)
-                throw new QueryParsingException("Returning type '" + returnTypeName + "' not defined in GraphQL schema");
-              from = returnType.getName();
-              break;
+              returnType = getTypeFromField(f);
+              if (returnType != null)
+                from = returnType.getName();
             }
           }
         }
@@ -111,23 +108,29 @@ public class GraphQLSchema {
         final Field field = selection.getField();
         if (field != null) {
           final Arguments arguments = field.getArguments();
-          for (Argument argument : arguments.getList()) {
-            final String argName = argument.getName();
-            final Object argValue = argument.getValueWithVariable().getValue().getValue();
+          if (arguments != null)
+            for (Argument argument : arguments.getList()) {
+              final String argName = argument.getName();
+              final Object argValue = argument.getValueWithVariable().getValue().getValue();
 
-            if (where.length() > 0)
-              where += " and ";
-            where += argName;
-            where += " = ";
+              if (where.length() > 0)
+                where += " and ";
 
-            if (argValue instanceof String)
-              where += "\"";
+              if ("where".equals(argName)) {
+                where += argValue;
+              } else {
+                where += argName;
+                where += " = ";
 
-            where += argValue;
+                if (argValue instanceof String)
+                  where += "\"";
 
-            if (argValue instanceof String)
-              where += "\"";
-          }
+                where += argValue;
+
+                if (argValue instanceof String)
+                  where += "\"";
+              }
+            }
 
           projection = field.getSelectionSet();
         }
@@ -140,7 +143,7 @@ public class GraphQLSchema {
       if (!where.isEmpty())
         query += " where " + where;
 
-      return new GraphQLResultSet(database.query("sql", query), projection, returnType);
+      return new GraphQLResultSet(this, database.query("sql", query), projection != null ? projection.getSelections() : null, returnType);
 
     } catch (QueryParsingException e) {
       throw e;
@@ -149,5 +152,18 @@ public class GraphQLSchema {
         throw new QueryParsingException("Error on executing GraphQL query '" + op.getName() + "'", e);
       throw new QueryParsingException("Error on executing GraphQL query", e);
     }
+  }
+
+  public ObjectTypeDefinition getTypeFromField(final FieldDefinition fieldDefinition) {
+    ObjectTypeDefinition returnType = null;
+    if (fieldDefinition.getType().getTypeName() != null) {
+      final String returnTypeName = fieldDefinition.getType().getTypeName().getName();
+      returnType = objectTypeDefinitionMap.get(returnTypeName);
+
+    } else if (fieldDefinition.getType().getListType() != null) {
+      final String returnTypeName = fieldDefinition.getType().getListType().getType().getTypeName().getName();
+      returnType = objectTypeDefinitionMap.get(returnTypeName);
+    }
+    return returnType;
   }
 }

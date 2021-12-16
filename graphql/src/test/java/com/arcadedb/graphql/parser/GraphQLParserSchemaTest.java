@@ -24,6 +24,6 @@ public class GraphQLParserSchemaTest {
 
     Assertions.assertTrue(ast.children.length > 0);
 
-    ast.dump("-");
+    System.out.println(ast.treeToString(""));
   }
 }

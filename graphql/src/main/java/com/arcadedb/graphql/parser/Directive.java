@@ -29,5 +29,10 @@ public class Directive extends SimpleNode {
   public Arguments getArguments() {
     return arguments;
   }
+
+  @Override
+  public String toString() {
+    return "Directive{" + name.value + " arguments=" + arguments + '}';
+  }
 }
 /* ParserGeneratorCC - OriginalChecksum=2ab2407d8f843d5e31ff6480a48183d5 (do not edit this line) */

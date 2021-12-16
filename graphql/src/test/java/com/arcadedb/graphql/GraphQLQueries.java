@@ -22,19 +22,19 @@ public class GraphQLQueries {
   private static final String DB_PATH = "./target/testgraphql";
 
   @Test
-  public void simpleExecute() {
+  public void ridMapping() {
     executeTest((database) -> {
       final String types = "type Query {\n" +//
-          "  bookById(id: ID): Book\n" +//
+          "  bookById(id: String): Book\n" +//
           "}\n\n" +//
           "type Book {\n" +//
-          "  id: ID\n" +//
+          "  id: String\n" +//
           "  name: String\n" +//
           "  pageCount: Int\n" +//
           "  authors: [Author] @relationship(type: \"IS_AUTHOR_OF\", direction: IN)\n" +//
           "}\n\n" +//
           "type Author {\n" +//
-          "  id: ID\n" +//
+          "  id: String\n" +//
           "  firstName: String\n" +//
           "  lastName: String\n" +//
           "}";
@@ -62,6 +62,84 @@ public class GraphQLQueries {
         Assertions.assertNotNull(rid);
 
         Assertions.assertEquals(5, record.getPropertyNames().size());
+        Assertions.assertEquals(1, ((Collection) record.getProperty("authors")).size());
+
+        Assertions.assertFalse(resultSet.hasNext());
+      }
+
+      return null;
+    });
+  }
+
+  @Test
+  public void allBooks() {
+    executeTest((database) -> {
+      final String types = "type Query {\n" +//
+          "  bookById(id: String): Book\n" +//
+          "  books(where: String!): [Book!]!\n" +//
+          "}\n\n" +//
+          "type Book {\n" +//
+          "  id: String\n" +//
+          "  name: String\n" +//
+          "  pageCount: Int\n" +//
+          "  authors: [Author] @relationship(type: \"IS_AUTHOR_OF\", direction: IN)\n" +//
+          "}\n\n" +//
+          "type Author {\n" +//
+          "  id: String\n" +//
+          "  firstName: String\n" +//
+          "  lastName: String\n" +//
+          "}";
+
+      database.command("graphql", types);
+
+      try (ResultSet resultSet = database.query("graphql", "{ books }")) {
+        Assertions.assertTrue(resultSet.hasNext());
+        Result record = resultSet.next();
+        Assertions.assertEquals(4, record.getPropertyNames().size());
+        Assertions.assertEquals(1, ((Collection) record.getProperty("authors")).size());
+
+        Assertions.assertTrue(resultSet.hasNext());
+        record = resultSet.next();
+        Assertions.assertEquals(4, record.getPropertyNames().size());
+        Assertions.assertEquals(1, ((Collection) record.getProperty("authors")).size());
+
+        Assertions.assertFalse(resultSet.hasNext());
+      }
+
+      return null;
+    });
+  }
+
+  @Test
+  public void queryWhereCondition() {
+    executeTest((database) -> {
+      final String types = "type Query {\n" +//
+          "  bookById(id: String): Book\n" +//
+          "  books(where: WHERE): [Book!]!\n" +//
+          "}\n\n" +//
+          "type Book {\n" +//
+          "  id: String\n" +//
+          "  name: String\n" +//
+          "  pageCount: Int\n" +//
+          "  authors: [Author] @relationship(type: \"IS_AUTHOR_OF\", direction: IN)\n" +//
+          "}\n\n" +//
+          "type Author {\n" +//
+          "  id: String\n" +//
+          "  firstName: String\n" +//
+          "  lastName: String\n" +//
+          "}";
+
+      database.command("graphql", types);
+
+      try (ResultSet resultSet = database.query("graphql", "{ books( where: \"name = 'Mr. brain'\" ) }")) {
+        Assertions.assertTrue(resultSet.hasNext());
+        Result record = resultSet.next();
+        Assertions.assertEquals(4, record.getPropertyNames().size());
+
+        Assertions.assertEquals("book-2", record.getProperty("id"));
+        Assertions.assertEquals("Mr. brain", record.getProperty("name"));
+        Assertions.assertEquals(422, (Integer) record.getProperty("pageCount"));
+
         Assertions.assertEquals(1, ((Collection) record.getProperty("authors")).size());
 
         Assertions.assertFalse(resultSet.hasNext());

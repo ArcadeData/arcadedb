@@ -73,26 +73,18 @@ public class SimpleNode implements Node {
     return GraphQLParserTreeConstants.jjtNodeName[id];
   }
 
-  public String toString(String prefix) {
-    return prefix + toString();
-  }
-
-  protected void dumpString(String s) {
-    // TODO get rid of this
-    System.out.println(s);
-  }
-
   /* Override this method if you want to customize how the node dumps
      out its children. */
-  public void dump(String prefix) {
-    dumpString(toString(prefix));
+  public String treeToString(final String prefix) {
+    String buffer = prefix + toString();
     if (children != null) {
       for (int i = 0; i < children.length; ++i) {
         SimpleNode n = (SimpleNode) children[i];
         if (n != null)
-          n.dump(prefix + " ");
+          buffer += "\n" + n.treeToString(prefix + " ");
       }
     }
+    return buffer;
   }
 
   public int getId() {

@@ -3,8 +3,7 @@
 package com.arcadedb.graphql.parser;
 
 public class ListType extends SimpleNode {
-
-  protected Type type;
+  protected Type    type;
   protected boolean bang = false;
 
   public ListType(int id) {
@@ -13,6 +12,14 @@ public class ListType extends SimpleNode {
 
   public ListType(GraphQLParser p, int id) {
     super(p, id);
+  }
+
+  public Type getType() {
+    return type;
+  }
+
+  public boolean isBang() {
+    return bang;
   }
 
   /**

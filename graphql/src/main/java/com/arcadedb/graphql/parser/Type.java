@@ -4,8 +4,8 @@ package com.arcadedb.graphql.parser;
 
 public class Type extends SimpleNode {
   protected TypeName typeName;
-  boolean bang = false;
   protected ListType listType;
+  protected boolean  bang = false;
 
   public Type(int id) {
     super(id);
@@ -32,6 +32,10 @@ public class Type extends SimpleNode {
    **/
   public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
     return visitor.visit(this, data);
+  }
+
+  public String treeToString(final String prefix) {
+    return prefix + "Type{" + (typeName != null ? typeName.getName() : listType.getType().getTypeName().getName()) + "}";
   }
 }
 /* ParserGeneratorCC - OriginalChecksum=c03be8fb7a8fc8bf149d18a7ff368c74 (do not edit this line) */

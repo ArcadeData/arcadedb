@@ -28,5 +28,10 @@ public class Argument extends SimpleNode {
   public ValueWithVariable getValueWithVariable() {
     return valueWithVariable;
   }
+
+  @Override
+  public String toString() {
+    return "Argument{" + name + " = " + valueWithVariable + '}';
+  }
 }
 /* ParserGeneratorCC - OriginalChecksum=5812dd8322af831327adf8100aeb4693 (do not edit this line) */

@@ -25,5 +25,10 @@ public class Arguments extends SimpleNode {
   public List<Argument> getList() {
     return arguments;
   }
+
+  @Override
+  public String toString() {
+    return "Arguments{" + arguments + '}';
+  }
 }
 /* ParserGeneratorCC - OriginalChecksum=262d81780905472eac1cf2b9e5525261 (do not edit this line) */

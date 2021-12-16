@@ -48,5 +48,10 @@ public class ValueWithVariable extends SimpleNode {
 
     return null;
   }
+
+  @Override
+  public String toString() {
+    return "" + getValue();
+  }
 }
 /* ParserGeneratorCC - OriginalChecksum=7d715420456ed7cdb3c0875b52f6a13a (do not edit this line) */

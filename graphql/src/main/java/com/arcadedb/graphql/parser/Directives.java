@@ -25,5 +25,16 @@ public class Directives extends SimpleNode {
   public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
     return visitor.visit(this, data);
   }
+
+  public String toString() {
+    String buffer = "Directives{";
+    for (int i = 0; i < directives.size(); i++) {
+      if (i > 0)
+        buffer += ",";
+      buffer += directives.get(i).treeToString("");
+    }
+    buffer += "}";
+    return buffer;
+  }
 }
 /* ParserGeneratorCC - OriginalChecksum=f93ba7b3c8a0e407e3d07fabf22ecdf2 (do not edit this line) */
