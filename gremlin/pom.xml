@@ -81,6 +81,17 @@
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>test-jar</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
                 <version>${maven-shade-plugin.version}</version>
                 <executions>
@@ -92,6 +103,9 @@
                     </execution>
                 </executions>
                 <configuration>
+                    <shadeTestJar>true</shadeTestJar>
+                    <minimizeJar>false</minimizeJar>
+                    <promoteTransitiveDependencies>false</promoteTransitiveDependencies>
                     <transformers>
                         <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer" />
                         <transformer implementation="org.apache.maven.plugins.shade.resource.ApacheLicenseResourceTransformer"/>
@@ -99,7 +113,6 @@
                             <addHeader>false</addHeader>
                         </transformer>
                     </transformers>
-<!--                    <shadeTestJar>true</shadeTestJar>-->
                     <filters>
                         <filter>
                             <artifact>*:*</artifact>
@@ -110,7 +123,6 @@
                             </excludes>
                         </filter>
                     </filters>
-                    <minimizeJar>false</minimizeJar>
                 </configuration>
             </plugin>
         </plugins>
