@@ -17,7 +17,7 @@ import org.junit.jupiter.api.Test;
 import java.io.*;
 import java.util.*;
 
-public class GraphQLQueries {
+public class GraphQLQueriesTest {
 
   private static final String DB_PATH = "./target/testgraphql";
 
@@ -102,6 +102,45 @@ public class GraphQLQueries {
         record = resultSet.next();
         Assertions.assertEquals(4, record.getPropertyNames().size());
         Assertions.assertEquals(1, ((Collection) record.getProperty("authors")).size());
+
+        Assertions.assertFalse(resultSet.hasNext());
+      }
+
+      return null;
+    });
+  }
+
+  @Test
+  public void allBooksWrongRelationshipDirective() {
+    executeTest((database) -> {
+      final String types = "type Query {\n" +//
+          "  bookById(id: String): Book\n" +//
+          "  books(where: String!): [Book!]!\n" +//
+          "}\n\n" +//
+          "type Book {\n" +//
+          "  id: String\n" +//
+          "  name: String\n" +//
+          "  pageCount: Int\n" +//
+          "  authors: [Author] @relationship(type: \"IS_AUTHOR_OF\", direction: IN)\n" +//
+          "}\n\n" +//
+          "type Author {\n" +//
+          "  id: String\n" +//
+          "  firstName: String\n" +//
+          "  lastName: String\n" +//
+          "}";
+
+      database.command("graphql", types);
+
+      try (ResultSet resultSet = database.query("graphql", "{ books { id\n name\n pageCount\n authors @relationship(type: \"WRONG\", direction: IN)} }")) {
+        Assertions.assertTrue(resultSet.hasNext());
+        Result record = resultSet.next();
+        Assertions.assertEquals(4, record.getPropertyNames().size());
+        Assertions.assertEquals(0, countIterable(record.getProperty("authors")));
+
+        Assertions.assertTrue(resultSet.hasNext());
+        record = resultSet.next();
+        Assertions.assertEquals(4, record.getPropertyNames().size());
+        Assertions.assertEquals(0, countIterable(record.getProperty("authors")));
 
         Assertions.assertFalse(resultSet.hasNext());
       }
@@ -199,5 +238,13 @@ public class GraphQLQueries {
         database.drop();
       }
     }
+  }
+
+  private int countIterable(Iterable<?> iter) {
+    int count = 0;
+    for (Object o : iter)
+      ++count;
+
+    return count;
   }
 }
