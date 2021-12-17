@@ -4,6 +4,9 @@ package com.arcadedb.graphql.parser;
 
 import com.arcadedb.query.sql.parser.SqlParserVisitor;
 
+import java.util.*;
+import java.util.stream.*;
+
 public class SimpleNode implements Node {
   protected Node          parent;
   protected Node[]        children;
@@ -73,13 +76,16 @@ public class SimpleNode implements Node {
     return GraphQLParserTreeConstants.jjtNodeName[id];
   }
 
-  /* Override this method if you want to customize how the node dumps
-     out its children. */
-  public String treeToString(final String prefix) {
+  public String treeToString(final String prefix, final Class... excludes) {
     String buffer = prefix + toString();
     if (children != null) {
+      final Set<Class> set = Arrays.stream(excludes).collect(Collectors.toSet());
+
       for (int i = 0; i < children.length; ++i) {
         SimpleNode n = (SimpleNode) children[i];
+        if (set.contains(n.getClass()))
+          continue;
+
         if (n != null)
           buffer += "\n" + n.treeToString(prefix + " ");
       }

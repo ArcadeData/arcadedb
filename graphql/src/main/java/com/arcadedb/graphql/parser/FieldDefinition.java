@@ -26,5 +26,10 @@ public class FieldDefinition extends AbstractField {
   public String toString() {
     return "FieldDefinition{" + getName() + " " + type.treeToString("") + (directives != null ? directives.treeToString(" ") : "") + "}";
   }
+
+  @Override
+  public String treeToString(String prefix, final Class... excludes) {
+    return prefix + toString();
+  }
 }
 /* ParserGeneratorCC - OriginalChecksum=6128650aa4801ab60df8105dc264845f (do not edit this line) */

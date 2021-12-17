@@ -54,5 +54,15 @@ public class ObjectTypeDefinition extends TypeDefinition {
     }
     return null;
   }
+
+  @Override
+  public String treeToString(final String prefix, final Class... excludes) {
+    return super.treeToString(prefix, Name.class);
+  }
+
+  @Override
+  public String toString() {
+    return "ObjectTypeDefinition{" + name.value + '}';
+  }
 }
 /* ParserGeneratorCC - OriginalChecksum=22e41e7403da6914e57ff609136bdc3e (do not edit this line) */
