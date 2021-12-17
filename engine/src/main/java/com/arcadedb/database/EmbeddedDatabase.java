@@ -1507,7 +1507,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
   private void checkDatabaseName() {
     if (name.contains("*") || name.contains(".."))
-      throw new IllegalArgumentException("Invalid characters used in database name");
+      throw new IllegalArgumentException("Invalid characters used in database name '" + name + "'");
   }
 
   private void internalClose(final boolean drop) {
