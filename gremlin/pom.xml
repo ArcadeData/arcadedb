@@ -104,8 +104,8 @@
                 </executions>
                 <configuration>
                     <shadeTestJar>true</shadeTestJar>
-                    <minimizeJar>false</minimizeJar>
-                    <promoteTransitiveDependencies>false</promoteTransitiveDependencies>
+                    <minimizeJar>true</minimizeJar>
+                    <promoteTransitiveDependencies>true</promoteTransitiveDependencies>
                     <transformers>
                         <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer" />
                         <transformer implementation="org.apache.maven.plugins.shade.resource.ApacheLicenseResourceTransformer"/>
