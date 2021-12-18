@@ -53,7 +53,7 @@ jobs:
           reporter: java-junit
 
       - name: Get coverage files
-        run: echo "::coverage-files name=COVERAGE-FILES::${find **/jacoco*.xml -printf '%p,'}"
+        run: echo "::set-output name=COVERAGE-FILES::${find **/jacoco*.xml -printf '%p,'}"
         id: coverage-files-generator
 
       - name: Codacy coverage reporter
