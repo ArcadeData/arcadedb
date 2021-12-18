@@ -186,6 +186,8 @@
                     <skipITs>${skipIntegration}</skipITs>
                     <argLine>${itCoverageAgent}</argLine>
                     <reuseForks>true</reuseForks>
+                    <forkedProcessExitTimeoutInSeconds>60</forkedProcessExitTimeoutInSeconds>
+                    <forkCount>1</forkCount>
                 </configuration>
             </plugin>
             <plugin>
