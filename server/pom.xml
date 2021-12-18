@@ -84,12 +84,6 @@
             <groupId>com.arcadedb</groupId>
             <artifactId>arcadedb-gremlin</artifactId>
             <version>${project.parent.version}</version>
-            <scope>compile</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.apache.tinkerpop</groupId>
-            <artifactId>gremlin-server</artifactId>
-            <version>${gremlin.version}</version>
         </dependency>
         <dependency>
             <groupId>io.undertow</groupId>

@@ -69,6 +69,16 @@
         </dependency>
         <dependency>
             <groupId>com.arcadedb</groupId>
+            <artifactId>arcadedb-console</artifactId>
+            <version>${project.parent.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.arcadedb</groupId>
+            <artifactId>arcadedb-server</artifactId>
+            <version>${project.parent.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.arcadedb</groupId>
             <artifactId>arcadedb-gremlin</artifactId>
             <version>${project.parent.version}</version>
             <exclusions>
@@ -77,16 +87,6 @@
                     <artifactId>*</artifactId>
                 </exclusion>
             </exclusions>
-        </dependency>
-        <dependency>
-            <groupId>com.arcadedb</groupId>
-            <artifactId>arcadedb-console</artifactId>
-            <version>${project.parent.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>com.arcadedb</groupId>
-            <artifactId>arcadedb-server</artifactId>
-            <version>${project.parent.version}</version>
         </dependency>
         <dependency>
             <groupId>com.arcadedb</groupId>
