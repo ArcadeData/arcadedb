@@ -115,7 +115,7 @@
         <module>mongodbw</module>
         <module>redisw</module>
         <module>postgresw</module>
-        <module>coverage</module>
+<!--        <module>coverage</module>-->
         <module>package</module>
     </modules>
 

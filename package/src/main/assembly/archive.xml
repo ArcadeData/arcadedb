@@ -82,9 +82,6 @@
             <includes>
                 <include>*:jar:*</include>
             </includes>
-            <excludes>
-                <exclude>arcadedb-package:*</exclude>
-            </excludes>
         </dependencySet>
     </dependencySets>
 
