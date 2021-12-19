@@ -101,6 +101,53 @@ public class GraphQLResultSet implements ResultSet {
     return mapProjections(current, projections);
   }
 
+  @Override
+  public void close() {
+    resultSet.close();
+  }
+
+  @Override
+  public Optional<ExecutionPlan> getExecutionPlan() {
+    return Optional.empty();
+  }
+
+  @Override
+  public Map<String, Long> getQueryStats() {
+    return new HashMap<>();
+  }
+
+  private Object evaluateDirectives(final Result current, final AbstractField fieldDefinition) {
+    Object projectionValue = null;
+
+    if (fieldDefinition != null) {
+      final Directives directives = fieldDefinition.getDirectives();
+      if (directives != null) {
+        for (Directive directive : directives.getDirectives()) {
+          if ("relationship".equals(directive.getName())) {
+            if (directive.getArguments() != null) {
+              String type = null;
+              Vertex.DIRECTION direction = Vertex.DIRECTION.BOTH;
+              for (Argument argument : directive.getArguments().getList()) {
+                if ("type".equals(argument.getName())) {
+                  type = argument.getValueWithVariable().getValue().getValue().toString();
+                } else if ("direction".equals(argument.getName())) {
+                  direction = Vertex.DIRECTION.valueOf(argument.getValueWithVariable().getValue().getValue().toString());
+                }
+              }
+
+              if (current.getElement().isPresent()) {
+                Vertex vertex = current.getElement().get().asVertex();
+                final Iterable<Vertex> connected = type != null ? vertex.getVertices(direction, type) : vertex.getVertices(direction);
+                projectionValue = connected;
+              }
+            }
+          }
+        }
+      }
+    }
+    return projectionValue;
+  }
+
   private GraphQLResult mapProjections(final Result current, final List<Projection> projections) {
     final Map<String, Object> map = new HashMap<>();
 
@@ -190,52 +237,5 @@ public class GraphQLResultSet implements ResultSet {
     }
 
     return new GraphQLResult(map);
-  }
-
-  @Override
-  public void close() {
-    resultSet.close();
-  }
-
-  @Override
-  public Optional<ExecutionPlan> getExecutionPlan() {
-    return Optional.empty();
-  }
-
-  @Override
-  public Map<String, Long> getQueryStats() {
-    return new HashMap<>();
-  }
-
-  private Object evaluateDirectives(final Result current, final AbstractField fieldDefinition) {
-    Object projectionValue = null;
-
-    if (fieldDefinition != null) {
-      final Directives directives = fieldDefinition.getDirectives();
-      if (directives != null) {
-        for (Directive directive : directives.getDirectives()) {
-          if ("relationship".equals(directive.getName())) {
-            if (directive.getArguments() != null) {
-              String type = null;
-              Vertex.DIRECTION direction = Vertex.DIRECTION.BOTH;
-              for (Argument argument : directive.getArguments().getList()) {
-                if ("type".equals(argument.getName())) {
-                  type = argument.getValueWithVariable().getValue().getValue().toString();
-                } else if ("direction".equals(argument.getName())) {
-                  direction = Vertex.DIRECTION.valueOf(argument.getValueWithVariable().getValue().getValue().toString());
-                }
-              }
-
-              if (current.getElement().isPresent()) {
-                Vertex vertex = current.getElement().get().asVertex();
-                final Iterable<Vertex> connected = type != null ? vertex.getVertices(direction, type) : vertex.getVertices(direction);
-                projectionValue = connected;
-              }
-            }
-          }
-        }
-      }
-    }
-    return projectionValue;
   }
 }

@@ -23,7 +23,55 @@ public class GraphQLParserSchemaTest {
         "}");
 
     Assertions.assertTrue(ast.children.length > 0);
+  }
 
-    System.out.println(ast.treeToString(""));
+  @Test
+  public void errorInvalidCharacters() {
+    try {
+      final Document ast = GraphQLParser.parse("type Query {\n" +//
+          "  bookById(id: String): Book\n" +//
+          "  bookByName(name: String): Book { id name pageCount authors }\n" +//
+          "}\n\n" +//
+          "type Book {\n" +//
+          "  id: String\n" +//
+          "  name: String\n" +//
+          "  pageCount: Int\n" +//
+          "  authors: [Author] @relationship(type: \"IS_AUTHOR_OF\", direction: IN)\n" +//
+          "}\n\n" +//
+          "type Author {\n" +//
+          "  id: String\n" +//
+          "  firstName: String\n" +//
+          "  lastName: String\n" +//
+          "  wrote: [Book] @relationship(type: \"IS_AUTHOR_OF\", direction: OUT)\n" +//
+          "} dsfjsd fjsdkjf sdk");
+      Assertions.fail(ast.treeToString(""));
+    } catch (ParseException e) {
+      // EXPECTED
+    }
+  }
+
+  @Test
+  public void errorInvalidCharactersWithDirective() {
+    try {
+      final Document ast = GraphQLParser.parse("type Query {\n" +//
+          "  bookById(id: String): Book\n" +//
+          "  bookByName(name: String): Book @sql(statement: \"select from Book where name = :name\", a = 3 ) { id name pageCount authors }\n" +//
+          "}\n\n" +//
+          "type Book {\n" +//
+          "  id: String\n" +//
+          "  name: String\n" +//
+          "  pageCount: Int\n" +//
+          "  authors: [Author] @relationship(type: \"IS_AUTHOR_OF\", direction: IN)\n" +//
+          "}\n\n" +//
+          "type Author {\n" +//
+          "  id: String\n" +//
+          "  firstName: String\n" +//
+          "  lastName: String\n" +//
+          "  wrote: [Book] @relationship(type: \"IS_AUTHOR_OF\", direction: OUT)\n" +//
+          "} dsfjsd fjsdkjf sdk");
+      Assertions.fail(ast.treeToString(""));
+    } catch (ParseException e) {
+      // EXPECTED
+    }
   }
 }

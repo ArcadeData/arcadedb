@@ -413,16 +413,54 @@ public class FileUtils {
   public static String printWithLineNumbers(final String text) {
     // COUNT TOTAL LINES FIRST
     int totalLines = 1;
+    int maxWidth = 0;
+    int currWidth = 0;
     for (int i = 0; i < text.length(); i++) {
       final Character current = text.charAt(i);
-      if (current == '\n')
+      if (current == '\n') {
         ++totalLines;
+
+        if (currWidth > maxWidth)
+          maxWidth = currWidth;
+
+        currWidth = 0;
+      } else
+        ++currWidth;
     }
+
+    if (currWidth > maxWidth)
+      maxWidth = currWidth;
 
     final int maxLineDigits = String.valueOf(totalLines).length();
 
-    final StringBuilder result = new StringBuilder("1: ");
+    final StringBuilder result = new StringBuilder();
 
+    // PRINT /10
+    for (int i = 0; i < maxLineDigits + 1; i++)
+      result.append(" ");
+
+    for (int i = 0; i < maxWidth; i++) {
+      String s = "" + i;
+      final Character unit = s.charAt(s.length() - 1);
+      if (unit == '0') {
+        final Character decimal = s.length() > 1 ? s.charAt(s.length() - 2) : ' ';
+        result.append(decimal);
+      } else
+        result.append(' ');
+    }
+    result.append("\n");
+
+    // PRINT UNITS
+    for (int i = 0; i < maxLineDigits + 1; i++)
+      result.append(" ");
+
+    for (int i = 0; i < maxWidth; i++) {
+      String s = "" + i;
+      final Character unit = s.charAt(s.length() - 1);
+      result.append(unit);
+    }
+
+    result.append(String.format("\n%-" + maxLineDigits + "d: ", 1));
     int line = 1;
     for (int i = 0; i < text.length(); i++) {
       final Character current = text.charAt(i);

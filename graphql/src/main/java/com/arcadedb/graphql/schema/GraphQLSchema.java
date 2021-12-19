@@ -26,10 +26,13 @@ import com.arcadedb.exception.QueryParsingException;
 import com.arcadedb.graphql.parser.Argument;
 import com.arcadedb.graphql.parser.Arguments;
 import com.arcadedb.graphql.parser.Definition;
+import com.arcadedb.graphql.parser.Directive;
+import com.arcadedb.graphql.parser.Directives;
 import com.arcadedb.graphql.parser.Document;
 import com.arcadedb.graphql.parser.Field;
 import com.arcadedb.graphql.parser.FieldDefinition;
 import com.arcadedb.graphql.parser.GraphQLParser;
+import com.arcadedb.graphql.parser.InputValueDefinition;
 import com.arcadedb.graphql.parser.ObjectTypeDefinition;
 import com.arcadedb.graphql.parser.OperationDefinition;
 import com.arcadedb.graphql.parser.ParseException;
@@ -87,31 +90,73 @@ public class GraphQLSchema {
 
   private ResultSet executeQuery(final OperationDefinition op) {
     String from = null;
-    String where = "";
+    String where = null;
 
     SelectionSet projection = null;
     ObjectTypeDefinition returnType = null;
+    FieldDefinition typeDefinition = null;
+    final Set<String> typeArgumentNames = new HashSet<>();
+
+    if (op.getSelectionSet().getSelections().size() > 1)
+      throw new QueryParsingException("Error on executing multiple queries");
+
+    String queryName = null;
+    Map<String, Object> arguments = null;
 
     try {
-      for (Selection selection : op.getSelectionSet().getSelections()) {
-        final String queryName = selection.getName();
-        if (queryDefinition != null) {
-          for (FieldDefinition f : queryDefinition.getFieldDefinitions()) {
-            if (queryName.equals(f.getName())) {
-              returnType = getTypeFromField(f);
-              if (returnType != null)
-                from = returnType.getName();
+      Selection selection = op.getSelectionSet().getSelections().get(0);
+      queryName = selection.getName();
+      if (queryDefinition != null) {
+        for (FieldDefinition f : queryDefinition.getFieldDefinitions()) {
+          if (queryName.equals(f.getName())) {
+            typeDefinition = f;
+            returnType = getTypeFromField(f);
+            for (InputValueDefinition d : f.getArgumentsDefinition().getInputValueDefinitions())
+              typeArgumentNames.add(d.getName().getValue());
+            if (returnType != null)
+              from = returnType.getName();
+          }
+        }
+      }
+
+      if (from == null)
+        throw new QueryParsingException("Target type not defined for GraphQL query '" + queryName + "'");
+
+      if (typeDefinition != null) {
+        final Directives directives = typeDefinition.getDirectives();
+        if (directives != null) {
+          for (Directive directive : directives.getDirectives()) {
+            if ("sql".equals(directive.getName())) {
+              if (directive.getArguments() != null) {
+                for (Argument argument : directive.getArguments().getList()) {
+                  if ("statement".equals(argument.getName())) {
+                    where = argument.getValueWithVariable().getValue().getValue().toString();
+
+                    final Field field = selection.getField();
+                    if (field != null) {
+                      arguments = getArguments(field.getArguments());
+                      projection = field.getSelectionSet();
+                    }
+                  }
+                }
+              }
             }
           }
         }
+      }
 
+      if (where == null) {
+        where = "";
         final Field field = selection.getField();
         if (field != null) {
-          final Arguments arguments = field.getArguments();
-          if (arguments != null)
-            for (Argument argument : arguments.getList()) {
-              final String argName = argument.getName();
-              final Object argValue = argument.getValueWithVariable().getValue().getValue();
+          final Arguments queryArguments = field.getArguments();
+          if (queryArguments != null)
+            for (Argument queryArgument : queryArguments.getList()) {
+              final String argName = queryArgument.getName();
+              if (!typeArgumentNames.contains(argName))
+                throw new QueryParsingException("Parameter '" + argName + "' not defined in query");
+
+              final Object argValue = queryArgument.getValueWithVariable().getValue().getValue();
 
               if (where.length() > 0)
                 where += " and ";
@@ -136,22 +181,40 @@ public class GraphQLSchema {
         }
       }
 
-      if (from == null)
-        throw new QueryParsingException("Target type not defined for GraphQL query");
-
       String query = "select from " + from;
       if (!where.isEmpty())
         query += " where " + where;
 
-      return new GraphQLResultSet(this, database.query("sql", query), projection != null ? projection.getSelections() : null, returnType);
+      final ResultSet resultSet = arguments != null ? database.query("sql", query, arguments) : database.query("sql", query);
+
+      return new GraphQLResultSet(this, resultSet, projection != null ? projection.getSelections() : null, returnType);
 
     } catch (QueryParsingException e) {
       throw e;
     } catch (Exception e) {
-      if (op.getName() != null)
-        throw new QueryParsingException("Error on executing GraphQL query '" + op.getName() + "'", e);
+      if (queryName != null)
+        throw new QueryParsingException("Error on executing GraphQL query '" + queryName + "'", e);
       throw new QueryParsingException("Error on executing GraphQL query", e);
     }
+
+  }
+
+  private Map<String, Object> getArguments(final Arguments queryArguments) {
+    Map<String, Object> arguments = null;
+
+    if (queryArguments != null) {
+      for (Argument queryArgument : queryArguments.getList()) {
+        final String argName = queryArgument.getName();
+        final Object argValue = queryArgument.getValueWithVariable().getValue().getValue();
+
+        if (arguments == null)
+          arguments = new HashMap<>();
+
+        arguments.put(argName, argValue);
+      }
+    }
+
+    return arguments;
   }
 
   public ObjectTypeDefinition getTypeFromField(final FieldDefinition fieldDefinition) {

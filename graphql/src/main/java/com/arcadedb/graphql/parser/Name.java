@@ -20,6 +20,10 @@ public class Name extends SimpleNode {
     return visitor.visit(this, data);
   }
 
+  public String getValue() {
+    return value;
+  }
+
   @Override
   public String toString() {
     return "Name{" + value + '}';
