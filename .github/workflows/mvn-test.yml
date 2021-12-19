@@ -53,7 +53,9 @@ jobs:
           reporter: java-junit
 
       - name: Get coverage files
-        run: echo ::set-output name=COVERAGE-FILES::"${find **/jacoco*.xml -printf '%p,'}"
+        run: |
+          files=find **/jacoco*.xml -printf '%p,'
+          echo ::set-output name=COVERAGE_FILES::${files}
         id: coverage-files-generator
 
       - name: Codacy coverage reporter
@@ -61,4 +63,4 @@ jobs:
         uses: codacy/codacy-coverage-reporter-action@v1
         with:
           project-token: ${{ secrets.CODACY_PROJECT_TOKEN }}
-          coverage-reports: ${{ steps.coverage-files-generator.COVERAGE-FILES }}
+          coverage-reports: ${{ steps.coverage-files-generator.COVERAGE_FILES }}
