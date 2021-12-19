@@ -54,8 +54,7 @@ jobs:
 
       - name: Get coverage files
         run: |
-          files=find **/jacoco*.xml -printf '%p,'
-          echo ::set-output name=COVERAGE_FILES::${files}
+          echo ::set-output name=COVERAGE_FILES::$(find **/jacoco*.xml -printf '%p,')
         id: coverage-files-generator
 
       - name: Codacy coverage reporter
