@@ -107,7 +107,8 @@ public class CypherQueryEngine implements QueryEngine {
   @Override
   public ResultSet command(final String query, final Map<String, Object> parameters) {
     try {
-      final Object arcadeGremlin = CypherQueryEngineFactory.arcadeGraphClass.getMethod("cypher", String.class).invoke(arcadeGraph, query);
+      final Object arcadeGremlin = CypherQueryEngineFactory.arcadeGraphClass.getMethod("cypher", String.class, Map.class)
+          .invoke(arcadeGraph, query, parameters);
       CypherQueryEngineFactory.arcadeCypherClass.getMethod("setParameters", Map.class).invoke(arcadeGremlin, parameters);
       return (ResultSet) CypherQueryEngineFactory.arcadeCypherClass.getMethod("execute").invoke(arcadeGremlin);
 

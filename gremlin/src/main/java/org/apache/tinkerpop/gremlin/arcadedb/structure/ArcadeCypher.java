@@ -75,11 +75,11 @@ public class ArcadeCypher extends ArcadeGremlin {
     return result;
   }
 
-  protected ArcadeCypher(final ArcadeGraph graph, final String cypherQuery) {
-    super(graph, compileToGremlin(graph, cypherQuery));
+  protected ArcadeCypher(final ArcadeGraph graph, final String cypherQuery, final Map<String, Object> parameters) {
+    super(graph, compileToGremlin(graph, cypherQuery, parameters));
   }
 
-  public static String compileToGremlin(final ArcadeGraph graph, final String cypher) {
+  public static String compileToGremlin(final ArcadeGraph graph, final String cypher, final Map<String, Object> parameters) {
     if (CACHE_SIZE == 0)
       // NO CACHE
       return new TranslationFacade().toGremlinGroovy(cypher);
@@ -97,7 +97,9 @@ public class ArcadeCypher extends ArcadeGremlin {
       }
 
       // TRANSLATE TO GREMLIN AND CACHE THE STATEMENT FOR FURTHER USAGE
-      final String gremlin = new TranslationFacade().toGremlinGroovy(cypher);
+      final String gremlin = parameters == null ?//
+          new TranslationFacade().toGremlinGroovy(cypher) ://
+          new TranslationFacade().toGremlinGroovy(cypher, parameters);
 
       while (totalCachedStatements.get() >= CACHE_SIZE) {
         int leastUsedValue = 0;

@@ -129,8 +129,12 @@ public class ArcadeGraph implements Graph, Closeable {
   }
 
   public ArcadeCypher cypher(final String query) {
+    return cypher(query, null);
+  }
+
+  public ArcadeCypher cypher(final String query, final Map<String, Object> parameters) {
     try {
-      return new ArcadeCypher(this, query);
+      return new ArcadeCypher(this, query, parameters);
     } catch (SyntaxException e) {
       throw new QueryParsingException(e);
     }
