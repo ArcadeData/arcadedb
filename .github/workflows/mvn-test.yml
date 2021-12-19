@@ -52,9 +52,14 @@ jobs:
           list-tests: 'failed'
           reporter: java-junit
 
+      - name: Get coverage files
+        run: |
+          echo ::set-output name=COVERAGE_FILES::$(find **/jacoco*.xml -printf '%p,')
+        id: coverage-files-generator
+
       - name: Codacy coverage reporter
         if: ${{ matrix.os != 'windows-latest' }}
         uses: codacy/codacy-coverage-reporter-action@v1
         with:
           project-token: ${{ secrets.CODACY_PROJECT_TOKEN }}
-          coverage-reports: coverage/target/site/jacoco-aggregate/jacoco.xml
+          coverage-reports: ${{ steps.coverage-files-generator.COVERAGE_FILES }}

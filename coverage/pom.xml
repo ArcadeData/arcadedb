@@ -31,7 +31,7 @@
 
     <artifactId>arcadedb-coverage</artifactId>
     <description>Compute aggregated test code coverage</description>
-
+    <packaging>pom</packaging>
     <properties>
         <maven.deploy.skip>true</maven.deploy.skip>
         <code.coverage.project.folder>${basedir}/../</code.coverage.project.folder>

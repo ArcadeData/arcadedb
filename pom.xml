@@ -60,6 +60,7 @@
         <maven-gpg-plugin.version>3.0.1</maven-gpg-plugin.version>
         <maven-versions-plugin.version>2.8.1</maven-versions-plugin.version>
         <maven-jar-plugin.version>3.2.0</maven-jar-plugin.version>
+        <maven-shade-plugin.version>3.2.4</maven-shade-plugin.version>
         <nexus-staging-maven-plugin.version>1.6.8</nexus-staging-maven-plugin.version>
 
         <assertj-core.version>3.21.0</assertj-core.version>
@@ -114,7 +115,7 @@
         <module>mongodbw</module>
         <module>redisw</module>
         <module>postgresw</module>
-        <module>coverage</module>
+<!--        <module>coverage</module>-->
         <module>package</module>
     </modules>
 
@@ -185,6 +186,8 @@
                     <skipITs>${skipIntegration}</skipITs>
                     <argLine>${itCoverageAgent}</argLine>
                     <reuseForks>true</reuseForks>
+                    <forkedProcessExitTimeoutInSeconds>60</forkedProcessExitTimeoutInSeconds>
+                    <forkCount>1</forkCount>
                 </configuration>
             </plugin>
             <plugin>
@@ -253,6 +256,9 @@
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-jar-plugin</artifactId>
                     <version>${maven-jar-plugin.version}</version>
+                    <configuration>
+                        <skipIfEmpty>true</skipIfEmpty>
+                    </configuration>
                     <executions>
                         <execution>
                             <goals>
