@@ -57,8 +57,6 @@ public class GraphQLSchema {
   public ResultSet execute(final String query) throws ParseException {
     final Document ast = GraphQLParser.parse(query);
 
-    //ast.dump("");
-
     final List<Definition> definitions = ast.getDefinitions();
     if (!definitions.isEmpty()) {
       for (Definition definition : definitions) {
@@ -90,7 +88,6 @@ public class GraphQLSchema {
 
   private ResultSet executeQuery(final OperationDefinition op) {
     String from = null;
-    String where = null;
 
     SelectionSet projection = null;
     ObjectTypeDefinition returnType = null;
@@ -126,59 +123,49 @@ public class GraphQLSchema {
         final Directives directives = typeDefinition.getDirectives();
         if (directives != null) {
           for (Directive directive : directives.getDirectives()) {
-            if ("sql".equals(directive.getName())) {
-              if (directive.getArguments() != null) {
-                for (Argument argument : directive.getArguments().getList()) {
-                  if ("statement".equals(argument.getName())) {
-                    where = argument.getValueWithVariable().getValue().getValue().toString();
+            final String directiveName = directive.getName();
 
-                    final Field field = selection.getField();
-                    if (field != null) {
-                      arguments = getArguments(field.getArguments());
-                      projection = field.getSelectionSet();
-                    }
-                  }
-                }
-              }
-            }
+            // TODO: REFACTOR THIS IN MULTIPLE PLUGGABLE CLASSES
+            if ("sql".equals(directiveName) ||//
+                "gremlin".equals(directiveName) ||//
+                "cypher".equals(directiveName))
+              return parseNativeQueryDirective(directiveName, directive, selection, returnType);
           }
         }
       }
 
-      if (where == null) {
-        where = "";
-        final Field field = selection.getField();
-        if (field != null) {
-          final Arguments queryArguments = field.getArguments();
-          if (queryArguments != null)
-            for (Argument queryArgument : queryArguments.getList()) {
-              final String argName = queryArgument.getName();
-              if (!typeArgumentNames.contains(argName))
-                throw new QueryParsingException("Parameter '" + argName + "' not defined in query");
+      String where = "";
+      final Field field = selection.getField();
+      if (field != null) {
+        final Arguments queryArguments = field.getArguments();
+        if (queryArguments != null)
+          for (Argument queryArgument : queryArguments.getList()) {
+            final String argName = queryArgument.getName();
+            if (!typeArgumentNames.contains(argName))
+              throw new QueryParsingException("Parameter '" + argName + "' not defined in query");
 
-              final Object argValue = queryArgument.getValueWithVariable().getValue().getValue();
+            final Object argValue = queryArgument.getValueWithVariable().getValue().getValue();
 
-              if (where.length() > 0)
-                where += " and ";
+            if (where.length() > 0)
+              where += " and ";
 
-              if ("where".equals(argName)) {
-                where += argValue;
-              } else {
-                where += argName;
-                where += " = ";
+            if ("where".equals(argName)) {
+              where += argValue;
+            } else {
+              where += argName;
+              where += " = ";
 
-                if (argValue instanceof String)
-                  where += "\"";
+              if (argValue instanceof String)
+                where += "\"";
 
-                where += argValue;
+              where += argValue;
 
-                if (argValue instanceof String)
-                  where += "\"";
-              }
+              if (argValue instanceof String)
+                where += "\"";
             }
+          }
 
-          projection = field.getSelectionSet();
-        }
+        projection = field.getSelectionSet();
       }
 
       String query = "select from " + from;
@@ -197,6 +184,34 @@ public class GraphQLSchema {
       throw new QueryParsingException("Error on executing GraphQL query", e);
     }
 
+  }
+
+  private GraphQLResultSet parseNativeQueryDirective(final String language, Directive directive, Selection selection, ObjectTypeDefinition returnType) {
+    if (directive.getArguments() == null)
+      throw new QueryParsingException(language.toUpperCase() + " directive has no `statement` argument");
+
+    String statement = null;
+    Map<String, Object> arguments = null;
+    SelectionSet projection = null;
+
+    for (Argument argument : directive.getArguments().getList()) {
+      if ("statement".equals(argument.getName())) {
+        statement = argument.getValueWithVariable().getValue().getValue().toString();
+
+        final Field field = selection.getField();
+        if (field != null) {
+          arguments = getArguments(field.getArguments());
+          projection = field.getSelectionSet();
+        }
+      }
+    }
+
+    if (statement == null)
+      throw new QueryParsingException(language.toUpperCase() + " directive has no `statement` argument");
+
+    final ResultSet resultSet = arguments != null ? database.query(language, statement, arguments) : database.query(language, statement);
+
+    return new GraphQLResultSet(this, resultSet, projection != null ? projection.getSelections() : null, returnType);
   }
 
   private Map<String, Object> getArguments(final Arguments queryArguments) {

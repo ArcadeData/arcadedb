@@ -1,6 +1,5 @@
 package com.arcadedb.graphql;
 
-import com.arcadedb.database.Database;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Assertions;
@@ -8,10 +7,9 @@ import org.junit.jupiter.api.Test;
 
 import java.util.*;
 
-public class GraphQLQueryLanguagesDirectivesTest extends AbstractGraphQLTest {
-
+public abstract class AbstractGraphQLNativeLanguageDirectivesTest extends AbstractGraphQLTest {
   @Test
-  public void testSQLUseTypeDefinitionForReturn() {
+  public void testUseTypeDefinitionForReturn() {
     executeTest((database) -> {
       defineTypes(database);
 
@@ -38,11 +36,12 @@ public class GraphQLQueryLanguagesDirectivesTest extends AbstractGraphQLTest {
   }
 
   @Test
-  public void testSQLCustomDefinitionForReturn() {
+  public void testCustomDefinitionForReturn() {
     executeTest((database) -> {
       defineTypes(database);
 
-      try (ResultSet resultSet = database.query("graphql", "{ bookByName(bookNameParameter: \"Harry Potter and the Philosopher's Stone\"){ id name pageCount } }")) {
+      try (ResultSet resultSet = database.query("graphql",
+          "{ bookByName(bookNameParameter: \"Harry Potter and the Philosopher's Stone\"){ id name pageCount } }")) {
         Assertions.assertTrue(resultSet.hasNext());
         final Result record = resultSet.next();
         Assertions.assertEquals(3, record.getPropertyNames().size());
@@ -60,13 +59,5 @@ public class GraphQLQueryLanguagesDirectivesTest extends AbstractGraphQLTest {
 
       return null;
     });
-  }
-
-  protected void defineTypes(final Database database) {
-    super.defineTypes(database);
-    database.command("graphql", "type Query {\n" +//
-        "  bookById(id: String): Book\n" +//
-        "  bookByName(bookNameParameter: String): Book @sql(statement: \"name = :bookNameParameter\")\n" +//
-        "}");
   }
 }
