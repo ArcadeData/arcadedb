@@ -79,6 +79,11 @@
             <artifactId>arcadedb-mongodbw</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <dependency>
+            <groupId>${project.groupId}</groupId>
+            <artifactId>arcadedb-graphql</artifactId>
+            <version>${project.version}</version>
+        </dependency>
 
     </dependencies>
 
