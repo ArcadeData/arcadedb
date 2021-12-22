@@ -26,9 +26,5 @@ public class InPathItemOpt extends InPathItem {
     super(p, id);
   }
 
-  /** Accept the visitor. **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
 }
 /* JavaCC - OriginalChecksum=ef282589054869578c47f554474b5c3b (do not edit this line) */

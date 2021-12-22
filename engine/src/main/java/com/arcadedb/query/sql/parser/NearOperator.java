@@ -28,11 +28,6 @@ public class NearOperator extends SimpleNode implements BinaryCompareOperator {
     super(p, id);
   }
 
-  /** Accept the visitor. **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
-
   @Override
   public boolean execute(DatabaseInternal database, Object left, Object right) {
     throw new UnsupportedOperationException(this + " operator cannot be evaluated in this context");
@@ -43,19 +38,23 @@ public class NearOperator extends SimpleNode implements BinaryCompareOperator {
     return "NEAR";
   }
 
-  @Override public boolean supportsBasicCalculation() {
+  @Override
+  public boolean supportsBasicCalculation() {
     return false;
   }
 
-  @Override public NearOperator copy() {
+  @Override
+  public NearOperator copy() {
     return this;
   }
 
-  @Override public boolean equals(Object obj) {
+  @Override
+  public boolean equals(Object obj) {
     return obj != null && obj.getClass().equals(this.getClass());
   }
 
-  @Override public int hashCode() {
+  @Override
+  public int hashCode() {
     return getClass().hashCode();
   }
 }

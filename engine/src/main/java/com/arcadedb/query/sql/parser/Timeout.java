@@ -37,13 +37,6 @@ public class Timeout extends SimpleNode {
     super(p, id);
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
-
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append(" TIMEOUT " + val);
     if (failureStrategy != null) {

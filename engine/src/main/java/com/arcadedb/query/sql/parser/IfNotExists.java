@@ -17,8 +17,7 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-public
-class IfNotExists extends SimpleNode {
+public class IfNotExists extends SimpleNode {
   public IfNotExists(int id) {
     super(id);
   }
@@ -27,10 +26,5 @@ class IfNotExists extends SimpleNode {
     super(p, id);
   }
 
-
-  /** Accept the visitor. **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
 }
 /* JavaCC - OriginalChecksum=5990db905ac7259f864fa5c62f123bcc (do not edit this line) */

@@ -145,9 +145,7 @@ public class CreateEdgeStatement extends Statement {
       return false;
     if (retry != null ? !retry.equals(that.retry) : that.retry != null)
       return false;
-    if (wait != null ? !wait.equals(that.wait) : that.wait != null)
-      return false;
-    return true;
+    return wait != null ? wait.equals(that.wait) : that.wait == null;
   }
 
   @Override

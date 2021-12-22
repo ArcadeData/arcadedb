@@ -40,13 +40,6 @@ public class ContainsAnyCondition extends BooleanExpression {
     super(p, id);
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
-
   public boolean execute(Object left, Object right) {
     if (left instanceof Collection) {
       if (right instanceof Iterable) {

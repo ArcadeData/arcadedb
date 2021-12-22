@@ -180,13 +180,6 @@ public abstract class BooleanExpression extends SimpleNode {
     super(p, id);
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
-
   public abstract boolean evaluate(Identifiable currentRecord, CommandContext ctx);
 
   public abstract boolean evaluate(Result currentRecord, CommandContext ctx);

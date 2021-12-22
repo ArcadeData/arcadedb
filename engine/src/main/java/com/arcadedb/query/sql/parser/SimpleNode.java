@@ -101,7 +101,7 @@ public class SimpleNode implements Node {
   /**
    * Accept the visitor.
    **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
+  public final Object jjtAccept(final SqlParserVisitor visitor, final Object data) {
     return visitor.visit(this, data);
   }
 

@@ -33,7 +33,8 @@ public class RollbackStatement extends SimpleExecStatement {
     super(p, id);
   }
 
-  @Override public ResultSet executeSimple(CommandContext ctx) {
+  @Override
+  public ResultSet executeSimple(CommandContext ctx) {
     ctx.getDatabase().rollback();
     InternalResultSet result = new InternalResultSet();
     ResultInternal item = new ResultInternal();
@@ -42,23 +43,26 @@ public class RollbackStatement extends SimpleExecStatement {
     return result;
   }
 
-
-  @Override public void toString(Map<String, Object> params, StringBuilder builder) {
+  @Override
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     builder.append("ROLLBACK");
   }
 
-  @Override public RollbackStatement copy() {
+  @Override
+  public RollbackStatement copy() {
     RollbackStatement result = new RollbackStatement(-1);
     return result;
   }
 
-  @Override public boolean equals(Object o) {
+  @Override
+  public boolean equals(Object o) {
     if (this == o)
       return true;
     return o != null && getClass() == o.getClass();
   }
 
-  @Override public int hashCode() {
+  @Override
+  public int hashCode() {
     return 0;
   }
 }

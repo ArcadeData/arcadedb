@@ -34,14 +34,8 @@ public class CreatePropertyAttributeStatement extends SimpleNode {
     super(p, id);
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
-
-  @Override public void toString(Map<String, Object> params, StringBuilder builder) {
+  @Override
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     settingName.toString(params, builder);
     if (settingValue != null) {
       builder.append(" ");
@@ -56,7 +50,8 @@ public class CreatePropertyAttributeStatement extends SimpleNode {
     return result;
   }
 
-  @Override public boolean equals(Object o) {
+  @Override
+  public boolean equals(Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
@@ -69,7 +64,8 @@ public class CreatePropertyAttributeStatement extends SimpleNode {
     return settingValue != null ? settingValue.equals(that.settingValue) : that.settingValue == null;
   }
 
-  @Override public int hashCode() {
+  @Override
+  public int hashCode() {
     int result = settingName != null ? settingName.hashCode() : 0;
     result = 31 * result + (settingValue != null ? settingValue.hashCode() : 0);
     return result;

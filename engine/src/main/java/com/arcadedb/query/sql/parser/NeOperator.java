@@ -20,8 +20,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.sql.executor.QueryOperatorEquals;
 
-public
-class NeOperator extends SimpleNode implements BinaryCompareOperator {
+public class NeOperator extends SimpleNode implements BinaryCompareOperator {
   public NeOperator(int id) {
     super(id);
   }
@@ -30,33 +29,33 @@ class NeOperator extends SimpleNode implements BinaryCompareOperator {
     super(p, id);
   }
 
-
-  /** Accept the visitor. **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
-
-  @Override public boolean execute(DatabaseInternal database, Object left, Object right) {
+  @Override
+  public boolean execute(DatabaseInternal database, Object left, Object right) {
     return !QueryOperatorEquals.equals(left, right);
   }
 
-  @Override public String toString() {
+  @Override
+  public String toString() {
     return "!=";
   }
 
-  @Override public boolean supportsBasicCalculation() {
+  @Override
+  public boolean supportsBasicCalculation() {
     return true;
   }
 
-  @Override public NeOperator copy() {
+  @Override
+  public NeOperator copy() {
     return this;
   }
 
-  @Override public boolean equals(Object obj) {
+  @Override
+  public boolean equals(Object obj) {
     return obj != null && obj.getClass().equals(this.getClass());
   }
 
-  @Override public int hashCode() {
+  @Override
+  public int hashCode() {
     return getClass().hashCode();
   }
 }

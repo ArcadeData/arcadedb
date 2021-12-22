@@ -39,13 +39,6 @@ public class InstanceofCondition extends BooleanExpression {
     super(p, id);
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
-
   @Override
   public boolean evaluate(Identifiable currentRecord, CommandContext ctx) {
     if (currentRecord == null) {
@@ -58,7 +51,7 @@ public class InstanceofCondition extends BooleanExpression {
     if (!(record instanceof Document)) {
       return false;
     }
-    Document doc = (Document)record;
+    Document doc = (Document) record;
     String typez = doc.getTypeName();
     if (typez == null) {
       return false;

@@ -22,7 +22,7 @@ package com.arcadedb.query.sql.parser;
  * You can explicitly create objects of this exception type by
  * calling the method generateParseException in the generated
  * parser.
- *
+ * <p>
  * You can modify this class to customize your error reporting
  * mechanisms so long as you retain the public fields.
  */
@@ -41,11 +41,7 @@ public class ParseException extends Exception {
    * a new object of this type with the fields "currentToken",
    * "expectedTokenSequences", and "tokenImage" set.
    */
-  public ParseException(Token currentTokenVal,
-                        int[][] expectedTokenSequencesVal,
-                        String[] tokenImageVal
-                       )
-  {
+  public ParseException(Token currentTokenVal, int[][] expectedTokenSequencesVal, String[] tokenImageVal) {
     super(initialise(currentTokenVal, expectedTokenSequencesVal, tokenImageVal));
     currentToken = currentTokenVal;
     expectedTokenSequences = expectedTokenSequencesVal;
@@ -66,11 +62,12 @@ public class ParseException extends Exception {
     super();
   }
 
-  /** Constructor with message. */
+  /**
+   * Constructor with message.
+   */
   public ParseException(String message) {
     super(message);
   }
-
 
   /**
    * This is the last token that has been consumed successfully.  If
@@ -100,9 +97,7 @@ public class ParseException extends Exception {
    * from the parser) the correct error message
    * gets displayed.
    */
-  private static String initialise(Token currentToken,
-                           int[][] expectedTokenSequences,
-                           String[] tokenImage) {
+  private static String initialise(Token currentToken, int[][] expectedTokenSequences, String[] tokenImage) {
     String eol = System.getProperty("line.separator", "\n");
     StringBuilder expected = new StringBuilder();
     int maxSize = 0;
@@ -121,7 +116,8 @@ public class ParseException extends Exception {
     String retval = "Encountered \"";
     Token tok = currentToken.next;
     for (int i = 0; i < maxSize; i++) {
-      if (i != 0) retval += " ";
+      if (i != 0)
+        retval += " ";
       if (tok.kind == 0) {
         retval += tokenImage[0];
         break;
@@ -154,49 +150,48 @@ public class ParseException extends Exception {
    * string literal.
    */
   static String add_escapes(String str) {
-      StringBuilder retval = new StringBuilder();
-      char ch;
-      for (int i = 0; i < str.length(); i++) {
-        switch (str.charAt(i))
-        {
-           case 0 :
-              continue;
-           case '\b':
-              retval.append("\\b");
-              continue;
-           case '\t':
-              retval.append("\\t");
-              continue;
-           case '\n':
-              retval.append("\\n");
-              continue;
-           case '\f':
-              retval.append("\\f");
-              continue;
-           case '\r':
-              retval.append("\\r");
-              continue;
-           case '\"':
-              retval.append("\\\"");
-              continue;
-           case '\'':
-              retval.append("\\'");
-              continue;
-           case '\\':
-              retval.append("\\\\");
-              continue;
-           default:
-              if ((ch = str.charAt(i)) < 0x20 || ch > 0x7e) {
-                 String s = "0000" + Integer.toString(ch, 16);
-                 retval.append("\\u" + s.substring(s.length() - 4));
-              } else {
-                 retval.append(ch);
-              }
-              continue;
+    StringBuilder retval = new StringBuilder();
+    char ch;
+    for (int i = 0; i < str.length(); i++) {
+      switch (str.charAt(i)) {
+      case 0:
+        continue;
+      case '\b':
+        retval.append("\\b");
+        continue;
+      case '\t':
+        retval.append("\\t");
+        continue;
+      case '\n':
+        retval.append("\\n");
+        continue;
+      case '\f':
+        retval.append("\\f");
+        continue;
+      case '\r':
+        retval.append("\\r");
+        continue;
+      case '\"':
+        retval.append("\\\"");
+        continue;
+      case '\'':
+        retval.append("\\'");
+        continue;
+      case '\\':
+        retval.append("\\\\");
+        continue;
+      default:
+        if ((ch = str.charAt(i)) < 0x20 || ch > 0x7e) {
+          String s = "0000" + Integer.toString(ch, 16);
+          retval.append("\\u" + s.substring(s.length() - 4));
+        } else {
+          retval.append(ch);
         }
+        continue;
       }
-      return retval.toString();
-   }
+    }
+    return retval.toString();
+  }
 
 }
 /* JavaCC - OriginalChecksum=e7f89c9049c17dd46e7739992a5ab696 (do not edit this line) */

@@ -38,12 +38,14 @@ public class ExplainStatement extends Statement {
     super(p, id);
   }
 
-  @Override public void toString(Map<String, Object> params, StringBuilder builder) {
+  @Override
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     builder.append("EXPLAIN ");
     statement.toString(params, builder);
   }
 
-  @Override public ResultSet execute(Database db, Object[] args, CommandContext parentCtx, boolean usePlanCache) {
+  @Override
+  public ResultSet execute(Database db, Object[] args, CommandContext parentCtx, boolean usePlanCache) {
     BasicCommandContext ctx = new BasicCommandContext();
     if (parentCtx != null) {
       ctx.setParentWithoutOverridingChild(parentCtx);
@@ -57,7 +59,8 @@ public class ExplainStatement extends Statement {
     return result;
   }
 
-  @Override public ResultSet execute(Database db, Map args, CommandContext parentCtx, boolean usePlanCache) {
+  @Override
+  public ResultSet execute(Database db, Map args, CommandContext parentCtx, boolean usePlanCache) {
     BasicCommandContext ctx = new BasicCommandContext();
     if (parentCtx != null) {
       ctx.setParentWithoutOverridingChild(parentCtx);
@@ -71,17 +74,20 @@ public class ExplainStatement extends Statement {
     return result;
   }
 
-  @Override public InternalExecutionPlan createExecutionPlan(CommandContext ctx, boolean enableProfiling) {
+  @Override
+  public InternalExecutionPlan createExecutionPlan(CommandContext ctx, boolean enableProfiling) {
     return statement.createExecutionPlan(ctx, enableProfiling);
   }
 
-  @Override public ExplainStatement copy() {
+  @Override
+  public ExplainStatement copy() {
     ExplainStatement result = new ExplainStatement(-1);
     result.statement = statement == null ? null : statement.copy();
     return result;
   }
 
-  @Override public boolean equals(Object o) {
+  @Override
+  public boolean equals(Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
@@ -92,11 +98,13 @@ public class ExplainStatement extends Statement {
     return statement != null ? statement.equals(that.statement) : that.statement == null;
   }
 
-  @Override public int hashCode() {
+  @Override
+  public int hashCode() {
     return statement != null ? statement.hashCode() : 0;
   }
 
-  @Override public boolean isIdempotent() {
+  @Override
+  public boolean isIdempotent() {
     return true;
   }
 }

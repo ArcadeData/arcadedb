@@ -45,13 +45,6 @@ public class ParenthesisExpression extends MathExpression {
     this.expression = exp;
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
-
   @Override
   public Object execute(Identifiable iCurrentRecord, CommandContext ctx) {
     if (expression != null) {

@@ -30,13 +30,6 @@ public class Url extends SimpleNode {
     super(p, id);
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(final SqlParserVisitor visitor, final Object data) {
-    return visitor.visit(this, data);
-  }
-
   @Override
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append(urlString);

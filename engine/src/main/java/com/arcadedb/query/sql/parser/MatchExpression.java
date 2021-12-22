@@ -21,7 +21,7 @@ import java.util.*;
 import java.util.stream.*;
 
 public class MatchExpression extends SimpleNode {
-  protected MatchFilter origin;
+  protected MatchFilter         origin;
   protected List<MatchPathItem> items = new ArrayList<MatchPathItem>();
 
   public MatchExpression(int id) {
@@ -39,14 +39,16 @@ public class MatchExpression extends SimpleNode {
     }
   }
 
-  @Override public MatchExpression copy() {
+  @Override
+  public MatchExpression copy() {
     MatchExpression result = new MatchExpression(-1);
     result.origin = origin == null ? null : origin.copy();
     result.items = items == null ? null : items.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;
   }
 
-  @Override public boolean equals(Object o) {
+  @Override
+  public boolean equals(Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
@@ -59,7 +61,8 @@ public class MatchExpression extends SimpleNode {
     return items != null ? items.equals(that.items) : that.items == null;
   }
 
-  @Override public int hashCode() {
+  @Override
+  public int hashCode() {
     int result = origin != null ? origin.hashCode() : 0;
     result = 31 * result + (items != null ? items.hashCode() : 0);
     return result;

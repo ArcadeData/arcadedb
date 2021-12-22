@@ -36,7 +36,8 @@ public class TruncateBucketStatement extends DDLStatement {
     super(p, id);
   }
 
-  @Override public ResultSet executeDDL(CommandContext ctx) {
+  @Override
+  public ResultSet executeDDL(CommandContext ctx) {
 //    ODatabaseDocumentAbstract database = (ODatabaseDocumentAbstract) ctx.getDatabase();
 //    OInternalResultSet rs = new OInternalResultSet();
 //
@@ -84,14 +85,8 @@ public class TruncateBucketStatement extends DDLStatement {
     throw new UnsupportedOperationException();
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
-
-  @Override public void toString(Map<String, Object> params, StringBuilder builder) {
+  @Override
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     builder.append("TRUNCATE BUCKET ");
     if (bucketName != null) {
       bucketName.toString(params, builder);
@@ -103,7 +98,8 @@ public class TruncateBucketStatement extends DDLStatement {
     }
   }
 
-  @Override public TruncateBucketStatement copy() {
+  @Override
+  public TruncateBucketStatement copy() {
     TruncateBucketStatement result = new TruncateBucketStatement(-1);
     result.bucketName = bucketName == null ? null : bucketName.copy();
     result.bucketNumber = bucketNumber == null ? null : bucketNumber.copy();
@@ -111,7 +107,8 @@ public class TruncateBucketStatement extends DDLStatement {
     return result;
   }
 
-  @Override public boolean equals(Object o) {
+  @Override
+  public boolean equals(Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
@@ -126,7 +123,8 @@ public class TruncateBucketStatement extends DDLStatement {
     return bucketNumber != null ? bucketNumber.equals(that.bucketNumber) : that.bucketNumber == null;
   }
 
-  @Override public int hashCode() {
+  @Override
+  public int hashCode() {
     int result = bucketName != null ? bucketName.hashCode() : 0;
     result = 31 * result + (bucketNumber != null ? bucketNumber.hashCode() : 0);
     result = 31 * result + (unsafe ? 1 : 0);

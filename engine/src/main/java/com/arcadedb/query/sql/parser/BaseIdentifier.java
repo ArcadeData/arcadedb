@@ -48,13 +48,6 @@ public class BaseIdentifier extends SimpleNode {
     this.suffix = new SuffixIdentifier(attr);
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
-
   public void toString(Map<String, Object> params, StringBuilder builder) {
     if (levelZero != null) {
       levelZero.toString(params, builder);

@@ -751,13 +751,6 @@ public class MathExpression extends SimpleNode {
     }
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
-
   public List<MathExpression> getChildExpressions() {
     return childExpressions;
   }

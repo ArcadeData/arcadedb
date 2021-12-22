@@ -34,13 +34,6 @@ public class PositionalParameter extends InputParameter {
     super(p, id);
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
-
   @Override
   public String toString() {
     return "?";

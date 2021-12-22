@@ -38,8 +38,7 @@ public class QueryCursor implements Iterator<Identifiable> {
 
   }
 
-  public QueryCursor(Iterator<Identifiable> PIdentifiableIterator, WhereClause filter, OrderBy orderBy, int skip, int limit,
-      CommandContext ctx) {
+  public QueryCursor(Iterator<Identifiable> PIdentifiableIterator, WhereClause filter, OrderBy orderBy, int skip, int limit, CommandContext ctx) {
     this.iterator = PIdentifiableIterator;
     this.filter = filter;
     this.skip = skip;
@@ -77,7 +76,7 @@ public class QueryCursor implements Iterator<Identifiable> {
       }
 
       Identifiable result = iterator.next();
-      if (filter==null || filter.matchesFilters(result, ctx)) {
+      if (filter == null || filter.matchesFilters(result, ctx)) {
         return result;
       }
     }

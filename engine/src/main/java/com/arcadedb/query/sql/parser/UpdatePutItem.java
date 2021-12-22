@@ -33,13 +33,6 @@ public class UpdatePutItem extends SimpleNode {
     super(p, id);
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
-
   public void toString(Map<String, Object> params, StringBuilder builder) {
     left.toString(params, builder);
     builder.append(" = ");
@@ -56,7 +49,8 @@ public class UpdatePutItem extends SimpleNode {
     return result;
   }
 
-  @Override public boolean equals(Object o) {
+  @Override
+  public boolean equals(Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
@@ -71,7 +65,8 @@ public class UpdatePutItem extends SimpleNode {
     return value != null ? value.equals(that.value) : that.value == null;
   }
 
-  @Override public int hashCode() {
+  @Override
+  public int hashCode() {
     int result = left != null ? left.hashCode() : 0;
     result = 31 * result + (key != null ? key.hashCode() : 0);
     result = 31 * result + (value != null ? value.hashCode() : 0);

@@ -21,20 +21,13 @@ import com.arcadedb.query.sql.executor.Result;
 
 import java.util.*;
 
-public
-class OutPathItem extends MatchPathItem {
+public class OutPathItem extends MatchPathItem {
   public OutPathItem(int id) {
     super(id);
   }
 
   public OutPathItem(SqlParser p, int id) {
     super(p, id);
-  }
-
-
-  /** Accept the visitor. **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
   }
 
   @Override

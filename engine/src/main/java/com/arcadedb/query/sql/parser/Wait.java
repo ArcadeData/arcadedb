@@ -29,13 +29,5 @@ public class Wait extends SimpleNode {
     super(p, id);
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
-
-
 }
 /* JavaCC - OriginalChecksum=e77b1496216c4d2b2f8ad564da0c3dac (do not edit this line) */

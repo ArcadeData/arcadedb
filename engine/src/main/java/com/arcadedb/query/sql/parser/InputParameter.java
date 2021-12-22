@@ -39,13 +39,6 @@ public class InputParameter extends SimpleNode {
     super(p, id);
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
-
   public Object bindFromInputParams(Map<String, Object> params) {
     return null;
   }
@@ -167,8 +160,7 @@ public class InputParameter extends SimpleNode {
 
   public static InputParameter deserializeFromOResult(Result doc) {
     try {
-      InputParameter result = (InputParameter) Class.forName(doc.getProperty("__class")).getConstructor(java.lang.Integer.class)
-          .newInstance(-1);
+      InputParameter result = (InputParameter) Class.forName(doc.getProperty("__class")).getConstructor(java.lang.Integer.class).newInstance(-1);
       result.deserialize(doc);
     } catch (Exception e) {
       throw new CommandExecutionException(e);

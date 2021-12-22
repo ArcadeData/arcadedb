@@ -17,20 +17,13 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-public
-class parse extends SimpleNode {
+public class parse extends SimpleNode {
   public parse(int id) {
     super(id);
   }
 
   public parse(SqlParser p, int id) {
     super(p, id);
-  }
-
-
-  /** Accept the visitor. **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
   }
 }
 /* JavaCC - OriginalChecksum=d5bdbb7024b5ee7edd4f794c6b8860d0 (do not edit this line) */

@@ -26,7 +26,8 @@ public class SelectWithoutTargetStatement extends SelectStatement {
     super(p, id);
   }
 
-  @Override public SelectStatement copy() {
+  @Override
+  public SelectStatement copy() {
     return super.copy();
   }
 }

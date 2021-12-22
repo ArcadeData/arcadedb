@@ -12,21 +12,21 @@ import java.util.*;
 import java.util.stream.*;
 
 public class CheckDatabaseStatement extends SimpleExecStatement {
-  protected Set<BucketIdentifier> buckets = new HashSet<>();
-  protected Set<String>           types   = new HashSet<>();
-  protected boolean               fix     = false;
+  protected final Set<BucketIdentifier> buckets = new HashSet<>();
+  protected final Set<String>           types   = new HashSet<>();
+  protected       boolean               fix     = false;
 
-  public CheckDatabaseStatement(int id) {
+  public CheckDatabaseStatement(final int id) {
     super(id);
   }
 
-  public CheckDatabaseStatement(SqlParser p, int id) {
+  public CheckDatabaseStatement(final SqlParser p, final int id) {
     super(p, id);
   }
 
   @Override
   public ResultSet executeSimple(CommandContext ctx) {
-    ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal();
     result.setProperty("operation", "check database");
 
     if (ctx.getDatabase().isTransactionActive())
@@ -42,20 +42,13 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
 
     result.setPropertiesFromMap(checkResult);
 
-    InternalResultSet rs = new InternalResultSet();
+    final InternalResultSet rs = new InternalResultSet();
     rs.add(result);
     return rs;
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
-
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("CHECK DATABASE");
 
     if (!types.isEmpty()) {

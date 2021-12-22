@@ -41,13 +41,6 @@ public class BinaryCondition extends BooleanExpression {
     super(p, id);
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(final SqlParserVisitor visitor, final Object data) {
-    return visitor.visit(this, data);
-  }
-
   @Override
   public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
     return operator.execute(ctx.getDatabase(), left.execute(currentRecord, ctx), right.execute(currentRecord, ctx));
@@ -55,8 +48,8 @@ public class BinaryCondition extends BooleanExpression {
 
   @Override
   public boolean evaluate(final Result currentRecord, final CommandContext ctx) {
-    Object leftVal = left.execute(currentRecord, ctx);
-    Object rightVal = right.execute(currentRecord, ctx);
+    final Object leftVal = left.execute(currentRecord, ctx);
+    final Object rightVal = right.execute(currentRecord, ctx);
     return operator.execute(ctx.getDatabase(), leftVal, rightVal);
   }
 
@@ -93,7 +86,7 @@ public class BinaryCondition extends BooleanExpression {
 
   @Override
   protected List<Object> getExternalCalculationConditions() {
-    List<Object> result = new ArrayList<>();
+    final List<Object> result = new ArrayList<>();
     if (!operator.supportsBasicCalculation()) {
       result.add(this);
     }
@@ -106,18 +99,18 @@ public class BinaryCondition extends BooleanExpression {
     return result;
   }
 
-  public BinaryCondition isIndexedFunctionCondition(DocumentType iSchemaClass, Database database) {
+  public BinaryCondition isIndexedFunctionCondition(final DocumentType iSchemaClass, final Database database) {
     if (left.isIndexedFunctionCal()) {
       return this;
     }
     return null;
   }
 
-  public long estimateIndexed(FromClause target, CommandContext context) {
+  public long estimateIndexed(final FromClause target, final CommandContext context) {
     return left.estimateIndexedFunction(target, context, operator, right.execute((Result) null, context));
   }
 
-  public Iterable<Record> executeIndexedFunction(FromClause target, CommandContext context) {
+  public Iterable<Record> executeIndexedFunction(final FromClause target, final CommandContext context) {
     return left.executeIndexedFunction(target, context, operator, right.execute((Result) null, context));
   }
 
@@ -129,7 +122,7 @@ public class BinaryCondition extends BooleanExpression {
    *
    * @return true if current expression involves an indexed function AND that function can be used on this target, false otherwise
    */
-  public boolean canExecuteIndexedFunctionWithoutIndex(FromClause target, CommandContext context) {
+  public boolean canExecuteIndexedFunctionWithoutIndex(final FromClause target, final CommandContext context) {
     return left.canExecuteIndexedFunctionWithoutIndex(target, context, operator, right.execute((Result) null, context));
   }
 
@@ -141,7 +134,7 @@ public class BinaryCondition extends BooleanExpression {
    *
    * @return true if current expression involves an indexed function AND that function can be used on this target, false otherwise
    */
-  public boolean allowsIndexedFunctionExecutionOnTarget(FromClause target, CommandContext context) {
+  public boolean allowsIndexedFunctionExecutionOnTarget(final FromClause target, final CommandContext context) {
     return left.allowsIndexedFunctionExecutionOnTarget(target, context, operator, right.execute((Result) null, context));
   }
 
@@ -156,11 +149,11 @@ public class BinaryCondition extends BooleanExpression {
    * @return true if current expression involves an indexed function AND the function has also to be executed after the index
    * search.
    */
-  public boolean executeIndexedFunctionAfterIndexSearch(FromClause target, CommandContext context) {
+  public boolean executeIndexedFunctionAfterIndexSearch(final FromClause target, final CommandContext context) {
     return left.executeIndexedFunctionAfterIndexSearch(target, context, operator, right.execute((Result) null, context));
   }
 
-  public List<BinaryCondition> getIndexedFunctionConditions(DocumentType iSchemaClass, Database database) {
+  public List<BinaryCondition> getIndexedFunctionConditions(final DocumentType iSchemaClass, final Database database) {
     if (left.isIndexedFunctionCal()) {
       return Collections.singletonList(this);
     }
@@ -168,7 +161,7 @@ public class BinaryCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean needsAliases(Set<String> aliases) {
+  public boolean needsAliases(final Set<String> aliases) {
     if (left.needsAliases(aliases)) {
       return true;
     }
@@ -177,7 +170,7 @@ public class BinaryCondition extends BooleanExpression {
 
   @Override
   public BinaryCondition copy() {
-    BinaryCondition result = new BinaryCondition(-1);
+    final BinaryCondition result = new BinaryCondition(-1);
     result.left = left.copy();
     result.operator = operator.copy();
     result.right = right.copy();
@@ -185,7 +178,7 @@ public class BinaryCondition extends BooleanExpression {
   }
 
   @Override
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
     left.extractSubQueries(collector);
     right.extractSubQueries(collector);
   }
@@ -203,7 +196,7 @@ public class BinaryCondition extends BooleanExpression {
     if (operator instanceof EqualsCompareOperator) {
       UpdateItem result = new UpdateItem(-1);
       result.operator = UpdateItem.OPERATOR_EQ;
-      BaseExpression baseExp = ((BaseExpression) left.mathExpression);
+      final BaseExpression baseExp = ((BaseExpression) left.mathExpression);
       result.left = baseExp.identifier.suffix.identifier.copy();
       result.leftModifier = baseExp.modifier == null ? null : baseExp.modifier.copy();
       result.right = right.copy();
@@ -216,7 +209,7 @@ public class BinaryCondition extends BooleanExpression {
     if (left == null || left.mathExpression == null || !(left.mathExpression instanceof BaseExpression)) {
       return false;
     }
-    BaseExpression base = (BaseExpression) left.mathExpression;
+    final BaseExpression base = (BaseExpression) left.mathExpression;
     return base.identifier != null && base.identifier.suffix != null && base.identifier.suffix.identifier != null;
   }
 
@@ -245,13 +238,13 @@ public class BinaryCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    BinaryCondition that = (BinaryCondition) o;
+    final BinaryCondition that = (BinaryCondition) o;
 
     if (Objects.equals(left, that.left))
       return false;
@@ -270,8 +263,8 @@ public class BinaryCondition extends BooleanExpression {
 
   @Override
   public List<String> getMatchPatternInvolvedAliases() {
-    List<String> leftX = left.getMatchPatternInvolvedAliases();
-    List<String> rightX = right.getMatchPatternInvolvedAliases();
+    final List<String> leftX = left.getMatchPatternInvolvedAliases();
+    final List<String> rightX = right.getMatchPatternInvolvedAliases();
     if (leftX == null) {
       return rightX;
     }
@@ -279,22 +272,22 @@ public class BinaryCondition extends BooleanExpression {
       return leftX;
     }
 
-    List<String> result = new ArrayList<>();
+    final List<String> result = new ArrayList<>();
     result.addAll(leftX);
     result.addAll(rightX);
     return result;
   }
 
   private Expression identifierToStringExpr(Identifier identifier) {
-    BaseExpression bExp = new BaseExpression(identifier.getStringValue());
+    final BaseExpression bExp = new BaseExpression(identifier.getStringValue());
 
-    Expression result = new Expression(-1);
+    final Expression result = new Expression(-1);
     result.mathExpression = bExp;
     return result;
   }
 
   public Result serialize() {
-    ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal();
     result.setProperty("left", left.serialize());
     result.setProperty("operator", operator.getClass().getName());
     result.setProperty("right", right.serialize());

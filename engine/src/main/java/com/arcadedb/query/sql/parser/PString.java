@@ -25,12 +25,5 @@ public class PString extends SimpleNode {
   public PString(SqlParser p, int id) {
     super(p, id);
   }
-
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
 }
 /* JavaCC - OriginalChecksum=839493e838048bfc6ae3d35e25d35280 (do not edit this line) */

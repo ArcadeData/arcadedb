@@ -39,13 +39,6 @@ public class OrderBy extends SimpleNode {
     super(p, id);
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
-
   public List<OrderByItem> getItems() {
     return items;
   }
@@ -82,7 +75,8 @@ public class OrderBy extends SimpleNode {
     return result;
   }
 
-  @Override public boolean equals(Object o) {
+  @Override
+  public boolean equals(Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
@@ -93,22 +87,23 @@ public class OrderBy extends SimpleNode {
     return items != null ? items.equals(oOrderBy.items) : oOrderBy.items == null;
   }
 
-  @Override public int hashCode() {
+  @Override
+  public int hashCode() {
     return items != null ? items.hashCode() : 0;
   }
 
   public void extractSubQueries(SubQueryCollector collector) {
-    if(items!=null){
-      for(OrderByItem item:items){
+    if (items != null) {
+      for (OrderByItem item : items) {
         item.extractSubQueries(collector);
       }
     }
   }
 
   public boolean refersToParent() {
-    if(items!=null){
-      for(OrderByItem item:items){
-        if(item.refersToParent()){
+    if (items != null) {
+      for (OrderByItem item : items) {
+        if (item.refersToParent()) {
           return true;
         }
       }

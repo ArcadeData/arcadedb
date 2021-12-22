@@ -30,11 +30,6 @@ public class InOperator extends SimpleNode implements BinaryCompareOperator {
     super(p, id);
   }
 
-  /** Accept the visitor. **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
-
   @Override
   public boolean execute(DatabaseInternal database, Object left, Object right) {
     if (left == null) {
@@ -86,19 +81,23 @@ public class InOperator extends SimpleNode implements BinaryCompareOperator {
     return false;
   }
 
-  @Override public boolean supportsBasicCalculation() {
+  @Override
+  public boolean supportsBasicCalculation() {
     return true;
   }
 
-  @Override public InOperator copy() {
+  @Override
+  public InOperator copy() {
     return this;
   }
 
-  @Override public boolean equals(Object obj) {
+  @Override
+  public boolean equals(Object obj) {
     return obj != null && obj.getClass().equals(this.getClass());
   }
 
-  @Override public int hashCode() {
+  @Override
+  public int hashCode() {
     return getClass().hashCode();
   }
 }

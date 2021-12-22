@@ -58,13 +58,6 @@ public class ProjectionItem extends SimpleNode {
     super(p, id);
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
-
   public boolean isAll() {
     if (all) {
       return true;
@@ -244,10 +237,13 @@ public class ProjectionItem extends SimpleNode {
 
   @Override
   public boolean equals(Object o) {
-    if (this == o) return true;
-    if (o == null || getClass() != o.getClass()) return false;
+    if (this == o)
+      return true;
+    if (o == null || getClass() != o.getClass())
+      return false;
     ProjectionItem that = (ProjectionItem) o;
-    return exclude == that.exclude && all == that.all && Objects.equals(alias, that.alias) && Objects.equals(expression, that.expression) && Objects.equals(aggregate, that.aggregate) && Objects.equals(nestedProjection, that.nestedProjection);
+    return exclude == that.exclude && all == that.all && Objects.equals(alias, that.alias) && Objects.equals(expression, that.expression) && Objects.equals(
+        aggregate, that.aggregate) && Objects.equals(nestedProjection, that.nestedProjection);
   }
 
   @Override

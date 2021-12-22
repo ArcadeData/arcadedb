@@ -40,13 +40,6 @@ public class IndexMatchCondition extends BooleanExpression {
     super(p, id);
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
-
   @Override
   public boolean evaluate(Identifiable currentRecord, CommandContext ctx) {
     throw new UnsupportedOperationException("TODO Implement IndexMatch!!!");//TODO
@@ -136,10 +129,8 @@ public class IndexMatchCondition extends BooleanExpression {
     result.operator = operator == null ? null : operator.copy();
     result.between = between;
 
-    result.leftExpressions =
-        leftExpressions == null ? null : leftExpressions.stream().map(x -> x.copy()).collect(Collectors.toList());
-    result.rightExpressions =
-        rightExpressions == null ? null : rightExpressions.stream().map(x -> x.copy()).collect(Collectors.toList());
+    result.leftExpressions = leftExpressions == null ? null : leftExpressions.stream().map(x -> x.copy()).collect(Collectors.toList());
+    result.rightExpressions = rightExpressions == null ? null : rightExpressions.stream().map(x -> x.copy()).collect(Collectors.toList());
 
     return result;
   }

@@ -28,8 +28,8 @@ import java.util.*;
 
 public class DropBucketStatement extends DDLStatement {
   protected Identifier name;
-  protected PInteger    id;
-  protected boolean ifExists = false;
+  protected PInteger   id;
+  protected boolean    ifExists = false;
 
   public DropBucketStatement(int id) {
     super(id);

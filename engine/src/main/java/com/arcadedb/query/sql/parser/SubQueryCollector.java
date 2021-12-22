@@ -62,6 +62,7 @@ public class SubQueryCollector {
     subQueries.put(alias, stm);
     return alias;
   }
+
   public Identifier addStatement(Statement stm) {
     Identifier alias = getNextAlias();
     return addStatement(alias, stm);

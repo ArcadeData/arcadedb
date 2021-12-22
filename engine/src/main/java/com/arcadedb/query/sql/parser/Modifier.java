@@ -29,7 +29,7 @@ import java.util.*;
 
 public class Modifier extends SimpleNode {
 
-  boolean squareBrackets = false;
+  boolean                   squareBrackets = false;
   ArrayRangeSelector        arrayRange;
   OrBlock                   condition;
   ArraySingleValuesSelector arraySingleValues;
@@ -45,13 +45,6 @@ public class Modifier extends SimpleNode {
 
   public Modifier(SqlParser p, int id) {
     super(p, id);
-  }
-
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
   }
 
   public void toString(Map<String, Object> params, StringBuilder builder) {
@@ -208,9 +201,7 @@ public class Modifier extends SimpleNode {
       return false;
     if (arraySingleValues != null ? !arraySingleValues.equals(oModifier.arraySingleValues) : oModifier.arraySingleValues != null)
       return false;
-    if (rightBinaryCondition != null ?
-        !rightBinaryCondition.equals(oModifier.rightBinaryCondition) :
-        oModifier.rightBinaryCondition != null)
+    if (rightBinaryCondition != null ? !rightBinaryCondition.equals(oModifier.rightBinaryCondition) : oModifier.rightBinaryCondition != null)
       return false;
     if (methodCall != null ? !methodCall.equals(oModifier.methodCall) : oModifier.methodCall != null)
       return false;

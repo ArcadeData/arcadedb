@@ -17,8 +17,7 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-public
-class CreateVertexStatementNoTarget extends CreateVertexStatement {
+public class CreateVertexStatementNoTarget extends CreateVertexStatement {
   public CreateVertexStatementNoTarget(int id) {
     super(id);
   }
@@ -27,7 +26,8 @@ class CreateVertexStatementNoTarget extends CreateVertexStatement {
     super(p, id);
   }
 
-  @Override public CreateVertexStatement copy() {
+  @Override
+  public CreateVertexStatement copy() {
     return super.copy();
   }
 }

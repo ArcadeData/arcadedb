@@ -24,8 +24,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.*;
 
-public
-class FieldMatchPathItem extends MatchPathItem {
+public class FieldMatchPathItem extends MatchPathItem {
 
   protected Identifier field;
 

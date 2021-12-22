@@ -61,13 +61,6 @@ public class Expression extends SimpleNode {
     mathExpression = new BaseExpression(attr, modifier);
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
-
   public Object execute(Identifiable iCurrentRecord, CommandContext ctx) {
     if (isNull) {
       return null;

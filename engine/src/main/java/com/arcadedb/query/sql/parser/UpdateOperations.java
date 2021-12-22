@@ -49,13 +49,6 @@ public class UpdateOperations extends SimpleNode {
     super(p, id);
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
-
   public void toString(Map<String, Object> params, StringBuilder builder) {
     boolean first = true;
     switch (type) {
@@ -128,14 +121,13 @@ public class UpdateOperations extends SimpleNode {
     result.updateItems = updateItems == null ? null : updateItems.stream().map(x -> x.copy()).collect(Collectors.toList());
     result.updatePutItems = updatePutItems == null ? null : updatePutItems.stream().map(x -> x.copy()).collect(Collectors.toList());
     result.json = json == null ? null : json.copy();
-    result.updateIncrementItems =
-        updateIncrementItems == null ? null : updateIncrementItems.stream().map(x -> x.copy()).collect(Collectors.toList());
-    result.updateRemoveItems =
-        updateRemoveItems == null ? null : updateRemoveItems.stream().map(x -> x.copy()).collect(Collectors.toList());
+    result.updateIncrementItems = updateIncrementItems == null ? null : updateIncrementItems.stream().map(x -> x.copy()).collect(Collectors.toList());
+    result.updateRemoveItems = updateRemoveItems == null ? null : updateRemoveItems.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;
   }
 
-  @Override public boolean equals(Object o) {
+  @Override
+  public boolean equals(Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
@@ -156,7 +148,8 @@ public class UpdateOperations extends SimpleNode {
     return updateRemoveItems != null ? updateRemoveItems.equals(that.updateRemoveItems) : that.updateRemoveItems == null;
   }
 
-  @Override public int hashCode() {
+  @Override
+  public int hashCode() {
     int result = type;
     result = 31 * result + (updateItems != null ? updateItems.hashCode() : 0);
     result = 31 * result + (updatePutItems != null ? updatePutItems.hashCode() : 0);

@@ -163,13 +163,6 @@ public class MatchStatement extends Statement {
     return planner.createExecutionPlan(ctx, enableProfiling);
   }
 
-  /**
-   * Accept the visitor. *
-   */
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
-
   protected void buildPatterns() {
     assignDefaultAliases(this.matchExpressions);
     pattern = new Pattern();

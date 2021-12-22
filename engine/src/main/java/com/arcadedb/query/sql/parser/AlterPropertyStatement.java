@@ -69,12 +69,12 @@ public class AlterPropertyStatement extends DDLStatement {
       String customName = customPropertyName.getStringValue();
       Object oldValue = property.getCustomValue(customName);
       Object finalValue = customPropertyValue.execute((Identifiable) null, ctx);
-      property.setCustomValue(customName, finalValue == null ? null : finalValue);
+      property.setCustomValue(customName, finalValue);
 
       result.setProperty("operation", "alter property custom");
       result.setProperty("customAttribute", customPropertyName.getStringValue());
-      result.setProperty("oldValue", oldValue != null ? oldValue : null);
-      result.setProperty("newValue", finalValue != null ? finalValue : null);
+      result.setProperty("oldValue", oldValue);
+      result.setProperty("newValue", finalValue);
     } else if (settingName != null) {
       final String setting = settingName.getStringValue().toLowerCase();
       final Object finalValue = settingValue.execute((Identifiable) null, ctx);
@@ -92,8 +92,8 @@ public class AlterPropertyStatement extends DDLStatement {
 
       result.setProperty("operation", "alter property");
       result.setProperty("attribute", setting);
-      result.setProperty("oldValue", oldValue != null ? oldValue : null);
-      result.setProperty("newValue", finalValue != null ? finalValue : null);
+      result.setProperty("oldValue", oldValue);
+      result.setProperty("newValue", finalValue);
     } else
       throw new CommandExecutionException("Property '" + property + "' not found on type '" + typez + "'");
 

@@ -17,8 +17,7 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-public
-class DeleteEdgeFromToStatement extends DeleteEdgeStatement {
+public class DeleteEdgeFromToStatement extends DeleteEdgeStatement {
   public DeleteEdgeFromToStatement(int id) {
     super(id);
   }
@@ -27,13 +26,8 @@ class DeleteEdgeFromToStatement extends DeleteEdgeStatement {
     super(p, id);
   }
 
-
-  /** Accept the visitor. **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
-
-  @Override public DeleteEdgeStatement copy() {
+  @Override
+  public DeleteEdgeStatement copy() {
     return super.copy();
   }
 }

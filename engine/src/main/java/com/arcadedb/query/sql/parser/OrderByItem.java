@@ -28,13 +28,13 @@ import java.util.logging.*;
  * Created by luigidellaquila on 06/02/15.
  */
 public class OrderByItem {
-  public static final String ASC  = "ASC";
-  public static final String DESC = "DESC";
-  protected String   alias;
-  protected Modifier modifier;
-  protected String   recordAttr;
-  protected Rid      rid;
-  protected String type = ASC;
+  public static final String   ASC  = "ASC";
+  public static final String   DESC = "DESC";
+  protected           String   alias;
+  protected           Modifier modifier;
+  protected           String   recordAttr;
+  protected           Rid      rid;
+  protected           String   type = ASC;
 
   public String getAlias() {
     return alias;
@@ -96,13 +96,13 @@ public class OrderByItem {
     if (recordAttr != null) {
       aVal = a.getProperty(recordAttr);
       if (aVal == null) {
-        if(recordAttr.equalsIgnoreCase("@rid")){
+        if (recordAttr.equalsIgnoreCase("@rid")) {
           aVal = a.getIdentity().orElse(null);
         } //TODO check other attributes
       }
       bVal = b.getProperty(recordAttr);
       if (bVal == null) {
-        if(recordAttr.equalsIgnoreCase("@rid")){
+        if (recordAttr.equalsIgnoreCase("@rid")) {
           bVal = b.getIdentity().orElse(null);
         } //TODO check other attributes
       }
@@ -190,7 +190,6 @@ public class OrderByItem {
     }
     type = DESC.equals(fromResult.getProperty("type")) ? DESC : ASC;
   }
-
 
   public void setModifier(Modifier modifier) {
     this.modifier = modifier;

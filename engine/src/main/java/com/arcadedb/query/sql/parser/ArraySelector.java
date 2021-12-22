@@ -30,7 +30,7 @@ public class ArraySelector extends SimpleNode {
   protected Rid            rid;
   protected InputParameter inputParam;
   protected Expression     expression;
-  protected PInteger        integer;
+  protected PInteger       integer;
 
   public ArraySelector(int id) {
     super(id);
@@ -38,13 +38,6 @@ public class ArraySelector extends SimpleNode {
 
   public ArraySelector(SqlParser p, int id) {
     super(p, id);
-  }
-
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
   }
 
   public void toString(Map<String, Object> params, StringBuilder builder) {
@@ -115,7 +108,8 @@ public class ArraySelector extends SimpleNode {
     return result;
   }
 
-  @Override public boolean equals(Object o) {
+  @Override
+  public boolean equals(Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
@@ -132,7 +126,8 @@ public class ArraySelector extends SimpleNode {
     return integer != null ? integer.equals(that.integer) : that.integer == null;
   }
 
-  @Override public int hashCode() {
+  @Override
+  public int hashCode() {
     int result = rid != null ? rid.hashCode() : 0;
     result = 31 * result + (inputParam != null ? inputParam.hashCode() : 0);
     result = 31 * result + (expression != null ? expression.hashCode() : 0);

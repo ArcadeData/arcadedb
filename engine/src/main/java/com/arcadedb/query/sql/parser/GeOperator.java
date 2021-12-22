@@ -31,13 +31,6 @@ public class GeOperator extends SimpleNode implements BinaryCompareOperator {
     super(p, id);
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
-
   @Override
   public boolean execute(final DatabaseInternal database, Object iLeft, Object iRight) {
     if (iLeft == iRight) {

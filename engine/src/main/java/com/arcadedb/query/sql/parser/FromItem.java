@@ -45,13 +45,6 @@ public class FromItem extends SimpleNode {
     super(p, id);
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
-
   public void toString(Map<String, Object> params, StringBuilder builder) {
     if (rids != null && rids.size() > 0) {
       if (rids.size() == 1) {

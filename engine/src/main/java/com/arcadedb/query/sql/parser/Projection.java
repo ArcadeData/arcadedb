@@ -49,13 +49,6 @@ public class Projection extends SimpleNode {
     super(p, id);
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
-
   public List<ProjectionItem> getItems() {
     return items;
   }

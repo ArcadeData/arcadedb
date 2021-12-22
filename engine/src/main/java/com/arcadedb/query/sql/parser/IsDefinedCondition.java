@@ -35,13 +35,6 @@ public class IsDefinedCondition extends BooleanExpression implements SimpleBoole
     super(p, id);
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(final SqlParserVisitor visitor, final Object data) {
-    return visitor.visit(this, data);
-  }
-
   @Override
   public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
     return expression.isDefinedFor(currentRecord.getRecord());

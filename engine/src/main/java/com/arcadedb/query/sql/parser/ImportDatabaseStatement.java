@@ -65,13 +65,6 @@ public class ImportDatabaseStatement extends SimpleExecStatement {
     return rs;
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
-
   @Override
   public void toString(Map<String, Object> params, StringBuilder builder) {
     builder.append("IMPORT DATABASE ");

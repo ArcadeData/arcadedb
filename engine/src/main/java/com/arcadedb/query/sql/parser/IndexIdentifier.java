@@ -40,13 +40,6 @@ public class IndexIdentifier extends SimpleNode {
     super(p, id);
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
-
   public void toString(Map<String, Object> params, StringBuilder builder) {
     switch (type) {
     case INDEX:

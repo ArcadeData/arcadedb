@@ -19,8 +19,7 @@ package com.arcadedb.query.sql.parser;
 
 import java.util.*;
 
-public
-class MultExpression extends MathExpression {
+public class MultExpression extends MathExpression {
 
   public MultExpression(int id) {
     super(id);
@@ -28,12 +27,6 @@ class MultExpression extends MathExpression {
 
   public MultExpression(SqlParser p, int id) {
     super(p, id);
-  }
-
-
-  /** Accept the visitor. **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
   }
 
   public boolean needsAliases(Set<String> aliases) {

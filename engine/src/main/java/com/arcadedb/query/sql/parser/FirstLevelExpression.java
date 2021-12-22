@@ -26,14 +26,8 @@ public class FirstLevelExpression extends MathExpression {
     super(p, id);
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
-
-  @Override protected boolean supportsBasicCalculation() {
+  @Override
+  protected boolean supportsBasicCalculation() {
     return super.supportsBasicCalculation();
   }
 
@@ -43,7 +37,8 @@ public class FirstLevelExpression extends MathExpression {
   }
 
   //never used, this class is never returned by the parser!
-  @Override public MathExpression copy() {
+  @Override
+  public MathExpression copy() {
     return super.copy();
   }
 }

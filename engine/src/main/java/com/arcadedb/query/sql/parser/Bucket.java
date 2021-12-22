@@ -30,19 +30,13 @@ public class Bucket extends SimpleNode {
     super(-1);
     this.bucketName = bucketName;
   }
+
   public Bucket(int id) {
     super(id);
   }
 
   public Bucket(SqlParser p, int id) {
     super(p, id);
-  }
-
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
   }
 
   @Override

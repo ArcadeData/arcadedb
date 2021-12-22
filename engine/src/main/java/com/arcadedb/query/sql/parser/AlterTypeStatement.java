@@ -118,9 +118,7 @@ public class AlterTypeStatement extends DDLStatement {
       return false;
     if (customKey != null ? !customKey.equals(that.customKey) : that.customKey != null)
       return false;
-    if (customValue != null ? !customValue.equals(that.customValue) : that.customValue != null)
-      return false;
-    return true;
+    return customValue != null ? customValue.equals(that.customValue) : that.customValue == null;
   }
 
   @Override

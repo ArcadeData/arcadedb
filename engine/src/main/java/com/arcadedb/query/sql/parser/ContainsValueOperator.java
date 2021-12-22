@@ -30,14 +30,8 @@ public class ContainsValueOperator extends SimpleNode implements BinaryCompareOp
     super(p, id);
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
-
-  @Override public boolean execute(DatabaseInternal database, Object iLeft, Object iRight) {
+  @Override
+  public boolean execute(DatabaseInternal database, Object iLeft, Object iRight) {
     if (iLeft instanceof Map<?, ?>) {
       final Map<String, ?> map = (Map<String, ?>) iLeft;
       return map.containsValue(iRight);
@@ -46,23 +40,28 @@ public class ContainsValueOperator extends SimpleNode implements BinaryCompareOp
 
   }
 
-  @Override public boolean supportsBasicCalculation() {
+  @Override
+  public boolean supportsBasicCalculation() {
     return true;
   }
 
-  @Override public ContainsValueOperator copy() {
+  @Override
+  public ContainsValueOperator copy() {
     return this;
   }
 
-  @Override public String toString() {
+  @Override
+  public String toString() {
     return "CONTAINSVALUE";
   }
 
-  @Override public boolean equals(Object obj) {
+  @Override
+  public boolean equals(Object obj) {
     return obj != null && obj.getClass().equals(this.getClass());
   }
 
-  @Override public int hashCode() {
+  @Override
+  public int hashCode() {
     return getClass().hashCode();
   }
 }

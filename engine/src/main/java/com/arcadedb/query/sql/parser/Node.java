@@ -21,34 +21,48 @@ package com.arcadedb.query.sql.parser;
    machinery for constructing the parent and child relationships
    between nodes. */
 
-public
-interface Node {
+public interface Node {
 
-  /** This method is called after the node has been made the current
-    node.  It indicates that child nodes can now be added to it. */
+  /**
+   * This method is called after the node has been made the current
+   * node.  It indicates that child nodes can now be added to it.
+   */
   void jjtOpen();
 
-  /** This method is called after all the child nodes have been
-    added. */
+  /**
+   * This method is called after all the child nodes have been
+   * added.
+   */
   void jjtClose();
 
-  /** This pair of methods are used to inform the node of its
-    parent. */
+  /**
+   * This pair of methods are used to inform the node of its
+   * parent.
+   */
   void jjtSetParent(Node n);
+
   Node jjtGetParent();
 
-  /** This method tells the node to add its argument to the node's
-    list of children.  */
+  /**
+   * This method tells the node to add its argument to the node's
+   * list of children.
+   */
   void jjtAddChild(Node n, int i);
 
-  /** This method returns a child node.  The children are numbered
-     from zero, left to right. */
+  /**
+   * This method returns a child node.  The children are numbered
+   * from zero, left to right.
+   */
   Node jjtGetChild(int i);
 
-  /** Return the number of children the node has. */
+  /**
+   * Return the number of children the node has.
+   */
   int jjtGetNumChildren();
 
-  /** Accept the visitor. **/
+  /**
+   * Accept the visitor.
+   **/
   Object jjtAccept(SqlParserVisitor visitor, Object data);
 }
 /* JavaCC - OriginalChecksum=8a51f6ec86184506d7baca4d2245af96 (do not edit this line) */

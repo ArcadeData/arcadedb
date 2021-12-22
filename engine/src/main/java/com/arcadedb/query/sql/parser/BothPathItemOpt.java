@@ -26,9 +26,5 @@ public class BothPathItemOpt extends BothPathItem {
     super(p, id);
   }
 
-  /** Accept the visitor. **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
 }
 /* JavaCC - OriginalChecksum=96af673f114382e530f23ae7937cb201 (do not edit this line) */

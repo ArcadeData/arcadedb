@@ -34,13 +34,6 @@ public class MultiMatchPathItem extends MatchPathItem {
     super(p, id);
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
-
   public boolean isBidirectional() {
     return false;
   }
@@ -56,8 +49,7 @@ public class MultiMatchPathItem extends MatchPathItem {
     }
   }
 
-  protected Iterable<Identifiable> traversePatternEdge(MatchStatement.MatchContext matchContext, Identifiable startingPoint,
-      CommandContext iCommandContext) {
+  protected Iterable<Identifiable> traversePatternEdge(MatchStatement.MatchContext matchContext, Identifiable startingPoint, CommandContext iCommandContext) {
     Set<Identifiable> result = new HashSet<Identifiable>();
     result.add(startingPoint);
     for (MatchPathItem subItem : items) {
@@ -77,13 +69,15 @@ public class MultiMatchPathItem extends MatchPathItem {
     return result;
   }
 
-  @Override public MultiMatchPathItem copy() {
+  @Override
+  public MultiMatchPathItem copy() {
     MultiMatchPathItem result = (MultiMatchPathItem) super.copy();
     result.items = items == null ? null : items.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;
   }
 
-  @Override public boolean equals(Object o) {
+  @Override
+  public boolean equals(Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
@@ -96,7 +90,8 @@ public class MultiMatchPathItem extends MatchPathItem {
     return items != null ? items.equals(that.items) : that.items == null;
   }
 
-  @Override public int hashCode() {
+  @Override
+  public int hashCode() {
     int result = super.hashCode();
     result = 31 * result + (items != null ? items.hashCode() : 0);
     return result;

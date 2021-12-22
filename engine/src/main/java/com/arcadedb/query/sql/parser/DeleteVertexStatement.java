@@ -118,9 +118,7 @@ public class DeleteVertexStatement extends Statement {
       return false;
     if (whereClause != null ? !whereClause.equals(that.whereClause) : that.whereClause != null)
       return false;
-    if (limit != null ? !limit.equals(that.limit) : that.limit != null)
-      return false;
-    return true;
+    return limit != null ? limit.equals(that.limit) : that.limit == null;
   }
 
   @Override

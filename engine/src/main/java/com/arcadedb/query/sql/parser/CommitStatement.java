@@ -36,7 +36,8 @@ public class CommitStatement extends SimpleExecStatement {
     super(p, id);
   }
 
-  @Override public ResultSet executeSimple(CommandContext ctx) {
+  @Override
+  public ResultSet executeSimple(CommandContext ctx) {
     ctx.getDatabase().commit();
     InternalResultSet result = new InternalResultSet();
     ResultInternal item = new ResultInternal();
@@ -45,7 +46,8 @@ public class CommitStatement extends SimpleExecStatement {
     return result;
   }
 
-  @Override public void toString(Map<String, Object> params, StringBuilder builder) {
+  @Override
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     builder.append("COMMIT");
     if (retry != null) {
       builder.append(" RETRY ");
@@ -53,13 +55,15 @@ public class CommitStatement extends SimpleExecStatement {
     }
   }
 
-  @Override public CommitStatement copy() {
+  @Override
+  public CommitStatement copy() {
     CommitStatement result = new CommitStatement(-1);
     result.retry = retry == null ? null : retry.copy();
     return result;
   }
 
-  @Override public boolean equals(Object o) {
+  @Override
+  public boolean equals(Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
@@ -70,7 +74,8 @@ public class CommitStatement extends SimpleExecStatement {
     return retry != null ? retry.equals(that.retry) : that.retry == null;
   }
 
-  @Override public int hashCode() {
+  @Override
+  public int hashCode() {
     return retry != null ? retry.hashCode() : 0;
   }
 }

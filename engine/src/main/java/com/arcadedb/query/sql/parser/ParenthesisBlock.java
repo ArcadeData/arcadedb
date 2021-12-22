@@ -35,13 +35,6 @@ public class ParenthesisBlock extends BooleanExpression {
     super(p, id);
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
-
   @Override
   public boolean evaluate(Identifiable currentRecord, CommandContext ctx) {
     return subElement.evaluate(currentRecord, ctx);

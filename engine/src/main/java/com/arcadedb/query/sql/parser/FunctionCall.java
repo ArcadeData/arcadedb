@@ -51,15 +51,7 @@ public class FunctionCall extends SimpleNode {
     throw new UnsupportedOperationException();
   }
 
-  /**
-   * Accept the visitor. *
-   */
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
-
   public boolean isStar() {
-
     if (this.params.size() != 1) {
       return false;
     }
@@ -169,12 +161,10 @@ public class FunctionCall extends SimpleNode {
    *
    * @return
    */
-  public Iterable<Record> executeIndexedFunction(FromClause target, CommandContext ctx, BinaryCompareOperator operator,
-      Object rightValue) {
+  public Iterable<Record> executeIndexedFunction(FromClause target, CommandContext ctx, BinaryCompareOperator operator, Object rightValue) {
     SQLFunction function = SQLEngine.getInstance().getFunction(name.getStringValue());
     if (function instanceof IndexableSQLFunction) {
-      return ((IndexableSQLFunction) function)
-          .searchFromTarget(target, operator, rightValue, ctx, this.getParams().toArray(new Expression[] {}));
+      return ((IndexableSQLFunction) function).searchFromTarget(target, operator, rightValue, ctx, this.getParams().toArray(new Expression[] {}));
     }
     return null;
   }
@@ -190,8 +180,7 @@ public class FunctionCall extends SimpleNode {
   public long estimateIndexedFunction(FromClause target, CommandContext ctx, BinaryCompareOperator operator, Object rightValue) {
     SQLFunction function = SQLEngine.getInstance().getFunction(name.getStringValue());
     if (function instanceof IndexableSQLFunction) {
-      return ((IndexableSQLFunction) function)
-          .estimate(target, operator, rightValue, ctx, this.getParams().toArray(new Expression[] {}));
+      return ((IndexableSQLFunction) function).estimate(target, operator, rightValue, ctx, this.getParams().toArray(new Expression[] {}));
     }
     return -1;
   }
@@ -207,12 +196,10 @@ public class FunctionCall extends SimpleNode {
    * @return true if current function is an indexed funciton AND that function can also be executed without using the index, false
    * otherwise
    */
-  public boolean canExecuteIndexedFunctionWithoutIndex(FromClause target, CommandContext context, BinaryCompareOperator operator,
-      Object right) {
+  public boolean canExecuteIndexedFunctionWithoutIndex(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {
     SQLFunction function = SQLEngine.getInstance().getFunction(name.getStringValue());
     if (function instanceof IndexableSQLFunction) {
-      return ((IndexableSQLFunction) function)
-          .canExecuteInline(target, operator, right, context, this.getParams().toArray(new Expression[] {}));
+      return ((IndexableSQLFunction) function).canExecuteInline(target, operator, right, context, this.getParams().toArray(new Expression[] {}));
     }
     return false;
   }
@@ -227,12 +214,10 @@ public class FunctionCall extends SimpleNode {
    *
    * @return true if current function is an indexed function AND that function can be used on this target, false otherwise
    */
-  public boolean allowsIndexedFunctionExecutionOnTarget(FromClause target, CommandContext context,
-      BinaryCompareOperator operator, Object right) {
+  public boolean allowsIndexedFunctionExecutionOnTarget(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {
     SQLFunction function = SQLEngine.getInstance().getFunction(name.getStringValue());
     if (function instanceof IndexableSQLFunction) {
-      return ((IndexableSQLFunction) function)
-          .allowsIndexedExecution(target, operator, right, context, this.getParams().toArray(new Expression[] {}));
+      return ((IndexableSQLFunction) function).allowsIndexedExecution(target, operator, right, context, this.getParams().toArray(new Expression[] {}));
     }
     return false;
   }
@@ -247,12 +232,10 @@ public class FunctionCall extends SimpleNode {
    *
    * @return true if current expression is an indexed function AND the function has also to be executed after the index search.
    */
-  public boolean executeIndexedFunctionAfterIndexSearch(FromClause target, CommandContext context,
-      BinaryCompareOperator operator, Object right) {
+  public boolean executeIndexedFunctionAfterIndexSearch(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {
     SQLFunction function = SQLEngine.getInstance().getFunction(name.getStringValue());
     if (function instanceof IndexableSQLFunction) {
-      return ((IndexableSQLFunction) function)
-          .shouldExecuteAfterSearch(target, operator, right, context, this.getParams().toArray(new Expression[] {}));
+      return ((IndexableSQLFunction) function).shouldExecuteAfterSearch(target, operator, right, context, this.getParams().toArray(new Expression[] {}));
     }
     return false;
   }
@@ -299,8 +282,7 @@ public class FunctionCall extends SimpleNode {
         } else {
           for (Expression param : params) {
             if (param.isAggregate()) {
-              throw new CommandExecutionException(
-                  "Cannot calculate an aggregate function of another aggregate function " + this);
+              throw new CommandExecutionException("Cannot calculate an aggregate function of another aggregate function " + this);
             }
             Identifier nextAlias = aggregateProj.getNextAlias();
             ProjectionItem paramItem = new ProjectionItem(-1);

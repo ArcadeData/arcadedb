@@ -42,13 +42,6 @@ public class UpdateEdgeStatement extends UpdateStatement {
     return planner.createExecutionPlan(ctx, enableProfiling);
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
-
   @Override
   public UpdateEdgeStatement copy() {
     UpdateEdgeStatement result = new UpdateEdgeStatement(-1);

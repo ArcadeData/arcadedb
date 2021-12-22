@@ -31,9 +31,9 @@ public class LocalResultSetLifecycleDecorator implements ResultSet {
 
   private static final AtomicLong counter = new AtomicLong(0);
 
-  private final ResultSet                     entity;
+  private final ResultSet                    entity;
   private final List<QueryLifecycleListener> lifecycleListeners = new ArrayList<>();
-  private final String                        queryId;
+  private final String                       queryId;
 
   private boolean hasNextPage;
 
@@ -90,7 +90,7 @@ public class LocalResultSetLifecycleDecorator implements ResultSet {
     this.hasNextPage = b;
   }
 
-  public boolean isDetached(){
+  public boolean isDetached() {
     return entity instanceof InternalResultSet;
   }
 }

@@ -20,10 +20,10 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.sql.executor.QueryOperatorEquals;
 
-public
-class ScAndOperator extends SimpleNode implements BinaryCompareOperator {
+public class ScAndOperator extends SimpleNode implements BinaryCompareOperator {
 
   QueryOperatorEquals lowLevelOperator = null;
+
   public ScAndOperator(int id) {
     super(id);
   }
@@ -32,18 +32,12 @@ class ScAndOperator extends SimpleNode implements BinaryCompareOperator {
     super(p, id);
   }
 
-
-  /** Accept the visitor. **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
-
   @Override
   public boolean execute(DatabaseInternal database, Object iLeft, Object iRight) {
-    if(lowLevelOperator==null) {
+    if (lowLevelOperator == null) {
       //TODO implement this!
     }
-    if(lowLevelOperator==null) {
+    if (lowLevelOperator == null) {
       throw new UnsupportedOperationException();
     }
     return false;
@@ -54,19 +48,23 @@ class ScAndOperator extends SimpleNode implements BinaryCompareOperator {
     return "&&";
   }
 
-  @Override public boolean supportsBasicCalculation() {
+  @Override
+  public boolean supportsBasicCalculation() {
     return true;
   }
 
-  @Override public ScAndOperator copy() {
+  @Override
+  public ScAndOperator copy() {
     return this;
   }
 
-  @Override public boolean equals(Object obj) {
+  @Override
+  public boolean equals(Object obj) {
     return obj != null && obj.getClass().equals(this.getClass());
   }
 
-  @Override public int hashCode() {
+  @Override
+  public int hashCode() {
     return getClass().hashCode();
   }
 }

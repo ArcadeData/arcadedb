@@ -20,7 +20,7 @@ package com.arcadedb.query.sql.parser;
 import java.util.*;
 
 public class ResourcePathItem extends SimpleNode {
-  protected boolean star = false;
+  protected boolean    star = false;
   protected Identifier identifier;
   protected String     name;
 
@@ -32,7 +32,8 @@ public class ResourcePathItem extends SimpleNode {
     super(p, id);
   }
 
-  @Override public void toString(Map<String, Object> params, StringBuilder builder) {
+  @Override
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     if (star) {
       builder.append("*");
     } else if (identifier != null) {
@@ -42,7 +43,8 @@ public class ResourcePathItem extends SimpleNode {
     }
   }
 
-  @Override public ResourcePathItem copy() {
+  @Override
+  public ResourcePathItem copy() {
     ResourcePathItem result = new ResourcePathItem(-1);
     result.star = star;
     result.identifier = identifier == null ? null : identifier.copy();
@@ -50,7 +52,8 @@ public class ResourcePathItem extends SimpleNode {
     return result;
   }
 
-  @Override public boolean equals(Object o) {
+  @Override
+  public boolean equals(Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
@@ -65,7 +68,8 @@ public class ResourcePathItem extends SimpleNode {
     return name != null ? name.equals(that.name) : that.name == null;
   }
 
-  @Override public int hashCode() {
+  @Override
+  public int hashCode() {
     int result = (star ? 1 : 0);
     result = 31 * result + (identifier != null ? identifier.hashCode() : 0);
     result = 31 * result + (name != null ? name.hashCode() : 0);

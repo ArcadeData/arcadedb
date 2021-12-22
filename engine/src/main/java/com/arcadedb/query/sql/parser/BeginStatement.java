@@ -25,57 +25,57 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import java.util.*;
 
 public class BeginStatement extends SimpleExecStatement {
-    protected Identifier isolation;
+  protected Identifier isolation;
 
-    public BeginStatement(int id) {
-        super(id);
+  public BeginStatement(int id) {
+    super(id);
+  }
+
+  public BeginStatement(SqlParser p, int id) {
+    super(p, id);
+  }
+
+  @Override
+  public ResultSet executeSimple(CommandContext ctx) {
+    ctx.getDatabase().begin();
+    InternalResultSet result = new InternalResultSet();
+    ResultInternal item = new ResultInternal();
+    item.setProperty("operation", "begin");
+    result.add(item);
+    return result;
+  }
+
+  @Override
+  public void toString(Map<String, Object> params, StringBuilder builder) {
+    builder.append("BEGIN");
+    if (isolation != null) {
+      builder.append(" ISOLATION ");
+      isolation.toString(params, builder);
     }
+  }
 
-    public BeginStatement(SqlParser p, int id) {
-        super(p, id);
-    }
+  @Override
+  public BeginStatement copy() {
+    BeginStatement result = new BeginStatement(-1);
+    result.isolation = isolation == null ? null : isolation.copy();
+    return result;
+  }
 
-    @Override
-    public ResultSet executeSimple(CommandContext ctx) {
-        ctx.getDatabase().begin();
-        InternalResultSet result = new InternalResultSet();
-        ResultInternal item = new ResultInternal();
-        item.setProperty("operation", "begin");
-        result.add(item);
-        return result;
-    }
+  @Override
+  public boolean equals(Object o) {
+    if (this == o)
+      return true;
+    if (o == null || getClass() != o.getClass())
+      return false;
 
-    @Override
-    public void toString(Map<String, Object> params, StringBuilder builder) {
-        builder.append("BEGIN");
-        if (isolation != null) {
-            builder.append(" ISOLATION ");
-            isolation.toString(params, builder);
-        }
-    }
+    BeginStatement that = (BeginStatement) o;
 
-    @Override
-    public BeginStatement copy() {
-        BeginStatement result = new BeginStatement(-1);
-        result.isolation = isolation == null ? null : isolation.copy();
-        return result;
-    }
+    return isolation != null ? isolation.equals(that.isolation) : that.isolation == null;
+  }
 
-    @Override
-    public boolean equals(Object o) {
-        if (this == o)
-            return true;
-        if (o == null || getClass() != o.getClass())
-            return false;
-
-        BeginStatement that = (BeginStatement) o;
-
-        return isolation != null ? isolation.equals(that.isolation) : that.isolation == null;
-    }
-
-    @Override
-    public int hashCode() {
-        return isolation != null ? isolation.hashCode() : 0;
-    }
+  @Override
+  public int hashCode() {
+    return isolation != null ? isolation.hashCode() : 0;
+  }
 }
 /* JavaCC - OriginalChecksum=aaa994acbe63cc4169fe33144d412fed (do not edit this line) */

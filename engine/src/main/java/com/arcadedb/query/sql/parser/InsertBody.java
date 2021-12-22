@@ -26,9 +26,8 @@ public class InsertBody extends SimpleNode {
   protected List<List<Expression>>    valueExpressions;
   protected List<InsertSetExpression> setExpressions;
 
-  protected Json content;
+  protected Json           content;
   protected InputParameter contentInputParam;
-
 
   public InsertBody(int id) {
     super(id);
@@ -36,13 +35,6 @@ public class InsertBody extends SimpleNode {
 
   public InsertBody(SqlParser p, int id) {
     super(p, id);
-  }
-
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
   }
 
   public void toString(Map<String, Object> params, StringBuilder builder) {
@@ -108,8 +100,7 @@ public class InsertBody extends SimpleNode {
     result.identifierList = identifierList == null ? null : identifierList.stream().map(x -> x.copy()).collect(Collectors.toList());
     result.valueExpressions = valueExpressions == null ?
         null :
-        valueExpressions.stream().map(sub -> sub.stream().map(x -> x.copy()).collect(Collectors.toList()))
-            .collect(Collectors.toList());
+        valueExpressions.stream().map(sub -> sub.stream().map(x -> x.copy()).collect(Collectors.toList())).collect(Collectors.toList());
     result.setExpressions = setExpressions == null ? null : setExpressions.stream().map(x -> x.copy()).collect(Collectors.toList());
     result.content = content == null ? null : content.copy();
     result.contentInputParam = contentInputParam == null ? null : contentInputParam.copy();

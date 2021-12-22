@@ -32,13 +32,11 @@ import java.util.stream.*;
 
 public class MethodCall extends SimpleNode {
 
-  static Set<String> graphMethods = new HashSet<String>(
-      Arrays.asList("out", "in", "both", "outE", "inE", "bothE", "bothV", "outV", "inV"));
+  static Set<String> graphMethods = new HashSet<String>(Arrays.asList("out", "in", "both", "outE", "inE", "bothE", "bothV", "outV", "inV"));
 
-  static Set<String> bidirectionalMethods = new HashSet<String>(
-      Arrays.asList("out", "in", "both", "oute", "ine", "inv", "outv"));
+  static Set<String> bidirectionalMethods = new HashSet<String>(Arrays.asList("out", "in", "both", "oute", "ine", "inv", "outv"));
 
-  protected Identifier methodName;
+  protected Identifier       methodName;
   protected List<Expression> params = new ArrayList<Expression>();
 
   private Boolean calculatedIsGraph = null;
@@ -49,13 +47,6 @@ public class MethodCall extends SimpleNode {
 
   public MethodCall(SqlParser p, int id) {
     super(p, id);
-  }
-
-  /**
-   * Accept the visitor. *
-   */
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
   }
 
   public void toString(Map<String, Object> params, StringBuilder builder) {
@@ -85,8 +76,7 @@ public class MethodCall extends SimpleNode {
     return execute(targetObjects, ctx, methodName.getStringValue(), params, iPossibleResults);
   }
 
-  private Object execute(Object targetObjects, CommandContext ctx, String name, List<Expression> iParams,
-      Iterable<Identifiable> iPossibleResults) {
+  private Object execute(Object targetObjects, CommandContext ctx, String name, List<Expression> iParams, Iterable<Identifiable> iPossibleResults) {
     List<Object> paramValues = new ArrayList<Object>();
     Object val = ctx.getVariable("$current");
     if (val == null && targetObjects == null) {
@@ -112,8 +102,7 @@ public class MethodCall extends SimpleNode {
         if (current instanceof Result) {
           current = ((Result) current).getElement().orElse(null);
         }
-        return ((SQLFunctionFiltered) function)
-            .execute(targetObjects, (Identifiable) current, null, paramValues.toArray(), iPossibleResults, ctx);
+        return ((SQLFunctionFiltered) function).execute(targetObjects, (Identifiable) current, null, paramValues.toArray(), iPossibleResults, ctx);
       } else {
         Object current = ctx.getVariable("$current");
         if (current instanceof Identifiable) {

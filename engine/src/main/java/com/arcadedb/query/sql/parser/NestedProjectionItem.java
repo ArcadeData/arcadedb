@@ -30,7 +30,7 @@ public class NestedProjectionItem extends SimpleNode {
   protected boolean star = false;
 
   protected Expression expression;
-  protected boolean rightWildcard = false;
+  protected boolean    rightWildcard = false;
 
   protected NestedProjection expansion;
   protected Identifier       alias;

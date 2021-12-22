@@ -45,13 +45,6 @@ public class DeleteEdgeStatement extends Statement {
     super(p, id);
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
-
   @Override
   public ResultSet execute(Database db, Map params, CommandContext parentCtx, boolean usePlanCache) {
     BasicCommandContext ctx = new BasicCommandContext();
@@ -170,9 +163,7 @@ public class DeleteEdgeStatement extends Statement {
       return false;
     if (whereClause != null ? !whereClause.equals(that.whereClause) : that.whereClause != null)
       return false;
-    if (limit != null ? !limit.equals(that.limit) : that.limit != null)
-      return false;
-    return true;
+    return limit != null ? limit.equals(that.limit) : that.limit == null;
   }
 
   @Override

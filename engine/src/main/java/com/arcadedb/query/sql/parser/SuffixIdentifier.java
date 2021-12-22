@@ -52,13 +52,6 @@ public class SuffixIdentifier extends SimpleNode {
     this.recordAttribute = attr;
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
-
   public void toString(Map<String, Object> params, StringBuilder builder) {
     if (identifier != null) {
       identifier.toString(params, builder);

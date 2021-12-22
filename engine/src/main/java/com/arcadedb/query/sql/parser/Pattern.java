@@ -70,8 +70,7 @@ public class Pattern {
               "In current MATCH version, optional nodes are allowed only on right terminal nodes, eg. {} --> {optional:true} is allowed, {optional:true} <-- {} is not. ");
         }
         if (node.in.size() == 0) {
-          throw new CommandSQLParsingException(
-              "In current MATCH version, optional nodes must have at least one incoming pattern edge");
+          throw new CommandSQLParsingException("In current MATCH version, optional nodes must have at least one incoming pattern edge");
         }
         //        if (node.in.size() != 1) {
         //          throw new OCommandSQLParsingException("In current MATCH version, optional nodes are allowed only as single terminal nodes. ");

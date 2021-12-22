@@ -39,21 +39,13 @@ public class ContainsCondition extends BooleanExpression {
     super(p, id);
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
-
   public boolean execute(Object left, Object right) {
     if (left instanceof Collection) {
       if (right instanceof Collection) {
         if (((Collection) right).size() == 1) {
           Object item = ((Collection) right).iterator().next();
           if (item instanceof Result && ((Result) item).getPropertyNames().size() == 1) {
-            Object propValue =
-                ((Result) item).getProperty(((Result) item).getPropertyNames().iterator().next());
+            Object propValue = ((Result) item).getProperty(((Result) item).getPropertyNames().iterator().next());
             if (((Collection) left).contains(propValue)) {
               return true;
             }
@@ -109,8 +101,7 @@ public class ContainsCondition extends BooleanExpression {
         boolean found = false;
         while (leftIterator.hasNext()) {
           Object rightItem = leftIterator.next();
-          if ((leftItem != null && leftItem.equals(rightItem))
-              || (leftItem == null && rightItem == null)) {
+          if ((leftItem != null && leftItem.equals(rightItem)) || (leftItem == null && rightItem == null)) {
             found = true;
             break;
           }

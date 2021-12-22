@@ -30,17 +30,20 @@ public class Permission extends SimpleNode {
     super(p, id);
   }
 
-  @Override public void toString(Map<String, Object> params, StringBuilder builder) {
+  @Override
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     builder.append(permission);
   }
 
-  @Override public Permission copy() {
+  @Override
+  public Permission copy() {
     Permission result = new Permission(-1);
     result.permission = permission;
     return result;
   }
 
-  @Override public boolean equals(Object o) {
+  @Override
+  public boolean equals(Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
@@ -51,7 +54,8 @@ public class Permission extends SimpleNode {
     return permission != null ? permission.equals(that.permission) : that.permission == null;
   }
 
-  @Override public int hashCode() {
+  @Override
+  public int hashCode() {
     return permission != null ? permission.hashCode() : 0;
   }
 }

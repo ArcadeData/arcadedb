@@ -26,13 +26,6 @@ public class ArrayConcatExpressionElement extends Expression {
     super(p, id);
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
-
   @Override
   public ArrayConcatExpressionElement copy() {
     ArrayConcatExpressionElement result = new ArrayConcatExpressionElement(-1);

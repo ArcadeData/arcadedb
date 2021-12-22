@@ -43,13 +43,6 @@ public class WhereClause extends SimpleNode {
     super(p, id);
   }
 
-  /**
-   * Accept the visitor. *
-   */
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
-
   public boolean matchesFilters(Identifiable currentRecord, CommandContext ctx) {
     if (baseExpression == null) {
       return true;

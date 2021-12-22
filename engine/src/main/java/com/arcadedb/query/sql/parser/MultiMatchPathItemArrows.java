@@ -17,8 +17,7 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-public
-class MultiMatchPathItemArrows extends MultiMatchPathItem {
+public class MultiMatchPathItemArrows extends MultiMatchPathItem {
   public MultiMatchPathItemArrows(int id) {
     super(id);
   }
@@ -27,10 +26,5 @@ class MultiMatchPathItemArrows extends MultiMatchPathItem {
     super(p, id);
   }
 
-
-  /** Accept the visitor. **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
 }
 /* JavaCC - OriginalChecksum=75506ca75aab9f66ab24c9f1b1cfe3ac (do not edit this line) */

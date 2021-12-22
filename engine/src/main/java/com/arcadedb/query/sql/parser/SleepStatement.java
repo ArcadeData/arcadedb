@@ -36,7 +36,8 @@ public class SleepStatement extends SimpleExecStatement {
     super(p, id);
   }
 
-  @Override public ResultSet executeSimple(CommandContext ctx) {
+  @Override
+  public ResultSet executeSimple(CommandContext ctx) {
 
     InternalResultSet result = new InternalResultSet();
     ResultInternal item = new ResultInternal();
@@ -56,18 +57,21 @@ public class SleepStatement extends SimpleExecStatement {
 
   }
 
-  @Override public void toString(Map<String, Object> params, StringBuilder builder) {
+  @Override
+  public void toString(Map<String, Object> params, StringBuilder builder) {
     builder.append("SLEEP ");
     millis.toString(params, builder);
   }
 
-  @Override public SleepStatement copy() {
+  @Override
+  public SleepStatement copy() {
     SleepStatement result = new SleepStatement(-1);
     result.millis = millis == null ? null : millis.copy();
     return result;
   }
 
-  @Override public boolean equals(Object o) {
+  @Override
+  public boolean equals(Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
@@ -78,7 +82,8 @@ public class SleepStatement extends SimpleExecStatement {
     return millis != null ? millis.equals(that.millis) : that.millis == null;
   }
 
-  @Override public int hashCode() {
+  @Override
+  public int hashCode() {
     return millis != null ? millis.hashCode() : 0;
   }
 }

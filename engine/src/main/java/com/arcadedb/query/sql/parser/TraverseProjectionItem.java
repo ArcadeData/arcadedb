@@ -88,13 +88,6 @@ public class TraverseProjectionItem extends SimpleNode {
     return val instanceof Result;
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
-
   public void toString(Map<String, Object> params, StringBuilder builder) {
 
     base.toString(params, builder);

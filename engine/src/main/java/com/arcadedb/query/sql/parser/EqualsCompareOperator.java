@@ -31,34 +31,33 @@ public class EqualsCompareOperator extends SimpleNode implements BinaryCompareOp
     super(p, id);
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
-
-  @Override public boolean execute(DatabaseInternal database, Object iLeft, Object iRight) {
+  @Override
+  public boolean execute(DatabaseInternal database, Object iLeft, Object iRight) {
     return QueryOperatorEquals.equals(iLeft, iRight);
   }
 
-  @Override public boolean supportsBasicCalculation() {
+  @Override
+  public boolean supportsBasicCalculation() {
     return true;
   }
 
-  @Override public String toString() {
+  @Override
+  public String toString() {
     return doubleEquals ? "==" : "=";
   }
 
-  @Override public EqualsCompareOperator copy() {
+  @Override
+  public EqualsCompareOperator copy() {
     return this;
   }
 
-  @Override public boolean equals(Object obj) {
-    return obj != null && obj.getClass().equals(this.getClass()) && ((EqualsCompareOperator)obj).doubleEquals == doubleEquals;
+  @Override
+  public boolean equals(Object obj) {
+    return obj != null && obj.getClass().equals(this.getClass()) && ((EqualsCompareOperator) obj).doubleEquals == doubleEquals;
   }
 
-  @Override public int hashCode() {
+  @Override
+  public int hashCode() {
     return getClass().hashCode();
   }
 }

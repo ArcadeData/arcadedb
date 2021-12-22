@@ -19,20 +19,13 @@ package com.arcadedb.query.sql.parser;
 
 import java.util.*;
 
-public
-class Alias extends SimpleNode {
+public class Alias extends SimpleNode {
   public Alias(int id) {
     super(id);
   }
 
   public Alias(SqlParser p, int id) {
     super(p, id);
-  }
-
-
-  /** Accept the visitor. **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
   }
 
   public void toString(Map<String, Object> params, StringBuilder builder) {

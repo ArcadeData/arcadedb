@@ -23,11 +23,5 @@ public class BucketIdentifier extends SimpleNode {
     return bucketName;
   }
 
-  /**
-   * Accept the visitor.
-   **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
-  }
 }
 /* ParserGeneratorCC - OriginalChecksum=2df38a8c1ac60c28421dc4665da4a817 (do not edit this line) */

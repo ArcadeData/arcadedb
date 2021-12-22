@@ -17,20 +17,13 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-public
-class StatementSemicolon extends SimpleNode {
+public class StatementSemicolon extends SimpleNode {
   public StatementSemicolon(int id) {
     super(id);
   }
 
   public StatementSemicolon(SqlParser p, int id) {
     super(p, id);
-  }
-
-
-  /** Accept the visitor. **/
-  public Object jjtAccept(SqlParserVisitor visitor, Object data) {
-    return visitor.visit(this, data);
   }
 }
 /* JavaCC - OriginalChecksum=dd666171278492fc7540b6aed7c08733 (do not edit this line) */

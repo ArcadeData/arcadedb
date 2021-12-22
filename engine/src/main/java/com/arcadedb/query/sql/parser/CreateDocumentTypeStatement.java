@@ -99,8 +99,7 @@ public class CreateDocumentTypeStatement extends DDLStatement {
     if (supertypes == null) {
       return new DocumentType[] {};
     }
-    return supertypes.stream().map(x -> schema.getType(x.getStringValue())).filter(x -> x != null).collect(Collectors.toList())
-        .toArray(new DocumentType[] {});
+    return supertypes.stream().map(x -> schema.getType(x.getStringValue())).filter(x -> x != null).collect(Collectors.toList()).toArray(new DocumentType[] {});
   }
 
   private void checkSuperTypes(Schema schema, CommandContext ctx) {

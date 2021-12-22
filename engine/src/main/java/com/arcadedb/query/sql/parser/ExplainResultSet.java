@@ -33,11 +33,13 @@ public class ExplainResultSet implements ResultSet {
     this.executionPlan = executionPlan;
   }
 
-  @Override public boolean hasNext() {
+  @Override
+  public boolean hasNext() {
     return hasNext;
   }
 
-  @Override public Result next() {
+  @Override
+  public Result next() {
     if (!hasNext) {
       throw new IllegalStateException();
     }
@@ -48,15 +50,18 @@ public class ExplainResultSet implements ResultSet {
     return result;
   }
 
-  @Override public void close() {
+  @Override
+  public void close() {
 
   }
 
-  @Override public Optional<ExecutionPlan> getExecutionPlan() {
+  @Override
+  public Optional<ExecutionPlan> getExecutionPlan() {
     return Optional.of(executionPlan);
   }
 
-  @Override public Map<String, Long> getQueryStats() {
+  @Override
+  public Map<String, Long> getQueryStats() {
     return new HashMap<>();
   }
 }
