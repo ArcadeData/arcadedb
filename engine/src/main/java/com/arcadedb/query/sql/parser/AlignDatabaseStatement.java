@@ -29,9 +29,9 @@ public class AlignDatabaseStatement extends SimpleExecStatement {
 
     final DatabaseInternal database = ctx.getDatabase().getWrappedDatabaseInstance();
 
-    //final Map<String, Object> commandResult = database.alignToReplicas();
+    final Map<String, Object> commandResult = database.alignToReplicas();
 
-    //result.setPropertiesFromMap(commandResult);
+    result.setPropertiesFromMap(commandResult);
 
     final InternalResultSet rs = new InternalResultSet();
     rs.add(result);

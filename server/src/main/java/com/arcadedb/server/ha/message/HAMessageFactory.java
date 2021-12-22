@@ -22,11 +22,8 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.ReplicationMessage;
 import com.arcadedb.utility.Pair;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.logging.Level;
+import java.util.*;
+import java.util.logging.*;
 
 public class HAMessageFactory {
   private final ArcadeDBServer                        server;
@@ -45,8 +42,9 @@ public class HAMessageFactory {
     registerCommand(DatabaseChangeStructureResponse.class);
     registerCommand(FileContentRequest.class);
     registerCommand(FileContentResponse.class);
+    registerCommand(DatabaseAlignRequest.class);
     registerCommand(TxRequest.class);
-    registerCommand(TxResponse.class);
+    registerCommand(OkResponse.class);
     registerCommand(TxForwardRequest.class);
     registerCommand(TxForwardResponse.class);
     registerCommand(CommandForwardRequest.class);

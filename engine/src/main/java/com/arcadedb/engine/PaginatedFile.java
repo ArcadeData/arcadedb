@@ -22,6 +22,7 @@ import java.nio.*;
 import java.nio.channels.*;
 import java.nio.file.*;
 import java.util.logging.*;
+import java.util.zip.*;
 
 public class PaginatedFile {
   public enum MODE {
@@ -98,6 +99,26 @@ public class PaginatedFile {
 
   public String getFileName() {
     return fileName;
+  }
+
+  public long calculateChecksum() throws IOException {
+    final CRC32 crc = new CRC32();
+
+    final ByteBuffer buffer = ByteBuffer.allocate(getPageSize());
+
+    final long totalPages = getTotalPages();
+    for (int i = 0; i < totalPages; i++) {
+      buffer.clear();
+      channel.read(buffer, pageSize * (long) i);
+
+      buffer.rewind();
+      for (int j = 0; j < pageSize; j++) {
+        final int read = buffer.get(j);
+        crc.update(read);
+      }
+    }
+
+    return crc.getValue();
   }
 
   /**

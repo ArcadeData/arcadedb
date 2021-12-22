@@ -1077,7 +1077,7 @@ public class EmbeddedSchema implements Schema {
             final PaginatedComponent bucket = bucketMap.get(schemaBucket.getString(i));
             if (bucket == null) {
               LogManager.instance()
-                  .log(this, Level.WARNING, "Cannot find bucket %s for type '%s', removing it from type configuration", null, schemaBucket.getString(i), type);
+                  .log(this, Level.WARNING, "Cannot find bucket '%s' for type '%s', removing it from type configuration", null, schemaBucket.getString(i), type);
 
               // GO BACK
               schemaBucket.remove(i);
@@ -1131,7 +1131,15 @@ public class EmbeddedSchema implements Schema {
 
               index.setNullStrategy(nullStrategy);
 
-              type.addIndexInternal(index, bucketMap.get(indexJSON.getString("bucket")).getId(), properties);
+              final String bucketName = indexJSON.getString("bucket");
+              final Bucket bucket = bucketMap.get(bucketName);
+              if (bucket == null) {
+                orphanIndexes.put(indexName, indexJSON);
+                indexJSON.put("type", typeName);
+                LogManager.instance().log(this, Level.WARNING, "Cannot find bucket '%s' defined in index '%s'. Ignoring it", null, bucketName, index.getName());
+              } else
+                type.addIndexInternal(index, bucket.getId(), properties);
+
             } else {
               orphanIndexes.put(indexName, indexJSON);
               indexJSON.put("type", typeName);

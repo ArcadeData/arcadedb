@@ -75,6 +75,8 @@ MORE :
 /* reserved words */
 TOKEN:
 {
+	< ALIGN: ( "a" | "A" ) ( "l" | "L" ) ( "i" | "I" ) ( "g" | "G" ) ( "n" | "N" ) >
+	|
 	< SELECT: ( "s" | "S" ) ( "e" | "E" ) ( "l" | "L" ) ( "e" | "E" ) ( "c" | "C" ) ( "t" | "T" ) >
 	|
 	< TRAVERSE: ( "t" | "T") ( "r" | "R") ( "a" | "A") ( "v" | "V") ( "e" | "E") ( "r" | "R") ( "s" | "S") ( "e" | "E") >
@@ -717,6 +719,8 @@ Identifier Identifier():
 }
 {
 (
+  token = <ALIGN>
+  |
   token = <IDENTIFIER>
   |
   token = <IN>
@@ -1101,6 +1105,8 @@ Statement StatementInternal():
         result = BackupDatabaseStatement()
         |
         result = CheckDatabaseStatement()
+        |
+        result = AlignDatabaseStatement()
       )
     )
     |
@@ -4284,6 +4290,18 @@ CheckDatabaseStatement CheckDatabaseStatement():
       ( <COMMA> lastBucket = BucketIdentifier() { jjtThis.buckets.add(lastBucket); } )*
     ]
     [ <FIX> { jjtThis.fix = true; } ]
+  )
+  {return jjtThis; }
+}
+
+AlignDatabaseStatement AlignDatabaseStatement():
+{
+  BucketIdentifier lastBucket;
+  String lastType;
+}
+{
+  (
+    <ALIGN> <DATABASE>
   )
   {return jjtThis; }
 }

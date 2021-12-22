@@ -61,6 +61,7 @@ import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.message.CommandForwardRequest;
+import com.arcadedb.server.ha.message.DatabaseAlignRequest;
 import com.arcadedb.server.ha.message.DatabaseChangeStructureRequest;
 import com.arcadedb.server.ha.message.TxForwardRequest;
 import com.arcadedb.server.ha.message.TxRequest;
@@ -706,6 +707,56 @@ public class ReplicatedDatabase implements DatabaseInternal {
   @Override
   public void saveConfiguration() throws IOException {
     proxied.saveConfiguration();
+  }
+
+  /**
+   * Aligns the database against all the replicas. This fixes any replication problem occured by overwriting the database content of replicas. This process
+   * first calculates the checksum of every files in the database. Then sends the checksums to the replicas, waiting for a response from each of them about
+   * which files differ. In case one or more files differ, a page by page CRC is calculated and sent to the replica. The replica responds with the page id
+   * of the page that differs, so the leader will send only the pages that differ to the replica to be overwritten.
+   */
+  @Override
+  public Map<String, Object> alignToReplicas() {
+    final HAServer ha = server.getHA();
+    if (!ha.isLeader()) {
+      // NOT THE LEADER
+      throw new ServerIsNotTheLeaderException("Align database can be executed only on the leader server", ha.getLeaderName());
+    }
+
+    final Map<String, Object> result = new HashMap<>();
+
+    final int quorum = ha.getConfiguredServers();
+    if (quorum == 1)
+      // NO ACTIVE NODES
+      return result;
+
+    final Map<Integer, Long> fileChecksums = new HashMap<>();
+    final Map<Integer, Long> fileSizes = new HashMap<>();
+
+    // ACQUIRE A READ LOCK. TRANSACTION CAN STILL RUN, BUT CREATION OF NEW FILES (BUCKETS, TYPES, INDEXES) WILL BE PUT ON PAUSE UNTIL THIS LOCK IS RELEASED
+    executeInReadLock(() -> {
+      // AVOID FLUSHING OF DATA PAGES TO DISK
+      proxied.getPageManager().suspendPageFlushing(true);
+      try {
+        final List<PaginatedFile> files = proxied.getFileManager().getFiles();
+
+        for (PaginatedFile paginatedFile : files)
+          if (paginatedFile != null) {
+            long fileChecksum = paginatedFile.calculateChecksum();
+            fileChecksums.put(paginatedFile.getFileId(), fileChecksum);
+            fileSizes.put(paginatedFile.getFileId(), paginatedFile.getSize());
+          }
+
+        final DatabaseAlignRequest request = new DatabaseAlignRequest(getName(), getSchema().getEmbedded().toJSON().toString(), fileChecksums, fileSizes);
+        ha.sendCommandToReplicasWithQuorum(request, quorum, 120_000);
+
+      } finally {
+        proxied.getPageManager().suspendPageFlushing(false);
+      }
+      return null;
+    });
+
+    return result;
   }
 
   private DatabaseChangeStructureRequest getChangeStructure(final long schemaVersionBefore) {

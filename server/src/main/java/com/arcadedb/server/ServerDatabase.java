@@ -105,6 +105,11 @@ public class ServerDatabase implements DatabaseInternal {
     return wrapped.getCurrentUserName();
   }
 
+  @Override
+  public Map<String, Object> alignToReplicas() {
+    throw new UnsupportedOperationException("Align Database not supported");
+  }
+
   public TransactionContext getTransaction() {
     return wrapped.getTransaction();
   }

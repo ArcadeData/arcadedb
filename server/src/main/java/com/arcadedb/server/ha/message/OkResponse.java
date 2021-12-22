@@ -18,9 +18,9 @@ package com.arcadedb.server.ha.message;
 import com.arcadedb.server.ha.HAServer;
 
 /**
- * Response for a transaction. This is needed to check the quorum by the leader.
+ * Response for a request. This is needed to check the quorum by the leader.
  */
-public class TxResponse extends HAAbstractCommand {
+public class OkResponse extends HAAbstractCommand {
   @Override
   public HACommand execute(final HAServer server, final String remoteServerName, final long messageNumber) {
     server.receivedResponse(remoteServerName, messageNumber);
@@ -29,6 +29,6 @@ public class TxResponse extends HAAbstractCommand {
 
   @Override
   public String toString() {
-    return "tx-response";
+    return "ok-response";
   }
 }

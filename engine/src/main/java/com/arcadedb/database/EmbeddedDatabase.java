@@ -1435,6 +1435,11 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   }
 
   @Override
+  public Map<String, Object> alignToReplicas() {
+    throw new UnsupportedOperationException("Align Database not supported");
+  }
+
+  @Override
   public DatabaseInternal getWrappedDatabaseInstance() {
     return wrappedDatabaseInstance;
   }

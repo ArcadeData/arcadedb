@@ -105,7 +105,7 @@ public class TxRequest extends TxRequestAbstract {
       db.getSchema().getEmbedded().initComponents();
 
     if (waitForResponse)
-      return new TxResponse();
+      return new OkResponse();
 
     return null;
   }

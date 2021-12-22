@@ -21,9 +21,6 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.engine.MutablePage;
-import com.arcadedb.engine.PageId;
-import com.arcadedb.engine.PageManager;
 import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ChannelBinaryClient;
@@ -379,7 +376,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
 
     try {
       sendCommandToLeader(buffer, new ReplicaConnectRequest(lastLogNumber), -1);
-      final HACommand response = receiveCommandFromLeaderDuringJoining(buffer);
+      final HACommand response = receiveCommandFromLeaderDuringJoin(buffer);
 
       if (response instanceof ReplicaConnectFullResyncResponse) {
         server.getServer().log(this, Level.INFO, "Asking for a full resync...");
@@ -393,7 +390,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
 
         for (String db : databases) {
           sendCommandToLeader(buffer, new DatabaseStructureRequest(db), -1);
-          final DatabaseStructureResponse dbStructure = (DatabaseStructureResponse) receiveCommandFromLeaderDuringJoining(buffer);
+          final DatabaseStructureResponse dbStructure = (DatabaseStructureResponse) receiveCommandFromLeaderDuringJoin(buffer);
 
           final DatabaseInternal database = (DatabaseInternal) server.getServer().getOrCreateDatabase(db);
 
@@ -429,7 +426,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
 
     // WRITE ALL THE FILES
     for (Map.Entry<Integer, String> f : dbStructure.getFileNames().entrySet()) {
-      installFile(buffer, db, database, f.getKey(), f.getValue());
+      installFile(buffer, db, f.getKey(), f.getValue(), 0, -1);
     }
 
     // RELOAD THE SCHEMA
@@ -438,42 +435,25 @@ public class Replica2LeaderNetworkExecutor extends Thread {
     database.getSchema().getEmbedded().load(PaginatedFile.MODE.READ_WRITE, true);
   }
 
-  private void installFile(final Binary buffer, final String db, final DatabaseInternal database, final int fileId, final String fileName) throws IOException {
-    final PageManager pageManager = database.getPageManager();
+  private void installFile(final Binary buffer, final String db, final int fileId, final String fileName, final int pageFromInclusive,
+      final int pageToInclusive) throws IOException {
 
-    final PaginatedFile file = database.getFileManager().getOrCreateFile(fileId, database.getDatabasePath() + "/" + fileName);
-
-    final int pageSize = file.getPageSize();
-
-    int from = 0;
+    int from = pageFromInclusive;
 
     server.getServer().log(this, Level.FINE, "Installing file '%s'...", fileName);
 
-    int pages = 0;
+    int pagesWritten = 0;
     long fileSize = 0;
-
     while (true) {
-      sendCommandToLeader(buffer, new FileContentRequest(db, fileId, from), -1);
-      final FileContentResponse fileChunk = (FileContentResponse) receiveCommandFromLeaderDuringJoining(buffer);
+      sendCommandToLeader(buffer, new FileContentRequest(db, fileId, from, pageToInclusive), -1);
+      final FileContentResponse fileChunk = (FileContentResponse) receiveCommandFromLeaderDuringJoin(buffer);
+
+      fileChunk.execute(server, null, -1);
 
       if (fileChunk.getPages() == 0)
         break;
 
-      if (fileChunk.getPagesContent().size() != fileChunk.getPages() * pageSize) {
-        server.getServer().log(this, Level.SEVERE, "Error on received chunk for file '%s': size=%s, expected=%s (pages=%d)", fileName,
-            FileUtils.getSizeAsString(fileChunk.getPagesContent().size()), FileUtils.getSizeAsString((long) fileChunk.getPages() * pageSize), pages);
-        throw new ReplicationException("Invalid file chunk");
-      }
-
-      for (int i = 0; i < fileChunk.getPages(); ++i) {
-        final MutablePage page = new MutablePage(pageManager, new PageId(file.getFileId(), from + i), pageSize);
-        System.arraycopy(fileChunk.getPagesContent().getContent(), i * pageSize, page.getTrackable().getContent(), 0, pageSize);
-        page.loadMetadata();
-        pageManager.overridePage(page);
-
-        ++pages;
-        fileSize += pageSize;
-      }
+      pagesWritten += fileChunk.getPages();
 
       if (fileChunk.isLast())
         break;
@@ -481,10 +461,10 @@ public class Replica2LeaderNetworkExecutor extends Thread {
       from += fileChunk.getPages();
     }
 
-    server.getServer().log(this, Level.FINE, "File '%s' installed (pages=%d size=%s)", fileName, pages, FileUtils.getSizeAsString(fileSize));
+    server.getServer().log(this, Level.FINE, "File '%s' installed (pagesWritten=%d size=%s)", fileName, pagesWritten, FileUtils.getSizeAsString(fileSize));
   }
 
-  private HACommand receiveCommandFromLeaderDuringJoining(final Binary buffer) throws IOException {
+  private HACommand receiveCommandFromLeaderDuringJoin(final Binary buffer) throws IOException {
     final byte[] response = receiveResponse();
 
     final Pair<ReplicationMessage, HACommand> command = server.getMessageFactory().deserializeCommand(buffer, response);
