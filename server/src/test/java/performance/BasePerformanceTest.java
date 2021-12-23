@@ -202,7 +202,13 @@ public abstract class BasePerformanceTest {
       final Database db2 = getServerDatabase(servers2Check[i], getDatabaseName());
 
       LogManager.instance().log(this, Level.INFO, "TEST: Comparing databases '%s' and '%s' are identical...", null, db1, db2);
-      new DatabaseComparator().compare(db1, db2);
+      try {
+        new DatabaseComparator().compare(db1, db2);
+        LogManager.instance().log(this, Level.INFO, "TEST: Comparing databases '%s' and '%s' are identical...", null, db1, db2);
+      } catch (RuntimeException e) {
+        LogManager.instance().log(this, Level.INFO, "ERROR on comparing databases '%s' and '%s'", null, db1, db2, e.getMessage());
+        throw e;
+      }
     }
   }
 }
