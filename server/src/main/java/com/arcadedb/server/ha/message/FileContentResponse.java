@@ -87,10 +87,15 @@ public class FileContentResponse extends HAAbstractCommand {
       }
 
       for (int i = 0; i < totalPages; ++i) {
-        final MutablePage page = new MutablePage(pageManager, new PageId(file.getFileId(), pageFromInclusive + i), pageSize);
+        final PageId pageId = new PageId(file.getFileId(), pageFromInclusive + i);
+
+        final MutablePage page = new MutablePage(pageManager, pageId, pageSize);
         System.arraycopy(pagesContent.getContent(), i * pageSize, page.getTrackable().getContent(), 0, pageSize);
         page.loadMetadata();
         pageManager.overridePage(page);
+
+        LogManager.instance().log(this, Level.FINE, "Overridden page %s from the leader", null,//
+            pageId);
       }
 
     } catch (IOException e) {

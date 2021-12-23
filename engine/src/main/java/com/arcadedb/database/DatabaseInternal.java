@@ -33,8 +33,6 @@ import java.util.concurrent.*;
  * Internal API, do not use as an end user.
  */
 public interface DatabaseInternal extends Database {
-  Map<String, Object> alignToReplicas();
-
   enum CALLBACK_EVENT {
     TX_AFTER_WAL_WRITE, DB_NOT_CLOSED
   }
@@ -108,4 +106,6 @@ public interface DatabaseInternal extends Database {
   <RET> RET recordFileChanges(final Callable<Object> callback);
 
   void saveConfiguration() throws IOException;
+
+  Map<String, Object> alignToReplicas();
 }

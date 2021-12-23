@@ -120,10 +120,10 @@ public class DatabaseAlignRequest extends HAAbstractCommand {
         }
 
         // ASK FOR FILES
-        final int quorum = server.getConfiguredServers();
+        final Binary buffer = new Binary();
         for (int[] entry : pagesToAlign) {
           final FileContentRequest fileAlign = new FileContentRequest(databaseName, entry[0], entry[1], entry[2]);
-          server.sendCommandToReplicasWithQuorum(fileAlign, quorum, 30_000);
+          server.getLeader().sendCommandToLeader(buffer, fileAlign, -1);
         }
 
       } finally {

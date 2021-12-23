@@ -16,9 +16,14 @@
 package com.arcadedb.server.ha;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseComparator;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Record;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
@@ -45,7 +50,35 @@ public class ServerDatabaseAlignIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void alignOk() {
+  public void alignNoNecessary() {
+    final Database database = getServer(0).getDatabase(getDatabaseName());
+
+    database.transaction(() -> {
+      final Record edge = database.iterateType(EDGE2_TYPE_NAME, true).next();
+
+      database.deleteRecord(edge);
+    });
+
+    getServer(0).getDatabase(getDatabaseName()).command("sql", "align database");
+  }
+
+  @Test
+  public void alignNecessary() {
+    final DatabaseInternal database = ((DatabaseInternal) getServer(0).getDatabase(getDatabaseName())).getEmbedded().getEmbedded();
+
+    // EXPLICIT TX ON THE UNDERLYING DATABASE IS THE ONLY WAY TO BYPASS REPLICATED DATABASE
+    database.begin();
+    final Record edge = database.iterateType(EDGE1_TYPE_NAME, true).next();
+    edge.delete();
+    database.commit();
+
+    try {
+      checkDatabasesAreIdentical();
+      Assertions.fail();
+    } catch (DatabaseComparator.DatabaseAreNotIdentical e) {
+      // EXPECTED
+    }
+
     getServer(0).getDatabase(getDatabaseName()).command("sql", "align database");
   }
 }
