@@ -92,9 +92,9 @@ public class FileContentResponse extends HAAbstractCommand {
         final MutablePage page = new MutablePage(pageManager, pageId, pageSize);
         System.arraycopy(pagesContent.getContent(), i * pageSize, page.getTrackable().getContent(), 0, pageSize);
         page.loadMetadata();
-        pageManager.overridePage(page);
+        pageManager.overwritePage(page);
 
-        LogManager.instance().log(this, Level.FINE, "Overridden page %s from the leader", null,//
+        LogManager.instance().log(this, Level.FINE, "Overwritten page %s from the leader", null,//
             pageId);
       }
 

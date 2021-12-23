@@ -264,7 +264,7 @@ public class PageManager extends LockContext {
     return page;
   }
 
-  public void overridePage(final MutablePage page) throws IOException {
+  public void overwritePage(final MutablePage page) throws IOException {
     readCache.remove(page.pageId);
 
     // ADD THE PAGE IN TO WRITE CACHE. FROM THIS POINT THE PAGE IS NEVER MODIFIED DIRECTLY, SO IT CAN BE SHARED
