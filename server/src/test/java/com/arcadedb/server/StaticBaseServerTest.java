@@ -385,18 +385,22 @@ public abstract class StaticBaseServerTest {
         DatabaseContext.INSTANCE.init(db1);
         DatabaseContext.INSTANCE.init(db2);
 
-        testLog("Comparing databases '%s' and '%s' are identical...", db1.getDatabasePath(), db2.getDatabasePath());
-        new DatabaseComparator().compare(db1, db2);
+        LogManager.instance().log(StaticBaseServerTest.class, Level.INFO, "TEST: Comparing databases '%s' and '%s' are identical...", null, db1, db2);
+        try {
+          new DatabaseComparator().compare(db1, db2);
+          LogManager.instance().log(StaticBaseServerTest.class, Level.INFO, "TEST: Comparing databases '%s' and '%s' are identical", null, db1, db2);
+        } catch (RuntimeException e) {
+          LogManager.instance().log(StaticBaseServerTest.class, Level.INFO, "ERROR on comparing databases '%s' and '%s'", null, db1, db2, e.getMessage());
+          throw e;
+        }
       }
     }
   }
 
   protected static void testLog(final String msg, final Object... args) {
-    LogManager.instance().log(StaticBaseServerTest.class, Level.INFO,
-        "****************************************************************************************************************");
+    LogManager.instance().log(StaticBaseServerTest.class, Level.INFO, "***********************************************************************************");
     LogManager.instance().log(StaticBaseServerTest.class, Level.INFO, "TEST: " + msg, null, args);
-    LogManager.instance().log(StaticBaseServerTest.class, Level.INFO,
-        "****************************************************************************************************************");
+    LogManager.instance().log(StaticBaseServerTest.class, Level.INFO, "***********************************************************************************");
   }
 
   protected void testEachServer(Callback callback) throws Exception {

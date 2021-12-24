@@ -20,7 +20,6 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseComparator;
-import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
@@ -439,38 +438,32 @@ public abstract class BaseGraphServerTest {
   protected void checkDatabasesAreIdentical() {
     final int[] servers2Check = getServerToCheck();
 
-    if (servers2Check.length > 1) {
-      LogManager.instance().log(this, Level.INFO, "END OF THE TEST: Check DBS are identical...");
+    for (int i = 1; i < servers2Check.length; ++i) {
+      final Database db1 = getServerDatabase(servers2Check[0], getDatabaseName());
+      final Database db2 = getServerDatabase(servers2Check[i], getDatabaseName());
 
-      for (int i = 1; i < servers2Check.length; ++i) {
-        final DatabaseInternal db1 = (DatabaseInternal) getServerDatabase(servers2Check[0], getDatabaseName());
-        final DatabaseInternal db2 = (DatabaseInternal) getServerDatabase(servers2Check[i], getDatabaseName());
-
-        // TODO: DISCOVER WHY THIS IS NEEDED. NOW CAN HAPPENS THAT THE TX HAS A DB INSTANCE DIFFERENT FROM THE CURRENT DATABASE. AND IT'S ALWAYS CLOSED
-        DatabaseContext.INSTANCE.init(db1);
-        DatabaseContext.INSTANCE.init(db2);
-
-        testLog("Comparing databases '%s' and '%s' are identical...", db1.getDatabasePath(), db2.getDatabasePath());
+      LogManager.instance().log(this, Level.INFO, "TEST: Comparing databases '%s' and '%s' are identical...", null, db1, db2);
+      try {
         new DatabaseComparator().compare(db1, db2);
+        LogManager.instance().log(this, Level.INFO, "TEST: Comparing databases '%s' and '%s' are identical", null, db1, db2);
+      } catch (RuntimeException e) {
+        LogManager.instance().log(this, Level.INFO, "ERROR on comparing databases '%s' and '%s'", null, db1, db2, e.getMessage());
+        throw e;
       }
     }
   }
 
   protected void testLog(final String msg, final Object... args) {
-    LogManager.instance()
-        .log(this, Level.INFO, "****************************************************************************************************************");
+    LogManager.instance().log(this, Level.INFO, "***********************************************************************************");
     LogManager.instance().log(this, Level.INFO, "TEST: " + msg, null, args);
-    LogManager.instance()
-        .log(this, Level.INFO, "****************************************************************************************************************");
+    LogManager.instance().log(this, Level.INFO, "***********************************************************************************");
   }
 
   protected void testEachServer(Callback callback) throws Exception {
     for (int i = 0; i < getServerCount(); i++) {
-      LogManager.instance()
-          .log(this, Level.INFO, "****************************************************************************************************************");
+      LogManager.instance().log(this, Level.INFO, "***********************************************************************************");
       LogManager.instance().log(this, Level.INFO, "EXECUTING TEST ON SERVER %d/%d...", null, i, getServerCount());
-      LogManager.instance()
-          .log(this, Level.INFO, "****************************************************************************************************************");
+      LogManager.instance().log(this, Level.INFO, "***********************************************************************************");
       callback.call(i);
     }
   }
