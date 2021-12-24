@@ -385,12 +385,17 @@ public abstract class StaticBaseServerTest {
         DatabaseContext.INSTANCE.init(db1);
         DatabaseContext.INSTANCE.init(db2);
 
-        LogManager.instance().log(StaticBaseServerTest.class, Level.INFO, "TEST: Comparing databases '%s' and '%s' are identical...", null, db1, db2);
+        LogManager.instance()
+            .log(StaticBaseServerTest.class, Level.INFO, "TEST: Comparing databases '%s' and '%s' are identical...", null, db1.getDatabasePath(),
+                db2.getDatabasePath());
         try {
           new DatabaseComparator().compare(db1, db2);
-          LogManager.instance().log(StaticBaseServerTest.class, Level.INFO, "TEST: Comparing databases '%s' and '%s' are identical", null, db1, db2);
+          LogManager.instance().log(StaticBaseServerTest.class, Level.INFO, "TEST: OK databases '%s' and '%s' are identical", null, db1.getDatabasePath(),
+              db2.getDatabasePath());
         } catch (RuntimeException e) {
-          LogManager.instance().log(StaticBaseServerTest.class, Level.INFO, "ERROR on comparing databases '%s' and '%s'", null, db1, db2, e.getMessage());
+          LogManager.instance()
+              .log(StaticBaseServerTest.class, Level.INFO, "ERROR on comparing databases '%s' and '%s': %s", null, db1.getDatabasePath(), db2.getDatabasePath(),
+                  e.getMessage());
           throw e;
         }
       }
