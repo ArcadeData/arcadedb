@@ -62,6 +62,7 @@ import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.message.CommandForwardRequest;
 import com.arcadedb.server.ha.message.DatabaseAlignRequest;
+import com.arcadedb.server.ha.message.DatabaseAlignResponse;
 import com.arcadedb.server.ha.message.DatabaseChangeStructureRequest;
 import com.arcadedb.server.ha.message.TxForwardRequest;
 import com.arcadedb.server.ha.message.TxRequest;
@@ -748,7 +749,14 @@ public class ReplicatedDatabase implements DatabaseInternal {
           }
 
         final DatabaseAlignRequest request = new DatabaseAlignRequest(getName(), getSchema().getEmbedded().toJSON().toString(), fileChecksums, fileSizes);
-        ha.sendCommandToReplicasWithQuorum(request, quorum, 120_000);
+        final List<Object> responsePayloads = ha.sendCommandToReplicasWithQuorum(request, quorum, 120_000);
+
+        if (responsePayloads != null) {
+          for (Object o : responsePayloads) {
+            final DatabaseAlignResponse response = (DatabaseAlignResponse) o;
+            result.put(response.getRemoteServerName(), response.getAlignedPages());
+          }
+        }
 
       } finally {
         proxied.getPageManager().suspendPageFlushing(false);

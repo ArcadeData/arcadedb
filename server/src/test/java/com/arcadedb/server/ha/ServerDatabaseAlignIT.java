@@ -20,6 +20,8 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseComparator;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Record;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
@@ -27,6 +29,7 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
+import java.util.*;
 
 public class ServerDatabaseAlignIT extends BaseGraphServerTest {
   @Override
@@ -50,7 +53,7 @@ public class ServerDatabaseAlignIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void alignNoNecessary() throws InterruptedException {
+  public void alignNotNecessary() throws InterruptedException {
     final Database database = getServer(0).getDatabase(getDatabaseName());
 
     database.transaction(() -> {
@@ -59,7 +62,16 @@ public class ServerDatabaseAlignIT extends BaseGraphServerTest {
       database.deleteRecord(edge);
     });
 
-    getServer(0).getDatabase(getDatabaseName()).command("sql", "align database");
+    final ResultSet resultset = getServer(0).getDatabase(getDatabaseName()).command("sql", "align database");
+
+    Assertions.assertTrue(resultset.hasNext());
+    final Result result = resultset.next();
+
+    Assertions.assertFalse(result.hasProperty("ArcadeDB_0"));
+    Assertions.assertTrue(result.hasProperty("ArcadeDB_1"));
+    Assertions.assertEquals(0, ((List<int[]>) result.getProperty("ArcadeDB_1")).size());
+    Assertions.assertTrue(result.hasProperty("ArcadeDB_2"));
+    Assertions.assertEquals(0, ((List<int[]>) result.getProperty("ArcadeDB_2")).size());
 
     // WAIT THE ALIGN IS COMPLETE BEFORE CHECKING THE DATABASES
     Thread.sleep(3000);
@@ -82,7 +94,16 @@ public class ServerDatabaseAlignIT extends BaseGraphServerTest {
       // EXPECTED
     }
 
-    getServer(0).getDatabase(getDatabaseName()).command("sql", "align database");
+    final ResultSet resultset = getServer(0).getDatabase(getDatabaseName()).command("sql", "align database");
+
+    Assertions.assertTrue(resultset.hasNext());
+    final Result result = resultset.next();
+
+    Assertions.assertFalse(result.hasProperty("ArcadeDB_0"));
+    Assertions.assertTrue(result.hasProperty("ArcadeDB_1"));
+    Assertions.assertEquals(3, ((List<int[]>) result.getProperty("ArcadeDB_1")).size());
+    Assertions.assertTrue(result.hasProperty("ArcadeDB_2"));
+    Assertions.assertEquals(3, ((List<int[]>) result.getProperty("ArcadeDB_2")).size());
 
     // WAIT THE ALIGN IS COMPLETE BEFORE CHECKING THE DATABASES
     Thread.sleep(3000);

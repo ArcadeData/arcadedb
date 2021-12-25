@@ -83,13 +83,14 @@ public class DatabaseAlignRequest extends HAAbstractCommand {
   public HACommand execute(final HAServer server, final String remoteServerName, final long messageNumber) {
     final DatabaseInternal database = (DatabaseInternal) server.getServer().getDatabase(databaseName);
 
+    final List<int[]> pagesToAlign = new ArrayList<>();
+
     // ACQUIRE A READ LOCK. TRANSACTION CAN STILL RUN, BUT CREATION OF NEW FILES (BUCKETS, TYPES, INDEXES) WILL BE PUT ON PAUSE UNTIL THIS LOCK IS RELEASED
     database.executeInReadLock(() -> {
       // AVOID FLUSHING OF DATA PAGES TO DISK
       database.getPageManager().suspendPageFlushing(true);
-      try {
-        final List<int[]> pagesToAlign = new ArrayList<>();
 
+      try {
         for (Map.Entry<Integer, Long> entry : fileSizes.entrySet()) {
           final Integer fileId = entry.getKey();
           final PaginatedFile file = database.getFileManager().getFile(fileId);
@@ -132,7 +133,7 @@ public class DatabaseAlignRequest extends HAAbstractCommand {
       return null;
     });
 
-    return new OkResponse();
+    return new DatabaseAlignResponse(pagesToAlign);
   }
 
   @Override

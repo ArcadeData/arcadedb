@@ -43,6 +43,7 @@ public class HAMessageFactory {
     registerCommand(FileContentRequest.class);
     registerCommand(FileContentResponse.class);
     registerCommand(DatabaseAlignRequest.class);
+    registerCommand(DatabaseAlignResponse.class);
     registerCommand(TxRequest.class);
     registerCommand(OkResponse.class);
     registerCommand(TxForwardRequest.class);

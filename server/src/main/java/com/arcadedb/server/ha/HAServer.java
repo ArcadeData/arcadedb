@@ -88,6 +88,7 @@ public class HAServer implements ServerPlugin {
   private static class QuorumMessage {
     public final long           sentOn = System.currentTimeMillis();
     public final CountDownLatch semaphore;
+    public       List<Object>   payloads;
 
     public QuorumMessage(final CountDownLatch quorumSemaphore) {
       this.semaphore = quorumSemaphore;
@@ -446,7 +447,7 @@ public class HAServer implements ServerPlugin {
     }
   }
 
-  public void receivedResponse(final String remoteServerName, final long messageNumber) {
+  public void receivedResponse(final String remoteServerName, final long messageNumber, final Object payload) {
     final long receivedOn = System.currentTimeMillis();
 
     final QuorumMessage msg = messagesWaitingForQuorum.get(messageNumber);
@@ -455,6 +456,14 @@ public class HAServer implements ServerPlugin {
       return;
 
     msg.semaphore.countDown();
+
+    if (payload != null) {
+      synchronized (msg) {
+        if (msg.payloads == null)
+          msg.payloads = new ArrayList<>();
+        msg.payloads.add(payload);
+      }
+    }
 
     // UPDATE LATENCY
     final Leader2ReplicaNetworkExecutor c = replicaConnections.get(remoteServerName);
@@ -643,7 +652,7 @@ public class HAServer implements ServerPlugin {
     }
   }
 
-  public long sendCommandToReplicasWithQuorum(final HACommand command, final int quorum, final long timeout) {
+  public List<Object> sendCommandToReplicasWithQuorum(final HACommand command, final int quorum, final long timeout) {
     checkCurrentNodeIsTheLeader();
 
     if (quorum > 1 + getOnlineReplicas()) {
@@ -654,8 +663,8 @@ public class HAServer implements ServerPlugin {
     final Binary buffer = new Binary();
 
     long opNumber = -1;
-
-    CountDownLatch quorumSemaphore = null;
+    QuorumMessage quorumMessage = null;
+    List<Object> responsePayloads = null;
 
     try {
       while (true) {
@@ -670,9 +679,9 @@ public class HAServer implements ServerPlugin {
           messageFactory.serializeCommand(command, buffer, opNumber);
 
           if (quorum > 1) {
-            quorumSemaphore = new CountDownLatch(quorum - 1);
             // REGISTER THE REQUEST TO WAIT FOR THE QUORUM
-            messagesWaitingForQuorum.put(opNumber, new QuorumMessage(quorumSemaphore));
+            quorumMessage = new QuorumMessage(new CountDownLatch(quorum - 1));
+            messagesWaitingForQuorum.put(opNumber, quorumMessage);
           }
 
           // SEND THE REQUEST TO ALL THE REPLICAS
@@ -686,8 +695,8 @@ public class HAServer implements ServerPlugin {
               if (replicaConnection.enqueueMessage(buffer.slice(0)))
                 ++sent;
               else {
-                if (quorumSemaphore != null)
-                  quorumSemaphore.countDown();
+                if (quorumMessage != null)
+                  quorumMessage.semaphore.countDown();
               }
 
             } catch (ReplicationException e) {
@@ -695,8 +704,8 @@ public class HAServer implements ServerPlugin {
                   e);
 
               // REMOVE THE REPLICA AND EXCLUDE IT FROM THE QUORUM
-              if (quorumSemaphore != null)
-                quorumSemaphore.countDown();
+              if (quorumMessage != null)
+                quorumMessage.semaphore.countDown();
             }
           }
         }
@@ -707,9 +716,9 @@ public class HAServer implements ServerPlugin {
           throw new QuorumNotReachedException("Quorum " + quorum + " not reached because only " + (sent + 1) + " server(s) are online");
         }
 
-        if (quorumSemaphore != null) {
+        if (quorumMessage != null) {
           try {
-            if (!quorumSemaphore.await(timeout, TimeUnit.MILLISECONDS)) {
+            if (!quorumMessage.semaphore.await(timeout, TimeUnit.MILLISECONDS)) {
 
               checkCurrentNodeIsTheLeader();
 
@@ -738,11 +747,13 @@ public class HAServer implements ServerPlugin {
       }
     } finally {
       // REQUEST IS OVER, REMOVE FROM THE QUORUM MAP
-      if (quorumSemaphore != null)
+      if (quorumMessage != null) {
+        responsePayloads = quorumMessage.payloads;
         messagesWaitingForQuorum.remove(opNumber);
+      }
     }
 
-    return opNumber;
+    return responsePayloads;
   }
 
   public void setReplicasHTTPAddresses(final String replicasHTTPAddresses) {
