@@ -94,7 +94,7 @@ public class FileContentResponse extends HAAbstractCommand {
         page.loadMetadata();
         pageManager.overwritePage(page);
 
-        LogManager.instance().log(this, Level.INFO, "Overwritten page %s v%d from the leader", null,//
+        LogManager.instance().log(this, Level.FINE, "Overwritten page %s v%d from the leader", null,//
             pageId, page.getVersion());
       }
 

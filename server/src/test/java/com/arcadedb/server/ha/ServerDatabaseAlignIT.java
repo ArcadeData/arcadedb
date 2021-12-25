@@ -50,7 +50,7 @@ public class ServerDatabaseAlignIT extends BaseGraphServerTest {
   }
 
   @Test
-  public void alignNoNecessary() {
+  public void alignNoNecessary() throws InterruptedException {
     final Database database = getServer(0).getDatabase(getDatabaseName());
 
     database.transaction(() -> {
@@ -60,10 +60,13 @@ public class ServerDatabaseAlignIT extends BaseGraphServerTest {
     });
 
     getServer(0).getDatabase(getDatabaseName()).command("sql", "align database");
+
+    // WAIT THE ALIGN IS COMPLETE BEFORE CHECKING THE DATABASES
+    Thread.sleep(3000);
   }
 
   @Test
-  public void alignNecessary() {
+  public void alignNecessary() throws InterruptedException {
     final DatabaseInternal database = ((DatabaseInternal) getServer(0).getDatabase(getDatabaseName())).getEmbedded().getEmbedded();
 
     // EXPLICIT TX ON THE UNDERLYING DATABASE IS THE ONLY WAY TO BYPASS REPLICATED DATABASE
@@ -80,5 +83,8 @@ public class ServerDatabaseAlignIT extends BaseGraphServerTest {
     }
 
     getServer(0).getDatabase(getDatabaseName()).command("sql", "align database");
+
+    // WAIT THE ALIGN IS COMPLETE BEFORE CHECKING THE DATABASES
+    Thread.sleep(3000);
   }
 }
