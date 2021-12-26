@@ -142,11 +142,11 @@ public class HAServer implements ServerPlugin {
 
     final String fileName = replicationPath + "/replication_" + server.getServerName() + ".rlog";
     try {
-      replicationLogFile = new ReplicationLogFile(fileName, this.getServer());
+      replicationLogFile = new ReplicationLogFile(fileName);
       final ReplicationMessage lastMessage = replicationLogFile.getLastMessage();
       if (lastMessage != null) {
         lastDistributedOperationNumber.set(lastMessage.messageNumber);
-        server.log(this, Level.FINE, "Found an existent replication log. Starting messages from %d", lastMessage.messageNumber);
+        LogManager.instance().log(this, Level.FINE, "Found an existent replication log. Starting messages from %d", lastMessage.messageNumber);
       }
     } catch (IOException e) {
       server.log(this, Level.SEVERE, "Error on creating replication file '%s' for remote server '%s'", fileName, server.getServerName());

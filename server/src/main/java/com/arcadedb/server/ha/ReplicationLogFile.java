@@ -18,7 +18,6 @@ package com.arcadedb.server.ha;
 import com.arcadedb.database.Binary;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.server.log.ServerLogger;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.LockContext;
 import com.arcadedb.utility.Pair;
@@ -39,7 +38,6 @@ import java.util.logging.*;
  * ( MSG ID + COMMAND( CMD ID + MSG ID + SERIALIZATION ) )
  */
 public class ReplicationLogFile extends LockContext {
-  private final        ServerLogger                  serverLogger;
   private final        String                        filePath;
   private              FileChannel                   lastChunkChannel;
   private              FileChannel                   searchChannel        = null;
@@ -79,8 +77,7 @@ public class ReplicationLogFile extends LockContext {
     }
   }
 
-  public ReplicationLogFile(final String filePath, final ServerLogger serverLogger) throws FileNotFoundException {
-    this.serverLogger = serverLogger;
+  public ReplicationLogFile(final String filePath ) throws FileNotFoundException {
     this.filePath = filePath;
 
     final File f = new File(filePath);
@@ -301,13 +298,13 @@ public class ReplicationLogFile extends LockContext {
   public boolean checkMessageOrder(final ReplicationMessage message) {
     if (lastMessageNumber > -1) {
       if (message.messageNumber < lastMessageNumber) {
-        serverLogger.log(this, Level.WARNING, "Wrong sequence in message numbers. Last was %d and now receiving %d. Skip saving this entry (threadId=%d)",
+        LogManager.instance().log(this, Level.WARNING, "Wrong sequence in message numbers. Last was %d and now receiving %d. Skip saving this entry (threadId=%d)",
             lastMessageNumber, message.messageNumber, Thread.currentThread().getId());
         return false;
       }
 
       if (message.messageNumber != lastMessageNumber + 1) {
-        serverLogger.log(this, Level.WARNING, "Found a jump (%d) in message numbers. Last was %d and now receiving %d. Skip saving this entry (threadId=%d)",
+        LogManager.instance().log(this, Level.WARNING, "Found a jump (%d) in message numbers. Last was %d and now receiving %d. Skip saving this entry (threadId=%d)",
             (message.messageNumber - lastMessageNumber), lastMessageNumber, message.messageNumber, Thread.currentThread().getId());
 
         return false;

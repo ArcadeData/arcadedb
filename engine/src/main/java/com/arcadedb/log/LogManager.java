@@ -52,57 +52,16 @@ public class LogManager {
   }
 
   public void log(final Object iRequester, final Level iLevel, String iMessage) {
-    logger.log(iRequester, iLevel, iMessage, null, CONTEXT_INSTANCE.get(), null, null, null, null, null, null, null, null, null, null, null, null, null, null,
-        null, null, null);
+    logger.log(iRequester, iLevel, iMessage, null, CONTEXT_INSTANCE.get());
   }
 
-  public void log(final Object iRequester, final Level iLevel, String iMessage, final Throwable iException) {
-    logger.log(iRequester, iLevel, iMessage, iException, CONTEXT_INSTANCE.get(), null, null, null, null, null, null, null, null, null, null, null, null, null,
-        null, null, null, null);
-  }
-
-  public void log(final Object iRequester, final Level iLevel, String iMessage, final Throwable iException, final Object arg1) {
-    logger.log(iRequester, iLevel, iMessage, iException, CONTEXT_INSTANCE.get(), arg1, null, null, null, null, null, null, null, null, null, null, null, null,
-        null, null, null, null);
-  }
-
-  public void log(final Object iRequester, final Level iLevel, String iMessage, final Throwable iException, final Object arg1, final Object arg2) {
-    logger.log(iRequester, iLevel, iMessage, iException, CONTEXT_INSTANCE.get(), arg1, arg2, null, null, null, null, null, null, null, null, null, null, null,
-        null, null, null, null);
-  }
-
-  public void log(final Object iRequester, final Level iLevel, String iMessage, final Throwable iException, final Object arg1, final Object arg2,
-      final Object arg3) {
-    logger.log(iRequester, iLevel, iMessage, iException, CONTEXT_INSTANCE.get(), arg1, arg2, arg3, null, null, null, null, null, null, null, null, null, null,
-        null, null, null, null);
-  }
-
-  public void log(final Object iRequester, final Level iLevel, String iMessage, final Throwable iException, final Object arg1, final Object arg2,
-      final Object arg3, final Object arg4) {
-    logger.log(iRequester, iLevel, iMessage, iException, CONTEXT_INSTANCE.get(), arg1, arg2, arg3, arg4, null, null, null, null, null, null, null, null, null,
-        null, null, null, null);
-  }
-
-  public void log(final Object iRequester, final Level iLevel, String iMessage, final Throwable iException, final Object arg1, final Object arg2,
-      final Object arg3, final Object arg4, final Object arg5) {
-    logger.log(iRequester, iLevel, iMessage, iException, CONTEXT_INSTANCE.get(), arg1, arg2, arg3, arg4, arg5, null, null, null, null, null, null, null, null,
-        null, null, null, null);
-  }
-
-  public void log(final Object iRequester, final Level iLevel, String iMessage, final Throwable iException, final Object arg1, final Object arg2,
-      final Object arg3, final Object arg4, final Object arg5, final Object arg6) {
-    logger.log(iRequester, iLevel, iMessage, iException, CONTEXT_INSTANCE.get(), arg1, arg2, arg3, arg4, arg5, arg6, null, null, null, null, null, null, null,
-        null, null, null, null);
-  }
-
-  public void log(final Object iRequester, final Level iLevel, String iMessage, final Throwable iException, final Object arg1, final Object arg2,
-      final Object arg3, final Object arg4, final Object arg5, final Object arg6, final Object arg7) {
-    logger.log(iRequester, iLevel, iMessage, iException, CONTEXT_INSTANCE.get(), arg1, arg2, arg3, arg4, arg5, arg6, arg7, null, null, null, null, null, null,
-        null, null, null, null);
-  }
 
   public void log(final Object iRequester, final Level iLevel, String iMessage, final Throwable iException, final Object... args) {
     logger.log(iRequester, iLevel, iMessage, iException, CONTEXT_INSTANCE.get(), args);
+  }
+
+  public void log(final Object iRequester, final Level iLevel, String iMessage,  final Object... args) {
+    logger.log(iRequester, iLevel, iMessage, null, CONTEXT_INSTANCE.get(), args);
   }
 
   public boolean isDebugEnabled() {

@@ -31,7 +31,6 @@ import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.ha.ReplicatedDatabase;
 import com.arcadedb.server.http.HttpServer;
-import com.arcadedb.server.log.ServerLogger;
 import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -45,7 +44,7 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.logging.*;
 
-public class ArcadeDBServer implements ServerLogger {
+public class ArcadeDBServer {
   public enum STATUS {OFFLINE, STARTING, ONLINE, SHUTTING_DOWN}
 
   public static final String                                  CONFIG_SERVER_CONFIGURATION_FILENAME = "config/server-configuration.json";
@@ -298,38 +297,15 @@ public class ArcadeDBServer implements ServerLogger {
     return Collections.unmodifiableSet(databases.keySet());
   }
 
-  public void log(final Object requester, final Level level, final String message) {
-    installContextIfNeeded(serverName);
-    LogManager.instance().log(requester, level, message, null);
-  }
-
-  public void log(final Object requester, final Level level, final String message, final Object arg1) {
-    installContextIfNeeded(serverName);
-    LogManager.instance().log(requester, level, message, null, arg1);
-  }
-
-  public void log(final Object requester, final Level level, final String message, final Object arg1, final Object arg2) {
-    installContextIfNeeded(serverName);
-    LogManager.instance().log(requester, level, message, null, arg1, arg2);
-  }
-
-  public void log(final Object requester, final Level level, final String message, final Object arg1, final Object arg2, final Object arg3) {
-    installContextIfNeeded(serverName);
-    LogManager.instance().log(requester, level, message, null, arg1, arg2, arg3);
-  }
-
-  public void log(final Object requester, final Level level, final String message, final Object arg1, final Object arg2, final Object arg3, final Object arg4) {
-    installContextIfNeeded(serverName);
-    LogManager.instance().log(requester, level, message, null, arg1, arg2, arg3, arg4);
-  }
-
-  public void log(final Object requester, final Level level, final String message, final Object arg1, final Object arg2, final Object arg3, final Object arg4,
-      final Object arg5) {
-    installContextIfNeeded(serverName);
-    LogManager.instance().log(requester, level, message, null, arg1, arg2, arg3, arg4, arg5);
-  }
 
   public void log(final Object requester, final Level level, final String message, final Object... args) {
+    setLogContext();
+    LogManager.instance().log(requester, level, message, null, args);
+  }
+
+  private void setLogContext() {
+    if (!serverName.equals(LogManager.instance().getContext()))
+      LogManager.instance().setContext(serverName);
     installContextIfNeeded(serverName);
     LogManager.instance().log(requester, level, message, null, args);
   }
