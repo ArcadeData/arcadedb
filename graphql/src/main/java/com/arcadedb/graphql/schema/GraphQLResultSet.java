@@ -205,7 +205,7 @@ public class GraphQLResultSet implements ResultSet {
             if (o instanceof Document)
               item = mapBySelections(new ResultInternal((Document) o), selectionSet);
             else if (o instanceof Result)
-              item = mapBySelections((Result) projectionValue, selectionSet);
+              item = mapBySelections((Result) o, selectionSet);
             else
               continue;
 
@@ -226,7 +226,7 @@ public class GraphQLResultSet implements ResultSet {
             if (o instanceof Document)
               item = mapByReturnType(new ResultInternal((Document) o), projectionType);
             else if (o instanceof Result)
-              item = mapByReturnType((Result) projectionValue, projectionType);
+              item = mapByReturnType((Result) o, projectionType);
             else
               continue;
 

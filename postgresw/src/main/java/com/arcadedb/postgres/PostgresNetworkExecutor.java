@@ -1064,6 +1064,9 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   private List<Result> createResultSet(final Object... elements) {
+    if (elements.length % 2 != 0)
+      throw new IllegalArgumentException("Resultset elements must be in pairs");
+
     final List<Result> resultSet = new ArrayList<>();
     for (int i = 0; i < elements.length; i += 2) {
       final Map<String, Object> map = new HashMap<>(2);

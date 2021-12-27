@@ -163,7 +163,7 @@ public class PageManager extends LockContext {
     for (Iterator<MutablePage> it = writeCache.values().iterator(); it.hasNext(); ) {
       final MutablePage p = it.next();
       if (p.getPageId().getFileId() == fileId) {
-        totalWriteCacheRAM.addAndGet(-1 * p.getPhysicalSize());
+        totalWriteCacheRAM.addAndGet(-1L * p.getPhysicalSize());
         it.remove();
       }
     }
@@ -171,7 +171,7 @@ public class PageManager extends LockContext {
     for (Iterator<ImmutablePage> it = readCache.values().iterator(); it.hasNext(); ) {
       final ImmutablePage p = it.next();
       if (p.getPageId().getFileId() == fileId) {
-        totalReadCacheRAM.addAndGet(-1 * p.getPhysicalSize());
+        totalReadCacheRAM.addAndGet(-1L * p.getPhysicalSize());
         it.remove();
       }
     }
@@ -300,11 +300,11 @@ public class PageManager extends LockContext {
   public void removePageFromCache(final PageId pageId) {
     final ImmutablePage page = readCache.remove(pageId);
     if (page != null)
-      totalReadCacheRAM.addAndGet(-1 * page.getPhysicalSize());
+      totalReadCacheRAM.addAndGet(-1L * page.getPhysicalSize());
 
     final MutablePage page2 = writeCache.remove(pageId);
     if (page2 != null)
-      totalWriteCacheRAM.addAndGet(-1 * page2.getPhysicalSize());
+      totalWriteCacheRAM.addAndGet(-1L * page2.getPhysicalSize());
   }
 
 //  public void preloadFile(final int fileId) {
@@ -369,7 +369,7 @@ public class PageManager extends LockContext {
     } finally {
       // DELETE ONLY CURRENT VERSION OF THE PAGE (THIS PREVENT TO REMOVE NEWER PAGES)
       if (writeCache.remove(page.pageId, page))
-        totalWriteCacheRAM.addAndGet(-1 * page.getPhysicalSize());
+        totalWriteCacheRAM.addAndGet(-1L * page.getPhysicalSize());
 
       txManager.notifyPageFlushed(page);
     }
@@ -476,7 +476,7 @@ public class PageManager extends LockContext {
         final ImmutablePage removedPage = readCache.remove(page.pageId);
         if (removedPage != null) {
           freedRAM += page.getPhysicalSize();
-          totalReadCacheRAM.addAndGet(-1 * page.getPhysicalSize());
+          totalReadCacheRAM.addAndGet(-1L * page.getPhysicalSize());
           pagesEvicted.incrementAndGet();
 
           if (freedRAM > ramToFree)

@@ -220,17 +220,7 @@ public class SelectExecutionPlanner {
       info.distributedFetchExecutionPlans = null;
     } else {
       //sharded fetching
-      List<ExecutionPlan> subPlans = new ArrayList<>();
-      for (Map.Entry<String, SelectExecutionPlan> entry : info.distributedFetchExecutionPlans.entrySet()) {
-        if (entry.getKey().equals(currentNode)) {
-          subPlans.add(entry.getValue());
-        } else {
-          DistributedExecutionStep step = new DistributedExecutionStep(entry.getValue(), entry.getKey(), ctx, enableProfiling);
-          SelectExecutionPlan subPlan = new SelectExecutionPlan(ctx);
-          subPlan.chain(step);
-          subPlans.add(subPlan);
-        }
-      }
+      // TODO
     }
     info.distributedPlanCreated = true;
   }

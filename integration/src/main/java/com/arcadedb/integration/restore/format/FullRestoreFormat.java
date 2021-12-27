@@ -83,9 +83,13 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
   }
 
   private long uncompressFile(final ZipInputStream inputFile, ZipEntry compressedFile, final File databaseDirectory) throws IOException {
-    logger.log(2, "- File '%s'...", compressedFile.getName());
+    final String fileName = compressedFile.getName();
 
-    final File uncompressedFile = new File(databaseDirectory, compressedFile.getName());
+    FileUtils.checkValidName(fileName);
+
+    logger.log(2, "- File '%s'...", fileName);
+
+    final File uncompressedFile = new File(databaseDirectory, fileName);
 
     try (final FileOutputStream fileOut = new FileOutputStream(uncompressedFile)) {
       int len;

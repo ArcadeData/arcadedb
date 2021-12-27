@@ -37,24 +37,24 @@ public class MutableEmbeddedDocument extends MutableDocument implements Embedded
   }
 
   @Override
-  public MutableEmbeddedDocument save() {
+  public synchronized MutableEmbeddedDocument save() {
     ((MutableDocument) modifier.getOwner()).save();
     return this;
   }
 
   @Override
-  public MutableEmbeddedDocument save(final String bucketName) {
+  public synchronized MutableEmbeddedDocument save(final String bucketName) {
     ((MutableDocument) modifier.getOwner()).save(bucketName);
     return this;
   }
 
   @Override
-  public void reload() {
+  public synchronized void reload() {
     modifier.getOwner().reload();
   }
 
   @Override
-  public MutableEmbeddedDocument modify() {
+  public synchronized MutableEmbeddedDocument modify() {
     return this;
   }
 

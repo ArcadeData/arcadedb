@@ -728,16 +728,12 @@ public class EmbeddedSchema implements Schema {
             sub.addSuperType(parent, false);
         }
 
-        final List<Bucket> buckets = new ArrayList<>(type.getBuckets(false));
-        final Set<Integer> bucketIds = new HashSet<>(buckets.size());
-        for (Bucket b : buckets)
-          bucketIds.add(b.getId());
-
         // DELETE ALL ASSOCIATED INDEXES
         for (Index m : type.getAllIndexes(true))
           dropIndex(m.getName());
 
         // DELETE ALL ASSOCIATED BUCKETS
+        final List<Bucket> buckets = new ArrayList<>(type.getBuckets(false));
         for (Bucket b : buckets) {
           type.removeBucket(b);
           dropBucket(b.getName());
@@ -1077,7 +1073,8 @@ public class EmbeddedSchema implements Schema {
             final PaginatedComponent bucket = bucketMap.get(schemaBucket.getString(i));
             if (bucket == null) {
               LogManager.instance()
-                  .log(this, Level.WARNING, "Cannot find bucket '%s' for type '%s', removing it from type configuration", null, schemaBucket.getString(i), type);
+                  .log(this, Level.WARNING, "Cannot find bucket '%s' for type '%s', removing it from type configuration", null, schemaBucket.getString(i),
+                      type);
 
               // GO BACK
               schemaBucket.remove(i);

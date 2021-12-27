@@ -151,40 +151,31 @@ public class BreadthFirstTraverseStep extends AbstractTraverseStep {
     tryAddEntryPoint(res, ctx);
   }
 
-  private void addNextEntryPoint(Result nextStep, int depth, List<Identifiable> path, List<Identifiable> stack, CommandContext ctx) {
-    if (!nextStep.isElement()) {
+  private void addNextEntryPoint(final Result nextStep, final int depth, final List<Identifiable> path, final List<Identifiable> stack,
+      final CommandContext ctx) {
+    if (!nextStep.isElement())
       return;
-    }
-    if (this.traversed.contains(nextStep.getElement().get().getIdentity())) {
+
+    if (this.traversed.contains(nextStep.getElement().get().getIdentity()))
       return;
-    }
+
     if (nextStep instanceof TraverseResult) {
       ((TraverseResult) nextStep).depth = depth;
       ((TraverseResult) nextStep).setMetadata("$depth", depth);
-      List<Identifiable> newPath = new ArrayList<>(path);
+      final List<Identifiable> newPath = new ArrayList<>(path);
       nextStep.getIdentity().ifPresent(x -> newPath.add(x.getIdentity()));
       ((TraverseResult) nextStep).setMetadata("$path", newPath);
 
-      List reverseStack = new ArrayList(newPath);
+      final List reverseStack = new ArrayList(newPath);
       Collections.reverse(reverseStack);
-      List newStack = new ArrayList(reverseStack);
+      final List newStack = new ArrayList(reverseStack);
       ((TraverseResult) nextStep).setMetadata("$stack", newStack);
 
       tryAddEntryPoint(nextStep, ctx);
     } else {
-      TraverseResult res = new TraverseResult();
+      final TraverseResult res = new TraverseResult();
       res.setElement(nextStep.getElement().get());
       res.depth = depth;
-      res.setMetadata("$depth", depth);
-      List<Identifiable> newPath = new ArrayList<>(path);
-      nextStep.getIdentity().ifPresent(x -> newPath.add(x.getIdentity()));
-      ((TraverseResult) nextStep).setMetadata("$path", newPath);
-
-      List reverseStack = new ArrayList(newPath);
-      Collections.reverse(reverseStack);
-      List newStack = new ArrayList(reverseStack);
-      ((TraverseResult) nextStep).setMetadata("$stack", newStack);
-
       tryAddEntryPoint(res, ctx);
     }
   }

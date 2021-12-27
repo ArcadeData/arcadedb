@@ -126,7 +126,7 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
   }
 
   @Override
-  public String toString() {
+  public synchronized String toString() {
     final StringBuilder buffer = new StringBuilder();
     buffer.append(out.toString());
     buffer.append("<->");

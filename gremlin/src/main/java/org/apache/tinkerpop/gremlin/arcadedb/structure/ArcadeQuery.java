@@ -17,10 +17,8 @@ package org.apache.tinkerpop.gremlin.arcadedb.structure;
 
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.concurrent.ExecutionException;
+import java.util.*;
+import java.util.concurrent.*;
 
 /**
  * Base class for query implementation from Gremlin/Tinkerpop.
@@ -52,8 +50,12 @@ public abstract class ArcadeQuery {
   }
 
   public ArcadeQuery setParameters(final Object... parameters) {
+    if (parameters.length % 2 != 0)
+      throw new IllegalArgumentException("Command parameters must be as pairs `<key>, <value>`");
+
     if (this.parameters == null)
       this.parameters = new HashMap<>();
+
     for (int i = 0; i < parameters.length; i += 2)
       this.parameters.put((String) parameters[i], parameters[i + 1]);
     return this;

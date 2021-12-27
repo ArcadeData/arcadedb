@@ -169,6 +169,18 @@ public class ArcadeFilterByIndexStep<S, E extends Element> extends AbstractStep<
     return Objects.hash(returnClass, indexCursors);
   }
 
+  @Override
+  public boolean equals(final Object o) {
+    if (this == o)
+      return true;
+    if (!(o instanceof ArcadeFilterByIndexStep))
+      return false;
+    if (!super.equals(o))
+      return false;
+    final ArcadeFilterByIndexStep<?, ?> that = (ArcadeFilterByIndexStep<?, ?>) o;
+    return Objects.equals(indexCursors, that.indexCursors) && Objects.equals(returnClass, that.returnClass);
+  }
+
   /**
    * Attempts to close an underlying iterator if it is of type {@link CloseableIterator}. Graph providers may choose
    * to return this interface containing their vertices and edges if there are expensive resources that might need to

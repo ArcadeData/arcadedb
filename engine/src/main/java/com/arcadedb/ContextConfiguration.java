@@ -18,9 +18,9 @@ package com.arcadedb;
 import com.arcadedb.utility.SystemVariableResolver;
 import org.json.JSONObject;
 
-import java.io.Serializable;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
+import java.io.*;
+import java.util.*;
+import java.util.concurrent.*;
 
 /**
  * Represents a context configuration where custom setting could be defined for the context only. If not defined, globals will be
@@ -101,7 +101,7 @@ public class ContextConfiguration implements Serializable {
   }
 
   public Object getValue(final GlobalConfiguration iConfig) {
-    if (config != null && config.containsKey(iConfig.getKey()))
+    if (config.containsKey(iConfig.getKey()))
       return config.get(iConfig.getKey());
     return iConfig.getValue();
   }
@@ -118,7 +118,7 @@ public class ContextConfiguration implements Serializable {
    */
   public <T extends Enum<T>> T getValueAsEnum(final GlobalConfiguration config, Class<T> enumType) {
     final Object value;
-    if (this.config != null && this.config.containsKey(config.getKey())) {
+    if (this.config.containsKey(config.getKey())) {
       value = this.config.get(config.getKey());
     } else {
       value = config.getValue();
@@ -138,12 +138,12 @@ public class ContextConfiguration implements Serializable {
   }
 
   public boolean hasValue(final String iName) {
-    return config != null && config.containsKey(iName);
+    return config.containsKey(iName);
   }
 
   @SuppressWarnings("unchecked")
   public <T> T getValue(final String iName, final T iDefaultValue) {
-    if (config != null && config.containsKey(iName))
+    if (config.containsKey(iName))
       return (T) config.get(iName);
 
     final String sysProperty = System.getProperty(iName);

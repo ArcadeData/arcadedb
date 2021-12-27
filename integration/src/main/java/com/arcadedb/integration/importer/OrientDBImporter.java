@@ -52,8 +52,6 @@ import static com.google.gson.stream.JsonToken.NULL;
  */
 public class OrientDBImporter {
   private final File                       file;
-  private final Map<String, Integer>       clustersNameToId                = new LinkedHashMap<>();
-  private final Map<Integer, String>       clustersIdToName                = new LinkedHashMap<>();
   private final Map<String, OrientDBClass> classes                         = new LinkedHashMap<>();
   private final Map<String, Long>          totalRecordByType               = new HashMap<>();
   private final Set<String>                excludeClasses                  = new HashSet<>(
@@ -897,9 +895,6 @@ public class OrientDBImporter {
         }
 
         if (clusterName != null && clusterId > -1) {
-          clustersNameToId.put(clusterName, clusterId);
-          clustersIdToName.put(clusterId, clusterName);
-
           clusterName = null;
           clusterId = -1;
           skipUntilEndOfObject(reader, END_OBJECT);

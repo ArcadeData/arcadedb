@@ -279,7 +279,7 @@ public class Bucket extends PaginatedComponent {
 
     if (verboseLevel > 1)
       LogManager.instance().log(this, Level.INFO, "- Checking bucket '%s' (totalPages=%d spaceOnDisk=%s pageSize=%s)...", null, name, totalPages,
-          FileUtils.getSizeAsString(totalPages * pageSize), FileUtils.getSizeAsString(pageSize));
+          FileUtils.getSizeAsString((long) totalPages * pageSize), FileUtils.getSizeAsString(pageSize));
 
     long totalAllocatedRecords = 0L;
     long totalActiveRecords = 0L;
@@ -539,7 +539,7 @@ public class Bucket extends PaginatedComponent {
 
       final byte[] array = buffer.toByteArray();
 
-      final int byteWritten = lastPage.writeNumber(newPosition, isPlaceHolder ? (-1 * array.length) : array.length);
+      final int byteWritten = lastPage.writeNumber(newPosition, isPlaceHolder ? (-1L * array.length) : array.length);
       lastPage.writeByteArray(newPosition + byteWritten, array);
 
       lastPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + recordCountInPage * INT_SERIALIZED_SIZE, newPosition);
@@ -626,7 +626,7 @@ public class Bucket extends PaginatedComponent {
 
         final int pageOccupied = (int) (lastRecordPositionInPage + lastRecordSize[0] + lastRecordSize[1]);
 
-        final int bufferSizeLength = Binary.getNumberSpace(isPlaceHolder ? -1 * buffer.size() : buffer.size());
+        final int bufferSizeLength = Binary.getNumberSpace(isPlaceHolder ? -1L * buffer.size() : buffer.size());
 
         final int delta = (int) (buffer.size() + bufferSizeLength - recordSize[0] - recordSize[1]);
 
@@ -654,7 +654,7 @@ public class Bucket extends PaginatedComponent {
             }
           }
 
-          recordSize[1] = page.writeNumber(recordPositionInPage, isPlaceHolder ? -1 * buffer.size() : buffer.size());
+          recordSize[1] = page.writeNumber(recordPositionInPage, isPlaceHolder ? -1L * buffer.size() : buffer.size());
           final int recordContentPositionInPage = (int) (recordPositionInPage + recordSize[1]);
 
           page.writeByteArray(recordContentPositionInPage, buffer.toByteArray());
@@ -677,7 +677,7 @@ public class Bucket extends PaginatedComponent {
         }
       } else {
 
-        recordSize[1] = page.writeNumber(recordPositionInPage, isPlaceHolder ? -1 * buffer.size() : buffer.size());
+        recordSize[1] = page.writeNumber(recordPositionInPage, isPlaceHolder ? -1L * buffer.size() : buffer.size());
         final int recordContentPositionInPage = (int) (recordPositionInPage + recordSize[1]);
         page.writeByteArray(recordContentPositionInPage, buffer.toByteArray());
 

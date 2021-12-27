@@ -21,9 +21,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.schema.DocumentType;
 import org.json.JSONObject;
 
-import java.util.Collections;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 
 public class ImmutableLightEdge extends ImmutableDocument implements LightEdge {
   private final RID out;
@@ -36,11 +34,11 @@ public class ImmutableLightEdge extends ImmutableDocument implements LightEdge {
   }
 
   @Override
-  public Object get(final String propertyName) {
+  public synchronized Object get(final String propertyName) {
     return null;
   }
 
-  public MutableEdge modify() {
+  public synchronized MutableEdge modify() {
     throw new IllegalStateException("Lightweight edges cannot be modified");
   }
 
@@ -93,7 +91,7 @@ public class ImmutableLightEdge extends ImmutableDocument implements LightEdge {
   }
 
   @Override
-  public Map<String, Object> toMap() {
+  public synchronized Map<String, Object> toMap() {
     return Collections.emptyMap();
   }
 
@@ -108,12 +106,12 @@ public class ImmutableLightEdge extends ImmutableDocument implements LightEdge {
   }
 
   @Override
-  public JSONObject toJSON() {
+  public synchronized JSONObject toJSON() {
     return new JSONObject();
   }
 
   @Override
-  public String toString() {
+  public synchronized String toString() {
     final StringBuilder buffer = new StringBuilder();
     buffer.append(out.toString());
     buffer.append("<->");

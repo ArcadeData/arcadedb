@@ -65,7 +65,7 @@ public class TransactionContext implements Transaction {
   // KEEPS TRACK OF MODIFIED RECORD IN TX. AT 1ST PHASE COMMIT TIME THE RECORD ARE SERIALIZED AND INDEXES UPDATED. THIS DEFERRING IMPROVES SPEED ESPECIALLY
   // WITH GRAPHS WHERE EDGES ARE CREATED AND CHUNKS ARE UPDATED MULTIPLE TIMES IN THE SAME TX
   // TODO: OPTIMIZE modifiedRecordsCache STRUCTURE, MAYBE JOIN IT WITH UPDATED RECORDS?
-  private       Set<Record>              updatedRecords        = null;
+  private       Map<RID, Record>         updatedRecords        = null;
 
   public enum STATUS {INACTIVE, BEGUN, COMMIT_1ST_PHASE, COMMIT_2ND_PHASE}
 
@@ -233,8 +233,8 @@ public class TransactionContext implements Transaction {
     final RID rid = record.getIdentity();
 
     if (updatedRecords == null)
-      updatedRecords = new HashSet<>();
-    if (updatedRecords.add(record))
+      updatedRecords = new HashMap<>();
+    if (updatedRecords.put(record.getIdentity(), record) == null)
       database.getSchema().getBucketById(rid.getBucketId()).fetchPageInTransaction(rid);
     updateRecordInCache(record);
     removeImmutableRecordsOfSamePage(record.getIdentity());
@@ -439,7 +439,7 @@ public class TransactionContext implements Transaction {
       throw new TransactionException("Transaction in phase " + status);
 
     if (updatedRecords != null) {
-      for (Record rec : updatedRecords)
+      for (Record rec : updatedRecords.values())
         try {
           database.updateRecordNoLock(rec);
         } catch (RecordNotFoundException e) {

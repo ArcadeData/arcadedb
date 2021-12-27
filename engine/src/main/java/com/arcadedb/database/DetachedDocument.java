@@ -61,12 +61,12 @@ public class DetachedDocument extends ImmutableDocument {
   }
 
   @Override
-  public Map<String, Object> toMap() {
+  public synchronized Map<String, Object> toMap() {
     return new HashMap<>(map);
   }
 
   @Override
-  public JSONObject toJSON() {
+  public synchronized JSONObject toJSON() {
     final JSONObject result = new JSONSerializer(database).map2json(map);
     result.put("@type", type.getName());
     if (getIdentity() != null)
@@ -75,11 +75,11 @@ public class DetachedDocument extends ImmutableDocument {
   }
 
   @Override
-  public boolean has(String propertyName) {
+  public synchronized boolean has(String propertyName) {
     return map.containsKey(propertyName);
   }
 
-  public Object get(final String propertyName) {
+  public synchronized Object get(final String propertyName) {
     return map.get(propertyName);
   }
 
@@ -89,7 +89,7 @@ public class DetachedDocument extends ImmutableDocument {
   }
 
   @Override
-  public String toString() {
+  public synchronized String toString() {
     final StringBuilder result = new StringBuilder(256);
     if (rid != null)
       result.append(rid);
@@ -117,7 +117,7 @@ public class DetachedDocument extends ImmutableDocument {
   }
 
   @Override
-  public Set<String> getPropertyNames() {
+  public synchronized Set<String> getPropertyNames() {
     return map.keySet();
   }
 

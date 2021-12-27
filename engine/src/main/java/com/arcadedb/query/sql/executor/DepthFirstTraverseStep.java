@@ -176,14 +176,6 @@ public class DepthFirstTraverseStep extends AbstractTraverseStep {
       res.setElement(nextStep.getElement().get());
       res.depth = depth;
       res.setMetadata("$depth", depth);
-      List<Identifiable> newPath = new ArrayList<>(path);
-      nextStep.getIdentity().ifPresent(x -> newPath.add(x.getIdentity()));
-      ((TraverseResult) nextStep).setMetadata("$path", newPath);
-
-      List reverseStack = new ArrayList(newPath);
-      Collections.reverse(reverseStack);
-      List newStack = new ArrayList(reverseStack);
-      ((TraverseResult) nextStep).setMetadata("$stack", newStack);
 
       tryAddEntryPoint(res, ctx);
     }

@@ -116,6 +116,9 @@ public class GraphQLQueryEngine implements QueryEngine {
 
   @Override
   public ResultSet command(final String query, final Object... parameters) {
+    if (parameters.length % 2 != 0)
+      throw new IllegalArgumentException("Command parameters must be as pairs `<key>, <value>`");
+
     final Map<String, Object> map = new HashMap<>(parameters.length / 2);
     for (int i = 0; i < parameters.length; i += 2)
       map.put((String) parameters[i], parameters[i + 1]);

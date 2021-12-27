@@ -93,7 +93,7 @@ public class LSMTreeIndexCompactor {
 
     for (int pageIndex = 0; pageIndex < lastImmutablePage; ) {
 
-      final long totalRAMNeeded = (lastImmutablePage - pageIndex + 1) * index.getPageSize();
+      final long totalRAMNeeded = (lastImmutablePage - pageIndex + 1L) * index.getPageSize();
 
       if (totalRAMNeeded > indexCompactionRAM) {
         pagesToCompact = (int) (indexCompactionRAM / index.getPageSize());

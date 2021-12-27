@@ -20,9 +20,9 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.serializer.BinaryComparator;
 
-import java.text.SimpleDateFormat;
+import java.text.*;
 import java.util.*;
-import java.util.Map.Entry;
+import java.util.Map.*;
 
 public class TableFormatter {
 
@@ -359,11 +359,8 @@ public class TableFormatter {
 
     // INIT METADATA
     final LinkedHashSet<String> allMetadataNames = new LinkedHashSet<String>();
-    final Set<String> metadataColumns = new HashSet<String>();
 
     for (Entry<String, Map<String, String>> entry : columnMetadata.entrySet()) {
-      metadataColumns.add(entry.getKey());
-
       for (Entry<String, String> entry2 : entry.getValue().entrySet()) {
         allMetadataNames.add(entry2.getKey());
 
