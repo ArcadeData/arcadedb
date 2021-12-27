@@ -238,6 +238,13 @@ public enum GlobalConfiguration {
   // HA
   HA_ENABLED("arcadedb.ha.enabled", "True if HA is enabled for the current server", Boolean.class, false),
 
+  HA_CLUSTER_NAME("arcadedb.ha.clusterName", "Cluster name. By default is 'arcadedb'. Useful in case of multiple clusters in the same network", String.class,
+      Constants.PRODUCT.toLowerCase()),
+
+  HA_SERVER_LIST("arcadedb.ha.serverList",
+      "Servers in the cluster as a list of <hostname/ip-address:port> items separated by comma. Example: localhost:2424,192.168.0.1:2424",
+      String.class, ""),
+
   HA_QUORUM("arcadedb.ha.quorum", "Default quorum between 'none', 1, 2, 3, 'majority' and 'all' servers. Default is majority", String.class, "MAJORITY"),
 
   HA_QUORUM_TIMEOUT("arcadedb.ha.quorumTimeout", "Timeout waiting for the quorum", Long.class, 10000),
@@ -251,21 +258,17 @@ public enum GlobalConfiguration {
   HA_REPLICATION_CHUNK_MAXSIZE("arcadedb.ha.replicationChunkMaxSize",
       "Maximum channel chunk size for replicating messages between servers. Default is 16777216", Integer.class, 16384 * 1024),
 
-  HA_REPLICATION_INCOMING_HOST("arcadedb.ha.replicationIncomingHost", "TCP/IP host name used for incoming replication connections", String.class, "localhost"),
+  HA_REPLICATION_INCOMING_HOST("arcadedb.ha.replicationIncomingHost",
+      "TCP/IP host name used for incoming replication connections. By default is 0.0.0.0 (listens to all the configured network interfaces)", String.class,
+      "0.0.0.0"),
 
   HA_REPLICATION_INCOMING_PORTS("arcadedb.ha.replicationIncomingPorts", "TCP/IP port number used for incoming replication connections", String.class,
       "2424-2433"),
-
-  HA_CLUSTER_NAME("arcadedb.ha.clusterName", "Cluster name. By default is 'arcadedb'. Useful in case of multiple clusters in the same network", String.class,
-      Constants.PRODUCT.toLowerCase()),
 
   HA_K8S("arcadedb.ha.k8s", "The server is running inside Kubernetes", Boolean.class, false),
 
   HA_K8S_DNS_SUFFIX("arcadedb.ha.k8sSuffix",
       "When running inside Kubernetes use this suffix to reach the other servers. Example: arcadedb.default.svc.cluster.local", String.class, ""),
-
-  HA_SERVER_LIST("arcadedb.ha.serverList", "List of <hostname/ip-address:port> items separated by comma. Example: localhost:2424,192.168.0.1:2424",
-      String.class, ""),
 
   // CYPHER
   CYPHER_STATEMENT_CACHE("arcadedb.cypher.statementCache",
