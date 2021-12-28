@@ -97,7 +97,7 @@ public class Neo4jImporter {
         state = "batchSize";
       else if (arg.equals("-decimalType"))
         state = "decimalType";
-      else {
+      else if (state != null) {
         if (state.equals("databasePath"))
           databasePath = arg;
         else if (state.equals("inputFile"))
@@ -369,7 +369,7 @@ public class Neo4jImporter {
 
         final IndexCursor beginCursor = database.lookupByKey(startType.getFirst(), "id", startId);
         if (!beginCursor.hasNext()) {
-          log("- cannot create relationship with id '%s'. Vertex id '%s' not found for labels. Skip it.", json.getString("id"), startId, startType.getSecond());
+          log("- cannot create relationship with id '%s'. Vertex id '%s' not found for labels. Skip it.", json.getString("id"), startId);
           ++warnings;
           return null;
         }
@@ -382,7 +382,7 @@ public class Neo4jImporter {
 
         final IndexCursor endCursor = database.lookupByKey(endType.getFirst(), "id", endId);
         if (!endCursor.hasNext()) {
-          log("- cannot create relationship with id '%s'. Vertex id '%s' not found for labels. Skip it.", json.getString("id"), endId, endType.getSecond());
+          log("- cannot create relationship with id '%s'. Vertex id '%s' not found for labels. Skip it.", json.getString("id"), endId);
           ++warnings;
           return null;
         }
@@ -474,16 +474,12 @@ public class Neo4jImporter {
           }
         }
       } finally {
-        if (reader != null) {
-          reader.close();
-          reader = null;
-        }
+        reader.close();
+        reader = null;
       }
     } finally {
-      if (inputStream != null) {
-        inputStream.close();
-        inputStream = null;
-      }
+      inputStream.close();
+      inputStream = null;
     }
   }
 

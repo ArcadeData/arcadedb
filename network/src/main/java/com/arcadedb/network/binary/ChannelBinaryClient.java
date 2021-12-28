@@ -48,13 +48,8 @@ public class ChannelBinaryClient extends ChannelBinary {
         throw new IOException("Cannot connect to host " + remoteHost + ":" + remotePort + " (timeout=" + socketTimeout + ")", e);
       }
       try {
-        if (socketBufferSize > 0) {
-          inStream = new BufferedInputStream(socket.getInputStream(), socketBufferSize);
-          outStream = new BufferedOutputStream(socket.getOutputStream(), socketBufferSize);
-        } else {
-          inStream = new BufferedInputStream(socket.getInputStream());
-          outStream = new BufferedOutputStream(socket.getOutputStream());
-        }
+        inStream = new BufferedInputStream(socket.getInputStream());
+        outStream = new BufferedOutputStream(socket.getOutputStream());
 
         in = new DataInputStream(inStream);
         out = new DataOutputStream(outStream);

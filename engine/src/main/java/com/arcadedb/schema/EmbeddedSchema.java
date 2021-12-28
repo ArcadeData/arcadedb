@@ -329,7 +329,7 @@ public class EmbeddedSchema implements Schema {
 
           ++copied;
 
-          if (copied > 0 && copied % transactionBatchSize == 0) {
+          if (copied % transactionBatchSize == 0) {
             database.commit();
             database.begin();
           }
@@ -1019,9 +1019,11 @@ public class EmbeddedSchema implements Schema {
         LogManager.instance().log(this, Level.WARNING, "Could not find schema file, loading the previous version saved");
       }
 
-      final String fileContent = FileUtils.readStreamAsString(new FileInputStream(file), ENCODING);
-
-      final JSONObject root = new JSONObject(fileContent);
+      final JSONObject root;
+      try (FileInputStream fis = new FileInputStream(file)) {
+        final String fileContent = FileUtils.readStreamAsString(fis, ENCODING);
+        root = new JSONObject(fileContent);
+      }
 
       if (root.names() == null || root.names().length() == 0)
         // EMPTY SCHEMA

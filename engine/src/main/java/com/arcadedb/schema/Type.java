@@ -403,11 +403,12 @@ public enum Type {
         if (iValue instanceof String) {
           if (FileUtils.isLong(iValue.toString()))
             return new Date(Long.parseLong(iValue.toString()));
-          try {
-            return new SimpleDateFormat(database.getSchema().getDateTimeFormat()).parse((String) iValue);
-          } catch (ParseException ignore) {
-            return new SimpleDateFormat(database.getSchema().getDateFormat()).parse((String) iValue);
-          }
+          if (database != null)
+            try {
+              return new SimpleDateFormat(database.getSchema().getDateTimeFormat()).parse((String) iValue);
+            } catch (ParseException ignore) {
+              return new SimpleDateFormat(database.getSchema().getDateFormat()).parse((String) iValue);
+            }
         }
       } else if (iTargetClass.equals(Identifiable.class)) {
         if (MultiValue.isMultiValue(iValue)) {

@@ -57,11 +57,12 @@ public class SourceDiscovery {
     final FormatImporter formatImporter = analyzeSourceContent(parser, entityType, settings);
     parser.reset();
 
-    final SourceSchema sourceSchema = formatImporter.analyze(entityType, parser, settings, analyzedSchema);
+    SourceSchema sourceSchema = null;
 
     if (formatImporter == null)
       LogManager.instance().log(this, Level.INFO, "Unknown format");
     else {
+      sourceSchema = formatImporter.analyze(entityType, parser, settings, analyzedSchema);
       LogManager.instance().log(this, Level.INFO, "Recognized format %s (parsingLimitBytes=%s parsingLimitEntries=%d)", null, formatImporter.getFormat(),
           FileUtils.getSizeAsString(limitBytes), limitEntries);
       if (sourceSchema != null && !sourceSchema.getOptions().isEmpty()) {

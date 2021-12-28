@@ -345,8 +345,12 @@ public class RemoteDatabase extends RWLockContext {
               cmd = "-";
 
             if (exception != null) {
+              if (detail == null)
+                detail = "Unknown";
+
               if (exception.equals(ServerIsNotTheLeaderException.class.getName())) {
-                throw new ServerIsNotTheLeaderException(detail.substring(0, detail.lastIndexOf('.')), exceptionArgs);
+                final int sep = detail.lastIndexOf('.');
+                throw new ServerIsNotTheLeaderException(sep > -1 ? detail.substring(0, sep) : detail, exceptionArgs);
               } else if (exception.equals(QuorumNotReachedException.class.getName())) {
                 lastException = new QuorumNotReachedException(detail);
                 continue;

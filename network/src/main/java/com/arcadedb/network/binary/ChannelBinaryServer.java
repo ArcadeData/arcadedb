@@ -18,25 +18,16 @@ package com.arcadedb.network.binary;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 
-import java.io.BufferedInputStream;
-import java.io.BufferedOutputStream;
-import java.io.DataInputStream;
-import java.io.DataOutputStream;
-import java.io.IOException;
-import java.net.Socket;
+import java.io.*;
+import java.net.*;
 
 public class ChannelBinaryServer extends ChannelBinary {
 
   public ChannelBinaryServer(final Socket iSocket, final ContextConfiguration config) throws IOException {
-    super(iSocket,config.getValueAsInteger(GlobalConfiguration.HA_REPLICATION_CHUNK_MAXSIZE));
+    super(iSocket, config.getValueAsInteger(GlobalConfiguration.HA_REPLICATION_CHUNK_MAXSIZE));
 
-    if (socketBufferSize > 0) {
-      inStream = new BufferedInputStream(socket.getInputStream(), socketBufferSize);
-      outStream = new BufferedOutputStream(socket.getOutputStream(), socketBufferSize);
-    } else {
-      inStream = new BufferedInputStream(socket.getInputStream());
-      outStream = new BufferedOutputStream(socket.getOutputStream());
-    }
+    inStream = new BufferedInputStream(socket.getInputStream());
+    outStream = new BufferedOutputStream(socket.getOutputStream());
 
     out = new DataOutputStream(outStream);
     in = new DataInputStream(inStream);

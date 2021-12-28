@@ -31,7 +31,7 @@ public class MatchPathItemFirst extends MatchPathItem {
     super(id);
   }
 
-  public MatchPathItemFirst(SqlParser p, int id) {
+  public MatchPathItemFirst(final SqlParser p, final int id) {
     super(p, id);
   }
 
@@ -39,34 +39,33 @@ public class MatchPathItemFirst extends MatchPathItem {
     return false;
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
-
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     function.toString(params, builder);
-    if (filter != null) {
+    if (filter != null)
       filter.toString(params, builder);
-    }
+
   }
 
-  protected Iterable<Identifiable> traversePatternEdge(MatchStatement.MatchContext matchContext, Identifiable startingPoint, CommandContext iCommandContext) {
-    Object qR = this.function.execute(startingPoint, iCommandContext);
+  protected Iterable<Identifiable> traversePatternEdge(final MatchStatement.MatchContext matchContext, final Identifiable startingPoint,
+      final CommandContext iCommandContext) {
+    final Object qR = this.function.execute(startingPoint, iCommandContext);
     return (qR instanceof Iterable) ? (Iterable) qR : Collections.singleton((Identifiable) qR);
   }
 
   @Override
   public MatchPathItem copy() {
-    MatchPathItemFirst result = (MatchPathItemFirst) super.copy();
+    final MatchPathItemFirst result = (MatchPathItemFirst) super.copy();
     result.function = function == null ? null : function.copy();
     return result;
   }
 
   @Override
-  public boolean equals(Object o) {
-    if (!super.equals(o)) {
+  public boolean equals(final Object o) {
+    if (!super.equals(o))
       return false;
-    }
-    MatchPathItemFirst that = (MatchPathItemFirst) o;
 
-    return function != null ? function.equals(that.function) : that.function == null;
+    final MatchPathItemFirst that = (MatchPathItemFirst) o;
+    return Objects.equals(function, that.function);
   }
 
   @Override
@@ -80,7 +79,7 @@ public class MatchPathItemFirst extends MatchPathItem {
     return function;
   }
 
-  public void setFunction(FunctionCall function) {
+  public void setFunction(final FunctionCall function) {
     this.function = function;
   }
 
@@ -89,9 +88,10 @@ public class MatchPathItemFirst extends MatchPathItem {
     if (methodWrapper == null) {
       synchronized (this) {
         if (methodWrapper == null) {
-          methodWrapper = new MethodCall(-1);
-          methodWrapper.params = function.params;
-          methodWrapper.methodName = function.name;
+          final MethodCall m = new MethodCall(-1);
+          m.params = function.params;
+          m.methodName = function.name;
+          methodWrapper = m;
         }
       }
     }

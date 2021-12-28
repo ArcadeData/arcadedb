@@ -61,8 +61,10 @@ public class GraphSONExporterFormat extends AbstractExporterFormat {
       exportFile.getParentFile().mkdirs();
 
     try (ArcadeGraph graph = ArcadeGraph.open(database)) {
-      try (GZIPOutputStream out = new GZIPOutputStream(new FileOutputStream(exportFile))) {
-        graph.io(IoCore.graphson()).writer().create().writeGraph(out, graph);
+      try (FileOutputStream fos = new FileOutputStream(exportFile)) {
+        try (GZIPOutputStream out = new GZIPOutputStream(fos)) {
+          graph.io(IoCore.graphson()).writer().create().writeGraph(out, graph);
+        }
       }
     }
   }

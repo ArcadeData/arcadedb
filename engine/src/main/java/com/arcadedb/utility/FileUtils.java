@@ -386,7 +386,7 @@ public class FileUtils {
     int maxWidth = 0;
     int currWidth = 0;
     for (int i = 0; i < text.length(); i++) {
-      final Character current = text.charAt(i);
+      final char current = text.charAt(i);
       if (current == '\n') {
         ++totalLines;
 
@@ -411,9 +411,9 @@ public class FileUtils {
 
     for (int i = 0; i < maxWidth; i++) {
       String s = "" + i;
-      final Character unit = s.charAt(s.length() - 1);
+      final char unit = s.charAt(s.length() - 1);
       if (unit == '0') {
-        final Character decimal = s.length() > 1 ? s.charAt(s.length() - 2) : ' ';
+        final char decimal = s.length() > 1 ? s.charAt(s.length() - 2) : ' ';
         result.append(decimal);
       } else
         result.append(' ');
@@ -426,14 +426,14 @@ public class FileUtils {
 
     for (int i = 0; i < maxWidth; i++) {
       String s = "" + i;
-      final Character unit = s.charAt(s.length() - 1);
+      final char unit = s.charAt(s.length() - 1);
       result.append(unit);
     }
 
     result.append(String.format("\n%-" + maxLineDigits + "d: ", 1));
     int line = 1;
     for (int i = 0; i < text.length(); i++) {
-      final Character current = text.charAt(i);
+      final char current = text.charAt(i);
       final Character next = i + 1 < text.length() ? text.charAt(i) : null;
       if (current == '\n') {
         ++line;

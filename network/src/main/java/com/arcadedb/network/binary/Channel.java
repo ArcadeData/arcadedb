@@ -30,19 +30,13 @@ public abstract class Channel {
   public volatile      Socket       socket;
   public               InputStream  inStream;
   public               OutputStream outStream;
-  public               int          socketBufferSize;
   private final        AtomicLong   metricTransmittedBytes       = new AtomicLong();
   private final        AtomicLong   metricReceivedBytes          = new AtomicLong();
   private final        AtomicLong   metricFlushes                = new AtomicLong();
 
   public Channel(final Socket iSocket) throws IOException {
-    socketBufferSize = 0;
     socket = iSocket;
     socket.setTcpNoDelay(true);
-    if (socketBufferSize > 0) {
-      socket.setSendBufferSize(socketBufferSize);
-      socket.setReceiveBufferSize(socketBufferSize);
-    }
     // THIS TIMEOUT IS CORRECT BUT CREATE SOME PROBLEM ON REMOTE, NEED CHECK BEFORE BE ENABLED
     // timeout = iConfig.getValueAsLong(OGlobalConfiguration.NETWORK_REQUEST_TIMEOUT);
   }

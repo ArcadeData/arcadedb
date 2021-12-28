@@ -751,7 +751,7 @@ public class SelectExecutionPlanner {
   private static List<ProjectionItem> calculateAdditionalOrderByProjections(Set<String> allAliases, OrderBy orderBy) {
     List<ProjectionItem> result = new ArrayList<>();
     int nextAliasCount = 0;
-    if (orderBy != null && orderBy.getItems() != null || !orderBy.getItems().isEmpty()) {
+    if (orderBy != null && orderBy.getItems() != null && !orderBy.getItems().isEmpty()) {
       for (OrderByItem item : orderBy.getItems()) {
         if (!allAliases.contains(item.getAlias())) {
           ProjectionItem newProj = new ProjectionItem(-1);
@@ -2185,17 +2185,18 @@ public class SelectExecutionPlanner {
     for (Bucket parserBucket : buckets) {
       String name = parserBucket.getBucketName();
       Integer bucketId = parserBucket.getBucketNumber();
-      if (name == null) {
+      if (name == null && bucketId != null)
         name = db.getSchema().getBucketById(bucketId).getName();
-      }
+
       if (bucketId == null) {
         final com.arcadedb.engine.Bucket bucket = db.getSchema().getBucketByName(name);
         if (bucket != null)
           bucketId = bucket.getId();
       }
+
       if (name != null) {
         bucketNames.add(name);
-        DocumentType typez = db.getSchema().getTypeByBucketId(bucketId);
+        DocumentType typez = bucketId != null ? db.getSchema().getTypeByBucketId(bucketId) : null;
         if (typez == null) {
           tryByIndex = false;
           break;
@@ -2214,7 +2215,7 @@ public class SelectExecutionPlanner {
 
     }
 
-    if (tryByIndex) {
+    if (tryByIndex && candidateClass != null) {
       Identifier typez = new Identifier(candidateClass.getName());
       if (handleClassAsTargetWithIndexedFunction(plan, bucketNames, typez, info, ctx, profilingEnabled)) {
         return;

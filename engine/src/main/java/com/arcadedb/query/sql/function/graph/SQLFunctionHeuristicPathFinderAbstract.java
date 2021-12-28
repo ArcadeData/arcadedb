@@ -163,7 +163,7 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
 
   protected double getManhatanHeuristicCost(final String[] axisNames, final Map<String, Double> slist, final Map<String, Double> clist,
       final Map<String, Double> plist, final Map<String, Double> glist, long depth, double dFactor) {
-    Double heuristic = 0.0;
+    double heuristic;
     double res = 0.0;
     for (String str : axisNames) {
       res += Math.abs((clist.get(str) != null ? clist.get(str) : 0.0) - (glist.get(str) != null ? glist.get(str) : 0.0));
@@ -174,7 +174,7 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
 
   protected double getMaxAxisHeuristicCost(final String[] axisNames, final Map<String, Double> slist, final Map<String, Double> clist,
       final Map<String, Double> plist, final Map<String, Double> glist, long depth, double dFactor) {
-    Double heuristic = 0.0;
+    double heuristic;
     double res = 0.0;
     for (String str : axisNames) {
       res = Math.max(Math.abs((clist.get(str) != null ? clist.get(str) : 0.0) - (glist.get(str) != null ? glist.get(str) : 0.0)), res);
@@ -186,7 +186,7 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
   protected double getDiagonalHeuristicCost(final String[] axisNames, final Map<String, Double> slist, final Map<String, Double> clist,
       final Map<String, Double> plist, final Map<String, Double> glist, long depth, double dFactor) {
 
-    Double heuristic = 0.0;
+    double heuristic;
     double h_diagonal = 0.0;
     double h_straight = 0.0;
     for (String str : axisNames) {
@@ -199,7 +199,7 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
 
   protected double getEuclideanHeuristicCost(final String[] axisNames, final Map<String, Double> slist, final Map<String, Double> clist,
       final Map<String, Double> plist, final Map<String, Double> glist, long depth, double dFactor) {
-    Double heuristic = 0.0;
+    double heuristic;
     double res = 0.0;
     for (String str : axisNames) {
       res += Math.pow(Math.abs((clist.get(str) != null ? clist.get(str) : 0.0) - (glist.get(str) != null ? glist.get(str) : 0.0)), 2);
@@ -210,7 +210,7 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
 
   protected double getEuclideanNoSQRHeuristicCost(final String[] axisNames, final Map<String, Double> slist, final Map<String, Double> clist,
       final Map<String, Double> plist, final Map<String, Double> glist, long depth, double dFactor) {
-    Double heuristic = 0.0;
+    double heuristic;
     double res = 0.0;
     for (String str : axisNames) {
       res += Math.pow(Math.abs((clist.get(str) != null ? clist.get(str) : 0.0) - (glist.get(str) != null ? glist.get(str) : 0.0)), 2);

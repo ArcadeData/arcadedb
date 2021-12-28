@@ -61,8 +61,10 @@ public class GraphMLExporterFormat extends AbstractExporterFormat {
       exportFile.getParentFile().mkdirs();
 
     try (ArcadeGraph graph = ArcadeGraph.open(database)) {
-      try (GZIPOutputStream out = new GZIPOutputStream(new FileOutputStream(exportFile))) {
-        graph.io(IoCore.graphml()).writer().create().writeGraph(out, graph);
+      try (FileOutputStream fos = new FileOutputStream(exportFile)) {
+        try (GZIPOutputStream out = new GZIPOutputStream(fos)) {
+          graph.io(IoCore.graphml()).writer().create().writeGraph(out, graph);
+        }
       }
     }
   }

@@ -61,7 +61,7 @@ public class HttpServer implements ServerPlugin {
 
   public HttpServer(final ArcadeDBServer server) {
     this.server = server;
-    this.sessionManager = new HttpSessionManager(server.getConfiguration().getValueAsInteger(GlobalConfiguration.SERVER_HTTP_TX_EXPIRE_TIMEOUT) * 1000);
+    this.sessionManager = new HttpSessionManager(server.getConfiguration().getValueAsInteger(GlobalConfiguration.SERVER_HTTP_TX_EXPIRE_TIMEOUT) * 1000L);
     this.webSocketEventBus = new WebSocketEventBus(this.server);
   }
 

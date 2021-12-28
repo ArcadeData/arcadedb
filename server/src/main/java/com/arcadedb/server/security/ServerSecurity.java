@@ -232,7 +232,7 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
       // wrong hash format
       return false;
 
-    final Integer iterations = Integer.parseInt(parts[1]);
+    final int iterations = Integer.parseInt(parts[1]);
     final String salt = parts[2];
     final String hash = encodePassword(password, salt, iterations);
 

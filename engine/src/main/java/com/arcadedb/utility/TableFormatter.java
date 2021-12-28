@@ -576,7 +576,7 @@ public class TableFormatter {
   }
 
   private Integer getColumnSize(final Integer iIndex, final TableRow row, final String fieldName, final Integer origSize) {
-    Integer newColumnSize;
+    int newColumnSize;
     if (origSize == null)
       // START FROM THE FIELD NAME SIZE
       newColumnSize = fieldName.length();

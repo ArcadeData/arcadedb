@@ -166,6 +166,11 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     }
 
     final AnalyzedEntity entity = sourceSchema.getSchema().getEntity(settings.vertexTypeName);
+    if (entity == null) {
+      LogManager.instance().log(this, Level.INFO, "Vertex type '%s' not defined", null, settings.vertexTypeName);
+      return;
+    }
+
     final AnalyzedProperty id = entity.getProperty(settings.typeIdProperty);
 
     if (id == null) {
@@ -283,6 +288,11 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     final long beginTime = System.currentTimeMillis();
 
     final AnalyzedEntity entity = sourceSchema.getSchema().getEntity(settings.edgeTypeName);
+    if (entity == null) {
+      LogManager.instance().log(this, Level.INFO, "Edge type '%s' not defined", null, settings.edgeTypeName);
+      return;
+    }
+
     final AnalyzedProperty from = entity.getProperty(settings.edgeFromField);
     if (from == null)
       throw new IllegalArgumentException("Specify -edgeFromField <from-field-name>");

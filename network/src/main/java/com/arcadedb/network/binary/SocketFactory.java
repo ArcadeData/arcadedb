@@ -95,7 +95,7 @@ public class SocketFactory {
         trustStore.load(getAsStream(trustStorePath), trustStorePass);
         tmf.init(trustStore);
 
-        context.init(kmf.getKeyManagers(), (tmf == null ? null : tmf.getTrustManagers()), null);
+        context.init(kmf.getKeyManagers(), tmf.getTrustManagers(), null);
 
         return context;
       } else {

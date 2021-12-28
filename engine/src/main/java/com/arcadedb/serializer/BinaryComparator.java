@@ -388,7 +388,7 @@ public class BinaryComparator {
         return 0;
       else
         return -1;
-    } else if (value1 == null)
+    } else if (value2 == null)
       return 1;
 
     switch (type1) {

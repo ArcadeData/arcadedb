@@ -83,7 +83,7 @@ public class ImmutableEmbeddedDocument extends ImmutableDocument implements Embe
 
       if (v1 == null && v2 == null)
         continue;
-      else if (!v1.equals(v2))
+      else if (v1 != null && !v1.equals(v2))
         return false;
     }
 

@@ -109,7 +109,7 @@ public class OrientDBImporter {
         state = "batchSize";
       else if (arg.equals("-v"))
         state = "verboseLevel";
-      else {
+      else if (state != null) {
         if (state.equals("databasePath"))
           databasePath = arg;
         else if (state.equals("inputFile"))

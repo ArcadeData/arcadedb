@@ -329,8 +329,9 @@ public class TransactionContext implements Transaction {
     if (modifiedPages != null)
       for (PageId pid : modifiedPages.keySet())
         involvedFiles.add(pid.getFileId());
-    for (PageId pid : newPages.keySet())
-      involvedFiles.add(pid.getFileId());
+    if (newPages != null)
+      for (PageId pid : newPages.keySet())
+        involvedFiles.add(pid.getFileId());
     involvedFiles.addAll(newPageCounters.keySet());
 
     map.put("status", status.name());

@@ -29,9 +29,12 @@ public class RestoreSettings {
   }
 
   protected void parseParameters(final String[] args) {
+    if (args.length % 2 != 0)
+      throw new IllegalArgumentException("Expected pairs key/value as parameters");
+
     if (args != null)
-      for (int i = 0; i < args.length; )
-        i += parseParameter(args[i].substring(1), i < args.length - 1 ? args[i + 1] : null);
+      for (int i = 0; i < args.length - 1; )
+        i += parseParameter(args[i].substring(1), args[i + 1]);
 
     validate();
   }

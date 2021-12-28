@@ -129,9 +129,11 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
       }
     }
 
-    // UPDATE THE ARRAY WITH LATEST CONFIGURATION
-    for (int i = 0; i < access.length(); i++)
-      databaseAccessMap[DATABASE_ACCESS.getByName(access.getString(i)).ordinal()] = true;
+    if (access != null) {
+      // UPDATE THE ARRAY WITH LATEST CONFIGURATION
+      for (int i = 0; i < access.length(); i++)
+        databaseAccessMap[DATABASE_ACCESS.getByName(access.getString(i)).ordinal()] = true;
+    }
   }
 
   public synchronized void updateFileAccess(final DatabaseInternal database, final JSONObject configuredGroups) {

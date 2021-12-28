@@ -115,48 +115,44 @@ public class FetchEdgesFromToVerticesStep extends AbstractExecutionStep {
 
   private void init() {
     synchronized (this) {
-      if (this.inited) {
+      if (this.inited)
         return;
-      }
       inited = true;
     }
 
     Object fromValues;
 
     fromValues = ctx.getVariable(fromAlias);
-    if (fromValues instanceof Iterable && !(fromValues instanceof Identifiable)) {
+    if (fromValues instanceof Iterable && !(fromValues instanceof Identifiable))
       fromValues = ((Iterable) fromValues).iterator();
-    } else if (!(fromValues instanceof Iterator)) {
+    else if (!(fromValues instanceof Iterator))
       fromValues = Collections.singleton(fromValues).iterator();
-    }
 
     Object toValues;
 
     toValues = ctx.getVariable(toAlias);
-    if (toValues instanceof Iterable && !(toValues instanceof Identifiable)) {
+    if (toValues instanceof Iterable && !(toValues instanceof Identifiable))
       toValues = ((Iterable) toValues).iterator();
-    } else if (!(toValues instanceof Iterator)) {
+    else if (!(toValues instanceof Iterator))
       toValues = Collections.singleton(toValues).iterator();
-    }
 
     fromIter = (Iterator) fromValues;
 
-    Iterator toIter = (Iterator) toValues;
+    final Iterator toIter = (Iterator) toValues;
 
     while (toIter != null && toIter.hasNext()) {
       Object elem = toIter.next();
-      if (elem instanceof Result) {
+      if (elem instanceof Result)
         elem = ((Result) elem).toElement();
-      }
-      if (elem instanceof Identifiable && !(elem instanceof Record)) {
+
+      if (elem instanceof Identifiable && !(elem instanceof Record))
         elem = ((Identifiable) elem).getRecord();
-      }
-      if (!(elem instanceof Record)) {
+
+      if (!(elem instanceof Record))
         throw new CommandExecutionException("Invalid vertex: " + elem);
-      }
-      if (elem instanceof Vertex) {
+
+      if (elem instanceof Vertex)
         toList.add(((Vertex) elem).getIdentity());
-      }
     }
 
     fetchNextEdge();
@@ -188,8 +184,8 @@ public class FetchEdgesFromToVerticesStep extends AbstractExecutionStep {
           return;
         }
       }
-      Edge edge = this.currentFromEdgesIter.next();
-      if (toList == null || toList.contains(edge.getIn().getIdentity())) {
+      final Edge edge = this.currentFromEdgesIter.next();
+      if (toList.contains(edge.getIn().getIdentity())) {
         if (matchesClass(edge) && matchesCluster(edge)) {
           this.nextEdge = edge;
           return;
@@ -198,39 +194,39 @@ public class FetchEdgesFromToVerticesStep extends AbstractExecutionStep {
     }
   }
 
-  private boolean matchesCluster(Edge edge) {
-    if (targetCluster == null) {
+  private boolean matchesCluster(final Edge edge) {
+    if (targetCluster == null)
       return true;
-    }
-    int bucketId = edge.getIdentity().getBucketId();
-    String bucketName = ctx.getDatabase().getSchema().getBucketById(bucketId).getName();
+
+    final int bucketId = edge.getIdentity().getBucketId();
+    final String bucketName = ctx.getDatabase().getSchema().getBucketById(bucketId).getName();
     return bucketName.equals(targetCluster.getStringValue());
   }
 
   private boolean matchesClass(Edge edge) {
-    if (targetClass == null) {
+    if (targetClass == null)
       return true;
-    }
+
     return edge.getTypeName().equals(targetClass.getStringValue());
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     String result = spaces + "+ FOR EACH x in " + fromAlias + "\n";
     result += spaces + "    FOR EACH y in " + toAlias + "\n";
     result += spaces + "       FETCH EDGES FROM x TO y";
-    if (targetClass != null) {
+    if (targetClass != null)
       result += "\n" + spaces + "       (target class " + targetClass + ")";
-    }
-    if (targetCluster != null) {
+
+    if (targetCluster != null)
       result += "\n" + spaces + "       (target bucket " + targetCluster + ")";
-    }
+
     return result;
   }
 
   @Override
-  public ExecutionStep copy(CommandContext ctx) {
+  public ExecutionStep copy(final CommandContext ctx) {
     return new FetchEdgesFromToVerticesStep(fromAlias, toAlias, targetClass, targetCluster, ctx, profilingEnabled);
   }
 }

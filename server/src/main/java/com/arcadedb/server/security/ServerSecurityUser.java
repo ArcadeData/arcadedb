@@ -149,8 +149,8 @@ public class ServerSecurityUser implements SecurityUser {
       // USE THE EXISTENT ONE
       dbu = prev;
 
-    if (!SecurityManager.ANY.equals(database.getName())) {
-      if (database != null) {
+    if (database != null) {
+      if (!SecurityManager.ANY.equals(database.getName())) {
         final JSONObject databaseGroups = server.getSecurity().getDatabaseGroupsConfiguration(database.getName());
         dbu.updateDatabaseConfiguration(databaseGroups);
         dbu.updateFileAccess((DatabaseInternal) database, databaseGroups);

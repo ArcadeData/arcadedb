@@ -346,12 +346,13 @@ public abstract class ChannelBinary extends Channel implements ChannelDataInput,
   }
 
   public ChannelBinary writeBytes(final byte[] content) throws IOException {
-    final int length = content.length;
-
-    if (debug)
-      LogManager.instance().log(this, Level.INFO, "%s - Writing bytes (%d bytes): %s", null, socket.getRemoteSocketAddress(), length, Arrays.toString(content));
-
     if (content != null) {
+      final int length = content.length;
+
+      if (debug)
+        LogManager.instance()
+            .log(this, Level.INFO, "%s - Writing bytes (%d bytes): %s", null, socket.getRemoteSocketAddress(), length, Arrays.toString(content));
+
       if (length > maxChunkSize) {
         throw new IOException("Impossible to write a chunk of " + length + " bytes. Max allowed chunk is " + maxChunkSize
             + " bytes. See NETWORK_BINARY_MAX_CONTENT_LENGTH settings ");
@@ -410,7 +411,7 @@ public abstract class ChannelBinary extends Channel implements ChannelDataInput,
   }
 
   @Override
-  public void close() {
+  public synchronized void close() {
     if (debug)
       LogManager.instance()
           .log(this, Level.INFO, "%s - Closing socket...", null, socket != null ? " null possible previous close" : socket.getRemoteSocketAddress());

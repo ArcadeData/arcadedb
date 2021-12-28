@@ -18,17 +18,17 @@ package com.arcadedb.integration.importer;
 import com.arcadedb.database.DatabaseFactory;
 
 import java.io.*;
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.*;
 
 public class Parser {
   private final Source            source;
   private       InputStream       is;
   private final InputStreamReader reader;
-  private final long       limit;
-  private final AtomicLong position = new AtomicLong();
-  private final long       total;
-  private       char       currentChar;
-  private final boolean compressed;
+  private final long              limit;
+  private final AtomicLong        position = new AtomicLong();
+  private final long              total;
+  private       char              currentChar;
+  private final boolean           compressed;
 
   public Parser(final Source source, final long limit) throws IOException {
     this.source = source;
@@ -92,13 +92,13 @@ public class Parser {
   private void resetInput() {
     this.is = new BufferedInputStream(source.inputStream) {
       @Override
-      public int read() throws IOException {
+      public synchronized int read() throws IOException {
         position.incrementAndGet();
         return super.read();
       }
 
       @Override
-      public int read(final byte[] b) throws IOException {
+      public synchronized int read(final byte[] b) throws IOException {
         if (limit > 0 && position.get() > limit)
           throw new EOFException();
 
@@ -108,7 +108,7 @@ public class Parser {
       }
 
       @Override
-      public int read(final byte[] b, final int off, final int len) throws IOException {
+      public synchronized int read(final byte[] b, final int off, final int len) throws IOException {
         if (limit > 0 && position.get() > limit)
           throw new EOFException();
 
@@ -118,7 +118,7 @@ public class Parser {
       }
 
       @Override
-      public int available() throws IOException {
+      public synchronized int available() throws IOException {
         if (limit > 0 && position.get() > limit)
           return 0;
 
@@ -126,7 +126,7 @@ public class Parser {
       }
 
       @Override
-      public synchronized void reset() throws IOException {
+      public synchronized void reset() {
         pos = 0;
         position.set(0);
       }

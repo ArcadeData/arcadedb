@@ -20,10 +20,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.function.SQLFunctionAbstract;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Comparator;
-import java.util.List;
+import java.util.*;
 
 /**
  * Computes the percentile for a field. Nulls are ignored in the calculation.
@@ -31,7 +28,6 @@ import java.util.List;
  * @author Fabrizio Fortino
  */
 public class SQLFunctionPercentile extends SQLFunctionAbstract {
-
   public static final String NAME = "percentile";
 
   protected     List<Double> quantiles = new ArrayList<Double>();
@@ -46,8 +42,7 @@ public class SQLFunctionPercentile extends SQLFunctionAbstract {
   }
 
   @Override
-  public Object execute( final Object iThis, Identifiable iCurrentRecord, Object iCurrentResult,
-      Object[] iParams, CommandContext iContext) {
+  public Object execute(final Object iThis, Identifiable iCurrentRecord, Object iCurrentResult, Object[] iParams, CommandContext iContext) {
 
     if (quantiles.isEmpty()) { // set quantiles once
       for (int i = 1; i < iParams.length; ++i) {
@@ -87,47 +82,41 @@ public class SQLFunctionPercentile extends SQLFunctionAbstract {
   }
 
   private Object evaluate(List<Number> iValues) {
-    if (iValues.isEmpty()) { // result set is empty
+    if (iValues.isEmpty())  // result set is empty
       return null;
-    }
+
     if (quantiles.size() > 1) {
-      List<Number> results = new ArrayList<Number>();
-      for (Double q : this.quantiles) {
+      List<Number> results = new ArrayList<Number>(this.quantiles.size());
+      for (Double q : this.quantiles)
         results.add(this.evaluate(iValues, q));
-      }
+
       return results;
-    } else {
+    } else
       return this.evaluate(iValues, this.quantiles.get(0));
-    }
   }
 
-  private Number evaluate(List<Number> iValues, double iQuantile) {
-    Collections.sort(iValues, new Comparator<Number>() {
-      @Override
-      public int compare(Number o1, Number o2) {
-        Double d1 = o1.doubleValue();
-        Double d2 = o2.doubleValue();
-        return d1.compareTo(d2);
-      }
+  private Number evaluate(final List<Number> iValues, final double iQuantile) {
+    Collections.sort(iValues, (o1, o2) -> {
+      final double d1 = o1.doubleValue();
+      final double d2 = o2.doubleValue();
+      return Double.compare(d1, d2);
     });
 
-    double n = iValues.size();
-    double pos = iQuantile * (n + 1);
+    final double n = iValues.size();
+    final double pos = iQuantile * (n + 1);
 
-    if (pos < 1) {
+    if (pos < 1)
       return iValues.get(0);
-    }
-    if (pos >= n) {
+
+    if (pos >= n)
       return iValues.get((int) n - 1);
-    }
 
-    double fpos = Math.floor(pos);
-    int intPos = (int) fpos;
-    double dif = pos - fpos;
+    final double fpos = Math.floor(pos);
+    final int intPos = (int) fpos;
+    final double dif = pos - fpos;
 
-    double lower = iValues.get(intPos - 1).doubleValue();
-    double upper = iValues.get(intPos).doubleValue();
+    final double lower = iValues.get(intPos - 1).doubleValue();
+    final double upper = iValues.get(intPos).doubleValue();
     return lower + dif * (upper - lower);
   }
-
 }
