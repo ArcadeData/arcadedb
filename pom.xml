@@ -139,6 +139,7 @@
                         <arg>jdk.hotspot.agent</arg>
                         <arg>--add-exports</arg>
                         <arg>jdk.hotspot.agent/sun.jvm.hotspot.tools=ALL-UNNAMED</arg>
+                        <arg>-proc:none</arg>
                     </compilerArgs>
                 </configuration>
             </plugin>

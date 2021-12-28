@@ -100,9 +100,9 @@ public class ServerDatabaseAlignIT extends BaseGraphServerTest {
     final Result result = resultset.next();
 
     Assertions.assertFalse(result.hasProperty("ArcadeDB_0"));
-    Assertions.assertTrue(result.hasProperty("ArcadeDB_1"));
+    Assertions.assertTrue(result.hasProperty("ArcadeDB_1"), "Missing response from server ArcadeDB_1: " + result.toJSON());
     Assertions.assertEquals(3, ((List<int[]>) result.getProperty("ArcadeDB_1")).size());
-    Assertions.assertTrue(result.hasProperty("ArcadeDB_2"));
+    Assertions.assertTrue(result.hasProperty("ArcadeDB_2"), "Missing response from server ArcadeDB_2: " + result.toJSON());
     Assertions.assertEquals(3, ((List<int[]>) result.getProperty("ArcadeDB_2")).size());
 
     // WAIT THE ALIGN IS COMPLETE BEFORE CHECKING THE DATABASES
