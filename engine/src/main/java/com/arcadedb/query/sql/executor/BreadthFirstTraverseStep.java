@@ -176,6 +176,15 @@ public class BreadthFirstTraverseStep extends AbstractTraverseStep {
       final TraverseResult res = new TraverseResult();
       res.setElement(nextStep.getElement().get());
       res.depth = depth;
+      res.setMetadata("$depth", depth);
+      List<Identifiable> newPath = new ArrayList<>(path);
+      nextStep.getIdentity().ifPresent(x -> newPath.add(x.getIdentity()));
+      res.setMetadata("$path", newPath);
+
+      List reverseStack = new ArrayList(newPath);
+      Collections.reverse(reverseStack);
+      List newStack = new ArrayList(reverseStack);
+      res.setMetadata("$stack", newStack);
       tryAddEntryPoint(res, ctx);
     }
   }
