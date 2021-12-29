@@ -19,7 +19,7 @@ function renderTable(){
       }
     }
 
-    orderedColumns = [];
+    let orderedColumns = [];
     if( columns["@rid"])
       orderedColumns.push("@rid");
     if( columns["@type"])

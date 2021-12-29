@@ -452,7 +452,7 @@ function loadNodeNeighbors( direction, rid ){
       globalRenderedVerticesRID[vertex.r] = true;
     }
 
-    for( i in data.result.edges ){
+    for( let i in data.result.edges ){
       let edge = data.result.edges[i];
 
       if( !globalRenderedVerticesRID[edge.i] || !globalRenderedVerticesRID[edge.o] )
