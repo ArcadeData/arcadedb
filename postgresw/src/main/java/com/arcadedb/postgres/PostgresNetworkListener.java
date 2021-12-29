@@ -34,9 +34,8 @@ public class PostgresNetworkListener extends Thread {
   private final    ServerSocketFactory socketFactory;
   private          ServerSocket        serverSocket;
   private          InetSocketAddress   inboundAddr;
-  private volatile boolean             active           = true;
-  private final    int                 socketBufferSize = 0;
-  private final    int                 protocolVersion  = -1;
+  private volatile boolean             active          = true;
+  private final    int                 protocolVersion = -1;
   private final    String              hostName;
   private          int                 port;
   private          ClientConnected     callback;
@@ -61,10 +60,7 @@ public class PostgresNetworkListener extends Thread {
           final Socket socket = serverSocket.accept();
 
           socket.setPerformancePreferences(0, 2, 1);
-          if (socketBufferSize > 0) {
-            socket.setSendBufferSize(socketBufferSize);
-            socket.setReceiveBufferSize(socketBufferSize);
-          }
+
           // CREATE A NEW PROTOCOL INSTANCE
           // TODO: OPEN A DATABASE
           final PostgresNetworkExecutor connection = new PostgresNetworkExecutor(server, socket, null);

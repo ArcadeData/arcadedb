@@ -354,7 +354,7 @@ public class RemoteDatabase extends RWLockContext {
               } else if (exception.equals(QuorumNotReachedException.class.getName())) {
                 lastException = new QuorumNotReachedException(detail);
                 continue;
-              } else if (exception.equals(DuplicatedKeyException.class.getName())) {
+              } else if (exception.equals(DuplicatedKeyException.class.getName()) && exceptionArgs != null) {
                 final String[] exceptionArgsParts = exceptionArgs.split("\\|");
                 throw new DuplicatedKeyException(exceptionArgsParts[0], exceptionArgsParts[1], new RID(null, exceptionArgsParts[2]));
               } else if (exception.equals(ConcurrentModificationException.class.getName())) {

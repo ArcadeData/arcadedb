@@ -44,9 +44,11 @@ public class DatabaseStructureRequest extends HAAbstractCommand {
     final File file = new File(db.getDatabasePath() + "/" + EmbeddedSchema.SCHEMA_FILE_NAME);
     try {
       final String schemaJson;
-      if (file.exists())
-        schemaJson = FileUtils.readStreamAsString(new FileInputStream(file), db.getSchema().getEncoding());
-      else
+      if (file.exists()) {
+        try (FileInputStream fis = new FileInputStream(file)) {
+          schemaJson = FileUtils.readStreamAsString(fis, db.getSchema().getEncoding());
+        }
+      } else
         schemaJson = "{}";
 
       final Map<Integer, String> fileNames = new HashMap<>();

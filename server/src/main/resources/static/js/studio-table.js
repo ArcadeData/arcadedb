@@ -10,10 +10,10 @@ function renderTable(){
 
   if( globalResultset.records.length > 0 ) {
     let columns = {};
-    for( i in globalResultset.records ){
+    for( let i in globalResultset.records ){
       let row = globalResultset.records[i];
 
-      for( p in row ){
+      for( let p in row ){
         if( !columns[p] )
           columns[p] = true;
       }
@@ -25,7 +25,7 @@ function renderTable(){
     if( columns["@type"])
       orderedColumns.push("@type");
 
-    for( colName in columns ){
+    for( let colName in columns ){
       if( !colName.startsWith("@"))
         orderedColumns.push(colName);
     }
@@ -35,7 +35,7 @@ function renderTable(){
     if( columns["@out"])
       orderedColumns.push("@out");
 
-    for( i in orderedColumns ){
+    for( let i in orderedColumns ){
       if( orderedColumns[i] == "@rid" )
         tableColumns.push( { "mRender": function ( data, type, full ) {
                                                    return $("<div/>").html(data).text();
@@ -44,11 +44,11 @@ function renderTable(){
         tableColumns.push( { sTitle: escapeHtml( orderedColumns[i] ), "defaultContent": "" } );
     }
 
-    for( i in globalResultset.records ){
+    for( let i in globalResultset.records ){
       let row = globalResultset.records[i];
 
       let record = [];
-      for( i in orderedColumns ){
+      for( let i in orderedColumns ){
         let colName = orderedColumns[i];
         let value = row[colName];
 
@@ -71,9 +71,6 @@ function renderTable(){
       paging:   true,
       pageLength: 20,
       bLengthChange: true,
-      initComplete: function() {
-        $('div.dataTables_filter input').attr('autocomplete', 'off')
-      },
       aoColumns: tableColumns,
       aaData: tableRecords,
       deferRender: true,

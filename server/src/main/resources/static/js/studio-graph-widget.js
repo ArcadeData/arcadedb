@@ -1,3 +1,7 @@
+var globalRenderedVerticesRID = {};
+var globalTotalEdges = 0;
+var globalSelected = null;
+
 function renderGraph(){
   if( globalResultset == null )
     return;
@@ -11,19 +15,19 @@ function renderGraph(){
 
   globalTotalEdges = 0;
 
-  for( i in globalResultset.vertices ){
+  for( let i in globalResultset.vertices ){
     let vertex = globalResultset.vertices[i];
     assignVertexColor(vertex.t);
     assignProperties(vertex);
   }
 
-  for( i in globalResultset.edges ){
+  for( let i in globalResultset.edges ){
     let edge = globalResultset.edges[i];
     assignProperties(edge);
   }
 
   let reachedMax = false;
-  for( i in globalResultset.vertices ){
+  for( let i in globalResultset.vertices ){
     let vertex = globalResultset.vertices[i];
 
     let rid = vertex["r"];
@@ -41,7 +45,7 @@ function renderGraph(){
     }
   }
 
-  for( i in globalResultset.edges ) {
+  for( let i in globalResultset.edges ) {
     let edge = globalResultset.edges[i];
     if( globalRenderedVerticesRID[edge.i] && globalRenderedVerticesRID[edge.o]  ){
       // DISPLAY ONLY EDGES RELATIVE TO VERTICES THAT ARE PART OF THE GRAPH
@@ -86,7 +90,6 @@ function renderGraph(){
       'target-arrow-shape': 'triangle',
       'curve-style': 'bezier',
       'edge-text-rotation': 'autorotate',
-      'target-arrow-shape': 'triangle',
       'text-outline-color': "#F7F7F7",
       'text-outline-width': 8,
       'z-index-compare': 'manual',
@@ -247,7 +250,7 @@ function assignProperties(element){
     globalGraphPropertiesPerType[type] = properties;
   }
 
-  for( p in element.p )
+  for( let p in element.p )
     properties[ p ] = true;;
 }
 
@@ -255,7 +258,7 @@ function assignStyles(styles){
   if( styles == null )
     styles = [];
 
-  for( type in globalGraphSettings.types ) {
+  for( let type in globalGraphSettings.types ) {
     let element = getOrCreateStyleTypeAttrib( type, "element");
 
     let labelColor = getOrCreateStyleTypeAttrib( type, "labelColor" );
@@ -337,7 +340,7 @@ function assignStyles(styles){
 
 function setGraphStyles(){
   let nodeHtmlStyles = [];
-  for( type in globalGraphSettings.types ) {
+  for( let type in globalGraphSettings.types ) {
     let iconColor = getOrCreateStyleTypeAttrib( type, "iconColor" );
     if( iconColor == null )
       iconColor = "black";
@@ -384,7 +387,7 @@ function removeGraphElement( ele ) {
   }
 
   try{
-    for( i in elements ) {
+    for( let i in elements ) {
       if( !elements[i].data )
         continue;
 
@@ -425,7 +428,7 @@ function loadNodeNeighbors( direction, rid ){
     globalCy.startBatch();
 
     let reachedMax = false;
-    for( i in data.result.vertices ){
+    for( let i in data.result.vertices ){
       if( Object.keys(globalRenderedVerticesRID).length >= globalGraphMaxResult ){
         reachedMax = true;
         break;
@@ -597,7 +600,7 @@ function displaySelectedNode(){
   }
 
   let selectedElementTypes = {};
-  for( i = 0; i < globalSelected.length; ++i ){
+  for( let i = 0; i < globalSelected.length; ++i ){
     let type = globalSelected[i].data()["type"];
     selectedElementTypes[type] = true;
   }
@@ -605,7 +608,7 @@ function displaySelectedNode(){
   let type = null;
   if( Object.keys(selectedElementTypes).length == 1 ){
     type = globalSelected[0].data()["type"];
-    properties = globalGraphPropertiesPerType[type];
+    let properties = globalGraphPropertiesPerType[type];
 
     let labelText = getOrCreateStyleTypeAttrib(type, "labelText");
     if( labelText == null )
@@ -615,7 +618,7 @@ function displaySelectedNode(){
     if( labelColor == null )
       labelColor = 'black';
 
-    layout = "<div class='row'><div class='col-12'><h5>Layout for type "+type;
+    let layout = "<div class='row'><div class='col-12'><h5>Layout for type "+type;
     layout += "<button class='btn-pill btn-transition btn text-right' style='padding: 1px 5px;' onclick='globalToggleWidget(\"layoutPanel\", \"layoutExpand\")'><i id='layoutExpand' class='fa fa-"+(globalWidgetExpanded["layoutPanel"]?"minus":"plus")+"'></i></button></h5></div></div>";
     layout += "<div class='p-2 "+(globalWidgetExpanded["layoutPanel"]?"show":"collapse")+"' id='layoutPanel'>";
     layout += "<div class='row'>";
@@ -624,7 +627,7 @@ function displaySelectedNode(){
     layout += "<div class='col-12'><label class='form-label'>Label</label></div>";
     layout += "<div class='col-9'><select id='graphLabel' class='form-control'>";
     layout += "<option value='@type'"+(labelText == "@type" ? " selected": "" )+">@type</option>" ;
-    for( p in properties ){
+    for( let p in properties ){
       layout += "<option value='"+p+"'"+(labelText == p ? " selected": "" )+">" + p + "</option>" ;
     }
     layout += "</select></div>";
@@ -730,8 +733,8 @@ function displaySelectedNode(){
     layout += "<div class='col-12'><label for='shapeColor' class='form-label'>Shape</label></div>";
 
     layout += "<div class='col-6'><select id='shapeSizeType' class='form-control' oninput='getOrCreateStyleTypeAttrib(\""+type+"\", \"shapeSize\", this.value == \"auto\" ? null : $(\"#shapeSize\").val() + \"px\" );renderGraph()'>";
-    layout += "  <option value='auto'"+(shapeSize==null?" selected":"")+">Auto</option>";
-    layout += "  <option value='custom'"+(shapeSize!=null?" selected":"")+">Custom</option>";
+    layout += "  <option value='auto'"+(shapeSize=='auto'?" selected":"")+">Auto</option>";
+    layout += "  <option value='custom'"+(shapeSize!='auto'?" selected":"")+">Custom</option>";
     layout += "</select></div>";
     layout += "<div class='col-3'><input type='range' class='form-control-range form-control' id='shapeSize' value='"+shapeSize+"' min='100' max='500' step='20' oninput='getOrCreateStyleTypeAttrib(\""+type+"\", \"shapeSize\", this.value + \"px\");renderGraph()'></div>";
     layout += "<div class='col-3'><select id='shapeColor' class='form-control colorselector'>";
@@ -826,7 +829,7 @@ function displaySelectedEdge(){
   }
 
   let selectedElementTypes = {};
-  for( i = 0; i < globalSelected.length; ++i ){
+  for( let i = 0; i < globalSelected.length; ++i ){
     let type = globalSelected[i].data()["type"];
     selectedElementTypes[type] = true;
   }
@@ -834,20 +837,20 @@ function displaySelectedEdge(){
   let type = null;
   if( Object.keys(selectedElementTypes).length == 1 ){
     type = globalSelected[0].data()["type"];
-    properties = globalGraphPropertiesPerType[type];
+    let properties = globalGraphPropertiesPerType[type];
 
     let sel = getOrCreateStyleTypeAttrib(type, "labelText");
     if( sel == null )
       sel = "@type";
 
-    layout = "<div class='row'><div class='col-12'><h5>Layout for type "+type;
+    let layout = "<div class='row'><div class='col-12'><h5>Layout for type "+type;
     layout += "<button class='btn-pill btn-transition btn text-right' style='padding: 1px 5px;' onclick='globalToggleWidget(\"layoutPanel\", \"layoutExpand\")'><i id='layoutExpand' class='fa fa-"+(globalWidgetExpanded["layoutPanel"]?"minus":"plus")+"'></i></button></h5></div></div>";
 
     layout += "<div class='p-2 "+(globalWidgetExpanded["layoutPanel"]?"show":"collapse")+"' id='layoutPanel'>";
     layout += "<div class='row'><div class='col-3'><label for='graphLabel' class='form-label'>Label</label></div>";
     layout += "<div class='col-9'><select id='graphLabel' class='form-control'>";
     layout += "<option value='@type'"+(sel == "@type" ? " selected": "" )+">@type</option>" ;
-    for( p in properties ){
+    for( let p in properties ){
       layout += "<option value='"+p+"'"+(sel == p ? " selected": "" )+">" + p + "</option>" ;
     }
     layout += "</select></div>";

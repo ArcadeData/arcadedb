@@ -227,7 +227,7 @@ public class PageManager extends LockContext {
       throws IOException, InterruptedException {
     lock();
     try {
-      final List<MutablePage> pagesToFlush = new ArrayList<>(newPages.size() + modifiedPages.size());
+      final List<MutablePage> pagesToFlush = new ArrayList<>((newPages != null ? newPages.size() : 0) + modifiedPages.size());
 
       if (newPages != null)
         for (MutablePage p : newPages.values())

@@ -60,15 +60,19 @@ public class BackupSettings {
   }
 
   public int parseParameter(final String name, final String value) {
-    if ("format".equals(name))
-      format = value.toLowerCase();
-    else if ("dir".equals(name))
-      directory = value.endsWith("/") ? value : value + "/";
-    else if ("f".equals(name))
-      file = value;
-    else if ("d".equals(name))
-      databaseURL = value;
-    else if ("o".equals(name)) {
+    if ("format".equals(name)) {
+      if (value != null)
+        format = value.toLowerCase();
+    } else if ("dir".equals(name)) {
+      if (value != null)
+        directory = value.endsWith("/") ? value : value + "/";
+    } else if ("f".equals(name)) {
+      if (value != null)
+        file = value;
+    } else if ("d".equals(name)) {
+      if (value != null)
+        databaseURL = value;
+    } else if ("o".equals(name)) {
       overwriteFile = true;
       return 1;
     } else

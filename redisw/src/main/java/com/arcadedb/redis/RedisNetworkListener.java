@@ -34,9 +34,8 @@ public class RedisNetworkListener extends Thread {
   private final        ServerSocketFactory socketFactory;
   private              ServerSocket        serverSocket;
   private              InetSocketAddress   inboundAddr;
-  private volatile     boolean             active           = true;
-  private static final int                 socketBufferSize = 0;
-  private static final int                 protocolVersion  = -1;
+  private volatile     boolean             active          = true;
+  private static final int                 protocolVersion = -1;
   private final        String              hostName;
   private              int                 port;
   private              ClientConnected     callback;
@@ -61,10 +60,6 @@ public class RedisNetworkListener extends Thread {
           final Socket socket = serverSocket.accept();
 
           socket.setPerformancePreferences(0, 2, 1);
-          if (socketBufferSize > 0) {
-            socket.setSendBufferSize(socketBufferSize);
-            socket.setReceiveBufferSize(socketBufferSize);
-          }
 
           // CREATE A NEW PROTOCOL INSTANCE
           final RedisNetworkExecutor connection = new RedisNetworkExecutor(server, socket);

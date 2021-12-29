@@ -154,7 +154,8 @@
                                  style="width: 100%">
                         </li>
 
-                        <li class="dropdown-item" onclick="globalToggleCheckbox('#cumulativeSelection');globalGraphSettings.cumulativeSelection = $('#cumulativeSelection').prop('checked')">
+                        <li class="dropdown-item"
+                            onclick="globalToggleCheckbox('#cumulativeSelection');globalGraphSettings.cumulativeSelection = $('#cumulativeSelection').prop('checked')">
                           <div class="form-check">
                             <input id="cumulativeSelection" class="form-check-input" type="checkbox">
                             <label for="cumulativeSelection" class="form-label">Cumulative Selection</label>
@@ -171,7 +172,7 @@
                       </button>
                     </li>
                     <li class="nav-item">
-                      <a class="nav-link btn btn-secondary" href="#" onclick="toggleSidebar()" href="#" id="toggleSidebar"><i
+                      <a class="nav-link btn btn-secondary" onclick="toggleSidebar()" href="#" id="toggleSidebar"><i
                               class="fa fa-eye-slash"></i> Hide Properties</a>
                     </li>
                   </ul>
@@ -223,6 +224,7 @@
 </div>
 
 <script>
+var editor = null;
 function initQuery() {
   $('[data-toggle="tooltip"]').tooltip()
 

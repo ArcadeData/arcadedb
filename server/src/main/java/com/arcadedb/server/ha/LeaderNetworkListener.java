@@ -31,9 +31,8 @@ public class LeaderNetworkListener extends Thread {
   private final        HAServer            ha;
   private final        ServerSocketFactory socketFactory;
   private              ServerSocket        serverSocket;
-  private volatile     boolean             active           = true;
-  private final static int                 socketBufferSize = 0;
-  private final static int                 protocolVersion  = -1;
+  private volatile     boolean             active          = true;
+  private final static int                 protocolVersion = -1;
   private final        String              hostName;
   private              int                 port;
   private              ClientConnected     callback;
@@ -65,11 +64,6 @@ public class LeaderNetworkListener extends Thread {
           final Socket socket = serverSocket.accept();
 
           socket.setPerformancePreferences(0, 2, 1);
-          if (socketBufferSize > 0) {
-            socket.setSendBufferSize(socketBufferSize);
-            socket.setReceiveBufferSize(socketBufferSize);
-          }
-
           handleConnection(socket);
 
         } catch (Exception e) {

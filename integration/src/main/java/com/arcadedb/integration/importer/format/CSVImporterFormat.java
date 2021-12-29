@@ -179,7 +179,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     }
 
     long expectedVertices = settings.expectedVertices;
-    if (expectedVertices <= 0 && entity != null)
+    if (expectedVertices <= 0)
       expectedVertices = (int) (sourceSchema.getSource().totalSize / entity.getAverageRowLength());
     if (expectedVertices <= 0)
       expectedVertices = 1000000;
@@ -302,7 +302,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       throw new IllegalArgumentException("Specify -edgeToField <from-field-name>");
 
     long expectedEdges = settings.expectedEdges;
-    if (expectedEdges <= 0 && entity != null)
+    if (expectedEdges <= 0)
       expectedEdges = (int) (sourceSchema.getSource().totalSize / entity.getAverageRowLength());
 
     if (expectedEdges <= 0 || expectedEdges > _32MB)

@@ -30,20 +30,23 @@ public class RestoreSettings {
 
   protected void parseParameters(final String[] args) {
     if (args != null)
-      for (int i = 0; i < args.length - 1; )
-        i += parseParameter(args[i].substring(1), i < args.length ? args[i + 1] : null);
+      for (int i = 0; i < args.length; )
+        i += parseParameter(args[i].substring(1), i < args.length - 1 ? args[i + 1] : null);
 
     validate();
   }
 
   public int parseParameter(final String name, final String value) {
-    if ("format".equals(name))
-      format = value.toLowerCase();
-    else if ("f".equals(name))
-      inputFileURL = value;
-    else if ("d".equals(name))
-      databaseDirectory = value;
-    else if ("o".equals(name)) {
+    if ("format".equals(name)) {
+      if (value != null)
+        format = value.toLowerCase();
+    } else if ("f".equals(name)) {
+      if (value != null)
+        inputFileURL = value;
+    } else if ("d".equals(name)) {
+      if (value != null)
+        databaseDirectory = value;
+    } else if ("o".equals(name)) {
       overwriteDestination = true;
       return 1;
     } else

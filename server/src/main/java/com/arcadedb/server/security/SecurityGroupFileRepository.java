@@ -125,7 +125,9 @@ public class SecurityGroupFileRepository {
     if (file.exists()) {
       fileLastUpdated = file.lastModified();
 
-      json = new JSONObject(FileUtils.readStreamAsString(new FileInputStream(file), "UTF-8"));
+      try (FileInputStream fis = new FileInputStream(file)) {
+        json = new JSONObject(FileUtils.readStreamAsString(fis, "UTF-8"));
+      }
       if (!json.has("version"))
         json = null;
     }

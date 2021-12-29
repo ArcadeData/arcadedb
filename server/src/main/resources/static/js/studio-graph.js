@@ -1,3 +1,4 @@
+var globalResultset = null;
 var globalBgColors = ['aqua', 'orange', 'green', 'purple', 'lime', 'teal', 'maroon', 'navy', 'olive', 'silver', 'blue', 'yellow', 'fuchsia', 'gray', 'white', 'black'];
 var globalFgColors = ['black', 'black', 'white', 'white', 'black', 'black', 'white', 'white', 'black', 'black', 'white', 'black', 'black', 'white', 'black', 'white'];
 var globalRenderedVerticesRID = {};

@@ -52,7 +52,7 @@ function updateDatabases( callback ){
   })
   .done(function(data){
     let databases = "";
-    for( i in data.result ){
+    for( let i in data.result ){
       let dbName = data.result[i];
       databases += "<option value='"+dbName+"'>"+dbName+"</option>";
     }
@@ -61,7 +61,7 @@ function updateDatabases( callback ){
     if( selected != null && selected != "" )
       $("#inputDatabase").val(selected);
 
-    $("#currentDatabase").html( $("#inputDatabase").val() );
+    $("#currentDatabase").html( escapeHtml( $("#inputDatabase").val() ) );
 
     $("#user").html(data.user);
 
@@ -402,7 +402,7 @@ function displaySchema(){
     let panelEHtml = "";
     let panelDHtml = "";
 
-    for( i in data.result ){
+    for( let i in data.result ){
       let row = data.result[i];
 
       let tabHtml = "<li class='nav-item'><a data-toggle='tab' href='#tab-" + row.name + "' class='nav-link vertical-tab" + (i == 0 ? " active show" : "");
@@ -425,7 +425,7 @@ function displaySchema(){
       panelHtml += "<thead><tr><th scope='col'>Name</th><th scope='col'>Type</th><th scope='col'>Indexed</th><th scope='col'>Actions</th>";
       panelHtml += "<tbody>";
 
-      for( k in row.properties ) {
+      for( let k in row.properties ) {
         let property = row.properties[k];
         panelHtml += "<tr><td>"+property.name+"</td><td>" + property.type + "</td>";
 

@@ -228,6 +228,9 @@ public class BinarySerializer {
   }
 
   public void serializeValue(final Database database, Binary content, final byte type, Object value) {
+    if( value==null)
+      return;
+
     switch (type) {
     case BinaryTypes.TYPE_NULL:
       break;
@@ -278,18 +281,12 @@ public class BinarySerializer {
       content.putBytes(((BigDecimal) value).unscaledValue().toByteArray());
       break;
     case BinaryTypes.TYPE_COMPRESSED_RID: {
-      if (value == null)
-        throw new IllegalArgumentException("RID is null");
-
       final RID rid = ((Identifiable) value).getIdentity();
       content.putNumber(rid.getBucketId());
       content.putNumber(rid.getPosition());
       break;
     }
     case BinaryTypes.TYPE_RID: {
-      if (value == null)
-        throw new IllegalArgumentException("RID is null");
-
       if (value instanceof Result)
         // COMING FROM A QUERY
         value = ((Result) value).getElement().get();
