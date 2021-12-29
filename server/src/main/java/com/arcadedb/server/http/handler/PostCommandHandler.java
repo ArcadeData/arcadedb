@@ -99,6 +99,9 @@ public class PostCommandHandler extends DatabaseAbstractHandler {
         while (qResult.hasNext()) {
           final Result row = qResult.next();
 
+          if (row.getIdentity().isEmpty())
+            continue;
+
           final RID rid = row.getIdentity().get();
           final boolean justIncluded = includedRecords.add(rid);
           if (justIncluded)
