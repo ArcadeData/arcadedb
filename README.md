@@ -1,7 +1,8 @@
 [![Java CI - deploy](https://github.com/ArcadeData/arcadedb/actions/workflows/mvn-deploy.yml/badge.svg)](https://github.com/ArcadeData/arcadedb/actions/workflows/mvn-deploy.yml)
 [![Maven Central](https://maven-badges.herokuapp.com/maven-central/com.arcadedb/arcadedb-parent/badge.svg)](https://maven-badges.herokuapp.com/maven-central/com.arcadedb/arcadedb-parent)
-[![Codacy Badge](https://api.codacy.com/project/badge/Grade/d40cc721f39b49eb81408307960f145b)](https://app.codacy.com/gh/ArcadeData/arcadedb?utm_source=github.com&utm_medium=referral&utm_content=ArcadeData/arcadedb&utm_campaign=Badge_Grade_Settings)
 [![Codacy Badge](https://app.codacy.com/project/badge/Coverage/1f971260db1e46638bd3fd91e3ebf668)](https://www.codacy.com/gh/ArcadeData/arcadedb/dashboard?utm_source=github.com&utm_medium=referral&utm_content=ArcadeData/arcadedb&utm_campaign=Badge_Coverage)
+[![Language grade: Java](https://img.shields.io/lgtm/grade/java/g/ArcadeData/arcadedb.svg?logo=lgtm&logoWidth=18)](https://lgtm.com/projects/g/ArcadeData/arcadedb/context:java)
+[![Codacy Badge](https://api.codacy.com/project/badge/Grade/d40cc721f39b49eb81408307960f145b)](https://app.codacy.com/gh/ArcadeData/arcadedb?utm_source=github.com&utm_medium=referral&utm_content=ArcadeData/arcadedb&utm_campaign=Badge_Grade_Settings)
 [![security status](https://www.meterian.io/badge/gh/ArcadeData/arcadedb/security?branch=main)](https://www.meterian.io/report/gh/ArcadeData/arcadedb)
 [![stability status](https://www.meterian.io/badge/gh/ArcadeData/arcadedb/stability?branch=main)](https://www.meterian.io/report/gh/ArcadeData/arcadedb)
 
