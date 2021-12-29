@@ -32,9 +32,16 @@ import java.util.stream.*;
 
 public class MethodCall extends SimpleNode {
 
-  static Set<String> graphMethods = new HashSet<String>(Arrays.asList("out", "in", "both", "outE", "inE", "bothE", "bothV", "outV", "inV"));
-
-  static Set<String> bidirectionalMethods = new HashSet<String>(Arrays.asList("out", "in", "both", "oute", "ine", "inv", "outv"));
+  static Map<String, String> bidirectionalMethods = Map.of(//
+      "out", "in",//
+      "in", "out", //
+      "both", "both", //
+      "oute", "outv", //
+      "ine", "inv", //
+      "bothe", "bothe", //
+      "bothv", "bothv", //
+      "outv", "oute", //
+      "inv", "ine");
 
   protected Identifier       methodName;
   protected List<Expression> params = new ArrayList<Expression>();
@@ -49,7 +56,7 @@ public class MethodCall extends SimpleNode {
     super(p, id);
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append(".");
     methodName.toString(params, builder);
     builder.append("(");
@@ -65,7 +72,7 @@ public class MethodCall extends SimpleNode {
   }
 
   public boolean isBidirectional() {
-    return bidirectionalMethods.contains(methodName.getStringValue().toLowerCase(Locale.ENGLISH));
+    return bidirectionalMethods.containsKey(methodName.getStringValue().toLowerCase(Locale.ENGLISH));
   }
 
   public Object execute(Object targetObjects, CommandContext ctx) {
@@ -76,8 +83,9 @@ public class MethodCall extends SimpleNode {
     return execute(targetObjects, ctx, methodName.getStringValue(), params, iPossibleResults);
   }
 
-  private Object execute(Object targetObjects, CommandContext ctx, String name, List<Expression> iParams, Iterable<Identifiable> iPossibleResults) {
-    List<Object> paramValues = new ArrayList<Object>();
+  private Object execute(final Object targetObjects, final CommandContext ctx, final String name, final List<Expression> iParams,
+      final Iterable<Identifiable> iPossibleResults) {
+    final List<Object> paramValues = new ArrayList<Object>();
     Object val = ctx.getVariable("$current");
     if (val == null && targetObjects == null) {
       return null;
@@ -104,7 +112,7 @@ public class MethodCall extends SimpleNode {
         }
         return ((SQLFunctionFiltered) function).execute(targetObjects, (Identifiable) current, null, paramValues.toArray(), iPossibleResults, ctx);
       } else {
-        Object current = ctx.getVariable("$current");
+        final Object current = ctx.getVariable("$current");
         if (current instanceof Identifiable) {
           return function.execute(targetObjects, (Identifiable) current, null, paramValues.toArray(), ctx);
         } else if (current instanceof Result) {
@@ -115,49 +123,24 @@ public class MethodCall extends SimpleNode {
       }
 
     }
-    SQLMethod method = SQLEngine.getInstance().getMethod(name);
+
+    final SQLMethod method = SQLEngine.getInstance().getMethod(name);
     if (method != null) {
-      if (val instanceof Result) {
+      if (val instanceof Result)
         val = ((Result) val).getElement().orElse(null);
-      }
+
       return method.execute(targetObjects, (Identifiable) val, ctx, targetObjects, paramValues.toArray());
     }
     throw new UnsupportedOperationException("OMethod call, something missing in the implementation...?");
 
   }
 
-  public Object executeReverse(Object targetObjects, CommandContext ctx) {
-    if (!isBidirectional()) {
-      throw new UnsupportedOperationException();
-    }
+  public Object executeReverse(final Object targetObjects, final CommandContext ctx) {
+    final String straightName = methodName.getStringValue().toLowerCase();
+    final String inverseMethodName = bidirectionalMethods.get(straightName);
 
-    String straightName = methodName.getStringValue();
-    if (straightName.equalsIgnoreCase("out")) {
-      return execute(targetObjects, ctx, "in", params, null);
-    }
-    if (straightName.equalsIgnoreCase("in")) {
-      return execute(targetObjects, ctx, "out", params, null);
-    }
-
-    if (straightName.equalsIgnoreCase("both")) {
-      return execute(targetObjects, ctx, "both", params, null);
-    }
-
-    if (straightName.equalsIgnoreCase("outE")) {
-      return execute(targetObjects, ctx, "outV", params, null);
-    }
-
-    if (straightName.equalsIgnoreCase("outV")) {
-      return execute(targetObjects, ctx, "outE", params, null);
-    }
-
-    if (straightName.equalsIgnoreCase("inE")) {
-      return execute(targetObjects, ctx, "inV", params, null);
-    }
-
-    if (straightName.equalsIgnoreCase("inV")) {
-      return execute(targetObjects, ctx, "inE", params, null);
-    }
+    if (inverseMethodName != null)
+      return execute(targetObjects, ctx, inverseMethodName, params, null);
 
     throw new UnsupportedOperationException("Invalid reverse traversal: " + methodName);
   }
@@ -172,20 +155,20 @@ public class MethodCall extends SimpleNode {
   }
 
   public MethodCall copy() {
-    MethodCall result = new MethodCall(-1);
+    final MethodCall result = new MethodCall(-1);
     result.methodName = methodName.copy();
     result.params = params.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    MethodCall that = (MethodCall) o;
+    final MethodCall that = (MethodCall) o;
 
     if (methodName != null ? !methodName.equals(that.methodName) : that.methodName != null)
       return false;
@@ -199,7 +182,7 @@ public class MethodCall extends SimpleNode {
     return result;
   }
 
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
     if (params != null) {
       for (Expression param : params) {
         param.extractSubQueries(collector);
@@ -219,23 +202,23 @@ public class MethodCall extends SimpleNode {
   }
 
   public Result serialize() {
-    ResultInternal result = new ResultInternal();
-    if (methodName != null) {
+    final ResultInternal result = new ResultInternal();
+    if (methodName != null)
       result.setProperty("methodName", methodName.serialize());
-    }
-    if (params != null) {
+
+    if (params != null)
       result.setProperty("items", params.stream().map(x -> x.serialize()).collect(Collectors.toList()));
-    }
+
     return result;
   }
 
-  public void deserialize(Result fromResult) {
+  public void deserialize(final Result fromResult) {
     if (fromResult.getProperty("methodName") != null) {
       methodName = new Identifier(-1);
       Identifier.deserialize(fromResult.getProperty("methodName"));
     }
     if (fromResult.getProperty("params") != null) {
-      List<Result> ser = fromResult.getProperty("params");
+      final List<Result> ser = fromResult.getProperty("params");
       params = new ArrayList<>();
       for (Result r : ser) {
         Expression exp = new Expression(-1);
@@ -250,18 +233,21 @@ public class MethodCall extends SimpleNode {
   }
 
   private boolean isGraphFunction() {
-    if (calculatedIsGraph != null) {
+    if (calculatedIsGraph != null)
       return calculatedIsGraph;
-    }
-    for (String graphMethod : graphMethods) {
-      if (graphMethod.equalsIgnoreCase(methodName.getStringValue())) {
+
+    final String methodNameLC = methodName.getStringValue().toLowerCase();
+
+    for (String graphMethod : bidirectionalMethods.keySet()) {
+      if (graphMethod.equals(methodNameLC)) {
         calculatedIsGraph = true;
         break;
       }
     }
-    if (calculatedIsGraph == null) {
+
+    if (calculatedIsGraph == null)
       calculatedIsGraph = false;
-    }
+
     return calculatedIsGraph;
   }
 }
