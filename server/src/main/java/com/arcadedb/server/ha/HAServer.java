@@ -462,6 +462,10 @@ public class HAServer implements ServerPlugin {
         if (msg.payloads == null)
           msg.payloads = new ArrayList<>();
         msg.payloads.add(payload);
+
+        // TODO: REMOVE ME
+        LogManager.instance().log(this, Level.INFO, "Received payload from '%s' (total=%d): %s", null,//
+            remoteServerName, msg.payloads.size(), payload);
       }
     }
 

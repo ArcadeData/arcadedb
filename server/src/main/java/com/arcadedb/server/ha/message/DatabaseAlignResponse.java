@@ -84,6 +84,14 @@ public class DatabaseAlignResponse extends HAAbstractCommand {
 
   @Override
   public String toString() {
-    return "db-align-response";
+    final StringBuilder buffer = new StringBuilder();
+
+    for (int[] array : alignedPages) {
+      if (buffer.length() > 0)
+        buffer.append(',');
+      buffer.append(Arrays.toString(array));
+    }
+
+    return "db-align-response(" + remoteServerName + ": [" + buffer + "])";
   }
 }
