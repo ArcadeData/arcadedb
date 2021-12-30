@@ -22,10 +22,9 @@ import com.arcadedb.server.TestCallback;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 
-import java.io.File;
-import java.util.concurrent.Callable;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.logging.Level;
+import java.io.*;
+import java.util.concurrent.atomic.*;
+import java.util.logging.*;
 
 public class ReplicationServerReplicaRestartForceDbInstallIT extends ReplicationServerIT {
   private final    AtomicLong totalMessages           = new AtomicLong();
@@ -66,6 +65,7 @@ public class ReplicationServerReplicaRestartForceDbInstallIT extends Replication
                 Thread.sleep(10000);
               } catch (InterruptedException e) {
                 // IGNORE IT
+                LogManager.instance().log(this, Level.SEVERE, "TEST: ArcadeDB_2 HA event listener thread interrupted");
                 Thread.currentThread().interrupt();
               }
             }
@@ -85,27 +85,26 @@ public class ReplicationServerReplicaRestartForceDbInstallIT extends Replication
       server.registerTestEventListener(new TestCallback() {
         @Override
         public void onEvent(final TYPE type, final Object object, final ArcadeDBServer server) {
-          // SLOW DOWN A SERVER
+          // AS SOON AS SERVER 2 IS OFFLINE, A CLEAN OF REPLICATION LOG AND RESTART IS EXECUTED
           if ("ArcadeDB_2".equals(object) && type == TYPE.REPLICA_OFFLINE && firstTimeServerShutdown) {
-            LogManager.instance().log(this, Level.INFO, "TEST: Stopping Replica 2, removing latency, delete the replication log file and restart the server...");
+            LogManager.instance()
+                .log(this, Level.INFO, "TEST: Stopping Replica 2, removing latency, delete the replication log file and restart the server...");
             slowDown = false;
             firstTimeServerShutdown = false;
 
-            executeAsynchronously(new Callable() {
-              @Override
-              public Object call() {
-                getServer(2).stop();
-                GlobalConfiguration.HA_REPLICATION_QUEUE_SIZE.setValue(512);
-                try {
-                  Thread.sleep(1000);
-                } catch (InterruptedException e) {
-                  Thread.currentThread().interrupt();
-                }
-                Assertions.assertTrue(new File("./target/replication/replication_ArcadeDB_2.rlog.0").exists());
-                new File("./target/replication/replication_ArcadeDB_2.rlog.0").delete();
-                getServer(2).start();
-                return null;
+            executeAsynchronously(() -> {
+              getServer(2).stop();
+              GlobalConfiguration.HA_REPLICATION_QUEUE_SIZE.setValue(512);
+              try {
+                Thread.sleep(1000);
+              } catch (InterruptedException e) {
+                LogManager.instance().log(this, Level.SEVERE, "TEST: ArcadeDB_0 HA event listener thread interrupted");
+                Thread.currentThread().interrupt();
               }
+              Assertions.assertTrue(new File("./target/replication/replication_ArcadeDB_2.rlog.0").exists());
+              new File("./target/replication/replication_ArcadeDB_2.rlog.0").delete();
+              getServer(2).start();
+              return null;
             });
           }
         }

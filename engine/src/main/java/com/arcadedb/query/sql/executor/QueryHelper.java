@@ -15,7 +15,7 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import java.util.Locale;
+import java.util.*;
 
 public class QueryHelper {
   protected static final char WILDCARD_ANYCHAR = '?';
@@ -35,8 +35,9 @@ public class QueryHelper {
   }
 
   public static String convertForRegExp(String value) {
+    // TODO: NOT EFFICIENT, IT SHOULD BROWSE ONCE AND BUILD THE FINAL RESULT
     for (int i = 0; i < value.length(); ) {
-      char c = value.charAt(i);
+      final char c = value.charAt(i);
 
       String replaceWith;
       switch (c) {
@@ -79,10 +80,10 @@ public class QueryHelper {
       case '.':
         replaceWith = "\\.";
         break;
-      case '?': // WILDCARD_ANYCHAR
+      case WILDCARD_ANYCHAR:
         replaceWith = ".";
         break;
-      case '%': // WILDCARD_ANY
+      case WILDCARD_ANY:
         replaceWith = ".*";
         break;
 

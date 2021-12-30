@@ -211,7 +211,7 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
 
         }
 
-        Assertions.assertEquals(recordInDb, ridsFoundInIndex.size(), "TEST: Found " + ridsFoundInIndex.size() + " missing records");
+        Assertions.assertEquals(recordInDb, ridsFoundInIndex.size(), "TEST: Found " + missingsCount + " missing records");
         Assertions.assertEquals(0, missingsCount);
         Assertions.assertEquals(total, total2);
 
