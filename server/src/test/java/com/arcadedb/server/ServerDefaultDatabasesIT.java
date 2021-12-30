@@ -75,7 +75,7 @@ public class ServerDefaultDatabasesIT extends BaseGraphServerTest {
     Assertions.assertTrue(getServer(0).existsDatabase("Universe"));
     Assertions.assertTrue(getServer(0).existsDatabase("Amiga"));
 
-    ((DatabaseInternal) getServer(0).getDatabase("Universe")).getWrappedDatabaseInstance().drop();
-    ((DatabaseInternal) getServer(0).getDatabase("Amiga")).getWrappedDatabaseInstance().drop();
+    ((DatabaseInternal) getServer(0).getDatabase("Universe")).getEmbedded().drop();
+    ((DatabaseInternal) getServer(0).getDatabase("Amiga")).getEmbedded().drop();
   }
 }

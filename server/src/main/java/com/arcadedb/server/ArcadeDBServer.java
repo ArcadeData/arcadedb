@@ -452,7 +452,7 @@ public class ArcadeDBServer implements ServerLogger {
             case "restore":
               // DROP THE DATABASE BECAUSE THE RESTORE OPERATION WILL TAKE CARE OF CREATING A NEW DATABASE
               if (database != null) {
-                ((DatabaseInternal) database).getWrappedDatabaseInstance().drop();
+                ((DatabaseInternal) database).getEmbedded().drop();
                 databases.remove(dbName);
               }
               new Restore(commandParams, configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + "/" + dbName).restoreDatabase();

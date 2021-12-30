@@ -52,7 +52,7 @@ public class MongoDBQueryTest {
     if (database != null) {
       if (database.isTransactionActive())
         database.rollback();
-      ((DatabaseInternal) database).getWrappedDatabaseInstance().drop();
+      ((DatabaseInternal) database).getEmbedded().drop();
     }
   }
 

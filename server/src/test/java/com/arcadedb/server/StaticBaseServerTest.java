@@ -355,14 +355,14 @@ public abstract class StaticBaseServerTest {
     if (databases != null)
       for (int i = 0; i < databases.length; ++i) {
         if (databases[i] != null && databases[i].isOpen())
-          ((DatabaseInternal) databases[i]).getWrappedDatabaseInstance().drop();
+          ((DatabaseInternal) databases[i]).getEmbedded().drop();
       }
 
     if (servers != null)
       for (int i = 0; i < getServerCount(); ++i)
         for (String dbName : getServer(i).getDatabaseNames())
           if (getServer(i).existsDatabase(dbName))
-            ((DatabaseInternal) getServer(i).getDatabase(dbName)).getWrappedDatabaseInstance().drop();
+            ((DatabaseInternal) getServer(i).getDatabase(dbName)).getEmbedded().drop();
 
     Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
 
