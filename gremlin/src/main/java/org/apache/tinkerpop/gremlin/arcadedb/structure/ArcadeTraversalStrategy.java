@@ -17,6 +17,7 @@ package org.apache.tinkerpop.gremlin.arcadedb.structure;
 
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.serializer.BinaryComparator;
 import org.apache.tinkerpop.gremlin.process.traversal.Compare;
 import org.apache.tinkerpop.gremlin.process.traversal.Step;
 import org.apache.tinkerpop.gremlin.process.traversal.Traversal;
@@ -60,7 +61,7 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
           int totalLabels = 0;
           for (HasContainer c : hasContainers) {
             final String key = c.getKey();
-            if (key.equals(LABEL_KEY)) {
+            if (BinaryComparator.equalsString(key, LABEL_KEY)) {
               ++totalLabels;
 
               if (totalLabels > 1)

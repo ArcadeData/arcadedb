@@ -17,6 +17,7 @@ package com.arcadedb;
 
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.utility.Callable;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.SystemVariableResolver;
@@ -242,8 +243,7 @@ public enum GlobalConfiguration {
       Constants.PRODUCT.toLowerCase()),
 
   HA_SERVER_LIST("arcadedb.ha.serverList",
-      "Servers in the cluster as a list of <hostname/ip-address:port> items separated by comma. Example: localhost:2424,192.168.0.1:2424",
-      String.class, ""),
+      "Servers in the cluster as a list of <hostname/ip-address:port> items separated by comma. Example: localhost:2424,192.168.0.1:2424", String.class, ""),
 
   HA_QUORUM("arcadedb.ha.quorum", "Default quorum between 'none', 1, 2, 3, 'majority' and 'all' servers. Default is majority", String.class, "MAJORITY"),
 
@@ -428,10 +428,10 @@ public enum GlobalConfiguration {
   public static void setConfiguration(final Map<String, Object> iConfig) {
     for (Map.Entry<String, Object> config : iConfig.entrySet()) {
       for (GlobalConfiguration v : values()) {
-        if (v.getKey().equals(config.getKey())) {
+        if (BinaryComparator.equalsString(v.getKey(), config.getKey())) {
           v.setValue(config.getValue());
           break;
-        } else if (v.name().equals(config.getKey())) {
+        } else if (BinaryComparator.equalsString(v.name(), config.getKey())) {
           v.setValue(config.getValue());
           break;
         }

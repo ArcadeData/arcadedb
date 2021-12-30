@@ -41,6 +41,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.utility.RWLockContext;
 
@@ -177,10 +178,10 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
     final LSMTreeIndex m2 = (LSMTreeIndex) obj;
 
-    if (!name.equals(m2.name))
+    if (!BinaryComparator.equalsString(name, m2.name))
       return false;
 
-    if (!typeName.equals(m2.typeName))
+    if (!BinaryComparator.equalsString(typeName, m2.typeName))
       return false;
 
     if (associatedBucketId != m2.associatedBucketId)

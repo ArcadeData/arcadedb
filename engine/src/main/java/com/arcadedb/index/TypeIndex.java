@@ -24,6 +24,7 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.BinaryComparator;
 
 import java.io.*;
 import java.util.*;
@@ -281,7 +282,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
 
     final TypeIndex index2 = (TypeIndex) obj;
 
-    if (!getName().equals(index2.getName()))
+    if (!BinaryComparator.equalsString(getName(), index2.getName()))
       return false;
 
     final List<String> index1Properties = getPropertyNames();

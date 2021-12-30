@@ -27,6 +27,7 @@ import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.integration.restore.Restore;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngineManager;
+import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.ha.ReplicatedDatabase;
 import com.arcadedb.server.http.HttpServer;
@@ -298,46 +299,38 @@ public class ArcadeDBServer implements ServerLogger {
   }
 
   public void log(final Object requester, final Level level, final String message) {
-    if (!serverName.equals(LogManager.instance().getContext()))
-      LogManager.instance().setContext(serverName);
+    installContextIfNeeded(serverName);
     LogManager.instance().log(requester, level, message, null);
   }
 
   public void log(final Object requester, final Level level, final String message, final Object arg1) {
-    if (!serverName.equals(LogManager.instance().getContext()))
-      LogManager.instance().setContext(serverName);
+    installContextIfNeeded(serverName);
     LogManager.instance().log(requester, level, message, null, arg1);
   }
 
   public void log(final Object requester, final Level level, final String message, final Object arg1, final Object arg2) {
-    if (!serverName.equals(LogManager.instance().getContext()))
-      LogManager.instance().setContext(serverName);
+    installContextIfNeeded(serverName);
     LogManager.instance().log(requester, level, message, null, arg1, arg2);
   }
 
   public void log(final Object requester, final Level level, final String message, final Object arg1, final Object arg2, final Object arg3) {
-    if (!serverName.equals(LogManager.instance().getContext()))
-      LogManager.instance().setContext(serverName);
+    installContextIfNeeded(serverName);
     LogManager.instance().log(requester, level, message, null, arg1, arg2, arg3);
   }
 
   public void log(final Object requester, final Level level, final String message, final Object arg1, final Object arg2, final Object arg3, final Object arg4) {
-    if (!serverName.equals(LogManager.instance().getContext()))
-      LogManager.instance().setContext(serverName);
+    installContextIfNeeded(serverName);
     LogManager.instance().log(requester, level, message, null, arg1, arg2, arg3, arg4);
   }
 
   public void log(final Object requester, final Level level, final String message, final Object arg1, final Object arg2, final Object arg3, final Object arg4,
       final Object arg5) {
-    if (!serverName.equals(LogManager.instance().getContext()))
-      LogManager.instance().setContext(serverName);
+    installContextIfNeeded(serverName);
     LogManager.instance().log(requester, level, message, null, arg1, arg2, arg3, arg4, arg5);
   }
 
   public void log(final Object requester, final Level level, final String message, final Object... args) {
-    if (!serverName.equals(LogManager.instance().getContext()))
-      LogManager.instance().setContext(serverName);
-
+    installContextIfNeeded(serverName);
     LogManager.instance().log(requester, level, message, null, args);
   }
 
@@ -551,5 +544,10 @@ public class ArcadeDBServer implements ServerLogger {
       serverRootPath = new File("config").exists() ? "." : new File("../config").exists() ? ".." : ".";
       configuration.setValue(GlobalConfiguration.SERVER_ROOT_PATH, serverRootPath);
     }
+  }
+
+  private void installContextIfNeeded(final String serverName) {
+    if (!BinaryComparator.equalsString(serverName, LogManager.instance().getContext()))
+      LogManager.instance().setContext(serverName);
   }
 }

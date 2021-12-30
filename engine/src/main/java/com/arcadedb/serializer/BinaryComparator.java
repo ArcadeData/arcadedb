@@ -322,6 +322,11 @@ public class BinaryComparator {
   public static boolean equalsBytes(final byte[] buffer1, final byte[] buffer2) {
     if (buffer1.length != buffer2.length)
       return false;
+
+    if (buffer1[buffer1.length - 1] != buffer2[buffer2.length - 1])
+      // OPTIMIZATION: CHECK THE LAST BYTE IF IT'S THE SAME FIRST
+      return false;
+
     return compareBytes(buffer1, buffer2) == 0;
   }
 
