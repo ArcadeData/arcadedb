@@ -320,6 +320,9 @@ public class BinaryComparator {
   }
 
   public static boolean equalsBytes(final byte[] buffer1, final byte[] buffer2) {
+    if (buffer1 == null || buffer2 == null)
+      return false;
+
     if (buffer1.length != buffer2.length)
       return false;
 
