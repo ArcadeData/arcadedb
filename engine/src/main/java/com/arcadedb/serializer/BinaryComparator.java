@@ -316,6 +316,9 @@ public class BinaryComparator {
   }
 
   public static boolean equalsString(final String buffer1, final String buffer2) {
+    if (buffer1 == null || buffer2 == null)
+      return false;
+
     return equalsBytes(buffer1.getBytes(DatabaseFactory.getDefaultCharset()), buffer2.getBytes(DatabaseFactory.getDefaultCharset()));
   }
 
