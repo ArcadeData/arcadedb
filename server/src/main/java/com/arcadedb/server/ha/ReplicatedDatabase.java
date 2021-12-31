@@ -51,7 +51,6 @@ import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
-import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -73,7 +72,6 @@ import java.io.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
-import java.util.logging.*;
 
 public class ReplicatedDatabase implements DatabaseInternal {
   private final ArcadeDBServer   server;
@@ -758,10 +756,6 @@ public class ReplicatedDatabase implements DatabaseInternal {
             final DatabaseAlignResponse response = (DatabaseAlignResponse) o;
             result.put(response.getRemoteServerName(), response.getAlignedPages());
           }
-
-          // TODO: REMOVE ME
-          LogManager.instance().log(this, Level.INFO, "Align Database setting response: %s", null,//
-              responsePayloads);
         }
 
       } finally {

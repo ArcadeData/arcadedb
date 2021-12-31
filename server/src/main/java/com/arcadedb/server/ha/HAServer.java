@@ -455,19 +455,15 @@ public class HAServer implements ServerPlugin {
       // QUORUM ALREADY REACHED OR TIMEOUT
       return;
 
-    msg.semaphore.countDown();
-
     if (payload != null) {
       synchronized (msg) {
         if (msg.payloads == null)
           msg.payloads = new ArrayList<>();
         msg.payloads.add(payload);
-
-        // TODO: REMOVE ME
-        LogManager.instance().log(this, Level.INFO, "Received payload from '%s' (total=%d): %s", null,//
-            remoteServerName, msg.payloads.size(), payload);
       }
     }
+
+    msg.semaphore.countDown();
 
     // UPDATE LATENCY
     final Leader2ReplicaNetworkExecutor c = replicaConnections.get(remoteServerName);
