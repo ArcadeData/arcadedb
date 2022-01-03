@@ -40,7 +40,7 @@
             <groupId>com.arcadedb</groupId>
             <artifactId>arcadedb-server</artifactId>
             <version>${project.parent.version}</version>
-            <scope>compile</scope>
+            <scope>provided</scope>
         </dependency>
         <dependency>
             <groupId>com.arcadedb</groupId>

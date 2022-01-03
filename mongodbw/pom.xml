@@ -41,19 +41,12 @@
             <groupId>com.arcadedb</groupId>
             <artifactId>arcadedb-server</artifactId>
             <version>${project.parent.version}</version>
-            <scope>compile</scope>
+            <scope>provided</scope>
         </dependency>
         <dependency>
             <groupId>de.bwaldvogel</groupId>
             <artifactId>mongo-java-server</artifactId>
             <version>${mongo-java-server.version}</version>
-            <scope>compile</scope>
-        </dependency>
-        <dependency>
-            <groupId>io.netty</groupId>
-            <artifactId>netty-all</artifactId>
-            <version>${netty.version}</version>
-            <scope>compile</scope>
         </dependency>
         <dependency>
             <groupId>org.mongodb</groupId>
