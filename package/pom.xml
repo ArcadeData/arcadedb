@@ -203,6 +203,9 @@
                                 </execution>
                             </executions>
                             <configuration>
+                                <buildArgs>
+                                    <ARCADEDB_VERSION>${project.version}</ARCADEDB_VERSION>
+                                </buildArgs>
                                 <repository>arcadedata/arcadedb</repository>
                                 <contextDirectory>${project.build.directory}</contextDirectory>
                             </configuration>

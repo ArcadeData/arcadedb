@@ -16,6 +16,8 @@
 
 FROM adoptopenjdk/openjdk11:alpine-slim
 
+ARG ARCADEDB_VERSION
+
 LABEL maintainer="Arcade Data LTD (info@arcadedb.com)"
 
 ENV JAVA_OPTS=" -XX:+UnlockExperimentalVMOptions -XX:+UseZGC "
@@ -30,11 +32,7 @@ RUN adduser -D -s /bin/sh arcadedb
 
 WORKDIR /home/arcadedb
 
-COPY arcadedb-*.tar.gz arcadedb.tar.gz
-
-RUN tar -xvzf arcadedb.tar.gz -C ./ --strip-components=1\
-      && rm arcadedb.tar.gz \
-      && rm -rf ./databases/*
+ADD arcadedb-${ARCADEDB_VERSION}.dir/arcadedb-${ARCADEDB_VERSION} ./
 
 ENV PATH ./bin:$PATH
 
