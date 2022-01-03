@@ -64,7 +64,7 @@
         <maven-deploy-plugin.version>3.0.0-M2</maven-deploy-plugin.version>
         <nexus-staging-maven-plugin.version>1.6.8</nexus-staging-maven-plugin.version>
 
-        <assertj-core.version>3.21.0</assertj-core.version>
+        <assertj-core.version>3.22.0</assertj-core.version>
         <junit.jupiter.version>5.8.2</junit.jupiter.version>
 
         <skipIntegration>true</skipIntegration>
