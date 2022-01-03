@@ -105,7 +105,7 @@ public class CreateEdgeFromImportTask extends DatabaseAsyncAbstractTask {
       threadContext.incomingConnectionsIndexThread = new CompressedRID2RIDsIndex(database, threadContext.incomingConnectionsIndexThread.getKeys(),
           (int) settings.expectedEdges);
 
-      LogManager.instance().log(this, Level.INFO, "Creation done, reset index buffer and continue", null);
+      LogManager.instance().log(this, Level.INFO, "Creation done, reset index buffer and continue");
     }
 
     if (threadContext.importedEdges % settings.commitEvery == 0) {

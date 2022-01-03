@@ -480,7 +480,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
       setValuesFreePosition(currentPage, keyValueFreePosition);
 
       if (LogManager.instance().isDebugEnabled())
-        LogManager.instance().log(this, Level.FINE, "Put entry %s=%s in index '%s' (page=%s countInPage=%d newPage=%s thread=%d)", null, Arrays.toString(keys),
+        LogManager.instance().log(this, Level.FINE, "Put entry %s=%s in index '%s' (page=%s countInPage=%d newPage=%s thread=%d)",  Arrays.toString(keys),
             Arrays.toString(rids), name, currentPage.getPageId(), count + 1, newPage, Thread.currentThread().getId());
 
     } catch (IOException e) {

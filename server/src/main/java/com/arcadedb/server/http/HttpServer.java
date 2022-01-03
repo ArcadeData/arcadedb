@@ -15,26 +15,16 @@
  */
 package com.arcadedb.server.http;
 
+import static io.undertow.UndertowOptions.SHUTDOWN_TIMEOUT;
+
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ServerPlugin;
-import com.arcadedb.server.http.handler.GetDatabasesHandler;
-import com.arcadedb.server.http.handler.GetDocumentHandler;
-import com.arcadedb.server.http.handler.GetDynamicContentHandler;
-import com.arcadedb.server.http.handler.GetExistsDatabaseHandler;
-import com.arcadedb.server.http.handler.GetQueryHandler;
-import com.arcadedb.server.http.handler.PostBeginHandler;
-import com.arcadedb.server.http.handler.PostCommandHandler;
-import com.arcadedb.server.http.handler.PostCommitHandler;
-import com.arcadedb.server.http.handler.PostCreateDatabaseHandler;
-import com.arcadedb.server.http.handler.PostCreateDocumentHandler;
-import com.arcadedb.server.http.handler.PostDropDatabaseHandler;
-import com.arcadedb.server.http.handler.PostQueryHandler;
-import com.arcadedb.server.http.handler.PostRollbackHandler;
-import com.arcadedb.server.http.handler.PostServersHandler;
+import com.arcadedb.server.http.handler.*;
 import com.arcadedb.server.http.ws.WebSocketConnectionHandler;
 import com.arcadedb.server.http.ws.WebSocketEventBus;
 import io.undertow.Handlers;
@@ -42,10 +32,8 @@ import io.undertow.Undertow;
 import io.undertow.server.RoutingHandler;
 import io.undertow.server.handlers.PathHandler;
 
-import java.net.*;
-import java.util.logging.*;
-
-import static io.undertow.UndertowOptions.SHUTDOWN_TIMEOUT;
+import java.net.BindException;
+import java.util.logging.Level;
 
 public class HttpServer implements ServerPlugin {
   private final ArcadeDBServer     server;
@@ -103,7 +91,7 @@ public class HttpServer implements ServerPlugin {
       }
     }
 
-    server.log(this, Level.INFO, "- Starting HTTP Server (host=%s port=%s)...", host, configuredPort.toString());
+    com.arcadedb.log.LogManager.instance().log(this, Level.INFO, "- Starting HTTP Server (host=%s port=%s)...", host, configuredPort.toString());
 
     final PathHandler routes = new PathHandler();
 
@@ -141,7 +129,7 @@ public class HttpServer implements ServerPlugin {
         undertow = Undertow.builder().addHttpListener(portListening, host).setHandler(routes).setServerOption(SHUTDOWN_TIMEOUT, 1000).build();
         undertow.start();
 
-        server.log(this, Level.INFO, "- HTTP Server started (host=%s port=%d)", host, portListening);
+        LogManager.instance().log(this, Level.INFO, "- HTTP Server started (host=%s port=%d)", host, portListening);
         listeningAddress = host + ":" + portListening;
         return;
 
@@ -150,7 +138,7 @@ public class HttpServer implements ServerPlugin {
 
         if (e.getCause() instanceof BindException) {
           // RETRY
-          server.log(this, Level.WARNING, "- HTTP Port %s not available", portListening);
+          LogManager.instance().log(this, Level.WARNING, "- HTTP Port %s not available", portListening);
           continue;
         }
 
@@ -160,7 +148,7 @@ public class HttpServer implements ServerPlugin {
 
     portListening = -1;
     final String msg = String.format("Unable to listen to a HTTP port in the configured port range %d - %d", portFrom, portTo);
-    server.log(this, Level.SEVERE, msg);
+    LogManager.instance().log(this, Level.SEVERE, msg);
     throw new ServerException("Error on starting HTTP Server: " + msg);
   }
 

@@ -16,6 +16,7 @@
 package performance;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.NullLogger;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.log.Logger;
 import com.arcadedb.utility.FileUtils;
@@ -33,16 +34,7 @@ public abstract class PerformanceTest {
   public static void clean() {
     GlobalConfiguration.PROFILE.setValue("high-performance");
 
-    LogManager.instance().setLogger(new Logger() {
-
-      @Override
-      public void log(Object iRequester, Level iLevel, String iMessage, Throwable iException, String context, Object... args) {
-      }
-
-      @Override
-      public void flush() {
-      }
-    });
+    LogManager.instance().setLogger(NullLogger.INSTANCE);
 
     final File dir = new File(PerformanceTest.DATABASE_PATH);
     FileUtils.deleteRecursively(dir);

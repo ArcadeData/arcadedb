@@ -15,6 +15,7 @@
  */
 package com.arcadedb.graph;
 
+import com.arcadedb.NullLogger;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
@@ -57,16 +58,7 @@ public class InsertGraphIndexTest extends TestHelper {
 
   @Override
   protected String getPerformanceProfile() {
-    LogManager.instance().setLogger(new Logger() {
-
-      @Override
-      public void log(Object iRequester, Level iLevel, String iMessage, Throwable iException, String context, Object... args) {
-      }
-
-      @Override
-      public void flush() {
-      }
-    });
+    LogManager.instance().setLogger(NullLogger.INSTANCE);
 
     return "high-performance";
   }

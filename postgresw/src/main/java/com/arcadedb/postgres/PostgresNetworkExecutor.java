@@ -44,7 +44,7 @@ import java.nio.*;
 import java.nio.charset.*;
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.logging.*;
+import java.util.logging.Level;
 
 public class PostgresNetworkExecutor extends Thread {
   public enum ERROR_SEVERITY {FATAL, ERROR}
@@ -188,13 +188,13 @@ public class PostgresNetworkExecutor extends Thread {
               errorInTransaction = true;
 
             if (e instanceof PostgresProtocolException) {
-              server.log(this, Level.SEVERE, e.getMessage(), e);
-              server.log(this, Level.SEVERE, "Closing connection with client");
+              LogManager.instance().log(this, Level.SEVERE, e.getMessage(), e);
+              LogManager.instance().log(this, Level.SEVERE, "Closing connection with client");
               return;
             } else {
-              server.log(this, Level.SEVERE, "Postgres wrapper: Error on reading request: %s", e, e.getMessage());
+              LogManager.instance().log(this, Level.SEVERE, "Postgres wrapper: Error on reading request: %s", e, e.getMessage());
               if (++consecutiveErrors > 3) {
-                server.log(this, Level.SEVERE, "Closing connection with client");
+                LogManager.instance().log(this, Level.SEVERE, "Closing connection with client");
                 return;
               }
             }

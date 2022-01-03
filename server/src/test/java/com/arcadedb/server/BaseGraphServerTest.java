@@ -457,7 +457,7 @@ public abstract class BaseGraphServerTest {
 
   protected void testLog(final String msg, final Object... args) {
     LogManager.instance().log(this, Level.INFO, "***********************************************************************************");
-    LogManager.instance().log(this, Level.INFO, "TEST: " + msg, null, args);
+    LogManager.instance().log(this, Level.INFO, "TEST: " + msg,  args);
     LogManager.instance().log(this, Level.INFO, "***********************************************************************************");
   }
 

@@ -16,14 +16,11 @@
 package com.arcadedb.redis;
 
 import com.arcadedb.Constants;
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.database.MutableDocument;
-import com.arcadedb.database.RID;
-import com.arcadedb.database.Record;
+import com.arcadedb.database.*;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ChannelBinaryServer;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
@@ -34,11 +31,16 @@ import com.arcadedb.utility.NumberUtils;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.*;
-import java.net.*;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.logging.*;
+import java.io.EOFException;
+import java.io.IOException;
+import java.net.Socket;
+import java.net.SocketException;
+import java.net.SocketTimeoutException;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.logging.Level;
 
 public class RedisNetworkExecutor extends Thread {
   private static final String              DEFAULT_BUCKET = "default";
@@ -66,18 +68,18 @@ public class RedisNetworkExecutor extends Thread {
         replyToClient(value);
 
       } catch (EOFException | SocketException e) {
-        server.log(this, Level.FINE, "Redis wrapper: Error on reading request", e);
+        LogManager.instance().log(this, Level.FINE, "Redis wrapper: Error on reading request", e);
         close();
       } catch (SocketTimeoutException e) {
         // IGNORE IT
       } catch (IOException e) {
-        server.log(this, Level.SEVERE, "Redis wrapper: Error on reading request", e);
+        LogManager.instance().log(this, Level.SEVERE, "Redis wrapper: Error on reading request", e);
       }
     }
   }
 
   public void replyToClient(final StringBuilder response) throws IOException {
-    server.log(this, Level.FINE, "Redis wrapper: Sending response back to the client '%s'...", response);
+    LogManager.instance().log(this, Level.FINE, "Redis wrapper: Sending response back to the client '%s'...", response);
 
     final byte[] buffer = response.toString().getBytes(DatabaseFactory.getDefaultCharset());
 
@@ -111,7 +113,7 @@ public class RedisNetworkExecutor extends Thread {
 
       final Object cmd = list.get(0);
       if (!(cmd instanceof String))
-        server.log(this, Level.SEVERE, "Redis wrapper: Invalid command[0] %s (type=%s)", command, cmd.getClass());
+        LogManager.instance().log(this, Level.SEVERE, "Redis wrapper: Invalid command[0] %s (type=%s)", command, cmd.getClass());
 
       final String cmdString = ((String) cmd).toUpperCase();
 
@@ -190,7 +192,7 @@ public class RedisNetworkExecutor extends Thread {
       appendCrLf();
 
     } else
-      server.log(this, Level.SEVERE, "Redis wrapper: Invalid command %s", command);
+      LogManager.instance().log(this, Level.SEVERE, "Redis wrapper: Invalid command %s", command);
   }
 
   private void decrBy(final List<Object> list) {
@@ -396,7 +398,7 @@ public class RedisNetworkExecutor extends Thread {
         array.add(parseNext());
       return array;
     } else {
-      server.log(this, Level.SEVERE, "Redis wrapper: Invalid character '%s'", (char) b);
+      LogManager.instance().log(this, Level.SEVERE, "Redis wrapper: Invalid character '%s'", (char) b);
       return null;
     }
   }
@@ -407,9 +409,9 @@ public class RedisNetworkExecutor extends Thread {
       final byte b2 = readNext();
       if (b2 == '\n') {
       } else
-        server.log(this, Level.SEVERE, "Redis wrapper: Invalid character '%s' instead of expected \\n", (char) b2);
+        LogManager.instance().log(this, Level.SEVERE, "Redis wrapper: Invalid character '%s' instead of expected \\n", (char) b2);
     } else
-      server.log(this, Level.SEVERE, "Redis wrapper: Invalid character '%s' instead of expected \\r", (char) b);
+      LogManager.instance().log(this, Level.SEVERE, "Redis wrapper: Invalid character '%s' instead of expected \\r", (char) b);
   }
 
   private String parseValueUntilLF() throws IOException {
@@ -429,7 +431,7 @@ public class RedisNetworkExecutor extends Thread {
         if (b == '\n')
           break;
         else
-          server.log(this, Level.SEVERE, "Redis wrapper: Error on parsing value waiting for LF, but found '%s' after /r", (char) b);
+          LogManager.instance().log(this, Level.SEVERE, "Redis wrapper: Error on parsing value waiting for LF, but found '%s' after /r", (char) b);
       }
     }
 
@@ -478,7 +480,7 @@ public class RedisNetworkExecutor extends Thread {
 //      for (int i = 0; i < bytesRead; ++i) {
 //        debug += (char) buffer[i];
 //      }
-//      server.log(this, Level.INFO, "Redis wrapper: Read '%s'...", debug);
+//      LogManager.instance().log(this, Level.INFO, "Redis wrapper: Read '%s'...", debug);
 
     } while (bytesRead == 0);
 

@@ -80,7 +80,7 @@ public class HAMessageFactory {
       return new Pair<>(new ReplicationMessage(messageNumber, buffer), request);
     }
 
-    server.log(this, Level.SEVERE, "Error on reading request, command %d not valid", commandId);
+    LogManager.instance().log(this, Level.SEVERE, "Error on reading request, command %d not valid", commandId);
     return null;
   }
 

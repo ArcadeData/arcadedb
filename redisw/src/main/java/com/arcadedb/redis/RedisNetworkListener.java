@@ -16,13 +16,14 @@
 package com.arcadedb.redis;
 
 import com.arcadedb.exception.ArcadeDBException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ha.network.ServerSocketFactory;
 
-import java.io.*;
+import java.io.IOException;
 import java.net.*;
-import java.util.logging.*;
+import java.util.logging.Level;
 
 public class RedisNetworkListener extends Thread {
 
@@ -70,7 +71,7 @@ public class RedisNetworkListener extends Thread {
 
         } catch (Exception e) {
           if (active)
-            server.log(this, Level.WARNING, "Error on client connection", e);
+            LogManager.instance().log(this, Level.WARNING, "Error on client connection", e);
         }
       }
     } finally {
@@ -124,7 +125,7 @@ public class RedisNetworkListener extends Thread {
         serverSocket = socketFactory.createServerSocket(tryPort, 0, InetAddress.getByName(hostName));
 
         if (serverSocket.isBound()) {
-          server.log(this, Level.INFO,
+          LogManager.instance().log(this, Level.INFO,
               "Listening for replication connections on $ANSI{green " + inboundAddr.getAddress().getHostAddress() + ":" + inboundAddr.getPort()
                   + "} (protocol v." + protocolVersion + ")");
 
@@ -132,17 +133,17 @@ public class RedisNetworkListener extends Thread {
           return;
         }
       } catch (BindException be) {
-        server.log(this, Level.WARNING, "Port %s:%d busy, trying the next available...", hostName, tryPort);
+        LogManager.instance().log(this, Level.WARNING, "Port %s:%d busy, trying the next available...", hostName, tryPort);
       } catch (SocketException se) {
-        server.log(this, Level.SEVERE, "Unable to create socket", se);
+        LogManager.instance().log(this, Level.SEVERE, "Unable to create socket", se);
         throw new ArcadeDBException(se);
       } catch (IOException ioe) {
-        server.log(this, Level.SEVERE, "Unable to read data from an open socket", ioe);
+        LogManager.instance().log(this, Level.SEVERE, "Unable to read data from an open socket", ioe);
         throw new ArcadeDBException(ioe);
       }
     }
 
-    server.log(this, Level.SEVERE, "Unable to listen for connections using the configured ports '%s' on host '%s'", hostPortRange, hostName);
+    LogManager.instance().log(this, Level.SEVERE, "Unable to listen for connections using the configured ports '%s' on host '%s'", hostPortRange, hostName);
 
     throw new ServerException("Unable to listen for connections using the configured ports '" + hostPortRange + "' on host '" + hostName + "'");
   }

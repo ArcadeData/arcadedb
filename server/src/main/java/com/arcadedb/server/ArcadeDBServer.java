@@ -103,13 +103,13 @@ public class ArcadeDBServer {
       throw new ServerException("Error on starting the server '" + serverName + "'");
     }
 
-    log(this, Level.INFO, "Starting ArcadeDB Server with plugins %s ...", getPluginNames());
+    LogManager.instance().log(this, Level.INFO, "Starting ArcadeDB Server with plugins %s ...", getPluginNames());
 
     // START METRICS & CONNECTED JMX REPORTER
     if (configuration.getValueAsBoolean(GlobalConfiguration.SERVER_METRICS)) {
       serverMetrics.stop();
       serverMetrics = new JMXServerMetrics();
-      log(this, Level.INFO, "- JMX Metrics Started...");
+      LogManager.instance().log(this, Level.INFO, "- JMX Metrics Started...");
     }
 
     security = new ServerSecurity(this, configuration, serverRootPath + "/config");
@@ -134,12 +134,12 @@ public class ArcadeDBServer {
 
     status = STATUS.ONLINE;
 
-    log(this, Level.INFO, "Available query languages: %s", new QueryEngineManager().getAvailableLanguages());
+    LogManager.instance().log(this, Level.INFO, "Available query languages: %s", new QueryEngineManager().getAvailableLanguages());
 
-    log(this, Level.INFO, "ArcadeDB Server started (CPUs=%d MAXRAM=%s)", Runtime.getRuntime().availableProcessors(),
+    LogManager.instance().log(this, Level.INFO, "ArcadeDB Server started (CPUs=%d MAXRAM=%s)", Runtime.getRuntime().availableProcessors(),
         FileUtils.getSizeAsString(Runtime.getRuntime().maxMemory()));
 
-    log(this, Level.INFO, "Studio web tool available at http://localhost:%d ", httpServer.getPort());
+    LogManager.instance().log(this, Level.INFO, "Studio web tool available at http://localhost:%d ", httpServer.getPort());
 
     try {
       lifecycleEvent(TestCallback.TYPE.SERVER_UP, null);
@@ -182,7 +182,7 @@ public class ArcadeDBServer {
 
           plugins.put(pluginName, pluginInstance);
 
-          log(this, Level.INFO, "- %s plugin started", pluginName);
+          LogManager.instance().log(this, Level.INFO, "- %s plugin started", pluginName);
 
         } catch (Exception e) {
           throw new ServerException("Error on loading plugin from class '" + p + ";", e);
@@ -201,12 +201,12 @@ public class ArcadeDBServer {
       throw new ServerException("Error on stopping the server '" + serverName + "'");
     }
 
-    log(this, Level.INFO, "Shutting down ArcadeDB Server...");
+    LogManager.instance().log(this, Level.INFO, "Shutting down ArcadeDB Server...");
 
     status = STATUS.SHUTTING_DOWN;
 
     for (Map.Entry<String, ServerPlugin> pEntry : plugins.entrySet()) {
-      log(this, Level.INFO, "- Stop %s plugin", pEntry.getKey());
+      LogManager.instance().log(this, Level.INFO, "- Stop %s plugin", pEntry.getKey());
       CodeUtils.executeIgnoringExceptions(() -> {
         pEntry.getValue().stopService();
       }, "Error on halting '" + pEntry.getKey() + "' plugin");
@@ -226,12 +226,12 @@ public class ArcadeDBServer {
     databases.clear();
 
     CodeUtils.executeIgnoringExceptions(() -> {
-      log(this, Level.INFO, "- Stop JMX Metrics");
+      LogManager.instance().log(this, Level.INFO, "- Stop JMX Metrics");
       serverMetrics.stop();
       serverMetrics = new NoServerMetrics();
     }, "Error on stopping JMX Metrics");
 
-    log(this, Level.INFO, "ArcadeDB Server is down");
+    LogManager.instance().log(this, Level.INFO, "ArcadeDB Server is down");
 
     try {
       lifecycleEvent(TestCallback.TYPE.SERVER_DOWN, null);
@@ -295,18 +295,6 @@ public class ArcadeDBServer {
   public Set<String> getDatabaseNames() {
     return Collections.unmodifiableSet(databases.keySet());
   }
-
-
-  public void log(final Object requester, final Level level, final String message, final Object... args) {
-    setLogContext();
-    LogManager.instance().log(requester, level, message, null, args);
-  }
-
-  private void setLogContext() {
-    if (!serverName.equals(LogManager.instance().getContext()))
-      LogManager.instance().setContext(serverName);
-  }
-
 
   public synchronized void removeDatabase(final String databaseName) {
     databases.remove(databaseName);
