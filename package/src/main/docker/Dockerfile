@@ -14,7 +14,7 @@
 # limitations under the License.
 #
 
-FROM adoptopenjdk/openjdk11:alpine-slim
+FROM eclipse-temurin:11.0.13_8-jdk-alpine
 
 ARG ARCADEDB_VERSION
 
