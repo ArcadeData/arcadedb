@@ -93,7 +93,7 @@ public class CRUDTest extends TestHelper {
 
         Assertions.assertEquals(TOT, db.countType("V", true));
 
-        LogManager.instance().log(this, Level.FINE, "Completed %d cycle of updates", null, i);
+        LogManager.instance().log(this, Level.FINE, "Completed %d cycle of updates", i);
       }
 
       db.scanType("V", true, new DocumentCallback() {
@@ -191,7 +191,7 @@ public class CRUDTest extends TestHelper {
           Assertions.assertEquals(0, db.countType("V", true));
         });
 
-        LogManager.instance().log(this, Level.FINE, "Completed %d cycle of updates+delete", null, i);
+        LogManager.instance().log(this, Level.FINE, "Completed %d cycle of updates+delete", i);
 
         createAll();
 

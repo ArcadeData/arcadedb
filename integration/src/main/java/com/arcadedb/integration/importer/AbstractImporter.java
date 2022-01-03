@@ -143,10 +143,10 @@ public abstract class AbstractImporter {
     }
 
     if (factory.exists()) {
-      LogManager.instance().log(this, Level.INFO, "Opening database '%s'...", null, settings.database);
+      LogManager.instance().log(this, Level.INFO, "Opening database '%s'...", settings.database);
       database = (DatabaseInternal) factory.open();
     } else {
-      LogManager.instance().log(this, Level.INFO, "Creating database '%s'...", null, settings.database);
+      LogManager.instance().log(this, Level.INFO, "Creating database '%s'...", settings.database);
       database = (DatabaseInternal) factory.create();
     }
 
@@ -177,14 +177,14 @@ public abstract class AbstractImporter {
 
   protected DocumentType getOrCreateDocumentType(final String name) {
     if (!database.getSchema().existsType(name)) {
-      LogManager.instance().log(this, Level.INFO, "Creating type '%s' of type DOCUMENT", null, name);
+      LogManager.instance().log(this, Level.INFO, "Creating type '%s' of type DOCUMENT", name);
 
       beginTxIfNeeded();
       final DocumentType type = database.getSchema().createDocumentType(name, settings.parallel);
       if (settings.typeIdProperty != null) {
         type.createProperty(settings.typeIdProperty, Type.getTypeByName(settings.typeIdType));
         database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, settings.typeIdPropertyIsUnique, name, settings.typeIdProperty);
-        LogManager.instance().log(this, Level.INFO, "- Creating indexed property '%s' of type '%s'", null, settings.typeIdProperty, settings.typeIdType);
+        LogManager.instance().log(this, Level.INFO, "- Creating indexed property '%s' of type '%s'", settings.typeIdProperty, settings.typeIdType);
       }
       return type;
     }
@@ -193,14 +193,14 @@ public abstract class AbstractImporter {
 
   protected VertexType getOrCreateVertexType(final String name) {
     if (!database.getSchema().existsType(name)) {
-      LogManager.instance().log(this, Level.INFO, "Creating type '%s' of type VERTEX", null, name);
+      LogManager.instance().log(this, Level.INFO, "Creating type '%s' of type VERTEX", name);
 
       beginTxIfNeeded();
       final VertexType type = database.getSchema().createVertexType(name, settings.parallel);
       if (settings.typeIdProperty != null) {
         type.createProperty(settings.typeIdProperty, Type.getTypeByName(settings.typeIdType));
         database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, settings.typeIdPropertyIsUnique, name, settings.typeIdProperty);
-        LogManager.instance().log(this, Level.INFO, "- Creating indexed property '%s' of type '%s'", null, settings.typeIdProperty, settings.typeIdType);
+        LogManager.instance().log(this, Level.INFO, "- Creating indexed property '%s' of type '%s'", settings.typeIdProperty, settings.typeIdType);
       }
       return type;
     }
@@ -210,7 +210,7 @@ public abstract class AbstractImporter {
 
   protected EdgeType getOrCreateEdgeType(final String name) {
     if (!database.getSchema().existsType(name)) {
-      LogManager.instance().log(this, Level.INFO, "Creating type '%s' of type EDGE", null, name);
+      LogManager.instance().log(this, Level.INFO, "Creating type '%s' of type EDGE", name);
 
       beginTxIfNeeded();
       return database.getSchema().createEdgeType(name, settings.parallel);
@@ -251,12 +251,12 @@ public abstract class AbstractImporter {
           final Property property = type.getPolymorphicProperty(propName);
           if (property.getType() != propValue.getType()) {
             LogManager.instance()
-                .log(this, Level.WARNING, "- found schema property %s.%s of type %s, while analyzing the source type %s was found", null, entity, propName,
+                .log(this, Level.WARNING, "- found schema property %s.%s of type %s, while analyzing the source type %s was found", entity, propName,
                     property.getType(), propValue.getType());
           }
         } else {
           // CREATE IT
-          LogManager.instance().log(this, Level.INFO, "- creating property %s.%s of type %s", null, entity, propName, propValue.getType());
+          LogManager.instance().log(this, Level.INFO, "- creating property %s.%s of type %s", entity, propName, propValue.getType());
           type.createProperty(propName, propValue.getType());
         }
 
@@ -271,15 +271,15 @@ public abstract class AbstractImporter {
 
   protected void dumpSchema(final AnalyzedSchema schema, final long parsedObjects) {
     LogManager.instance().log(this, Level.INFO, "---------------------------------------------------------------");
-    LogManager.instance().log(this, Level.INFO, "Objects found %d", null, parsedObjects);
+    LogManager.instance().log(this, Level.INFO, "Objects found %d", parsedObjects);
     for (AnalyzedEntity entity : schema.getEntities()) {
       LogManager.instance().log(this, Level.INFO, "---------------------------------------------------------------");
-      LogManager.instance().log(this, Level.INFO, "Entity '%s':", null, entity);
+      LogManager.instance().log(this, Level.INFO, "Entity '%s':", entity);
 
       for (AnalyzedProperty p : entity.getProperties()) {
-        LogManager.instance().log(this, Level.INFO, "- %s (%s)", null, p.getName(), p.getType());
+        LogManager.instance().log(this, Level.INFO, "- %s (%s)", p.getName(), p.getType());
         if (p.isCollectingSamples())
-          LogManager.instance().log(this, Level.INFO, "    contents (%d items): %s", null, p.getContents().size(), p.getContents());
+          LogManager.instance().log(this, Level.INFO, "    contents (%d items): %s", p.getContents().size(), p.getContents());
       }
     }
     LogManager.instance().log(this, Level.INFO, "---------------------------------------------------------------");

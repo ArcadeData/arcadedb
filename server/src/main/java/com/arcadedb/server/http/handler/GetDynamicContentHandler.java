@@ -87,7 +87,7 @@ public class GetDynamicContentHandler extends AbstractHandler {
 
     exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, contentType);
 
-    LogManager.instance().log(this, Level.FINE, "Loading file %s ", null, "/static" + uri);
+    LogManager.instance().log(this, Level.FINE, "Loading file %s ", "/static" + uri);
 
     final InputStream file = getClass().getClassLoader().getResourceAsStream("static" + uri);
     if (file == null) {
@@ -127,7 +127,7 @@ public class GetDynamicContentHandler extends AbstractHandler {
 
       int endTokenPos = file.indexOf("}", pos);
       if (endTokenPos == -1) {
-        LogManager.instance().log(this, Level.SEVERE, "Could not find end of token after position %d", null, beginTokenPos);
+        LogManager.instance().log(this, Level.SEVERE, "Could not find end of token after position %d", beginTokenPos);
         return file;
       }
 
@@ -150,7 +150,7 @@ public class GetDynamicContentHandler extends AbstractHandler {
 
         final InputStream fis = getClass().getClassLoader().getResourceAsStream("static/" + include);
         if (fis == null) {
-          LogManager.instance().log(this, Level.SEVERE, "Could not find file to include '%s' to include", null, include);
+          LogManager.instance().log(this, Level.SEVERE, "Could not find file to include '%s' to include", include);
           return file;
         }
 

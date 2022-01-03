@@ -78,7 +78,7 @@ public abstract class BaseGraphServerTest {
 
     checkArcadeIsTotallyDown();
 
-    LogManager.instance().log(this, Level.INFO, "Starting test %s...", null, getClass().getName());
+    LogManager.instance().log(this, Level.INFO, "Starting test %s...", getClass().getName());
 
     if (isCreateDatabases()) {
       deleteDatabaseFolders();
@@ -197,7 +197,7 @@ public abstract class BaseGraphServerTest {
         LogManager.instance().log(this, Level.INFO, "TEST: Stopping servers...");
         stopServers();
 
-        LogManager.instance().log(this, Level.INFO, "END OF THE TEST: Cleaning test %s...", null, getClass().getName());
+        LogManager.instance().log(this, Level.INFO, "END OF THE TEST: Cleaning test %s...", getClass().getName());
         if (dropDatabasesAtTheEnd())
           deleteDatabaseFolders();
 
@@ -262,7 +262,7 @@ public abstract class BaseGraphServerTest {
       onBeforeStarting(servers[i]);
       servers[i].start();
 
-      LogManager.instance().log(this, Level.INFO, "Server %d database directory: %s", null, i,
+      LogManager.instance().log(this, Level.INFO, "Server %d database directory: %s", i,
           servers[i].getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY));
 
       try {
@@ -400,7 +400,7 @@ public abstract class BaseGraphServerTest {
     final int onlineReplicas = leader.getHA().getOnlineReplicas();
     if (1 + onlineReplicas < getServerCount()) {
       // NOT ALL THE SERVERS ARE UP, AVOID A QUORUM ERROR
-      LogManager.instance().log(this, Level.INFO, "TEST: Not all the servers are ONLINE (%d), skip this crash...", null, onlineReplicas);
+      LogManager.instance().log(this, Level.INFO, "TEST: Not all the servers are ONLINE (%d), skip this crash...", onlineReplicas);
       leader.getHA().printClusterConfiguration();
       return false;
     }
@@ -443,13 +443,13 @@ public abstract class BaseGraphServerTest {
       final Database db2 = getServerDatabase(servers2Check[i], getDatabaseName());
 
       LogManager.instance()
-          .log(this, Level.INFO, "TEST: Comparing databases '%s' and '%s' are identical...", null, db1.getDatabasePath(), db2.getDatabasePath());
+          .log(this, Level.INFO, "TEST: Comparing databases '%s' and '%s' are identical...", db1.getDatabasePath(), db2.getDatabasePath());
       try {
         new DatabaseComparator().compare(db1, db2);
-        LogManager.instance().log(this, Level.INFO, "TEST: OK databases '%s' and '%s' are identical", null, db1.getDatabasePath(), db2.getDatabasePath());
+        LogManager.instance().log(this, Level.INFO, "TEST: OK databases '%s' and '%s' are identical", db1.getDatabasePath(), db2.getDatabasePath());
       } catch (RuntimeException e) {
         LogManager.instance()
-            .log(this, Level.INFO, "ERROR on comparing databases '%s' and '%s': %s", null, db1.getDatabasePath(), db2.getDatabasePath(), e.getMessage());
+            .log(this, Level.INFO, "ERROR on comparing databases '%s' and '%s': %s", db1.getDatabasePath(), db2.getDatabasePath(), e.getMessage());
         throw e;
       }
     }
@@ -464,7 +464,7 @@ public abstract class BaseGraphServerTest {
   protected void testEachServer(Callback callback) throws Exception {
     for (int i = 0; i < getServerCount(); i++) {
       LogManager.instance().log(this, Level.INFO, "***********************************************************************************");
-      LogManager.instance().log(this, Level.INFO, "EXECUTING TEST ON SERVER %d/%d...", null, i, getServerCount());
+      LogManager.instance().log(this, Level.INFO, "EXECUTING TEST ON SERVER %d/%d...", i, getServerCount());
       LogManager.instance().log(this, Level.INFO, "***********************************************************************************");
       callback.call(i);
     }
@@ -500,7 +500,7 @@ public abstract class BaseGraphServerTest {
 
       Assertions.assertEquals(200, connection.getResponseCode());
       Assertions.assertEquals("OK", connection.getResponseMessage());
-      LogManager.instance().log(this, Level.INFO, "TEST: Response: %s", null, response);
+      LogManager.instance().log(this, Level.INFO, "TEST: Response: %s", response);
       Assertions.assertTrue(response.contains("#"));
 
       return response;
@@ -522,7 +522,7 @@ public abstract class BaseGraphServerTest {
 
       final String response = readResponse(initialConnection);
 
-      LogManager.instance().log(this, Level.INFO, "Response: %s", null, response);
+      LogManager.instance().log(this, Level.INFO, "Response: %s", response);
       Assertions.assertEquals(200, initialConnection.getResponseCode());
       Assertions.assertEquals("OK", initialConnection.getResponseMessage());
       return response;

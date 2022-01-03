@@ -43,7 +43,7 @@ public class SQLFunctionReflectionFactory {
     for (Map.Entry<String, List<Method>> entry : methodsMap.entrySet()) {
       final String name = prefix + entry.getKey();
       if (factory.getFunctionNames().contains(name)) {
-        LogManager.instance().log(this, Level.WARNING, "Unable to register reflective function with name '%s'", null, name);
+        LogManager.instance().log(this, Level.WARNING, "Unable to register reflective function with name '%s'", name);
       } else {
         List<Method> methodsList = methodsMap.get(entry.getKey());
         Method[] methods = new Method[methodsList.size()];

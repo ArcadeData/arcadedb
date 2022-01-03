@@ -278,7 +278,7 @@ public class Bucket extends PaginatedComponent {
     final int totalPages = getTotalPages();
 
     if (verboseLevel > 1)
-      LogManager.instance().log(this, Level.INFO, "- Checking bucket '%s' (totalPages=%d spaceOnDisk=%s pageSize=%s)...", null, name, totalPages,
+      LogManager.instance().log(this, Level.INFO, "- Checking bucket '%s' (totalPages=%d spaceOnDisk=%s pageSize=%s)...", name, totalPages,
           FileUtils.getSizeAsString((long) totalPages * pageSize), FileUtils.getSizeAsString(pageSize));
 
     long totalAllocatedRecords = 0L;
@@ -376,7 +376,7 @@ public class Bucket extends PaginatedComponent {
         totalMaxOffset += pageMaxOffset;
 
         if (verboseLevel > 2)
-          LogManager.instance().log(this, Level.FINE, "-- Page %d records=%d (actives=%d deleted=%d placeholders=%d surrogates=%d) maxOffset=%d", null, pageId,
+          LogManager.instance().log(this, Level.FINE, "-- Page %d records=%d (actives=%d deleted=%d placeholders=%d surrogates=%d) maxOffset=%d", pageId,
               recordCountInPage, pageActiveRecords, pageDeletedRecords, pagePlaceholderRecords, pageSurrogateRecords, pageMaxOffset);
 
       } catch (Exception e) {
@@ -396,7 +396,7 @@ public class Bucket extends PaginatedComponent {
 
     if (verboseLevel > 1)
       LogManager.instance()
-          .log(this, Level.INFO, "-- Total records=%d (actives=%d deleted=%d placeholders=%d surrogates=%d) avgPageUsed=%.2f%%", null, totalAllocatedRecords,
+          .log(this, Level.INFO, "-- Total records=%d (actives=%d deleted=%d placeholders=%d surrogates=%d) avgPageUsed=%.2f%%", totalAllocatedRecords,
               totalActiveRecords, totalDeletedRecords, totalPlaceholderRecords, totalSurrogateRecords, avgPageUsed);
 
     stats.put("pageSize", (long) pageSize);
@@ -547,7 +547,7 @@ public class Bucket extends PaginatedComponent {
       lastPage.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) ++recordCountInPage);
 
       LogManager.instance()
-          .log(this, Level.FINE, "Created record %s (page=%s records=%d threadId=%d)", null, rid, lastPage, recordCountInPage, Thread.currentThread().getId());
+          .log(this, Level.FINE, "Created record %s (page=%s records=%d threadId=%d)", rid, lastPage, recordCountInPage, Thread.currentThread().getId());
 
       ((RecordInternal) record).setBuffer(buffer.copy());
 

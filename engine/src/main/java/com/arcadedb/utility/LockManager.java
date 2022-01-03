@@ -51,7 +51,7 @@ public class LockManager<RESOURCE, REQUESTER> {
     if (currentLock != null) {
       if (currentLock.owner.equals(requester)) {
         // SAME RESOURCE/SERVER, ALREADY LOCKED
-        LogManager.instance().log(this, Level.FINE, "Resource '%s' already locked by requester '%s'", null, resource, currentLock.owner);
+        LogManager.instance().log(this, Level.FINE, "Resource '%s' already locked by requester '%s'", resource, currentLock.owner);
         return LOCK_STATUS.ALREADY_ACQUIRED;
       } else {
         // TRY TO RE-LOCK IT UNTIL TIMEOUT IS EXPIRED

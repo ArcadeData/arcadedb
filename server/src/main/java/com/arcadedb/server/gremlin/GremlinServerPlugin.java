@@ -50,11 +50,11 @@ public class GremlinServerPlugin implements ServerPlugin {
         settings = Settings.read(is);
       } catch (Exception e) {
         LogManager.instance()
-            .log(this, Level.INFO, "Error on loading Gremlin Server configuration file '%s'. Using default configuration", null, CONFIG_GREMLIN_SERVER_YAML);
+            .log(this, Level.INFO, "Error on loading Gremlin Server configuration file '%s'. Using default configuration", CONFIG_GREMLIN_SERVER_YAML);
       }
     } else
       LogManager.instance()
-          .log(this, Level.INFO, "Cannot find Gremlin Server configuration file '%s'. Using default configuration", null, CONFIG_GREMLIN_SERVER_YAML);
+          .log(this, Level.INFO, "Cannot find Gremlin Server configuration file '%s'. Using default configuration", CONFIG_GREMLIN_SERVER_YAML);
 
     if (settings == null)
       // DEFAULT CONFIGURATION

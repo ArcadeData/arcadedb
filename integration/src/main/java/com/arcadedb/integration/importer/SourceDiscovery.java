@@ -48,7 +48,7 @@ public class SourceDiscovery {
 
   public SourceSchema getSchema(final ImporterSettings settings, final AnalyzedEntity.ENTITY_TYPE entityType, final AnalyzedSchema analyzedSchema)
       throws IOException {
-    LogManager.instance().log(this, Level.INFO, "Analyzing url: %s...", null, url);
+    LogManager.instance().log(this, Level.INFO, "Analyzing url: %s...", url);
 
     final Source source = getSource();
 
@@ -63,11 +63,11 @@ public class SourceDiscovery {
       LogManager.instance().log(this, Level.INFO, "Unknown format");
     else {
       sourceSchema = formatImporter.analyze(entityType, parser, settings, analyzedSchema);
-      LogManager.instance().log(this, Level.INFO, "Recognized format %s (parsingLimitBytes=%s parsingLimitEntries=%d)", null, formatImporter.getFormat(),
+      LogManager.instance().log(this, Level.INFO, "Recognized format %s (parsingLimitBytes=%s parsingLimitEntries=%d)", formatImporter.getFormat(),
           FileUtils.getSizeAsString(limitBytes), limitEntries);
       if (sourceSchema != null && !sourceSchema.getOptions().isEmpty()) {
         for (Map.Entry<String, String> o : sourceSchema.getOptions().entrySet())
-          LogManager.instance().log(this, Level.INFO, "- %s = %s", null, o.getKey(), o.getValue());
+          LogManager.instance().log(this, Level.INFO, "- %s = %s", o.getKey(), o.getValue());
       }
     }
 
@@ -237,7 +237,7 @@ public class SourceDiscovery {
       else if (knownFileType.equalsIgnoreCase("graphson"))
         return new GraphSONImporterFormat();
       else
-        LogManager.instance().log(this, Level.WARNING, "File type '%s' is not supported. Trying to understand file type...", null, knownFileType);
+        LogManager.instance().log(this, Level.WARNING, "File type '%s' is not supported. Trying to understand file type...", knownFileType);
     }
 
     parser.nextChar();
@@ -297,7 +297,7 @@ public class SourceDiscovery {
 
       final Map.Entry<Character, AtomicInteger> bestSeparator = list.get(0);
 
-      LogManager.instance().log(this, Level.INFO, "Best separator candidate='%s' (all candidates=%s)", null, bestSeparator.getKey(), list);
+      LogManager.instance().log(this, Level.INFO, "Best separator candidate='%s' (all candidates=%s)", bestSeparator.getKey(), list);
 
       settings.options.put("delimiter", "" + bestSeparator.getKey());
       return new CSVImporterFormat();

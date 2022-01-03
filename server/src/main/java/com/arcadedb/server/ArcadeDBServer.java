@@ -27,7 +27,6 @@ import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.integration.restore.Restore;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngineManager;
-import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.ha.ReplicatedDatabase;
 import com.arcadedb.server.http.HttpServer;
@@ -306,9 +305,8 @@ public class ArcadeDBServer {
   private void setLogContext() {
     if (!serverName.equals(LogManager.instance().getContext()))
       LogManager.instance().setContext(serverName);
-    installContextIfNeeded(serverName);
-    LogManager.instance().log(requester, level, message, null, args);
   }
+
 
   public synchronized void removeDatabase(final String databaseName) {
     databases.remove(databaseName);
@@ -398,7 +396,7 @@ public class ArcadeDBServer {
       for (String db : dbs) {
         final int credentialBegin = db.indexOf('[');
         if (credentialBegin < 0) {
-          LogManager.instance().log(this, Level.WARNING, "Error in default databases format: '%s'", null, defaultDatabases);
+          LogManager.instance().log(this, Level.WARNING, "Error in default databases format: '%s'", defaultDatabases);
           break;
         }
 
@@ -418,7 +416,7 @@ public class ArcadeDBServer {
           for (String command : commandParts) {
             final int commandSeparator = command.indexOf(":");
             if (commandSeparator < 0) {
-              LogManager.instance().log(this, Level.WARNING, "Error in startup command configuration format: '%s'", null, commands);
+              LogManager.instance().log(this, Level.WARNING, "Error in startup command configuration format: '%s'", commands);
               break;
             }
             final String commandType = command.substring(0, commandSeparator).toLowerCase();
@@ -522,8 +520,4 @@ public class ArcadeDBServer {
     }
   }
 
-  private void installContextIfNeeded(final String serverName) {
-    if (!BinaryComparator.equalsString(serverName, LogManager.instance().getContext()))
-      LogManager.instance().setContext(serverName);
-  }
 }

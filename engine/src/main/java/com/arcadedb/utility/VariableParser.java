@@ -50,7 +50,7 @@ public class VariableParser {
 
     if (resolved == null) {
       if (iDefaultValue == null)
-        LogManager.instance().log(null, Level.INFO, "[OVariableParser.resolveVariables] Error on resolving property: %s", null, var);
+        LogManager.instance().log(null, Level.INFO, "[OVariableParser.resolveVariables] Error on resolving property: %s", var);
       else
         resolved = iDefaultValue;
     }

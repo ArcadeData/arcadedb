@@ -1581,7 +1581,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
             Files.delete(Paths.get(lockFile.getAbsolutePath()));
 
           if (lockFile.exists() && !lockFile.delete())
-            LogManager.instance().log(this, Level.WARNING, "Error on deleting lock file '%s'", null, lockFile);
+            LogManager.instance().log(this, Level.WARNING, "Error on deleting lock file '%s'", lockFile);
 
         } catch (IOException e) {
           // IGNORE IT

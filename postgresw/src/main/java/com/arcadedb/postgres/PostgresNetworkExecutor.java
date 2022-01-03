@@ -211,7 +211,7 @@ public class PostgresNetworkExecutor extends Thread {
 
   private void syncCommand() {
     if (DEBUG)
-      LogManager.instance().log(this, Level.INFO, "PSQL: sync (thread=%s)", null, Thread.currentThread().getId());
+      LogManager.instance().log(this, Level.INFO, "PSQL: sync (thread=%s)", Thread.currentThread().getId());
 
     if (!explicitTransactionStarted) {
       if (errorInTransaction)
@@ -234,7 +234,7 @@ public class PostgresNetworkExecutor extends Thread {
 
     if (DEBUG)
       LogManager.instance()
-          .log(this, Level.INFO, "PSQL: close '%s' type=%s (thread=%s)", null, prepStatementOrPortal, (char) closeType, Thread.currentThread().getId());
+          .log(this, Level.INFO, "PSQL: close '%s' type=%s (thread=%s)", prepStatementOrPortal, (char) closeType, Thread.currentThread().getId());
 
     writeMessage("close complete", null, '3', 4);
   }
@@ -244,7 +244,7 @@ public class PostgresNetworkExecutor extends Thread {
     final String portalName = readString();
 
     if (DEBUG)
-      LogManager.instance().log(this, Level.INFO, "PSQL: describe '%s' type=%s (thread=%s)", null, portalName, (char) type, Thread.currentThread().getId());
+      LogManager.instance().log(this, Level.INFO, "PSQL: describe '%s' type=%s (thread=%s)", portalName, (char) type, Thread.currentThread().getId());
 
     final PostgresPortal portal = getPortal(portalName, false);
     if (portal == null) {
@@ -288,7 +288,7 @@ public class PostgresNetworkExecutor extends Thread {
 
       if (DEBUG)
         LogManager.instance()
-            .log(this, Level.INFO, "PSQL: execute (portal=%s) (limit=%d)-> %s (thread=%s)", null, portalName, limit, portal, Thread.currentThread().getId());
+            .log(this, Level.INFO, "PSQL: execute (portal=%s) (limit=%d)-> %s (thread=%s)", portalName, limit, portal, Thread.currentThread().getId());
 
       if (portal.ignoreExecution)
         writeMessage("empty query response", null, 'I', 4);
@@ -332,7 +332,7 @@ public class PostgresNetworkExecutor extends Thread {
         queryText = queryText.substring(0, queryText.length() - 1);
 
       if (DEBUG)
-        LogManager.instance().log(this, Level.INFO, "PSQL: query -> %s (thread=%s)", null, queryText, Thread.currentThread().getId());
+        LogManager.instance().log(this, Level.INFO, "PSQL: query -> %s (thread=%s)", queryText, Thread.currentThread().getId());
 
       if (queryText.isEmpty()) {
 
@@ -494,7 +494,7 @@ public class PostgresNetworkExecutor extends Thread {
     channel.flush();
 
     if (DEBUG)
-      LogManager.instance().log(this, Level.INFO, "PSQL:-> %d row data (%s) (thread=%s)", null, resultSet.size(), FileUtils.getSizeAsString(bufferData.limit()),
+      LogManager.instance().log(this, Level.INFO, "PSQL:-> %d row data (%s) (thread=%s)", resultSet.size(), FileUtils.getSizeAsString(bufferData.limit()),
           Thread.currentThread().getId());
   }
 
@@ -512,7 +512,7 @@ public class PostgresNetworkExecutor extends Thread {
 
       if (DEBUG)
         LogManager.instance()
-            .log(this, Level.INFO, "PSQL: bind (portal=%s) -> %s (thread=%s)", null, portalName, sourcePreparedStatement, Thread.currentThread().getId());
+            .log(this, Level.INFO, "PSQL: bind (portal=%s) -> %s (thread=%s)", portalName, sourcePreparedStatement, Thread.currentThread().getId());
 
       final int paramFormatCount = channel.readShort();
       if (paramFormatCount > 0) {
@@ -572,7 +572,7 @@ public class PostgresNetworkExecutor extends Thread {
       }
 
       if (DEBUG)
-        LogManager.instance().log(this, Level.INFO, "PSQL: parse (portal=%s) -> %s (params=%d) (thread=%s)", null, portalName, portal.query, paramCount,
+        LogManager.instance().log(this, Level.INFO, "PSQL: parse (portal=%s) -> %s (params=%d) (thread=%s)", portalName, portal.query, paramCount,
             Thread.currentThread().getId());
 
       final String upperCaseText = portal.query.toUpperCase();
@@ -828,7 +828,7 @@ public class PostgresNetworkExecutor extends Thread {
         final long pid = channel.readUnsignedInt();
         final long secret = channel.readUnsignedInt();
 
-        LogManager.instance().log(this, Level.INFO, "Received cancel request pid %d", null, pid);
+        LogManager.instance().log(this, Level.INFO, "Received cancel request pid %d", pid);
 
         final Pair<Long, PostgresNetworkExecutor> session = ACTIVE_SESSIONS.get(pid);
         if (session != null) {

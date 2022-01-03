@@ -39,7 +39,7 @@ public class JSONSerializer {
 
       if (value instanceof Number && !Float.isFinite(((Number) value).floatValue())) {
         LogManager.instance()
-            .log(this, Level.SEVERE, "Found non finite number in map with key '%s', ignore this entry in the conversion", null, entry.getKey());
+            .log(this, Level.SEVERE, "Found non finite number in map with key '%s', ignore this entry in the conversion", entry.getKey());
         continue;
       }
 

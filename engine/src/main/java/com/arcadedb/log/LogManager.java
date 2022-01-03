@@ -51,18 +51,18 @@ public class LogManager {
     this.logger = logger;
   }
 
-  public void log(final Object iRequester, final Level iLevel, String iMessage) {
-    logger.log(iRequester, iLevel, iMessage, null, CONTEXT_INSTANCE.get());
+  public void log(final Object requester, final Level level, String message) {
+    logger.log(requester, level, message, null, CONTEXT_INSTANCE.get());
   }
 
-
-  public void log(final Object iRequester, final Level iLevel, String iMessage, final Throwable iException, final Object... args) {
-    logger.log(iRequester, iLevel, iMessage, iException, CONTEXT_INSTANCE.get(), args);
+  public void log(final Object requester, final Level level, String message,  final Object... args) {
+    logger.log(requester, level, message, null, CONTEXT_INSTANCE.get(), args);
   }
 
-  public void log(final Object iRequester, final Level iLevel, String iMessage,  final Object... args) {
-    logger.log(iRequester, iLevel, iMessage, null, CONTEXT_INSTANCE.get(), args);
+  public void log(final Object requester, final Level level, String message, final Throwable throwable, final Object... args) {
+    logger.log(requester, level, message, throwable, CONTEXT_INSTANCE.get(), args);
   }
+
 
   public boolean isDebugEnabled() {
     return debug;

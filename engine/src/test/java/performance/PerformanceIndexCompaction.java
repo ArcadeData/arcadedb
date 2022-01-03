@@ -45,7 +45,7 @@ public class PerformanceIndexCompaction {
 
       final long total = database.countType("Device", true);
       long totalIndexed = countIndexedItems(database);
-      LogManager.instance().log(this, Level.INFO, "Total indexes items %d", null, totalIndexed);
+      LogManager.instance().log(this, Level.INFO, "Total indexes items %d", totalIndexed);
 
       for (Index index : database.getSchema().getIndexes())
         Assertions.assertTrue(((IndexInternal) index).compact());

@@ -51,7 +51,7 @@ public class PageManagerFlushThread extends Thread {
         return;
     }
 
-    LogManager.instance().log(this, Level.SEVERE, "Error on flushing pages %s during shutdown of the database", null, pages);
+    LogManager.instance().log(this, Level.SEVERE, "Error on flushing pages %s during shutdown of the database", pages);
   }
 
   @Override

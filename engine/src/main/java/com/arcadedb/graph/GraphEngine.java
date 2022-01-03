@@ -222,7 +222,7 @@ public class GraphEngine {
         inChunk = (EdgeSegment) database.lookupByRID(inEdgesHeadChunk, true);
       } catch (RecordNotFoundException e) {
         LogManager.instance()
-            .log(this, Level.WARNING, "Record %s (inEdgesHeadChunk) not found on vertex %s. Creating a new one", null, inEdgesHeadChunk, toVertex);
+            .log(this, Level.WARNING, "Record %s (inEdgesHeadChunk) not found on vertex %s. Creating a new one", inEdgesHeadChunk, toVertex);
         inEdgesHeadChunk = null;
       }
 
@@ -246,7 +246,7 @@ public class GraphEngine {
       try {
         outChunk = (EdgeSegment) database.lookupByRID(outEdgesHeadChunk, true);
       } catch (RecordNotFoundException e) {
-        LogManager.instance().log(this, Level.WARNING, "Record %s (outEdgesHeadChunk) not found on vertex %s. Creating a new one", null, outEdgesHeadChunk,
+        LogManager.instance().log(this, Level.WARNING, "Record %s (outEdgesHeadChunk) not found on vertex %s. Creating a new one", outEdgesHeadChunk,
             fromVertex.getIdentity());
         outEdgesHeadChunk = null;
       }
@@ -358,7 +358,7 @@ public class GraphEngine {
         } catch (RecordNotFoundException e) {
           // ALREADY DELETED, IGNORE THIS
           LogManager.instance()
-              .log(this, Level.FINE, "Error on deleting outgoing vertex %s connected from vertex %s (record not found)", null, inV, vertex.getIdentity());
+              .log(this, Level.FINE, "Error on deleting outgoing vertex %s connected from vertex %s (record not found)", inV, vertex.getIdentity());
         }
       }
 
@@ -389,7 +389,7 @@ public class GraphEngine {
           }
         } catch (RecordNotFoundException e) {
           // ALREADY DELETED, IGNORE THIS
-          LogManager.instance().log(this, Level.WARNING, "Error on deleting incoming vertex %s connected to vertex %s", null, outV, vertex.getIdentity());
+          LogManager.instance().log(this, Level.WARNING, "Error on deleting incoming vertex %s connected to vertex %s", outV, vertex.getIdentity());
         }
       }
 

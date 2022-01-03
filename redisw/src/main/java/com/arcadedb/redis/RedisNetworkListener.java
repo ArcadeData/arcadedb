@@ -142,7 +142,7 @@ public class RedisNetworkListener extends Thread {
       }
     }
 
-    server.log(this, Level.SEVERE, "Unable to listen for connections using the configured ports '%s' on host '%s'", null, hostPortRange, hostName);
+    server.log(this, Level.SEVERE, "Unable to listen for connections using the configured ports '%s' on host '%s'", hostPortRange, hostName);
 
     throw new ServerException("Unable to listen for connections using the configured ports '" + hostPortRange + "' on host '" + hostName + "'");
   }
