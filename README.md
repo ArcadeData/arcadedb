@@ -22,14 +22,15 @@ ArcadeDB understands multiple languages:
 - [SQL](https://docs.arcadedb.com#SQL) (from OrientDB SQL)
 - Neo4j [Cypher (Open Cypher)](https://docs.arcadedb.com#Cypher)
 - [Apache Gremlin (Apache Tinkerpop v3.5.x)](https://docs.arcadedb.com#Gremlin-API)
+- [GraphQL Language](https://docs.arcadedb.com#GraphQL)
 - [MongoDB Query Language](https://docs.arcadedb.com#MongoDB-API)
 
 ArcadeDB can be used as:
 - Embedded from any language on top of the Java Virtual Machine
 - Remotely by using [HTTP/JSON](https://docs.arcadedb.com#HTTP-API)
 - Remotely by using a [Postgres driver](https://docs.arcadedb.com#Postgres-Driver) (ArcadeDB implements Postgres Wire protocol)
-- Remotely by using a [MongoDB driver](https://docs.arcadedb.com#MongoDB-API) (only a subset of the operations are implemented)
 - Remotely by using a [Redis driver](https://docs.arcadedb.com#Redis-API) (only a subset of the operations are implemented)
+- Remotely by using a [MongoDB driver](https://docs.arcadedb.com#MongoDB-API) (only a subset of the operations are implemented)
 
 ArcadeDB is Free for any usage and licensed under the liberal [Open Source Apache 2 license](LICENSE). To contribute to the project check [CONTRIBUTING](CONTRIBUTING.md). If you need commercial support, or you need to have an issue fixed ASAP, check our [GitHub Sponsor page](https://github.com/sponsors/ArcadeData) on both Recurrent and One-Time tiers. All the sponsorship received will be distributed to the active contributors of this project.
 
@@ -38,8 +39,8 @@ ArcadeDB is Free for any usage and licensed under the liberal [Open Source Apach
 
 Start ArcadeDB Server with Docker:
 ```
-docker run --rm -p 2480:2480 -p 2424:2424 --env arcadedb.server.rootPassword=playwithdata
-           --env "arcadedb.server.defaultDatabases=Imported[root]{import:https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz}"
+docker run --rm -p 2480:2480 -p 2424:2424 -e arcadedb.server.rootPassword=playwithdata
+           -e "arcadedb.server.defaultDatabases=Imported[root]{import:https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz}"
            arcadedata/arcadedb:latest
 ```
 
