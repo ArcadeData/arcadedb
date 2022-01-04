@@ -31,9 +31,10 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-import java.util.*;
-import java.util.concurrent.*;
+import java.io.File;
+import java.util.List;
+import java.util.UUID;
+import java.util.concurrent.ExecutionException;
 
 /**
  * Tests execution of gremlin queries as text.

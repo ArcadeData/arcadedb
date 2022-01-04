@@ -18,7 +18,10 @@ package com.arcadedb.query.sql.function;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.SQLFunction;
 
-import java.util.*;
+import java.util.HashMap;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Created by frank on 25/05/2017.

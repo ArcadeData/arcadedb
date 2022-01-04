@@ -15,11 +15,11 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 import com.arcadedb.TestHelper;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
-
-import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdb.com)

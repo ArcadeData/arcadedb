@@ -27,8 +27,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
-import java.net.*;
-import java.util.zip.*;
+import java.net.URL;
+import java.util.zip.GZIPInputStream;
 
 public class JsonlExporterIT {
   private final static String DATABASE_PATH = "target/databases/performance";

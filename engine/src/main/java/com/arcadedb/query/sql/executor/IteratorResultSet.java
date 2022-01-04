@@ -17,7 +17,10 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Document;
 
-import java.util.*;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.Map;
+import java.util.Optional;
 
 /**
  * Created by luigidellaquila on 07/07/16.

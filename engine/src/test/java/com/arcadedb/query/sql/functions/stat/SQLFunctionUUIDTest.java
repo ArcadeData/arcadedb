@@ -15,14 +15,14 @@
  */
 package com.arcadedb.query.sql.functions.stat;
 
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.function.misc.SQLFunctionUUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
 
 public class SQLFunctionUUIDTest {
 

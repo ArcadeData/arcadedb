@@ -20,7 +20,7 @@ import org.json.JSONObject;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.stream.*;
+import java.util.stream.Collectors;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)

@@ -33,19 +33,19 @@ import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.RecordTableFormatter;
 import com.arcadedb.utility.TableFormatter;
-import org.jline.reader.Completer;
-import org.jline.reader.EndOfFileException;
-import org.jline.reader.LineReader;
-import org.jline.reader.LineReaderBuilder;
-import org.jline.reader.ParsedLine;
-import org.jline.reader.UserInterruptException;
+import org.jline.reader.*;
 import org.jline.reader.impl.completer.StringsCompleter;
 import org.jline.reader.impl.history.DefaultHistory;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
 
-import java.io.*;
-import java.util.*;
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileReader;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
 
 public class Console {
   private static final String           PROMPT               = "%n%s> ";

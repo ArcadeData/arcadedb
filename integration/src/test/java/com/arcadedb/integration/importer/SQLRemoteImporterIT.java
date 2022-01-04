@@ -21,7 +21,7 @@ import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
+import java.io.File;
 
 public class SQLRemoteImporterIT {
   @Test

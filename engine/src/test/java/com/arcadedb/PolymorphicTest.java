@@ -24,7 +24,7 @@ import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.concurrent.atomic.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class PolymorphicTest extends TestHelper {
 

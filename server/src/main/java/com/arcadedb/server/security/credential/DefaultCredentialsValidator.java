@@ -17,7 +17,8 @@ package com.arcadedb.server.security.credential;
 
 import com.arcadedb.server.security.ServerSecurityException;
 
-import java.util.*;
+import java.util.Random;
+import java.util.UUID;
 
 /**
  * Default implementation for validating users. The requirements are quite minimalistic: user name must be between 4 and 256 character and the password between 8 and 256.

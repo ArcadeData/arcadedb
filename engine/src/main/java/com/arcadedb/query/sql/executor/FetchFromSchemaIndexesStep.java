@@ -22,7 +22,7 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
 
-import java.io.*;
+import java.io.IOException;
 import java.util.*;
 
 /**

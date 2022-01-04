@@ -24,8 +24,11 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.utility.FileUtils;
 
-import java.io.*;
-import java.util.*;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.util.HashMap;
+import java.util.Map;
 
 public class DatabaseStructureRequest extends HAAbstractCommand {
   private String databaseName;

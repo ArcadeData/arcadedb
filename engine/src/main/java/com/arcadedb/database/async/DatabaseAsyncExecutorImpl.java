@@ -16,14 +16,7 @@
 package com.arcadedb.database.async;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseContext;
-import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.database.DocumentCallback;
-import com.arcadedb.database.Identifiable;
-import com.arcadedb.database.MutableDocument;
-import com.arcadedb.database.RID;
-import com.arcadedb.database.Record;
+import com.arcadedb.database.*;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.WALFile;
@@ -35,9 +28,12 @@ import com.arcadedb.schema.DocumentType;
 import com.conversantmedia.util.concurrent.PushPullBlockingQueue;
 
 import java.util.*;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
 
 public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   private final DatabaseInternal   database;

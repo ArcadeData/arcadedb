@@ -15,6 +15,8 @@
  */
 package com.arcadedb.query.sql.method.misc;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.executor.SQLMethod;
@@ -24,8 +26,6 @@ import org.mockito.Mockito;
 
 import java.util.Collection;
 import java.util.List;
-
-import static org.assertj.core.api.Assertions.assertThat;
 
 class SQLMethodSizeTest {
     private SQLMethod method;

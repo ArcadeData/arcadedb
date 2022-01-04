@@ -21,7 +21,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 
 import java.util.*;
-import java.util.stream.*;
+import java.util.stream.Collectors;
 
 /**
  * Created by luigidellaquila on 06/07/16.

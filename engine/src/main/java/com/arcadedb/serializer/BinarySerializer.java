@@ -15,7 +15,6 @@
  */
 package com.arcadedb.serializer;
 
-import com.arcadedb.database.Record;
 import com.arcadedb.database.*;
 import com.arcadedb.engine.Dictionary;
 import com.arcadedb.exception.SerializationException;

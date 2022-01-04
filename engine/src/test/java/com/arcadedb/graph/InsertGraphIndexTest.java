@@ -22,13 +22,12 @@ import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionS
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.log.Logger;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.logging.*;
+import java.util.logging.Level;
 
 public class InsertGraphIndexTest extends TestHelper {
   private static final int    VERTICES         = 1_000;

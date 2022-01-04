@@ -26,7 +26,8 @@ import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
+import java.util.Arrays;
+import java.util.Map;
 
 public class LSMTreeIndexPolymorphicTest extends TestHelper {
 

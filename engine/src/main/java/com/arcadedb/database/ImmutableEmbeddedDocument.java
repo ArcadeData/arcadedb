@@ -18,7 +18,7 @@ package com.arcadedb.database;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.schema.DocumentType;
 
-import java.util.*;
+import java.util.Set;
 
 public class ImmutableEmbeddedDocument extends ImmutableDocument implements EmbeddedDocument {
   private final EmbeddedModifier modifier;

@@ -16,14 +16,7 @@
 package com.arcadedb.database;
 
 import com.arcadedb.exception.DatabaseMetadataException;
-import com.arcadedb.graph.Edge;
-import com.arcadedb.graph.EdgeSegment;
-import com.arcadedb.graph.ImmutableEdge;
-import com.arcadedb.graph.ImmutableVertex;
-import com.arcadedb.graph.MutableEdge;
-import com.arcadedb.graph.MutableEdgeSegment;
-import com.arcadedb.graph.MutableVertex;
-import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.*;
 import com.arcadedb.schema.DocumentType;
 
 public class RecordFactory {

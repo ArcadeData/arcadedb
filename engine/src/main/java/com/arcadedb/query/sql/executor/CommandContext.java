@@ -17,7 +17,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.DatabaseInternal;
 
-import java.util.*;
+import java.util.Map;
 
 /**
  * Basic interface for commands. Manages the context variables during execution.

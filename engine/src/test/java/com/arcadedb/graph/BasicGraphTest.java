@@ -31,8 +31,9 @@ import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
-import java.util.concurrent.atomic.*;
+import java.util.Iterator;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 public class BasicGraphTest extends BaseGraphTest {
   @Test

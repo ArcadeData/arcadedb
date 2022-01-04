@@ -15,16 +15,12 @@
  */
 package com.arcadedb.graph;
 
-import com.arcadedb.database.Binary;
-import com.arcadedb.database.Database;
-import com.arcadedb.database.MutableDocument;
-import com.arcadedb.database.RID;
-import com.arcadedb.database.Transaction;
+import com.arcadedb.database.*;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.serializer.BinaryTypes;
 import org.json.JSONObject;
 
-import java.util.*;
+import java.util.Map;
 
 /**
  * Mutable edge that supports updates. After any changes, call the method {@link #save()} to mark the record as dirty in the current transaction, so the

@@ -18,7 +18,7 @@ package com.arcadedb.database.async;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.*;
+import java.util.Map;
 
 public class DatabaseAsyncCommand extends DatabaseAsyncAbstractTask {
   public final boolean                idempotent;

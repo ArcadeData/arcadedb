@@ -19,7 +19,8 @@ import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.schema.DocumentType;
 import org.json.JSONObject;
 
-import java.util.*;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Immutable document implementation. To modify the record, you need to get the mutable representation by calling {@link #modify()}. This implementation keeps the

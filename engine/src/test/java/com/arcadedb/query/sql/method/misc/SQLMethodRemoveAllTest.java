@@ -15,6 +15,8 @@
  */
 package com.arcadedb.query.sql.method.misc;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.SQLMethod;
@@ -23,8 +25,6 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
-
-import static org.assertj.core.api.Assertions.assertThat;
 
 class SQLMethodRemoveAllTest {
     private SQLMethod method;

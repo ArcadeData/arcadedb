@@ -28,7 +28,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 
-import java.util.*;
+import java.util.Map;
 
 public class AlterPropertyStatement extends DDLStatement {
 

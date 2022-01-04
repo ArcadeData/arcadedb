@@ -34,12 +34,17 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.*;
-import java.math.*;
-import java.text.*;
-import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.stream.*;
-import java.util.zip.*;
+import java.math.BigDecimal;
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+import java.util.zip.GZIPInputStream;
 
 /**
  * Importer of a Neo4j dataabase exported in JSONL format. To export a Neo4j database follow the instructions in https://neo4j.com/labs/apoc/4.3/export/json/.

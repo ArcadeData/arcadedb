@@ -17,8 +17,10 @@ package org.apache.tinkerpop.gremlin.arcadedb.structure;
 
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.*;
-import java.util.concurrent.*;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.ExecutionException;
 
 /**
  * Base class for query implementation from Gremlin/Tinkerpop.

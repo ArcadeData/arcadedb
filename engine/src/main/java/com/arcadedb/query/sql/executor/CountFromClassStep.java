@@ -17,8 +17,8 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
-import com.arcadedb.schema.DocumentType;
 import com.arcadedb.query.sql.parser.Identifier;
+import com.arcadedb.schema.DocumentType;
 
 import java.util.Map;
 import java.util.Optional;

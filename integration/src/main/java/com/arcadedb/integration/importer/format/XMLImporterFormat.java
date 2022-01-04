@@ -19,13 +19,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.async.NewRecordCallback;
 import com.arcadedb.graph.MutableVertex;
-import com.arcadedb.integration.importer.AnalyzedEntity;
-import com.arcadedb.integration.importer.AnalyzedSchema;
-import com.arcadedb.integration.importer.ImportException;
-import com.arcadedb.integration.importer.ImporterContext;
-import com.arcadedb.integration.importer.ImporterSettings;
-import com.arcadedb.integration.importer.Parser;
-import com.arcadedb.integration.importer.SourceSchema;
+import com.arcadedb.integration.importer.*;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.FileUtils;
 
@@ -33,9 +27,10 @@ import javax.xml.XMLConstants;
 import javax.xml.stream.XMLInputFactory;
 import javax.xml.stream.XMLStreamException;
 import javax.xml.stream.XMLStreamReader;
-import java.io.*;
-import java.util.*;
-import java.util.logging.*;
+import java.io.IOException;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.logging.Level;
 
 public class XMLImporterFormat implements FormatImporter {
   @Override

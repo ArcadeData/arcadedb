@@ -22,9 +22,9 @@ import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
-import java.io.*;
-import java.net.*;
-import java.util.*;
+import java.io.UnsupportedEncodingException;
+import java.net.URLDecoder;
+import java.util.Deque;
 
 public class GetQueryHandler extends DatabaseAbstractHandler {
   public GetQueryHandler(final HttpServer httpServer) {

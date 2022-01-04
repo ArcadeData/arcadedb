@@ -21,7 +21,7 @@ import com.arcadedb.server.http.HttpSessionManager;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
-import java.io.*;
+import java.io.IOException;
 
 public class PostRollbackHandler extends DatabaseAbstractHandler {
 

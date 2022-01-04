@@ -15,21 +15,18 @@
  */
 package com.arcadedb.integration.importer;
 
+import static com.google.gson.stream.JsonToken.BEGIN_OBJECT;
+import static com.google.gson.stream.JsonToken.END_ARRAY;
+import static com.google.gson.stream.JsonToken.END_OBJECT;
+import static com.google.gson.stream.JsonToken.NULL;
+
 import com.arcadedb.Constants;
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.database.MutableDocument;
-import com.arcadedb.database.RID;
+import com.arcadedb.database.*;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
-import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EdgeType;
-import com.arcadedb.schema.Schema;
-import com.arcadedb.schema.Type;
-import com.arcadedb.schema.VertexType;
+import com.arcadedb.schema.*;
 import com.arcadedb.utility.FileUtils;
 import com.google.gson.stream.JsonReader;
 import com.google.gson.stream.JsonToken;
@@ -38,12 +35,7 @@ import org.json.JSONObject;
 
 import java.io.*;
 import java.util.*;
-import java.util.zip.*;
-
-import static com.google.gson.stream.JsonToken.BEGIN_OBJECT;
-import static com.google.gson.stream.JsonToken.END_ARRAY;
-import static com.google.gson.stream.JsonToken.END_OBJECT;
-import static com.google.gson.stream.JsonToken.NULL;
+import java.util.zip.GZIPInputStream;
 
 /**
  * Importer from OrientDB. OrientDB is a registered mark of SAP.

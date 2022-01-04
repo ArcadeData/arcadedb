@@ -24,9 +24,11 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 import org.json.JSONObject;
 
-import java.io.*;
-import java.util.*;
-import java.util.stream.*;
+import java.io.IOException;
+import java.util.Collections;
+import java.util.Map;
+import java.util.Optional;
+import java.util.stream.Collectors;
 
 public class PostQueryHandler extends DatabaseAbstractHandler {
   public PostQueryHandler(final HttpServer httpServer) {

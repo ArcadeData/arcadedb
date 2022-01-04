@@ -16,18 +16,11 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.CommandExecutionException;
-import com.arcadedb.query.sql.parser.DeleteEdgeStatement;
-import com.arcadedb.query.sql.parser.Expression;
-import com.arcadedb.query.sql.parser.FromClause;
-import com.arcadedb.query.sql.parser.FromItem;
-import com.arcadedb.query.sql.parser.Identifier;
-import com.arcadedb.query.sql.parser.Limit;
-import com.arcadedb.query.sql.parser.Rid;
-import com.arcadedb.query.sql.parser.SelectStatement;
-import com.arcadedb.query.sql.parser.WhereClause;
+import com.arcadedb.query.sql.parser.*;
 
-import java.util.*;
-import java.util.stream.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.stream.Collectors;
 
 /**
  * Created by luigidellaquila on 08/08/16.

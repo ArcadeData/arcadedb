@@ -20,15 +20,8 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
-import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.ConcurrentModificationException;
-import com.arcadedb.exception.DatabaseOperationException;
-import com.arcadedb.exception.DuplicatedKeyException;
-import com.arcadedb.exception.NeedRetryException;
-import com.arcadedb.exception.RecordNotFoundException;
-import com.arcadedb.exception.SchemaException;
-import com.arcadedb.exception.TimeoutException;
-import com.arcadedb.exception.TransactionException;
+import com.arcadedb.exception.*;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
@@ -42,11 +35,13 @@ import com.arcadedb.utility.RWLockContext;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.*;
-import java.net.*;
-import java.nio.charset.*;
+import java.io.DataOutputStream;
+import java.io.IOException;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
-import java.util.logging.*;
+import java.util.logging.Level;
 
 public class RemoteDatabase extends RWLockContext {
 

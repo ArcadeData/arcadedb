@@ -19,13 +19,9 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.InternalResultSet;
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
-import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.*;
 
-import java.util.*;
+import java.util.Map;
 
 public class ReturnStatement extends SimpleExecStatement {
   protected Expression expression;

@@ -25,8 +25,8 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.Assertions;
 
-import java.util.*;
-import java.util.logging.*;
+import java.util.UUID;
+import java.util.logging.Level;
 
 public class ReplicationSpeedQuorumMajorityIT extends BasePerformanceTest {
   public static void main(final String[] args) {

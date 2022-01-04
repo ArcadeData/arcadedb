@@ -20,7 +20,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.util.*;
+import java.util.Map;
 
 public class Timeout extends SimpleNode {
   public static final String RETURN    = "RETURN";

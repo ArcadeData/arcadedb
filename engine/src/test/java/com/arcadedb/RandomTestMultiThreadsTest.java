@@ -31,10 +31,10 @@ import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.Pair;
 import org.junit.jupiter.api.Test;
 
-import java.math.*;
+import java.math.BigDecimal;
 import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
 
 public class RandomTestMultiThreadsTest extends TestHelper {
   private static final int CYCLES           = 10000;

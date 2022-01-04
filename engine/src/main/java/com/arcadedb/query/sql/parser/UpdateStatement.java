@@ -18,14 +18,12 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.query.sql.executor.BasicCommandContext;
-import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.query.sql.executor.UpdateExecutionPlan;
-import com.arcadedb.query.sql.executor.UpdateExecutionPlanner;
+import com.arcadedb.query.sql.executor.*;
 
-import java.util.*;
-import java.util.stream.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 public class UpdateStatement extends Statement {
   protected FromClause             target;

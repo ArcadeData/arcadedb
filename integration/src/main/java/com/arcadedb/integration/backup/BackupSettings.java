@@ -15,8 +15,10 @@
  */
 package com.arcadedb.integration.backup;
 
-import java.text.*;
-import java.util.*;
+import java.text.DateFormat;
+import java.text.SimpleDateFormat;
+import java.util.HashMap;
+import java.util.Map;
 
 public class BackupSettings {
   public       String              format        = "full";

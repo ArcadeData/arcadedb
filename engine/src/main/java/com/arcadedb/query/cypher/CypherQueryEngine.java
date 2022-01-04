@@ -24,10 +24,12 @@ import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.lang.reflect.*;
-import java.util.*;
-import java.util.logging.*;
-import java.util.stream.*;
+import java.lang.reflect.InvocationTargetException;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.logging.Level;
+import java.util.stream.Collectors;
 
 public class CypherQueryEngine implements QueryEngine {
   private static final String ENGINE_NAME = "cypher-engine";

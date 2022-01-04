@@ -23,8 +23,8 @@ import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.math.*;
-import java.text.*;
+import java.math.BigDecimal;
+import java.text.SimpleDateFormat;
 import java.util.*;
 
 public class DocumentTest extends TestHelper {

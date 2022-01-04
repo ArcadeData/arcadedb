@@ -17,11 +17,11 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.query.sql.parser.IndexIdentifier;
+import com.arcadedb.query.sql.parser.IndexName;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
-import com.arcadedb.query.sql.parser.IndexIdentifier;
-import com.arcadedb.query.sql.parser.IndexName;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 

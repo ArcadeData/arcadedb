@@ -22,8 +22,8 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.*;
-import java.util.logging.*;
+import java.util.Map;
+import java.util.logging.Level;
 
 public class MongoQueryEngine implements QueryEngine {
   private static final String ENGINE_NAME = "mongo-engine";

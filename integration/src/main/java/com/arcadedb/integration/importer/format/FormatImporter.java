@@ -16,14 +16,9 @@
 package com.arcadedb.integration.importer.format;
 
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.integration.importer.AnalyzedEntity;
-import com.arcadedb.integration.importer.AnalyzedSchema;
-import com.arcadedb.integration.importer.ImporterContext;
-import com.arcadedb.integration.importer.ImporterSettings;
-import com.arcadedb.integration.importer.Parser;
-import com.arcadedb.integration.importer.SourceSchema;
+import com.arcadedb.integration.importer.*;
 
-import java.io.*;
+import java.io.IOException;
 
 public interface FormatImporter {
   void load(SourceSchema sourceSchema, AnalyzedEntity.ENTITY_TYPE entityType, Parser parser, DatabaseInternal database,

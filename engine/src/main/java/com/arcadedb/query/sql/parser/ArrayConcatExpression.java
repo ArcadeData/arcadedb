@@ -19,14 +19,10 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
-import com.arcadedb.query.sql.executor.AggregationContext;
-import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.MultiValue;
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.*;
 
 import java.util.*;
-import java.util.stream.*;
+import java.util.stream.Collectors;
 
 public class ArrayConcatExpression extends SimpleNode {
 

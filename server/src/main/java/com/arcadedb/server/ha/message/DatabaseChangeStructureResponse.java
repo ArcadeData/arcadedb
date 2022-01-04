@@ -18,7 +18,7 @@ package com.arcadedb.server.ha.message;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ha.HAServer;
 
-import java.util.logging.*;
+import java.util.logging.Level;
 
 /**
  * Response for a transaction. This is needed to check the quorum by the leader.

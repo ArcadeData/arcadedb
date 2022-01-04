@@ -25,8 +25,9 @@ import com.arcadedb.integration.exporter.format.JsonlExporterFormat;
 import com.arcadedb.integration.importer.ConsoleLogger;
 import com.arcadedb.log.LogManager;
 
-import java.util.*;
-import java.util.logging.*;
+import java.util.Timer;
+import java.util.TimerTask;
+import java.util.logging.Level;
 
 public class Exporter {
   protected ExporterSettings       settings = new ExporterSettings();

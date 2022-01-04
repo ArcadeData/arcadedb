@@ -22,7 +22,7 @@ import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.ErrorRecordCallback;
 
-import java.util.concurrent.*;
+import java.util.concurrent.CountDownLatch;
 
 public class DatabaseAsyncScanBucket extends DatabaseAsyncAbstractTask {
   public final CountDownLatch      semaphore;

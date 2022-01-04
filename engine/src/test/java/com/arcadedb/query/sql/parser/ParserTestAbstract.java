@@ -15,10 +15,10 @@
  */
 package com.arcadedb.query.sql.parser;
 
+import static org.junit.jupiter.api.Assertions.fail;
+
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
-
-import static org.junit.jupiter.api.Assertions.fail;
 
 public abstract class ParserTestAbstract {
 

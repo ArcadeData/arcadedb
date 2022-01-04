@@ -22,7 +22,8 @@ import com.arcadedb.utility.CallableNoReturn;
 import com.arcadedb.utility.CallableParameterNoReturn;
 import org.junit.jupiter.api.Assertions;
 
-import java.net.*;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
 
 /**
  * Executes all the tests while the server is up and running.

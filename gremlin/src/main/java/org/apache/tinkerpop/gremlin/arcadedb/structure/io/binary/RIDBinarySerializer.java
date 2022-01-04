@@ -22,7 +22,7 @@ import org.apache.tinkerpop.gremlin.structure.io.binary.GraphBinaryReader;
 import org.apache.tinkerpop.gremlin.structure.io.binary.GraphBinaryWriter;
 import org.apache.tinkerpop.gremlin.structure.io.binary.types.CustomTypeSerializer;
 
-import java.io.*;
+import java.io.IOException;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)

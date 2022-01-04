@@ -19,7 +19,8 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.serializer.BinaryComparator;
 
-import java.util.*;
+import java.util.Iterator;
+import java.util.NoSuchElementException;
 
 public class EmptyIndexCursor implements IndexCursor {
   @Override

@@ -20,13 +20,15 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.log.LogManager;
 
 import java.io.*;
-import java.lang.management.*;
-import java.nio.channels.*;
+import java.lang.management.ManagementFactory;
+import java.lang.management.ThreadInfo;
+import java.lang.management.ThreadMXBean;
+import java.nio.channels.FileChannel;
 import java.nio.file.FileSystem;
 import java.nio.file.*;
-import java.util.*;
-import java.util.logging.*;
-import java.util.zip.*;
+import java.util.Locale;
+import java.util.logging.Level;
+import java.util.zip.GZIPOutputStream;
 
 public class FileUtils {
   public static final int    KILOBYTE = 1024;

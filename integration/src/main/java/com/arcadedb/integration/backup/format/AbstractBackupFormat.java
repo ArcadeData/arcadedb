@@ -19,7 +19,8 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.integration.backup.BackupSettings;
 import com.arcadedb.integration.importer.ConsoleLogger;
 
-import java.text.*;
+import java.text.DateFormat;
+import java.text.SimpleDateFormat;
 
 public abstract class AbstractBackupFormat {
   protected final        BackupSettings   settings;

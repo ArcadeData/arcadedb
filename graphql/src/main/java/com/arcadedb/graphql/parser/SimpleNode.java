@@ -19,8 +19,9 @@ package com.arcadedb.graphql.parser;
 
 import com.arcadedb.query.sql.parser.SqlParserVisitor;
 
-import java.util.*;
-import java.util.stream.*;
+import java.util.Arrays;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 public class SimpleNode implements Node {
   protected Node          parent;

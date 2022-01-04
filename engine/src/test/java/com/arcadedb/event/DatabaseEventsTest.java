@@ -20,7 +20,7 @@ import com.arcadedb.graph.MutableVertex;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.concurrent.atomic.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * TODO: ADD TESTS FOR DOCUMENTS AND EDGES

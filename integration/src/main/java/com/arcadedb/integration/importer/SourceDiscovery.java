@@ -15,24 +15,23 @@
  */
 package com.arcadedb.integration.importer;
 
-import com.arcadedb.integration.importer.format.CSVImporterFormat;
-import com.arcadedb.integration.importer.format.FormatImporter;
-import com.arcadedb.integration.importer.format.GraphMLImporterFormat;
-import com.arcadedb.integration.importer.format.GraphSONImporterFormat;
-import com.arcadedb.integration.importer.format.JSONImporterFormat;
-import com.arcadedb.integration.importer.format.OrientDBImporterFormat;
-import com.arcadedb.integration.importer.format.RDFImporterFormat;
-import com.arcadedb.integration.importer.format.XMLImporterFormat;
+import com.arcadedb.integration.importer.format.*;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.FileUtils;
 
-import java.io.*;
-import java.net.*;
+import java.io.BufferedInputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.util.*;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
-import java.util.zip.*;
+import java.util.concurrent.Callable;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Level;
+import java.util.zip.GZIPInputStream;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 public class SourceDiscovery {
   private static final String RESOURCE_SEPARATOR = ":::";

@@ -26,9 +26,10 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.math.*;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.*;
-import java.util.stream.*;
+import java.util.stream.Collectors;
 
 public class MathExpression extends SimpleNode {
 

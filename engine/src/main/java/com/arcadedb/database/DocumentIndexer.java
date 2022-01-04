@@ -20,7 +20,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.index.Index;
 import com.arcadedb.schema.DocumentType;
 
-import java.util.*;
+import java.util.List;
 
 public class DocumentIndexer {
   private final EmbeddedDatabase database;

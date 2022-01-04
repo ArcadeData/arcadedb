@@ -15,6 +15,8 @@
  */
 package com.arcadedb.query.sql;
 
+import static com.arcadedb.query.sql.parser.SqlParserTreeConstants.JJTLIMIT;
+
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -22,9 +24,7 @@ import com.arcadedb.query.sql.executor.SQLEngine;
 import com.arcadedb.query.sql.parser.Limit;
 import com.arcadedb.query.sql.parser.Statement;
 
-import java.util.*;
-
-import static com.arcadedb.query.sql.parser.SqlParserTreeConstants.JJTLIMIT;
+import java.util.Map;
 
 public class SQLQueryEngine implements QueryEngine {
   private final DatabaseInternal database;

@@ -24,7 +24,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.*;
-import java.util.stream.*;
+import java.util.stream.Collectors;
 
 public class NestedProjection extends SimpleNode {
   protected List<NestedProjectionItem> includeItems = new ArrayList<>();

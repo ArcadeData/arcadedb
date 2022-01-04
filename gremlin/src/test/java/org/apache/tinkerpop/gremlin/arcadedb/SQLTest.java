@@ -24,8 +24,8 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-import java.util.concurrent.*;
+import java.io.File;
+import java.util.concurrent.ExecutionException;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)

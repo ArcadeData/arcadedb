@@ -19,7 +19,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.schema.Type;
 
-import java.util.*;
+import java.util.Collection;
 
 /**
  * Compute the minimum value for a field. Uses the context to save the last minimum number. When different Number class are used,

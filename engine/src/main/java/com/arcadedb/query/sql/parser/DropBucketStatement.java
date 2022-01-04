@@ -24,7 +24,7 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 
-import java.util.*;
+import java.util.Map;
 
 public class DropBucketStatement extends DDLStatement {
   protected Identifier name;

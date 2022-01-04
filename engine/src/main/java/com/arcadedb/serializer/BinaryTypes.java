@@ -22,8 +22,11 @@ import com.arcadedb.exception.DatabaseMetadataException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.Type;
 
-import java.math.*;
-import java.util.*;
+import java.math.BigDecimal;
+import java.util.Collection;
+import java.util.Date;
+import java.util.Map;
+import java.util.UUID;
 
 public class BinaryTypes {
   public final static byte TYPE_NULL              = 0;

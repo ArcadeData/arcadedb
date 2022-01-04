@@ -23,7 +23,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Assertions;
 
-import java.util.concurrent.atomic.*;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class PerformanceParsing {
   private static final String TYPE_NAME = "Person";

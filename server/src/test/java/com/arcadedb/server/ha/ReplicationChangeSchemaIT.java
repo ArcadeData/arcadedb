@@ -30,8 +30,9 @@ import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-import java.util.*;
+import java.io.IOException;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 public class ReplicationChangeSchemaIT extends ReplicationServerIT {
   private final Database            databases[] = new Database[getServerCount()];

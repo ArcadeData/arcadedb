@@ -31,8 +31,8 @@ import com.arcadedb.log.LogManager;
 import org.json.JSONObject;
 
 import java.util.*;
-import java.util.concurrent.*;
-import java.util.logging.*;
+import java.util.concurrent.Callable;
+import java.util.logging.Level;
 
 public class DocumentType {
   protected final EmbeddedSchema                    schema;

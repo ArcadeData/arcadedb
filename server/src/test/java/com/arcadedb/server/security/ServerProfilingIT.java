@@ -16,11 +16,7 @@
 package com.arcadedb.server.security;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.database.DatabaseContext;
-import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.database.Document;
-import com.arcadedb.database.RID;
-import com.arcadedb.database.Record;
+import com.arcadedb.database.*;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
@@ -38,9 +34,9 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-import java.util.*;
-import java.util.concurrent.atomic.*;
+import java.io.File;
+import java.util.Iterator;
+import java.util.concurrent.atomic.AtomicReference;
 
 public class ServerProfilingIT {
   private static       ArcadeDBServer SERVER;

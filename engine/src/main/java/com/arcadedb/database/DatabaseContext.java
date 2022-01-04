@@ -18,7 +18,10 @@ package com.arcadedb.database;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.security.SecurityDatabaseUser;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  * Thread local to store transaction data.

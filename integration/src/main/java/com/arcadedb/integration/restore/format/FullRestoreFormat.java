@@ -23,8 +23,10 @@ import com.arcadedb.integration.restore.RestoreSettings;
 import com.arcadedb.utility.FileUtils;
 
 import java.io.*;
-import java.net.*;
-import java.util.zip.*;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 public class FullRestoreFormat extends AbstractRestoreFormat {
   private final byte[] BUFFER = new byte[8192];

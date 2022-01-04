@@ -26,7 +26,7 @@ import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
 
-import java.io.*;
+import java.io.IOException;
 import java.util.*;
 
 /**

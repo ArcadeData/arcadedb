@@ -25,8 +25,8 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.ha.ReplicationException;
 
-import java.nio.channels.*;
-import java.util.logging.*;
+import java.nio.channels.ClosedChannelException;
+import java.util.logging.Level;
 
 /**
  * Replicate a transaction. No response is expected.

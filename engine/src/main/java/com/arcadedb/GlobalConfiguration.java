@@ -23,9 +23,12 @@ import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.SystemVariableResolver;
 import org.json.JSONObject;
 
-import java.io.*;
-import java.util.*;
-import java.util.logging.*;
+import java.io.PrintStream;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Timer;
+import java.util.TimerTask;
+import java.util.logging.Level;
 
 /**
  * Keeps all configuration settings. At startup assigns the configuration values by reading system properties.

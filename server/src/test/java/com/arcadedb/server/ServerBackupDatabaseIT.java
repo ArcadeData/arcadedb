@@ -19,7 +19,7 @@ import com.arcadedb.database.Database;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
+import java.io.File;
 
 public class ServerBackupDatabaseIT extends BaseGraphServerTest {
 

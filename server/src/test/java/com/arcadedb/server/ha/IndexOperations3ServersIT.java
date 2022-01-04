@@ -28,8 +28,8 @@ import org.json.JSONObject;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
-import java.util.logging.*;
+import java.util.UUID;
+import java.util.logging.Level;
 
 public class IndexOperations3ServersIT extends BaseGraphServerTest {
 

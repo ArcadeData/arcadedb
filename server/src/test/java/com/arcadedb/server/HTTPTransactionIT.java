@@ -15,17 +15,21 @@
  */
 package com.arcadedb.server;
 
+import static com.arcadedb.server.http.HttpSessionManager.ARCADEDB_SESSION_ID;
+
 import com.arcadedb.log.LogManager;
 import org.json.JSONObject;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-import java.net.*;
-import java.util.*;
-import java.util.logging.*;
-
-import static com.arcadedb.server.http.HttpSessionManager.ARCADEDB_SESSION_ID;
+import java.io.IOException;
+import java.io.OutputStreamWriter;
+import java.io.PrintWriter;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.util.Base64;
+import java.util.HashMap;
+import java.util.logging.Level;
 
 public class HTTPTransactionIT extends BaseGraphServerTest {
 

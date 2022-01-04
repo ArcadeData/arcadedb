@@ -21,7 +21,7 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ha.network.ServerSocketFactory;
 
-import java.io.*;
+import java.io.IOException;
 import java.net.*;
 import java.util.logging.Level;
 

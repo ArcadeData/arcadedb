@@ -27,7 +27,7 @@ import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HeaderValues;
 import io.undertow.util.HttpString;
 
-import java.io.*;
+import java.io.IOException;
 
 public class PostBeginHandler extends DatabaseAbstractHandler {
 

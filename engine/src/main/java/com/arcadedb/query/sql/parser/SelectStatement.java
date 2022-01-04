@@ -21,22 +21,17 @@
  */
 package com.arcadedb.query.sql.parser;
 
+import static com.arcadedb.query.sql.parser.SqlParserTreeConstants.JJTLIMIT;
+import static com.arcadedb.query.sql.parser.SqlParserTreeConstants.JJTTIMEOUT;
+
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.CommandSQLParsingException;
-import com.arcadedb.query.sql.executor.BasicCommandContext;
-import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.InternalExecutionPlan;
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
-import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.query.sql.executor.SelectExecutionPlanner;
+import com.arcadedb.query.sql.executor.*;
 
-import java.util.*;
-
-import static com.arcadedb.query.sql.parser.SqlParserTreeConstants.JJTLIMIT;
-import static com.arcadedb.query.sql.parser.SqlParserTreeConstants.JJTTIMEOUT;
+import java.util.HashMap;
+import java.util.Map;
 
 public class SelectStatement extends Statement {
   protected FromClause  target;

@@ -20,9 +20,9 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.serializer.BinaryComparator;
 
-import java.text.*;
+import java.text.SimpleDateFormat;
 import java.util.*;
-import java.util.Map.*;
+import java.util.Map.Entry;
 
 public class TableFormatter {
 

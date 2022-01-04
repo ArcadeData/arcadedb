@@ -16,7 +16,10 @@
 package performance;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.database.*;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.Document;
+import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.engine.WALFile;

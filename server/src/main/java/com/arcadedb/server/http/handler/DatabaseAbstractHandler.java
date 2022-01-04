@@ -28,8 +28,8 @@ import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HeaderValues;
 import io.undertow.util.HttpString;
 
-import java.util.*;
-import java.util.logging.*;
+import java.util.Deque;
+import java.util.logging.Level;
 
 public abstract class DatabaseAbstractHandler extends AbstractHandler {
   private static final HttpString SESSION_ID_HEADER = new HttpString(HttpSessionManager.ARCADEDB_SESSION_ID);

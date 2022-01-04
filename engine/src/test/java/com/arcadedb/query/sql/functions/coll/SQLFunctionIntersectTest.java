@@ -20,7 +20,10 @@ import com.arcadedb.query.sql.function.coll.SQLFunctionIntersect;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.List;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)

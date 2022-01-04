@@ -15,18 +15,13 @@
  */
 package com.arcadedb.graph;
 
-import com.arcadedb.database.BaseRecord;
-import com.arcadedb.database.Binary;
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.database.RID;
-import com.arcadedb.database.RecordInternal;
+import com.arcadedb.database.*;
 import com.arcadedb.serializer.BinaryTypes;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.util.*;
-import java.util.concurrent.atomic.*;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, RecordInternal {
   public static final byte RECORD_TYPE            = 3;

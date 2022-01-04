@@ -22,8 +22,11 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.HAServer;
 
-import java.util.*;
-import java.util.logging.*;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.logging.Level;
 
 public class DatabaseAlignRequest extends HAAbstractCommand {
   private String             databaseName;

@@ -15,11 +15,7 @@
  */
 package com.arcadedb.graph;
 
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.database.Identifiable;
-import com.arcadedb.database.MutableDocument;
-import com.arcadedb.database.RID;
+import com.arcadedb.database.*;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
@@ -29,8 +25,8 @@ import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.Pair;
 
 import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
 
 /**
  * Central class to work with graphs. This is not intended to be used by the end user, but rather from Vertex and Edge classes.

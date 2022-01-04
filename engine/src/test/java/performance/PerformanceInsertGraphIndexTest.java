@@ -26,15 +26,14 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.log.Logger;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Assertions;
 
-import java.io.*;
-import java.util.logging.*;
+import java.io.File;
+import java.util.logging.Level;
 
 /**
  * Inserts a graph. Configurations:

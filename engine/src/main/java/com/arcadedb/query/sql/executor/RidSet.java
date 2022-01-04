@@ -17,7 +17,9 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.RID;
 
-import java.util.*;
+import java.util.Collection;
+import java.util.Iterator;
+import java.util.Set;
 
 /**
  * Special implementation of Java Set&lt;ORID&gt; to efficiently handle memory and performance. It does not store actual RIDs, but

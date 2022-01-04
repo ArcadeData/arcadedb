@@ -15,20 +15,16 @@
  */
 package com.arcadedb.engine;
 
-import com.arcadedb.database.Binary;
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.database.RID;
-import com.arcadedb.database.Record;
+import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
+
+import com.arcadedb.database.*;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.security.SecurityDatabaseUser;
 
-import java.io.*;
-import java.util.*;
-import java.util.logging.*;
-
-import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
+import java.io.IOException;
+import java.util.Iterator;
+import java.util.logging.Level;
 
 public class BucketIterator implements Iterator<Record> {
 

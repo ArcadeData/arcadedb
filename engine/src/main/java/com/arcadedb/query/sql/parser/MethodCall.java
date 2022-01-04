@@ -19,16 +19,10 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
-import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
-import com.arcadedb.query.sql.executor.SQLEngine;
-import com.arcadedb.query.sql.executor.SQLFunction;
-import com.arcadedb.query.sql.executor.SQLFunctionFiltered;
-import com.arcadedb.query.sql.executor.SQLMethod;
+import com.arcadedb.query.sql.executor.*;
 
 import java.util.*;
-import java.util.stream.*;
+import java.util.stream.Collectors;
 
 public class MethodCall extends SimpleNode {
 

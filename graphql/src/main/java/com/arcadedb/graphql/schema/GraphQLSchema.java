@@ -17,23 +17,7 @@ package com.arcadedb.graphql.schema;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.QueryParsingException;
-import com.arcadedb.graphql.parser.Argument;
-import com.arcadedb.graphql.parser.Arguments;
-import com.arcadedb.graphql.parser.Definition;
-import com.arcadedb.graphql.parser.Directive;
-import com.arcadedb.graphql.parser.Directives;
-import com.arcadedb.graphql.parser.Document;
-import com.arcadedb.graphql.parser.Field;
-import com.arcadedb.graphql.parser.FieldDefinition;
-import com.arcadedb.graphql.parser.GraphQLParser;
-import com.arcadedb.graphql.parser.InputValueDefinition;
-import com.arcadedb.graphql.parser.ObjectTypeDefinition;
-import com.arcadedb.graphql.parser.OperationDefinition;
-import com.arcadedb.graphql.parser.ParseException;
-import com.arcadedb.graphql.parser.Selection;
-import com.arcadedb.graphql.parser.SelectionSet;
-import com.arcadedb.graphql.parser.TypeDefinition;
-import com.arcadedb.graphql.parser.TypeSystemDefinition;
+import com.arcadedb.graphql.parser.*;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultSet;
 

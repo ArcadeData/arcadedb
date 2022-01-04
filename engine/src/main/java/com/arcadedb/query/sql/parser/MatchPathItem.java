@@ -24,7 +24,10 @@ import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.schema.DocumentType;
 
-import java.util.*;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
 
 public class MatchPathItem extends SimpleNode {
   protected MethodCall  method;

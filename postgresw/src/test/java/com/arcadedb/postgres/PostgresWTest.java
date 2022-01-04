@@ -24,7 +24,7 @@ import org.junit.jupiter.api.Test;
 import org.postgresql.util.PSQLException;
 
 import java.sql.*;
-import java.util.*;
+import java.util.Properties;
 
 public class PostgresWTest extends BaseGraphServerTest {
   @Override

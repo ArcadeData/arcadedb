@@ -21,9 +21,12 @@ import com.arcadedb.engine.Bucket;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.EdgeType;
 
-import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Level;
 
 public abstract class IteratorFilterBase<T> implements Iterator<T>, Iterable<T> {
   protected final DatabaseInternal database;

@@ -17,11 +17,13 @@ package com.arcadedb.engine;
 
 import com.arcadedb.log.LogManager;
 
-import java.io.*;
+import java.io.File;
+import java.io.FileNotFoundException;
+import java.io.IOException;
 import java.util.*;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
 
 public class FileManager {
   private final        PaginatedFile.MODE                        mode;

@@ -21,7 +21,7 @@ import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
-import java.util.*;
+import java.util.Deque;
 
 public class GetExistsDatabaseHandler extends DatabaseAbstractHandler {
   public GetExistsDatabaseHandler(final HttpServer httpServer) {

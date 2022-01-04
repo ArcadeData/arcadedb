@@ -15,6 +15,8 @@
  */
 package com.arcadedb.server.gremlin;
 
+import static com.arcadedb.server.BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
+
 import org.apache.tinkerpop.gremlin.arcadedb.structure.io.ArcadeIoRegistry;
 import org.apache.tinkerpop.gremlin.driver.Cluster;
 import org.apache.tinkerpop.gremlin.driver.remote.DriverRemoteConnection;
@@ -27,9 +29,8 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
-
-import static com.arcadedb.server.BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
+import java.util.List;
+import java.util.Map;
 
 /**
  * Manual test against a Gremlin Server.

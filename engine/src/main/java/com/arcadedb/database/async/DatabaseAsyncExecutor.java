@@ -15,7 +15,6 @@
  */
 package com.arcadedb.database.async;
 
-import com.arcadedb.database.Record;
 import com.arcadedb.database.*;
 import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.WALFile;

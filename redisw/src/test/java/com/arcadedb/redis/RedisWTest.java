@@ -26,7 +26,8 @@ import org.junit.jupiter.api.Test;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.exceptions.JedisDataException;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
 
 public class RedisWTest extends BaseGraphServerTest {
 

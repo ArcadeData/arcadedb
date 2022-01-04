@@ -15,7 +15,7 @@
  */
 package com.arcadedb.log;
 
-import java.util.logging.*;
+import java.util.logging.Level;
 
 /**
  * Centralized Log Manager.

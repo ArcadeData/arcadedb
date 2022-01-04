@@ -18,7 +18,8 @@ package com.arcadedb.query.sql.function.coll;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.util.*;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * This operator add an entry in a map. The entry is composed by a key and a value.

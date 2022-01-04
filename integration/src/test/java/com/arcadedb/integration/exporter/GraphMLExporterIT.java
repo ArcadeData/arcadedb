@@ -29,10 +29,12 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-import java.net.*;
-import java.util.stream.*;
-import java.util.zip.*;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.net.URL;
+import java.util.stream.Collectors;
+import java.util.zip.GZIPInputStream;
 
 public class GraphMLExporterIT {
   private final static String DATABASE_PATH = "target/databases/performance";

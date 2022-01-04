@@ -15,6 +15,15 @@
  */
 package com.arcadedb.mongo;
 
+import static com.mongodb.client.model.Filters.and;
+import static com.mongodb.client.model.Filters.eq;
+import static com.mongodb.client.model.Filters.exists;
+import static com.mongodb.client.model.Filters.gt;
+import static com.mongodb.client.model.Filters.lte;
+import static com.mongodb.client.model.Filters.ne;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.mongodb.MongoClient;
@@ -25,15 +34,6 @@ import org.bson.Document;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-
-import static com.mongodb.client.model.Filters.and;
-import static com.mongodb.client.model.Filters.eq;
-import static com.mongodb.client.model.Filters.exists;
-import static com.mongodb.client.model.Filters.gt;
-import static com.mongodb.client.model.Filters.lte;
-import static com.mongodb.client.model.Filters.ne;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
 
 public class MongoDBServerTest extends BaseGraphServerTest {
 

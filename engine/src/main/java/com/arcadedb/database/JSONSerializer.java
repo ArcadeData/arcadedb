@@ -23,7 +23,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.*;
-import java.util.logging.*;
+import java.util.logging.Level;
 
 public class JSONSerializer {
   private final Database database;

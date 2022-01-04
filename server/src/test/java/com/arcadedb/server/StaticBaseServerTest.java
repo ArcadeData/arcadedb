@@ -17,12 +17,7 @@ package com.arcadedb.server;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseComparator;
-import com.arcadedb.database.DatabaseContext;
-import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.database.RID;
+import com.arcadedb.database.*;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.log.LogManager;
@@ -34,10 +29,10 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeAll;
 
 import java.io.*;
-import java.net.*;
+import java.net.HttpURLConnection;
 import java.util.*;
-import java.util.concurrent.*;
-import java.util.logging.*;
+import java.util.concurrent.Callable;
+import java.util.logging.Level;
 
 /**
  * Executes all the tests while the server is up and running.

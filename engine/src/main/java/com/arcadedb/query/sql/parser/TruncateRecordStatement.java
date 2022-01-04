@@ -20,8 +20,9 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.*;
-import java.util.stream.*;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 public class TruncateRecordStatement extends SimpleExecStatement {
   protected Rid       record;

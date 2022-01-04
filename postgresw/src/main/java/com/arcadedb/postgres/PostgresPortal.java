@@ -18,7 +18,8 @@ package com.arcadedb.postgres;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.parser.Statement;
 
-import java.util.*;
+import java.util.List;
+import java.util.Map;
 
 public class PostgresPortal {
   public String                    query;
