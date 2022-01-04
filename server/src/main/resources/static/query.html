@@ -7,6 +7,7 @@
         <option value="sql">SQL</option>
         <option value="gremlin">Gremlin</option>
         <option value="cypher">Cypher</option>
+        <option value="graphql">GraphQL</option>
         <option value="mongodb">MongoDB</option>
       </select>
     </div>
@@ -294,6 +295,8 @@ function getEditorMode(){
   else if( language == "gremlin" )
     mime = "sql";
   else if( language == "mongodb" )
+    mime = "application/json";
+  else if( language == "graphql" )
     mime = "application/json";
   return mime;
 }
