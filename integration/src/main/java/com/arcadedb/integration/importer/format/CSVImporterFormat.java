@@ -72,7 +72,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       final ImporterSettings settings) throws ImportException {
     AbstractParser csvParser = createCSVParser(settings, ",");
 
-    LogManager.instance().log(this, Level.INFO, "Started importing documents from CSV source", null);
+    LogManager.instance().log(this, Level.INFO, "Started importing documents from CSV source");
 
     final long beginTime = System.currentTimeMillis();
 
@@ -191,7 +191,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
     final AbstractParser csvParser = createCSVParser(settings, ",");
 
-    LogManager.instance().log(this, Level.INFO, "Started importing vertices from CSV source", null);
+    LogManager.instance().log(this, Level.INFO, "Started importing vertices from CSV source");
 
     final long beginTime = System.currentTimeMillis();
 

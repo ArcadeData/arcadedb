@@ -15,6 +15,7 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -38,7 +39,7 @@ public class PostServersHandler extends AbstractHandler {
       final String leaderServer = ha.isLeader() ? ha.getServer().getHttpServer().getListeningAddress() : ha.getLeader().getRemoteHTTPAddress();
       final String replicaServers = ha.getReplicaServersHTTPAddressesList();
 
-      httpServer.getServer().log(this, Level.INFO, "Returning configuration leaderServer=%s replicaServers=[%s]", leaderServer, replicaServers);
+      LogManager.instance().log(this, Level.INFO, "Returning configuration leaderServer=%s replicaServers=[%s]", leaderServer, replicaServers);
 
       exchange.getResponseSender().send("{ \"leaderServer\": \"" + leaderServer + "\", \"replicaServers\" : \"" + replicaServers + "\"}");
     }

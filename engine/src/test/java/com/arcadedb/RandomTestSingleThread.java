@@ -59,7 +59,7 @@ public class RandomTestSingleThread extends TestHelper {
 
           final int op = rnd.nextInt(6);
 
-          LogManager.instance().log(this, Level.INFO, "Operation %d %d/%d", null, op, i, CYCLES);
+          LogManager.instance().log(this, Level.INFO, "Operation %d %d/%d", op, i, CYCLES);
 
           switch (op) {
           case 0:
@@ -108,7 +108,7 @@ public class RandomTestSingleThread extends TestHelper {
   private void createTransactions(Database database) {
     final int txOps = rnd.nextInt(100);
 
-    //LogManager.instance().log(this, Level.INFO, "Creating %d transactions...", null, txOps);
+    //LogManager.instance().log(this, Level.INFO, "Creating %d transactions...", txOps);
 
     for (long txId = 0; txId < txOps; ++txId) {
       final MutableDocument tx = database.newVertex("Transaction");
@@ -129,7 +129,7 @@ public class RandomTestSingleThread extends TestHelper {
 
       if (rnd.nextInt(2) == 0) {
         database.deleteRecord(next);
-        LogManager.instance().log(this, Level.INFO, "Deleted record %s", null, next.getIdentity());
+        LogManager.instance().log(this, Level.INFO, "Deleted record %s", next.getIdentity());
       }
     }
   }

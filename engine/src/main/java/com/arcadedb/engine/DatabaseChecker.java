@@ -99,7 +99,7 @@ public class DatabaseChecker {
 
   private void checkEdges() {
     if (verboseLevel > 0)
-      LogManager.instance().log(this, Level.INFO, "Checking edges...", null);
+      LogManager.instance().log(this, Level.INFO, "Checking edges...");
 
     for (DocumentType type : database.getSchema().getTypes()) {
       if (types != null && !types.isEmpty())
@@ -119,7 +119,7 @@ public class DatabaseChecker {
 
   private void checkVertices() {
     if (verboseLevel > 0)
-      LogManager.instance().log(this, Level.INFO, "Checking vertices...", null);
+      LogManager.instance().log(this, Level.INFO, "Checking vertices...");
 
     for (DocumentType type : database.getSchema().getTypes()) {
       if (types != null && !types.isEmpty())
@@ -159,7 +159,7 @@ public class DatabaseChecker {
 
   private void checkBuckets(Map<String, Object> result) {
     if (verboseLevel > 0)
-      LogManager.instance().log(this, Level.INFO, "Checking buckets...", null);
+      LogManager.instance().log(this, Level.INFO, "Checking buckets...");
 
     result.put("pageSize", 0L);
     result.put("totalPages", 0L);

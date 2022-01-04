@@ -41,9 +41,9 @@ public class DatabaseAsyncIndexCompaction extends DatabaseAsyncAbstractTask {
     } catch (IllegalArgumentException e) {
     } catch (Exception e) {
       if (e instanceof IllegalArgumentException && e.getMessage().contains("File with id ") && e.getMessage().contains("was not found"))
-        LogManager.instance().log(this, Level.SEVERE, "Error on executing compaction of index '%s' (%s)", null, index.getName(), e.getMessage());
+        LogManager.instance().log(this, Level.SEVERE, "Error on executing compaction of index '%s' (%s)", index.getName(), e.getMessage());
       else if (e instanceof IndexException && e.getMessage().contains("not valid"))
-        LogManager.instance().log(this, Level.SEVERE, "Error on executing compaction of index '%s' (%s)", null, index.getName(), e.getMessage());
+        LogManager.instance().log(this, Level.SEVERE, "Error on executing compaction of index '%s' (%s)", index.getName(), e.getMessage());
       else
         LogManager.instance().log(this, Level.SEVERE, "Error on executing compaction of index '%s'", e, index.getName());
     }

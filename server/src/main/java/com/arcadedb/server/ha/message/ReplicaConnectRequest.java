@@ -16,6 +16,7 @@
 package com.arcadedb.server.ha.message;
 
 import com.arcadedb.database.Binary;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.HAServer;
 
@@ -34,7 +35,7 @@ public class ReplicaConnectRequest extends HAAbstractCommand {
   @Override
   public HACommand execute(final HAServer server, final String remoteServerName, final long messageNumber) {
     if (lastReplicationMessageNumber > -1) {
-      server.getServer().log(this, Level.INFO, "Hot backup with Replica server '%s' is possible (lastReplicationMessageNumber=%d)", remoteServerName,
+      LogManager.instance().log(this, Level.INFO, "Hot backup with Replica server '%s' is possible (lastReplicationMessageNumber=%d)", remoteServerName,
           lastReplicationMessageNumber);
       return new ReplicaConnectHotResyncResponse(lastReplicationMessageNumber);
     }

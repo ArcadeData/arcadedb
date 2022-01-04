@@ -165,7 +165,7 @@ public class PerformanceVertexIndexTest {
 
         if (counter % 1000 == 0) {
           if (System.currentTimeMillis() - lastLap > 1000) {
-            LogManager.instance().log(this, Level.INFO, "TEST: - Progress %d/%d (%d records/sec)", null, counter, totalToInsert, counter - lastLapCounter);
+            LogManager.instance().log(this, Level.INFO, "TEST: - Progress %d/%d (%d records/sec)", counter, totalToInsert, counter - lastLapCounter);
             lastLap = System.currentTimeMillis();
             lastLapCounter = counter;
           }

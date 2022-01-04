@@ -188,7 +188,7 @@ public class TransactionContext implements Transaction {
 
   @Override
   public void rollback() {
-    LogManager.instance().log(this, Level.FINE, "Rollback transaction newPages=%s modifiedPages=%s (threadId=%d)", null, newPages, modifiedPages,
+    LogManager.instance().log(this, Level.FINE, "Rollback transaction newPages=%s modifiedPages=%s (threadId=%d)", newPages, modifiedPages,
         Thread.currentThread().getId());
 
     if (database.isOpen() && database.getSchema().getDictionary() != null) {
@@ -445,7 +445,7 @@ public class TransactionContext implements Transaction {
           database.updateRecordNoLock(rec);
         } catch (RecordNotFoundException e) {
           // DELETED IN TRANSACTION, THIS IS FULLY MANAGED TO NEVER HAPPEN, BUT IF IT DOES DUE TO THE INTRODUCTION OF A BUG, JUST LOG SOMETHING AND MOVE ON
-          LogManager.instance().log(this, Level.WARNING, "Attempt to update the delete record %s in transaction", null, rec.getIdentity());
+          LogManager.instance().log(this, Level.WARNING, "Attempt to update the delete record %s in transaction", rec.getIdentity());
         }
       updatedRecords = null;
     }
@@ -500,7 +500,7 @@ public class TransactionContext implements Transaction {
 
       if (useWAL) {
         txId = database.getTransactionManager().getNextTransactionId();
-        //LogManager.instance().log(this, Level.FINE, "Creating buffer for TX %d (threadId=%d)", null, txId, Thread.currentThread().getId());
+        //LogManager.instance().log(this, Level.FINE, "Creating buffer for TX %d (threadId=%d)", txId, Thread.currentThread().getId());
         result = database.getTransactionManager().createTransactionBuffer(txId, pages);
       }
 
@@ -537,7 +537,7 @@ public class TransactionContext implements Transaction {
 
       // AT THIS POINT, LOCK + VERSION CHECK, THERE IS NO NEED TO MANAGE ROLLBACK BECAUSE THERE CANNOT BE CONCURRENT TX THAT UPDATE THE SAME PAGE CONCURRENTLY
       // UPDATE PAGE COUNTER FIRST
-      LogManager.instance().log(this, Level.FINE, "TX committing pages newPages=%s modifiedPages=%s (threadId=%d)", null, newPages, modifiedPages,
+      LogManager.instance().log(this, Level.FINE, "TX committing pages newPages=%s modifiedPages=%s (threadId=%d)", newPages, modifiedPages,
           Thread.currentThread().getId());
 
       pageManager.updatePages(newPages, modifiedPages, asyncFlush);

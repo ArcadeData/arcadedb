@@ -81,7 +81,7 @@ public class FileContentResponse extends HAAbstractCommand {
       final int pageSize = file.getPageSize();
 
       if (pagesContent.size() != totalPages * pageSize) {
-        server.getServer().log(this, Level.SEVERE, "Error on received chunk for file '%s': size=%s, expected=%s (totalPages=%d)", file.getFileName(),
+        LogManager.instance().log(this, Level.SEVERE, "Error on received chunk for file '%s': size=%s, expected=%s (totalPages=%d)", file.getFileName(),
             FileUtils.getSizeAsString(pagesContent.size()), FileUtils.getSizeAsString((long) totalPages * pageSize), totalPages);
         throw new ReplicationException("Invalid file chunk");
       }

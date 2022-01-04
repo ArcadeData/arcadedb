@@ -74,7 +74,7 @@ public abstract class StaticBaseServerTest {
     setTestConfiguration();
     checkArcadeIsTotallyDown();
 
-    LogManager.instance().log(StaticBaseServerTest.class, Level.INFO, "Starting test...", null);
+    LogManager.instance().log(StaticBaseServerTest.class, Level.INFO, "Starting test...");
 
     deleteDatabaseFolders();
 
@@ -404,7 +404,7 @@ public abstract class StaticBaseServerTest {
 
   protected static void testLog(final String msg, final Object... args) {
     LogManager.instance().log(StaticBaseServerTest.class, Level.INFO, "***********************************************************************************");
-    LogManager.instance().log(StaticBaseServerTest.class, Level.INFO, "TEST: " + msg, null, args);
+    LogManager.instance().log(StaticBaseServerTest.class, Level.INFO, "TEST: " + msg, args);
     LogManager.instance().log(StaticBaseServerTest.class, Level.INFO, "***********************************************************************************");
   }
 

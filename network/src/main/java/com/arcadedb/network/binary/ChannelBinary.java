@@ -391,7 +391,7 @@ public abstract class ChannelBinary extends Channel implements ChannelDataInput,
     final String message = "Received unread response from " + socket.getRemoteSocketAddress()
         + " probably corrupted data from the network connection. Cleared dirty data in the buffer (" + i + " bytes): [" + dirtyBuffer + (
         i > dirtyBuffer.length() ? "..." : "") + "]";
-    LogManager.instance().log(this, Level.SEVERE, message, null);
+    LogManager.instance().log(this, Level.SEVERE, message);
     throw new IOException(message);
 
   }

@@ -62,15 +62,15 @@ public class IndexOperations3ServersIT extends BaseGraphServerTest {
     });
 
     testEachServer((serverIndex) -> {
-      LogManager.instance().log(this, Level.INFO, "Rebuild index Person[id] on server %s...", null, getServer(serverIndex).getHA().getServerName());
+      LogManager.instance().log(this, Level.INFO, "Rebuild index Person[id] on server %s...", getServer(serverIndex).getHA().getServerName());
       String response1 = command(serverIndex, "rebuild index `Person[id]`");
       Assertions.assertEquals(TOTAL_RECORDS, new JSONObject(response1).getJSONArray("result").getJSONObject(0).getLong("totalIndexed"));
 
-      LogManager.instance().log(this, Level.INFO, "Rebuild index Person[uuid] on server %s...", null, getServer(serverIndex).getHA().getServerName());
+      LogManager.instance().log(this, Level.INFO, "Rebuild index Person[uuid] on server %s...", getServer(serverIndex).getHA().getServerName());
       String response2 = command(serverIndex, "rebuild index `Person[uuid]`");
       Assertions.assertEquals(TOTAL_RECORDS, new JSONObject(response2).getJSONArray("result").getJSONObject(0).getLong("totalIndexed"));
 
-      LogManager.instance().log(this, Level.INFO, "Rebuild index * on server %s...", null, getServer(serverIndex).getHA().getServerName());
+      LogManager.instance().log(this, Level.INFO, "Rebuild index * on server %s...", getServer(serverIndex).getHA().getServerName());
       String response3 = command(serverIndex, "rebuild index *");
       Assertions.assertEquals(TOTAL_RECORDS * 2, new JSONObject(response3).getJSONArray("result").getJSONObject(0).getLong("totalIndexed"));
     });
@@ -93,15 +93,15 @@ public class IndexOperations3ServersIT extends BaseGraphServerTest {
     database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Person", "uuid");
 
     testEachServer((serverIndex) -> {
-      LogManager.instance().log(this, Level.INFO, "Rebuild index Person[id] on server %s...", null, getServer(serverIndex).getHA().getServerName());
+      LogManager.instance().log(this, Level.INFO, "Rebuild index Person[id] on server %s...", getServer(serverIndex).getHA().getServerName());
       String response1 = command(serverIndex, "rebuild index `Person[id]`");
       Assertions.assertEquals(TOTAL_RECORDS, new JSONObject(response1).getJSONArray("result").getJSONObject(0).getLong("totalIndexed"));
 
-      LogManager.instance().log(this, Level.INFO, "Rebuild index Person[uuid] on server %s...", null, getServer(serverIndex).getHA().getServerName());
+      LogManager.instance().log(this, Level.INFO, "Rebuild index Person[uuid] on server %s...", getServer(serverIndex).getHA().getServerName());
       String response2 = command(serverIndex, "rebuild index `Person[uuid]`");
       Assertions.assertEquals(TOTAL_RECORDS, new JSONObject(response2).getJSONArray("result").getJSONObject(0).getLong("totalIndexed"));
 
-      LogManager.instance().log(this, Level.INFO, "Rebuild index * on server %s...", null, getServer(serverIndex).getHA().getServerName());
+      LogManager.instance().log(this, Level.INFO, "Rebuild index * on server %s...", getServer(serverIndex).getHA().getServerName());
       String response3 = command(serverIndex, "rebuild index *");
       Assertions.assertEquals(TOTAL_RECORDS * 2, new JSONObject(response3).getJSONArray("result").getJSONObject(0).getLong("totalIndexed"));
     });

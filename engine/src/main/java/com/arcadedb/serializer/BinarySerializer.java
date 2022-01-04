@@ -387,7 +387,7 @@ public class BinarySerializer {
     }
 
     default:
-      LogManager.instance().log(this, Level.INFO, "Error on serializing value '" + value + "', type not supported", null);
+      LogManager.instance().log(this, Level.INFO, "Error on serializing value '" + value + "', type not supported");
     }
   }
 
@@ -485,7 +485,7 @@ public class BinarySerializer {
     }
 
     default:
-      LogManager.instance().log(this, Level.INFO, "Error on deserializing value of type " + type, null);
+      LogManager.instance().log(this, Level.INFO, "Error on deserializing value of type " + type);
       value = null;
     }
     return value;

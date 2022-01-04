@@ -87,14 +87,14 @@ public class TxRequest extends TxRequestAbstract {
     final WALFile.WALTransaction walTx = readTxFromBuffer();
 
     try {
-      server.getServer().log(this, Level.FINE, "Applying tx %d from server %s (modifiedPages=%d)...", walTx.txId, remoteServerName, walTx.pages.length);
+      LogManager.instance().log(this, Level.FINE, "Applying tx %d from server %s (modifiedPages=%d)...", walTx.txId, remoteServerName, walTx.pages.length);
 
       db.getTransactionManager().applyChanges(walTx);
 
     } catch (WALException e) {
       if (e.getCause() instanceof ClosedChannelException) {
         // CLOSE THE ENTIRE DB
-        server.getServer().log(this, Level.SEVERE, "Closed file during transaction, closing the entire database (error=%s)", e.toString());
+        LogManager.instance().log(this, Level.SEVERE, "Closed file during transaction, closing the entire database (error=%s)", e.toString());
         db.getEmbedded().close();
       }
       throw e;

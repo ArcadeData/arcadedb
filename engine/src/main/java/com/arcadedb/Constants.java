@@ -53,7 +53,7 @@ public class Constants {
   public static int getVersionMajor() {
     final String[] versions = properties.getProperty("version").split("\\.");
     if (versions.length == 0) {
-      LogManager.instance().log(Constants.class, Level.SEVERE, "Can not retrieve version information for this build", null);
+      LogManager.instance().log(Constants.class, Level.SEVERE, "Can not retrieve version information for this build");
       return -1;
     }
 
@@ -71,7 +71,7 @@ public class Constants {
   public static int getVersionMinor() {
     final String[] versions = properties.getProperty("version").split("\\.");
     if (versions.length < 2) {
-      LogManager.instance().log(Constants.class, Level.SEVERE, "Can not retrieve minor version information for this build", null);
+      LogManager.instance().log(Constants.class, Level.SEVERE, "Can not retrieve minor version information for this build");
       return -1;
     }
 

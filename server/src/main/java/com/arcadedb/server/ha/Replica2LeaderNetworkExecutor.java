@@ -87,7 +87,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
         final Pair<ReplicationMessage, HACommand> request = server.getMessageFactory().deserializeCommand(buffer, requestBytes);
 
         if (request == null) {
-          server.getServer().log(this, Level.SEVERE, "Error on receiving message NULL, reconnecting (threadId=%d)", Thread.currentThread().getId());
+          LogManager.instance().log(this, Level.SEVERE, "Error on receiving message NULL, reconnecting (threadId=%d)", Thread.currentThread().getId());
           reconnect(null);
           continue;
         }
@@ -97,9 +97,9 @@ public class Replica2LeaderNetworkExecutor extends Thread {
         reqId = message.messageNumber;
 
         if (reqId > -1)
-          server.getServer().log(this, Level.FINE, "Received request %d from the Leader (threadId=%d)", reqId, Thread.currentThread().getId());
+          LogManager.instance().log(this, Level.FINE, "Received request %d from the Leader (threadId=%d)", reqId, Thread.currentThread().getId());
         else
-          server.getServer().log(this, Level.FINE, "Received response %d from the Leader (threadId=%d)", reqId, Thread.currentThread().getId());
+          LogManager.instance().log(this, Level.FINE, "Received response %d from the Leader (threadId=%d)", reqId, Thread.currentThread().getId());
 
         // NUMBERS <0 ARE FORWARD FROM REPLICA TO LEADER WITHOUT A VALID SEQUENCE
         if (reqId > -1) {
@@ -107,7 +107,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
 
           if (reqId <= lastMessage) {
             //TODO: CHECK IF THE MESSAGE IS IDENTICAL?
-            server.getServer().log(this, Level.FINE, "Message %d already applied on local server (last=%d). Skip this", reqId, lastMessage);
+            LogManager.instance().log(this, Level.FINE, "Message %d already applied on local server (last=%d). Skip this", reqId, lastMessage);
             continue;
           }
 
@@ -142,14 +142,12 @@ public class Replica2LeaderNetworkExecutor extends Thread {
       } catch (SocketTimeoutException e) {
         // IGNORE IT
       } catch (Exception e) {
-        server.getServer()
-            .log(this, Level.INFO, "Exception during execution of request %d (shutdown=%s name=%s error=%s)", reqId, shutdown, getName(), e.toString());
+        LogManager.instance().log(this, Level.INFO, "Exception during execution of request %d (shutdown=%s name=%s error=%s)", reqId, shutdown, getName(), e.toString());
         reconnect(e);
       }
     }
 
-    server.getServer()
-        .log(this, Level.INFO, "Replica message thread closed (shutdown=%s name=%s threadId=%d)", shutdown, getName(), Thread.currentThread().getId());
+    LogManager.instance().log(this, Level.INFO, "Replica message thread closed (shutdown=%s name=%s threadId=%d)", shutdown, getName(), Thread.currentThread().getId());
   }
 
   public String getRemoteServerName() {
@@ -169,21 +167,20 @@ public class Replica2LeaderNetworkExecutor extends Thread {
 
       if (server.getLeader() != this) {
         // LEADER ALREADY CONNECTED (RE-ELECTED?)
-        server.getServer().log(this, Level.SEVERE, "Removing connection to the previous Leader ('%s'). New Leader is: %s", getRemoteServerName(),
+        LogManager.instance().log(this, Level.SEVERE, "Removing connection to the previous Leader ('%s'). New Leader is: %s", getRemoteServerName(),
             server.getLeader().getRemoteServerName());
         close();
         return;
       }
 
-      server.getServer()
-          .log(this, Level.SEVERE, "Error on communication between current replica and the Leader ('%s'), reconnecting... (error=%s)", getRemoteServerName(),
+      LogManager.instance().log(this, Level.SEVERE, "Error on communication between current replica and the Leader ('%s'), reconnecting... (error=%s)", getRemoteServerName(),
               e);
 
       if (!shutdown) {
         try {
           connect();
         } catch (Exception e1) {
-          server.getServer().log(this, Level.SEVERE, "Error on re-connecting to the Leader ('%s') (error=%s)", getRemoteServerName(), e1);
+          LogManager.instance().log(this, Level.SEVERE, "Error on re-connecting to the Leader ('%s') (error=%s)", getRemoteServerName(), e1);
 
           HashSet<String> serverAddressListCopy = new HashSet<>(Arrays.asList(server.getServerAddressList().split(",")));
 
@@ -202,7 +199,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
                 connect();
                 return;
               } catch (Exception e2) {
-                server.getServer().log(this, Level.SEVERE, "Error on re-connecting to the server '%s' (error=%s)", getRemoteAddress(), e2);
+                LogManager.instance().log(this, Level.SEVERE, "Error on re-connecting to the server '%s' (error=%s)", getRemoteAddress(), e2);
               }
             }
 
@@ -225,9 +222,9 @@ public class Replica2LeaderNetworkExecutor extends Thread {
 
   public void sendCommandToLeader(final Binary buffer, final HACommand response, final long messageNumber) throws IOException {
     if (messageNumber > -1)
-      server.getServer().log(this, Level.FINE, "Sending message (response to %d) to the Leader '%s'...", messageNumber, response);
+      LogManager.instance().log(this, Level.FINE, "Sending message (response to %d) to the Leader '%s'...", messageNumber, response);
     else
-      server.getServer().log(this, Level.FINE, "Sending message (request %d) to the Leader '%s'...", messageNumber, response);
+      LogManager.instance().log(this, Level.FINE, "Sending message (request %d) to the Leader '%s'...", messageNumber, response);
 
     server.getMessageFactory().serializeCommand(response, buffer, messageNumber);
 
@@ -286,7 +283,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
   }
 
   private void connect() {
-    server.getServer().log(this, Level.FINE, "Connecting to server %s:%d...", host, port);
+    LogManager.instance().log(this, Level.FINE, "Connecting to server %s:%d...", host, port);
 
     try {
       channel = server.createNetworkConnection(host, port, ReplicationProtocol.COMMAND_CONNECT);
@@ -304,35 +301,31 @@ public class Replica2LeaderNetworkExecutor extends Thread {
           case ReplicationProtocol.ERROR_CONNECT_NOLEADER:
             final String leaderServerName = channel.readString();
             final String leaderAddress = channel.readString();
-            server.getServer()
-                .log(this, Level.INFO, "Cannot accept incoming connections: remote server is not a Leader, connecting to the current Leader '%s' (%s)",
+            LogManager.instance().log(this, Level.INFO, "Cannot accept incoming connections: remote server is not a Leader, connecting to the current Leader '%s' (%s)",
                     leaderServerName, leaderAddress);
             closeChannel();
             throw new ServerIsNotTheLeaderException(
                 "Remote server is not a Leader, connecting to the current Leader '" + leaderServerName + "' (" + leaderAddress + ")", leaderAddress);
 
           case ReplicationProtocol.ERROR_CONNECT_ELECTION_PENDING:
-            server.getServer().log(this, Level.INFO, "Cannot accept incoming connections: an election for the Leader server is in progress");
+            LogManager.instance().log(this, Level.INFO, "Cannot accept incoming connections: an election for the Leader server is in progress");
             closeChannel();
             throw new ReplicationException("An election for the Leader server is pending");
 
           case ReplicationProtocol.ERROR_CONNECT_UNSUPPORTEDPROTOCOL:
-            server.getServer()
-                .log(this, Level.INFO, "Cannot accept incoming connections: remote server does not support protocol %d", ReplicationProtocol.PROTOCOL_VERSION);
+            LogManager.instance().log(this, Level.INFO, "Cannot accept incoming connections: remote server does not support protocol %d", ReplicationProtocol.PROTOCOL_VERSION);
             break;
 
           case ReplicationProtocol.ERROR_CONNECT_WRONGCLUSTERNAME:
-            server.getServer()
-                .log(this, Level.INFO, "Cannot accept incoming connections: remote server joined a different cluster than '%s'", server.getClusterName());
+            LogManager.instance().log(this, Level.INFO, "Cannot accept incoming connections: remote server joined a different cluster than '%s'", server.getClusterName());
             break;
 
           case ReplicationProtocol.ERROR_CONNECT_SAME_SERVERNAME:
-            server.getServer()
-                .log(this, Level.INFO, "Cannot accept incoming connections: remote server has the same name as the local server '%s'", server.getServerName());
+            LogManager.instance().log(this, Level.INFO, "Cannot accept incoming connections: remote server has the same name as the local server '%s'", server.getServerName());
             break;
 
           default:
-            server.getServer().log(this, Level.INFO, "Cannot accept incoming connections: unknown reason code '%s'", reasonCode);
+            LogManager.instance().log(this, Level.INFO, "Cannot accept incoming connections: unknown reason code '%s'", reasonCode);
           }
 
           closeChannel();
@@ -349,16 +342,16 @@ public class Replica2LeaderNetworkExecutor extends Thread {
         server.setServerAddresses(memberList);
       }
 
-      server.getServer().log(this, Level.INFO, "Server connected to the Leader server %s:%d, members=[%s]", host, port, server.getServerAddressList());
+      LogManager.instance().log(this, Level.INFO, "Server connected to the Leader server %s:%d, members=[%s]", host, port, server.getServerAddressList());
 
       setName(Constants.PRODUCT + "-ha-replica2leader/" + server.getServerName() + "/" + getRemoteServerName());
 
-      server.getServer().log(this, Level.INFO, "Server started as Replica in HA mode (cluster=%s leader=%s:%d)", server.getClusterName(), host, port);
+      LogManager.instance().log(this, Level.INFO, "Server started as Replica in HA mode (cluster=%s leader=%s:%d)", server.getClusterName(), host, port);
 
       installDatabases();
 
     } catch (Exception e) {
-      server.getServer().log(this, Level.FINE, "Error on connecting to the server %s:%d (cause=%s)", host, port, e.toString());
+      LogManager.instance().log(this, Level.FINE, "Error on connecting to the server %s:%d (cause=%s)", host, port, e.toString());
 
       //shutdown();
       throw new ConnectionException(host + ":" + port, e);
@@ -372,14 +365,14 @@ public class Replica2LeaderNetworkExecutor extends Thread {
     final ReplicationMessage lastMessage = server.getReplicationLogFile().getLastMessage();
     long lastLogNumber = lastMessage != null ? lastMessage.messageNumber - 1 : -1;
 
-    server.getServer().log(this, Level.INFO, "Requesting install of databases...");
+    LogManager.instance().log(this, Level.INFO, "Requesting install of databases...");
 
     try {
       sendCommandToLeader(buffer, new ReplicaConnectRequest(lastLogNumber), -1);
       final HACommand response = receiveCommandFromLeaderDuringJoin(buffer);
 
       if (response instanceof ReplicaConnectFullResyncResponse) {
-        server.getServer().log(this, Level.INFO, "Asking for a full resync...");
+        LogManager.instance().log(this, Level.INFO, "Asking for a full resync...");
 
         if (testOn)
           server.getServer().lifecycleEvent(TestCallback.TYPE.REPLICA_FULL_RESYNC, null);
@@ -400,7 +393,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
         sendCommandToLeader(buffer, new ReplicaReadyRequest(), -1);
 
       } else {
-        server.getServer().log(this, Level.INFO, "Receiving hot resync (from=%d)...", lastLogNumber);
+        LogManager.instance().log(this, Level.INFO, "Receiving hot resync (from=%d)...", lastLogNumber);
 
         if (testOn)
           server.getServer().lifecycleEvent(TestCallback.TYPE.REPLICA_HOT_RESYNC, null);
@@ -410,7 +403,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
 
     } catch (Exception e) {
       shutdown();
-      server.getServer().log(this, Level.SEVERE, "Error starting HA service (error=%s)", e);
+      LogManager.instance().log(this, Level.SEVERE, "Error starting HA service (error=%s)", e);
       throw new ServerException("Cannot start HA service", e);
     }
   }
@@ -440,7 +433,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
 
     int from = pageFromInclusive;
 
-    server.getServer().log(this, Level.FINE, "Installing file '%s'...", fileName);
+    LogManager.instance().log(this, Level.FINE, "Installing file '%s'...", fileName);
 
     int pagesWritten = 0;
     long fileSize = 0;
@@ -461,7 +454,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
       from += fileChunk.getPages();
     }
 
-    server.getServer().log(this, Level.FINE, "File '%s' installed (pagesWritten=%d size=%s)", fileName, pagesWritten, FileUtils.getSizeAsString(fileSize));
+    LogManager.instance().log(this, Level.FINE, "File '%s' installed (pagesWritten=%d size=%s)", fileName, pagesWritten, FileUtils.getSizeAsString(fileSize));
   }
 
   private HACommand receiveCommandFromLeaderDuringJoin(final Binary buffer) throws IOException {
@@ -475,7 +468,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
   }
 
   private void shutdown() {
-    server.getServer().log(this, Level.FINE, "Shutting down thread %s (id=%d)...", getName(), getId());
+    LogManager.instance().log(this, Level.FINE, "Shutting down thread %s (id=%d)...", getName(), getId());
     shutdown = true;
   }
 }

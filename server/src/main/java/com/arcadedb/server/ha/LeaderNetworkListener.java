@@ -68,7 +68,7 @@ public class LeaderNetworkListener extends Thread {
 
         } catch (Exception e) {
           if (active)
-            ha.getServer().log(this, Level.WARNING, "Error on connection from another server (error=%s)", e);
+            LogManager.instance().log(this, Level.WARNING, "Error on connection from another server (error=%s)", e);
         }
       }
     } finally {
@@ -120,7 +120,7 @@ public class LeaderNetworkListener extends Thread {
         serverSocket = socketFactory.createServerSocket(tryPort, 0, InetAddress.getByName(hostName));
 
         if (serverSocket.isBound()) {
-          ha.getServer().log(this, Level.INFO,
+          LogManager.instance().log(this, Level.INFO,
               "Listening for replication connections on $ANSI{green " + inboundAddr.getAddress().getHostAddress() + ":" + inboundAddr.getPort() + "} " + (
                   ha.getServerAddress() != null ? ("current host $ANSI{green " + ha.getServerAddress() + "} ") : "") + "(protocol v." + protocolVersion + ")");
 
@@ -132,17 +132,17 @@ public class LeaderNetworkListener extends Thread {
           return;
         }
       } catch (BindException be) {
-        ha.getServer().log(this, Level.WARNING, "Port %s:%d busy, trying the next available...", hostName, tryPort);
+        LogManager.instance().log(this, Level.WARNING, "Port %s:%d busy, trying the next available...", hostName, tryPort);
       } catch (SocketException se) {
-        ha.getServer().log(this, Level.SEVERE, "Unable to create socket", se);
+        LogManager.instance().log(this, Level.SEVERE, "Unable to create socket", se);
         throw new ArcadeDBException(se);
       } catch (IOException ioe) {
-        ha.getServer().log(this, Level.SEVERE, "Unable to read data from an open socket", ioe);
+        LogManager.instance().log(this, Level.SEVERE, "Unable to read data from an open socket", ioe);
         throw new ArcadeDBException(ioe);
       }
     }
 
-    ha.getServer().log(this, Level.SEVERE, "Unable to listen for connections using the configured ports '%s' on host '%s'", null, hostPortRange, hostName);
+    LogManager.instance().log(this, Level.SEVERE, "Unable to listen for connections using the configured ports '%s' on host '%s'", null, hostPortRange, hostName);
 
     throw new ServerException("Unable to listen for connections using the configured ports '" + hostPortRange + "' on host '" + hostName + "'");
   }
@@ -196,7 +196,7 @@ public class LeaderNetworkListener extends Thread {
     ha.lastElectionVote = new Pair<>(voteTurn, remoteServerName);
     channel.close();
 
-    ha.getServer().log(this, Level.INFO, "Received new leadership from server '%s' (turn=%d)", remoteServerName, voteTurn);
+    LogManager.instance().log(this, Level.INFO, "Received new leadership from server '%s' (turn=%d)", remoteServerName, voteTurn);
 
     if (ha.connectToLeader(remoteServerAddress))
       // ELECTION FINISHED, THE SERVER IS A REPLICA
@@ -214,7 +214,7 @@ public class LeaderNetworkListener extends Thread {
 
     if (localServerLastMessageNumber > lastReplicationMessage) {
       // LOCAL SERVER HAS A HIGHER LSN, START ELECTION PROCESS IF NOT THE LEADER
-      ha.getServer().log(this, Level.INFO,
+      LogManager.instance().log(this, Level.INFO,
           "Server '%s' asked for election (lastReplicationMessage=%d my=%d) on turn %d, but cannot give my vote because my LSN is higher", remoteServerName,
           lastReplicationMessage, localServerLastMessageNumber, voteTurn);
       channel.writeByte((byte) 2);
@@ -226,13 +226,13 @@ public class LeaderNetworkListener extends Thread {
         ha.startElection();
 
     } else if (ha.lastElectionVote == null || ha.lastElectionVote.getFirst() < voteTurn) {
-      ha.getServer().log(this, Level.INFO, "Server '%s' asked for election (lastReplicationMessage=%d my=%d) on turn %d, giving my vote", remoteServerName,
+      LogManager.instance().log(this, Level.INFO, "Server '%s' asked for election (lastReplicationMessage=%d my=%d) on turn %d, giving my vote", remoteServerName,
           lastReplicationMessage, localServerLastMessageNumber, voteTurn);
       channel.writeByte((byte) 0);
       ha.lastElectionVote = new Pair<>(voteTurn, remoteServerName);
       ha.setElectionStatus(HAServer.ELECTION_STATUS.VOTING_FOR_OTHERS);
     } else {
-      ha.getServer().log(this, Level.INFO,
+      LogManager.instance().log(this, Level.INFO,
           "Server '%s' asked for election (lastReplicationMessage=%d my=%d) on turn %d, but cannot give my vote (votedFor='%s' on turn %d)", remoteServerName,
           lastReplicationMessage, localServerLastMessageNumber, voteTurn, ha.lastElectionVote.getSecond(), ha.lastElectionVote.getFirst());
       channel.writeByte((byte) 1);

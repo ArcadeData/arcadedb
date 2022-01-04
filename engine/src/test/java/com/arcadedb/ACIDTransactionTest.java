@@ -192,7 +192,7 @@ public class ACIDTransactionTest extends TestHelper {
         @Override
         public Void call() throws IOException {
           if (commits.incrementAndGet() > TOT - 1) {
-            LogManager.instance().log(this, Level.INFO, "TEST: Causing IOException at commit %d...", null, commits.get());
+            LogManager.instance().log(this, Level.INFO, "TEST: Causing IOException at commit %d...",  commits.get());
             throw new IOException("Test IO Exception");
           }
           return null;
@@ -338,12 +338,9 @@ public class ACIDTransactionTest extends TestHelper {
             stock.set("history", history);
             stock.save();
 
-//            LogManager.instance().log(this, Level.INFO, "- Saved stockId=%d date=%d", null, id, now.getTimeInMillis());
-
             now.add(Calendar.DAY_OF_YEAR, +1);
           }
 
-          //LogManager.instance().log(this, Level.INFO, "Finished stockId=%d", null, id);
         } catch (Exception e) {
           errors.incrementAndGet();
           LogManager.instance().log(this, Level.SEVERE, "Error on saving stockId=%d", e, id);

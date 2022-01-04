@@ -87,7 +87,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         this.queue = new ArrayBlockingQueue<>(queueSize);
       else {
         // WARNING AND THEN USE THE DEFAULT
-        LogManager.instance().log(this, Level.WARNING, "Error on async operation queue implementation setting: %s is not supported", null, cfgQueueImpl);
+        LogManager.instance().log(this, Level.WARNING, "Error on async operation queue implementation setting: %s is not supported", cfgQueueImpl);
         this.queue = new ArrayBlockingQueue<>(queueSize);
       }
     }
@@ -109,7 +109,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         try {
           final DatabaseAsyncTask message = queue.poll(500, TimeUnit.MILLISECONDS);
           if (message != null) {
-            LogManager.instance().log(this, Level.FINE, "Received async message %s (threadId=%d)", null, message, Thread.currentThread().getId());
+            LogManager.instance().log(this, Level.FINE, "Received async message %s (threadId=%d)", message, Thread.currentThread().getId());
 
             if (message == FORCE_EXIT) {
               break;

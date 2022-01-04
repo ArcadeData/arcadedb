@@ -103,7 +103,7 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
 
     if (typeFileSize > 100_000_000) {
       LogManager.instance()
-          .log(this, Level.WARNING, "Attempt to scan type '%s' of total size %s. This operation is very expensive, consider using an index", null, className,
+          .log(this, Level.WARNING, "Attempt to scan type '%s' of total size %s. This operation is very expensive, consider using an index", className,
               FileUtils.getSizeAsString(typeFileSize));
     }
 

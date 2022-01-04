@@ -27,11 +27,9 @@ import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.integration.restore.Restore;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngineManager;
-import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.ha.ReplicatedDatabase;
 import com.arcadedb.server.http.HttpServer;
-import com.arcadedb.server.log.ServerLogger;
 import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -45,7 +43,7 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.logging.*;
 
-public class ArcadeDBServer implements ServerLogger {
+public class ArcadeDBServer {
   public enum STATUS {OFFLINE, STARTING, ONLINE, SHUTTING_DOWN}
 
   public static final String                                  CONFIG_SERVER_CONFIGURATION_FILENAME = "config/server-configuration.json";
@@ -105,13 +103,13 @@ public class ArcadeDBServer implements ServerLogger {
       throw new ServerException("Error on starting the server '" + serverName + "'");
     }
 
-    log(this, Level.INFO, "Starting ArcadeDB Server with plugins %s ...", getPluginNames());
+    LogManager.instance().log(this, Level.INFO, "Starting ArcadeDB Server with plugins %s ...", getPluginNames());
 
     // START METRICS & CONNECTED JMX REPORTER
     if (configuration.getValueAsBoolean(GlobalConfiguration.SERVER_METRICS)) {
       serverMetrics.stop();
       serverMetrics = new JMXServerMetrics();
-      log(this, Level.INFO, "- JMX Metrics Started...");
+      LogManager.instance().log(this, Level.INFO, "- JMX Metrics Started...");
     }
 
     security = new ServerSecurity(this, configuration, serverRootPath + "/config");
@@ -136,12 +134,12 @@ public class ArcadeDBServer implements ServerLogger {
 
     status = STATUS.ONLINE;
 
-    log(this, Level.INFO, "Available query languages: %s", new QueryEngineManager().getAvailableLanguages());
+    LogManager.instance().log(this, Level.INFO, "Available query languages: %s", new QueryEngineManager().getAvailableLanguages());
 
-    log(this, Level.INFO, "ArcadeDB Server started (CPUs=%d MAXRAM=%s)", Runtime.getRuntime().availableProcessors(),
+    LogManager.instance().log(this, Level.INFO, "ArcadeDB Server started (CPUs=%d MAXRAM=%s)", Runtime.getRuntime().availableProcessors(),
         FileUtils.getSizeAsString(Runtime.getRuntime().maxMemory()));
 
-    log(this, Level.INFO, "Studio web tool available at http://localhost:%d ", httpServer.getPort());
+    LogManager.instance().log(this, Level.INFO, "Studio web tool available at http://localhost:%d ", httpServer.getPort());
 
     try {
       lifecycleEvent(TestCallback.TYPE.SERVER_UP, null);
@@ -184,7 +182,7 @@ public class ArcadeDBServer implements ServerLogger {
 
           plugins.put(pluginName, pluginInstance);
 
-          log(this, Level.INFO, "- %s plugin started", pluginName);
+          LogManager.instance().log(this, Level.INFO, "- %s plugin started", pluginName);
 
         } catch (Exception e) {
           throw new ServerException("Error on loading plugin from class '" + p + ";", e);
@@ -203,12 +201,12 @@ public class ArcadeDBServer implements ServerLogger {
       throw new ServerException("Error on stopping the server '" + serverName + "'");
     }
 
-    log(this, Level.INFO, "Shutting down ArcadeDB Server...");
+    LogManager.instance().log(this, Level.INFO, "Shutting down ArcadeDB Server...");
 
     status = STATUS.SHUTTING_DOWN;
 
     for (Map.Entry<String, ServerPlugin> pEntry : plugins.entrySet()) {
-      log(this, Level.INFO, "- Stop %s plugin", pEntry.getKey());
+      LogManager.instance().log(this, Level.INFO, "- Stop %s plugin", pEntry.getKey());
       CodeUtils.executeIgnoringExceptions(() -> {
         pEntry.getValue().stopService();
       }, "Error on halting '" + pEntry.getKey() + "' plugin");
@@ -228,12 +226,12 @@ public class ArcadeDBServer implements ServerLogger {
     databases.clear();
 
     CodeUtils.executeIgnoringExceptions(() -> {
-      log(this, Level.INFO, "- Stop JMX Metrics");
+      LogManager.instance().log(this, Level.INFO, "- Stop JMX Metrics");
       serverMetrics.stop();
       serverMetrics = new NoServerMetrics();
     }, "Error on stopping JMX Metrics");
 
-    log(this, Level.INFO, "ArcadeDB Server is down");
+    LogManager.instance().log(this, Level.INFO, "ArcadeDB Server is down");
 
     try {
       lifecycleEvent(TestCallback.TYPE.SERVER_DOWN, null);
@@ -296,42 +294,6 @@ public class ArcadeDBServer implements ServerLogger {
 
   public Set<String> getDatabaseNames() {
     return Collections.unmodifiableSet(databases.keySet());
-  }
-
-  public void log(final Object requester, final Level level, final String message) {
-    installContextIfNeeded(serverName);
-    LogManager.instance().log(requester, level, message, null);
-  }
-
-  public void log(final Object requester, final Level level, final String message, final Object arg1) {
-    installContextIfNeeded(serverName);
-    LogManager.instance().log(requester, level, message, null, arg1);
-  }
-
-  public void log(final Object requester, final Level level, final String message, final Object arg1, final Object arg2) {
-    installContextIfNeeded(serverName);
-    LogManager.instance().log(requester, level, message, null, arg1, arg2);
-  }
-
-  public void log(final Object requester, final Level level, final String message, final Object arg1, final Object arg2, final Object arg3) {
-    installContextIfNeeded(serverName);
-    LogManager.instance().log(requester, level, message, null, arg1, arg2, arg3);
-  }
-
-  public void log(final Object requester, final Level level, final String message, final Object arg1, final Object arg2, final Object arg3, final Object arg4) {
-    installContextIfNeeded(serverName);
-    LogManager.instance().log(requester, level, message, null, arg1, arg2, arg3, arg4);
-  }
-
-  public void log(final Object requester, final Level level, final String message, final Object arg1, final Object arg2, final Object arg3, final Object arg4,
-      final Object arg5) {
-    installContextIfNeeded(serverName);
-    LogManager.instance().log(requester, level, message, null, arg1, arg2, arg3, arg4, arg5);
-  }
-
-  public void log(final Object requester, final Level level, final String message, final Object... args) {
-    installContextIfNeeded(serverName);
-    LogManager.instance().log(requester, level, message, null, args);
   }
 
   public synchronized void removeDatabase(final String databaseName) {
@@ -422,7 +384,7 @@ public class ArcadeDBServer implements ServerLogger {
       for (String db : dbs) {
         final int credentialBegin = db.indexOf('[');
         if (credentialBegin < 0) {
-          LogManager.instance().log(this, Level.WARNING, "Error in default databases format: '%s'", null, defaultDatabases);
+          LogManager.instance().log(this, Level.WARNING, "Error in default databases format: '%s'", defaultDatabases);
           break;
         }
 
@@ -442,7 +404,7 @@ public class ArcadeDBServer implements ServerLogger {
           for (String command : commandParts) {
             final int commandSeparator = command.indexOf(":");
             if (commandSeparator < 0) {
-              LogManager.instance().log(this, Level.WARNING, "Error in startup command configuration format: '%s'", null, commands);
+              LogManager.instance().log(this, Level.WARNING, "Error in startup command configuration format: '%s'", commands);
               break;
             }
             final String commandType = command.substring(0, commandSeparator).toLowerCase();
@@ -546,8 +508,4 @@ public class ArcadeDBServer implements ServerLogger {
     }
   }
 
-  private void installContextIfNeeded(final String serverName) {
-    if (!BinaryComparator.equalsString(serverName, LogManager.instance().getContext()))
-      LogManager.instance().setContext(serverName);
-  }
 }

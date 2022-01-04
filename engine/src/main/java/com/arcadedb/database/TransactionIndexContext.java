@@ -327,7 +327,7 @@ public class TransactionIndexContext {
           } catch (RecordNotFoundException e) {
             // INDEX DIRTY, THE RECORD WA DELETED, REMOVE THE ENTRY IN THE INDEX TO FIX IT
             LogManager.instance()
-                .log(this, Level.WARNING, "Found entry in index '%s' with key %s pointing to the deleted record %s. Overriding it.", null, idx.getName(),
+                .log(this, Level.WARNING, "Found entry in index '%s' with key %s pointing to the deleted record %s. Overriding it.", idx.getName(),
                     Arrays.toString(key.keyValues), firstEntry.getIdentity());
 
             idx.remove(key.keyValues);
