@@ -106,11 +106,11 @@ public class PostgresWTest extends BaseGraphServerTest {
   }
 
   @Test
-  @Disabled
   public void queryTransaction() throws Exception {
     try (final Connection conn = getConnection()) {
       conn.setAutoCommit(false);
       try (Statement st = conn.createStatement()) {
+        st.execute("begin");
         st.execute("create vertex type V");
         st.execute("create vertex V set name = 'Jay', lastName = 'Miner'");
 
@@ -137,6 +137,8 @@ public class PostgresWTest extends BaseGraphServerTest {
           } else
             Assertions.fail("Unknown value");
         }
+
+        st.execute("commit");
 
         Assertions.assertEquals(2, i);
 

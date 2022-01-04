@@ -127,7 +127,7 @@ public class PostgresNetworkListener extends Thread {
 
         if (serverSocket.isBound()) {
           LogManager.instance().log(this, Level.INFO,
-              "Listening for replication connections on $ANSI{green " + inboundAddr.getAddress().getHostAddress() + ":" + inboundAddr.getPort()
+              "Listening for incoming connections on $ANSI{green " + inboundAddr.getAddress().getHostAddress() + ":" + inboundAddr.getPort()
                   + "} (protocol v." + protocolVersion + ")");
 
           port = tryPort;
