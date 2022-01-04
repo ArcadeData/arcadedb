@@ -15,17 +15,16 @@
  */
 package com.arcadedb.integration.importer.graph;
 
-import com.arcadedb.database.Record;
 import com.arcadedb.database.*;
 import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.database.async.NewRecordCallback;
 import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.VertexInternal;
-import com.arcadedb.integration.importer.ImporterContext;
-import com.arcadedb.integration.importer.ImporterSettings;
 import com.arcadedb.index.CompressedAny2RIDIndex;
 import com.arcadedb.index.CompressedRID2RIDsIndex;
+import com.arcadedb.integration.importer.ImporterContext;
+import com.arcadedb.integration.importer.ImporterSettings;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.Pair;

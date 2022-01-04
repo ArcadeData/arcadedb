@@ -19,7 +19,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
 
-import java.util.*;
+import java.util.Arrays;
 
 /**
  * Select the bucket using a partition algorithm computed as the hashed value of the properties values. This allows to predetermine in which bucket is contained

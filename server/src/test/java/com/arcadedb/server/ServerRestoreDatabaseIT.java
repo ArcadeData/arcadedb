@@ -25,7 +25,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
+import java.io.File;
 
 public class ServerRestoreDatabaseIT extends BaseGraphServerTest {
   public ServerRestoreDatabaseIT() {

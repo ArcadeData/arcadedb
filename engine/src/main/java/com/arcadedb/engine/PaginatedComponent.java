@@ -18,8 +18,9 @@ package com.arcadedb.engine;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.TransactionContext;
 
-import java.io.*;
-import java.util.concurrent.atomic.*;
+import java.io.File;
+import java.io.IOException;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * HEADER = [recordCount(int:4)] CONTENT-PAGES = [version(long:8),recordCountInPage(short:2),recordOffsetsInPage(512*ushort=2048)]

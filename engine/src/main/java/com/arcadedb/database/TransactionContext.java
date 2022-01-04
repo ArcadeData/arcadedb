@@ -16,27 +16,16 @@
 package com.arcadedb.database;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.engine.BasePage;
-import com.arcadedb.engine.Bucket;
-import com.arcadedb.engine.MutablePage;
-import com.arcadedb.engine.PageId;
-import com.arcadedb.engine.PageManager;
-import com.arcadedb.engine.PaginatedComponent;
-import com.arcadedb.engine.PaginatedFile;
-import com.arcadedb.engine.TransactionManager;
-import com.arcadedb.engine.WALFile;
+import com.arcadedb.engine.*;
 import com.arcadedb.exception.ConcurrentModificationException;
-import com.arcadedb.exception.DuplicatedKeyException;
-import com.arcadedb.exception.RecordNotFoundException;
-import com.arcadedb.exception.SchemaException;
-import com.arcadedb.exception.TransactionException;
+import com.arcadedb.exception.*;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 
-import java.io.*;
+import java.io.IOException;
 import java.util.*;
-import java.util.logging.*;
+import java.util.logging.Level;
 
 /**
  * Manage the transaction context. When the transaction begins, the modifiedPages map is initialized. This allows to always delegate

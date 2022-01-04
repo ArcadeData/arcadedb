@@ -20,11 +20,12 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.DatabaseMetadataException;
 import com.arcadedb.log.LogManager;
 
-import java.io.*;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.io.IOException;
+import java.util.List;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.logging.Level;
 
 /**
  * Flushes pages to disk asynchronously.

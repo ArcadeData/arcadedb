@@ -15,7 +15,8 @@
  */
 package com.arcadedb.query.sql.parser;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * This class is used by the query planner to split projections in three parts:

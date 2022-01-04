@@ -15,6 +15,8 @@
  */
 package com.arcadedb.query.sql.functions.graph;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.graph.MutableEdge;
@@ -25,8 +27,6 @@ import com.arcadedb.query.sql.function.graph.SQLFunctionDijkstra;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
-
-import static org.junit.jupiter.api.Assertions.assertEquals;
 
 public class SQLFunctionDijkstraTest {
 

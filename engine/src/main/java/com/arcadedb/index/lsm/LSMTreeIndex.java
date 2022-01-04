@@ -15,28 +15,11 @@
  */
 package com.arcadedb.index.lsm;
 
-import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.database.Document;
-import com.arcadedb.database.Identifiable;
-import com.arcadedb.database.RID;
-import com.arcadedb.database.TransactionContext;
-import com.arcadedb.database.TransactionIndexContext;
-import com.arcadedb.engine.BasePage;
-import com.arcadedb.engine.MutablePage;
-import com.arcadedb.engine.PageId;
-import com.arcadedb.engine.PaginatedComponent;
-import com.arcadedb.engine.PaginatedComponentFactory;
-import com.arcadedb.engine.PaginatedFile;
+import com.arcadedb.database.*;
+import com.arcadedb.engine.*;
 import com.arcadedb.exception.DatabaseIsReadOnlyException;
 import com.arcadedb.exception.TimeoutException;
-import com.arcadedb.index.EmptyIndexCursor;
-import com.arcadedb.index.IndexCursor;
-import com.arcadedb.index.IndexCursorEntry;
-import com.arcadedb.index.IndexException;
-import com.arcadedb.index.IndexInternal;
-import com.arcadedb.index.RangeIndex;
-import com.arcadedb.index.TempIndexCursor;
-import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.*;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.schema.Schema;
@@ -45,11 +28,12 @@ import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.utility.RWLockContext;
 
-import java.io.*;
-import java.nio.*;
+import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.logging.Level;
 
 /**
  * LSM-Tree index implementation. It relies on a mutable index and its underlying immutable, compacted index.

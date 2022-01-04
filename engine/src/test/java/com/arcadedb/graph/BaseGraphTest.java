@@ -22,8 +22,9 @@ import com.arcadedb.database.RID;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Assertions;
 
-import java.io.*;
-import java.util.*;
+import java.io.File;
+import java.util.HashMap;
+import java.util.Map;
 
 public abstract class BaseGraphTest extends TestHelper {
   protected static final String VERTEX1_TYPE_NAME = "V1";

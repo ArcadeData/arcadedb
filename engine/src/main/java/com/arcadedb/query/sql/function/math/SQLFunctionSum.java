@@ -16,9 +16,9 @@
 package com.arcadedb.query.sql.function.math;
 
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.schema.Type;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
+import com.arcadedb.schema.Type;
 
 /**
  * Computes the sum of field. Uses the context to save the last sum number. When different Number class are used, take the class

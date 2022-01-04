@@ -18,8 +18,8 @@ package com.arcadedb.postgres;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseFactory;
 
-import java.nio.*;
-import java.util.*;
+import java.nio.ByteBuffer;
+import java.util.Date;
 
 public enum PostgresType {
   SMALLINT(21, Short.class, 2, -1), //

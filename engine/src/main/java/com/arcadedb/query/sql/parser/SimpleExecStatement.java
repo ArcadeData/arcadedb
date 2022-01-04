@@ -16,13 +16,9 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.query.sql.executor.BasicCommandContext;
-import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.InternalExecutionPlan;
-import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.query.sql.executor.SingleOpExecutionPlan;
+import com.arcadedb.query.sql.executor.*;
 
-import java.util.*;
+import java.util.Map;
 
 /**
  * Superclass for SQL statements that are too simple to deserve an execution planner.

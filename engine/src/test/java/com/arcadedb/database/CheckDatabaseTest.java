@@ -19,20 +19,18 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
-import com.arcadedb.graph.Edge;
-import com.arcadedb.graph.EdgeLinkedList;
-import com.arcadedb.graph.MutableVertex;
-import com.arcadedb.graph.Vertex;
-import com.arcadedb.graph.VertexInternal;
+import com.arcadedb.graph.*;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-import java.util.*;
-import java.util.concurrent.atomic.*;
+import java.io.IOException;
+import java.util.Collection;
+import java.util.Iterator;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 public class CheckDatabaseTest extends TestHelper {
 

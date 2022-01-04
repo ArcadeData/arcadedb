@@ -19,7 +19,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.DatabaseInternal;
 
-import java.util.*;
+import java.util.Map;
 
 public class ContainsKeyOperator extends SimpleNode implements BinaryCompareOperator {
   public ContainsKeyOperator(int id) {

@@ -28,9 +28,9 @@ import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.utility.FileUtils;
 
-import java.io.*;
+import java.io.IOException;
 import java.util.*;
-import java.util.logging.*;
+import java.util.logging.Level;
 
 public class LSMTreeIndexCompactor {
   public LSMTreeIndexCompactor() {

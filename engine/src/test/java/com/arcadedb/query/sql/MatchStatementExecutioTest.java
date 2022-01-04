@@ -15,6 +15,8 @@
  */
 package com.arcadedb.query.sql;
 
+import static org.junit.jupiter.api.Assertions.fail;
+
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
@@ -28,9 +30,9 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
-
-import static org.junit.jupiter.api.Assertions.fail;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 
 public class MatchStatementExecutioTest extends TestHelper {
   public MatchStatementExecutioTest() {

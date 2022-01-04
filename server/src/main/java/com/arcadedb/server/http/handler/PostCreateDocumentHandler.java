@@ -26,7 +26,7 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 import org.json.JSONObject;
 
-import java.io.*;
+import java.io.IOException;
 
 public class PostCreateDocumentHandler extends DatabaseAbstractHandler {
   public PostCreateDocumentHandler(final HttpServer httpServer) {

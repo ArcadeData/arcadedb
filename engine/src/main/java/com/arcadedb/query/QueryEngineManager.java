@@ -22,7 +22,10 @@ import com.arcadedb.query.gremlin.GremlinQueryEngine;
 import com.arcadedb.query.mongo.MongoQueryEngine;
 import com.arcadedb.query.sql.SQLQueryEngine;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 public class QueryEngineManager {
   private final Map<String, QueryEngine.QueryEngineFactory> implementations = new HashMap<>();

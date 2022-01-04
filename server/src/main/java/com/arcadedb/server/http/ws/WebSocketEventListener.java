@@ -16,7 +16,9 @@
 package com.arcadedb.server.http.ws;
 
 import com.arcadedb.database.Record;
-import com.arcadedb.event.*;
+import com.arcadedb.event.AfterRecordCreateListener;
+import com.arcadedb.event.AfterRecordDeleteListener;
+import com.arcadedb.event.AfterRecordUpdateListener;
 
 public class WebSocketEventListener implements AfterRecordCreateListener, AfterRecordUpdateListener, AfterRecordDeleteListener {
 

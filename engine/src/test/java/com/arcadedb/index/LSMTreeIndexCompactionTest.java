@@ -29,9 +29,11 @@ import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.logging.*;
+import java.util.Iterator;
+import java.util.Timer;
+import java.util.TimerTask;
+import java.util.concurrent.CountDownLatch;
+import java.util.logging.Level;
 
 /**
  * This test stresses the index compaction by forcing using only 1MB of RAM for compaction causing multiple page compacted index.

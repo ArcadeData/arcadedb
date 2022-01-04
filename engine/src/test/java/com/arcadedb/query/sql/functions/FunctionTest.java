@@ -23,8 +23,9 @@ import com.arcadedb.query.sql.executor.SQLEngine;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
-import java.util.concurrent.atomic.*;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class FunctionTest extends TestHelper {
   private static final int TOT = 10000;

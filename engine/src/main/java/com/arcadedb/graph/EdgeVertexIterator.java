@@ -22,9 +22,10 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.Pair;
 
-import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.util.Iterator;
+import java.util.NoSuchElementException;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Level;
 
 public class EdgeVertexIterator implements Iterator<Pair<RID, RID>>, Iterable<Pair<RID, RID>> {
   private       EdgeSegment      currentContainer;

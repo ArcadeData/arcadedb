@@ -15,12 +15,7 @@
  */
 package com.arcadedb.database;
 
-import com.arcadedb.event.AfterRecordCreateListener;
-import com.arcadedb.event.AfterRecordDeleteListener;
-import com.arcadedb.event.AfterRecordUpdateListener;
-import com.arcadedb.event.BeforeRecordCreateListener;
-import com.arcadedb.event.BeforeRecordDeleteListener;
-import com.arcadedb.event.BeforeRecordUpdateListener;
+import com.arcadedb.event.*;
 
 public interface DatabaseEvents {
   DatabaseEvents registerListener(final BeforeRecordCreateListener listener);

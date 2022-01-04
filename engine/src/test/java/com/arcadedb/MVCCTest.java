@@ -30,10 +30,12 @@ import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.math.*;
-import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.math.BigDecimal;
+import java.util.Date;
+import java.util.Random;
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
 
 public class MVCCTest extends TestHelper {
   private static final int CYCLES      = 3;

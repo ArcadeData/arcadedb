@@ -18,13 +18,9 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.query.sql.executor.BasicCommandContext;
-import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.CreateEdgeExecutionPlanner;
-import com.arcadedb.query.sql.executor.InsertExecutionPlan;
-import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.*;
 
-import java.util.*;
+import java.util.Map;
 
 public class CreateEdgeStatement extends Statement {
   protected Identifier targetType;

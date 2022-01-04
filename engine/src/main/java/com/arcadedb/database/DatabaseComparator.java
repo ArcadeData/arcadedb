@@ -22,8 +22,10 @@ import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.index.Index;
 import com.arcadedb.schema.DocumentType;
 
-import java.io.*;
-import java.util.*;
+import java.io.IOException;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.HashMap;
 
 /**
  * Compares 2 databases if are identical.

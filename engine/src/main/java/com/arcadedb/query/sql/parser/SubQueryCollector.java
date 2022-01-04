@@ -15,7 +15,8 @@
  */
 package com.arcadedb.query.sql.parser;
 
-import java.util.*;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * This class is used by the query planner to extract subqueries and move them to LET clause

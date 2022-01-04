@@ -15,6 +15,8 @@
  */
 package com.arcadedb.query.sql.method.misc;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.query.sql.executor.SQLMethod;
 import org.junit.jupiter.api.BeforeEach;
@@ -22,8 +24,6 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.HashSet;
-
-import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * Tests the "asSet()" method implemented by the OSQLMethodAsSet class. Note that the only input to

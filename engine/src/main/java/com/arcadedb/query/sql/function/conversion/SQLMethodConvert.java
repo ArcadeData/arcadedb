@@ -17,9 +17,9 @@ package com.arcadedb.query.sql.function.conversion;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.schema.Type;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.misc.AbstractSQLMethod;
+import com.arcadedb.schema.Type;
 
 import java.util.Locale;
 import java.util.logging.Level;

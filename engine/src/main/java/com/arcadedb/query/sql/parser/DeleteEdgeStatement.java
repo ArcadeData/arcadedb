@@ -19,14 +19,12 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.ArcadeDBException;
-import com.arcadedb.query.sql.executor.BasicCommandContext;
-import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.DeleteEdgeExecutionPlanner;
-import com.arcadedb.query.sql.executor.DeleteExecutionPlan;
-import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.*;
 
-import java.util.*;
-import java.util.stream.*;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 public class DeleteEdgeStatement extends Statement {
   protected Identifier  typeName;

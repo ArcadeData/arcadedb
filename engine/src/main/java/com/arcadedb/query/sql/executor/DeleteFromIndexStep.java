@@ -21,22 +21,12 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.RangeIndex;
-import com.arcadedb.query.sql.parser.AndBlock;
-import com.arcadedb.query.sql.parser.BetweenCondition;
-import com.arcadedb.query.sql.parser.BinaryCompareOperator;
-import com.arcadedb.query.sql.parser.BinaryCondition;
-import com.arcadedb.query.sql.parser.BooleanExpression;
-import com.arcadedb.query.sql.parser.EqualsCompareOperator;
-import com.arcadedb.query.sql.parser.Expression;
-import com.arcadedb.query.sql.parser.GeOperator;
-import com.arcadedb.query.sql.parser.GtOperator;
-import com.arcadedb.query.sql.parser.LeOperator;
-import com.arcadedb.query.sql.parser.LtOperator;
-import com.arcadedb.query.sql.parser.PCollection;
+import com.arcadedb.query.sql.parser.*;
 import com.arcadedb.utility.Pair;
 
-import java.io.*;
-import java.util.*;
+import java.io.IOException;
+import java.util.Map;
+import java.util.Optional;
 
 /**
  * Created by luigidellaquila on 11/08/16.

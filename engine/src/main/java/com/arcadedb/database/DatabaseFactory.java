@@ -21,10 +21,12 @@ import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.security.SecurityManager;
 
-import java.io.*;
-import java.nio.charset.*;
+import java.io.File;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
-import java.util.concurrent.*;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class DatabaseFactory implements AutoCloseable {
   private              SecurityManager                                            security;

@@ -25,10 +25,13 @@ import com.arcadedb.utility.FileUtils;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.Headers;
 
-import java.io.*;
-import java.nio.*;
-import java.util.*;
-import java.util.logging.*;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.ByteBuffer;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Set;
+import java.util.logging.Level;
 
 public class GetDynamicContentHandler extends AbstractHandler {
 

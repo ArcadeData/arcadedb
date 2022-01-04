@@ -21,8 +21,10 @@ import com.arcadedb.event.AfterRecordDeleteListener;
 import com.arcadedb.event.AfterRecordUpdateListener;
 import com.arcadedb.log.LogManager;
 
-import java.util.concurrent.*;
-import java.util.logging.*;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.logging.Level;
 
 final public class DatabaseEventWatcherThread extends Thread {
   private final    WebSocketEventBus               eventBus;

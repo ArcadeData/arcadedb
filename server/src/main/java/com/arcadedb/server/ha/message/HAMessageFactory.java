@@ -22,8 +22,11 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.ReplicationMessage;
 import com.arcadedb.utility.Pair;
 
-import java.util.*;
-import java.util.logging.*;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.logging.Level;
 
 public class HAMessageFactory {
   private final ArcadeDBServer                        server;

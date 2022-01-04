@@ -21,7 +21,7 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.RWLockContext;
 
 import java.util.*;
-import java.util.logging.*;
+import java.util.logging.Level;
 
 /**
  * Handles the stateful transactions in HTTP protocol as sessions. A HTTP transaction starts with the `/begin` command and is committed with `/commit` and

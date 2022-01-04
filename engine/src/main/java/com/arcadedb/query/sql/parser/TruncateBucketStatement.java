@@ -20,7 +20,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.*;
+import java.util.Map;
 
 public class TruncateBucketStatement extends DDLStatement {
 

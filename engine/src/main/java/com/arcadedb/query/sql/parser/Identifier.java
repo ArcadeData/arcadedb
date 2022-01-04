@@ -20,7 +20,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.util.*;
+import java.util.Map;
 
 /**
  * This class is used to represent all the indentifies in the SQL grammar, ie. class names, property names, index names, variables

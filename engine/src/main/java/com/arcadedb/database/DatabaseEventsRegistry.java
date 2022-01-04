@@ -15,14 +15,10 @@
  */
 package com.arcadedb.database;
 
-import com.arcadedb.event.AfterRecordCreateListener;
-import com.arcadedb.event.AfterRecordDeleteListener;
-import com.arcadedb.event.AfterRecordUpdateListener;
-import com.arcadedb.event.BeforeRecordCreateListener;
-import com.arcadedb.event.BeforeRecordDeleteListener;
-import com.arcadedb.event.BeforeRecordUpdateListener;
+import com.arcadedb.event.*;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
 
 public class DatabaseEventsRegistry implements DatabaseEvents {
   private final List<BeforeRecordCreateListener>        beforeCreateListeners = new ArrayList<>();

@@ -24,8 +24,9 @@ import org.apache.tinkerpop.gremlin.arcadedb.structure.ArcadeGraph;
 import org.apache.tinkerpop.gremlin.structure.io.IoCore;
 import org.json.JSONObject;
 
-import java.io.*;
-import java.util.zip.*;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.util.zip.GZIPOutputStream;
 
 public class GraphSONExporterFormat extends AbstractExporterFormat {
   public static final String     NAME       = "graphson";

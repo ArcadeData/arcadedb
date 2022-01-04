@@ -19,7 +19,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.query.sql.executor.Result;
 
-import java.util.*;
+import java.util.Map;
 
 public class InPathItem extends MatchPathItem {
   public InPathItem(int id) {

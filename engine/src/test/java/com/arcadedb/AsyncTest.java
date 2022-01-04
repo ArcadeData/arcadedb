@@ -28,7 +28,7 @@ import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.concurrent.atomic.*;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class AsyncTest extends TestHelper {
   private static final int    TOT       = 10000;

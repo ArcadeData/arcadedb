@@ -17,7 +17,7 @@ package com.arcadedb.utility;
 
 import com.arcadedb.log.LogManager;
 
-import java.util.logging.*;
+import java.util.logging.Level;
 
 /**
  * Utility class for common practices with Java code.

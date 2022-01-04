@@ -15,6 +15,8 @@
  */
 package com.arcadedb.query.sql.parser;
 
+import static org.junit.jupiter.api.Assertions.fail;
+
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
@@ -26,8 +28,6 @@ import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
-
-import static org.junit.jupiter.api.Assertions.fail;
 
 public class DeleteStatementTest extends TestHelper {
 

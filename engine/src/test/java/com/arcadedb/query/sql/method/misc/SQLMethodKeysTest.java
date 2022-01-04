@@ -15,6 +15,8 @@
  */
 package com.arcadedb.query.sql.method.misc;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.SQLMethod;
 import org.junit.jupiter.api.BeforeEach;
@@ -22,8 +24,6 @@ import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
 import java.util.LinkedHashSet;
-
-import static org.junit.jupiter.api.Assertions.assertEquals;
 
 public class SQLMethodKeysTest {
 

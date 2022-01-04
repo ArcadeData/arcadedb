@@ -16,17 +16,9 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.exception.TimeoutException;
-import com.arcadedb.query.sql.executor.AbstractExecutionStep;
-import com.arcadedb.query.sql.executor.BasicCommandContext;
-import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.EmptyStep;
-import com.arcadedb.query.sql.executor.ExecutionStepInternal;
-import com.arcadedb.query.sql.executor.InternalExecutionPlan;
-import com.arcadedb.query.sql.executor.ResultInternal;
-import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.query.sql.executor.ScriptExecutionPlan;
+import com.arcadedb.query.sql.executor.*;
 
-import java.util.*;
+import java.util.List;
 
 public class WhileStep extends AbstractExecutionStep {
   private final BooleanExpression condition;

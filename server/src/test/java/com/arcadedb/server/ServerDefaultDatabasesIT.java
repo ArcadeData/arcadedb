@@ -22,7 +22,7 @@ import com.arcadedb.server.security.ServerSecurityException;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
+import java.io.IOException;
 
 public class ServerDefaultDatabasesIT extends BaseGraphServerTest {
 

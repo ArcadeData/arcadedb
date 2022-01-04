@@ -15,7 +15,7 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import java.util.*;
+import java.util.Locale;
 
 public class QueryHelper {
   protected static final char WILDCARD_ANYCHAR = '?';

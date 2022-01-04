@@ -19,7 +19,10 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.HAServer;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
 
 /**
  * Response for a request. This is needed to check the quorum by the leader.

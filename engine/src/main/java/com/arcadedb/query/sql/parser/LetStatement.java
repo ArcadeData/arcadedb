@@ -22,7 +22,7 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.*;
+import java.util.Map;
 
 public class LetStatement extends SimpleExecStatement {
   protected Identifier name;

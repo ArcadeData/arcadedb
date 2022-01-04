@@ -32,8 +32,8 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
 
 public class TypeLSMTreeIndexTest extends TestHelper {
   private static final int    TOT       = 100000;

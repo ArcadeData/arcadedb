@@ -21,7 +21,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.util.*;
+import java.util.Map;
 
 public class UpdateRemoveItem extends SimpleNode {
 

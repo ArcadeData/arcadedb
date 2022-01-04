@@ -15,6 +15,10 @@
  */
 package com.arcadedb.server.security;
 
+import static com.arcadedb.GlobalConfiguration.SERVER_SECURITY_ALGORITHM;
+import static com.arcadedb.GlobalConfiguration.SERVER_SECURITY_SALT_CACHE_SIZE;
+import static com.arcadedb.GlobalConfiguration.SERVER_SECURITY_SALT_ITERATIONS;
+
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseFactory;
@@ -37,16 +41,14 @@ import org.json.JSONObject;
 import javax.crypto.SecretKey;
 import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.PBEKeySpec;
-import java.io.*;
-import java.nio.charset.*;
-import java.security.*;
-import java.security.spec.*;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
+import java.security.spec.InvalidKeySpecException;
+import java.security.spec.KeySpec;
 import java.util.*;
-import java.util.logging.*;
-
-import static com.arcadedb.GlobalConfiguration.SERVER_SECURITY_ALGORITHM;
-import static com.arcadedb.GlobalConfiguration.SERVER_SECURITY_SALT_CACHE_SIZE;
-import static com.arcadedb.GlobalConfiguration.SERVER_SECURITY_SALT_ITERATIONS;
+import java.util.logging.Level;
 
 public class ServerSecurity implements ServerPlugin, com.arcadedb.security.SecurityManager {
 

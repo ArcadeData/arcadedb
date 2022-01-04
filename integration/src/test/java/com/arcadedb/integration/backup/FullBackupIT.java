@@ -35,9 +35,10 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-import java.net.*;
-import java.util.concurrent.atomic.*;
+import java.io.File;
+import java.io.IOException;
+import java.net.URL;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class FullBackupIT {
   private final static String DATABASE_PATH     = "target/databases/performance";

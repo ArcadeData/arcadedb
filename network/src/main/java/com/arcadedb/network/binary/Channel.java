@@ -17,11 +17,13 @@ package com.arcadedb.network.binary;
 
 import com.arcadedb.log.LogManager;
 
-import java.io.*;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.*;
-import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.util.Enumeration;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
 
 public abstract class Channel {
   private static final AtomicLong   metricGlobalTransmittedBytes = new AtomicLong();

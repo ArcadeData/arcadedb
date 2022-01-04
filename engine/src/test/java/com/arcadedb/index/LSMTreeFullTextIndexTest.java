@@ -26,8 +26,8 @@ import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
-import java.util.logging.*;
+import java.util.List;
+import java.util.logging.Level;
 
 public class LSMTreeFullTextIndexTest extends TestHelper {
   private static final int    TOT       = 10000;

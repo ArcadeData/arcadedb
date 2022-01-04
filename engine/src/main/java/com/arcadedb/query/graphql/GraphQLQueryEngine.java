@@ -24,9 +24,10 @@ import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
 
-import java.lang.reflect.*;
-import java.util.*;
-import java.util.logging.*;
+import java.lang.reflect.InvocationTargetException;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.logging.Level;
 
 public class GraphQLQueryEngine implements QueryEngine {
   private static final String ENGINE_NAME = "graphql-engine";

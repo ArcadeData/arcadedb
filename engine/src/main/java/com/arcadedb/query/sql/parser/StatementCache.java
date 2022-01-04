@@ -20,10 +20,13 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.log.LogManager;
 
-import java.io.*;
-import java.nio.charset.*;
-import java.util.*;
-import java.util.logging.*;
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
+import java.io.UnsupportedEncodingException;
+import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.logging.Level;
 
 /**
  * This class is an LRU cache for already parsed SQL statement executors. It stores itself in the storage as a resource. It also

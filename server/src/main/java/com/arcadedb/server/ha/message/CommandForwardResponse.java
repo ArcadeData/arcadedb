@@ -15,7 +15,6 @@
  */
 package com.arcadedb.server.ha.message;
 
-import com.arcadedb.database.Record;
 import com.arcadedb.database.*;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.VertexInternal;

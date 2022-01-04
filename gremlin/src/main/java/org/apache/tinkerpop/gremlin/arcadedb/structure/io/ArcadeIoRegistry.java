@@ -25,7 +25,7 @@ import org.apache.tinkerpop.gremlin.structure.io.binary.GraphBinaryIo;
 import org.apache.tinkerpop.gremlin.structure.io.graphson.GraphSONIo;
 import org.apache.tinkerpop.gremlin.structure.io.gryo.GryoIo;
 
-import java.util.*;
+import java.util.Map;
 
 @SuppressWarnings("serial")
 public class ArcadeIoRegistry extends AbstractIoRegistry {

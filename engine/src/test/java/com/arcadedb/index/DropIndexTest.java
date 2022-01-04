@@ -25,7 +25,7 @@ import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
+import java.util.List;
 
 public class DropIndexTest extends TestHelper {
   private static final int    TOT        = 10;

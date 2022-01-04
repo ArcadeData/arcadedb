@@ -15,6 +15,8 @@
  */
 package com.arcadedb.mongo;
 
+import static de.bwaldvogel.mongo.backend.Utils.markOkay;
+
 import com.arcadedb.database.Database;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
@@ -45,8 +47,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
-
-import static de.bwaldvogel.mongo.backend.Utils.markOkay;
 
 public class MongoDBDatabaseWrapper implements MongoDatabase {
   protected final Database                           database;

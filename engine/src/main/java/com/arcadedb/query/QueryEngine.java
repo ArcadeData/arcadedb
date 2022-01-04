@@ -18,7 +18,7 @@ package com.arcadedb.query;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.*;
+import java.util.Map;
 
 public interface QueryEngine {
   interface AnalyzedQuery {

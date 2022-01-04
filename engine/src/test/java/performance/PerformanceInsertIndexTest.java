@@ -22,7 +22,6 @@ import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.log.Logger;
 import com.arcadedb.schema.DocumentType;
 
 import java.util.logging.Level;

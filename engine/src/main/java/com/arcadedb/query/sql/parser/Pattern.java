@@ -20,7 +20,7 @@ import com.arcadedb.query.sql.executor.PatternEdge;
 import com.arcadedb.query.sql.executor.PatternNode;
 
 import java.util.*;
-import java.util.stream.*;
+import java.util.stream.Collectors;
 
 /**
  * Created by luigidellaquila on 28/07/15.

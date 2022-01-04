@@ -15,14 +15,14 @@
  */
 package com.arcadedb.query.sql.method.misc;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 import com.arcadedb.database.Database;
 import com.arcadedb.query.sql.executor.SQLMethod;
 import com.arcadedb.schema.DocumentType;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
-
-import static org.assertj.core.api.Assertions.assertThat;
 
 class SQLMethodFieldTest {
 

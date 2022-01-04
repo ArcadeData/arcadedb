@@ -28,7 +28,7 @@ import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 
 import java.util.*;
-import java.util.stream.*;
+import java.util.stream.Collectors;
 
 public class UpdateItem extends SimpleNode {
   public static final int OPERATOR_EQ          = 0;

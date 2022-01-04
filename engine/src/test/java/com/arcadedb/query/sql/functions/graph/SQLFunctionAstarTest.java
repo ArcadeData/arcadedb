@@ -15,6 +15,8 @@
  */
 package com.arcadedb.query.sql.functions.graph;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.graph.MutableEdge;
@@ -31,8 +33,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
-
-import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /*
  * @author Saeed Tabrizi (saeed a_t  nowcando.com)

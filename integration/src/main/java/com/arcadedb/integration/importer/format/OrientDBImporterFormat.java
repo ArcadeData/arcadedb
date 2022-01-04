@@ -16,17 +16,10 @@
 package com.arcadedb.integration.importer.format;
 
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.integration.importer.AnalyzedEntity;
-import com.arcadedb.integration.importer.AnalyzedSchema;
-import com.arcadedb.integration.importer.ImportException;
-import com.arcadedb.integration.importer.ImporterContext;
-import com.arcadedb.integration.importer.ImporterSettings;
-import com.arcadedb.integration.importer.OrientDBImporter;
-import com.arcadedb.integration.importer.Parser;
-import com.arcadedb.integration.importer.SourceSchema;
+import com.arcadedb.integration.importer.*;
 
-import java.io.*;
-import java.util.zip.*;
+import java.io.IOException;
+import java.util.zip.GZIPInputStream;
 
 public class OrientDBImporterFormat extends AbstractImporterFormat {
   @Override

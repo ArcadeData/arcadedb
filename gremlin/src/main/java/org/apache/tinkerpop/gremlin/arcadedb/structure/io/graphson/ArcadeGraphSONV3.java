@@ -15,6 +15,9 @@
  */
 package org.apache.tinkerpop.gremlin.arcadedb.structure.io.graphson;
 
+import static org.apache.tinkerpop.gremlin.arcadedb.structure.io.ArcadeIoRegistry.isRID;
+import static org.apache.tinkerpop.gremlin.arcadedb.structure.io.ArcadeIoRegistry.newRID;
+
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import org.apache.tinkerpop.gremlin.structure.Edge;
@@ -32,9 +35,6 @@ import java.io.IOException;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
-
-import static org.apache.tinkerpop.gremlin.arcadedb.structure.io.ArcadeIoRegistry.isRID;
-import static org.apache.tinkerpop.gremlin.arcadedb.structure.io.ArcadeIoRegistry.newRID;
 
 /**
  * Created by Enrico Risa on 06/09/2017.

@@ -15,6 +15,10 @@
  */
 package com.arcadedb.query.sql.functions;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -22,8 +26,6 @@ import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.util.Date;
-
-import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * @author Luca Garulli (l.garulli--(at)--orientdb.com)

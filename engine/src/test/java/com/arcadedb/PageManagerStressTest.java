@@ -28,7 +28,7 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import performance.PerformanceTest;
 
-import java.util.*;
+import java.util.UUID;
 
 public class PageManagerStressTest {
   private static final int    TOT       = 100_000;

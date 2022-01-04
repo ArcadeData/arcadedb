@@ -22,7 +22,7 @@ import com.arcadedb.integration.backup.format.AbstractBackupFormat;
 import com.arcadedb.integration.backup.format.FullBackupFormat;
 import com.arcadedb.integration.importer.ConsoleLogger;
 
-import java.util.*;
+import java.util.Timer;
 
 public class Backup {
   protected BackupSettings       settings           = new BackupSettings();

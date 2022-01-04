@@ -28,9 +28,11 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.schema.Schema;
 
-import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.stream.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.stream.Collectors;
 
 public class CreateIndexStatement extends DDLStatement {
 

@@ -24,9 +24,10 @@ import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.ha.ReplicationException;
 import org.json.JSONObject;
 
-import java.io.*;
-import java.util.*;
-import java.util.logging.*;
+import java.io.IOException;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.logging.Level;
 
 public class DatabaseChangeStructureRequest extends HAAbstractCommand {
   private String               databaseName;

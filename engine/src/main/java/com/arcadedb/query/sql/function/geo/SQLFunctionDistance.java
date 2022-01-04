@@ -16,9 +16,9 @@
 package com.arcadedb.query.sql.function.geo;
 
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.schema.Type;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.function.SQLFunctionAbstract;
+import com.arcadedb.schema.Type;
 
 /**
  * Haversine formula to compute the distance between 2 gro points.

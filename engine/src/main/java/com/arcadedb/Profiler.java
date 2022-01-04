@@ -23,9 +23,13 @@ import com.arcadedb.utility.FileUtils;
 
 import javax.management.MBeanServer;
 import javax.management.ObjectName;
-import java.io.*;
-import java.lang.management.*;
-import java.util.*;
+import java.io.File;
+import java.io.PrintStream;
+import java.lang.management.GarbageCollectorMXBean;
+import java.lang.management.ManagementFactory;
+import java.util.LinkedHashSet;
+import java.util.Map;
+import java.util.Set;
 
 public class Profiler {
   public static final Profiler INSTANCE = new Profiler();

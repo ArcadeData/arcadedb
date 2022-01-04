@@ -31,7 +31,7 @@ import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.lang.reflect.*;
+import java.lang.reflect.Array;
 import java.util.*;
 
 public class SelectStatementExecutionTest extends TestHelper {

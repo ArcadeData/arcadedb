@@ -15,7 +15,6 @@
  */
 package com.arcadedb.graph;
 
-import com.arcadedb.database.Record;
 import com.arcadedb.database.*;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.serializer.BinaryTypes;

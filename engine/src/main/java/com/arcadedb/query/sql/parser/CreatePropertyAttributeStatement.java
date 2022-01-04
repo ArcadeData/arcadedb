@@ -20,7 +20,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.schema.Property;
 
-import java.util.*;
+import java.util.Map;
 
 public class CreatePropertyAttributeStatement extends SimpleNode {
   public Identifier settingName;

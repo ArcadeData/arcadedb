@@ -15,12 +15,13 @@
  */
 package com.arcadedb;
 
+import static com.arcadedb.GlobalConfiguration.TEST;
+
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-
-import static com.arcadedb.GlobalConfiguration.TEST;
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
 
 public class ConfigurationTest {
   @Test

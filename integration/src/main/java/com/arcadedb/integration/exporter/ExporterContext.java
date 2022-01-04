@@ -15,7 +15,7 @@
  */
 package com.arcadedb.integration.exporter;
 
-import java.util.concurrent.atomic.*;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class ExporterContext {
   public final AtomicLong documents = new AtomicLong();

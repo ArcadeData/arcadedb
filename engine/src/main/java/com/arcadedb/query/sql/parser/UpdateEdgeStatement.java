@@ -21,7 +21,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.UpdateExecutionPlan;
 import com.arcadedb.query.sql.executor.UpdateExecutionPlanner;
 
-import java.util.stream.*;
+import java.util.stream.Collectors;
 
 public class UpdateEdgeStatement extends UpdateStatement {
   public UpdateEdgeStatement(int id) {

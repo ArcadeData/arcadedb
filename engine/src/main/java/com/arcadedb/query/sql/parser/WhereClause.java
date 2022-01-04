@@ -28,7 +28,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 
 import java.util.*;
-import java.util.stream.*;
+import java.util.stream.Collectors;
 
 public class WhereClause extends SimpleNode {
   protected BooleanExpression baseExpression;

@@ -27,8 +27,8 @@ import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.ha.ReplicationException;
 import com.arcadedb.utility.FileUtils;
 
-import java.io.*;
-import java.util.logging.*;
+import java.io.IOException;
+import java.util.logging.Level;
 
 public class FileContentResponse extends HAAbstractCommand {
   private String databaseName;

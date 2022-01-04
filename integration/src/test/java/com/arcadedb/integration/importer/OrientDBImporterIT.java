@@ -25,8 +25,9 @@ import org.json.JSONObject;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-import java.net.*;
+import java.io.File;
+import java.io.IOException;
+import java.net.URL;
 
 public class OrientDBImporterIT {
   private final static String DATABASE_PATH = "target/databases/performance";

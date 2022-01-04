@@ -25,8 +25,9 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 
-import java.util.*;
-import java.util.stream.*;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 public class CreateVertexTypeStatement extends DDLStatement {
   /**

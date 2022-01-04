@@ -15,13 +15,13 @@
  */
 package com.arcadedb.query.sql;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 import com.arcadedb.TestHelper;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.stream.*;
-
-import static org.assertj.core.api.Assertions.assertThat;
+import java.util.stream.IntStream;
 
 public class DDLTest extends TestHelper {
   @Override
