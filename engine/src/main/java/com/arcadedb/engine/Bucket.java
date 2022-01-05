@@ -15,10 +15,11 @@
  */
 package com.arcadedb.engine;
 
-import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
-import static com.arcadedb.database.Binary.LONG_SERIALIZED_SIZE;
-
-import com.arcadedb.database.*;
+import com.arcadedb.database.Binary;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
+import com.arcadedb.database.RecordInternal;
 import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.RecordNotFoundException;
@@ -29,9 +30,12 @@ import com.arcadedb.schema.VertexType;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.utility.FileUtils;
 
-import java.io.IOException;
+import java.io.*;
 import java.util.*;
-import java.util.logging.Level;
+import java.util.logging.*;
+
+import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
+import static com.arcadedb.database.Binary.LONG_SERIALIZED_SIZE;
 
 /**
  * PAGE CONTENT = [version(long:8),recordCountInPage(short:2),recordOffsetsInPage(2048*uint=8192)]
@@ -372,8 +376,9 @@ public class Bucket extends PaginatedComponent {
         totalMaxOffset += pageMaxOffset;
 
         if (verboseLevel > 2)
-          LogManager.instance().log(this, Level.FINE, "-- Page %d records=%d (actives=%d deleted=%d placeholders=%d surrogates=%d) maxOffset=%d", pageId,
-              recordCountInPage, pageActiveRecords, pageDeletedRecords, pagePlaceholderRecords, pageSurrogateRecords, pageMaxOffset);
+          LogManager.instance()
+              .log(this, Level.FINE, "-- Page %d records=%d (actives=%d deleted=%d placeholders=%d surrogates=%d) maxOffset=%d", pageId, recordCountInPage,
+                  pageActiveRecords, pageDeletedRecords, pagePlaceholderRecords, pageSurrogateRecords, pageMaxOffset);
 
       } catch (Exception e) {
         ++errors;
