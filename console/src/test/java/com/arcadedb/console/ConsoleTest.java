@@ -40,7 +40,7 @@ public class ConsoleTest {
   public void drop() {
     console.close();
     Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
-    FileUtils.deleteRecursively(new File(DB_NAME));
+    FileUtils.deleteRecursively(new File("target/databases"));
   }
 
   @Test
@@ -51,7 +51,7 @@ public class ConsoleTest {
   @Test
   public void testSetVerbose() throws IOException {
     try {
-      console.parse("set verbose 2; close; connect " + DB_NAME + "XX", false);
+      console.parse("set verbose = 2; close; connect " + DB_NAME + "XX", false);
       Assertions.fail();
     } catch (DatabaseOperationException e) {
       // EXPECTED

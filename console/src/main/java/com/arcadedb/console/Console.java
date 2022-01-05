@@ -49,6 +49,7 @@ import java.util.*;
 
 public class Console {
   private static final String           PROMPT               = "%n%s> ";
+  private static final String           REMOTE_PREFIX        = "remote:";
   private final        boolean          system               = System.console() != null;
   private final        Terminal         terminal;
   private final        LineReader       lineReader;
@@ -91,28 +92,25 @@ public class Console {
     try {
       while (true) {
 
+        String line = null;
         try {
-          String line = lineReader.readLine(getPrompt());
+          line = lineReader.readLine(getPrompt());
           if (line == null)
             continue;
 
           lineReader.getHistory().save();
 
-          if (!parse(line, false))
-            return;
-
         } catch (UserInterruptException e) {
           return;
         } catch (EndOfFileException e) {
           return;
+        }
+
+        try {
+          if (!parse(line, false))
+            return;
         } catch (Exception e) {
-          if (verboseLevel > 1) {
-            try (ByteArrayOutputStream out = new ByteArrayOutputStream(); PrintWriter writer = new PrintWriter(out)) {
-              e.printStackTrace(writer);
-              output("\nError:\n" + out + "\n");
-            }
-          } else
-            output("\nError: " + e.getMessage() + "\n");
+          // IGNORE (ALREADY PRINTED)
         }
       }
     } finally {
@@ -165,44 +163,52 @@ public class Console {
   }
 
   private boolean execute(String line) throws IOException {
-    if (line != null && !line.isEmpty()) {
-      line = line.trim();
+    try {
+      if (line != null && !line.isEmpty()) {
+        line = line.trim();
 
-      if (line.startsWith("begin"))
-        executeBegin();
-      else if (line.startsWith("close"))
-        executeClose();
-      else if (line.startsWith("commit"))
-        executeCommit();
-      else if (line.startsWith("connect"))
-        executeConnect(line);
-      else if (line.startsWith("create database"))
-        executeCreateDatabase(line);
-      else if (line.startsWith("drop database"))
-        executeDropDatabase(line);
-      else if (line.equalsIgnoreCase("help") || line.equals("?"))
-        executeHelp();
-      else if (line.startsWith("info"))
-        executeInfo(line.substring("info".length()).trim());
-      else if (line.startsWith("load"))
-        executeLoad(line.substring("load".length()).trim());
-      else if (line.equalsIgnoreCase("quit") || line.equalsIgnoreCase("exit")) {
-        executeClose();
-        return false;
-      } else if (line.startsWith("pwd"))
-        output("Current directory: " + new File(".").getAbsolutePath());
-      else if (line.startsWith("rollback"))
-        executeRollback();
-      else if (line.startsWith("set"))
-        executeSet(line.substring("set".length()).trim());
-      else {
-        executeSQL(line);
+        if (line.startsWith("begin"))
+          executeBegin();
+        else if (line.startsWith("close"))
+          executeClose();
+        else if (line.startsWith("commit"))
+          executeCommit();
+        else if (line.startsWith("connect"))
+          executeConnect(line);
+        else if (line.startsWith("create database"))
+          executeCreateDatabase(line);
+        else if (line.startsWith("drop database"))
+          executeDropDatabase(line);
+        else if (line.equalsIgnoreCase("help") || line.equals("?"))
+          executeHelp();
+        else if (line.startsWith("info"))
+          executeInfo(line.substring("info".length()).trim());
+        else if (line.startsWith("load"))
+          executeLoad(line.substring("load".length()).trim());
+        else if (line.equalsIgnoreCase("quit") || line.equalsIgnoreCase("exit")) {
+          executeClose();
+          return false;
+        } else if (line.startsWith("pwd"))
+          output("Current directory: " + new File(".").getAbsolutePath());
+        else if (line.startsWith("rollback"))
+          executeRollback();
+        else if (line.startsWith("set"))
+          executeSet(line.substring("set".length()).trim());
+        else {
+          executeSQL(line);
+        }
       }
+
+      output("%n");
+
+      return true;
+    } catch (IOException e) {
+      outputError(e);
+      throw e;
+    } catch (RuntimeException e) {
+      outputError(e);
+      throw e;
     }
-
-    output("%n");
-
-    return true;
   }
 
   private void executeSet(final String line) {
@@ -287,7 +293,7 @@ public class Console {
     if (localDatabase != null || remoteDatabase != null)
       output("Database already connected, to connect to a different database close the current one first\n");
     else if (!urlParts[0].isEmpty()) {
-      if (urlParts[0].startsWith("remote:")) {
+      if (urlParts[0].startsWith(REMOTE_PREFIX)) {
         connectToRemoteServer(url);
 
         output("%nConnected%n");
@@ -312,7 +318,7 @@ public class Console {
     if (localDatabase != null || remoteDatabase != null)
       output("Database already connected, to connect to a different database close the current one first\n");
     else if (!url.isEmpty()) {
-      if (url.startsWith("remote:")) {
+      if (url.startsWith(REMOTE_PREFIX)) {
         connectToRemoteServer(url);
         remoteDatabase.create();
 
@@ -337,7 +343,7 @@ public class Console {
     if (localDatabase != null || remoteDatabase != null)
       output("Database already connected, to connect to a different database close the current one first\n");
     else if (!url.isEmpty()) {
-      if (url.startsWith("remote:")) {
+      if (url.startsWith(REMOTE_PREFIX)) {
         connectToRemoteServer(url);
         remoteDatabase.drop();
 
@@ -582,7 +588,7 @@ public class Console {
   }
 
   private void connectToRemoteServer(final String url) {
-    final String conn = url.substring("remote:".length());
+    final String conn = url.startsWith(REMOTE_PREFIX + "//") ? url.substring((REMOTE_PREFIX + "//").length()) : url.substring(REMOTE_PREFIX.length());
 
     final String[] serverUserPassword = conn.split(" ");
     if (serverUserPassword.length != 3)
@@ -609,5 +615,16 @@ public class Console {
 
   private void flushOutput() {
     terminal.writer().flush();
+  }
+
+  private void outputError(final Exception e) throws IOException {
+    if (verboseLevel > 1) {
+      try (ByteArrayOutputStream out = new ByteArrayOutputStream(); PrintWriter writer = new PrintWriter(out)) {
+        e.printStackTrace(writer);
+        writer.flush();
+        output("\nError:\n" + out + "\n");
+      }
+    } else
+      output("\nError: " + e.getMessage() + "\n");
   }
 }
