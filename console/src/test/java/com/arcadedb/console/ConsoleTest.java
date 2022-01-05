@@ -16,14 +16,14 @@
 package com.arcadedb.console;
 
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.File;
-import java.io.IOException;
+import java.io.*;
 
 public class ConsoleTest {
   private static final String  DB_NAME = "console";
@@ -46,6 +46,16 @@ public class ConsoleTest {
   @Test
   public void testConnect() throws IOException {
     Assertions.assertTrue(console.parse("connect " + DB_NAME + ";info types", false));
+  }
+
+  @Test
+  public void testSetVerbose() throws IOException {
+    try {
+      console.parse("set verbose 2; close; connect " + DB_NAME + "XX", false);
+      Assertions.fail();
+    } catch (DatabaseOperationException e) {
+      // EXPECTED
+    }
   }
 
   @Test

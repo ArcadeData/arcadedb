@@ -33,19 +33,19 @@ import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.RecordTableFormatter;
 import com.arcadedb.utility.TableFormatter;
-import org.jline.reader.*;
+import org.jline.reader.Completer;
+import org.jline.reader.EndOfFileException;
+import org.jline.reader.LineReader;
+import org.jline.reader.LineReaderBuilder;
+import org.jline.reader.ParsedLine;
+import org.jline.reader.UserInterruptException;
 import org.jline.reader.impl.completer.StringsCompleter;
 import org.jline.reader.impl.history.DefaultHistory;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
 
-import java.io.BufferedReader;
-import java.io.File;
-import java.io.FileReader;
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Iterator;
-import java.util.List;
+import java.io.*;
+import java.util.*;
 
 public class Console {
   private static final String           PROMPT               = "%n%s> ";
@@ -63,6 +63,7 @@ public class Console {
   private              ResultSet        resultSet;
   private              String           rootDirectory;
   private              String           databaseDirectory;
+  private              int              verboseLevel         = 1;
 
   private String getPrompt() {
     return String.format(PROMPT, localDatabase != null ? "{" + localDatabase.getName() + "}" : "");
@@ -105,7 +106,13 @@ public class Console {
         } catch (EndOfFileException e) {
           return;
         } catch (Exception e) {
-          terminal.writer().print("\nError: " + e.getMessage() + "\n");
+          if (verboseLevel > 1) {
+            try (ByteArrayOutputStream out = new ByteArrayOutputStream(); PrintWriter writer = new PrintWriter(out)) {
+              e.printStackTrace(writer);
+              output("\nError:\n" + out + "\n");
+            }
+          } else
+            output("\nError: " + e.getMessage() + "\n");
         }
       }
     } finally {
@@ -119,7 +126,7 @@ public class Console {
 
   public void close() {
     if (terminal != null)
-      terminal.writer().flush();
+      flushOutput();
 
     if (remoteDatabase != null) {
       remoteDatabase.close();
@@ -146,9 +153,9 @@ public class Console {
       this.rootDirectory = this.rootDirectory.substring(0, this.rootDirectory.length() - 1);
 
     if (!new File(this.rootDirectory + "config").exists() && new File(this.rootDirectory + "../config").exists()) {
-      databaseDirectory = new File(this.rootDirectory).getAbsoluteFile().getParentFile().getPath() + "/databases";
+      databaseDirectory = new File(this.rootDirectory).getAbsoluteFile().getParentFile().getPath() + "/databases/";
     } else
-      databaseDirectory = this.rootDirectory + "/databases";
+      databaseDirectory = this.rootDirectory + "/databases/";
 
     return this;
   }
@@ -157,8 +164,10 @@ public class Console {
     this.output = output;
   }
 
-  private boolean execute(final String line) throws IOException {
+  private boolean execute(String line) throws IOException {
     if (line != null && !line.isEmpty()) {
+      line = line.trim();
+
       if (line.startsWith("begin"))
         executeBegin();
       else if (line.startsWith("close"))
@@ -181,7 +190,7 @@ public class Console {
         executeClose();
         return false;
       } else if (line.startsWith("pwd"))
-        terminal.writer().print("Current directory: " + new File(".").getAbsolutePath());
+        output("Current directory: " + new File(".").getAbsolutePath());
       else if (line.startsWith("rollback"))
         executeRollback();
       else if (line.startsWith("set"))
@@ -210,10 +219,12 @@ public class Console {
     if ("limit".equalsIgnoreCase(key)) {
       limit = Integer.parseInt(value);
       output("Set new limit = %d", limit);
-    } else if ("expandResultset".equalsIgnoreCase(key)) {
+    } else if ("expandResultset".equalsIgnoreCase(key))
       expandResultset = value.equalsIgnoreCase("true");
-    } else if ("maxMultiValueEntries".equalsIgnoreCase(key))
+    else if ("maxMultiValueEntries".equalsIgnoreCase(key))
       maxMultiValueEntries = Integer.parseInt(value);
+    else if ("verbose".equalsIgnoreCase(key))
+      verboseLevel = Integer.parseInt(value);
   }
 
   private void executeTransactionStatus() {
@@ -274,22 +285,23 @@ public class Console {
     final String[] urlParts = url.split(" ");
 
     if (localDatabase != null || remoteDatabase != null)
-      terminal.writer().print("Database already connected, to connect to a different database close the current one first\n");
+      output("Database already connected, to connect to a different database close the current one first\n");
     else if (!urlParts[0].isEmpty()) {
       if (urlParts[0].startsWith("remote:")) {
         connectToRemoteServer(url);
 
-        terminal.writer().printf("%nConnected%n");
-        terminal.writer().flush();
+        output("%nConnected%n");
+        flushOutput();
 
       } else {
         PaginatedFile.MODE mode = PaginatedFile.MODE.READ_WRITE;
         if (urlParts.length > 1)
           mode = PaginatedFile.MODE.valueOf(urlParts[1].toUpperCase());
 
-        databaseFactory = new DatabaseFactory(urlParts[0]);
-        localDatabase = (DatabaseInternal) databaseFactory.setAutoTransaction(true).open(mode);
+        final String databaseUrl = databaseDirectory + urlParts[0];
 
+        databaseFactory = new DatabaseFactory(databaseUrl);
+        localDatabase = (DatabaseInternal) databaseFactory.setAutoTransaction(true).open(mode);
       }
     } else
       throw new ConsoleException("URL missing");
@@ -298,23 +310,20 @@ public class Console {
   private void executeCreateDatabase(final String line) {
     String url = line.substring("create database".length()).trim();
     if (localDatabase != null || remoteDatabase != null)
-      terminal.writer().print("Database already connected, to connect to a different database close the current one first\n");
+      output("Database already connected, to connect to a different database close the current one first\n");
     else if (!url.isEmpty()) {
       if (url.startsWith("remote:")) {
         connectToRemoteServer(url);
         remoteDatabase.create();
 
-        terminal.writer().printf("%nDatabase created%n");
-        terminal.writer().flush();
+        output("%nDatabase created%n");
+        flushOutput();
 
       } else {
         if (url.startsWith("file://"))
           url = url.substring("file://".length());
 
-        if (!databaseDirectory.endsWith("/"))
-          url = databaseDirectory + "/" + url;
-        else
-          url = databaseDirectory + url;
+        url = databaseDirectory + url;
 
         databaseFactory = new DatabaseFactory(url);
         localDatabase = (DatabaseInternal) databaseFactory.setAutoTransaction(true).create();
@@ -326,14 +335,14 @@ public class Console {
   private void executeDropDatabase(final String line) {
     final String url = line.substring("drop database".length()).trim();
     if (localDatabase != null || remoteDatabase != null)
-      terminal.writer().print("Database already connected, to connect to a different database close the current one first\n");
+      output("Database already connected, to connect to a different database close the current one first\n");
     else if (!url.isEmpty()) {
       if (url.startsWith("remote:")) {
         connectToRemoteServer(url);
         remoteDatabase.drop();
 
-        terminal.writer().printf("%nDatabase dropped%n");
-        terminal.writer().flush();
+        output("%nDatabase dropped%n");
+        flushOutput();
 
       } else {
         databaseFactory = new DatabaseFactory(url);
@@ -462,7 +471,7 @@ public class Console {
       table.writeRows(list, limit);
     }
 
-    terminal.writer().printf("%nCommand executed in %dms%n", elapsed);
+    output("%nCommand executed in %dms%n", elapsed);
   }
 
   private void executeLoad(final String fileName) throws IOException {
@@ -484,7 +493,7 @@ public class Console {
 
     for (String w : parsed.words()) {
       if (printCommand)
-        terminal.writer().printf(getPrompt() + w);
+        output(getPrompt() + w);
 
       if (!execute(w))
         return false;
@@ -493,6 +502,9 @@ public class Console {
   }
 
   private void output(final String text, final Object... args) {
+    if (verboseLevel < 1)
+      return;
+
     if (output != null)
       output.onOutput(String.format(text, args));
     else
@@ -593,5 +605,9 @@ public class Console {
     }
 
     remoteDatabase = new RemoteDatabase(remoteServer, remotePort, serverParts[1], serverUserPassword[1], serverUserPassword[2]);
+  }
+
+  private void flushOutput() {
+    terminal.writer().flush();
   }
 }
