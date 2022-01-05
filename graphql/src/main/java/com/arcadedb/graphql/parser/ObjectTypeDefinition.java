@@ -17,8 +17,7 @@
 /* ParserGeneratorCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_CLASS_VISIBILITY_PUBLIC=true */
 package com.arcadedb.graphql.parser;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
 
 public class ObjectTypeDefinition extends TypeDefinition {
 
@@ -48,19 +47,6 @@ public class ObjectTypeDefinition extends TypeDefinition {
 
   public List<FieldDefinition> getFieldDefinitions() {
     return fieldDefinitions;
-  }
-
-  public FieldDefinition getFieldDefinitionByPath(final String path) {
-    final int sep = path.indexOf(".");
-    if (sep > -1) {
-      final String prefix = path.substring(0, sep);
-      final FieldDefinition field = getFieldDefinitionByPath(prefix);
-      if (field != null) {
-
-      }
-    }
-
-    return getFieldDefinitionByName(path);
   }
 
   public FieldDefinition getFieldDefinitionByName(final String fieldName) {

@@ -32,7 +32,7 @@ RUN adduser -D -s /bin/sh arcadedb
 
 WORKDIR /home/arcadedb
 
-ADD arcadedb-${ARCADEDB_VERSION}.dir/arcadedb-${ARCADEDB_VERSION} ./
+COPY arcadedb-${ARCADEDB_VERSION}.dir/arcadedb-${ARCADEDB_VERSION} ./
 
 ENV PATH ./bin:$PATH
 

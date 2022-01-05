@@ -19,18 +19,20 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
-import com.arcadedb.graph.*;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.EdgeLinkedList;
+import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
-import java.util.Collection;
-import java.util.Iterator;
-import java.util.List;
-import java.util.concurrent.atomic.AtomicReference;
+import java.io.*;
+import java.util.*;
+import java.util.concurrent.atomic.*;
 
 public class CheckDatabaseTest extends TestHelper {
 
@@ -106,17 +108,16 @@ public class CheckDatabaseTest extends TestHelper {
     final AtomicReference<RID> deletedEdge = new AtomicReference<>();
 
     database.transaction(() -> {
-      for (Iterator<Record> iter = database.iterateType("Knows", false); iter.hasNext(); ) {
-        final Record edge = iter.next();
+      final Iterator<Record> iter = database.iterateType("Knows", false);
+      Assertions.assertTrue(iter.hasNext());
 
-        deletedEdge.set(edge.getIdentity());
+      final Record edge = iter.next();
+      deletedEdge.set(edge.getIdentity());
 
-        Assertions.assertEquals(root.getIdentity(), edge.asEdge().getOut());
+      Assertions.assertEquals(root.getIdentity(), edge.asEdge().getOut());
 
-        // DELETE THE EDGE AT LOW LEVEL
-        database.getSchema().getBucketById(edge.getIdentity().getBucketId()).deleteRecord(edge.getIdentity());
-        break;
-      }
+      // DELETE THE EDGE AT LOW LEVEL
+      database.getSchema().getBucketById(edge.getIdentity().getBucketId()).deleteRecord(edge.getIdentity());
     });
 
     ResultSet result = database.command("sql", "check database");
