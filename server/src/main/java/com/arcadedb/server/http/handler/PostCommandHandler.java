@@ -35,9 +35,9 @@ import io.undertow.server.HttpServerExchange;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.IOException;
+import java.io.*;
 import java.util.*;
-import java.util.stream.Collectors;
+import java.util.stream.*;
 
 public class PostCommandHandler extends DatabaseAbstractHandler {
 
@@ -99,13 +99,13 @@ public class PostCommandHandler extends DatabaseAbstractHandler {
         while (qResult.hasNext()) {
           final Result row = qResult.next();
 
-          if (row.getIdentity().isEmpty())
-            continue;
-
-          final RID rid = row.getIdentity().get();
-          final boolean justIncluded = includedRecords.add(rid);
-          if (justIncluded)
-            records.put(serializerImpl.serializeResult(row));
+          boolean justIncluded = true;
+          if (!row.getIdentity().isEmpty()) {
+            final RID rid = row.getIdentity().get();
+            justIncluded = includedRecords.add(rid);
+            if (justIncluded)
+              records.put(serializerImpl.serializeResult(row));
+          }
 
           if (row.isVertex()) {
             if (justIncluded) {
