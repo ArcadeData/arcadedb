@@ -21,7 +21,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 
 import java.util.*;
-import java.util.stream.Collectors;
+import java.util.stream.*;
 
 /**
  * Created by luigidellaquila on 06/07/16.
@@ -237,9 +237,10 @@ public class ResultInternal implements Result {
     if (element != null)
       return Optional.of(element.getIdentity());
 
-    if (hasProperty("@rid"))
-      return Optional.of(getProperty("@rid"));
-
+    if (hasProperty("@rid")) {
+      final Object rid = getProperty("@rid");
+      return Optional.of((RID) (rid instanceof RID ? rid : new RID(null, rid.toString())));
+    }
     return Optional.empty();
   }
 
