@@ -15,7 +15,11 @@
  */
 package com.arcadedb.integration.importer.graph;
 
-import com.arcadedb.database.*;
+import com.arcadedb.database.Binary;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
 import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.database.async.NewRecordCallback;
 import com.arcadedb.graph.GraphEngine;
@@ -29,9 +33,8 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.Pair;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.logging.Level;
+import java.util.*;
+import java.util.logging.*;
 
 public class GraphImporter {
   private final CompressedAny2RIDIndex verticesIndex;

@@ -15,12 +15,16 @@
  */
 package com.arcadedb.database.async;
 
-import com.arcadedb.database.*;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DocumentCallback;
+import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
 import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.graph.Vertex;
 
-import java.util.Map;
+import java.util.*;
 
 /**
  * Asynchronous executor. Use this to execute operation in parallel. ArcadeDB will optimize the execution on the available cores.

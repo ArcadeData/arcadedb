@@ -16,11 +16,30 @@
 package com.arcadedb.server;
 
 import com.arcadedb.ContextConfiguration;
-import com.arcadedb.database.*;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseContext;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.DocumentCallback;
+import com.arcadedb.database.DocumentIndexer;
+import com.arcadedb.database.EmbeddedModifier;
+import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.MutableEmbeddedDocument;
+import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
+import com.arcadedb.database.RecordCallback;
+import com.arcadedb.database.RecordEvents;
+import com.arcadedb.database.RecordFactory;
+import com.arcadedb.database.TransactionContext;
 import com.arcadedb.database.async.DatabaseAsyncExecutor;
 import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.database.async.OkCallback;
-import com.arcadedb.engine.*;
+import com.arcadedb.engine.ErrorRecordCallback;
+import com.arcadedb.engine.FileManager;
+import com.arcadedb.engine.PageManager;
+import com.arcadedb.engine.PaginatedFile;
+import com.arcadedb.engine.TransactionManager;
+import com.arcadedb.engine.WALFile;
+import com.arcadedb.engine.WALFileFactory;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.MutableVertex;
@@ -33,10 +52,9 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.BinarySerializer;
 
-import java.io.IOException;
-import java.util.Iterator;
-import java.util.Map;
-import java.util.concurrent.Callable;
+import java.io.*;
+import java.util.*;
+import java.util.concurrent.*;
 
 /**
  * Wrapper of database returned from the server when runs embedded that prevents the close(), drop() and kill() by the user.

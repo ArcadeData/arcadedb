@@ -23,8 +23,9 @@ import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Schema;
 
-import java.util.logging.Level;
+import java.util.logging.*;
 
 public class PerformanceInsertIndexTest extends TestHelper {
   private static final int    TOT       = 100_000_000;
@@ -59,12 +60,12 @@ public class PerformanceInsertIndexTest extends TestHelper {
 
       final DocumentType type = database.getSchema().createDocumentType(TYPE_NAME, PARALLEL, Bucket.DEF_PAGE_SIZE);
 
-      //type.createProperty("id", Integer.class);
+      type.createProperty("id", Long.class);
       type.createProperty("area", String.class);
       type.createProperty("age", Byte.class);
       type.createProperty("active", Byte.class);
 
-//      database.getSchema().createTypeIndex(SchemaImpl.INDEX_TYPE.LSM_TREE, false, TYPE_NAME, new String[] { "id" }, 5000000);
+      database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, TYPE_NAME, new String[] { "id" }, 5000000);
 
       database.commit();
 

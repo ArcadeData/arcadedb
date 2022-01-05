@@ -15,18 +15,34 @@
  */
 package com.arcadedb.serializer;
 
-import com.arcadedb.database.*;
+import com.arcadedb.database.BaseRecord;
+import com.arcadedb.database.Binary;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
+import com.arcadedb.database.EmbeddedDatabase;
+import com.arcadedb.database.EmbeddedDocument;
+import com.arcadedb.database.EmbeddedModifier;
+import com.arcadedb.database.EmbeddedModifierProperty;
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
 import com.arcadedb.engine.Dictionary;
 import com.arcadedb.exception.SerializationException;
-import com.arcadedb.graph.*;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.EdgeSegment;
+import com.arcadedb.graph.MutableEdge;
+import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
 
-import java.lang.reflect.Array;
-import java.math.BigDecimal;
-import java.math.BigInteger;
+import java.lang.reflect.*;
+import java.math.*;
 import java.util.*;
-import java.util.logging.Level;
+import java.util.logging.*;
 
 /**
  * Default serializer implementation.

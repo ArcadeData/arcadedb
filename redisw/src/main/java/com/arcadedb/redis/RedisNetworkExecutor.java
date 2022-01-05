@@ -16,7 +16,11 @@
 package com.arcadedb.redis;
 
 import com.arcadedb.Constants;
-import com.arcadedb.database.*;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
@@ -31,16 +35,11 @@ import com.arcadedb.utility.NumberUtils;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.EOFException;
-import java.io.IOException;
-import java.net.Socket;
-import java.net.SocketException;
-import java.net.SocketTimeoutException;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.logging.Level;
+import java.io.*;
+import java.net.*;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.logging.*;
 
 public class RedisNetworkExecutor extends Thread {
   private static final String              DEFAULT_BUCKET = "default";

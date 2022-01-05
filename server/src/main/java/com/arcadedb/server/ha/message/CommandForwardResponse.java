@@ -15,7 +15,11 @@
  */
 package com.arcadedb.server.ha.message;
 
-import com.arcadedb.database.*;
+import com.arcadedb.database.Binary;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
+import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
@@ -27,8 +31,7 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.HAServer;
 import org.json.JSONObject;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
 
 public class CommandForwardResponse extends HAAbstractCommand {
   private ResultSet        resultset;

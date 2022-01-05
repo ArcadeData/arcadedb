@@ -15,10 +15,16 @@
  */
 package com.arcadedb.graph;
 
-import com.arcadedb.database.*;
+import com.arcadedb.database.Binary;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.EmbeddedModifierProperty;
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.ImmutableDocument;
+import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
 import com.arcadedb.schema.DocumentType;
 
-import java.util.Map;
+import java.util.*;
 
 /**
  * Immutable read-only vertex. It is returned from database on read operations such as queries or lookups. To modify a vertex use {@link #modify()} to have the
