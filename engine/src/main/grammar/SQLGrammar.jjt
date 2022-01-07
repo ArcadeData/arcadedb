@@ -173,15 +173,7 @@ TOKEN:
   |
   < LET: ( "l" | "L" ) ( "e" | "E" ) ( "t" | "T" ) >
   |
-  < CACHE: ( "c" | "C" ) ( "a" | "A" ) ( "c" | "C" ) ( "h" | "H" ) ( "e" | "E" ) >
-  |
   < CHECK: ( "c" | "C" ) ( "h" | "H" ) ( "e" | "E" ) ( "c" | "C" ) ( "k" | "K" ) >
-  |
-  < CYCLE: ( "c" | "C" ) ( "y" | "Y" ) ( "c" | "C" ) ( "l" | "L" ) ( "e" | "E" ) >
-  |
-  < NOLIMIT: ( "n" | "N" ) ( "o" | "O" ) ( "l" | "L" ) ( "i" | "I" ) ( "m" | "M" ) ( "i" | "I" ) ( "t" | "T" ) >
-  |
-  < NOCYCLE: ( "n" | "N" ) ( "o" | "O" ) ( "c" | "C" ) ( "y" | "Y" ) ( "c" | "C" ) ( "l" | "L" ) ( "e" | "E" ) >
   |
   < UNSAFE: ( "u" | "U" ) ( "n" | "N" ) ( "s" | "S" ) ( "a" | "A" ) ( "f" | "F" ) ( "e" | "E" ) >
   |
@@ -213,8 +205,6 @@ TOKEN:
 	|
 	< PROFILE: ( "p" | "P" ) ( "r" | "R" ) ( "o" | "O" ) ( "f" | "F" ) ( "i" | "I" ) ( "l" | "L" ) ( "e" | "E" ) >
 	|
-	< STORAGE: ( "s" | "S" ) ( "t" | "T" ) ( "o" | "O" ) ( "r" | "R" ) ( "a" | "A" ) ( "g" | "G" ) ( "e" | "E" ) >
-	|
 	< ON: ( "o" | "O" ) ( "n" | "N" ) >
 	|
 	< OFF: ( "o" | "O" ) ( "f" | "F" ) ( "f" | "F" ) >
@@ -224,8 +214,6 @@ TOKEN:
 	< POLYMORPHIC: ( "p" | "P" ) ( "o" | "O" ) ( "l" | "L" ) ( "y" | "Y" ) ( "m" | "M" ) ( "o" | "O" ) ( "r" | "R" ) ( "p" | "P" ) ( "h" | "H" ) ( "i" | "I" ) ( "c" | "C" ) >
 	|
 	< FIND: ( "f" | "F" ) ( "i" | "I" ) ( "n" | "N" ) ( "d" | "D" ) >
-	|
-	< REFERENCES: ( "r" | "R" ) ( "e" | "E" ) ( "f" | "F" ) ( "e" | "E" ) ( "r" | "R" ) ( "e" | "E" ) ( "n" | "N" ) ( "c" | "C" ) ( "e" | "E" ) ( "s" | "S" ) >
 	|
 	< EXTENDS: ( "e" | "E" ) ( "x" | "X" ) ( "t" | "T" ) ( "e" | "E" ) ( "n" | "N" ) ( "d" | "D" ) ( "s" | "S" ) >
 	|
@@ -291,12 +279,6 @@ TOKEN:
   |
   < FUNCTION: ( "F" | "f") ( "U" | "u")  ( "N" | "n") ( "C" | "c") ( "T" | "t")  ( "I" | "i") ( "O" | "o")  ( "N" | "n") >
   |
-  < PARAMETERS: ( "P" | "p") ( "A" | "a")  ( "R" | "r") ( "A" | "a") ( "M" | "m")  ( "E" | "e") ( "T" | "t")  ( "E" | "e") ( "R" | "r") ( "S" | "s") >
-  |
-  < IDEMPOTENT: ( "I" | "i") ( "D" | "d")  ( "E" | "e") ( "M" | "m") ( "P" | "p")  ( "O" | "o") ( "T" | "t")  ( "E" | "e") ( "N" | "n") ( "T" | "t") >
-  |
-  < LANGUAGE: ( "L" | "l") ( "A" | "a")  ( "N" | "n") ( "G" | "g") ( "U" | "u")  ( "A" | "a") ( "G" | "g")  ( "E" | "e") >
-  |
   < BEGIN: ( "B" | "b") ( "E" | "e")  ( "G" | "g") ( "I" | "i") ( "N" | "n") >
   |
   < COMMIT: ( "C" | "c") ( "O" | "o")  ( "M" | "m") ( "M" | "m") ( "I" | "i")  ( "T" | "t") >
@@ -317,14 +299,6 @@ TOKEN:
   |
   < SLEEP: ( "S" | "s") ( "L" | "l") ( "E" | "e") ( "E" | "e") ( "P" | "p")  >
   |
-  < CONSOLE: ( "C" | "c") ( "O" | "o") ( "N" | "n") ( "S" | "s") ( "O" | "o")  ( "L" | "l") ( "E" | "e")>
-  |
-  < BLOB: ( "B" | "b") ( "L" | "l") ( "O" | "o") ( "B" | "b") >
-  |
-  < SHARED: ( "S" | "s") ( "H" | "h") ( "A" | "a") ( "R" | "r") ( "E" | "e") ( "D" | "d") >
-  |
-  < DEFAULT_: ( "D" | "d") ( "E" | "e") ( "F" | "f") ( "A" | "a") ( "U" | "u") ( "L" | "l") ( "T" | "t") >
-	|
 	< START: ( "S" | "s") ( "T" | "t") ( "A" | "a") ( "R" | "r") ( "T" | "t") >
 	|
 	< OPTIONAL: ( "O" | "o") ( "P" | "p") ( "T" | "t") ( "I" | "i") ( "O" | "o") ( "N" | "n") ( "A" | "a") ( "L" | "l") >
@@ -765,8 +739,6 @@ Identifier Identifier():
   |
   token = <PROFILE>
   |
-  token = <STORAGE>
-  |
 	token = <CUSTOM>
 	|
   token = <CHECK>
@@ -778,8 +750,6 @@ Identifier Identifier():
   token = <TRUNCATE>
   |
   token = <FIND>
-  |
-  token = <REFERENCES>
   |
   token = <EXTENDS>
   |
@@ -843,12 +813,6 @@ Identifier Identifier():
   |
   token = <FUNCTION>
   |
-  token = <PARAMETERS>
-  |
-  token = <IDEMPOTENT>
-  |
-  token = <LANGUAGE>
-  |
   token = <BEGIN>
   |
   token = <COMMIT>
@@ -866,22 +830,6 @@ Identifier Identifier():
   token = <ISOLATION>
   |
   token = <SLEEP>
-  |
-  token = <CONSOLE>
-  |
-  token = <BLOB>
-  |
-  token = <SHARED>
-  |
-  token = <DEFAULT_>
-  |
-  token = <CACHE>
-  |
-  token = <CYCLE>
-  |
-  token = <NOLIMIT>
-  |
-  token = <NOCYCLE>
   |
   token = <START>
   |
@@ -4016,12 +3964,7 @@ DropIndexStatement DropIndexStatement():
 CreateBucketStatement CreateBucketStatement():
 {}
 {
-  <CREATE>
-  (
-    ( <BUCKET> )
-    |
-    ( <BLOB> <BUCKET> { jjtThis.blob = true; } )
-  )
+  <CREATE> <BUCKET>
   jjtThis.name = Identifier()
   [ <IF> <NOT> <EXISTS> { jjtThis.ifNotExists = true; } ]
   [ <ID> jjtThis.id = PInteger() ]
