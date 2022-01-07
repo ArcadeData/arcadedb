@@ -18,13 +18,14 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.Map;
+import java.util.*;
 
 public class CreateBucketStatement extends DDLStatement {
   protected Identifier name;
@@ -43,28 +44,29 @@ public class CreateBucketStatement extends DDLStatement {
   @Override
   public ResultSet executeDDL(final CommandContext ctx) {
     final Database db = ctx.getDatabase();
-    int existingId = db.getSchema().getBucketByName(name.getStringValue()).getId();
-    if (existingId >= 0) {
-      if (ifNotExists) {
+    final String bucketName = name.getStringValue();
+    if (db.getSchema().existsBucket(bucketName)) {
+      if (ifNotExists)
         return new InternalResultSet();
-      } else {
-        throw new CommandExecutionException("Bucket '" + name.getStringValue() + "' already exists");
-      }
+      throw new CommandExecutionException("Bucket '" + bucketName + "' already exists");
     }
+
     if (id != null) {
       final String existingName = db.getSchema().getBucketById(id.getValue().intValue()).getName();
       if (existingName != null) {
-        if (ifNotExists) {
+        if (ifNotExists)
           return new InternalResultSet();
-        } else {
-          throw new CommandExecutionException("Bucket '" + id.getValue() + "' already exists");
-        }
+
+        throw new CommandExecutionException("Bucket '" + id.getValue() + "' already exists");
       }
     }
 
+    final Bucket bucket = db.getSchema().createBucket(bucketName);
+
     final ResultInternal result = new ResultInternal();
     result.setProperty("operation", "create bucket");
-    result.setProperty("bucketName", name.getStringValue());
+    result.setProperty("bucketName", bucketName);
+    result.setProperty("bucketId", bucket.getId());
 
     final InternalResultSet rs = new InternalResultSet();
     rs.add(result);

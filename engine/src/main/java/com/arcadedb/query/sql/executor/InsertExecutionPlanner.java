@@ -15,10 +15,18 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.query.sql.parser.*;
+import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.query.sql.parser.Bucket;
+import com.arcadedb.query.sql.parser.Identifier;
+import com.arcadedb.query.sql.parser.IndexIdentifier;
+import com.arcadedb.query.sql.parser.InsertBody;
+import com.arcadedb.query.sql.parser.InsertSetExpression;
+import com.arcadedb.query.sql.parser.InsertStatement;
+import com.arcadedb.query.sql.parser.Projection;
+import com.arcadedb.query.sql.parser.SelectStatement;
+import com.arcadedb.query.sql.parser.UpdateItem;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
 
 /**
  * Created by luigidellaquila on 08/08/16.
@@ -115,17 +123,29 @@ public class InsertExecutionPlanner {
 
   private void handleCreateRecord(InsertExecutionPlan result, InsertBody body, CommandContext ctx, boolean profilingEnabled) {
     int tot = 1;
-
-    if (body != null && body.getValueExpressions() != null && body.getValueExpressions().size() > 0) {
+    if (body != null && body.getValueExpressions() != null && body.getValueExpressions().size() > 0)
       tot = body.getValueExpressions().size();
+
+    if (targetType == null && targetBucket != null) {
+      final com.arcadedb.engine.Bucket bucket;
+      if (targetBucket.getBucketName() != null)
+        bucket = ctx.getDatabase().getSchema().getBucketByName(targetBucket.getBucketName());
+      else
+        bucket = ctx.getDatabase().getSchema().getBucketById(targetBucket.getBucketNumber());
+
+      if (bucket == null)
+        throw new CommandSQLParsingException("Target not specified");
+
+      targetType = new Identifier(ctx.getDatabase().getSchema().getTypeNameByBucketId(bucket.getId()));
     }
+
     result.chain(new CreateRecordStep(targetType.getStringValue(), ctx, tot, profilingEnabled));
   }
 
   private void handleInsertSelect(InsertExecutionPlan result, SelectStatement selectStatement, CommandContext ctx, boolean profilingEnabled) {
     InternalExecutionPlan subPlan = selectStatement.createExecutionPlan(ctx, profilingEnabled);
     result.chain(new SubQueryStep(subPlan, ctx, ctx, profilingEnabled));
-    if(targetType!=null) {
+    if (targetType != null) {
       result.chain(new CopyDocumentStep(ctx, targetType.getStringValue(), profilingEnabled));
     }
     result.chain(new RemoveEdgePointersStep(ctx, profilingEnabled));

@@ -17,9 +17,11 @@
 /* ParserGeneratorCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_CLASS_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import java.util.*;
+
 public class BucketIdentifier extends SimpleNode {
-  protected PInteger bucketId;
-  protected String   bucketName;
+  protected PInteger   bucketId;
+  protected Identifier bucketName;
 
   public BucketIdentifier(int id) {
     super(id);
@@ -32,11 +34,26 @@ public class BucketIdentifier extends SimpleNode {
   public Object getValue() {
     if (bucketId != null)
       return bucketId;
-    if (bucketName.startsWith("\"") || bucketName.startsWith("'"))
-      return bucketName.substring(1, bucketName.length() - 1);
 
-    return bucketName;
+    final String bucketNameAsString = bucketName.getValue();
+
+    if (bucketNameAsString.startsWith("\"") || bucketNameAsString.startsWith("'"))
+      return bucketNameAsString.substring(1, bucketNameAsString.length() - 1);
+
+    return bucketNameAsString;
   }
 
+  @Override
+  public BucketIdentifier copy() {
+    final BucketIdentifier copy = new BucketIdentifier(-1);
+    copy.bucketName = bucketName.copy();
+    copy.bucketId = bucketId.copy();
+    return copy;
+  }
+
+  @Override
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
+    builder.append(getValue());
+  }
 }
 /* ParserGeneratorCC - OriginalChecksum=2df38a8c1ac60c28421dc4665da4a817 (do not edit this line) */

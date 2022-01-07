@@ -68,7 +68,7 @@ public class CheckIsVertexTypeStep extends AbstractExecutionStep {
         found = true;
       }
       if (!found) {
-        throw new CommandExecutionException("Type  " + this.targetClass + " is not a Vertex type");
+        throw new CommandExecutionException("Type ' '" + this.targetClass + "' is not a Vertex type");
       }
 
       return new InternalResultSet();

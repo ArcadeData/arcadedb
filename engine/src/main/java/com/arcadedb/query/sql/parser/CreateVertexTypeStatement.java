@@ -17,43 +17,14 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.exception.CommandExecutionException;
-import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.InternalResultSet;
-import com.arcadedb.query.sql.executor.ResultInternal;
-import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.engine.Bucket;
+import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 
-import java.util.List;
-import java.util.Map;
-import java.util.stream.Collectors;
+import java.util.*;
 
-public class CreateVertexTypeStatement extends DDLStatement {
-  /**
-   * Class name
-   */
-  public Identifier name;
-
-  public boolean ifNotExists;
-
-  /**
-   * Direct superclasses for this class
-   */
-  protected List<Identifier> supertypes;
-
-  /**
-   * Cluster IDs for this class
-   */
-  protected List<PInteger> buckets;
-
-  /**
-   * Total number clusters for this class
-   */
-  protected PInteger totalBucketNo;
-
-  protected boolean abstractType = false;
-
+public class CreateVertexTypeStatement extends CreateTypeAbstractStatement {
   public CreateVertexTypeStatement(final int id) {
     super(id);
   }
@@ -63,137 +34,33 @@ public class CreateVertexTypeStatement extends DDLStatement {
   }
 
   @Override
-  public ResultSet executeDDL(final CommandContext ctx) {
-
-    final Schema schema = ctx.getDatabase().getSchema();
-    if (schema.existsType(name.getStringValue())) {
-      if (ifNotExists) {
-        return new InternalResultSet();
-      } else {
-        throw new CommandExecutionException("Type " + name + " already exists");
-      }
-    }
-    checkSuperTypes(schema, ctx);
-
-    final ResultInternal result = new ResultInternal();
-    result.setProperty("operation", "create vertex type");
-    result.setProperty("typeName", name.getStringValue());
-
-    final VertexType[] superclasses = getSuperTypes(schema);
-
-    final VertexType type;
-    if (totalBucketNo != null)
-      type = schema.createVertexType(name.getStringValue(), totalBucketNo.getValue().intValue());
-    else
-      type = schema.createVertexType(name.getStringValue());
-
-    for (VertexType c : superclasses)
-      type.addSuperType(c);
-
-    return new InternalResultSet(result);
-  }
-
-  private VertexType[] getSuperTypes(final Schema schema) {
-    if (supertypes == null)
-      return new VertexType[] {};
-
-    return supertypes.stream().map(x -> schema.getType(x.getStringValue())).filter(x -> x != null).collect(Collectors.toList()).toArray(new VertexType[] {});
-  }
-
-  private void checkSuperTypes(final Schema schema, final CommandContext ctx) {
-    if (supertypes != null) {
-      for (Identifier superType : supertypes) {
-        if (!schema.existsType(superType.value)) {
-          throw new CommandExecutionException("Supertype " + superType + " not found");
-        }
-      }
-    }
+  protected String commandType() {
+    return "create vertex type";
   }
 
   @Override
-  public void toString(final Map<String, Object> params, final StringBuilder builder) {
-    builder.append("CREATE VERTEX TYPE ");
-    name.toString(params, builder);
-    if (ifNotExists) {
-      builder.append(" IF NOT EXISTS");
-    }
-    if (supertypes != null && supertypes.size() > 0) {
-      builder.append(" EXTENDS ");
-      boolean first = true;
-      for (Identifier sup : supertypes) {
-        if (!first) {
-          builder.append(", ");
-        }
-        sup.toString(params, builder);
-        first = false;
+  protected DocumentType createType(Schema schema) {
+    final VertexType type;
+    if (totalBucketNo != null)
+      type = schema.createVertexType(name.getStringValue(), totalBucketNo.getValue().intValue());
+    else {
+      if (buckets == null || buckets.isEmpty())
+        type = schema.createVertexType(name.getStringValue());
+      else {
+        // CHECK THE BUCKETS FIRST
+        final List<Bucket> bucketInstances = new ArrayList<>();
+        for (BucketIdentifier b : buckets)
+          bucketInstances.add(b.bucketName != null ? schema.getBucketByName(b.bucketName.getStringValue()) : schema.getBucketById(b.bucketId.value.intValue()));
+
+        type = schema.createVertexType(name.getStringValue(), bucketInstances);
       }
     }
-    if (buckets != null && buckets.size() > 0) {
-      builder.append(" BUCKET ");
-      boolean first = true;
-      for (PInteger bucket : buckets) {
-        if (!first) {
-          builder.append(",");
-        }
-        bucket.toString(params, builder);
-        first = false;
-      }
-    }
-    if (totalBucketNo != null) {
-      builder.append(" BUCKETS ");
-      totalBucketNo.toString(params, builder);
-    }
-    if (abstractType) {
-      builder.append(" ABSTRACT");
-    }
+    return type;
   }
 
   @Override
   public CreateVertexTypeStatement copy() {
-    final CreateVertexTypeStatement result = new CreateVertexTypeStatement(-1);
-    result.name = name == null ? null : name.copy();
-    result.supertypes = supertypes == null ? null : supertypes.stream().map(x -> x.copy()).collect(Collectors.toList());
-    result.buckets = buckets == null ? null : buckets.stream().map(x -> x.copy()).collect(Collectors.toList());
-    result.totalBucketNo = totalBucketNo == null ? null : totalBucketNo.copy();
-    result.abstractType = abstractType;
-    result.ifNotExists = ifNotExists;
-    return result;
-  }
-
-  @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final CreateVertexTypeStatement that = (CreateVertexTypeStatement) o;
-
-    if (abstractType != that.abstractType)
-      return false;
-    if (name != null ? !name.equals(that.name) : that.name != null)
-      return false;
-    if (supertypes != null ? !supertypes.equals(that.supertypes) : that.supertypes != null)
-      return false;
-    if (buckets != null ? !buckets.equals(that.buckets) : that.buckets != null)
-      return false;
-    if (totalBucketNo != null ? !totalBucketNo.equals(that.totalBucketNo) : that.totalBucketNo != null)
-      return false;
-    return ifNotExists == that.ifNotExists;
-  }
-
-  @Override
-  public int hashCode() {
-    int result = name != null ? name.hashCode() : 0;
-    result = 31 * result + (supertypes != null ? supertypes.hashCode() : 0);
-    result = 31 * result + (buckets != null ? buckets.hashCode() : 0);
-    result = 31 * result + (totalBucketNo != null ? totalBucketNo.hashCode() : 0);
-    result = 31 * result + (abstractType ? 1 : 0);
-    return result;
-  }
-
-  public List<Identifier> getSupertypes() {
-    return supertypes;
+    return (CreateVertexTypeStatement) super.copy(new CreateVertexTypeStatement(-1));
   }
 }
 /* JavaCC - OriginalChecksum=4043013624f55fdf0ea8fee6d4f211b0 (do not edit this line) */

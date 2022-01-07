@@ -23,10 +23,11 @@ public class CheckDatabaseStatementTest extends ParserTestAbstract {
   public void testPlain() {
     checkRightSyntax("CHECK DATABASE");
     checkRightSyntax("check database");
+    checkRightSyntax("check database type Customer");
     checkRightSyntax("check database bucket 3");
-    checkRightSyntax("check database bucket 'Test'");
     checkRightSyntax("check database bucket 3 FIX");
-    checkRightSyntax("check database bucket 'Test' fix");
+    checkRightSyntax("check database bucket Customer");
+    checkRightSyntax("check database bucket Customer fix");
 
     checkWrongSyntax("check database file:///foo/bar/ foo bar");
   }

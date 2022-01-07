@@ -70,7 +70,7 @@ public class CheckIsEdgeTypeStep extends AbstractExecutionStep {
         found = true;
       }
       if (!found) {
-        throw new CommandExecutionException("Type  " + this.targetClass + " is not an Edge type");
+        throw new CommandExecutionException("Type ' '" + this.targetClass + "' is not an Edge type");
       }
 
       return new InternalResultSet();

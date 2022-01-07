@@ -55,7 +55,7 @@ public class CheckDatabaseTest extends TestHelper {
 
   @Test
   public void checkTypes() {
-    ResultSet result = database.command("sql", "check database type 'Person'");
+    ResultSet result = database.command("sql", "check database type Person");
     Assertions.assertTrue(result.hasNext());
     while (result.hasNext()) {
       final Result row = result.next();
@@ -66,7 +66,7 @@ public class CheckDatabaseTest extends TestHelper {
       Assertions.assertEquals(0, (Long) row.getProperty("autoFix"));
     }
 
-    result = database.command("sql", "check database type 'Person', 'Knows'");
+    result = database.command("sql", "check database type Person, Knows");
     Assertions.assertTrue(result.hasNext());
     while (result.hasNext()) {
       final Result row = result.next();

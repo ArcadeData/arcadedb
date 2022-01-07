@@ -25,5 +25,11 @@ public class PString extends SimpleNode {
   public PString(SqlParser p, int id) {
     super(p, id);
   }
+
+  public PString copy() {
+    PString result = new PString(-1);
+    result.value = value;
+    return result;
+  }
 }
 /* JavaCC - OriginalChecksum=839493e838048bfc6ae3d35e25d35280 (do not edit this line) */

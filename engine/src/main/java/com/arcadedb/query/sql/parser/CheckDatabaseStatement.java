@@ -23,15 +23,12 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.Map;
-import java.util.Set;
-import java.util.stream.Collectors;
+import java.util.*;
+import java.util.stream.*;
 
 public class CheckDatabaseStatement extends SimpleExecStatement {
   protected final Set<BucketIdentifier> buckets = new HashSet<>();
-  protected final Set<String>           types   = new HashSet<>();
+  protected final Set<Identifier>       types   = new HashSet<>();
   protected       boolean               fix     = false;
 
   public CheckDatabaseStatement(final int id) {
@@ -53,7 +50,9 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
     final DatabaseChecker checker = new DatabaseChecker(ctx.getDatabase().getWrappedDatabaseInstance());
     checker.setVerboseLevel(0);
     checker.setBuckets(buckets.stream().map(x -> x.getValue()).collect(Collectors.toSet()));
-    checker.setTypes(types.stream().map(x -> (x.startsWith("\"") || x.startsWith("'")) ? x.substring(1, x.length() - 1) : x).collect(Collectors.toSet()));
+    checker.setTypes(types.stream().map(x -> (x.getStringValue().startsWith("\"") || x.getStringValue().startsWith("'")) ?
+        x.getStringValue().substring(1, x.getStringValue().length() - 1) :
+        x.getStringValue()).collect(Collectors.toSet()));
     checker.setFix(fix);
 
     final Map<String, Object> checkResult = checker.check();
@@ -71,11 +70,9 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
 
     if (!types.isEmpty()) {
       builder.append(" TYPE ");
-      final Iterator<String> iterator = types.iterator();
+      final Iterator<Identifier> iterator = types.iterator();
       for (int i = 0; iterator.hasNext(); i++) {
-        builder.append(" \"");
-        builder.append(iterator.next());
-        builder.append("\"");
+        builder.append(iterator.next().getStringValue());
 
         if (i > 0)
           builder.append(",");
@@ -87,11 +84,7 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
       final Iterator<BucketIdentifier> iterator = buckets.iterator();
       for (int i = 0; iterator.hasNext(); i++) {
         final Object bucket = iterator.next().getValue();
-        if (bucket instanceof String)
-          builder.append(" \"");
         builder.append(bucket);
-        if (bucket instanceof String)
-          builder.append("\"");
 
         if (i > 0)
           builder.append(",");

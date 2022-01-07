@@ -233,8 +233,6 @@ TOKEN:
   |
 	< BUCKETS: ( "B" | "b" ) ( "U" | "u" ) ( "C" | "c" ) ( "K" | "k" ) ( "E" | "e" ) ( "T" | "t" ) ( "S" | "s" ) >
 	|
-	< ABSTRACT: ( "a" | "A" ) ( "b" | "B" ) ( "s" | "S" ) ( "T" | "t" ) ( "R" | "r" ) ( "a" | "A" ) ( "C" | "c" ) ( "T" | "t" ) >
-	|
 	< ALTER: ( "a" | "A" ) ( "l" | "L" ) ( "t" | "T" ) ( "e" | "E" ) ( "r" | "R" ) >
 	|
 	< NAME: ("n" | "N") ( "a" | "A" ) ( "m" | "M" ) ( "e" | "E" ) >
@@ -566,7 +564,7 @@ TOKEN :
 |
   < INDEXVALUESDESC_IDENTIFIER: ( "I" | "i") ( "N" | "n") ( "D" | "d") ( "E" | "e") ( "X" | "x") ( "V" | "v") ( "A" | "a") ( "L" | "l") ( "U" | "u") ( "E" | "e") ( "S" | "s") ( "D" | "d") ( "E" | "e") ( "S" | "s") ( "C" | "c") ":" ( "__@recordmap@___" )? <IDENTIFIER> ( ( <DOT> | <MINUS> ) <IDENTIFIER> )* >
 |
-  < BUCKET_IDENTIFIER: <BUCKET> <COLON> <IDENTIFIER>  >
+  < BUCKET_IDENTIFIER: <BUCKET> <COLON> <IDENTIFIER> >
 |
   < BUCKET_NUMBER_IDENTIFIER: <BUCKET> <COLON> <INTEGER_LITERAL>  >
 |
@@ -661,7 +659,7 @@ BucketIdentifier BucketIdentifier():
   (
     jjtThis.bucketId = PInteger()
     |
-    jjtThis.bucketName = PString()
+    jjtThis.bucketName = Identifier()
   )
   { return jjtThis; }
 }
@@ -786,8 +784,6 @@ Identifier Identifier():
   token = <EXTENDS>
   |
   token = <BUCKETS>
-  |
-  token = <ABSTRACT>
   |
   token = <ALTER>
   |
@@ -3611,7 +3607,7 @@ TruncateRecordStatement TruncateRecordStatement():
 CreateDocumentTypeStatement CreateDocumentTypeStatement():
 {
 	Identifier lastIdentifier;
-	PInteger lastInteger;
+	BucketIdentifier lastBucket;
 }
 {
 	<CREATE> <DOCUMENT> <TYPE>
@@ -3626,14 +3622,13 @@ CreateDocumentTypeStatement CreateDocumentTypeStatement():
 			 )*
 		]
 		[
-			<BUCKET> lastInteger = PInteger() { jjtThis.buckets = new ArrayList<PInteger>(); jjtThis.buckets.add(lastInteger); }
+			<BUCKET> lastBucket = BucketIdentifier() { jjtThis.buckets = new ArrayList<BucketIdentifier>(); jjtThis.buckets.add(lastBucket); }
 		 	(
 				<COMMA>
-				lastInteger = PInteger() { jjtThis.buckets.add(lastInteger); }
+				lastBucket = BucketIdentifier() { jjtThis.buckets.add(lastBucket); }
 		 	)*
 		]
 		[ <BUCKETS> jjtThis.totalBucketNo = PInteger() ]
-		[ <ABSTRACT> { jjtThis.abstractType = true; } ]
 	)
 	{ return jjtThis; }
 }
@@ -3641,7 +3636,7 @@ CreateDocumentTypeStatement CreateDocumentTypeStatement():
 CreateVertexTypeStatement CreateVertexTypeStatement():
 {
 	Identifier lastIdentifier;
-	PInteger lastInteger;
+	BucketIdentifier lastBucket;
 }
 {
 	<CREATE> <VERTEX> <TYPE>
@@ -3656,14 +3651,13 @@ CreateVertexTypeStatement CreateVertexTypeStatement():
 			 )*
 		]
 		[
-			<BUCKET> lastInteger = PInteger() { jjtThis.buckets = new ArrayList<PInteger>(); jjtThis.buckets.add(lastInteger); }
+			<BUCKET> lastBucket = BucketIdentifier() { jjtThis.buckets = new ArrayList<BucketIdentifier>(); jjtThis.buckets.add(lastBucket); }
 		 	(
 				<COMMA>
-				lastInteger = PInteger() { jjtThis.buckets.add(lastInteger); }
+				lastBucket = BucketIdentifier() { jjtThis.buckets.add(lastBucket); }
 		 	)*
 		]
 		[ <BUCKETS> jjtThis.totalBucketNo = PInteger() ]
-		[ <ABSTRACT> { jjtThis.abstractType = true; } ]
 	)
 	{ return jjtThis; }
 }
@@ -3671,7 +3665,7 @@ CreateVertexTypeStatement CreateVertexTypeStatement():
 CreateEdgeTypeStatement CreateEdgeTypeStatement():
 {
 	Identifier lastIdentifier;
-	PInteger lastInteger;
+	BucketIdentifier lastBucket;
 }
 {
 	<CREATE> <EDGE> <TYPE>
@@ -3686,14 +3680,13 @@ CreateEdgeTypeStatement CreateEdgeTypeStatement():
 			 )*
 		]
 		[
-			<BUCKET> lastInteger = PInteger() { jjtThis.buckets = new ArrayList<PInteger>(); jjtThis.buckets.add(lastInteger); }
+			<BUCKET> lastBucket = BucketIdentifier() { jjtThis.buckets = new ArrayList<BucketIdentifier>(); jjtThis.buckets.add(lastBucket); }
 		 	(
 				<COMMA>
-				lastInteger = PInteger() { jjtThis.buckets.add(lastInteger); }
+				lastBucket = BucketIdentifier() { jjtThis.buckets.add(lastBucket); }
 		 	)*
 		]
 		[ <BUCKETS> jjtThis.totalBucketNo = PInteger() ]
-		[ <ABSTRACT> { jjtThis.abstractType = true; } ]
 	)
 	{ return jjtThis; }
 }
@@ -4275,19 +4268,21 @@ BackupDatabaseStatement BackupDatabaseStatement():
 
 CheckDatabaseStatement CheckDatabaseStatement():
 {
+  Identifier lastType;
   BucketIdentifier lastBucket;
-  String lastType;
 }
 {
+  <CHECK> <DATABASE>
   (
-    <CHECK> <DATABASE>
     [ <TYPE>
-      lastType = PString() { jjtThis.types.add(lastType); }
-      ( <COMMA> lastType = PString() { jjtThis.types.add(lastType); } )*
+      lastType = Identifier() { jjtThis.types.add(lastType); }
+      ( <COMMA> lastType = Identifier() { jjtThis.types.add(lastType); } )*
     ]
-    [ <BUCKET>
-      lastBucket = BucketIdentifier() { jjtThis.buckets.add(lastBucket); }
-      ( <COMMA> lastBucket = BucketIdentifier() { jjtThis.buckets.add(lastBucket); } )*
+    [ <BUCKET> lastBucket = BucketIdentifier() { jjtThis.buckets.add(lastBucket); }
+      (
+        <COMMA>
+        lastBucket = BucketIdentifier() { jjtThis.buckets.add(lastBucket); }
+      )*
     ]
     [ <FIX> { jjtThis.fix = true; } ]
   )

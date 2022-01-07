@@ -21,8 +21,7 @@ import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 
-import java.util.Collection;
-import java.util.TimeZone;
+import java.util.*;
 
 public interface Schema {
 
@@ -96,7 +95,11 @@ public interface Schema {
 
   DocumentType createDocumentType(String typeName, int buckets);
 
+  DocumentType createDocumentType(String typeName, List<Bucket> buckets);
+
   DocumentType createDocumentType(String typeName, int buckets, int pageSize);
+
+  DocumentType createDocumentType(String typeName, List<Bucket> buckets, int pageSize);
 
   DocumentType getOrCreateDocumentType(String typeName);
 
@@ -108,7 +111,11 @@ public interface Schema {
 
   VertexType createVertexType(String typeName, int buckets);
 
+  VertexType createVertexType(String typeName, List<Bucket> buckets);
+
   VertexType createVertexType(String typeName, int buckets, int pageSize);
+
+  VertexType createVertexType(String typeName, List<Bucket> buckets, final int pageSize);
 
   VertexType getOrCreateVertexType(String typeName);
 
@@ -120,7 +127,11 @@ public interface Schema {
 
   EdgeType createEdgeType(String typeName, int buckets);
 
+  EdgeType createEdgeType(String typeName, List<Bucket> buckets);
+
   EdgeType createEdgeType(String typeName, int buckets, int pageSize);
+
+  EdgeType createEdgeType(String typeName, List<Bucket> buckets, int pageSize);
 
   EdgeType getOrCreateEdgeType(String typeName);
 
