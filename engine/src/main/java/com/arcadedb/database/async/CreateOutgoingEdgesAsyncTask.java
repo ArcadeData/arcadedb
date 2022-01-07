@@ -25,7 +25,7 @@ import java.util.List;
 /**
  * Asynchronous Task that creates the relationship between the sourceVertex and the destinationVertex as outgoing.
  */
-public class CreateOutgoingEdgesAsyncTask extends DatabaseAsyncAbstractTask {
+public class CreateOutgoingEdgesAsyncTask implements DatabaseAsyncTask {
   private final VertexInternal                        sourceVertex;
   private final List<GraphEngine.CreateEdgeOperation> connections;
   private final boolean                               edgeBidirectional;

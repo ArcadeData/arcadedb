@@ -18,9 +18,15 @@ package com.arcadedb.integration.importer.graph;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
-import com.arcadedb.database.async.DatabaseAsyncAbstractTask;
 import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
-import com.arcadedb.graph.*;
+import com.arcadedb.database.async.DatabaseAsyncTask;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.EdgeLinkedList;
+import com.arcadedb.graph.EdgeSegment;
+import com.arcadedb.graph.GraphEngine;
+import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
+import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.index.CompressedRID2RIDsIndex;
 import com.arcadedb.integration.importer.ImporterContext;
 import com.arcadedb.integration.importer.ImporterSettings;
@@ -35,7 +41,7 @@ import java.util.logging.Level;
 /**
  * Asynchronous Task that creates the relationship between the sourceVertex and the destinationVertex as outgoing.
  */
-public class CreateEdgeFromImportTask extends DatabaseAsyncAbstractTask {
+public class CreateEdgeFromImportTask implements DatabaseAsyncTask {
   private final GraphImporter.GraphImporterThreadContext threadContext;
   private final String                                   edgeTypeName;
   private final long                                     sourceVertexKey;

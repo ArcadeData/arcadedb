@@ -23,7 +23,7 @@ import com.arcadedb.log.LogManager;
 
 import java.util.logging.Level;
 
-public class DatabaseAsyncIndexCompaction extends DatabaseAsyncAbstractTask {
+public class DatabaseAsyncIndexCompaction implements DatabaseAsyncTask {
   public final IndexInternal index;
 
   public DatabaseAsyncIndexCompaction(final IndexInternal index) {

@@ -121,6 +121,7 @@
         <module>postgresw</module>
         <module>coverage</module>
         <module>package</module>
+        <module>e2e</module>
     </modules>
 
     <build>

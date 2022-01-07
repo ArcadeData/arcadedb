@@ -17,8 +17,8 @@ package com.arcadedb.integration.importer.graph;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.database.async.DatabaseAsyncAbstractTask;
 import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
+import com.arcadedb.database.async.DatabaseAsyncTask;
 import com.arcadedb.graph.EdgeLinkedList;
 import com.arcadedb.graph.EdgeSegment;
 import com.arcadedb.graph.MutableVertex;
@@ -30,7 +30,7 @@ import java.util.List;
 /**
  * Asynchronous Task that links the destination vertex back to the edges/vertices.
  */
-public class LinkEdgeFromImportTask extends DatabaseAsyncAbstractTask {
+public class LinkEdgeFromImportTask implements DatabaseAsyncTask {
   private final Identifiable                           destinationVertex;
   private final List<Pair<Identifiable, Identifiable>> connections;
   private final EdgeLinkedCallback                     callback;

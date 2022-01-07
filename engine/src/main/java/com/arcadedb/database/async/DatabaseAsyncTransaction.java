@@ -19,7 +19,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.ConcurrentModificationException;
 
-public class DatabaseAsyncTransaction extends DatabaseAsyncAbstractTask {
+public class DatabaseAsyncTransaction implements DatabaseAsyncTask {
   public final Database.TransactionScope tx;
   public final  int           retries;
   private final OkCallback    onOkCallback;

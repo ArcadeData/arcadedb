@@ -20,7 +20,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.Map;
 
-public class DatabaseAsyncCommand extends DatabaseAsyncAbstractTask {
+public class DatabaseAsyncCommand implements DatabaseAsyncTask {
   public final boolean                idempotent;
   public final String                 language;
   public final String                 command;

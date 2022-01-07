@@ -24,7 +24,7 @@ import com.arcadedb.engine.ErrorRecordCallback;
 
 import java.util.concurrent.CountDownLatch;
 
-public class DatabaseAsyncScanBucket extends DatabaseAsyncAbstractTask {
+public class DatabaseAsyncScanBucket implements DatabaseAsyncTask {
   public final CountDownLatch      semaphore;
   public final DocumentCallback    userCallback;
   public final ErrorRecordCallback errorRecordCallback;

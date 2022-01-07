@@ -17,11 +17,31 @@ package com.arcadedb.graphql.schema;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.QueryParsingException;
-import com.arcadedb.graphql.parser.*;
+import com.arcadedb.graphql.parser.Argument;
+import com.arcadedb.graphql.parser.Arguments;
+import com.arcadedb.graphql.parser.Definition;
+import com.arcadedb.graphql.parser.Directive;
+import com.arcadedb.graphql.parser.Directives;
+import com.arcadedb.graphql.parser.Document;
+import com.arcadedb.graphql.parser.Field;
+import com.arcadedb.graphql.parser.FieldDefinition;
+import com.arcadedb.graphql.parser.GraphQLParser;
+import com.arcadedb.graphql.parser.InputValueDefinition;
+import com.arcadedb.graphql.parser.ObjectTypeDefinition;
+import com.arcadedb.graphql.parser.OperationDefinition;
+import com.arcadedb.graphql.parser.ParseException;
+import com.arcadedb.graphql.parser.Selection;
+import com.arcadedb.graphql.parser.SelectionSet;
+import com.arcadedb.graphql.parser.TypeDefinition;
+import com.arcadedb.graphql.parser.TypeSystemDefinition;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.*;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 public class GraphQLSchema {
   private Database                          database;
@@ -104,8 +124,8 @@ public class GraphQLSchema {
             final String directiveName = directive.getName();
 
             // TODO: REFACTOR THIS IN MULTIPLE PLUGGABLE CLASSES
-            if ("sql".equals(directiveName) ||//
-                "gremlin".equals(directiveName) ||//
+            if ("sql".equals(directiveName) ||
+                "gremlin".equals(directiveName) ||
                 "cypher".equals(directiveName))
               return parseNativeQueryDirective(directiveName, directive, selection, returnType);
           }
