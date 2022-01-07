@@ -51,6 +51,12 @@
         </dependency>
         <dependency>
             <groupId>com.arcadedb</groupId>
+            <artifactId>arcadedb-integration</artifactId>
+            <version>${project.parent.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.arcadedb</groupId>
             <artifactId>arcadedb-server</artifactId>
             <version>${project.parent.version}</version>
             <type>test-jar</type>

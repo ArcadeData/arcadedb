@@ -19,7 +19,6 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.integration.importer.OrientDBImporter;
-import com.arcadedb.integration.importer.OrientDBImporterIT;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.FileUtils;
 import org.apache.tinkerpop.gremlin.arcadedb.structure.ArcadeGraph;
@@ -46,7 +45,7 @@ public class GraphMLExporterIT {
 
   @Test
   public void testExportOK() throws IOException {
-    final URL inputFile = OrientDBImporterIT.class.getClassLoader().getResource("orientdb-export-small.gz");
+    final URL inputFile = GraphMLExporterIT.class.getClassLoader().getResource("orientdb-export-small.gz");
 
     final OrientDBImporter importer = new OrientDBImporter(("-i " + inputFile.getFile() + " -d " + DATABASE_PATH + " -o").split(" "));
     importer.run().close();

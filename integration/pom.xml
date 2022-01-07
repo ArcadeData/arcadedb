@@ -42,12 +42,12 @@
             <version>${project.parent.version}</version>
             <scope>compile</scope>
         </dependency>
-        <dependency>
-            <groupId>com.arcadedb</groupId>
-            <artifactId>arcadedb-gremlin</artifactId>
-            <version>${project.parent.version}</version>
-            <scope>provided</scope>
-        </dependency>
+<!--        <dependency>-->
+<!--            <groupId>com.arcadedb</groupId>-->
+<!--            <artifactId>arcadedb-gremlin</artifactId>-->
+<!--            <version>${project.parent.version}</version>-->
+<!--            <scope>provided</scope>-->
+<!--        </dependency>-->
         <dependency>
             <groupId>com.univocity</groupId>
             <artifactId>univocity-parsers</artifactId>
