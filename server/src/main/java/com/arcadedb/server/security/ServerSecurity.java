@@ -63,6 +63,7 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
   private              CredentialsValidator            credentialsValidator       = new DefaultCredentialsValidator();
   private static final Random                          RANDOM                     = new SecureRandom();
   public static final  int                             SALT_SIZE                  = 32;
+  private              Timer                           reloadConfigurationTimer;
 
   public ServerSecurity(final ArcadeDBServer server, final ContextConfiguration configuration, final String configPath) {
     this.server = server;
@@ -122,9 +123,9 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
         askForRootPassword();
 
       final long fileLastModified = usersRepository.getFileLastModified();
-      if (fileLastModified > -1) {
-        final Timer timer = new Timer();
-        timer.schedule(new TimerTask() {
+      if (fileLastModified > -1 && reloadConfigurationTimer == null) {
+        reloadConfigurationTimer = new Timer();
+        reloadConfigurationTimer.schedule(new TimerTask() {
           @Override
           public void run() {
             if (usersRepository.isUserFileChanged()) {
@@ -142,6 +143,9 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
 
   @Override
   public void stopService() {
+    if (reloadConfigurationTimer != null)
+      reloadConfigurationTimer.cancel();
+
     users.clear();
     if (groupRepository != null)
       groupRepository.stop();
