@@ -22,15 +22,14 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.*;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import java.util.logging.Level;
+import java.util.*;
+import java.util.logging.*;
 
 public class SecurityUserFileRepository {
-  public static final  String FILE_NAME   = "server-users.jsonl";
-  private static final int    BUFFER_SIZE = 65536 * 10;
+  public static final  String FILE_NAME        = "server-users.jsonl";
+  private static final int    BUFFER_SIZE      = 65536 * 10;
   private final        String securityConfPath;
+  private              long   fileLastModified = -1;
 
   public SecurityUserFileRepository(String securityConfPath) {
     if (!securityConfPath.endsWith("/") && !securityConfPath.endsWith("\\"))
@@ -58,11 +57,17 @@ public class SecurityUserFileRepository {
     }
   }
 
+  public boolean isUserFileChanged() {
+    final File file = new File(securityConfPath, FILE_NAME);
+    return file.lastModified() > fileLastModified;
+  }
+
   protected List<JSONObject> load() throws IOException {
     final File file = new File(securityConfPath, FILE_NAME);
 
     final List<JSONObject> resultSet = new ArrayList<>();
     if (file.exists()) {
+      fileLastModified = file.lastModified();
 
       try (final InputStreamReader is = new InputStreamReader(new FileInputStream(file));//
           final BufferedReader reader = new BufferedReader(is, BUFFER_SIZE)) {
@@ -76,9 +81,13 @@ public class SecurityUserFileRepository {
     return createDefault();
   }
 
-  public List<JSONObject> createDefault() {
+  public static List<JSONObject> createDefault() {
     // ROOT USER
     return Collections.singletonList(
         new JSONObject().put("name", "root").put("databases", new JSONObject().put(SecurityManager.ANY, new JSONArray(new String[] { "admin" }))));
+  }
+
+  public long getFileLastModified() {
+    return fileLastModified;
   }
 }

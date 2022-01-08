@@ -24,15 +24,9 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.ByteArrayInputStream;
-import java.io.File;
-import java.io.IOException;
-import java.io.InputStream;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.util.Collections;
-import java.util.List;
+import java.io.*;
+import java.nio.file.*;
+import java.util.*;
 
 public class ServerSecurityIT {
 
@@ -111,6 +105,39 @@ public class ServerSecurityIT {
     Assertions.assertTrue(security.existsUser("providedUser"));
     Assertions.assertFalse(security.existsUser("root"));
     passwordShouldMatch(security, "MyPassword12345", security.getUser("providedUser").getPassword());
+  }
+
+  @Test
+  void shouldReloadSecurityConfiguration() throws IOException {
+    GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(PASSWORD);
+
+    SecurityUserFileRepository repository = new SecurityUserFileRepository("./target");
+
+    final ServerSecurity security = new ServerSecurity(null, new ContextConfiguration(), "./target");
+
+    final JSONObject json = new JSONObject().put("name", "providedUser").put("password", security.encodePassword("MyPassword12345"))
+        .put("databases", new JSONObject());
+
+    repository.save(Collections.singletonList(json));
+
+    //when
+    security.startService();
+    security.loadUsers();
+
+    Assertions.assertTrue(security.existsUser("providedUser"));
+    Assertions.assertFalse(security.existsUser("root"));
+    passwordShouldMatch(security, "MyPassword12345", security.getUser("providedUser").getPassword());
+
+    // RESET USERS ACCESSING DIRECTLY TO THE FILE
+    repository.save(SecurityUserFileRepository.createDefault());
+
+    try {
+      Thread.sleep(5_500);
+    } catch (InterruptedException e) {
+      e.printStackTrace();
+    }
+
+    Assertions.assertFalse(security.existsUser("providedUser"));
   }
 
   @Test

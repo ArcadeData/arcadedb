@@ -15,10 +15,6 @@
  */
 package com.arcadedb.server.security;
 
-import static com.arcadedb.GlobalConfiguration.SERVER_SECURITY_ALGORITHM;
-import static com.arcadedb.GlobalConfiguration.SERVER_SECURITY_SALT_CACHE_SIZE;
-import static com.arcadedb.GlobalConfiguration.SERVER_SECURITY_SALT_ITERATIONS;
-
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseFactory;
@@ -41,18 +37,21 @@ import org.json.JSONObject;
 import javax.crypto.SecretKey;
 import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.PBEKeySpec;
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.security.NoSuchAlgorithmException;
-import java.security.SecureRandom;
-import java.security.spec.InvalidKeySpecException;
-import java.security.spec.KeySpec;
+import java.io.*;
+import java.nio.charset.*;
+import java.security.*;
+import java.security.spec.*;
 import java.util.*;
-import java.util.logging.Level;
+import java.util.logging.*;
+
+import static com.arcadedb.GlobalConfiguration.SERVER_SECURITY_ALGORITHM;
+import static com.arcadedb.GlobalConfiguration.SERVER_SECURITY_SALT_CACHE_SIZE;
+import static com.arcadedb.GlobalConfiguration.SERVER_SECURITY_SALT_ITERATIONS;
 
 public class ServerSecurity implements ServerPlugin, com.arcadedb.security.SecurityManager {
 
-  public static final  int                             LATEST_VERSION       = 1;
+  public static final  int                             LATEST_VERSION             = 1;
+  private static final int                             CHECK_USER_RELOAD_EVERY_MS = 5_000;
   private final        ArcadeDBServer                  server;
   private final        SecurityUserFileRepository      usersRepository;
   private final        SecurityGroupFileRepository     groupRepository;
@@ -60,10 +59,10 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
   private final        SecretKeyFactory                secretKeyFactory;
   private final        Map<String, String>             saltCache;
   private final        int                             saltIteration;
-  private final        Map<String, ServerSecurityUser> users                = new HashMap<>();
-  private              CredentialsValidator            credentialsValidator = new DefaultCredentialsValidator();
-  private static final Random                          RANDOM               = new SecureRandom();
-  public static final  int                             SALT_SIZE            = 32;
+  private final        Map<String, ServerSecurityUser> users                      = new HashMap<>();
+  private              CredentialsValidator            credentialsValidator       = new DefaultCredentialsValidator();
+  private static final Random                          RANDOM                     = new SecureRandom();
+  public static final  int                             SALT_SIZE                  = 32;
 
   public ServerSecurity(final ArcadeDBServer server, final ContextConfiguration configuration, final String configPath) {
     this.server = server;
@@ -104,6 +103,8 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
 
   public void loadUsers() {
     try {
+      users.clear();
+
       try {
         for (JSONObject userJson : usersRepository.getUsers()) {
           final ServerSecurityUser user = new ServerSecurityUser(server, userJson);
@@ -119,6 +120,20 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
 
       if (users.isEmpty() || (users.containsKey("root") && users.get("root").getPassword() == null))
         askForRootPassword();
+
+      final long fileLastModified = usersRepository.getFileLastModified();
+      if (fileLastModified > -1) {
+        final Timer timer = new Timer();
+        timer.schedule(new TimerTask() {
+          @Override
+          public void run() {
+            if (usersRepository.isUserFileChanged()) {
+              LogManager.instance().log(this, Level.INFO, "Reloading user files...");
+              loadUsers();
+            }
+          }
+        }, CHECK_USER_RELOAD_EVERY_MS, CHECK_USER_RELOAD_EVERY_MS);
+      }
 
     } catch (IOException e) {
       throw new ServerException("Error on starting Security service", e);
