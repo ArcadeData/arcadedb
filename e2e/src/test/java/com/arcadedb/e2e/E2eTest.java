@@ -31,10 +31,13 @@ public class E2eTest {
 
     @Container
     private static GenericContainer arcade = new GenericContainer("arcadedata/arcadedb:latest")
-            .withExposedPorts(2480, 6379, 5432)
+            .withExposedPorts(2480, 6379, 5432, 8182)
             .withEnv("arcadedb.server.rootPassword", "playwithdata")
             .withEnv("arcadedb.server.defaultDatabases", "beer[root]{import:https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz}")
-            .withEnv("arcadedb.server.plugins", "Redis:com.arcadedb.redis.RedisProtocolPlugin, MongoDB:com.arcadedb.mongo.MongoDBProtocolPlugin, Postgres:com.arcadedb.postgres.PostgresProtocolPlugin, GremlinServer:com.arcadedb.server.gremlin.GremlinServerPlugin")
+            .withEnv("arcadedb.server.plugins", "Redis:com.arcadedb.redis.RedisProtocolPlugin, " +
+                    "MongoDB:com.arcadedb.mongo.MongoDBProtocolPlugin, " +
+                    "Postgres:com.arcadedb.postgres.PostgresProtocolPlugin, " +
+                    "GremlinServer:com.arcadedb.server.gremlin.GremlinServerPlugin")
             .waitingFor(Wait.forListeningPort());
 
 
@@ -53,7 +56,6 @@ public class E2eTest {
 
         try {
             final String response = readResponse(connection);
-            System.out.println("response = " + response);
             Assertions.assertEquals(200, connection.getResponseCode());
             Assertions.assertEquals("OK", connection.getResponseMessage());
             Assertions.assertTrue(response.contains("Beer"));

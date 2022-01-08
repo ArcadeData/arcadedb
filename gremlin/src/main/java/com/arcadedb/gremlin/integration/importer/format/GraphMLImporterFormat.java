@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.arcadedb.graph.importer.format;
+package com.arcadedb.gremlin.integration.importer.format;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.integration.importer.AnalyzedEntity;
@@ -30,7 +30,7 @@ import org.apache.tinkerpop.gremlin.structure.io.IoCore;
 import java.io.IOException;
 import java.io.InputStream;
 
-public class GraphSONImporterFormat extends CSVImporterFormat {
+public class GraphMLImporterFormat extends CSVImporterFormat {
   @Override
   public void load(final SourceSchema sourceSchema, AnalyzedEntity.ENTITY_TYPE entityType, final Parser parser, final DatabaseInternal database,
       final ImporterContext context, final ImporterSettings settings) throws ImportException {
@@ -38,7 +38,7 @@ public class GraphSONImporterFormat extends CSVImporterFormat {
     final ArcadeGraph graph = ArcadeGraph.open(database);
 
     try (InputStream is = parser.getInputStream()) {
-      graph.io(IoCore.graphson()).reader().create().readGraph(is, graph);
+      graph.io(IoCore.graphml()).reader().create().readGraph(is, graph);
     } catch (IOException e) {
       throw new ImportException("Error on importing GraphML", e);
     }
@@ -52,6 +52,6 @@ public class GraphSONImporterFormat extends CSVImporterFormat {
 
   @Override
   public String getFormat() {
-    return "graphson";
+    return "graphml";
   }
 }

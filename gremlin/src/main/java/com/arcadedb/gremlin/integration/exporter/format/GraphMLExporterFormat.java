@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.arcadedb.graph.exporter.format;
+package com.arcadedb.gremlin.integration.exporter.format;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.integration.exporter.ExportException;
@@ -29,11 +29,11 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.util.zip.GZIPOutputStream;
 
-public class GraphSONExporterFormat extends AbstractExporterFormat {
-  public static final String     NAME       = "graphson";
+public class GraphMLExporterFormat extends AbstractExporterFormat {
+  public static final String     NAME       = "graphml";
   protected final     JSONObject sharedJson = new JSONObject();
 
-  public GraphSONExporterFormat(final DatabaseInternal database, final ExporterSettings settings, final ExporterContext context, final ConsoleLogger logger) {
+  public GraphMLExporterFormat(final DatabaseInternal database, final ExporterSettings settings, final ExporterContext context, final ConsoleLogger logger) {
     super(database, settings, context, logger);
   }
 
@@ -65,7 +65,7 @@ public class GraphSONExporterFormat extends AbstractExporterFormat {
     try (ArcadeGraph graph = ArcadeGraph.open(database)) {
       try (FileOutputStream fos = new FileOutputStream(exportFile)) {
         try (GZIPOutputStream out = new GZIPOutputStream(fos)) {
-          graph.io(IoCore.graphson()).writer().create().writeGraph(out, graph);
+          graph.io(IoCore.graphml()).writer().create().writeGraph(out, graph);
         }
       }
     }

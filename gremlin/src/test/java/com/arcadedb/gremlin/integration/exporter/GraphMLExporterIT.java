@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.arcadedb.graph.exporter;
+package com.arcadedb.gremlin.integration.exporter;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;

@@ -165,7 +165,7 @@ public class Exporter {
 
     case "graphml": {
       try {
-        final Class<AbstractExporterFormat> clazz = (Class<AbstractExporterFormat>) Class.forName("com.arcadedb.graph.exporter.format.GraphMLExporterFormat");
+        final Class<AbstractExporterFormat> clazz = (Class<AbstractExporterFormat>) Class.forName("com.arcadedb.gremlin.integration.exporter.format.GraphMLExporterFormat");
         return clazz.getConstructor( DatabaseInternal.class,  ExporterSettings.class, ExporterContext.class, ConsoleLogger.class)
                 .newInstance(database, settings, context, logger);
       } catch (InstantiationException | IllegalAccessException | InvocationTargetException | NoSuchMethodException | ClassNotFoundException e) {
@@ -176,7 +176,7 @@ public class Exporter {
     }
     case "graphson": {
       try {
-        final Class<AbstractExporterFormat> clazz = (Class<AbstractExporterFormat>) Class.forName("com.arcadedb.graph.exporter.format.GraphSONExporterFormat");
+        final Class<AbstractExporterFormat> clazz = (Class<AbstractExporterFormat>) Class.forName("com.arcadedb.gremlin.integration.exporter.format.GraphSONExporterFormat");
         return clazz.getConstructor( DatabaseInternal.class,  ExporterSettings.class, ExporterContext.class, ConsoleLogger.class)
                 .newInstance(database, settings, context, logger);
       } catch (InstantiationException | IllegalAccessException | InvocationTargetException | NoSuchMethodException | ClassNotFoundException e) {
