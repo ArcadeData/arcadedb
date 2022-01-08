@@ -13,11 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.arcadedb.integration.exporter;
+package com.arcadedb.graph.exporter;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.engine.PaginatedFile;
+import com.arcadedb.integration.exporter.Exporter;
 import com.arcadedb.integration.importer.OrientDBImporter;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.FileUtils;
@@ -31,7 +32,6 @@ import org.junit.jupiter.api.Test;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
-import java.net.URL;
 import java.util.stream.Collectors;
 import java.util.zip.GZIPInputStream;
 
@@ -45,9 +45,9 @@ public class GraphMLExporterIT {
 
   @Test
   public void testExportOK() throws IOException {
-    final URL inputFile = GraphMLExporterIT.class.getClassLoader().getResource("orientdb-export-small.gz");
+    final var inputFile = GraphMLExporterIT.class.getClassLoader().getResource("orientdb-export-small.gz");
 
-    final OrientDBImporter importer = new OrientDBImporter(("-i " + inputFile.getFile() + " -d " + DATABASE_PATH + " -o").split(" "));
+    final var importer = new OrientDBImporter(("-i " + inputFile.getFile() + " -d " + DATABASE_PATH + " -o").split(" "));
     importer.run().close();
 
     Assertions.assertFalse(importer.isError());

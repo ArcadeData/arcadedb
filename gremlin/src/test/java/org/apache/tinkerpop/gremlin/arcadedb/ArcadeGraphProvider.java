@@ -22,7 +22,16 @@ import com.arcadedb.database.RID;
 import org.apache.commons.configuration2.Configuration;
 import org.apache.tinkerpop.gremlin.AbstractGraphProvider;
 import org.apache.tinkerpop.gremlin.LoadGraphWith;
-import org.apache.tinkerpop.gremlin.arcadedb.structure.*;
+import org.apache.tinkerpop.gremlin.arcadedb.structure.ArcadeEdge;
+import org.apache.tinkerpop.gremlin.arcadedb.structure.ArcadeElement;
+import org.apache.tinkerpop.gremlin.arcadedb.structure.ArcadeGraph;
+import org.apache.tinkerpop.gremlin.arcadedb.structure.ArcadeGraphFeatures;
+import org.apache.tinkerpop.gremlin.arcadedb.structure.ArcadeGraphTransaction;
+import org.apache.tinkerpop.gremlin.arcadedb.structure.ArcadeGremlin;
+import org.apache.tinkerpop.gremlin.arcadedb.structure.ArcadeProperty;
+import org.apache.tinkerpop.gremlin.arcadedb.structure.ArcadeVariableFeatures;
+import org.apache.tinkerpop.gremlin.arcadedb.structure.ArcadeVertex;
+import org.apache.tinkerpop.gremlin.arcadedb.structure.ArcadeVertexProperty;
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.ProfileTest;
 import org.apache.tinkerpop.gremlin.structure.Graph;
 import org.apache.tinkerpop.gremlin.structure.SerializationTest;
@@ -32,7 +41,12 @@ import org.apache.tinkerpop.gremlin.structure.io.IoGraphTest;
 import org.junit.AssumptionViolatedException;
 
 import java.io.File;
-import java.util.*;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Created by Enrico Risa on 30/07/2018.

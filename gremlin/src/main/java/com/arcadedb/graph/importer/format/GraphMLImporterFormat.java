@@ -13,10 +13,17 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.arcadedb.integration.importer.format;
+package com.arcadedb.graph.importer.format;
 
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.integration.importer.*;
+import com.arcadedb.integration.importer.AnalyzedEntity;
+import com.arcadedb.integration.importer.AnalyzedSchema;
+import com.arcadedb.integration.importer.ImportException;
+import com.arcadedb.integration.importer.ImporterContext;
+import com.arcadedb.integration.importer.ImporterSettings;
+import com.arcadedb.integration.importer.Parser;
+import com.arcadedb.integration.importer.SourceSchema;
+import com.arcadedb.integration.importer.format.CSVImporterFormat;
 import org.apache.tinkerpop.gremlin.arcadedb.structure.ArcadeGraph;
 import org.apache.tinkerpop.gremlin.structure.io.IoCore;
 

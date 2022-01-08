@@ -235,7 +235,7 @@ public class SourceDiscovery {
       else if (knownFileType.equalsIgnoreCase("graphml")){
 
         try {
-          final Class<FormatImporter> clazz = (Class<FormatImporter>) Class.forName("com.arcadedb.integration.importer.format.GraphMLImporterFormat");
+          final Class<FormatImporter> clazz = (Class<FormatImporter>) Class.forName("com.arcadedb.graph.importer.format.GraphMLImporterFormat");
           return clazz.getConstructor().newInstance();
         } catch (ClassNotFoundException | InvocationTargetException | InstantiationException | IllegalAccessException | NoSuchMethodException e) {
           LogManager.instance().log(this, Level.SEVERE, "Impossible to find importer for 'graphml' ", e);
@@ -245,7 +245,7 @@ public class SourceDiscovery {
       }
       else if (knownFileType.equalsIgnoreCase("graphson")){
         try {
-          final Class<FormatImporter> clazz = (Class<FormatImporter>) Class.forName("com.arcadedb.integration.importer.format.GraphSONImporterFormat");
+          final Class<FormatImporter> clazz = (Class<FormatImporter>) Class.forName("com.arcadedb.graph.importer.format.GraphSONImporterFormat");
           return clazz.getConstructor().newInstance();
         } catch (ClassNotFoundException | InvocationTargetException | InstantiationException | IllegalAccessException | NoSuchMethodException e) {
 
