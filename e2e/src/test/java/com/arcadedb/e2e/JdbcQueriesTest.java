@@ -1,6 +1,5 @@
 package com.arcadedb.e2e;
 
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -16,13 +15,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 public class JdbcQueriesTest extends ArcadeContainerTemplate {
 
-
     private Connection conn;
 
     @BeforeAll
     static void beforeAll() throws ClassNotFoundException {
         Class.forName("org.postgresql.Driver");
-
     }
 
     @BeforeEach
@@ -32,7 +29,7 @@ public class JdbcQueriesTest extends ArcadeContainerTemplate {
         props.setProperty("password", "playwithdata");
         props.setProperty("ssl", "false");
 
-        conn = DriverManager.getConnection("jdbc:postgresql://" + address + ":" + pgsqlPort + "/beer", props);
+        conn = DriverManager.getConnection("jdbc:postgresql://" + host + ":" + pgsqlPort + "/beer", props);
     }
 
     @AfterEach

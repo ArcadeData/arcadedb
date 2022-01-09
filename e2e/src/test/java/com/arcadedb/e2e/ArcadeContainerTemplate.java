@@ -5,10 +5,10 @@ import org.testcontainers.containers.wait.strategy.Wait;
 
 public abstract class ArcadeContainerTemplate {
 
-    static final GenericContainer arcade;
+    static final GenericContainer ARCADE;
 
     static {
-        arcade = new GenericContainer("arcadedata/arcadedb:latest")
+        ARCADE = new GenericContainer("arcadedata/arcadedb:latest")
                 .withExposedPorts(2480, 6379, 5432, 8182)
                 .withEnv("arcadedb.server.rootPassword", "playwithdata")
                 .withEnv("arcadedb.server.defaultDatabases", "beer[root]{import:https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz}")
@@ -17,17 +17,16 @@ public abstract class ArcadeContainerTemplate {
                         "Postgres:com.arcadedb.postgres.PostgresProtocolPlugin, " +
                         "GremlinServer:com.arcadedb.server.gremlin.GremlinServerPlugin")
                 .waitingFor(Wait.forListeningPort());
-        arcade.start();
+        ARCADE.start();
     }
 
+    protected String host = ARCADE.getHost();
 
-    String address = arcade.getHost();
+    protected int httpPort = ARCADE.getMappedPort(2480);
 
-    int httpPort = arcade.getMappedPort(2480);
+    protected int redisPort = ARCADE.getMappedPort(6379);
 
-    int redisPort = arcade.getMappedPort(6379);
+    protected int pgsqlPort = ARCADE.getMappedPort(5432);
 
-    int pgsqlPort = arcade.getMappedPort(5432);
-
-    int gremlinPort = arcade.getMappedPort(8182);
+    protected int gremlinPort = ARCADE.getMappedPort(8182);
 }

@@ -3,7 +3,6 @@ package com.arcadedb.e2e;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -15,7 +14,7 @@ public class RemoteDatabaseQueriesTest extends ArcadeContainerTemplate {
 
     @BeforeEach
     void setUp() {
-        database = new RemoteDatabase(address, httpPort, "beer", "root", "playwithdata");
+        database = new RemoteDatabase(host, httpPort, "beer", "root", "playwithdata");
         database.setTimeout(10000);
     }
 
