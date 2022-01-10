@@ -21,10 +21,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 
 public class ContainsTextCondition extends BooleanExpression {
 
@@ -172,6 +169,22 @@ public class ContainsTextCondition extends BooleanExpression {
       return false;
     }
     return right == null || right.isCacheable();
+  }
+
+  public void setLeft(Expression left) {
+    this.left = left;
+  }
+
+  public void setRight(Expression right) {
+    this.right = right;
+  }
+
+  public Expression getLeft() {
+    return left;
+  }
+
+  public Expression getRight() {
+    return right;
   }
 }
 /* JavaCC - OriginalChecksum=b588492ba2cbd0f932055f1f64bbbecd (do not edit this line) */

@@ -15,12 +15,12 @@
  */
 package com.arcadedb.utility;
 
-import java.util.Map;
+import java.util.*;
 
 /**
  * Container for pair of non null objects.
  */
-public class Pair<V1, V2> {
+public class Pair<V1, V2> implements Comparable<Pair<V1, V2>> {
   private final V1 first;
   private final V2 second;
 
@@ -66,5 +66,14 @@ public class Pair<V1, V2> {
   @Override
   public String toString() {
     return "<" + first + "," + second + ">";
+  }
+
+  @Override
+  public int compareTo(final Pair<V1, V2> o) {
+    int c = ((Comparable) first).compareTo(o.first);
+    if (c == 0)
+      c = ((Comparable) second).compareTo(o.second);
+
+    return c;
   }
 }

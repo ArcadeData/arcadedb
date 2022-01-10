@@ -24,11 +24,52 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.RangeIndex;
 import com.arcadedb.index.TypeIndex;
-import com.arcadedb.query.sql.parser.*;
+import com.arcadedb.query.sql.parser.AggregateProjectionSplit;
+import com.arcadedb.query.sql.parser.AndBlock;
+import com.arcadedb.query.sql.parser.BaseExpression;
+import com.arcadedb.query.sql.parser.BinaryCompareOperator;
+import com.arcadedb.query.sql.parser.BinaryCondition;
+import com.arcadedb.query.sql.parser.BooleanExpression;
+import com.arcadedb.query.sql.parser.Bucket;
+import com.arcadedb.query.sql.parser.ContainsAnyCondition;
+import com.arcadedb.query.sql.parser.ContainsTextCondition;
+import com.arcadedb.query.sql.parser.EqualsCompareOperator;
+import com.arcadedb.query.sql.parser.Expression;
+import com.arcadedb.query.sql.parser.FromClause;
+import com.arcadedb.query.sql.parser.FromItem;
+import com.arcadedb.query.sql.parser.FunctionCall;
+import com.arcadedb.query.sql.parser.GeOperator;
+import com.arcadedb.query.sql.parser.GroupBy;
+import com.arcadedb.query.sql.parser.GtOperator;
+import com.arcadedb.query.sql.parser.Identifier;
+import com.arcadedb.query.sql.parser.InCondition;
+import com.arcadedb.query.sql.parser.IndexIdentifier;
+import com.arcadedb.query.sql.parser.InputParameter;
+import com.arcadedb.query.sql.parser.LeOperator;
+import com.arcadedb.query.sql.parser.LetClause;
+import com.arcadedb.query.sql.parser.LetItem;
+import com.arcadedb.query.sql.parser.LtOperator;
+import com.arcadedb.query.sql.parser.OrBlock;
+import com.arcadedb.query.sql.parser.OrderBy;
+import com.arcadedb.query.sql.parser.OrderByItem;
+import com.arcadedb.query.sql.parser.PInteger;
+import com.arcadedb.query.sql.parser.Projection;
+import com.arcadedb.query.sql.parser.ProjectionItem;
+import com.arcadedb.query.sql.parser.RecordAttribute;
+import com.arcadedb.query.sql.parser.Rid;
+import com.arcadedb.query.sql.parser.SchemaIdentifier;
+import com.arcadedb.query.sql.parser.SelectStatement;
+import com.arcadedb.query.sql.parser.Statement;
+import com.arcadedb.query.sql.parser.SubQueryCollector;
+import com.arcadedb.query.sql.parser.Timeout;
+import com.arcadedb.query.sql.parser.WhereClause;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.utility.Pair;
 
 import java.util.*;
-import java.util.stream.Collectors;
+import java.util.stream.*;
+
+import static com.arcadedb.schema.Schema.INDEX_TYPE.FULL_TEXT;
 
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
@@ -1730,15 +1771,13 @@ public class SelectExecutionPlanner {
 
     final DocumentType typez = ctx.getDatabase().getSchema().getType(targetClass);
     if (typez == null) {
-      throw new CommandExecutionException("Cannot find class " + targetClass);
+      throw new CommandExecutionException("Cannot find type " + targetClass);
     }
 
     final List<TypeIndex> indexes = typez.getAllIndexes(true);
 
-    final List<IndexSearchDescriptor> indexSearchDescriptors = new ArrayList<>();
-
-    for (AndBlock entry : info.flattenedWhereClause)
-      indexSearchDescriptors.addAll(findBestIndexesFor(ctx, indexes, entry, typez));
+    List<IndexSearchDescriptor> indexSearchDescriptors = info.flattenedWhereClause.stream().map(x -> findBestIndexFor(ctx, indexes, x, typez))
+        .filter(Objects::nonNull).collect(Collectors.toList());
 
     if (indexSearchDescriptors.isEmpty())
       return null;
@@ -1788,6 +1827,9 @@ public class SelectExecutionPlanner {
     } else {
       result = new ArrayList<>();
       result.add(createParallelIndexFetch(optimumIndexSearchDescriptors, filterClusters, ctx, profilingEnabled));
+      if (optimumIndexSearchDescriptors.size() > 1) {
+        result.add(new DistinctExecutionStep(ctx, profilingEnabled));
+      }
     }
     return result;
   }
@@ -1946,6 +1988,186 @@ public class SelectExecutionPlanner {
       list.add(it.next());
 
     return list;
+  }
+
+  /**
+   * given a flat AND block and a set of indexes, returns the best index to be used to process it,
+   * with the complete description on how to use it
+   *
+   * @param ctx
+   * @param indexes
+   * @param block
+   *
+   * @return
+   */
+  private IndexSearchDescriptor findBestIndexFor(CommandContext ctx, List<TypeIndex> indexes, AndBlock block, DocumentType clazz) {
+    // get all valid index descriptors
+    List<IndexSearchDescriptor> descriptors = indexes.stream().map(index -> buildIndexSearchDescriptor(ctx, index, block, clazz)).filter(Objects::nonNull)
+        .filter(x -> x.keyCondition != null).filter(x -> x.keyCondition.getSubBlocks().size() > 0).collect(Collectors.toList());
+
+    List<IndexSearchDescriptor> fullTextIndexDescriptors = indexes.stream().filter(idx -> idx.getType().equals(FULL_TEXT))
+        .map(idx -> buildIndexSearchDescriptorForFulltext(ctx, idx, block, clazz)).filter(Objects::nonNull).filter(x -> x.keyCondition != null)
+        .filter(x -> x.keyCondition.getSubBlocks().size() > 0).collect(Collectors.toList());
+
+    descriptors.addAll(fullTextIndexDescriptors);
+
+    // remove the redundant descriptors (eg. if I have one on [a] and one on [a, b], the first one
+    // is redundant, just discard it)
+    descriptors = removePrefixIndexes(descriptors);
+
+    // sort by cost
+    List<Pair<Integer, IndexSearchDescriptor>> sortedDescriptors = descriptors.stream()
+        .map(x -> (Pair<Integer, IndexSearchDescriptor>) new Pair(x.cost(ctx), x)).sorted().collect(Collectors.toList());
+
+    // get only the descriptors with the lowest cost
+    if (sortedDescriptors.isEmpty()) {
+      descriptors = Collections.emptyList();
+    } else {
+      descriptors = sortedDescriptors.stream().filter(x -> x.getFirst().equals(sortedDescriptors.get(0).getFirst())).map(x -> x.getSecond())
+          .collect(Collectors.toList());
+    }
+
+    // sort remaining by the number of indexed fields
+    descriptors = descriptors.stream().sorted(Comparator.comparingInt(x -> x.keyCondition.getSubBlocks().size())).collect(Collectors.toList());
+
+    // get the one that has more indexed fields
+    return descriptors.isEmpty() ? null : descriptors.get(descriptors.size() - 1);
+  }
+
+  /**
+   * returns true if the first argument is a prefix for the second argument, eg. if the first
+   * argument is [a] and the second argument is [a, b]
+   *
+   * @param item
+   * @param desc
+   *
+   * @return
+   */
+  private boolean isPrefixOf(IndexSearchDescriptor item, IndexSearchDescriptor desc) {
+    List<BooleanExpression> left = item.keyCondition.getSubBlocks();
+    List<BooleanExpression> right = desc.keyCondition.getSubBlocks();
+    if (left.size() > right.size()) {
+      return false;
+    }
+    for (int i = 0; i < left.size(); i++) {
+      if (!left.get(i).equals(right.get(i))) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private boolean isPrefixOfAny(IndexSearchDescriptor desc, List<IndexSearchDescriptor> result) {
+    for (IndexSearchDescriptor item : result) {
+      if (isPrefixOf(desc, item)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * finds prefix conditions for a given condition, eg. if the condition is on [a,b] and in the list
+   * there is another condition on [a] or on [a,b], then that condition is returned.
+   *
+   * @param desc
+   * @param descriptors
+   *
+   * @return
+   */
+  private List<IndexSearchDescriptor> findPrefixes(IndexSearchDescriptor desc, List<IndexSearchDescriptor> descriptors) {
+    List<IndexSearchDescriptor> result = new ArrayList<>();
+    for (IndexSearchDescriptor item : descriptors) {
+      if (isPrefixOf(item, desc)) {
+        result.add(item);
+      }
+    }
+    return result;
+  }
+
+  private List<IndexSearchDescriptor> removePrefixIndexes(List<IndexSearchDescriptor> descriptors) {
+    List<IndexSearchDescriptor> result = new ArrayList<>();
+    for (IndexSearchDescriptor desc : descriptors) {
+      if (result.isEmpty()) {
+        result.add(desc);
+      } else {
+        List<IndexSearchDescriptor> prefixes = findPrefixes(desc, result);
+        if (prefixes.isEmpty()) {
+          if (!isPrefixOfAny(desc, result)) {
+            result.add(desc);
+          }
+        } else {
+          result.removeAll(prefixes);
+          result.add(desc);
+        }
+      }
+    }
+    return result;
+  }
+
+  /**
+   * given a full text index and a flat AND block, returns a descriptor on how to process it with an
+   * index (index, index key and additional filters to apply after index fetch
+   *
+   * @param ctx
+   * @param index
+   * @param block
+   * @param clazz
+   *
+   * @return
+   */
+  private IndexSearchDescriptor buildIndexSearchDescriptorForFulltext(CommandContext ctx, Index index, AndBlock block, DocumentType clazz) {
+    List<String> indexFields = index.getPropertyNames();
+    BinaryCondition keyCondition = new BinaryCondition(-1);
+    Identifier key = new Identifier("key");
+    keyCondition.setLeft(new Expression(key));
+    boolean found = false;
+
+    AndBlock blockCopy = block.copy();
+    Iterator<BooleanExpression> blockIterator;
+
+    AndBlock indexKeyValue = new AndBlock(-1);
+    IndexSearchDescriptor result = new IndexSearchDescriptor();
+    result.idx = (RangeIndex) index;
+    result.keyCondition = indexKeyValue;
+    for (String indexField : indexFields) {
+      blockIterator = blockCopy.getSubBlocks().iterator();
+      boolean breakHere = false;
+      boolean indexFieldFound = false;
+      while (blockIterator.hasNext()) {
+        BooleanExpression singleExp = blockIterator.next();
+        if (singleExp instanceof ContainsTextCondition) {
+          Expression left = ((ContainsTextCondition) singleExp).getLeft();
+          if (left.isBaseIdentifier()) {
+            String fieldName = left.getDefaultAlias().getStringValue();
+            if (indexField.equals(fieldName)) {
+              found = true;
+              indexFieldFound = true;
+              ContainsTextCondition condition = new ContainsTextCondition(-1);
+              condition.setLeft(left);
+              condition.setRight(((ContainsTextCondition) singleExp).getRight().copy());
+              indexKeyValue.getSubBlocks().add(condition);
+              blockIterator.remove();
+              break;
+            }
+          }
+        }
+      }
+      if (breakHere || !indexFieldFound) {
+        break;
+      }
+    }
+
+    if (result.keyCondition.getSubBlocks().size() < index.getPropertyNames().size() && !index.supportsOrderedIterations()) {
+      // hash indexes do not support partial key match
+      return null;
+    }
+
+    if (found) {
+      result.remainingCondition = blockCopy;
+      return result;
+    }
+    return null;
   }
 
   /**
