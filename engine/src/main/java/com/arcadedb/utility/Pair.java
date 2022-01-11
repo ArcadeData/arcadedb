@@ -71,7 +71,7 @@ public class Pair<V1, V2> implements Comparable<Pair<V1, V2>> {
   @Override
   public int compareTo(final Pair<V1, V2> o) {
     int c = ((Comparable) first).compareTo(o.first);
-    if (c == 0)
+    if (c == 0 && second instanceof Comparable)
       c = ((Comparable) second).compareTo(o.second);
 
     return c;
