@@ -17,13 +17,25 @@ package com.arcadedb.graphql.schema;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.graph.Vertex;
-import com.arcadedb.graphql.parser.*;
+import com.arcadedb.graphql.parser.AbstractField;
+import com.arcadedb.graphql.parser.Argument;
+import com.arcadedb.graphql.parser.Directive;
+import com.arcadedb.graphql.parser.Directives;
+import com.arcadedb.graphql.parser.Field;
+import com.arcadedb.graphql.parser.FieldDefinition;
+import com.arcadedb.graphql.parser.ObjectTypeDefinition;
+import com.arcadedb.graphql.parser.Selection;
+import com.arcadedb.graphql.parser.SelectionSet;
 import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)

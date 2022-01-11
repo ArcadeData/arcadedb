@@ -23,6 +23,7 @@ import java.io.BufferedInputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.lang.reflect.InvocationTargetException;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.*;
@@ -227,16 +228,31 @@ public class SourceDiscovery {
       if (knownFileType.equalsIgnoreCase("csv")) {
         settings.options.put("delimiter", knownDelimiter);
         return new CSVImporterFormat();
-      } else if (knownFileType.equalsIgnoreCase("json"))
+      } else if (knownFileType.equalsIgnoreCase("json")) {
         return new JSONImporterFormat();
-      else if (knownFileType.equalsIgnoreCase("xml"))
+      } else if (knownFileType.equalsIgnoreCase("xml")) {
         return new XMLImporterFormat();
-      else if (knownFileType.equalsIgnoreCase("graphml"))
-        return new GraphMLImporterFormat();
-      else if (knownFileType.equalsIgnoreCase("graphson"))
-        return new GraphSONImporterFormat();
-      else
+      } else if (knownFileType.equalsIgnoreCase("graphml")){
+
+        try {
+          final Class<FormatImporter> clazz = (Class<FormatImporter>) Class.forName("com.arcadedb.gremlin.integration.importer.format.GraphMLImporterFormat");
+          return clazz.getConstructor().newInstance();
+        } catch (ClassNotFoundException | InvocationTargetException | InstantiationException | IllegalAccessException | NoSuchMethodException e) {
+          LogManager.instance().log(this, Level.SEVERE, "Impossible to find importer for 'graphml' ", e);
+        }
+
+      } else if (knownFileType.equalsIgnoreCase("graphson")){
+
+        try {
+          final Class<FormatImporter> clazz = (Class<FormatImporter>) Class.forName("com.arcadedb.gremlin.integration.importer.format.GraphSONImporterFormat");
+          return clazz.getConstructor().newInstance();
+        } catch (ClassNotFoundException | InvocationTargetException | InstantiationException | IllegalAccessException | NoSuchMethodException e) {
+          LogManager.instance().log(this, Level.SEVERE, "Impossible to find importer for 'graphson' ", e);
+        }
+
+      } else {
         LogManager.instance().log(this, Level.WARNING, "File type '%s' is not supported. Trying to understand file type...", knownFileType);
+      }
     }
 
     parser.nextChar();

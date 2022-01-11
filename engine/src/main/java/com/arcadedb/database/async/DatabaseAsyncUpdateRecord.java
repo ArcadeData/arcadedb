@@ -23,7 +23,7 @@ import com.arcadedb.log.LogManager;
 
 import java.util.logging.Level;
 
-public class DatabaseAsyncUpdateRecord extends DatabaseAsyncAbstractTask {
+public class DatabaseAsyncUpdateRecord implements DatabaseAsyncTask {
   public final Record                record;
   public final UpdatedRecordCallback callback;
 

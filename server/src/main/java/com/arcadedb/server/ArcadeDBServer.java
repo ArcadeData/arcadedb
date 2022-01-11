@@ -22,9 +22,10 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.EmbeddedDatabase;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.DatabaseIsClosedException;
-import com.arcadedb.integration.restore.Restore;
+//import com.arcadedb.integration.restore.Restore;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngineManager;
 import com.arcadedb.server.ha.HAServer;
@@ -40,6 +41,7 @@ import org.json.JSONObject;
 
 import java.io.File;
 import java.io.IOException;
+import java.lang.reflect.InvocationTargetException;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -419,7 +421,23 @@ public class ArcadeDBServer {
                 ((DatabaseInternal) database).getEmbedded().drop();
                 databases.remove(dbName);
               }
-              new Restore(commandParams, configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + "/" + dbName).restoreDatabase();
+              String dbPath = configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + "/" + dbName;
+//              new Restore(commandParams, dbPath).restoreDatabase();
+
+              try {
+                final Class<?> clazz = Class.forName("com.arcadedb.integration.restore.Restore");
+                final Object restorer = clazz.getConstructor(String.class, String.class).newInstance(commandParams, dbPath);
+
+                clazz.getMethod("restoreDatabase").invoke(restorer);
+
+              } catch (ClassNotFoundException | NoSuchMethodException | IllegalAccessException | InstantiationException e) {
+                throw new CommandExecutionException("Error on restoring database, restore libs not found in classpath", e);
+              } catch (InvocationTargetException e) {
+                throw new CommandExecutionException("Error on restoring database", e.getTargetException());
+              }
+
+
+
               getDatabase(dbName);
               break;
 

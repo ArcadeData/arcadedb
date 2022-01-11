@@ -40,13 +40,6 @@
             <groupId>com.arcadedb</groupId>
             <artifactId>arcadedb-engine</artifactId>
             <version>${project.parent.version}</version>
-            <scope>compile</scope>
-        </dependency>
-        <dependency>
-            <groupId>com.arcadedb</groupId>
-            <artifactId>arcadedb-gremlin</artifactId>
-            <version>${project.parent.version}</version>
-            <scope>compile</scope>
         </dependency>
         <dependency>
             <groupId>com.univocity</groupId>

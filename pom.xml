@@ -121,6 +121,7 @@
         <module>postgresw</module>
         <module>coverage</module>
         <module>package</module>
+        <module>e2e</module>
     </modules>
 
     <build>
@@ -138,13 +139,13 @@
                 <configuration>
                     <source>11</source>
                     <target>11</target>
-                    <compilerArgs>
-                        <arg>--add-modules</arg>
-                        <arg>jdk.hotspot.agent</arg>
-                        <arg>--add-exports</arg>
-                        <arg>jdk.hotspot.agent/sun.jvm.hotspot.tools=ALL-UNNAMED</arg>
-                        <arg>-proc:none</arg>
-                    </compilerArgs>
+<!--                    <compilerArgs>-->
+<!--                        <arg>&#45;&#45;add-modules</arg>-->
+<!--                        <arg>jdk.hotspot.agent</arg>-->
+<!--                        <arg>&#45;&#45;add-exports</arg>-->
+<!--                        <arg>jdk.hotspot.agent/sun.jvm.hotspot.tools=ALL-UNNAMED</arg>-->
+<!--                        <arg>-proc:none</arg>-->
+<!--                    </compilerArgs>-->
                 </configuration>
             </plugin>
             <plugin>

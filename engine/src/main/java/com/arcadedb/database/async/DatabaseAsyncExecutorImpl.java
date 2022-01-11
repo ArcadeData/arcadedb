@@ -53,7 +53,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   private final AtomicLong         commandRoundRobinIndex        = new AtomicLong();
 
   // SPECIAL TASKS
-  public final static DatabaseAsyncTask FORCE_EXIT = new DatabaseAsyncAbstractTask() {
+  public final static DatabaseAsyncTask FORCE_EXIT = new DatabaseAsyncTask() {
     @Override
     public void execute(AsyncThread async, DatabaseInternal database) {
     }

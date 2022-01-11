@@ -1103,7 +1103,7 @@ public class PostgresNetworkExecutor extends Thread {
       language = "cypher";
       queryText = queryText.substring("{cypher}".length());
     } else if (queryText.startsWith("{gremlin}")) {
-      language = "gremlin";
+      language = "com/arcadedb/server/gremlin";
       queryText = queryText.substring("{gremlin}".length());
     } else if (queryText.startsWith("{mongo}")) {
       language = "mongo";

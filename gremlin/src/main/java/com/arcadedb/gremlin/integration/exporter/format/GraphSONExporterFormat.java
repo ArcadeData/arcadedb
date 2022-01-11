@@ -13,12 +13,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.arcadedb.integration.exporter.format;
+package com.arcadedb.gremlin.integration.exporter.format;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.integration.exporter.ExportException;
 import com.arcadedb.integration.exporter.ExporterContext;
 import com.arcadedb.integration.exporter.ExporterSettings;
+import com.arcadedb.integration.exporter.format.AbstractExporterFormat;
 import com.arcadedb.integration.importer.ConsoleLogger;
 import org.apache.tinkerpop.gremlin.arcadedb.structure.ArcadeGraph;
 import org.apache.tinkerpop.gremlin.structure.io.IoCore;
@@ -28,11 +29,11 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.util.zip.GZIPOutputStream;
 
-public class GraphMLExporterFormat extends AbstractExporterFormat {
-  public static final String     NAME       = "graphml";
+public class GraphSONExporterFormat extends AbstractExporterFormat {
+  public static final String     NAME       = "graphson";
   protected final     JSONObject sharedJson = new JSONObject();
 
-  public GraphMLExporterFormat(final DatabaseInternal database, final ExporterSettings settings, final ExporterContext context, final ConsoleLogger logger) {
+  public GraphSONExporterFormat(final DatabaseInternal database, final ExporterSettings settings, final ExporterContext context, final ConsoleLogger logger) {
     super(database, settings, context, logger);
   }
 
@@ -64,7 +65,7 @@ public class GraphMLExporterFormat extends AbstractExporterFormat {
     try (ArcadeGraph graph = ArcadeGraph.open(database)) {
       try (FileOutputStream fos = new FileOutputStream(exportFile)) {
         try (GZIPOutputStream out = new GZIPOutputStream(fos)) {
-          graph.io(IoCore.graphml()).writer().create().writeGraph(out, graph);
+          graph.io(IoCore.graphson()).writer().create().writeGraph(out, graph);
         }
       }
     }

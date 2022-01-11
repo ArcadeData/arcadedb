@@ -19,12 +19,11 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.integration.exporter.format.AbstractExporterFormat;
-import com.arcadedb.integration.exporter.format.GraphMLExporterFormat;
-import com.arcadedb.integration.exporter.format.GraphSONExporterFormat;
 import com.arcadedb.integration.exporter.format.JsonlExporterFormat;
 import com.arcadedb.integration.importer.ConsoleLogger;
 import com.arcadedb.log.LogManager;
 
+import java.lang.reflect.InvocationTargetException;
 import java.util.Timer;
 import java.util.TimerTask;
 import java.util.logging.Level;
@@ -164,12 +163,27 @@ public class Exporter {
     case JsonlExporterFormat.NAME:
       return new JsonlExporterFormat(database, settings, context, logger);
 
-    case GraphMLExporterFormat.NAME:
-      return new GraphMLExporterFormat(database, settings, context, logger);
+    case "graphml": {
+      try {
+        final Class<AbstractExporterFormat> clazz = (Class<AbstractExporterFormat>) Class.forName("com.arcadedb.gremlin.integration.exporter.format.GraphMLExporterFormat");
+        return clazz.getConstructor( DatabaseInternal.class,  ExporterSettings.class, ExporterContext.class, ConsoleLogger.class)
+                .newInstance(database, settings, context, logger);
+      } catch (InstantiationException | IllegalAccessException | InvocationTargetException | NoSuchMethodException | ClassNotFoundException e) {
+        LogManager.instance().log(this, Level.SEVERE, "Impossible to find exporter for 'graphml' ", e);
 
-    case GraphSONExporterFormat.NAME:
-      return new GraphSONExporterFormat(database, settings, context, logger);
+      }
 
+    }
+    case "graphson": {
+      try {
+        final Class<AbstractExporterFormat> clazz = (Class<AbstractExporterFormat>) Class.forName("com.arcadedb.gremlin.integration.exporter.format.GraphSONExporterFormat");
+        return clazz.getConstructor( DatabaseInternal.class,  ExporterSettings.class, ExporterContext.class, ConsoleLogger.class)
+                .newInstance(database, settings, context, logger);
+      } catch (InstantiationException | IllegalAccessException | InvocationTargetException | NoSuchMethodException | ClassNotFoundException e) {
+        LogManager.instance().log(this, Level.SEVERE, "Impossible to find exporter for 'graphson' ", e);
+      }
+
+    }
     default:
       throw new ExportException("Format '" + settings.format + "' not supported");
     }
