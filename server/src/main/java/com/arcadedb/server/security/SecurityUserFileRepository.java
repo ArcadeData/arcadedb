@@ -46,6 +46,8 @@ public class SecurityUserFileRepository {
       for (JSONObject line : configuration)
         writer.write(line.toString() + "\n");
     }
+
+    fileLastModified = file.lastModified();
   }
 
   public List<JSONObject> getUsers() {
