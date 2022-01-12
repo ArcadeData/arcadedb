@@ -44,11 +44,11 @@ Start ArcadeDB Server with Docker:
 ```
 docker run --rm -p 2480:2480 -p 2424:2424
            -e arcadedb.server.rootPassword=playwithdata
-           -e "arcadedb.server.defaultDatabases=Imported[root]{import:https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz}"
+           -e "arcadedb.server.defaultDatabases=OpenBeer[root]{import:https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz}"
            arcadedata/arcadedb:latest
 ```
 
-Now open your browser on http://localhost:2480 and play with [ArcadeDB Studio](https://docs.arcadedb.com/#_studio) and the imported OpenBeer database to find your favorite beer.
+Now open your browser on http://localhost:2480 and play with [ArcadeDB Studio](https://docs.arcadedb.com/#_studio) and the imported `OpenBeer` database to find your favorite beer.
 
 ![ArcadeDB Studio](https://arcadedb.com/assets/images/openbeer-demo-graph.png)
 

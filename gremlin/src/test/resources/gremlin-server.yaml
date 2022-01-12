@@ -14,7 +14,11 @@ scriptEngines:
         files:
           - ./target/config/gremlin-server.groovy
 serializers:
-  - className: org.apache.tinkerpop.gremlin.driver.ser.GraphBinaryMessageSerializerV1
+  - className: org.apache.tinkerpop.gremlin.driver.ser.GraphSONMessageSerializerV3d0
+    config:
+      ioRegistries:
+        - org.apache.tinkerpop.gremlin.arcadedb.structure.io.ArcadeIoRegistry
+  - className: org.apache.tinkerpop.gremlin.driver.ser.GraphSONMessageSerializerV2d0
     config:
       ioRegistries:
         - org.apache.tinkerpop.gremlin.arcadedb.structure.io.ArcadeIoRegistry
