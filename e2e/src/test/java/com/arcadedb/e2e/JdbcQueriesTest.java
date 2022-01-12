@@ -66,4 +66,33 @@ public class JdbcQueriesTest extends ArcadeContainerTemplate {
             }
         }
     }
+
+    @Test
+    void simpleGremlinQuery() throws Exception {
+
+        try (Statement st = conn.createStatement()) {
+
+            try (java.sql.ResultSet rs = st.executeQuery("{gremlin}g.V().limit(1)")) {
+                assertThat(rs.next()).isTrue();
+
+                assertThat(rs.getString("name")).isNotBlank();
+
+                assertThat(rs.next()).isFalse();
+            }
+        }
+    }
+    @Test
+    void simpleCypherQuery() throws Exception {
+
+        try (Statement st = conn.createStatement()) {
+
+            try (java.sql.ResultSet rs = st.executeQuery("{cypher}MATCH(p:Beer) RETURN * LIMIT 1")) {
+                assertThat(rs.next()).isTrue();
+
+                assertThat(rs.getString("name")).isNotBlank();
+
+                assertThat(rs.next()).isFalse();
+            }
+        }
+    }
 }

@@ -13,13 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.arcadedb.query.graphql;
+package com.arcadedb.graphql.query;
 
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.QueryParsingException;
-import com.arcadedb.log.LogManager;
+import com.arcadedb.graphql.schema.GraphQLSchema;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
@@ -27,53 +25,12 @@ import com.arcadedb.utility.FileUtils;
 import java.lang.reflect.InvocationTargetException;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.logging.Level;
 
 public class GraphQLQueryEngine implements QueryEngine {
-  private static final String ENGINE_NAME = "graphql-engine";
-  private final        Object graphQLSchema;
+  public static final String ENGINE_NAME = "graphql-engine";
+  private final       GraphQLSchema graphQLSchema;
 
-  public static class GraphQLQueryEngineFactory implements QueryEngineFactory {
-    private static Boolean  available = null;
-    private static Class<?> graphQLSchemaClass;
-
-    @Override
-    public boolean isAvailable() {
-      if (available == null) {
-        try {
-          graphQLSchemaClass = Class.forName("com.arcadedb.graphql.schema.GraphQLSchema");
-          available = true;
-        } catch (ClassNotFoundException e) {
-          available = false;
-        }
-      }
-      return available;
-    }
-
-    @Override
-    public String getLanguage() {
-      return "graphql";
-    }
-
-    @Override
-    public QueryEngine getInstance(final DatabaseInternal database) {
-      Object engine = database.getWrappers().get(ENGINE_NAME);
-      if (engine != null)
-        return (GraphQLQueryEngine) engine;
-
-      try {
-        engine = new GraphQLQueryEngine(graphQLSchemaClass.getConstructor(Database.class).newInstance(database));
-        database.setWrapper(ENGINE_NAME, engine);
-        return (GraphQLQueryEngine) engine;
-
-      } catch (Exception e) {
-        LogManager.instance().log(this, Level.SEVERE, "Error on initializing GraphQL query engine", e);
-        throw new QueryParsingException("Error on initializing GraphQL query engine", e);
-      }
-    }
-  }
-
-  protected GraphQLQueryEngine(final Object graphQLSchema) {
+  protected GraphQLQueryEngine(final GraphQLSchema graphQLSchema) {
     this.graphQLSchema = graphQLSchema;
   }
 
@@ -105,11 +62,10 @@ public class GraphQLQueryEngine implements QueryEngine {
   @Override
   public ResultSet command(final String query, final Map<String, Object> parameters) {
     try {
-      final ResultSet resultSet = (ResultSet) GraphQLQueryEngineFactory.graphQLSchemaClass.getMethod("execute", String.class).invoke(graphQLSchema, query);
+
+      final ResultSet resultSet = graphQLSchema.execute(query);
 
       return resultSet;
-    } catch (InvocationTargetException e) {
-      throw new CommandExecutionException("Error on executing GraphQL command:\n" + FileUtils.printWithLineNumbers(query), e.getTargetException());
     } catch (Exception e) {
       throw new QueryParsingException("Error on executing GraphQL query:\n" + FileUtils.printWithLineNumbers(query), e);
     }
