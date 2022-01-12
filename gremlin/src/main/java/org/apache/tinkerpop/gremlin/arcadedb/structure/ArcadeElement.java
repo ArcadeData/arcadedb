@@ -16,16 +16,13 @@
 package org.apache.tinkerpop.gremlin.arcadedb.structure;
 
 import com.arcadedb.database.Document;
+import com.arcadedb.database.RID;
 import org.apache.tinkerpop.gremlin.structure.Element;
 import org.apache.tinkerpop.gremlin.structure.Graph;
 import org.apache.tinkerpop.gremlin.structure.Property;
 import org.apache.tinkerpop.gremlin.structure.util.ElementHelper;
 
-import java.util.ArrayList;
-import java.util.Iterator;
-import java.util.List;
-import java.util.NoSuchElementException;
-import java.util.Set;
+import java.util.*;
 
 /**
  * Created by Enrico Risa on 30/07/2018.
@@ -83,7 +80,8 @@ public abstract class ArcadeElement<T extends Document> implements Element {
 
   @Override
   public Object id() {
-    return baseElement.getIdentity();
+    final RID rid = baseElement.getIdentity();
+    return rid != null ? rid.toString() : null;
   }
 
   @Override

@@ -17,15 +17,9 @@ package org.apache.tinkerpop.gremlin.arcadedb.structure.io;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
-import org.apache.tinkerpop.gremlin.arcadedb.structure.io.binary.RIDBinarySerializer;
-import org.apache.tinkerpop.gremlin.arcadedb.structure.io.graphson.ArcadeGraphSONV3;
-import org.apache.tinkerpop.gremlin.arcadedb.structure.io.gryo.RIDGyroSerializer;
 import org.apache.tinkerpop.gremlin.structure.io.AbstractIoRegistry;
-import org.apache.tinkerpop.gremlin.structure.io.binary.GraphBinaryIo;
-import org.apache.tinkerpop.gremlin.structure.io.graphson.GraphSONIo;
-import org.apache.tinkerpop.gremlin.structure.io.gryo.GryoIo;
 
-import java.util.Map;
+import java.util.*;
 
 @SuppressWarnings("serial")
 public class ArcadeIoRegistry extends AbstractIoRegistry {
@@ -41,9 +35,6 @@ public class ArcadeIoRegistry extends AbstractIoRegistry {
 
   public ArcadeIoRegistry(final Database database) {
     this.database = database;
-    register(GryoIo.class, RID.class, new RIDGyroSerializer());
-    register(GraphSONIo.class, RID.class, new ArcadeGraphSONV3(database));
-    register(GraphBinaryIo.class, RID.class, new RIDBinarySerializer());
   }
 
   public Database getDatabase() {
@@ -57,9 +48,10 @@ public class ArcadeIoRegistry extends AbstractIoRegistry {
   public static RID newRID(final Database database, final Object obj) {
     if (obj == null)
       return null;
-
     if (obj instanceof RID)
       return (RID) obj;
+    if (obj instanceof String)
+      return new RID(database, (String) obj);
 
     if (obj instanceof Map) {
       @SuppressWarnings({ "unchecked", "rawtypes" })
@@ -82,5 +74,4 @@ public class ArcadeIoRegistry extends AbstractIoRegistry {
   public static ArcadeIoRegistry instance() {
     return INSTANCE;
   }
-
 }

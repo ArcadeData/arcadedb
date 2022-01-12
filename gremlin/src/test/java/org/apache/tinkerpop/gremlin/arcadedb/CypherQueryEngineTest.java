@@ -15,13 +15,6 @@
  */
 package org.apache.tinkerpop.gremlin.arcadedb;
 
-import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.Matchers.containsInAnyOrder;
-import static org.hamcrest.Matchers.equalTo;
-import static org.hamcrest.Matchers.hasItems;
-import static org.hamcrest.Matchers.hasSize;
-import static org.hamcrest.Matchers.notNullValue;
-
 import com.arcadedb.database.Database;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
@@ -35,13 +28,17 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.File;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.concurrent.ExecutionException;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
+import java.io.*;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.stream.*;
+
+import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.containsInAnyOrder;
+import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.hasItems;
+import static org.hamcrest.Matchers.hasSize;
+import static org.hamcrest.Matchers.notNullValue;
 
 public class CypherQueryEngineTest {
 
@@ -63,8 +60,8 @@ public class CypherQueryEngineTest {
         v1.newEdge("E", v2, true);
         v1.newEdge("E", v3, true);
         try (ResultSet query = database.query("cypher",
-          "match(parent:V)-[e:E]-(child:V) where id(parent) = $p return parent as parent, collect(child) as childs", "p",
-          v1.getIdentity())) {
+          "match(parent:V)-[e:E]-(child:V) where id(parent) = $p return parent as parent, collect(child) as children", "p",
+          v1.getIdentity().toString())) {
 
           // Ensure that the result (set) has the desired format
           List<Result> results = IteratorUtils.toList(query, 1);
@@ -73,7 +70,7 @@ public class CypherQueryEngineTest {
           Result result = results.get(0);
           assertThat(result, notNullValue());
           assertThat(result.isProjection(), equalTo(true));
-          assertThat(result.getPropertyNames(), hasItems("parent", "childs"));
+          assertThat(result.getPropertyNames(), hasItems("parent", "children"));
 
           // Transform rid from result to string as in vertex
           Result parentAsResult = result.getProperty("parent");
@@ -83,15 +80,15 @@ public class CypherQueryEngineTest {
           assertThat(parent, equalTo(vertexMap));
 
           // Transform rid from result to string as in vertex
-          List<Result> childsAsResult = result.getProperty("childs");
-          List<Map<String, Object>> childs = childsAsResult.stream()
+          List<Result> childrenAsResult = result.getProperty("children");
+          List<Map<String, Object>> children = childrenAsResult.stream()
             .map(Result::toMap)
             .collect(Collectors.toList());
-          childs.forEach(c -> c.computeIfPresent("@rid", (k, v) -> Objects.toString(v)));
+          children.forEach(c -> c.computeIfPresent("@rid", (k, v) -> Objects.toString(v)));
           List<Map<String, Object>> childVertices = Stream.of(v2, v3)
             .map(MutableVertex::toJSON)
             .map(JSONObject::toMap).collect(Collectors.toList());
-          assertThat(childs, containsInAnyOrder(childVertices.toArray()));
+          assertThat(children, containsInAnyOrder(childVertices.toArray()));
         }
 
       });

@@ -132,7 +132,7 @@ public class CypherQueryEngine implements QueryEngine {
     return value;
   }
 
-  public static Map<String, Object> transformMap(Map<? extends Object, ? extends Object> map) {
+  public static Map<String, Object> transformMap(final Map<? extends Object, ? extends Object> map) {
 
     final Map<String, Object> mapStringObject = new HashMap<>(map.size());
     Map<Object, Object> internal = new HashMap<>(map);

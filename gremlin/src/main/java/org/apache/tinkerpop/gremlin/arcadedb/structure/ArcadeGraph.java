@@ -45,17 +45,8 @@ import org.apache.tinkerpop.gremlin.structure.util.ElementHelper;
 import org.apache.tinkerpop.gremlin.structure.util.StringFactory;
 import org.opencypher.v9_0.util.SyntaxException;
 
-import java.io.Closeable;
-import java.io.File;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Set;
+import java.io.*;
+import java.util.*;
 
 /**
  * Created by Enrico Risa on 30/07/2018.
@@ -219,15 +210,19 @@ public class ArcadeGraph implements Graph, Closeable {
 
     ElementHelper.validateMixedElementIds(Vertex.class, vertexIds);
 
-    final List<Vertex> resultset = new ArrayList<>();
+    final List<Vertex> resultSet = new ArrayList<>(vertexIds.length);
 
     for (Object o : vertexIds) {
       final RID rid;
       if (o instanceof RID)
         rid = (RID) o;
-      else if (o instanceof Vertex)
-        rid = (RID) ((Vertex) o).id();
-      else if (o instanceof String)
+      else if (o instanceof Vertex) {
+        final Object objectId = ((Vertex) o).id();
+        if (objectId != null)
+          rid = objectId instanceof RID ? (RID) objectId : new RID(database, objectId.toString());
+        else
+          continue;
+      } else if (o instanceof String)
         rid = new RID(database, (String) o);
       else
         continue;
@@ -235,13 +230,13 @@ public class ArcadeGraph implements Graph, Closeable {
       try {
         final Record r = database.lookupByRID(rid, true);
         if (r instanceof com.arcadedb.graph.Vertex)
-          resultset.add(new ArcadeVertex(this, ((com.arcadedb.graph.Vertex) r)));
+          resultSet.add(new ArcadeVertex(this, ((com.arcadedb.graph.Vertex) r)));
       } catch (RecordNotFoundException e) {
         // NP, IGNORE IT
       }
     }
 
-    return resultset.iterator();
+    return resultSet.iterator();
   }
 
   @Override
@@ -272,22 +267,26 @@ public class ArcadeGraph implements Graph, Closeable {
       }
       query.append("]");
 
-      final ResultSet resultset = this.database.query("sql", query.toString());
-      return resultset.stream().map(result -> (Edge) new ArcadeEdge(this, (com.arcadedb.graph.Edge) result.toElement())).iterator();
+      final ResultSet resultSet = this.database.query("sql", query.toString());
+      return resultSet.stream().map(result -> (Edge) new ArcadeEdge(this, (com.arcadedb.graph.Edge) result.toElement())).iterator();
 
     }
 
     ElementHelper.validateMixedElementIds(Vertex.class, edgeIds);
 
-    final List<Edge> resultset = new ArrayList<>();
+    final List<Edge> resultSet = new ArrayList<>(edgeIds.length);
 
     for (Object o : edgeIds) {
       final RID rid;
       if (o instanceof RID)
         rid = (RID) o;
-      else if (o instanceof Edge)
-        rid = (RID) ((Edge) o).id();
-      else if (o instanceof String)
+      else if (o instanceof Edge) {
+        final Object objectId = ((Edge) o).id();
+        if (objectId != null)
+          rid = objectId instanceof RID ? (RID) objectId : new RID(database, objectId.toString());
+        else
+          continue;
+      } else if (o instanceof String)
         rid = new RID(database, (String) o);
       else
         continue;
@@ -295,13 +294,13 @@ public class ArcadeGraph implements Graph, Closeable {
       try {
         final Record r = database.lookupByRID(rid, true);
         if (r instanceof com.arcadedb.graph.Edge)
-          resultset.add(new ArcadeEdge(this, (com.arcadedb.graph.Edge) r));
+          resultSet.add(new ArcadeEdge(this, (com.arcadedb.graph.Edge) r));
       } catch (RecordNotFoundException e) {
         // NP, IGNORE IT
       }
     }
 
-    return resultset.iterator();
+    return resultSet.iterator();
   }
 
   @Override
