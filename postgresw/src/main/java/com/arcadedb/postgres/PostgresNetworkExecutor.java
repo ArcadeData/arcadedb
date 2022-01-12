@@ -271,8 +271,6 @@ public class PostgresNetworkExecutor extends Thread {
       } else {
         if (portal.columns != null)
           writeRowDescription(portal.columns);
-
-        writeNoData();
       }
     } else if (type == 'S') {
       writeNoData();
@@ -1103,7 +1101,7 @@ public class PostgresNetworkExecutor extends Thread {
       language = "cypher";
       queryText = queryText.substring("{cypher}".length());
     } else if (queryText.startsWith("{gremlin}")) {
-      language = "com/arcadedb/server/gremlin";
+      language = "gremlin";
       queryText = queryText.substring("{gremlin}".length());
     } else if (queryText.startsWith("{mongo}")) {
       language = "mongo";

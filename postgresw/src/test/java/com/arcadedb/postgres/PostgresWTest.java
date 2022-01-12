@@ -24,13 +24,13 @@ import org.junit.jupiter.api.Test;
 import org.postgresql.util.PSQLException;
 
 import java.sql.*;
-import java.util.Properties;
+import java.util.*;
 
 public class PostgresWTest extends BaseGraphServerTest {
   @Override
   public void setTestConfiguration() {
     super.setTestConfiguration();
-    GlobalConfiguration.SERVER_PLUGINS.setValue("Postgres Protocol:com.arcadedb.postgres.PostgresProtocolPlugin");
+    GlobalConfiguration.SERVER_PLUGINS.setValue("Postgres:com.arcadedb.postgres.PostgresProtocolPlugin,GremlinServer:com.arcadedb.server.gremlin.GremlinServerPlugin");
   }
 
   @AfterEach
@@ -54,6 +54,21 @@ public class PostgresWTest extends BaseGraphServerTest {
   }
 
   @Test
+  void testGremlinQuery() throws Exception {
+    try (final Connection conn = getConnection()) {
+      conn.setAutoCommit(false);
+      try (Statement st = conn.createStatement()) {
+        st.execute("create vertex type V");
+        for (int i = 0; i < 11; i++) {
+          st.execute("create vertex V set id = " + i + ", name = 'Jay', lastName = 'Miner'");
+        }
+
+        ResultSet rs = st.executeQuery("{gremlin}g.V().limit(10)");
+      }
+    }
+  }
+
+  @Test
   public void queryVertices() throws Exception {
     final int TOTAL = 1000;
     try (final Connection conn = getConnection()) {
@@ -63,7 +78,8 @@ public class PostgresWTest extends BaseGraphServerTest {
           st.execute("create vertex V set id = " + i + ", name = 'Jay', lastName = 'Miner'");
         }
 
-        PreparedStatement pst = conn.prepareStatement("create vertex V set name = ?, lastName = ?, short = ?, int = ?, long = ?, float = ?, double = ?, boolean = ?");
+        PreparedStatement pst = conn.prepareStatement(
+            "create vertex V set name = ?, lastName = ?, short = ?, int = ?, long = ?, float = ?, double = ?, boolean = ?");
         pst.setString(1, "Rocky");
         pst.setString(2, "Balboa");
         pst.setShort(3, (short) 3);
