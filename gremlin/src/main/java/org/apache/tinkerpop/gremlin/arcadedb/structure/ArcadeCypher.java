@@ -16,7 +16,7 @@
 package org.apache.tinkerpop.gremlin.arcadedb.structure;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.query.cypher.CypherQueryEngine;
+import com.arcadedb.gremlin.query.CypherQueryEngine;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;

@@ -55,4 +55,12 @@ public class RemoteDatabaseQueriesTest extends ArcadeContainerTemplate {
         });
     }
 
+    @Test
+    void simpleCypherQuery() {
+        database.transaction(() -> {
+            ResultSet result = database.query("cypher", "MATCH(p:Beer) RETURN * LIMIT 10");
+            assertThat(result.countEntries()).isEqualTo(10);
+        });
+    }
+
 }
