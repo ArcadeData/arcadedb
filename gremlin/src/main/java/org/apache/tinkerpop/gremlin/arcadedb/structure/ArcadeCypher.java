@@ -23,11 +23,9 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.opencypher.gremlin.translation.TranslationFacade;
 
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.Map;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
 
 /**
  * Cypher Expression builder. Transform a cypher expression into Gremlin.
@@ -49,6 +47,10 @@ public class ArcadeCypher extends ArcadeGremlin {
       this.cypher = cypher;
       this.gremlin = gremlin;
     }
+  }
+
+  protected ArcadeCypher(final ArcadeGraph graph, final String cypherQuery, final Map<String, Object> parameters) {
+    super(graph, compileToGremlin(graph, cypherQuery, parameters));
   }
 
   @Override
@@ -75,10 +77,6 @@ public class ArcadeCypher extends ArcadeGremlin {
       }
     }
     return result;
-  }
-
-  protected ArcadeCypher(final ArcadeGraph graph, final String cypherQuery, final Map<String, Object> parameters) {
-    super(graph, compileToGremlin(graph, cypherQuery, parameters));
   }
 
   public static String compileToGremlin(final ArcadeGraph graph, final String cypher, final Map<String, Object> parameters) {
