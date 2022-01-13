@@ -35,26 +35,26 @@ public class QueryEngineManager {
       QueryEngine.QueryEngineFactory engineFactory = (QueryEngine.QueryEngineFactory) Class.forName("com.arcadedb.gremlin.query.GremlinQueryEngineFactory").getConstructor().newInstance();
       register(engineFactory);
     } catch (Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "Unable to register engine", e);
+//      LogManager.instance().log(this, Level.SEVERE, "Unable to register engine", e);
     }
     try {
       QueryEngine.QueryEngineFactory engineFactory = (QueryEngine.QueryEngineFactory) Class.forName("com.arcadedb.gremlin.query.CypherQueryEngineFactory").getConstructor().newInstance();
       register(engineFactory);
     } catch (Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "Unable to register engine", e);
+//      LogManager.instance().log(this, Level.SEVERE, "Unable to register engine", e);
     }
     try {
       QueryEngine.QueryEngineFactory engineFactory = (QueryEngine.QueryEngineFactory) Class.forName("com.arcadedb.mongo.query.MongoQueryEngineFactory").getConstructor().newInstance();
       register(engineFactory);
     } catch (Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "Unable to register engine", e);
+//      LogManager.instance().log(this, Level.SEVERE, "Unable to register engine", e);
     }
 
     try {
       QueryEngine.QueryEngineFactory engineFactory = (QueryEngine.QueryEngineFactory) Class.forName("com.arcadedb.graphql.query.GraphQLQueryEngineFactory").getConstructor().newInstance();
       register(engineFactory);
     } catch (Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "Unable to register engine", e);
+//      LogManager.instance().log(this, Level.SEVERE, "Unable to register engine", e);
     }
   }
 
