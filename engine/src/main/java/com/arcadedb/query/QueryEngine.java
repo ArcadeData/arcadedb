@@ -28,8 +28,6 @@ public interface QueryEngine {
   }
 
   interface QueryEngineFactory {
-    boolean isAvailable();
-
     String getLanguage();
 
     QueryEngine getInstance(DatabaseInternal database);

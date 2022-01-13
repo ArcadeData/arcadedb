@@ -16,14 +16,13 @@
 package com.arcadedb.graphql;
 
 import com.arcadedb.database.RID;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.QueryParsingException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.Collection;
+import java.util.*;
 
 public class GraphQLBasicTest extends AbstractGraphQLTest {
 
@@ -112,7 +111,7 @@ public class GraphQLBasicTest extends AbstractGraphQLTest {
       try {
         database.query("graphql", "{ bookByName(wrong: \"Mr. brain\") }");
         Assertions.fail();
-      } catch (CommandExecutionException e) {
+      } catch (QueryParsingException e) {
         // EXPECTED
         Assertions.assertEquals(QueryParsingException.class, e.getCause().getClass());
       }

@@ -21,34 +21,28 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngine;
 import org.apache.tinkerpop.gremlin.arcadedb.structure.ArcadeGraph;
 
-import java.util.logging.Level;
+import java.util.logging.*;
 
 public class CypherQueryEngineFactory implements QueryEngine.QueryEngineFactory {
+  @Override
+  public String getLanguage() {
+    return "cypher";
+  }
 
-    @Override
-    public boolean isAvailable() {
-        return true;
+  @Override
+  public QueryEngine getInstance(final DatabaseInternal database) {
+    Object engine = database.getWrappers().get(CypherQueryEngine.ENGINE_NAME);
+    if (engine != null)
+      return (CypherQueryEngine) engine;
+
+    try {
+      engine = new CypherQueryEngine(ArcadeGraph.open(database));
+      database.setWrapper(CypherQueryEngine.ENGINE_NAME, engine);
+      return (CypherQueryEngine) engine;
+
+    } catch (Exception e) {
+      LogManager.instance().log(this, Level.SEVERE, "Error on initializing Cypher query engine", e);
+      throw new QueryParsingException("Error on initializing Cypher query engine", e);
     }
-
-    @Override
-    public String getLanguage() {
-        return "cypher";
-    }
-
-    @Override
-    public QueryEngine getInstance(final DatabaseInternal database) {
-        Object engine = database.getWrappers().get(CypherQueryEngine.ENGINE_NAME);
-        if (engine != null)
-            return (CypherQueryEngine) engine;
-
-        try {
-            engine = new CypherQueryEngine(ArcadeGraph.open(database));
-            database.setWrapper(CypherQueryEngine.ENGINE_NAME, engine);
-            return (CypherQueryEngine) engine;
-
-        } catch (Exception e) {
-            LogManager.instance().log(this, Level.SEVERE, "Error on initializing Cypher query engine", e);
-            throw new QueryParsingException("Error on initializing Cypher query engine", e);
-        }
-    }
+  }
 }

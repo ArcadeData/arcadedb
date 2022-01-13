@@ -16,14 +16,9 @@
 package com.arcadedb.query;
 
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.SQLQueryEngine;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.logging.Level;
+import java.util.*;
 
 public class QueryEngineManager {
   private final Map<String, QueryEngine.QueryEngineFactory> implementations = new HashMap<>();
@@ -32,26 +27,30 @@ public class QueryEngineManager {
 
     register(new SQLQueryEngine.SQLQueryEngineFactory());
     try {
-      QueryEngine.QueryEngineFactory engineFactory = (QueryEngine.QueryEngineFactory) Class.forName("com.arcadedb.gremlin.query.GremlinQueryEngineFactory").getConstructor().newInstance();
+      QueryEngine.QueryEngineFactory engineFactory = (QueryEngine.QueryEngineFactory) Class.forName("com.arcadedb.gremlin.query.GremlinQueryEngineFactory")
+          .getConstructor().newInstance();
       register(engineFactory);
     } catch (Exception e) {
 //      LogManager.instance().log(this, Level.SEVERE, "Unable to register engine", e);
     }
     try {
-      QueryEngine.QueryEngineFactory engineFactory = (QueryEngine.QueryEngineFactory) Class.forName("com.arcadedb.gremlin.query.CypherQueryEngineFactory").getConstructor().newInstance();
+      QueryEngine.QueryEngineFactory engineFactory = (QueryEngine.QueryEngineFactory) Class.forName("com.arcadedb.gremlin.query.CypherQueryEngineFactory")
+          .getConstructor().newInstance();
       register(engineFactory);
     } catch (Exception e) {
 //      LogManager.instance().log(this, Level.SEVERE, "Unable to register engine", e);
     }
     try {
-      QueryEngine.QueryEngineFactory engineFactory = (QueryEngine.QueryEngineFactory) Class.forName("com.arcadedb.mongo.query.MongoQueryEngineFactory").getConstructor().newInstance();
+      QueryEngine.QueryEngineFactory engineFactory = (QueryEngine.QueryEngineFactory) Class.forName("com.arcadedb.mongo.query.MongoQueryEngineFactory")
+          .getConstructor().newInstance();
       register(engineFactory);
     } catch (Exception e) {
 //      LogManager.instance().log(this, Level.SEVERE, "Unable to register engine", e);
     }
 
     try {
-      QueryEngine.QueryEngineFactory engineFactory = (QueryEngine.QueryEngineFactory) Class.forName("com.arcadedb.graphql.query.GraphQLQueryEngineFactory").getConstructor().newInstance();
+      QueryEngine.QueryEngineFactory engineFactory = (QueryEngine.QueryEngineFactory) Class.forName("com.arcadedb.graphql.query.GraphQLQueryEngineFactory")
+          .getConstructor().newInstance();
       register(engineFactory);
     } catch (Exception e) {
 //      LogManager.instance().log(this, Level.SEVERE, "Unable to register engine", e);
@@ -59,8 +58,7 @@ public class QueryEngineManager {
   }
 
   public void register(final QueryEngine.QueryEngineFactory impl) {
-    if (impl.isAvailable())
-      implementations.put(impl.getLanguage().toLowerCase(), impl);
+    implementations.put(impl.getLanguage().toLowerCase(), impl);
   }
 
   public QueryEngine getInstance(final String language, DatabaseInternal database) {
@@ -73,8 +71,7 @@ public class QueryEngineManager {
   public List<String> getAvailableLanguages() {
     final List<String> available = new ArrayList<>();
     for (QueryEngine.QueryEngineFactory impl : implementations.values()) {
-      if (impl.isAvailable())
-        available.add(impl.getLanguage());
+      available.add(impl.getLanguage());
     }
     return available;
   }

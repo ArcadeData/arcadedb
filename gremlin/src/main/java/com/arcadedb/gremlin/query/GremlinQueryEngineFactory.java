@@ -21,36 +21,29 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngine;
 import org.apache.tinkerpop.gremlin.arcadedb.structure.ArcadeGraph;
 
-import java.util.logging.Level;
+import java.util.logging.*;
 
 public class GremlinQueryEngineFactory implements QueryEngine.QueryEngineFactory {
+  @Override
+  public String getLanguage() {
+    return "gremlin";
+  }
 
-    @Override
-    public boolean isAvailable() {
-        return true;
+  @Override
+  public QueryEngine getInstance(final DatabaseInternal database) {
+    Object engine = database.getWrappers().get(GremlinQueryEngine.ENGINE_NAME);
+    if (engine != null)
+      return (GremlinQueryEngine) engine;
+
+    try {
+
+      engine = new GremlinQueryEngine(ArcadeGraph.open(database));
+      database.setWrapper(GremlinQueryEngine.ENGINE_NAME, engine);
+      return (GremlinQueryEngine) engine;
+
+    } catch (Exception e) {
+      LogManager.instance().log(this, Level.SEVERE, "Error on initializing Gremlin query engine", e);
+      throw new QueryParsingException("Error on initializing Gremlin query engine", e);
     }
-
-    @Override
-    public String getLanguage() {
-        return "gremlin";
-    }
-
-    @Override
-    public QueryEngine getInstance(final DatabaseInternal database) {
-        Object engine = database.getWrappers().get(GremlinQueryEngine.ENGINE_NAME);
-        if (engine != null)
-            return (GremlinQueryEngine) engine;
-
-
-        try {
-
-            engine = new GremlinQueryEngine(ArcadeGraph.open(database));
-            database.setWrapper(GremlinQueryEngine.ENGINE_NAME, engine);
-            return (GremlinQueryEngine) engine;
-
-        } catch (Exception e) {
-            LogManager.instance().log(this, Level.SEVERE, "Error on initializing Gremlin query engine", e);
-            throw new QueryParsingException("Error on initializing Gremlin query engine", e);
-        }
-    }
+  }
 }

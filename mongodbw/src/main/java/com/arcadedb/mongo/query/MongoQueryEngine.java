@@ -15,61 +15,60 @@
  */
 package com.arcadedb.mongo.query;
 
-import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.QueryParsingException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.mongo.MongoDBDatabaseWrapper;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.Map;
-import java.util.logging.Level;
+import java.util.*;
+import java.util.logging.*;
 
 public class MongoQueryEngine implements QueryEngine {
-    public static final String ENGINE_NAME = "mongo-engine";
-    private final MongoDBDatabaseWrapper mongoDBWrapper;
+  public static final String                 ENGINE_NAME = "mongo-engine";
+  private final       MongoDBDatabaseWrapper mongoDBWrapper;
 
-    protected MongoQueryEngine(final MongoDBDatabaseWrapper mongoDBWrapper) {
-        this.mongoDBWrapper = mongoDBWrapper;
+  protected MongoQueryEngine(final MongoDBDatabaseWrapper mongoDBWrapper) {
+    this.mongoDBWrapper = mongoDBWrapper;
+  }
+
+  @Override
+  public AnalyzedQuery analyze(String query) {
+    return new AnalyzedQuery() {
+      @Override
+      public boolean isIdempotent() {
+        return false;
+      }
+
+      @Override
+      public boolean isDDL() {
+        return false;
+      }
+    };
+  }
+
+  @Override
+  public ResultSet query(final String query, final Map<String, Object> parameters) {
+    try {
+      return mongoDBWrapper.query(query);
+    } catch (Exception e) {
+      LogManager.instance().log(this, Level.SEVERE, "Error on initializing Mongo query engine", e);
+      throw new QueryParsingException("Error on initializing Mongo query engine", e);
     }
+  }
 
-    @Override
-    public AnalyzedQuery analyze(String query) {
-        return new AnalyzedQuery() {
-            @Override
-            public boolean isIdempotent() {
-                return false;
-            }
+  @Override
+  public ResultSet query(final String query, final Object... parameters) {
+    return query(query, (Map) null);
+  }
 
-            @Override
-            public boolean isDDL() {
-                return false;
-            }
-        };
-    }
+  @Override
+  public ResultSet command(final String query, final Map<String, Object> parameters) {
+    return null;
+  }
 
-    @Override
-    public ResultSet query(final String query, final Map<String, Object> parameters) {
-        try {
-            return mongoDBWrapper.query(query);
-        } catch (Exception e) {
-            LogManager.instance().log(this, Level.SEVERE, "Error on initializing Mongo query engine", e);
-            throw new QueryParsingException("Error on initializing Mongo query engine", e);
-        }
-    }
-
-    @Override
-    public ResultSet query(final String query, final Object... parameters) {
-        return query(query, (Map) null);
-    }
-
-    @Override
-    public ResultSet command(final String query, final Map<String, Object> parameters) {
-        return null;
-    }
-
-    @Override
-    public ResultSet command(String query, Object... parameters) {
-        return null;
-    }
+  @Override
+  public ResultSet command(String query, Object... parameters) {
+    return null;
+  }
 }
