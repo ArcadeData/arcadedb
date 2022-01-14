@@ -23,8 +23,7 @@ import org.apache.tinkerpop.gremlin.structure.VertexProperty;
 import org.apache.tinkerpop.gremlin.structure.util.ElementHelper;
 import org.apache.tinkerpop.gremlin.structure.util.StringFactory;
 
-import java.util.Iterator;
-import java.util.NoSuchElementException;
+import java.util.*;
 
 /**
  * Created by Enrico Risa on 30/07/2018.
@@ -85,9 +84,12 @@ public class ArcadeVertexProperty<T> implements VertexProperty<T> {
     throw new UnsupportedOperationException();
   }
 
+  /**
+   * Not supported.
+   */
   @Override
   public <U> Iterator<Property<U>> properties(final String... propertyKeys) {
-    throw new UnsupportedOperationException();
+    return Collections.emptyIterator();
   }
 
   @Override
