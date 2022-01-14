@@ -4072,6 +4072,41 @@ public class SelectStatementExecutionTest extends TestHelper {
     result.close();
   }
 
+  @Test
+  public void testOrderByLet() {
+    String className = "testOrderByLet";
+    database.setAutoTransaction(true);
+    database.getSchema().createDocumentType(className);
+    MutableDocument doc = database.newDocument(className);
+    doc.set("name", "abbb");
+    doc.save();
+
+    doc = database.newDocument(className);
+    doc.set("name", "baaa");
+    doc.save();
+
+    try (ResultSet result =
+        database.query("sql",
+            "select from "
+                + className
+                + " LET $order = name.substring(1) ORDER BY $order ASC LIMIT 1")) {
+      Assertions.assertTrue(result.hasNext());
+      Result item = result.next();
+      Assertions.assertNotNull(item);
+      Assertions.assertEquals("baaa", item.getProperty("name"));
+    }
+    try (ResultSet result =
+        database.query("sql",
+            "select from "
+                + className
+                + " LET $order = name.substring(1) ORDER BY $order DESC LIMIT 1")) {
+      Assertions.assertTrue(result.hasNext());
+      Result item = result.next();
+      Assertions.assertNotNull(item);
+      Assertions.assertEquals("abbb", item.getProperty("name"));
+    }
+  }
+
   public static void printExecutionPlan(ResultSet result) {
     //printExecutionPlan(null, result);
   }

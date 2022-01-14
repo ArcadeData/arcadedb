@@ -21,8 +21,8 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.serializer.BinaryComparator;
 
-import java.util.Map;
-import java.util.logging.Level;
+import java.util.*;
+import java.util.logging.*;
 
 /**
  * Created by luigidellaquila on 06/02/15.
@@ -109,6 +109,10 @@ public class OrderByItem {
     } else if (alias != null) {
       aVal = a.getProperty(alias);
       bVal = b.getProperty(alias);
+    }
+    if (aVal == null && bVal == null) {
+      aVal = a.getMetadata(alias);
+      bVal = b.getMetadata(alias);
     }
     if (modifier != null) {
       aVal = modifier.execute(a, aVal, ctx);
