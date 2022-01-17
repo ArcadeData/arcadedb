@@ -15,10 +15,9 @@
  */
 package com.arcadedb.query.sql.parser;
 
-import static org.junit.jupiter.api.Assertions.fail;
+import java.io.*;
 
-import java.io.ByteArrayInputStream;
-import java.io.InputStream;
+import static org.junit.jupiter.api.Assertions.fail;
 
 public abstract class ParserTestAbstract {
 
@@ -49,7 +48,10 @@ public abstract class ParserTestAbstract {
   protected SimpleNode checkSyntax(String query, boolean isCorrect) {
     SqlParser osql = getParserFor(query);
     try {
-      SimpleNode result = osql.parse();
+      Statement result = osql.parse();
+
+      result.validate();
+
       if (!isCorrect) {
         //        System.out.println(query);
         //        if (result != null) {
