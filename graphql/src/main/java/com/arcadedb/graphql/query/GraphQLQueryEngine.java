@@ -27,11 +27,16 @@ import com.arcadedb.utility.FileUtils;
 import java.util.*;
 
 public class GraphQLQueryEngine implements QueryEngine {
-  public static final String ENGINE_NAME = "graphql-engine";
+  public static final String        ENGINE_NAME = "graphql";
   private final       GraphQLSchema graphQLSchema;
 
   protected GraphQLQueryEngine(final GraphQLSchema graphQLSchema) {
     this.graphQLSchema = graphQLSchema;
+  }
+
+  @Override
+  public String getLanguage() {
+    return ENGINE_NAME;
   }
 
   @Override

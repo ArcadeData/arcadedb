@@ -20,6 +20,7 @@ package com.arcadedb.query;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.polyglot.PolyglotQueryEngine;
 import com.arcadedb.query.sql.SQLQueryEngine;
 
 import java.util.*;
@@ -29,6 +30,10 @@ public class QueryEngineManager {
   private final Map<String, QueryEngine.QueryEngineFactory> implementations = new HashMap<>();
 
   public QueryEngineManager() {
+    // REGISTER ALL THE SUPPORTED LANGUAGE FROM POLYGLOT ENGINE
+    for (String language : PolyglotQueryEngine.PolyglotQueryEngineFactory.getSupportedLanguages())
+      register(new PolyglotQueryEngine.PolyglotQueryEngineFactory(language));
+
     // REGISTER QUERY ENGINES IF AVAILABLE ON CLASSPATH AT RUN-TIME
     register(new SQLQueryEngine.SQLQueryEngineFactory());
 

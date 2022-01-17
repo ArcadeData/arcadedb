@@ -30,12 +30,13 @@ import java.util.*;
 import static com.arcadedb.query.sql.parser.SqlParserTreeConstants.JJTLIMIT;
 
 public class SQLQueryEngine implements QueryEngine {
+  public static String           ENGINE_NAME = "sql";
   private final DatabaseInternal database;
 
   public static class SQLQueryEngineFactory implements QueryEngineFactory {
     @Override
     public String getLanguage() {
-      return "sql";
+      return ENGINE_NAME;
     }
 
     @Override
@@ -46,6 +47,11 @@ public class SQLQueryEngine implements QueryEngine {
 
   protected SQLQueryEngine(final DatabaseInternal database) {
     this.database = database;
+  }
+
+  @Override
+  public String getLanguage() {
+    return ENGINE_NAME;
   }
 
   @Override
