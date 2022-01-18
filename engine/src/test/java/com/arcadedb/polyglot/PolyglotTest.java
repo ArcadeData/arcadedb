@@ -79,11 +79,25 @@ public class PolyglotTest extends TestHelper {
   }
 
   @Test
+  public void testSandboxSystem() {
+    // BY DEFAULT NO JAVA PACKAGES ARE ACCESSIBLE
+    try {
+      ResultSet result = database.command("js", "let System = Java.type('java.lang.System'); System.exit(1)");
+      Assertions.assertFalse(result.hasNext());
+      Assertions.fail("It should not execute the function");
+    } catch (Exception e) {
+      Assertions.assertTrue(e instanceof UserCodeException);
+      Assertions.assertTrue(e.getCause() instanceof PolyglotException);
+      Assertions.assertTrue(e.getCause().getMessage().contains("java.lang.System"));
+    }
+  }
+
+  @Test
   public void testTimeout() {
     GlobalConfiguration.POLYGLOT_COMMAND_TIMEOUT.setValue(2000);
     try {
       database.command("js", "while(true);");
-      Assertions.fail("It should not execute the function");
+      Assertions.fail("It should go in timeout");
     } catch (Exception e) {
       Assertions.assertTrue(e instanceof UserCodeException);
       Assertions.assertTrue(e.getCause() instanceof TimeoutException);
