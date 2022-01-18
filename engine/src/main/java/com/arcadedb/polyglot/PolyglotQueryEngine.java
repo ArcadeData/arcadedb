@@ -15,6 +15,7 @@
  */
 package com.arcadedb.polyglot;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
@@ -26,10 +27,26 @@ import org.graalvm.polyglot.Engine;
 import org.graalvm.polyglot.Value;
 
 import java.util.*;
+import java.util.concurrent.*;
 
 public class PolyglotQueryEngine implements QueryEngine {
-  private final GraalPolyglotEngine polyglotEngine;
-  private final String              language;
+  private final GraalPolyglotEngine          polyglotEngine;
+  private final String                       language;
+  private final long                         timeout;
+  private       ExecutorService              userCodeExecutor;
+  private       ArrayBlockingQueue<Runnable> userCodeExecutorQueue;
+
+  private static final AnalyzedQuery ANALYZED_QUERY = new AnalyzedQuery() {
+    @Override
+    public boolean isIdempotent() {
+      return false;
+    }
+
+    @Override
+    public boolean isDDL() {
+      return false;
+    }
+  };
 
   public static class PolyglotQueryEngineFactory implements QueryEngineFactory {
     private final String       language;
@@ -62,6 +79,9 @@ public class PolyglotQueryEngine implements QueryEngine {
   protected PolyglotQueryEngine(final DatabaseInternal database, final String language, final List<String> allowedPackages) {
     this.language = language;
     this.polyglotEngine = GraalPolyglotEngine.newBuilder(database, Engine.create()).setLanguage(language).setAllowedPackages(allowedPackages).build();
+    this.userCodeExecutorQueue = new ArrayBlockingQueue<>(10000);
+    this.userCodeExecutor = new ThreadPoolExecutor(8, 8, 30, TimeUnit.SECONDS, userCodeExecutorQueue, new ThreadPoolExecutor.CallerRunsPolicy());
+    this.timeout = database.getConfiguration().getValueAsLong(GlobalConfiguration.POLYGLOT_COMMAND_TIMEOUT);
   }
 
   @Override
@@ -78,81 +98,90 @@ public class PolyglotQueryEngine implements QueryEngine {
 
   @Override
   public ResultSet command(final String query, final Map<String, Object> parameters) {
-    synchronized (polyglotEngine) {
-      if (parameters != null && !parameters.isEmpty()) {
-        for (Map.Entry<String, Object> entry : parameters.entrySet())
-          polyglotEngine.setAttribute(entry.getKey(), entry.getValue());
-      }
-      final Value result = polyglotEngine.eval(query);
+    try {
+      return executeUserCode(() -> {
 
-      if (result.isHostObject()) {
-        final Object host = result.asHostObject();
-        if (host instanceof ResultSet)
-          return (ResultSet) host;
+        synchronized (polyglotEngine) {
+          if (parameters != null && !parameters.isEmpty()) {
+            for (Map.Entry<String, Object> entry : parameters.entrySet())
+              polyglotEngine.setAttribute(entry.getKey(), entry.getValue());
+          }
 
-        final InternalResultSet resultSet = new InternalResultSet();
-        if (host instanceof Iterable) {
-          for (Object o : (Iterable) host)
-            resultSet.add(extractResult(o));
-        } else
-          resultSet.add(extractResult(host));
+          final Value result = polyglotEngine.eval(query);
 
-        return resultSet;
+          if (result.isHostObject()) {
+            final Object host = result.asHostObject();
+            if (host instanceof ResultSet)
+              return (ResultSet) host;
 
-      }
+            final InternalResultSet resultSet = new InternalResultSet();
+            if (host instanceof Iterable) {
+              for (Object o : (Iterable) host)
+                resultSet.add(extractResult(o));
+            } else
+              resultSet.add(extractResult(host));
 
-      final InternalResultSet resultSet = new InternalResultSet();
+            return resultSet;
 
-      Object value;
-      if (result.isString())
-        value = result.asString();
-      else if (result.isBoolean())
-        value = result.asBoolean();
-      else if (result.isNumber()) {
-        if (result.fitsInInt())
-          value = result.asInt();
-        else if (result.fitsInLong())
-          value = result.asLong();
-        else if (result.fitsInFloat())
-          value = result.asFloat();
-        else
-          value = result.asFloat();
-      } else if (result.isNull())
-        value = null;
-      else
-        // UNKNOWN OR NOT SUPPORTED
-        value = null;
+          }
 
-      resultSet.add(new ResultInternal().setProperty("value", value));
-      return resultSet;
+          final InternalResultSet resultSet = new InternalResultSet();
+
+          Object value;
+          if (result.isString())
+            value = result.asString();
+          else if (result.isBoolean())
+            value = result.asBoolean();
+          else if (result.isNumber()) {
+            if (result.fitsInInt())
+              value = result.asInt();
+            else if (result.fitsInLong())
+              value = result.asLong();
+            else if (result.fitsInFloat())
+              value = result.asFloat();
+            else
+              value = result.asFloat();
+          } else if (result.isNull())
+            value = null;
+          else
+            // UNKNOWN OR NOT SUPPORTED
+            value = null;
+
+          resultSet.add(new ResultInternal().setProperty("value", value));
+          return resultSet;
+        }
+
+      }, timeout);
+
+    } catch (UserCodeException e) {
+      throw e;
+    } catch (ExecutionException e) {
+      // USE THE UNDERLYING CAUSE BYPASSING THE NOT RELEVANT EXECUTION EXCEPTION
+      throw new UserCodeException("Error on executing user code", e.getCause());
+    } catch (Exception e) {
+      throw new UserCodeException("Error on executing user code", e);
     }
-  }
-
-  private ResultInternal extractResult(final Object o) {
-    if (o instanceof Document)
-      return new ResultInternal((Document) o);
-    else if (o instanceof Identifiable)
-      return new ResultInternal((Identifiable) o);
-    else if (o instanceof Map)
-      return new ResultInternal((Map) o);
-
-    return new ResultInternal().setProperty("value", o);
   }
 
   @Override
   public AnalyzedQuery analyze(final String query) {
-    polyglotEngine.eval(query);
-    return new AnalyzedQuery() {
-      @Override
-      public boolean isIdempotent() {
-        return false;
-      }
+    try {
+      executeUserCode(() -> {
+        synchronized (polyglotEngine) {
+          polyglotEngine.eval(query);
+        }
+        return null;
+      }, timeout);
+    } catch (UserCodeException e) {
+      throw e;
+    } catch (ExecutionException e) {
+      // USE THE UNDERLYING CAUSE BYPASSING THE NOT RELEVANT EXECUTION EXCEPTION
+      throw new UserCodeException("Error on executing user code", e.getCause());
+    } catch (Exception e) {
+      throw new UserCodeException("Error on analyzing user code", e);
+    }
 
-      @Override
-      public boolean isDDL() {
-        return false;
-      }
-    };
+    return ANALYZED_QUERY;
   }
 
   @Override
@@ -169,4 +198,35 @@ public class PolyglotQueryEngine implements QueryEngine {
   public void close() {
     polyglotEngine.close();
   }
+
+  private ResultSet executeUserCode(final Callable task, final long executionTimeoutMs) throws Exception {
+    // IF NOT INITIALIZED, EXECUTE AS SOON AS THE SERVICE STARTS
+    final Future future = userCodeExecutor.submit(task);
+    if (future == null)
+      return null;
+
+    try {
+      Object result = executionTimeoutMs > 0 ? future.get(executionTimeoutMs, TimeUnit.MILLISECONDS) : future.get();
+      if (result instanceof Exception)
+        throw (Exception) result;
+
+      return (ResultSet) result;
+
+    } catch (TimeoutException e) {
+      future.cancel(true); //this method will stop the running underlying task
+      throw e;
+    }
+  }
+
+  private ResultInternal extractResult(final Object o) {
+    if (o instanceof Document)
+      return new ResultInternal((Document) o);
+    else if (o instanceof Identifiable)
+      return new ResultInternal((Identifiable) o);
+    else if (o instanceof Map)
+      return new ResultInternal((Map) o);
+
+    return new ResultInternal().setProperty("value", o);
+  }
+
 }

@@ -1,5 +1,6 @@
 package com.arcadedb.polyglot;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.EmbeddedDatabase;
@@ -11,6 +12,7 @@ import org.junit.jupiter.api.Test;
 
 import java.math.*;
 import java.util.*;
+import java.util.concurrent.*;
 
 public class PolyglotTest extends TestHelper {
   @Test
@@ -74,5 +76,19 @@ public class PolyglotTest extends TestHelper {
     Assertions.assertTrue(result.hasNext());
 
     Assertions.assertEquals(new BigDecimal(1), result.next().getProperty("value"));
+  }
+
+  @Test
+  public void testTimeout() {
+    GlobalConfiguration.POLYGLOT_COMMAND_TIMEOUT.setValue(2000);
+    try {
+      database.command("js", "while(true);");
+      Assertions.fail("It should not execute the function");
+    } catch (Exception e) {
+      Assertions.assertTrue(e instanceof UserCodeException);
+      Assertions.assertTrue(e.getCause() instanceof TimeoutException);
+    } finally {
+      GlobalConfiguration.POLYGLOT_COMMAND_TIMEOUT.reset();
+    }
   }
 }
