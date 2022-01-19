@@ -1,4 +1,4 @@
-package com.arcadedb.polyglot;
+package com.arcadedb.query.polyglot;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.log.LogManager;

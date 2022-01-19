@@ -1,9 +1,10 @@
-package com.arcadedb.polyglot;
+package com.arcadedb.query.polyglot;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.EmbeddedDatabase;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.graalvm.polyglot.PolyglotException;
@@ -61,7 +62,7 @@ public class PolyglotTest extends TestHelper {
       Assertions.assertFalse(result.hasNext());
       Assertions.fail("It should not execute the function");
     } catch (Exception e) {
-      Assertions.assertTrue(e instanceof UserCodeException);
+      Assertions.assertTrue(e instanceof CommandExecutionException);
       Assertions.assertTrue(e.getCause() instanceof PolyglotException);
       Assertions.assertTrue(e.getCause().getMessage().contains("java.math.BigDecimal"));
     }
@@ -86,7 +87,7 @@ public class PolyglotTest extends TestHelper {
       Assertions.assertFalse(result.hasNext());
       Assertions.fail("It should not execute the function");
     } catch (Exception e) {
-      Assertions.assertTrue(e instanceof UserCodeException);
+      Assertions.assertTrue(e instanceof CommandExecutionException);
       Assertions.assertTrue(e.getCause() instanceof PolyglotException);
       Assertions.assertTrue(e.getCause().getMessage().contains("java.lang.System"));
     }
@@ -99,7 +100,7 @@ public class PolyglotTest extends TestHelper {
       database.command("js", "while(true);");
       Assertions.fail("It should go in timeout");
     } catch (Exception e) {
-      Assertions.assertTrue(e instanceof UserCodeException);
+      Assertions.assertTrue(e instanceof CommandExecutionException);
       Assertions.assertTrue(e.getCause() instanceof TimeoutException);
     } finally {
       GlobalConfiguration.POLYGLOT_COMMAND_TIMEOUT.reset();

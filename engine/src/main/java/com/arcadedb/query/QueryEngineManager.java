@@ -20,7 +20,8 @@ package com.arcadedb.query;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.polyglot.PolyglotQueryEngine;
+import com.arcadedb.query.java.JavaQueryEngine;
+import com.arcadedb.query.polyglot.PolyglotQueryEngine;
 import com.arcadedb.query.sql.SQLQueryEngine;
 
 import java.util.*;
@@ -34,9 +35,10 @@ public class QueryEngineManager {
     for (String language : PolyglotQueryEngine.PolyglotQueryEngineFactory.getSupportedLanguages())
       register(new PolyglotQueryEngine.PolyglotQueryEngineFactory(language));
 
-    // REGISTER QUERY ENGINES IF AVAILABLE ON CLASSPATH AT RUN-TIME
+    register(new JavaQueryEngine.JavaQueryEngineFactory());
     register(new SQLQueryEngine.SQLQueryEngineFactory());
 
+    // REGISTER QUERY ENGINES IF AVAILABLE ON CLASSPATH AT RUN-TIME
     register("com.arcadedb.gremlin.query.GremlinQueryEngineFactory");
     register("com.arcadedb.gremlin.query.CypherQueryEngineFactory");
     register("com.arcadedb.mongo.query.MongoQueryEngineFactory");

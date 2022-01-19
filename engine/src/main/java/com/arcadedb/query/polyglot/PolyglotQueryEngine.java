@@ -13,12 +13,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.arcadedb.polyglot;
+package com.arcadedb.query.polyglot;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -153,13 +154,13 @@ public class PolyglotQueryEngine implements QueryEngine {
 
       }, timeout);
 
-    } catch (UserCodeException e) {
+    } catch (CommandExecutionException e) {
       throw e;
     } catch (ExecutionException e) {
       // USE THE UNDERLYING CAUSE BYPASSING THE NOT RELEVANT EXECUTION EXCEPTION
-      throw new UserCodeException("Error on executing user code", e.getCause());
+      throw new CommandExecutionException("Error on executing user code", e.getCause());
     } catch (Exception e) {
-      throw new UserCodeException("Error on executing user code", e);
+      throw new CommandExecutionException("Error on executing user code", e);
     }
   }
 
@@ -172,13 +173,13 @@ public class PolyglotQueryEngine implements QueryEngine {
         }
         return null;
       }, timeout);
-    } catch (UserCodeException e) {
+    } catch (CommandExecutionException e) {
       throw e;
     } catch (ExecutionException e) {
       // USE THE UNDERLYING CAUSE BYPASSING THE NOT RELEVANT EXECUTION EXCEPTION
-      throw new UserCodeException("Error on executing user code", e.getCause());
+      throw new CommandExecutionException("Error on executing user code", e.getCause());
     } catch (Exception e) {
-      throw new UserCodeException("Error on analyzing user code", e);
+      throw new CommandExecutionException("Error on analyzing user code", e);
     }
 
     return ANALYZED_QUERY;
