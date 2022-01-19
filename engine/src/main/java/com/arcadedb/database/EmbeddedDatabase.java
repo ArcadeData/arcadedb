@@ -1217,6 +1217,21 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   }
 
   @Override
+  public QueryEngine getQueryEngine(final String language) {
+    QueryEngine engine = reusableQueryEngines.get(language);
+    if (engine == null) {
+      engine = queryEngineManager.getInstance(language, this);
+      if (engine.isReusable()) {
+        final QueryEngine prev = reusableQueryEngines.putIfAbsent(language, engine);
+        if (prev != null)
+          engine = prev;
+      }
+    }
+
+    return engine;
+  }
+
+  @Override
   public ResultSet command(final String language, final String query, final Object... parameters) {
     checkDatabaseIsOpen();
 
@@ -1716,19 +1731,5 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     }
 
     return new LocalResultSet(plan);
-  }
-
-  private QueryEngine getQueryEngine(final String language) {
-    QueryEngine engine = reusableQueryEngines.get(language);
-    if (engine == null) {
-      engine = queryEngineManager.getInstance(language, this);
-      if (engine.isReusable()) {
-        final QueryEngine prev = reusableQueryEngines.putIfAbsent(language, engine);
-        if (prev != null)
-          engine = prev;
-      }
-    }
-
-    return engine;
   }
 }

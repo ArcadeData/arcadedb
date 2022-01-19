@@ -33,10 +33,11 @@ import java.util.*;
 import java.util.concurrent.*;
 
 public class JavaQueryEngine implements QueryEngine {
-  public static final String                       ENGINE_NAME = "java";
+  public static final String                       ENGINE_NAME       = "java";
   private final       long                         timeout;
   private final       ThreadPoolExecutor           userCodeExecutor;
-  private             ArrayBlockingQueue<Runnable> userCodeExecutorQueue;
+  private final       ArrayBlockingQueue<Runnable> userCodeExecutorQueue;
+  private final       Set<String>                  registeredClasses = new HashSet<>();
 
   private static final AnalyzedQuery ANALYZED_QUERY = new AnalyzedQuery() {
     @Override
@@ -49,6 +50,24 @@ public class JavaQueryEngine implements QueryEngine {
       return false;
     }
   };
+
+  /**
+   * Registers a class to be used in a query via Java reflection.
+   *
+   * @param classFullName Full name of the class (with package). For inner classes, use $ as separator, example: `com.arcadedb.query.java.JavaFunctionsTest$Sum`.
+   */
+  public void registerClass(final String classFullName) {
+    registeredClasses.add(classFullName);
+  }
+
+  /**
+   * Unregister a class to be not used by the Java Query engine.
+   *
+   * @param classFullName Full name of the class (with package). For inner classes, use $ as separator, example: `com.arcadedb.query.java.JavaFunctionsTest$Sum`.
+   */
+  public void unregisterClass(final String classFullName) {
+    registeredClasses.remove(classFullName);
+  }
 
   public static class JavaQueryEngineFactory implements QueryEngineFactory {
     private List<String> allowedPackages = null;
@@ -88,6 +107,10 @@ public class JavaQueryEngine implements QueryEngine {
         if (parts.length != 2)
           throw new QueryParsingException(
               "Java function name '" + query + "' must contain the full package of the class, :: and the method. Example: org.acme.Math::sum");
+
+        if (!registeredClasses.contains(parts[0]))
+          throw new QueryParsingException(
+              "The Java class '" + parts[0] + "' was not registered to be used by the Java Query engine. Please register it before using.");
 
         final Class<?> impl = Class.forName(parts[0]);
 

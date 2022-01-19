@@ -31,6 +31,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
+import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 
@@ -344,6 +345,14 @@ public interface Database extends AutoCloseable {
    * @param record The record to delete
    */
   void deleteRecord(Record record);
+
+   * Returns the query engine by language name.
+   *
+   * @param language Language name
+   *
+   * @return Query engine implementation if available, otherwise null
+   */
+  QueryEngine getQueryEngine(String language);
 
   /**
    * Returns the database schema.

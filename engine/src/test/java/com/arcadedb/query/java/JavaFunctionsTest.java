@@ -1,6 +1,7 @@
 package com.arcadedb.query.java;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -18,7 +19,29 @@ public class JavaFunctionsTest extends TestHelper {
   }
 
   @Test
+  public void testRegistration() {
+    // TEST REGISTRATION HERE
+    ((JavaQueryEngine) database.getQueryEngine("java")).registerClass("com.arcadedb.query.java.JavaFunctionsTest$Sum");
+    ((JavaQueryEngine) database.getQueryEngine("java")).unregisterClass("com.arcadedb.query.java.JavaFunctionsTest$Sum");
+    ((JavaQueryEngine) database.getQueryEngine("java")).registerClass("com.arcadedb.query.java.JavaFunctionsTest$Sum");
+    ((JavaQueryEngine) database.getQueryEngine("java")).registerClass("com.arcadedb.query.java.JavaFunctionsTest$Sum");
+  }
+
+  @Test
+  public void testSecurityError() {
+    try {
+      database.command("java", "com.arcadedb.query.java.JavaFunctionsTest$Sum::sum", 3, 5);
+      Assertions.fail("it shouldn't be allowed to execute a method of a class that has not whitelisted before");
+    } catch (CommandExecutionException e) {
+      // EXPECTED
+    }
+  }
+
+  @Test
   public void testMethodParameterByPosition() {
+    // TEST REGISTRATION HERE
+    ((JavaQueryEngine) database.getQueryEngine("java")).registerClass("com.arcadedb.query.java.JavaFunctionsTest$Sum");
+
     ResultSet result = database.command("java", "com.arcadedb.query.java.JavaFunctionsTest$Sum::sum", 3, 5);
     Assertions.assertTrue(result.hasNext());
     Assertions.assertEquals(8, (Integer) result.next().getProperty("value"));
@@ -26,6 +49,8 @@ public class JavaFunctionsTest extends TestHelper {
 
   @Test
   public void testStaticMethodParameterByPosition() {
+    ((JavaQueryEngine) database.getQueryEngine("java")).registerClass("com.arcadedb.query.java.JavaFunctionsTest$Sum");
+
     ResultSet result = database.command("java", "com.arcadedb.query.java.JavaFunctionsTest$Sum::SUM", 3, 5);
     Assertions.assertTrue(result.hasNext());
     Assertions.assertEquals(8, (Integer) result.next().getProperty("value"));
