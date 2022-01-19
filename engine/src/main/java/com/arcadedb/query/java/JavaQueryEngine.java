@@ -109,7 +109,7 @@ public class JavaQueryEngine implements QueryEngine {
               "Java function name '" + query + "' must contain the full package of the class, :: and the method. Example: org.acme.Math::sum");
 
         if (!registeredClasses.contains(parts[0]))
-          throw new QueryParsingException(
+          throw new SecurityException(
               "The Java class '" + parts[0] + "' was not registered to be used by the Java Query engine. Please register it before using.");
 
         final Class<?> impl = Class.forName(parts[0]);
@@ -120,7 +120,7 @@ public class JavaQueryEngine implements QueryEngine {
         final Method rightMethod = searchMethod(parts, impl, parameterArray, parameters);
 
         if (rightMethod == null)
-          throw new QueryParsingException(
+          throw new NoSuchMethodException(
               "Java function '" + query + "' not found on classpath (class '" + parts[0] + "' method '" + parts[1] + "' with parameters " + Arrays.toString(
                   parameters) + ")");
 

@@ -34,6 +34,19 @@ public class JavaFunctionsTest extends TestHelper {
       Assertions.fail("it shouldn't be allowed to execute a method of a class that has not whitelisted before");
     } catch (CommandExecutionException e) {
       // EXPECTED
+      Assertions.assertTrue(e.getCause() instanceof SecurityException);
+    }
+  }
+
+  @Test
+  public void testMethodNotFoundError() {
+    try {
+      ((JavaQueryEngine) database.getQueryEngine("java")).registerClass("com.arcadedb.query.java.JavaFunctionsTest$Sum");
+      database.command("java", "com.arcadedb.query.java.JavaFunctionsTest$Sum::sum", 3, 5, 7);
+      Assertions.fail("method does not exist");
+    } catch (CommandExecutionException e) {
+      // EXPECTED
+      Assertions.assertTrue(e.getCause() instanceof NoSuchMethodException);
     }
   }
 
