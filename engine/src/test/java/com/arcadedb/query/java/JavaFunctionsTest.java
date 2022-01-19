@@ -21,10 +21,10 @@ public class JavaFunctionsTest extends TestHelper {
   @Test
   public void testRegistration() {
     // TEST REGISTRATION HERE
-    ((JavaQueryEngine) database.getQueryEngine("java")).registerClass("com.arcadedb.query.java.JavaFunctionsTest$Sum");
-    ((JavaQueryEngine) database.getQueryEngine("java")).unregisterClass("com.arcadedb.query.java.JavaFunctionsTest$Sum");
-    ((JavaQueryEngine) database.getQueryEngine("java")).registerClass("com.arcadedb.query.java.JavaFunctionsTest$Sum");
-    ((JavaQueryEngine) database.getQueryEngine("java")).registerClass("com.arcadedb.query.java.JavaFunctionsTest$Sum");
+    database.getSchema().registerFunctions("java", "com.arcadedb.query.java.JavaFunctionsTest$Sum");
+    database.getSchema().registerFunctions("java", "com.arcadedb.query.java.JavaFunctionsTest$Sum");
+    database.getSchema().unregisterFunctions("java");
+    database.getSchema().registerFunctions("java", "com.arcadedb.query.java.JavaFunctionsTest$Sum");
   }
 
   @Test
@@ -41,7 +41,7 @@ public class JavaFunctionsTest extends TestHelper {
   @Test
   public void testMethodNotFoundError() {
     try {
-      ((JavaQueryEngine) database.getQueryEngine("java")).registerClass("com.arcadedb.query.java.JavaFunctionsTest$Sum");
+      database.getSchema().registerFunctions("java", "com.arcadedb.query.java.JavaFunctionsTest$Sum");
       database.command("java", "com.arcadedb.query.java.JavaFunctionsTest$Sum::sum", 3, 5, 7);
       Assertions.fail("method does not exist");
     } catch (CommandExecutionException e) {
@@ -53,7 +53,7 @@ public class JavaFunctionsTest extends TestHelper {
   @Test
   public void testMethodParameterByPosition() {
     // TEST REGISTRATION HERE
-    ((JavaQueryEngine) database.getQueryEngine("java")).registerClass("com.arcadedb.query.java.JavaFunctionsTest$Sum");
+    database.getSchema().registerFunctions("java", "com.arcadedb.query.java.JavaFunctionsTest$Sum");
 
     ResultSet result = database.command("java", "com.arcadedb.query.java.JavaFunctionsTest$Sum::sum", 3, 5);
     Assertions.assertTrue(result.hasNext());
@@ -62,7 +62,7 @@ public class JavaFunctionsTest extends TestHelper {
 
   @Test
   public void testStaticMethodParameterByPosition() {
-    ((JavaQueryEngine) database.getQueryEngine("java")).registerClass("com.arcadedb.query.java.JavaFunctionsTest$Sum");
+    database.getSchema().registerFunctions("java", "com.arcadedb.query.java.JavaFunctionsTest$Sum");
 
     ResultSet result = database.command("java", "com.arcadedb.query.java.JavaFunctionsTest$Sum::SUM", 3, 5);
     Assertions.assertTrue(result.hasNext());

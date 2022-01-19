@@ -159,6 +159,10 @@ public interface Schema {
 
   EmbeddedSchema getEmbedded();
 
+  Schema registerFunctions(String language, String function);
+
+  Schema unregisterFunctions(String language);
+
   enum INDEX_TYPE {
     LSM_TREE, FULL_TEXT
   }

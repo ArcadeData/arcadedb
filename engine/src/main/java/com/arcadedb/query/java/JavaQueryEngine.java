@@ -38,6 +38,7 @@ public class JavaQueryEngine implements QueryEngine {
   private final       ThreadPoolExecutor           userCodeExecutor;
   private final       ArrayBlockingQueue<Runnable> userCodeExecutorQueue;
   private final       Set<String>                  registeredClasses = new HashSet<>();
+  private final       Set<String>                  registeredMethods = new HashSet<>();
 
   private static final AnalyzedQuery ANALYZED_QUERY = new AnalyzedQuery() {
     @Override
@@ -55,9 +56,17 @@ public class JavaQueryEngine implements QueryEngine {
    * Registers a class to be used in a query via Java reflection.
    *
    * @param classFullName Full name of the class (with package). For inner classes, use $ as separator, example: `com.arcadedb.query.java.JavaFunctionsTest$Sum`.
+   *
+   * @return
    */
-  public void registerClass(final String classFullName) {
-    registeredClasses.add(classFullName);
+  @Override
+  public JavaQueryEngine registerFunctions(final String classFullName) {
+    if (classFullName.indexOf("::") > -1)
+      registeredMethods.add(classFullName);
+    else
+      registeredClasses.add(classFullName);
+
+    return this;
   }
 
   /**
@@ -65,8 +74,11 @@ public class JavaQueryEngine implements QueryEngine {
    *
    * @param classFullName Full name of the class (with package). For inner classes, use $ as separator, example: `com.arcadedb.query.java.JavaFunctionsTest$Sum`.
    */
-  public void unregisterClass(final String classFullName) {
-    registeredClasses.remove(classFullName);
+  @Override
+  public QueryEngine unregisterFunctions() {
+    registeredClasses.clear();
+    registeredMethods.clear();
+    return this;
   }
 
   public static class JavaQueryEngineFactory implements QueryEngineFactory {
@@ -108,9 +120,11 @@ public class JavaQueryEngine implements QueryEngine {
           throw new QueryParsingException(
               "Java function name '" + query + "' must contain the full package of the class, :: and the method. Example: org.acme.Math::sum");
 
-        if (!registeredClasses.contains(parts[0]))
-          throw new SecurityException(
-              "The Java class '" + parts[0] + "' was not registered to be used by the Java Query engine. Please register it before using.");
+        if (!registeredMethods.contains(query)) {
+          if (!registeredClasses.contains(parts[0]))
+            throw new SecurityException("The Java class '" + parts[0] + "' or the method '" + query
+                + "' was not registered to be used by the Java Query engine. Please register it before using.");
+        }
 
         final Class<?> impl = Class.forName(parts[0]);
 

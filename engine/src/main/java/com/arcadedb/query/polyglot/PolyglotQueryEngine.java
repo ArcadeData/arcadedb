@@ -31,9 +31,11 @@ import java.util.*;
 import java.util.concurrent.*;
 
 public class PolyglotQueryEngine implements QueryEngine {
-  private final GraalPolyglotEngine          polyglotEngine;
+  private       GraalPolyglotEngine          polyglotEngine;
   private final String                       language;
   private final long                         timeout;
+  private final DatabaseInternal             database;
+  private       List<String>                 allowedPackages = null;
   private       ExecutorService              userCodeExecutor;
   private       ArrayBlockingQueue<Runnable> userCodeExecutorQueue;
 
@@ -79,6 +81,8 @@ public class PolyglotQueryEngine implements QueryEngine {
 
   protected PolyglotQueryEngine(final DatabaseInternal database, final String language, final List<String> allowedPackages) {
     this.language = language;
+    this.database = database;
+    this.allowedPackages = allowedPackages;
     this.polyglotEngine = GraalPolyglotEngine.newBuilder(database, Engine.create()).setLanguage(language).setAllowedPackages(allowedPackages).build();
     this.userCodeExecutorQueue = new ArrayBlockingQueue<>(10000);
     this.userCodeExecutor = new ThreadPoolExecutor(8, 8, 30, TimeUnit.SECONDS, userCodeExecutorQueue, new ThreadPoolExecutor.CallerRunsPolicy());
@@ -162,6 +166,26 @@ public class PolyglotQueryEngine implements QueryEngine {
     } catch (Exception e) {
       throw new CommandExecutionException("Error on executing user code", e);
     }
+  }
+
+  @Override
+  public QueryEngine registerFunctions(final String function) {
+    synchronized (polyglotEngine) {
+      try {
+        polyglotEngine.eval(function);
+      } catch (CommandExecutionException e) {
+        throw e;
+      } catch (Exception e) {
+        throw new CommandExecutionException("Error on executing user code", e);
+      }
+    }
+    return this;
+  }
+
+  @Override
+  public QueryEngine unregisterFunctions() {
+    this.polyglotEngine = GraalPolyglotEngine.newBuilder(database, Engine.create()).setLanguage(language).setAllowedPackages(allowedPackages).build();
+    return this;
   }
 
   @Override

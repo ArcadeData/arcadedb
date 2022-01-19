@@ -19,24 +19,40 @@ public class PolyglotTest extends TestHelper {
   @Test
   public void testSum() {
     ResultSet result = database.command("js", "3 + 5");
-
     Assertions.assertTrue(result.hasNext());
     Assertions.assertEquals(8, (Integer) result.next().getProperty("value"));
   }
 
   @Test
   public void testEmbeddedFunction() {
-    ResultSet result = database.command("js", "function sum(a,b){return a + b;} sum(3,5);");
+    database.getSchema().registerFunctions("js", "function sum(a,b){return a + b;}");
+
+    ResultSet result = database.command("js", "sum(3,5)");
     Assertions.assertEquals(8, (Integer) result.next().getProperty("value"));
   }
 
   @Test
   public void testReuseSameQueryEngine() {
-    ResultSet result = database.command("js", "function sum(a,b){return a + b;} sum(3,5);");
+    database.getSchema().registerFunctions("js", "function sum(a,b){return a + b;}");
+
+    ResultSet result = database.command("js", "sum(3,5);");
     Assertions.assertEquals(8, (Integer) result.next().getProperty("value"));
 
-    result = database.command("js", "function sum(a,b){return a + b;} sum(3,5);");
+    result = database.command("js", "sum(3,5);");
     Assertions.assertEquals(8, (Integer) result.next().getProperty("value"));
+  }
+
+  @Test
+  public void testRedefineFunction() {
+    database.getSchema().registerFunctions("js", "function sum(a,b){return a + b;}");
+
+    ResultSet result = database.command("js", "sum(3,5);");
+    Assertions.assertEquals(8, (Integer) result.next().getProperty("value"));
+
+    database.getSchema().registerFunctions("js", "function sum(a,b){return a - b;}");
+
+    result = database.command("js", "sum(3,5);");
+    Assertions.assertEquals(-2, (Integer) result.next().getProperty("value"));
   }
 
   @Test

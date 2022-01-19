@@ -48,6 +48,14 @@ public interface QueryEngine {
 
   ResultSet command(String query, Object... parameters);
 
+  default QueryEngine registerFunctions(String function) {
+    return this;
+  }
+
+  default QueryEngine unregisterFunctions() {
+    return this;
+  }
+
   default boolean isReusable() {
     return true;
   }

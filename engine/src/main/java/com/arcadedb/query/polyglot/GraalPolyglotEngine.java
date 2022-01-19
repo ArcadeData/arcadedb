@@ -135,7 +135,7 @@ public class GraalPolyglotEngine implements AutoCloseable {
     }
   }
 
-  public Value eval(final String script) throws Exception {
+  public Value eval(final String script) throws IOException {
     final Source source;
     source = Source.newBuilder(language, script, "src." + language).build();
 
