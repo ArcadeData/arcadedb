@@ -29,6 +29,7 @@ import org.apache.tinkerpop.gremlin.structure.Vertex;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
@@ -205,6 +206,54 @@ public class GremlinTest {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testLabel");
     try {
       graph.traversal().V().hasLabel("Car").forEachRemaining(System.out::println);
+    } finally {
+      graph.drop();
+    }
+  }
+
+  // ISSUE: https://github.com/ArcadeData/arcadedb/issues/289
+  @Disabled
+  @Test
+  public void infinityValue() throws ExecutionException, InterruptedException {
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testInfinite");
+    try {
+      Vertex alice = graph.addVertex("person");
+      alice.property("hair", Double.POSITIVE_INFINITY);
+
+      Vertex bob = graph.addVertex("person");
+      bob.property("hair", 500);
+
+      final ArcadeGremlin gremlinReadOnly = graph.gremlin("g.V().has('hair', 500.00)");
+      final ResultSet result = gremlinReadOnly.execute();
+
+      Assertions.assertTrue(result.hasNext());
+
+    } finally {
+      graph.drop();
+    }
+  }
+
+  // ISSUE: https://github.com/ArcadeData/arcadedb/issues/290
+  @Test
+  public void sort() throws ExecutionException, InterruptedException {
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testOrder");
+    try {
+      graph.getDatabase().getSchema().getOrCreateVertexType("Person");
+      graph.getDatabase().getSchema().getOrCreateEdgeType("FriendOf");
+
+      Vertex alice = graph.addVertex("label", "Person", "name", "Alice");
+      Vertex bob = graph.addVertex("label", "Person", "name", "Bob");
+      Vertex steve = graph.addVertex("label", "Person", "name", "Steve");
+
+      alice.addEdge("FriendOf", bob);
+      alice.addEdge("FriendOf", steve);
+      steve.addEdge("FriendOf", bob);
+
+      final ArcadeGremlin gremlinReadOnly = graph.gremlin("g.E().order().by('name', asc)");
+      final ResultSet result = gremlinReadOnly.execute();
+
+      Assertions.assertTrue(result.hasNext());
+
     } finally {
       graph.drop();
     }
