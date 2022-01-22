@@ -34,6 +34,8 @@ import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.DatabaseMetadataException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.function.FunctionDefinition;
+import com.arcadedb.function.FunctionLibraryDefinition;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexFactory;
@@ -45,7 +47,6 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.lsm.LSMTreeIndexCompacted;
 import com.arcadedb.index.lsm.LSMTreeIndexMutable;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.query.QueryEngine;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityManager;
 import com.arcadedb.utility.FileUtils;
@@ -85,6 +86,7 @@ public class EmbeddedSchema implements Schema {
   private              boolean                    loadInRamCompleted      = false;
   private              boolean                    multipleUpdate          = false;
   private final        AtomicLong                 versionSerial           = new AtomicLong();
+  private              Map<String, FunctionLibraryDefinition> functionLibraries       = new ConcurrentHashMap<>();
 
   public EmbeddedSchema(final DatabaseInternal database, final String databasePath, final SecurityManager security) {
     this.database = database;
@@ -1337,23 +1339,31 @@ public class EmbeddedSchema implements Schema {
   }
 
   @Override
-  public Schema registerFunctions(final String language, final String function) {
-    final QueryEngine queryEngine = database.getQueryEngine(language);
-    if (queryEngine == null)
-      throw new IllegalArgumentException("Query language '" + language + "' not available");
-
-    queryEngine.registerFunctions(function);
+  public Schema registerFunctionLibrary(final FunctionLibraryDefinition library) {
+    if (functionLibraries.putIfAbsent(library.getName(), library) != null)
+      throw new IllegalArgumentException("Function library '" + library.getName() + "' already registered");
     return this;
   }
 
   @Override
-  public Schema unregisterFunctions(final String language) {
-    final QueryEngine queryEngine = database.getQueryEngine(language);
-    if (queryEngine == null)
-      throw new IllegalArgumentException("Query language '" + language + "' not available");
-
-    queryEngine.unregisterFunctions();
+  public Schema unregisterFunctionLibrary(final String name) {
+    functionLibraries.remove(name);
     return this;
+  }
+
+  @Override
+  public Iterable<FunctionLibraryDefinition> getFunctionLibraries() {
+    return functionLibraries.values();
+  }
+
+  public FunctionLibraryDefinition getFunctionLibrary(final String name) {
+    return functionLibraries.get(name);
+  }
+
+  @Override
+  public FunctionDefinition getFunction(String libraryName, String functionName) {
+    final FunctionLibraryDefinition library = functionLibraries.get(libraryName);
+    return library != null ? library.getFunction(functionName) : null;
   }
 
   public boolean isDirty() {

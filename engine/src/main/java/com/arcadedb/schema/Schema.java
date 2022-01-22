@@ -21,6 +21,8 @@ package com.arcadedb.schema;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.PaginatedComponent;
+import com.arcadedb.function.FunctionDefinition;
+import com.arcadedb.function.FunctionLibraryDefinition;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
@@ -159,9 +161,15 @@ public interface Schema {
 
   EmbeddedSchema getEmbedded();
 
-  Schema registerFunctions(String language, String function);
+  Schema registerFunctionLibrary(FunctionLibraryDefinition library);
 
-  Schema unregisterFunctions(String language);
+  Schema unregisterFunctionLibrary(String name);
+
+  Iterable<FunctionLibraryDefinition> getFunctionLibraries();
+
+  FunctionLibraryDefinition getFunctionLibrary(String name);
+
+  FunctionDefinition getFunction(String libraryName, String functionName);
 
   enum INDEX_TYPE {
     LSM_TREE, FULL_TEXT
