@@ -252,7 +252,7 @@ public class MatchStatementTest {
 
   protected SqlParser getParserFor(String string) {
     InputStream is = new ByteArrayInputStream(string.getBytes());
-    SqlParser osql = new SqlParser(is);
+    SqlParser osql = new SqlParser(null, is);
     return osql;
   }
 }

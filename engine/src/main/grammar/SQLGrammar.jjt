@@ -32,6 +32,7 @@ package com.arcadedb.query.sql.parser;
 import java.io.InputStream;
 import java.util.List;
 import java.util.ArrayList;
+import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.QueryParsingException;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
@@ -40,13 +41,20 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 public class SqlParser {
 
   private int inputParamCount = 0;
+  private Database database;
 
-  public SqlParser(InputStream stream) {
+  public SqlParser(final Database database, final InputStream stream) {
     this(new JavaCharStream(stream));
+    this.database = database;
   }
 
-  public SqlParser(InputStream stream, String charset) throws java.io.UnsupportedEncodingException {
+  public SqlParser(final Database database, InputStream stream, String charset) throws java.io.UnsupportedEncodingException {
     this(new JavaCharStream(stream, charset));
+    this.database = database;
+  }
+
+  public Database getDatabase(){
+    return database;
   }
 }
 
@@ -1891,6 +1899,7 @@ RecordAttribute RecordAttribute():
 FunctionCall FunctionCall():
 {
   Expression lastExpression = null;
+  jjtn000.parser = this;
 }
 {
   (

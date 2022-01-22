@@ -293,7 +293,7 @@ public class LevelZeroIdentifier extends SimpleNode {
 
   public void deserialize(Result fromResult) {
     if (fromResult.getProperty("functionCall") != null) {
-      functionCall = new FunctionCall(-1);
+      functionCall = new FunctionCall(parser, -1);
       functionCall.deserialize(fromResult.getProperty("functionCall"));
     }
     self = fromResult.getProperty("self");

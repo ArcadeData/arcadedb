@@ -86,25 +86,22 @@ public class StatementCache {
    */
   protected Statement parse(final String statement) throws CommandSQLParsingException {
     try {
-
-      InputStream is;
-
-      if (db == null) {
+      final InputStream is;
+      if (db == null)
         is = new ByteArrayInputStream(statement.getBytes(DatabaseFactory.getDefaultCharset()));
-      } else {
+      else
         is = new ByteArrayInputStream(statement.getBytes(StandardCharsets.UTF_8));
-      }
 
       SqlParser osql = null;
       if (db == null) {
-        osql = new SqlParser(is);
+        osql = new SqlParser(db, is);
       } else {
         try {
 //          osql = new SqlParser(is, db.getStorage().getConfiguration().getCharset());
-          osql = new SqlParser(is, "UTF-8");
+          osql = new SqlParser(db, is, "UTF-8");
         } catch (UnsupportedEncodingException e2) {
           LogManager.instance().log(this, Level.WARNING, "Unsupported charset for database " + db);
-          osql = new SqlParser(is);
+          osql = new SqlParser(db, is);
         }
       }
       Statement result = osql.parse();

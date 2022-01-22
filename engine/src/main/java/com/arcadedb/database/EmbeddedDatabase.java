@@ -58,11 +58,11 @@ import com.arcadedb.index.lsm.LSMTreeIndexMutable;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.QueryEngineManager;
+import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalExecutionPlan;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.query.sql.executor.SQLEngine;
 import com.arcadedb.query.sql.executor.ScriptExecutionPlan;
 import com.arcadedb.query.sql.parser.BeginStatement;
 import com.arcadedb.query.sql.parser.CommitStatement;
@@ -1257,7 +1257,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     context.setDatabase(getWrappedDatabaseInstance());
     context.setInputParameters(params);
 
-    final List<Statement> statements = SQLEngine.parseScript(script, wrappedDatabaseInstance);
+    final List<Statement> statements = ((SQLQueryEngine) getQueryEngine("sql")).parseScript(script, wrappedDatabaseInstance);
     return new LocalResultSetLifecycleDecorator(executeInternal(statements, context));
   }
 
@@ -1269,7 +1269,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     context.setDatabase(getWrappedDatabaseInstance());
     context.setInputParameters(args);
 
-    final List<Statement> statements = SQLEngine.parseScript(script, wrappedDatabaseInstance);
+    final List<Statement> statements = ((SQLQueryEngine) getQueryEngine("sql")).parseScript(script, wrappedDatabaseInstance);
     return new LocalResultSetLifecycleDecorator(executeInternal(statements, context));
   }
 
