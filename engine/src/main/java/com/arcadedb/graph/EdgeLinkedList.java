@@ -244,6 +244,6 @@ public class EdgeLinkedList {
   }
 
   private int computeBestSize() {
-    return ((DatabaseInternal) vertex.getDatabase()).getEdgeListSize(first.getRecordSize());
+    return ((DatabaseInternal) vertex.getDatabase()).getNewEdgeListSize(first.getRecordSize());
   }
 }

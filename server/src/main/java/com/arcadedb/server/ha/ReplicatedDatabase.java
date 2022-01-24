@@ -326,8 +326,8 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
-  public int getEdgeListSize(int previousSize) {
-    return proxied.getEdgeListSize(previousSize);
+  public int getNewEdgeListSize(int previousSize) {
+    return proxied.getNewEdgeListSize(previousSize);
   }
 
   @Override
@@ -624,13 +624,20 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
-  public void setReadYourWrites(final boolean value) {
+  public Database setReadYourWrites(final boolean value) {
     proxied.setReadYourWrites(value);
+    return this;
   }
 
   @Override
-  public void setEdgeListSize(final int size) {
+  public int getEdgeListSize() {
+    return proxied.getEdgeListSize();
+  }
+
+  @Override
+  public Database setEdgeListSize(final int size) {
     proxied.setEdgeListSize(size);
+    return this;
   }
 
   @Override

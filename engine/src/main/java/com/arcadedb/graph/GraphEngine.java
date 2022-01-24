@@ -223,7 +223,7 @@ public class GraphEngine {
       }
 
     if (inEdgesHeadChunk == null) {
-      inChunk = new MutableEdgeSegment(database, database.getEdgeListSize(0));
+      inChunk = new MutableEdgeSegment(database, database.getNewEdgeListSize(0));
       database.createRecord(inChunk, getEdgesBucketName(toVertex.getIdentity().getBucketId(), Vertex.DIRECTION.IN));
       inEdgesHeadChunk = inChunk.getIdentity();
 
@@ -248,7 +248,7 @@ public class GraphEngine {
       }
 
     if (outEdgesHeadChunk == null) {
-      outChunk = new MutableEdgeSegment(database, database.getEdgeListSize(0));
+      outChunk = new MutableEdgeSegment(database, database.getNewEdgeListSize(0));
       database.createRecord(outChunk, getEdgesBucketName(fromVertex.getIdentity().getBucketId(), Vertex.DIRECTION.OUT));
       outEdgesHeadChunk = outChunk.getIdentity();
 

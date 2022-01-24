@@ -135,50 +135,50 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
-  public long countBucket(String bucketName) {
+  public long countBucket(final String bucketName) {
     return wrapped.countBucket(bucketName);
   }
 
   @Override
-  public long countType(String typeName, boolean polymorphic) {
+  public long countType(final String typeName, final boolean polymorphic) {
     return wrapped.countType(typeName, polymorphic);
   }
 
   @Override
-  public void scanType(String typeName, boolean polymorphic, DocumentCallback callback) {
+  public void scanType(final String typeName, final boolean polymorphic, final DocumentCallback callback) {
     wrapped.scanType(typeName, polymorphic, callback);
   }
 
   @Override
-  public void scanType(String typeName, boolean polymorphic, DocumentCallback callback, ErrorRecordCallback errorRecordCallback) {
+  public void scanType(final String typeName, final boolean polymorphic, final DocumentCallback callback, final ErrorRecordCallback errorRecordCallback) {
     wrapped.scanType(typeName, polymorphic, callback, errorRecordCallback);
   }
 
   @Override
-  public void scanBucket(String bucketName, RecordCallback callback) {
+  public void scanBucket(final String bucketName, final RecordCallback callback) {
     wrapped.scanBucket(bucketName, callback);
   }
 
   @Override
-  public void scanBucket(String bucketName, RecordCallback callback, ErrorRecordCallback errorRecordCallback) {
+  public void scanBucket(final String bucketName, final RecordCallback callback, final ErrorRecordCallback errorRecordCallback) {
     wrapped.scanBucket(bucketName, callback, errorRecordCallback);
   }
 
   @Override
-  public Iterator<Record> iterateType(String typeName, boolean polymorphic) {
+  public Iterator<Record> iterateType(final String typeName, final boolean polymorphic) {
     return wrapped.iterateType(typeName, polymorphic);
   }
 
   @Override
-  public Iterator<Record> iterateBucket(String bucketName) {
+  public Iterator<Record> iterateBucket(final String bucketName) {
     return wrapped.iterateBucket(bucketName);
   }
 
-  public void checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS access) {
+  public void checkPermissionsOnDatabase(final SecurityDatabaseUser.DATABASE_ACCESS access) {
     wrapped.checkPermissionsOnDatabase(access);
   }
 
-  public void checkPermissionsOnFile(int fileId, SecurityDatabaseUser.ACCESS access) {
+  public void checkPermissionsOnFile(final int fileId, final SecurityDatabaseUser.ACCESS access) {
     wrapped.checkPermissionsOnFile(fileId, access);
   }
 
@@ -191,25 +191,25 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
-  public Record lookupByRID(RID rid, boolean loadContent) {
+  public Record lookupByRID(final RID rid, final boolean loadContent) {
     return wrapped.lookupByRID(rid, loadContent);
   }
 
   @Override
-  public IndexCursor lookupByKey(String type, String keyName, Object keyValue) {
+  public IndexCursor lookupByKey(final String type, final String keyName, final Object keyValue) {
     return wrapped.lookupByKey(type, keyName, keyValue);
   }
 
   @Override
-  public IndexCursor lookupByKey(String type, String[] keyNames, Object[] keyValues) {
+  public IndexCursor lookupByKey(final String type, final String[] keyNames, final Object[] keyValues) {
     return wrapped.lookupByKey(type, keyNames, keyValues);
   }
 
-  public void registerCallback(DatabaseInternal.CALLBACK_EVENT event, Callable<Void> callback) {
+  public void registerCallback(final DatabaseInternal.CALLBACK_EVENT event, final Callable<Void> callback) {
     wrapped.registerCallback(event, callback);
   }
 
-  public void unregisterCallback(DatabaseInternal.CALLBACK_EVENT event, Callable<Void> callback) {
+  public void unregisterCallback(final DatabaseInternal.CALLBACK_EVENT event, final Callable<Void> callback) {
     wrapped.unregisterCallback(event, callback);
   }
 
@@ -227,17 +227,23 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
-  public void setReadYourWrites(boolean readYourWrites) {
+  public Database setReadYourWrites(final boolean readYourWrites) {
     wrapped.setReadYourWrites(readYourWrites);
+    return this;
   }
 
   @Override
-  public Database setUseWAL(boolean useWAL) {
+  public int getEdgeListSize() {
+    return wrapped.getEdgeListSize();
+  }
+
+  @Override
+  public Database setUseWAL(final boolean useWAL) {
     return wrapped.setUseWAL(useWAL);
   }
 
   @Override
-  public Database setWALFlush(WALFile.FLUSH_TYPE flush) {
+  public Database setWALFlush(final WALFile.FLUSH_TYPE flush) {
     return wrapped.setWALFlush(flush);
   }
 
@@ -247,32 +253,32 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
-  public Database setAsyncFlush(boolean value) {
+  public Database setAsyncFlush(final boolean value) {
     return wrapped.setAsyncFlush(value);
   }
 
-  public void createRecord(MutableDocument record) {
+  public void createRecord(final MutableDocument record) {
     wrapped.createRecord(record);
   }
 
-  public void createRecord(Record record, String bucketName) {
+  public void createRecord(final Record record, final String bucketName) {
     wrapped.createRecord(record, bucketName);
   }
 
-  public void createRecordNoLock(Record record, String bucketName) {
+  public void createRecordNoLock(final Record record, final String bucketName) {
     wrapped.createRecordNoLock(record, bucketName);
   }
 
-  public void updateRecord(Record record) {
+  public void updateRecord(final Record record) {
     wrapped.updateRecord(record);
   }
 
-  public void updateRecordNoLock(Record record) {
+  public void updateRecordNoLock(final Record record) {
     wrapped.updateRecordNoLock(record);
   }
 
   @Override
-  public void deleteRecord(Record record) {
+  public void deleteRecord(final Record record) {
     wrapped.deleteRecord(record);
   }
 
@@ -282,22 +288,22 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
-  public void transaction(TransactionScope txBlock) {
+  public void transaction(final TransactionScope txBlock) {
     wrapped.transaction(txBlock);
   }
 
   @Override
-  public boolean transaction(TransactionScope txBlock, boolean joinCurrentTx) {
+  public boolean transaction(final TransactionScope txBlock, final boolean joinCurrentTx) {
     return wrapped.transaction(txBlock, joinCurrentTx);
   }
 
   @Override
-  public boolean transaction(TransactionScope txBlock, boolean joinCurrentTx, int retries) {
+  public boolean transaction(final TransactionScope txBlock, final boolean joinCurrentTx, final int retries) {
     return wrapped.transaction(txBlock, joinCurrentTx, retries);
   }
 
   @Override
-  public boolean transaction(TransactionScope txBlock, boolean joinCurrentTx, int attempts, OkCallback ok, ErrorCallback error) {
+  public boolean transaction(final TransactionScope txBlock, final boolean joinCurrentTx, final int attempts, final OkCallback ok, final ErrorCallback error) {
     return wrapped.transaction(txBlock, joinCurrentTx, attempts, ok, error);
   }
 
@@ -324,7 +330,7 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
-  public MutableDocument newDocument(String typeName) {
+  public MutableDocument newDocument(final String typeName) {
     return wrapped.newDocument(typeName);
   }
 
@@ -333,21 +339,22 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
-  public MutableVertex newVertex(String typeName) {
+  public MutableVertex newVertex(final String typeName) {
     return wrapped.newVertex(typeName);
   }
 
   @Override
-  public Edge newEdgeByKeys(String sourceVertexType, String[] sourceVertexKeyNames, Object[] sourceVertexKeyValues, String destinationVertexType,
-      String[] destinationVertexKeyNames, Object[] destinationVertexKeyValues, boolean createVertexIfNotExist, String edgeType, boolean bidirectional,
-      Object... properties) {
+  public Edge newEdgeByKeys(final String sourceVertexType, final String[] sourceVertexKeyNames, final Object[] sourceVertexKeyValues,
+      final String destinationVertexType, final String[] destinationVertexKeyNames, final Object[] destinationVertexKeyValues,
+      final boolean createVertexIfNotExist, final String edgeType, final boolean bidirectional, final Object... properties) {
     return wrapped.newEdgeByKeys(sourceVertexType, sourceVertexKeyNames, sourceVertexKeyValues, destinationVertexType, destinationVertexKeyNames,
         destinationVertexKeyValues, createVertexIfNotExist, edgeType, bidirectional, properties);
   }
 
   @Override
-  public Edge newEdgeByKeys(Vertex sourceVertex, String destinationVertexType, String[] destinationVertexKeyNames, Object[] destinationVertexKeyValues,
-      boolean createVertexIfNotExist, String edgeType, boolean bidirectional, Object... properties) {
+  public Edge newEdgeByKeys(final Vertex sourceVertex, final String destinationVertexType, final String[] destinationVertexKeyNames,
+      final Object[] destinationVertexKeyValues, final boolean createVertexIfNotExist, final String edgeType, final boolean bidirectional,
+      final Object... properties) {
     return wrapped.newEdgeByKeys(sourceVertex, destinationVertexType, destinationVertexKeyNames, destinationVertexKeyValues, createVertexIfNotExist, edgeType,
         bidirectional, properties);
   }
@@ -358,7 +365,7 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
-  public void setAutoTransaction(boolean autoTransaction) {
+  public void setAutoTransaction(final boolean autoTransaction) {
     wrapped.setAutoTransaction(autoTransaction);
   }
 
@@ -377,7 +384,7 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
-  public boolean checkTransactionIsActive(boolean createTx) {
+  public boolean checkTransactionIsActive(final boolean createTx) {
     return wrapped.checkTransactionIsActive(createTx);
   }
 
@@ -386,32 +393,32 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
-  public ResultSet command(String language, String query, Object... parameters) {
+  public ResultSet command(final String language, final String query, final Object... parameters) {
     return wrapped.command(language, query, parameters);
   }
 
   @Override
-  public ResultSet command(String language, String query, Map<String, Object> parameters) {
+  public ResultSet command(final String language, final String query, final Map<String, Object> parameters) {
     return wrapped.command(language, query, parameters);
   }
 
   @Override
-  public ResultSet execute(String language, String script, Map<String, Object> params) {
+  public ResultSet execute(final String language, final String script, final Map<String, Object> params) {
     return wrapped.execute(language, script, params);
   }
 
   @Override
-  public ResultSet execute(String language, String script, Object... args) {
+  public ResultSet execute(final String language, final String script, final Object... args) {
     return wrapped.execute(language, script, args);
   }
 
   @Override
-  public ResultSet query(String language, String query, Object... parameters) {
+  public ResultSet query(final String language, final String query, final Object... parameters) {
     return wrapped.query(language, query, parameters);
   }
 
   @Override
-  public ResultSet query(String language, String query, Map<String, Object> parameters) {
+  public ResultSet query(final String language, final String query, final Map<String, Object> parameters) {
     return wrapped.query(language, query, parameters);
   }
 
@@ -425,16 +432,16 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
-  public <RET> RET executeInReadLock(Callable<RET> callable) {
+  public <RET> RET executeInReadLock(final Callable<RET> callable) {
     return wrapped.executeInReadLock(callable);
   }
 
   @Override
-  public <RET> RET executeInWriteLock(Callable<RET> callable) {
+  public <RET> RET executeInWriteLock(final Callable<RET> callable) {
     return wrapped.executeInWriteLock(callable);
   }
 
-  public <RET> RET recordFileChanges(Callable<Object> callback) {
+  public <RET> RET recordFileChanges(final Callable<Object> callback) {
     return wrapped.recordFileChanges(callback);
   }
 
@@ -460,7 +467,7 @@ public class ServerDatabase implements DatabaseInternal {
     return wrapped.hashCode();
   }
 
-  public void executeCallbacks(DatabaseInternal.CALLBACK_EVENT event) throws IOException {
+  public void executeCallbacks(final DatabaseInternal.CALLBACK_EVENT event) throws IOException {
     wrapped.executeCallbacks(event);
   }
 
@@ -484,19 +491,20 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
-  public void setEdgeListSize(int size) {
+  public Database setEdgeListSize(final int size) {
     wrapped.setEdgeListSize(size);
+    return this;
   }
 
-  public int getEdgeListSize(int previousSize) {
-    return wrapped.getEdgeListSize(previousSize);
+  public int getNewEdgeListSize(int previousSize) {
+    return wrapped.getNewEdgeListSize(previousSize);
   }
 
   public Map<String, Object> getWrappers() {
     return wrapped.getWrappers();
   }
 
-  public void setWrapper(String name, Object instance) {
+  public void setWrapper(final String name, final Object instance) {
     wrapped.setWrapper(name, instance);
   }
 }

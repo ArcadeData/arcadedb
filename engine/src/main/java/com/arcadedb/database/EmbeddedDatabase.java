@@ -662,8 +662,9 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   }
 
   @Override
-  public void setReadYourWrites(final boolean readYourWrites) {
+  public Database setReadYourWrites(final boolean readYourWrites) {
     this.readYourWrites = readYourWrites;
+    return this;
   }
 
   @Override
@@ -1420,12 +1421,18 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   }
 
   @Override
-  public void setEdgeListSize(final int size) {
-    this.edgeListSize = size;
+  public int getEdgeListSize() {
+    return this.edgeListSize;
   }
 
   @Override
-  public int getEdgeListSize(final int previousSize) {
+  public Database setEdgeListSize(final int size) {
+    this.edgeListSize = size;
+    return this;
+  }
+
+  @Override
+  public int getNewEdgeListSize(final int previousSize) {
     if (previousSize == 0)
       return edgeListSize;
 
