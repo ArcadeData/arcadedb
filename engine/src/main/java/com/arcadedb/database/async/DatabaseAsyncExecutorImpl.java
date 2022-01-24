@@ -293,27 +293,27 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   }
 
   @Override
-  public void query(final String language, final String query, final AsyncResultsetCallback callback, final Object... parameters) {
+  public void query(final String language, final String query, final AsyncResultsetCallback callback, final Object... args) {
     final int slot = getSlot((int) commandRoundRobinIndex.getAndIncrement());
-    scheduleTask(slot, new DatabaseAsyncCommand(true, language, query, parameters, callback), true, backPressurePercentage);
+    scheduleTask(slot, new DatabaseAsyncCommand(true, language, query, args, callback), true, backPressurePercentage);
   }
 
   @Override
-  public void query(final String language, final String query, final AsyncResultsetCallback callback, final Map<String, Object> parameters) {
+  public void query(final String language, final String query, final AsyncResultsetCallback callback, final Map<String, Object> args) {
     final int slot = getSlot((int) commandRoundRobinIndex.getAndIncrement());
-    scheduleTask(slot, new DatabaseAsyncCommand(true, language, query, parameters, callback), true, backPressurePercentage);
+    scheduleTask(slot, new DatabaseAsyncCommand(true, language, query, args, callback), true, backPressurePercentage);
   }
 
   @Override
-  public void command(final String language, final String query, final AsyncResultsetCallback callback, final Object... parameters) {
+  public void command(final String language, final String query, final AsyncResultsetCallback callback, final Object... args) {
     final int slot = getSlot((int) commandRoundRobinIndex.getAndIncrement());
-    scheduleTask(slot, new DatabaseAsyncCommand(false, language, query, parameters, callback), true, backPressurePercentage);
+    scheduleTask(slot, new DatabaseAsyncCommand(false, language, query, args, callback), true, backPressurePercentage);
   }
 
   @Override
-  public void command(final String language, final String query, final AsyncResultsetCallback callback, final Map<String, Object> parameters) {
+  public void command(final String language, final String query, final AsyncResultsetCallback callback, final Map<String, Object> args) {
     final int slot = getSlot((int) commandRoundRobinIndex.getAndIncrement());
-    scheduleTask(slot, new DatabaseAsyncCommand(false, language, query, parameters, callback), true, backPressurePercentage);
+    scheduleTask(slot, new DatabaseAsyncCommand(false, language, query, args, callback), true, backPressurePercentage);
   }
 
   @Override

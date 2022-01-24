@@ -18,6 +18,7 @@ package com.arcadedb.database;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.async.DatabaseAsyncExecutor;
 import com.arcadedb.database.async.ErrorCallback;
+import com.arcadedb.database.async.NewEdgeCallback;
 import com.arcadedb.database.async.OkCallback;
 import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.PaginatedFile;
@@ -63,15 +64,17 @@ public interface Database extends AutoCloseable {
   boolean isTransactionActive();
 
   /**
-   * Executes a lambda in the transaction scope. If there is an active transaction, then the current transaction is parked and a new sub-transaction is begun.
+   * Executes a lambda in the transaction scope. If there is an active transaction, then the current transaction is temporarily parked and a new sub-transaction
+   * is begun. In case an exception is thrown inside the lambda method, the transaction is rolled back.
    *
    * @param txBlock Transaction lambda to execute
    */
   void transaction(TransactionScope txBlock);
 
   /**
-   * Executes a lambda in the transaction scope. If there is an active transaction, then the current transaction is parked and a new sub-transaction is begun
-   * if joinCurrentTx is true, otherwise the current active transaction is joined.
+   * Executes a lambda in the transaction scope. If there is an active transaction, then the current transaction is temporarily parked and a new sub-transaction
+   * is begun. In case an exception is thrown inside the lambda method, the transaction is rolled back. If joinCurrentTx is true, otherwise the current active
+   * transaction is joined.
    *
    * @param txBlock       Transaction lambda to execute
    * @param joinCurrentTx if active joins the current transaction, otherwise always create a new one
@@ -81,10 +84,10 @@ public interface Database extends AutoCloseable {
   boolean transaction(TransactionScope txBlock, boolean joinCurrentTx);
 
   /**
-   * Executes a lambda in the transaction scope. If there is an active transaction, then the current transaction is parked and a new sub-transaction is begun
-   * if joinCurrentTx is true, otherwise the current active transaction is joined.
-   * The difference with the method {@link #transaction(TransactionScope)} is that in case the NeedRetryException exception is thrown, the transaction is
-   * re-executed for a number of retries.
+   * Executes a lambda in the transaction scope. If there is an active transaction, then the current transaction is temporarily parked and a new sub-transaction
+   * is begun.  In case an exception is thrown inside the lambda method, the transaction is rolled back. If joinCurrentTx is true, otherwise the current active
+   * transaction is joined. The difference with the method {@link #transaction(TransactionScope)} is that in case the NeedRetryException exception is thrown, the
+   * transaction is re-executed for a number of retries.
    *
    * @param txBlock       Transaction lambda to execute
    * @param joinCurrentTx if active joins the current transaction, otherwise always create a new one
@@ -264,8 +267,8 @@ public interface Database extends AutoCloseable {
   long countBucket(String bucketName);
 
   /**
-   * Creates a new document of type #typeName. The type must be defined beforehand in the schema. The returned document only lives in memory until the method
-   * #MutableDocument.save is executed.
+   * Creates a new document of type typeName. The type must be defined beforehand in the schema. The returned document only lives in memory until the method
+   * {@link MutableDocument#save()} is executed.
    *
    * @param typeName Type name defined in the schema
    *
@@ -274,8 +277,8 @@ public interface Database extends AutoCloseable {
   MutableDocument newDocument(String typeName);
 
   /**
-   * Creates a new vertex of type #typeName. The type must be defined beforehand in the schema. The returned vertex only lives in memory until the method
-   * #MutableVertex.save is executed.
+   * Creates a new vertex of type typeName. The type must be defined beforehand in the schema. The returned vertex only lives in memory until the method
+   * {@link MutableVertex#save()} is executed.
    *
    * @param typeName Type name defined in the schema
    *
@@ -283,10 +286,52 @@ public interface Database extends AutoCloseable {
    */
   MutableVertex newVertex(String typeName);
 
+  /**
+   * Creates a new edge between two vertices specifying the key/value pairs to lookup for both source and destination vertices. The direction of the edge is from source
+   * to destination. This API is useful for bulk import of edges.
+   *
+   * @param sourceVertexType           Source vertex type name
+   * @param sourceVertexKeyNames       Source vertex keys
+   * @param sourceVertexKeyValues      Source vertex values
+   * @param destinationVertexType      Destination vertex type name
+   * @param destinationVertexKeyNames  Destination vertex keys
+   * @param destinationVertexKeyValues Source vertex values
+   * @param createVertexIfNotExist     True to create vertices if the lookup did not find the vertices. This is valid for both source and destination vertices.
+   *                                   In case the vertices are implicitly created, only the properties specified in keys and values will be set
+   * @param edgeType                   Type of the edge to create. The type must be defined in the schema beforehand
+   * @param bidirectional              True to create a bidirectional edge. Using bidirectional edges is always the recommended setting, unless advanced
+   *                                   fine-tuning on performances
+   * @param properties                 Initial properties to set to the new edge as a variable argument array with key/value pairs
+   *
+   * @return The new edge. The edge is already persistent in the current transaction.
+   *
+   * @see DatabaseAsyncExecutor#newEdgeByKeys(String, String, Object, String, String, Object, boolean, String, boolean, boolean, NewEdgeCallback, Object...)
+   * @see #newEdgeByKeys(Vertex, String, String[], Object[], boolean, String, boolean, Object...)
+   */
   Edge newEdgeByKeys(String sourceVertexType, String[] sourceVertexKeyNames, Object[] sourceVertexKeyValues, String destinationVertexType,
       String[] destinationVertexKeyNames, Object[] destinationVertexKeyValues, boolean createVertexIfNotExist, String edgeType, boolean bidirectional,
       Object... properties);
 
+  /**
+   * Creates a new edge between two vertices specifying the source vertex instance and the key/value pairs to lookup for the destination vertices. The direction
+   * of the edge is from source to destination. This API is useful for bulk import of edges.
+   *
+   * @param sourceVertex               Source vertex instance
+   * @param destinationVertexType      Destination vertex type name
+   * @param destinationVertexKeyNames  Destination vertex keys
+   * @param destinationVertexKeyValues Source vertex values
+   * @param createVertexIfNotExist     True to create the destination vertex if the lookup did not find the destination vertex.
+   *                                   In case the destination vertex is implicitly created, only the properties specified in keys and values will be set
+   * @param edgeType                   Type of the edge to create. The type must be defined in the schema beforehand
+   * @param bidirectional              True to create a bidirectional edge. Using bidirectional edges is always the recommended setting, unless advanced
+   *                                   fine-tuning on performances
+   * @param properties                 Initial properties to set to the new edge as a variable argument array with key/value pairs
+   *
+   * @return The new edge. The edge is already persistent in the current transaction.
+   *
+   * @see DatabaseAsyncExecutor#newEdgeByKeys(String, String, Object, String, String, Object, boolean, String, boolean, boolean, NewEdgeCallback, Object...)
+   * @see #newEdgeByKeys(String, String[], Object[], String, String[], Object[], boolean, String, boolean, Object...)
+   */
   Edge newEdgeByKeys(Vertex sourceVertex, String destinationVertexType, String[] destinationVertexKeyNames, Object[] destinationVertexKeyValues,
       boolean createVertexIfNotExist, String edgeType, boolean bidirectional, Object... properties);
 
@@ -310,7 +355,7 @@ public interface Database extends AutoCloseable {
   /**
    * Executes a command by specifying the language and an optional variable array of arguments.
    *
-   * @param language The language to use between the supported ones ("sql", "gremlin", "cypher", "graphql", "mongo"m etc.)
+   * @param language The language to use between the supported ones ("sql", "gremlin", "cypher", "graphql", "mongo", etc.)
    * @param query    The command to be interpreted in the specified language as a string
    * @param args     (optional) Arguments to pass to the command as a variable length array
    *
@@ -321,7 +366,7 @@ public interface Database extends AutoCloseable {
   /**
    * Executes a command by specifying the language and arguments in a map.
    *
-   * @param language The language to use between the supported ones ("sql", "gremlin", "cypher", "graphql", "mongo"m etc.)
+   * @param language The language to use between the supported ones ("sql", "gremlin", "cypher", "graphql", "mongo", etc.)
    * @param query    The command to be interpreted in the specified language as a string
    * @param args     Arguments to pass to the command as a map of name/values.
    *
@@ -332,7 +377,7 @@ public interface Database extends AutoCloseable {
   /**
    * Executes a query as an idempotent (read only) command by specifying the language and an optional variable array of arguments.
    *
-   * @param language The language to use between the supported ones ("sql", "gremlin", "cypher", "graphql", "mongo"m etc.)
+   * @param language The language to use between the supported ones ("sql", "gremlin", "cypher", "graphql", "mongo", etc.)
    * @param query    The command to be interpreted in the specified language as a string
    * @param args     (optional) Arguments to pass to the command as a variable length array
    *
@@ -343,7 +388,7 @@ public interface Database extends AutoCloseable {
   /**
    * Executes a query as an idempotent (read only) command by specifying the language and arguments in a map.
    *
-   * @param language The language to use between the supported ones ("sql", "gremlin", "cypher", "graphql", "mongo"m etc.)
+   * @param language The language to use between the supported ones ("sql", "gremlin", "cypher", "graphql", "mongo", etc.)
    * @param query    The command to be interpreted in the specified language as a string
    * @param args     Arguments to pass to the command as a map of name/values.
    *
@@ -406,12 +451,13 @@ public interface Database extends AutoCloseable {
   Database setUseWAL(boolean useWAL);
 
   /**
-   * Sets the WAL (Write Ahead Log - Transaction Journal) flush strategy between NO (no flush), YES_NOMETADATA (flush only data, no metadata),
-   * YES_FULL (full flush).
+   * Sets the WAL (Write Ahead Log - Transaction Journal) flush strategy.
    *
-   * @param flush
+   * @param flush The new value contained in the enum: NO (no flush), YES_NOMETADATA (flush only data, no metadata), YES_FULL (full flush)
    *
    * @return Current Database instance to execute setter methods in chain.
+   *
+   * @see DatabaseAsyncExecutor#setTransactionSync(WALFile.FLUSH_TYPE)
    */
   Database setWALFlush(WALFile.FLUSH_TYPE flush);
 
