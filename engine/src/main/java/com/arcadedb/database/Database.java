@@ -346,6 +346,7 @@ public interface Database extends AutoCloseable {
    */
   void deleteRecord(Record record);
 
+  /**
    * Returns the query engine by language name.
    *
    * @param language Language name
