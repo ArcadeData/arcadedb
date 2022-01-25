@@ -20,6 +20,10 @@ Files: .*/*
 Copyright: Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
 License: Apache-2.0
 
+Files: **/src/*
+Copyright: Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+License: Apache-2.0
+
 
 Files: console/src/test/resources/*.csv
 Copyright: Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
@@ -57,3 +61,11 @@ License: MIT
 Files: server/src/main/resources/static/components/fontawesome/css/*
 Copyright: Font Awesome by Dave Gandy - http://fontawesome.io
 License: MIT
+
+Files: server/src/main/resources/static/components/fontawesome/js/*
+Copyright: Font Awesome by Dave Gandy - http://fontawesome.io
+License: MIT
+
+Files: server/src/main/resources/static/components/fontawesome/webfonts/*
+Copyright: Font Awesome by Dave Gandy - http://fontawesome.io
+License: SIL OFL 1.1
