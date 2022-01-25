@@ -100,6 +100,7 @@ public class MatchFieldTraverser extends MatchEdgeTraverser {
               nextElement = (ResultInternal) o;
               break;
             } else if (o == null) {
+              continue;
             } else {
               throw new UnsupportedOperationException();
             }

@@ -81,8 +81,8 @@ public class ImmutableEmbeddedDocument extends ImmutableDocument implements Embe
       final Object v1 = me.get(prop);
       final Object v2 = that.get(prop);
 
-      if (v1 == null && v2 == null) {
-      }
+      if (v1 == null && v2 == null)
+        continue;
       else if (v1 != null && !v1.equals(v2))
         return false;
     }

@@ -703,6 +703,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
                 } catch (NeedRetryException e) {
                   needRetryExceptions.incrementAndGet();
                   Assertions.assertFalse(database.isTransactionActive());
+                  continue;
                 } catch (DuplicatedKeyException e) {
                   duplicatedExceptions.incrementAndGet();
                   keyPresent = true;

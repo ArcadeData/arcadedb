@@ -92,7 +92,7 @@ public class InputParameter extends SimpleNode {
     if (value instanceof String) {
       return value;
     }
-    if (MultiValue.isMultiValue(value) && !(value instanceof Byte[])) {
+    if (MultiValue.isMultiValue(value) && !(value instanceof byte[]) && !(value instanceof Byte[])) {
       PCollection coll = new PCollection(-1);
       coll.expressions = new ArrayList<Expression>();
       Iterator iterator = MultiValue.getMultiValueIterator(value);

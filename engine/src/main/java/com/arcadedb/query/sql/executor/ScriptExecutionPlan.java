@@ -135,7 +135,7 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
   @Override
   public List<ExecutionStep> getSteps() {
     // TODO do a copy of the steps
-    return steps;
+    return (List) steps;
   }
 
   public void setSteps(List<ExecutionStepInternal> steps) {

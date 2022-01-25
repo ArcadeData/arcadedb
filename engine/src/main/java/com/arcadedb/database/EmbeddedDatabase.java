@@ -1274,7 +1274,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   public boolean equals(final Object o) {
     if (this == o)
       return true;
-    if (!(o instanceof Database))
+    if (o == null || !(o instanceof Database))
       return false;
 
     final Database other = (Database) o;

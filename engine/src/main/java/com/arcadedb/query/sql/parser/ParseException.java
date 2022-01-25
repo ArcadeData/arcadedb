@@ -187,6 +187,7 @@ public class ParseException extends Exception {
         } else {
           retval.append(ch);
         }
+        continue;
       }
     }
     return retval.toString();

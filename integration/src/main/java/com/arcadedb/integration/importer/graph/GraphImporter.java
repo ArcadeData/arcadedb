@@ -88,7 +88,8 @@ public class GraphImporter {
 
     database.async().waitCompletion();
 
-      Arrays.fill(threadContexts, null);
+    for (int i = 0; i < threadContexts.length; ++i)
+      threadContexts[i] = null;
 
     status = STATUS.CLOSED;
   }

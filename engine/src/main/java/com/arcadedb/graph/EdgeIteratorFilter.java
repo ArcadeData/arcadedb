@@ -80,7 +80,7 @@ public class EdgeIteratorFilter extends IteratorFilterBase<Edge> {
 
   @Override
   protected void handleCorruption(final Exception e, final RID edge, final RID vertex) {
-    if ((e instanceof SchemaException) &&//
+    if ((e instanceof RecordNotFoundException || e instanceof SchemaException) &&//
         database.getMode() == PaginatedFile.MODE.READ_WRITE) {
 
       LogManager.instance().log(this, Level.WARNING, "Error on loading edge %s %s. Fixing it...", e, edge, vertex != null ? "vertex " + vertex : "");

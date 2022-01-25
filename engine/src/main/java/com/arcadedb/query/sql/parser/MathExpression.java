@@ -541,8 +541,8 @@ public class MathExpression extends SimpleNode {
       if (a == null || b == null)
         throw new IllegalArgumentException("Cannot increment a null value");
 
-      if (a instanceof Short) {
-        if (b instanceof Short) {
+      if (a instanceof Integer || a instanceof Short) {
+        if (b instanceof Integer || b instanceof Short) {
           return operation.apply(a.intValue(), b.intValue());
         } else if (b instanceof Long) {
           return operation.apply(a.longValue(), b.longValue());
@@ -553,7 +553,7 @@ public class MathExpression extends SimpleNode {
         else if (b instanceof BigDecimal)
           return operation.apply(new BigDecimal((Integer) a), (BigDecimal) b);
       } else if (a instanceof Long) {
-        if (b instanceof Short)
+        if (b instanceof Integer || b instanceof Long || b instanceof Short)
           return operation.apply(a.longValue(), b.longValue());
         else if (b instanceof Float)
           return operation.apply(a.floatValue(), b.floatValue());
@@ -562,7 +562,7 @@ public class MathExpression extends SimpleNode {
         else if (b instanceof BigDecimal)
           return operation.apply(new BigDecimal((Long) a), (BigDecimal) b);
       } else if (a instanceof Float) {
-        if (b instanceof Float)
+        if (b instanceof Short || b instanceof Integer || b instanceof Long || b instanceof Float)
           return operation.apply(a.floatValue(), b.floatValue());
         else if (b instanceof Double)
           return operation.apply(a.doubleValue(), b.doubleValue());
@@ -570,7 +570,7 @@ public class MathExpression extends SimpleNode {
           return operation.apply(new BigDecimal((Float) a), (BigDecimal) b);
 
       } else if (a instanceof Double) {
-        if (b instanceof Double)
+        if (b instanceof Short || b instanceof Integer || b instanceof Long || b instanceof Float || b instanceof Double)
           return operation.apply(a.doubleValue(), b.doubleValue());
         else if (b instanceof BigDecimal)
           return operation.apply(new BigDecimal((Double) a), (BigDecimal) b);

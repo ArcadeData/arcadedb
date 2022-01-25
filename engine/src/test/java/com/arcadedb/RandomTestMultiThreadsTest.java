@@ -156,7 +156,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
                   LogManager.instance().log(this, Level.FINE, "Updating records (thread=%d)...", threadId);
 
                   updateRecords(database, threadId);
-                } else if (op == 95) {
+                } else if (op >= 95 && op <= 95) {
                   LogManager.instance().log(this, Level.FINE, "Counting Transaction records (thread=%d)...", threadId);
 
                   final long newCounter = database.countType("Transaction", true);
@@ -168,7 +168,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
 
                   totalTransactionInCurrentTx -= deleteRecords(database, threadId);
 
-                } else if (op == 96) {
+                } else if (op >= 96 && op <= 96) {
                   LogManager.instance().log(this, Level.FINE, "Counting account records (thread=%d)...", threadId);
 
                   final long newCounter = database.countType("Account", true);

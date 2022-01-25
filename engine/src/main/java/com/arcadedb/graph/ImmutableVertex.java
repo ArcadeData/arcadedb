@@ -59,7 +59,7 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
 
   public synchronized MutableVertex modify() {
     final Record recordInCache = database.getTransaction().getRecordFromCache(rid);
-    if (recordInCache instanceof MutableVertex)
+    if (recordInCache != null && recordInCache != this && recordInCache instanceof MutableVertex)
       return (MutableVertex) recordInCache;
 
     checkForLazyLoading();

@@ -61,7 +61,8 @@ public class MultiValue {
     }
 
     public static boolean isIterable(final Object iObject) {
-        return iObject instanceof Iterator<?>;
+        return iObject instanceof Iterable<?> ||
+                iObject instanceof Iterator<?>;
     }
 
     /**
@@ -195,7 +196,7 @@ public class MultiValue {
                 }
             } else if (iObject.getClass().isArray())
                 return Array.get(iObject, iIndex);
-            else if (iObject instanceof Iterable<?>) {
+            else if (iObject instanceof Iterator<?> || iObject instanceof Iterable<?>) {
 
                 final Iterator<Object> it = (iObject instanceof Iterable<?>) ? ((Iterable<Object>) iObject).iterator() : (Iterator<Object>) iObject;
                 for (int i = 0; it.hasNext(); ++i) {
@@ -621,7 +622,7 @@ public class MultiValue {
             // CREATE STATIC ARRAY AND FILL IT
             result = (T[]) Array.newInstance(iClass, getSize(iValue));
             int i = 0;
-            for (Iterator<T> it = getMultiValueIterator(iValue, false); it.hasNext(); ++i)
+            for (Iterator<T> it = (Iterator<T>) getMultiValueIterator(iValue, false); it.hasNext(); ++i)
                 result[i] = (T) convert(it.next(), iCallback);
         } else if (isIterable(iValue)) {
             // SIZE UNKNOWN: USE A LIST AS TEMPORARY OBJECT

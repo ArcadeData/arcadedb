@@ -304,7 +304,7 @@ public class Modifier extends SimpleNode {
     } else if (arrayRange != null) {
       return arrayRange.execute(currentRecord, target, ctx);
     } else if (condition != null) {
-      if (target instanceof Identifiable || target instanceof Map) {
+      if (target instanceof Result || target instanceof Identifiable || target instanceof Map) {
         if (condition.evaluate(target, ctx)) {
           return target;
         } else {

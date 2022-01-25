@@ -39,11 +39,11 @@ public class ContainsTextCondition extends BooleanExpression {
   @Override
   public boolean evaluate(Identifiable currentRecord, CommandContext ctx) {
     Object leftValue = left.execute(currentRecord, ctx);
-    if (!(leftValue instanceof String)) {
+    if (leftValue == null || !(leftValue instanceof String)) {
       return false;
     }
     Object rightValue = right.execute(currentRecord, ctx);
-    if (!(rightValue instanceof String)) {
+    if (rightValue == null || !(rightValue instanceof String)) {
       return false;
     }
 
@@ -53,11 +53,11 @@ public class ContainsTextCondition extends BooleanExpression {
   @Override
   public boolean evaluate(Result currentRecord, CommandContext ctx) {
     Object leftValue = left.execute(currentRecord, ctx);
-    if (!(leftValue instanceof String)) {
+    if (leftValue == null || !(leftValue instanceof String)) {
       return false;
     }
     Object rightValue = right.execute(currentRecord, ctx);
-    if (!(rightValue instanceof String)) {
+    if (rightValue == null || !(rightValue instanceof String)) {
       return false;
     }
 
