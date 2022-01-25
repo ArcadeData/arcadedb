@@ -225,11 +225,7 @@ public abstract class StaticBaseServerTest {
   }
 
   protected static void startServers() {
-    servers = TestServerHelper.startServers(getServerCount(), (config) -> {
-      onServerConfiguration(config);
-    }, (server) -> {
-      onBeforeStarting(server);
-    });
+    servers = TestServerHelper.startServers(getServerCount(), StaticBaseServerTest::onServerConfiguration, StaticBaseServerTest::onBeforeStarting);
   }
 
   protected static void stopServers() {
