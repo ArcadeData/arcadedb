@@ -369,12 +369,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       // EMBEDDED CALL WITHOUT THE SERVER
       return;
 
-    List<Document> results = this.lastResults.get(channel);
-    if (results == null) {
-      results = new ArrayList<>(10);
-      this.lastResults.put(channel, results);
-    }
-    results.add(null);
+      List<Document> results = this.lastResults.computeIfAbsent(channel, k -> new ArrayList<>(10));
+      results.add(null);
   }
 
   private synchronized void putLastResult(final Channel channel, final Document result) {
