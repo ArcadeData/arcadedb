@@ -43,7 +43,7 @@ public class WebSocketEventBusIT extends StaticBaseServerTest {
         Assertions.assertEquals("ok", result.get("result"));
       }
       Thread.sleep(DELAY_MS);
-      Assertions.assertEquals(0, this.getServer(0).getHttpServer().getWebSocketEventBus().getDatabaseSubscriptions("graph").size());
+      Assertions.assertEquals(0, getServer(0).getHttpServer().getWebSocketEventBus().getDatabaseSubscriptions("graph").size());
     }, "closeUnsubscribesAll");
   }
 
@@ -61,13 +61,13 @@ public class WebSocketEventBusIT extends StaticBaseServerTest {
         JSONObject result = new JSONObject(client.send(buildActionMessage("subscribe", "graph", "V1")));
         Assertions.assertEquals("ok", result.get("result"));
 
-        this.getServerDatabase(0, "graph").newVertex("V1").set("name", "test").save();
+        getServerDatabase(0, "graph").newVertex("V1").set("name", "test").save();
         var json = getJsonMessageOrFail(client);
         Assertions.assertEquals("create", json.get("changeType"));
 
         // The sending thread should have detected and removed the zombie connection.
         Thread.sleep(DELAY_MS);
-        Assertions.assertEquals(1, this.getServer(0).getHttpServer().getWebSocketEventBus().getDatabaseSubscriptions("graph").size());
+        Assertions.assertEquals(1, getServer(0).getHttpServer().getWebSocketEventBus().getDatabaseSubscriptions("graph").size());
       }
 
       Thread.sleep(DELAY_MS);
@@ -144,7 +144,7 @@ public class WebSocketEventBusIT extends StaticBaseServerTest {
         var result = client.send(buildActionMessage("subscribe", "graph"));
         Assertions.assertEquals("ok", new JSONObject(result).get("result"));
 
-        final MutableVertex v = this.getServerDatabase(0, "graph").newVertex("V1").set("name", "test").save();
+        final MutableVertex v = getServerDatabase(0, "graph").newVertex("V1").set("name", "test").save();
 
         var json = getJsonMessageOrFail(client);
         Assertions.assertEquals("create", json.get("changeType"));
@@ -166,7 +166,7 @@ public class WebSocketEventBusIT extends StaticBaseServerTest {
         Assertions.assertEquals("ok", new JSONObject(result).get("result"));
       }
 
-      this.getServerDatabase(0, "graph").newVertex("V1").set("name", "test").save();
+      getServerDatabase(0, "graph").newVertex("V1").set("name", "test").save();
 
       for (var client : clients) {
         var json = getJsonMessageOrFail(client);
@@ -187,7 +187,7 @@ public class WebSocketEventBusIT extends StaticBaseServerTest {
         var result = client.send(buildActionMessage("subscribe", "graph", "V1"));
         Assertions.assertEquals("ok", new JSONObject(result).get("result"));
 
-        this.getServerDatabase(0, "graph").newVertex("V1").set("name", "test").save();
+        getServerDatabase(0, "graph").newVertex("V1").set("name", "test").save();
 
         var json = getJsonMessageOrFail(client);
         Assertions.assertEquals("create", json.get("changeType"));
@@ -205,7 +205,7 @@ public class WebSocketEventBusIT extends StaticBaseServerTest {
         var result = client.send(buildActionMessage("subscribe", "graph", null, new String[] { "create" }));
         Assertions.assertEquals("ok", new JSONObject(result).get("result"));
 
-        this.getServerDatabase(0, "graph").newVertex("V1").set("name", "test").save();
+        getServerDatabase(0, "graph").newVertex("V1").set("name", "test").save();
 
         var json = getJsonMessageOrFail(client);
         Assertions.assertEquals("create", json.get("changeType"));
@@ -223,7 +223,7 @@ public class WebSocketEventBusIT extends StaticBaseServerTest {
         var result = client.send(buildActionMessage("subscribe", "graph", null, new String[] { "create", "update", "delete" }));
         Assertions.assertEquals("ok", new JSONObject(result).get("result"));
 
-        var v1 = this.getServerDatabase(0, "graph").newVertex("V1").set("name", "test").save();
+        var v1 = getServerDatabase(0, "graph").newVertex("V1").set("name", "test").save();
 
         var json = getJsonMessageOrFail(client);
         Assertions.assertEquals("create", json.get("changeType"));
@@ -257,7 +257,7 @@ public class WebSocketEventBusIT extends StaticBaseServerTest {
         var result = client.send(buildActionMessage("subscribe", "graph", null, new String[] { "update" }));
         Assertions.assertEquals("ok", new JSONObject(result).get("result"));
 
-        this.getServerDatabase(0, "graph").newVertex("V2").save();
+        getServerDatabase(0, "graph").newVertex("V2").save();
 
         Assertions.assertNull(client.popMessage(500));
       }
@@ -271,7 +271,7 @@ public class WebSocketEventBusIT extends StaticBaseServerTest {
         var result = client.send(buildActionMessage("subscribe", "graph", "V1"));
         Assertions.assertEquals("ok", new JSONObject(result).get("result"));
 
-        this.getServerDatabase(0, "graph").newVertex("V2").save();
+        getServerDatabase(0, "graph").newVertex("V2").save();
 
         Assertions.assertNull(client.popMessage(500));
       }
@@ -288,7 +288,7 @@ public class WebSocketEventBusIT extends StaticBaseServerTest {
         result = client.send(buildActionMessage("unsubscribe", "graph"));
         Assertions.assertEquals("ok", new JSONObject(result).get("result"));
 
-        this.getServerDatabase(0, "graph").newVertex("V1").save();
+        getServerDatabase(0, "graph").newVertex("V1").save();
 
         Assertions.assertNull(client.popMessage(500));
       }
