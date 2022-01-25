@@ -366,12 +366,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         }
       }
 
-      context.graphImporter.close(new EdgeLinkedCallback() {
-        @Override
-        public void onLinked(long linked) {
-          context.linkedEdges.addAndGet(linked);
-        }
-      });
+      context.graphImporter.close(linked -> context.linkedEdges.addAndGet(linked));
 
     } catch (IOException e) {
       throw new ImportException("Error on importing CSV", e);

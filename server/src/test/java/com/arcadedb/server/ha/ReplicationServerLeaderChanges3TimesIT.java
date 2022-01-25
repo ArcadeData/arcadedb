@@ -165,12 +165,9 @@ public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT 
             restarts.incrementAndGet();
             messagesPerRestart.set(0);
 
-            executeAsynchronously(new Callable() {
-              @Override
-              public Object call() {
-                getServer(leaderName).start();
-                return null;
-              }
+            executeAsynchronously(() -> {
+              getServer(leaderName).start();
+              return null;
             });
           }
         }

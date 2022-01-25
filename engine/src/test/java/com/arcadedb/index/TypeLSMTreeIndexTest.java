@@ -759,17 +759,14 @@ public class TypeLSMTreeIndexTest extends TestHelper {
 
       LogManager.instance().log(this, Level.FINE, "COUNT OF INSERTED RECORDS (ORDERED BY ID)");
       final Map<Integer, Integer> result = new HashMap<>();
-      database.scanType(TYPE_NAME, true, new DocumentCallback() {
-        @Override
-        public boolean onRecord(Document record) {
-          final int id = (int) record.get("id");
-          Integer key = result.get(id);
-          if (key == null)
-            result.put(id, 1);
-          else
-            result.put(id, key + 1);
-          return true;
-        }
+      database.scanType(TYPE_NAME, true, record -> {
+        final int id = (int) record.get("id");
+        Integer key = result.get(id);
+        if (key == null)
+          result.put(id, 1);
+        else
+          result.put(id, key + 1);
+        return true;
       });
 
       LogManager.instance().log(this, Level.FINE, "FOUND %d ENTRIES", null, result.size());

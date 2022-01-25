@@ -77,32 +77,29 @@ public enum AnsiCode {
   }
 
   public static String format(final String message, final boolean supportsColors) {
-    return (String) VariableParser.resolveVariables(message, "$ANSI{", "}", new VariableParserListener() {
-      @Override
-      public Object resolve(final String iVariable) {
-        final int pos = iVariable.indexOf(' ');
+    return (String) VariableParser.resolveVariables(message, "$ANSI{", "}", iVariable -> {
+      final int pos = iVariable.indexOf(' ');
 
-        final String text = pos > -1 ? iVariable.substring(pos + 1) : "";
+      final String text = pos > -1 ? iVariable.substring(pos + 1) : "";
 
-        if (supportsColors) {
-          final String code = pos > -1 ? iVariable.substring(0, pos) : iVariable;
+      if (supportsColors) {
+        final String code = pos > -1 ? iVariable.substring(0, pos) : iVariable;
 
-          final StringBuilder buffer = new StringBuilder();
+        final StringBuilder buffer = new StringBuilder();
 
-          final String[] codes = code.split(":");
-          for (int i = 0; i < codes.length; ++i)
-            buffer.append(AnsiCode.valueOf(codes[i].toUpperCase(Locale.ENGLISH)));
+        final String[] codes = code.split(":");
+        for (int i = 0; i < codes.length; ++i)
+          buffer.append(AnsiCode.valueOf(codes[i].toUpperCase(Locale.ENGLISH)));
 
-          if (pos > -1) {
-            buffer.append(text);
-            buffer.append(AnsiCode.RESET);
-          }
-
-          return buffer.toString();
+        if (pos > -1) {
+          buffer.append(text);
+          buffer.append(AnsiCode.RESET);
         }
 
-        return text;
+        return buffer.toString();
       }
+
+      return text;
     });
   }
 }

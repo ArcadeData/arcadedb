@@ -103,12 +103,7 @@ public class CreateEdgeFromImportTask implements DatabaseAsyncTask {
               threadContext.incomingConnectionsIndexThread.size(), threadContext.incomingConnectionsIndexThread.getTotalUsedSlots(),
               Thread.currentThread().getId());
 
-      createIncomingEdgesInBatch(database, threadContext.incomingConnectionsIndexThread, new EdgeLinkedCallback() {
-        @Override
-        public void onLinked(long linked) {
-          context.linkedEdges.addAndGet(linked);
-        }
-      });
+      createIncomingEdgesInBatch(database, threadContext.incomingConnectionsIndexThread, linked -> context.linkedEdges.addAndGet(linked));
 
       // CREATE A NEW CHUNK BEFORE CONTINUING
       threadContext.incomingConnectionsIndexThread = new CompressedRID2RIDsIndex(database, threadContext.incomingConnectionsIndexThread.getKeys(),

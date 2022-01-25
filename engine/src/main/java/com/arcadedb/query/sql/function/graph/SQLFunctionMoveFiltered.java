@@ -47,22 +47,11 @@ public abstract class SQLFunctionMoveFiltered extends SQLFunctionMove implements
       final Object[] iParameters, final Iterable<Identifiable> iPossibleResults, final CommandContext iContext) {
     final String[] labels;
     if (iParameters != null && iParameters.length > 0 && iParameters[0] != null)
-      labels = MultiValue.array(iParameters, String.class, new Callable<Object, Object>() {
-
-        @Override
-        public Object call(final Object iArgument) {
-          return FileUtils.getStringContent(iArgument);
-        }
-      });
+      labels = MultiValue.array(iParameters, String.class, iArgument -> FileUtils.getStringContent(iArgument));
     else
       labels = null;
 
-    return SQLEngine.foreachRecord(new Callable<>() {
-        @Override
-        public Object call(final Identifiable iArgument) {
-            return move(iContext.getDatabase(), iArgument, labels, iPossibleResults);
-        }
-    }, iThis, iContext);
+    return SQLEngine.foreachRecord(iArgument -> move(iContext.getDatabase(), iArgument, labels, iPossibleResults), iThis, iContext);
 
   }
 

@@ -129,12 +129,7 @@ public class ACIDTransactionTest extends TestHelper {
 
     verifyDatabaseWasNotClosedProperly();
 
-    database.transaction(new Database.TransactionScope() {
-      @Override
-      public void execute() {
-        Assertions.assertEquals(0, database.countType("V", true));
-      }
-    });
+    database.transaction(() -> Assertions.assertEquals(0, database.countType("V", true)));
   }
 
   @Test
@@ -182,12 +177,7 @@ public class ACIDTransactionTest extends TestHelper {
     db.async().setTransactionSync(WALFile.FLUSH_TYPE.YES_NOMETADATA);
     db.async().setTransactionUseWAL(true);
     db.async().setCommitEvery(1);
-    db.async().onError(new ErrorCallback() {
-      @Override
-      public void call(Throwable exception) {
-        errors.incrementAndGet();
-      }
-    });
+    db.async().onError(exception -> errors.incrementAndGet());
 
     final int TOT = 1000;
 
@@ -235,12 +225,7 @@ public class ACIDTransactionTest extends TestHelper {
 
     verifyDatabaseWasNotClosedProperly();
 
-    database.transaction(new Database.TransactionScope() {
-      @Override
-      public void execute() {
-        Assertions.assertEquals(TOT, database.countType("V", true));
-      }
-    });
+    database.transaction(() -> Assertions.assertEquals(TOT, database.countType("V", true)));
   }
 
   @Test
@@ -256,12 +241,7 @@ public class ACIDTransactionTest extends TestHelper {
     db.async().setTransactionSync(WALFile.FLUSH_TYPE.YES_NOMETADATA);
     db.async().setTransactionUseWAL(true);
     db.async().setCommitEvery(1000000);
-    db.async().onError(new ErrorCallback() {
-      @Override
-      public void call(Throwable exception) {
-        errors.incrementAndGet();
-      }
-    });
+    db.async().onError(exception -> errors.incrementAndGet());
 
     try {
       ((DatabaseInternal) db).registerCallback(DatabaseInternal.CALLBACK_EVENT.TX_AFTER_WAL_WRITE, new Callable<Void>() {
