@@ -4,7 +4,7 @@ Upstream-Contact: info@arcadedb.com
 Source: https://github.com/ArcadeData/arcadedb
 
 
-Files: **/*.md
+Files: *.md
 Copyright: Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
 License: Apache-2.0
 
@@ -12,11 +12,23 @@ Files: mvnw*
 Copyright: Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
 License: Apache-2.0
 
+Files: Jenkinsfile
+Copyright: Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+License: Apache-2.0
+
 Files: **/pom.xml
 Copyright: Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
 License: Apache-2.0
 
+Files: .*
+Copyright: Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+License: Apache-2.0
+
 Files: .*/*
+Copyright: Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+License: Apache-2.0
+
+Files: **/pom.xml
 Copyright: Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
 License: Apache-2.0
 
