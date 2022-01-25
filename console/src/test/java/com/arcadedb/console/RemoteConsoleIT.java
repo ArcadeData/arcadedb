@@ -68,7 +68,7 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
     Assertions.assertTrue(console.parse("create document type Person2", false));
 
     final StringBuilder buffer = new StringBuilder();
-    console.setOutput(output -> buffer.append(output));
+    console.setOutput(buffer::append);
     Assertions.assertTrue(console.parse("info types", false));
     Assertions.assertTrue(buffer.toString().contains("Person2"));
     Assertions.assertTrue(console.parse("drop type Person2", false));
@@ -81,7 +81,7 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
     Assertions.assertTrue(console.parse("insert into Person2 set name = 'Jay', lastname='Miner'", false));
 
     final StringBuilder buffer = new StringBuilder();
-    console.setOutput(output -> buffer.append(output));
+    console.setOutput(buffer::append);
     Assertions.assertTrue(console.parse("select from Person2", false));
     Assertions.assertTrue(buffer.toString().contains("Jay"));
     Assertions.assertTrue(console.parse("drop type Person2", false));
@@ -96,7 +96,7 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
     Assertions.assertTrue(console.parse("rollback", false));
 
     final StringBuilder buffer = new StringBuilder();
-    console.setOutput(output -> buffer.append(output));
+    console.setOutput(buffer::append);
     Assertions.assertTrue(console.parse("select from Person", false));
     Assertions.assertFalse(buffer.toString().contains("Jay"));
   }
@@ -110,7 +110,7 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
     Assertions.assertTrue(console.parse("commit", false));
 
     final StringBuilder buffer = new StringBuilder();
-    console.setOutput(output -> buffer.append(output));
+    console.setOutput(buffer::append);
     Assertions.assertTrue(console.parse("select from Person", false));
     Assertions.assertTrue(buffer.toString().contains("Jay"));
   }
@@ -130,7 +130,7 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
     }
 
     final StringBuilder buffer = new StringBuilder();
-    console.setOutput(output -> buffer.append(output));
+    console.setOutput(buffer::append);
     Assertions.assertTrue(console.parse("select from Person", false));
     Assertions.assertFalse(buffer.toString().contains("Jay"));
   }
@@ -138,7 +138,7 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
   @Test
   public void testHelp() throws IOException {
     final StringBuilder buffer = new StringBuilder();
-    console.setOutput(output -> buffer.append(output));
+    console.setOutput(buffer::append);
     Assertions.assertTrue(console.parse("?", false));
     Assertions.assertTrue(buffer.toString().contains("quit"));
   }

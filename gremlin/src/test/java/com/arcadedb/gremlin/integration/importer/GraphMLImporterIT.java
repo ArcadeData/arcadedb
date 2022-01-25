@@ -55,7 +55,7 @@ public class GraphMLImporterIT {
 
       Assertions.assertEquals(//
           new HashSet<>(Arrays.asList("Friend", "Person")),//
-          database.getSchema().getTypes().stream().map(x -> x.getName()).collect(Collectors.toSet()));
+          database.getSchema().getTypes().stream().map(DocumentType::getName).collect(Collectors.toSet()));
 
       for (DocumentType type : database.getSchema().getTypes()) {
         Assertions.assertTrue(database.countType(type.getName(), true) > 0);
@@ -85,7 +85,7 @@ public class GraphMLImporterIT {
 
       Assertions.assertEquals(//
           new HashSet<>(Arrays.asList("Friend", "Person")),//
-          database.getSchema().getTypes().stream().map(x -> x.getName()).collect(Collectors.toSet()));
+          database.getSchema().getTypes().stream().map(DocumentType::getName).collect(Collectors.toSet()));
 
       for (DocumentType type : database.getSchema().getTypes()) {
         Assertions.assertTrue(database.countType(type.getName(), true) > 0);
@@ -105,7 +105,7 @@ public class GraphMLImporterIT {
 
       Assertions.assertEquals(//
           new HashSet<>(Arrays.asList("Friend", "Person")),//
-          database.getSchema().getTypes().stream().map(x -> x.getName()).collect(Collectors.toSet()));
+          database.getSchema().getTypes().stream().map(DocumentType::getName).collect(Collectors.toSet()));
 
       for (DocumentType type : database.getSchema().getTypes()) {
         Assertions.assertTrue(database.countType(type.getName(), true) > 0);

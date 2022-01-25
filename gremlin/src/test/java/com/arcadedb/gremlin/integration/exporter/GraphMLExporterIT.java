@@ -67,8 +67,8 @@ public class GraphMLExporterIT {
 
       try (Database originalDatabase = new DatabaseFactory(DATABASE_PATH).open(PaginatedFile.MODE.READ_ONLY)) {
         Assertions.assertEquals(//
-            originalDatabase.getSchema().getTypes().stream().map(x -> x.getName()).collect(Collectors.toSet()),//
-            graph.getDatabase().getSchema().getTypes().stream().map(x -> x.getName()).collect(Collectors.toSet()));
+            originalDatabase.getSchema().getTypes().stream().map(DocumentType::getName).collect(Collectors.toSet()),//
+            graph.getDatabase().getSchema().getTypes().stream().map(DocumentType::getName).collect(Collectors.toSet()));
 
         for (DocumentType type : originalDatabase.getSchema().getTypes()) {
           Assertions.assertEquals(//

@@ -90,29 +90,17 @@ public class WebSocketClientHelper implements AutoCloseable {
     CodeUtils.executeIgnoringExceptions(() -> {
       WebSockets.sendCloseBlocking(CloseMessage.NORMAL_CLOSURE, null, this.channel);
     });
-    CodeUtils.executeIgnoringExceptions(() -> {
-      this.channel.flush();
-    });
-    CodeUtils.executeIgnoringExceptions(() -> {
-      this.channel.close();
-    });
-    CodeUtils.executeIgnoringExceptions(() -> {
-      pool.close();
-    });
-    CodeUtils.executeIgnoringExceptions(() -> {
-      worker.shutdown();
-    });
+    CodeUtils.executeIgnoringExceptions(this.channel::flush);
+    CodeUtils.executeIgnoringExceptions(this.channel::close);
+    CodeUtils.executeIgnoringExceptions(pool::close);
+    CodeUtils.executeIgnoringExceptions(worker::shutdown);
     messageQueue.clear();
   }
 
   public void breakConnection() {
     LogManager.instance().log(this, Level.FINE, "WS client break connection");
-    CodeUtils.executeIgnoringExceptions(() -> {
-      this.channel.close();
-    });
-    CodeUtils.executeIgnoringExceptions(() -> {
-      pool.close();
-    });
+    CodeUtils.executeIgnoringExceptions(this.channel::close);
+    CodeUtils.executeIgnoringExceptions(pool::close);
     messageQueue.clear();
   }
 

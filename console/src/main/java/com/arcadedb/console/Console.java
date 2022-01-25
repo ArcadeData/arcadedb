@@ -402,7 +402,7 @@ public class Console {
       row.setProperty("VALUE", value);
     }
 
-    final TableFormatter formatter = new TableFormatter((text, args) -> output(text, args));
+    final TableFormatter formatter = new TableFormatter(this::output);
     formatter.setMaxWidthSize(maxWidth);
     formatter.writeRows(resultSet, -1);
   }
@@ -449,7 +449,7 @@ public class Console {
 
     } else {
       // TABLE FORMAT
-      final TableFormatter table = new TableFormatter((text, args) -> output(text, args));
+      final TableFormatter table = new TableFormatter(this::output);
       table.setMaxWidthSize(maxWidth);
       table.setPrefixedColumns("#", "@RID", "@TYPE");
 
@@ -524,7 +524,7 @@ public class Console {
     if (subject.equalsIgnoreCase("types")) {
       outputLine("AVAILABLE TYPES");
 
-      final TableFormatter table = new TableFormatter((text, args) -> output(text, args));
+      final TableFormatter table = new TableFormatter(this::output);
       table.setMaxWidthSize(maxWidth);
 
       if (remoteDatabase != null) {
