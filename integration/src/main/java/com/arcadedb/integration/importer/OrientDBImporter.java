@@ -301,7 +301,7 @@ public class OrientDBImporter {
       user.put("password", u.get("password"));
       user.put("databases", new JSONArray(new String[] { databaseName }));
 
-      buffer.append(user + "\n");
+      buffer.append(user).append("\n");
     }
 
     FileUtils.writeFile(securityFile, buffer.toString());
