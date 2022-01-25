@@ -35,8 +35,7 @@ public class SQLFunctionFormat extends SQLFunctionAbstract {
       final Object[] params, CommandContext iContext) {
     final Object[] args = new Object[params.length - 1];
 
-    for (int i = 0; i < args.length; ++i)
-      args[i] = params[i + 1];
+      System.arraycopy(params, 1, args, 0, args.length);
 
     return String.format((String) params[0], args);
   }
