@@ -501,7 +501,7 @@ public class Neo4jImporter {
     if (args.length == 0)
       System.out.println(text);
     else
-      System.out.println(String.format(text, args));
+      System.out.printf((text) + "%n", args);
   }
 
   private void error(final String text, final Object... args) {

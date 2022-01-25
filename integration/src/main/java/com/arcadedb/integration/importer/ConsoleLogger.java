@@ -34,7 +34,7 @@ public class ConsoleLogger {
     if (args.length == 0)
       System.out.println(text);
     else
-      System.out.println(String.format(text, args));
+      System.out.printf((text) + "%n", args);
   }
 
   public void log(final int level, final String text, final Object... args) {
@@ -51,7 +51,7 @@ public class ConsoleLogger {
     if (args.length == 0)
       System.out.println(text);
     else
-      System.out.println(String.format(text, args));
+      System.out.printf((text) + "%n", args);
   }
 
   public int getVerboseLevel() {

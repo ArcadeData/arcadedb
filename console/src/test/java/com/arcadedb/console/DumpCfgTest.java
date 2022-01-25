@@ -24,7 +24,7 @@ import java.util.stream.Collectors;
 
 public class DumpCfgTest {
   public static void main(String[] args) {
-    System.out.printf("\n|Name|Description|Type|Default Value");
+    System.out.print("\n|Name|Description|Type|Default Value");
     final List<GlobalConfiguration> orderedList = Arrays.stream(GlobalConfiguration.values()).sorted(Comparator.comparing(Enum::name)).collect(Collectors.toList());
 
       for (GlobalConfiguration c : orderedList) {
