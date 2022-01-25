@@ -125,10 +125,7 @@ public class ArcadeCypher extends ArcadeGremlin {
       final String mapKey = graph.getDatabase().getDatabasePath() + ":";
 
       // REMOVE ALL THE ENTRIES RELATIVE TO THE CLOSED DATABASE
-      for (Iterator<Map.Entry<String, CachedStatement>> it = STATEMENT_CACHE.entrySet().iterator(); it.hasNext(); ) {
-        if (it.next().getKey().startsWith(mapKey))
-          it.remove();
-      }
+        STATEMENT_CACHE.entrySet().removeIf(stringCachedStatementEntry -> stringCachedStatementEntry.getKey().startsWith(mapKey));
     }
   }
 }
