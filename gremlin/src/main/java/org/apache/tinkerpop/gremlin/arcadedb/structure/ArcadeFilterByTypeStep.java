@@ -77,16 +77,16 @@ public class ArcadeFilterByTypeStep<S, E extends Element> extends AbstractStep<S
         throw new IllegalArgumentException("Type '" + typeName + "' is not a vertex type");
 
       final Iterator<Record> rawIterator = graph.getDatabase().iterateType(typeName, true);
-      iteratorSupplier = () -> new Iterator<E>() {
-        @Override
-        public boolean hasNext() {
-          return rawIterator.hasNext();
-        }
+      iteratorSupplier = () -> new Iterator<>() {
+          @Override
+          public boolean hasNext() {
+              return rawIterator.hasNext();
+          }
 
-        @Override
-        public E next() {
-          return (E) new ArcadeVertex(graph, rawIterator.next().asVertex());
-        }
+          @Override
+          public E next() {
+              return (E) new ArcadeVertex(graph, rawIterator.next().asVertex());
+          }
       };
 
     } else if (Edge.class.isAssignableFrom(this.returnClass)) {

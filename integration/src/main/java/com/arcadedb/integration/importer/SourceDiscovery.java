@@ -100,35 +100,29 @@ public class SourceDiscovery {
     connection.connect();
 
     return getSourceFromContent(new BufferedInputStream(connection.getInputStream()), connection.getContentLengthLong(), resource,
-        new com.arcadedb.utility.Callable<Void, Source>() {
-          @Override
-          public Void call(Source source) {
-            try {
-              connection.disconnect();
+            source -> {
+                try {
+                    connection.disconnect();
 
-              final HttpURLConnection connection = (HttpURLConnection) new URL(urlPath).openConnection();
-              connection.setRequestMethod("GET");
-              connection.setDoOutput(true);
-              connection.connect();
+                    final HttpURLConnection connection1 = (HttpURLConnection) new URL(urlPath).openConnection();
+                    connection1.setRequestMethod("GET");
+                    connection1.setDoOutput(true);
+                    connection1.connect();
 
-              if (source.inputStream instanceof GZIPInputStream)
-                source.inputStream = new GZIPInputStream(connection.getInputStream(), 2048);
-              else if (source.inputStream instanceof ZipInputStream)
-                source.inputStream = new ZipInputStream(connection.getInputStream());
-              else
-                source.inputStream = new BufferedInputStream(connection.getInputStream());
-            } catch (Exception e) {
-              throw new ImportException("Error on reset remote resource", e);
-            }
-            return null;
-          }
-        }, new Callable<Void>() {
-          @Override
-          public Void call() throws Exception {
-            connection.disconnect();
-            return null;
-          }
-        });
+                    if (source.inputStream instanceof GZIPInputStream)
+                        source.inputStream = new GZIPInputStream(connection1.getInputStream(), 2048);
+                    else if (source.inputStream instanceof ZipInputStream)
+                        source.inputStream = new ZipInputStream(connection1.getInputStream());
+                    else
+                        source.inputStream = new BufferedInputStream(connection1.getInputStream());
+                } catch (Exception e) {
+                    throw new ImportException("Error on reset remote resource", e);
+                }
+                return null;
+            }, () -> {
+                connection.disconnect();
+                return null;
+            });
   }
 
   private Source getSourceFromFile(final String path) throws IOException {
@@ -146,28 +140,22 @@ public class SourceDiscovery {
     final File file = new File(filePath);
     final BufferedInputStream fis = new BufferedInputStream(new FileInputStream(file));
 
-    return getSourceFromContent(fis, file.length(), resource, new com.arcadedb.utility.Callable<Void, Source>() {
-      @Override
-      public Void call(Source source) {
+    return getSourceFromContent(fis, file.length(), resource, source -> {
         try {
-          source.inputStream.close();
-          if (source.inputStream instanceof GZIPInputStream)
-            source.inputStream = new GZIPInputStream(new FileInputStream(file), 2048);
-          else if (source.inputStream instanceof ZipInputStream)
-            source.inputStream = new ZipInputStream(new FileInputStream(file));
-          else
-            source.inputStream = new BufferedInputStream(new FileInputStream(file));
+            source.inputStream.close();
+            if (source.inputStream instanceof GZIPInputStream)
+                source.inputStream = new GZIPInputStream(new FileInputStream(file), 2048);
+            else if (source.inputStream instanceof ZipInputStream)
+                source.inputStream = new ZipInputStream(new FileInputStream(file));
+            else
+                source.inputStream = new BufferedInputStream(new FileInputStream(file));
         } catch (IOException e) {
-          throw new ImportException("Error on reset local resource", e);
+            throw new ImportException("Error on reset local resource", e);
         }
         return null;
-      }
-    }, new Callable<Void>() {
-      @Override
-      public Void call() throws Exception {
+    }, () -> {
         fis.close();
         return null;
-      }
     });
   }
 
@@ -304,13 +292,10 @@ public class SourceDiscovery {
         candidateSeparators.remove(' ');
 
       final ArrayList<Map.Entry<Character, AtomicInteger>> list = new ArrayList(candidateSeparators.entrySet());
-      list.sort(new Comparator<Map.Entry<Character, AtomicInteger>>() {
-        @Override
-        public int compare(final Map.Entry<Character, AtomicInteger> o1, final Map.Entry<Character, AtomicInteger> o2) {
+      list.sort((o1, o2) -> {
           if (o1.getValue().get() == o2.getValue().get())
-            return 0;
+              return 0;
           return o1.getValue().get() < o2.getValue().get() ? 1 : -1;
-        }
       });
 
       final Map.Entry<Character, AtomicInteger> bestSeparator = list.get(0);

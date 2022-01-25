@@ -36,10 +36,10 @@ import static org.apache.tinkerpop.gremlin.arcadedb.structure.io.ArcadeIoRegistr
  */
 public class ArcadeGraphSONV3 extends ArcadeGraphSON {
 
-  protected static final Map<Class, String> TYPES = Collections.unmodifiableMap(new LinkedHashMap<Class, String>() {
-    {
-      put(RID.class, "RID");
-    }
+  protected static final Map<Class, String> TYPES = Collections.unmodifiableMap(new LinkedHashMap<>() {
+      {
+          put(RID.class, "RID");
+      }
   });
 
   private final Database database;
