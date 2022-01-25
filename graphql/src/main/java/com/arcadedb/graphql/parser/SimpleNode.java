@@ -96,7 +96,7 @@ public class SimpleNode implements Node {
   }
 
   public String treeToString(final String prefix, final Class... excludes) {
-    String buffer = prefix + toString();
+    String buffer = prefix + this;
     if (children != null) {
       final Set<Class> set = Arrays.stream(excludes).collect(Collectors.toSet());
 

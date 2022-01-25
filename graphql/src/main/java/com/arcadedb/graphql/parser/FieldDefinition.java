@@ -47,7 +47,7 @@ public class FieldDefinition extends AbstractField {
 
   @Override
   public String treeToString(String prefix, final Class... excludes) {
-    return prefix + toString();
+    return prefix + this;
   }
 }
 /* ParserGeneratorCC - OriginalChecksum=6128650aa4801ab60df8105dc264845f (do not edit this line) */
