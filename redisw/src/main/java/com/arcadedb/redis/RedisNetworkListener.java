@@ -78,7 +78,7 @@ public class RedisNetworkListener extends Thread {
       try {
         if (serverSocket != null && !serverSocket.isClosed())
           serverSocket.close();
-      } catch (IOException ioe) {
+      } catch (IOException ignored) {
       }
     }
   }
