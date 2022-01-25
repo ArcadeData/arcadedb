@@ -20,7 +20,7 @@ package com.arcadedb.graphql.parser;
 /** Token Manager. */
 @SuppressWarnings ("unused")
 public class GraphQLParserTokenManager implements GraphQLParserConstants {
-private final int jjStopStringLiteralDfa_0(int pos, long active0){
+private  int jjStopStringLiteralDfa_0(int pos, long active0){
    switch (pos)
    {
       case 0:
@@ -114,7 +114,7 @@ private final int jjStopStringLiteralDfa_0(int pos, long active0){
          return -1;
    }
 }
-private final int jjStartNfa_0(int pos, long active0){
+private int jjStartNfa_0(int pos, long active0){
    return jjMoveNfa_0(jjStopStringLiteralDfa_0(pos, active0), pos + 1);
 }
 private int jjStopAtPos(int pos, int kind)

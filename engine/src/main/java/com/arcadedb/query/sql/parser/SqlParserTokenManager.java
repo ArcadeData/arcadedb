@@ -26,7 +26,7 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 /** Token Manager. */
 @SuppressWarnings ("unused")
 public class SqlParserTokenManager implements SqlParserConstants {
-private final int jjStopStringLiteralDfa_0(int pos, long active0, long active1, long active2, long active3){
+private int jjStopStringLiteralDfa_0(int pos, long active0, long active1, long active2, long active3){
    switch (pos)
    {
       case 0:
@@ -208,7 +208,7 @@ private final int jjStopStringLiteralDfa_0(int pos, long active0, long active1, 
          return -1;
    }
 }
-private final int jjStartNfa_0(int pos, long active0, long active1, long active2, long active3){
+private  int jjStartNfa_0(int pos, long active0, long active1, long active2, long active3){
    return jjMoveNfa_0(jjStopStringLiteralDfa_0(pos, active0, active1, active2, active3), pos + 1);
 }
 private int jjStopAtPos(int pos, int kind)
@@ -5853,7 +5853,7 @@ static final int[] jjnextStates = {
    92, 97, 98, 1039, 1040, 1042, 1046, 1048, 1050, 1067, 1068, 1070, 1080, 1081, 1083, 1098,
    1099, 1100, 1101, 1106, 1107, 39, 40, 53, 54, 1065, 1066, 1078, 1079,
 };
-private static final boolean jjCanMove_0(int hiByte, int i1, int i2, long l1, long l2)
+private static  boolean jjCanMove_0(int hiByte, int i1, int i2, long l1, long l2)
 {
    switch(hiByte)
    {
