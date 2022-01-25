@@ -171,17 +171,13 @@ public class CRUDTest extends TestHelper {
 
         db.commit();
 
-        database.transaction(() -> {
-          Assertions.assertEquals(0, db.countType("V", true));
-        });
+        database.transaction(() -> Assertions.assertEquals(0, db.countType("V", true)));
 
         LogManager.instance().log(this, Level.FINE, "Completed %d cycle of updates+delete", i);
 
         createAll();
 
-        database.transaction(() -> {
-          Assertions.assertEquals(TOT, db.countType("V", true));
-        });
+        database.transaction(() -> Assertions.assertEquals(TOT, db.countType("V", true)));
       }
 
     } finally {

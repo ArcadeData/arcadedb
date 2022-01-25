@@ -211,9 +211,7 @@ public class ArcadeDBServer {
 
     for (Map.Entry<String, ServerPlugin> pEntry : plugins.entrySet()) {
       LogManager.instance().log(this, Level.INFO, "- Stop %s plugin", pEntry.getKey());
-      CodeUtils.executeIgnoringExceptions(() -> {
-        pEntry.getValue().stopService();
-      }, "Error on halting '" + pEntry.getKey() + "' plugin");
+      CodeUtils.executeIgnoringExceptions(() -> pEntry.getValue().stopService(), "Error on halting '" + pEntry.getKey() + "' plugin");
     }
 
     if (haServer != null)

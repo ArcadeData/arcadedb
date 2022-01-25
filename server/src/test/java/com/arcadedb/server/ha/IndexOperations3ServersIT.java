@@ -57,9 +57,7 @@ public class IndexOperations3ServersIT extends BaseGraphServerTest {
 
     LogManager.instance().log(this, Level.INFO, "Inserting 1M records with 2 indexes...");
     // CREATE 1M RECORD IN 10 TX CHUNKS OF 100K EACH
-    database.transaction(() -> {
-      insertRecords(database);
-    });
+    database.transaction(() -> insertRecords(database));
 
     testEachServer((serverIndex) -> {
       LogManager.instance().log(this, Level.INFO, "Rebuild index Person[id] on server %s...", getServer(serverIndex).getHA().getServerName());
@@ -83,9 +81,7 @@ public class IndexOperations3ServersIT extends BaseGraphServerTest {
 
     LogManager.instance().log(this, Level.INFO, "Inserting 1M records without indexes first...");
     // CREATE 1M RECORD IN 10 TX CHUNKS OF 100K EACH
-    database.transaction(() -> {
-      insertRecords(database);
-    });
+    database.transaction(() -> insertRecords(database));
 
     v.createProperty("id", Long.class);
     database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Person", "id");
@@ -115,9 +111,7 @@ public class IndexOperations3ServersIT extends BaseGraphServerTest {
     testEachServer((serverIndex) -> {
       LogManager.instance().log(this, Level.INFO, "Inserting 1M records without indexes first...");
       // CREATE 1M RECORD IN 10 TX CHUNKS OF 100K EACH
-      database.transaction(() -> {
-        insertRecords(database);
-      });
+      database.transaction(() -> insertRecords(database));
 
       v.createProperty("id", Long.class);
       database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Person", "id");
@@ -125,22 +119,16 @@ public class IndexOperations3ServersIT extends BaseGraphServerTest {
       database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Person", "uuid");
 
       // TRY CREATING A DUPLICATE
-      TestServerHelper.expectException(() -> {
-        database.newVertex("Person").set("id", 0, "uuid", UUID.randomUUID().toString()).save();
-      }, DuplicatedKeyException.class);
+      TestServerHelper.expectException(() -> database.newVertex("Person").set("id", 0, "uuid", UUID.randomUUID().toString()).save(), DuplicatedKeyException.class);
 
       // TRY DROPPING A PROPERTY WITH AN INDEX
-      TestServerHelper.expectException(() -> {
-        database.getSchema().getType("Person").dropProperty("id");
-      }, SchemaException.class);
+      TestServerHelper.expectException(() -> database.getSchema().getType("Person").dropProperty("id"), SchemaException.class);
 
       database.getSchema().dropIndex("Person[id]");
       database.getSchema().getType("Person").dropProperty("id");
 
       // TRY DROPPING A PROPERTY WITH AN INDEX
-      TestServerHelper.expectException(() -> {
-        database.getSchema().getType("Person").dropProperty("uuid");
-      }, SchemaException.class);
+      TestServerHelper.expectException(() -> database.getSchema().getType("Person").dropProperty("uuid"), SchemaException.class);
 
       database.getSchema().dropIndex("Person[uuid]");
       database.getSchema().getType("Person").dropProperty("uuid");
@@ -165,13 +153,9 @@ public class IndexOperations3ServersIT extends BaseGraphServerTest {
       v.createProperty("id", Long.class);
 
       // TRY CREATING INDEX WITH DUPLICATES
-      TestServerHelper.expectException(() -> {
-        database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Person", "id");
-      }, IndexException.class);
+      TestServerHelper.expectException(() -> database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Person", "id"), IndexException.class);
 
-      TestServerHelper.expectException(() -> {
-        database.getSchema().getIndexByName("Person[id]");
-      }, SchemaException.class);
+      TestServerHelper.expectException(() -> database.getSchema().getIndexByName("Person[id]"), SchemaException.class);
 
       // TRY CREATING INDEX WITH DUPLICATES
       v.createProperty("uuid", String.class);

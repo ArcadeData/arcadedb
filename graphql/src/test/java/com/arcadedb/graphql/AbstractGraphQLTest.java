@@ -70,9 +70,7 @@ public class AbstractGraphQLTest {
                     author1.newEdge("IS_AUTHOR_OF", book2, true);
                 });
 
-                database.transaction(() -> {
-                    callback.call(database);
-                });
+                database.transaction(() -> callback.call(database));
             } finally {
                 if (database.isTransactionActive())
                     database.rollback();
