@@ -37,7 +37,7 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
   private       boolean[][] fileAccessMap     = null;
   private       long        resultSetLimit    = -1;
   private       long        readTimeout       = -1;
-  private       boolean[]   databaseAccessMap = new boolean[DATABASE_ACCESS.values().length];
+  private final boolean[]   databaseAccessMap = new boolean[DATABASE_ACCESS.values().length];
 
   public ServerSecurityDatabaseUser(final String databaseName, final String userName, final String[] groups) {
     this.databaseName = databaseName;

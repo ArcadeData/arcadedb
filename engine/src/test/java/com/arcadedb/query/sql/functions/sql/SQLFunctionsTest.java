@@ -45,7 +45,7 @@ import java.text.SimpleDateFormat;
 import java.util.*;
 
 public class SQLFunctionsTest {
-  private DatabaseFactory factory = new DatabaseFactory("./target/databases/SQLFunctionsTest");
+  private final DatabaseFactory factory = new DatabaseFactory("./target/databases/SQLFunctionsTest");
   private Database        database;
 
   @Test

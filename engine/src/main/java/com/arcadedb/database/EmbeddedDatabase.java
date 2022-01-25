@@ -97,8 +97,8 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   private final        File                                      configurationFile;
   private              DatabaseInternal                          wrappedDatabaseInstance              = this;
   private              int                                       edgeListSize                         = EDGE_LIST_INITIAL_CHUNK_SIZE;
-  private              SecurityManager                           security;
-  private              Map<String, Object>                       wrappers                             = new HashMap<>();
+  private final        SecurityManager                           security;
+  private final        Map<String, Object>                       wrappers                             = new HashMap<>();
   private              File                                      lockFile;
   private              RandomAccessFile                          lockFileIO;
   private              FileChannel                               lockFileIOChannel;

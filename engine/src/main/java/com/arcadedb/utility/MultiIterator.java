@@ -37,7 +37,7 @@ public class MultiIterator<T> implements Iterator<T>, Iterable<T> {
   private long    timeout   = -1L;
   private boolean embedded  = false;
   private int     skipped   = 0;
-  private long    beginTime = System.currentTimeMillis();
+  private final long    beginTime = System.currentTimeMillis();
 
   public MultiIterator() {
     sources = new ArrayList<>();

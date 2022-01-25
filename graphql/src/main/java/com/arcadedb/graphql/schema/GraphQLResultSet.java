@@ -44,7 +44,7 @@ import java.util.Optional;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class GraphQLResultSet implements ResultSet {
-  private       GraphQLSchema        schema;
+  private final GraphQLSchema        schema;
   private final ResultSet            resultSet;
   private final List<Selection>      projections;
   private final ObjectTypeDefinition returnType;

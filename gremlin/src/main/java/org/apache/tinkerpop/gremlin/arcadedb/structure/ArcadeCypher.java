@@ -39,7 +39,7 @@ import java.util.concurrent.atomic.*;
 public class ArcadeCypher extends ArcadeGremlin {
   private static final HashMap<String, CachedStatement> STATEMENT_CACHE       = new HashMap<>();
   private static final int                              CACHE_SIZE            = GlobalConfiguration.CYPHER_STATEMENT_CACHE.getValueAsInteger();
-  private static       AtomicInteger                    totalCachedStatements = new AtomicInteger(0);
+  private static final AtomicInteger                    totalCachedStatements = new AtomicInteger(0);
 
   private static class CachedStatement {
     public final String cypher;
