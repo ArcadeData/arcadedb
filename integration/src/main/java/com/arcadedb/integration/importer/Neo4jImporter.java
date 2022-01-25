@@ -241,13 +241,9 @@ public class Neo4jImporter {
 
   private void inferPropertyType(final JSONObject json, final String label) {
     // TRY TO INFER PROPERTY TYPES
-    Map<String, Type> typeProperties = schemaProperties.get(label);
-    if (typeProperties == null) {
-      typeProperties = new HashMap<>();
-      schemaProperties.put(label, typeProperties);
-    }
+      Map<String, Type> typeProperties = schemaProperties.computeIfAbsent(label, k -> new HashMap<>());
 
-    final JSONObject properties = json.getJSONObject("properties");
+      final JSONObject properties = json.getJSONObject("properties");
     for (String propName : properties.keySet()) {
       ++totalAttributesParsed;
 
