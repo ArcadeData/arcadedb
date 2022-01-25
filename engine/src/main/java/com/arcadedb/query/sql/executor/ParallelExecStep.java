@@ -103,7 +103,7 @@ public class ParallelExecStep extends AbstractExecutionStep {
 
   @Override
   public String prettyPrint(int depth, int indent) {
-    String result = "";
+    StringBuilder result = new StringBuilder();
     String ind = ExecutionStepInternal.getIndent(depth, indent);
 
     int[] blockSizes = new int[subExecutionPlans.size()];
@@ -114,23 +114,23 @@ public class ParallelExecStep extends AbstractExecutionStep {
 
       String[] partials = partial.split("\n");
       blockSizes[subExecutionPlans.size() - 1 - i] = partials.length + 2;
-      result = "+-------------------------\n" + result;
+      result.insert(0, "+-------------------------\n");
       for (int j = 0; j < partials.length; j++) {
         String p = partials[partials.length - 1 - j];
         if (result.length() > 0) {
-          result = appendPipe(p) + "\n" + result;
+          result.insert(0, appendPipe(p) + "\n");
         } else {
-          result = appendPipe(p);
+          result = new StringBuilder(appendPipe(p));
         }
       }
-      result = "+-------------------------\n" + result;
+      result.insert(0, "+-------------------------\n");
     }
-    result = addArrows(result, blockSizes);
-    result += foot(blockSizes);
-    result = ind + result;
-    result = result.replaceAll("\n", "\n" + ind);
-    result = head(depth, indent, subExecutionPlans.size()) + "\n" + result;
-    return result;
+    result = new StringBuilder(addArrows(result.toString(), blockSizes));
+    result.append(foot(blockSizes));
+    result.insert(0, ind);
+    result = new StringBuilder(result.toString().replaceAll("\n", "\n" + ind));
+    result.insert(0, head(depth, indent, subExecutionPlans.size()) + "\n");
+    return result.toString();
   }
 
   private String addArrows(String input, int[] blockSizes) {

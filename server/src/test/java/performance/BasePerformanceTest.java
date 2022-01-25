@@ -95,18 +95,18 @@ public abstract class BasePerformanceTest {
     servers = new ArcadeDBServer[totalServers];
 
     int port = 2424;
-    String serverURLs = "";
+    StringBuilder serverURLs = new StringBuilder();
     for (int i = 0; i < totalServers; ++i) {
       if (i > 0)
-        serverURLs += ",";
-      serverURLs += "localhost:" + (port++);
+        serverURLs.append(",");
+      serverURLs.append("localhost:").append(port++);
     }
 
     for (int i = 0; i < totalServers; ++i) {
       final ContextConfiguration config = new ContextConfiguration();
       config.setValue(GlobalConfiguration.SERVER_NAME, Constants.PRODUCT + "_" + i);
       config.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, "./target/databases" + i);
-      config.setValue(GlobalConfiguration.HA_SERVER_LIST, serverURLs);
+      config.setValue(GlobalConfiguration.HA_SERVER_LIST, serverURLs.toString());
       config.setValue(GlobalConfiguration.HA_ENABLED, getServerCount() > 1);
 
       servers[i] = new ArcadeDBServer(config);

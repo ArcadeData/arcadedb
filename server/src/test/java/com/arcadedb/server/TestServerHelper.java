@@ -35,13 +35,13 @@ public abstract class TestServerHelper {
     final ArcadeDBServer[] servers = new ArcadeDBServer[totalServers];
 
     int port = 2424;
-    String serverURLs = "";
+    StringBuilder serverURLs = new StringBuilder();
     for (int i = 0; i < totalServers; ++i) {
       if (i > 0)
-        serverURLs += ",";
+        serverURLs.append(",");
 
       try {
-        serverURLs += (InetAddress.getLocalHost().getHostName()) + ":" + (port++);
+        serverURLs.append(InetAddress.getLocalHost().getHostName()).append(":").append(port++);
       } catch (UnknownHostException e) {
         e.printStackTrace();
       }
@@ -51,7 +51,7 @@ public abstract class TestServerHelper {
       final ContextConfiguration config = new ContextConfiguration();
       config.setValue(GlobalConfiguration.SERVER_NAME, Constants.PRODUCT + "_" + i);
       config.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, "./target/databases" + i);
-      config.setValue(GlobalConfiguration.HA_SERVER_LIST, serverURLs);
+      config.setValue(GlobalConfiguration.HA_SERVER_LIST, serverURLs.toString());
       config.setValue(GlobalConfiguration.HA_REPLICATION_INCOMING_HOST, "0.0.0.0");
       config.setValue(GlobalConfiguration.HA_ENABLED, totalServers > 1);
 

@@ -263,8 +263,10 @@ public class TableFormatter {
       case LEFT: {
         final int room = columnWidth - strippedValue.length();
         if (room > 0) {
-          for (int k = 0; k < room; ++k)
-            valueAsString = valueAsString + " ";
+            StringBuilder valueAsStringBuilder = new StringBuilder(valueAsString);
+            for (int k = 0; k < room; ++k)
+            valueAsStringBuilder.append(" ");
+            valueAsString = valueAsStringBuilder.toString();
         }
         break;
       }
@@ -272,10 +274,13 @@ public class TableFormatter {
       case CENTER: {
         final int room = columnWidth - strippedValue.length();
         if (room > 1) {
-          for (int k = 0; k < room / 2; ++k)
-            valueAsString = " " + valueAsString;
-          for (int k = strippedValue.length() + (room / 2); k < columnWidth; ++k)
-            valueAsString = valueAsString + " ";
+            StringBuilder valueAsStringBuilder = new StringBuilder(valueAsString);
+            for (int k = 0; k < room / 2; ++k)
+            valueAsStringBuilder.insert(0, " ");
+            StringBuilder valueAsStringBuilder1 = new StringBuilder(valueAsStringBuilder.toString());
+            for (int k = strippedValue.length() + (room / 2); k < columnWidth; ++k)
+            valueAsStringBuilder1.append(" ");
+            valueAsString = valueAsStringBuilder1.toString();
         }
         break;
       }
@@ -283,8 +288,10 @@ public class TableFormatter {
       case RIGHT: {
         final int room = columnWidth - strippedValue.length();
         if (room > 0) {
-          for (int k = 0; k < room; ++k)
-            valueAsString = " " + valueAsString;
+            StringBuilder valueAsStringBuilder = new StringBuilder(valueAsString);
+            for (int k = 0; k < room; ++k)
+            valueAsStringBuilder.insert(0, " ");
+            valueAsString = valueAsStringBuilder.toString();
         }
         break;
       }

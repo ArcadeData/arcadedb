@@ -132,7 +132,7 @@ public class GraphQLSchema {
         }
       }
 
-      String where = "";
+      StringBuilder where = new StringBuilder();
       final Field field = selection.getField();
       if (field != null) {
         final Arguments queryArguments = field.getArguments();
@@ -145,21 +145,21 @@ public class GraphQLSchema {
             final Object argValue = queryArgument.getValueWithVariable().getValue().getValue();
 
             if (where.length() > 0)
-              where += " and ";
+              where.append(" and ");
 
             if ("where".equals(argName)) {
-              where += argValue;
+              where.append(argValue);
             } else {
-              where += argName;
-              where += " = ";
+              where.append(argName);
+              where.append(" = ");
 
               if (argValue instanceof String)
-                where += "\"";
+                where.append("\"");
 
-              where += argValue;
+              where.append(argValue);
 
               if (argValue instanceof String)
-                where += "\"";
+                where.append("\"");
             }
           }
 
@@ -167,7 +167,7 @@ public class GraphQLSchema {
       }
 
       String query = "select from " + from;
-      if (!where.isEmpty())
+      if (where.length() > 0)
         query += " where " + where;
 
       final ResultSet resultSet = arguments != null ? database.query("sql", query, arguments) : database.query("sql", query);

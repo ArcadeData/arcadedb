@@ -93,7 +93,7 @@ public class SimpleNode implements Node {
   }
 
   public String treeToString(final String prefix, final Class... excludes) {
-    String buffer = prefix + this;
+    StringBuilder buffer = new StringBuilder(prefix + this);
     if (children != null) {
       final Set<Class> set = Arrays.stream(excludes).collect(Collectors.toSet());
 
@@ -103,10 +103,10 @@ public class SimpleNode implements Node {
                 continue;
 
             if (n != null)
-                buffer += "\n" + n.treeToString(prefix + " ");
+                buffer.append("\n").append(n.treeToString(prefix + " "));
       }
     }
-    return buffer;
+    return buffer.toString();
   }
 
   public int getId() {
