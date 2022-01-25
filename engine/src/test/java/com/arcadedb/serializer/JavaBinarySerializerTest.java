@@ -36,7 +36,7 @@ public class JavaBinarySerializerTest extends TestHelper {
     type.createProperty("id", Type.LONG);
 
     final MutableDocument doc1 = database.newDocument("Doc").set("id", 100L, "name", "Elon");
-    try (ByteArrayOutputStream arrayOut = new ByteArrayOutputStream(); ObjectOutput buffer = new ObjectOutputStream(arrayOut);) {
+    try (ByteArrayOutputStream arrayOut = new ByteArrayOutputStream(); ObjectOutput buffer = new ObjectOutputStream(arrayOut)) {
       doc1.writeExternal(buffer);
       buffer.flush();
 
@@ -61,7 +61,7 @@ public class JavaBinarySerializerTest extends TestHelper {
     final MutableDocument doc1 = database.newDocument("Doc").set("id", 100L, "name", "Elon");
     doc1.save();
 
-    try (ByteArrayOutputStream arrayOut = new ByteArrayOutputStream(); ObjectOutput buffer = new ObjectOutputStream(arrayOut);) {
+    try (ByteArrayOutputStream arrayOut = new ByteArrayOutputStream(); ObjectOutput buffer = new ObjectOutputStream(arrayOut)) {
       doc1.writeExternal(buffer);
       buffer.flush();
 
@@ -83,7 +83,7 @@ public class JavaBinarySerializerTest extends TestHelper {
     type.createProperty("id", Type.LONG);
 
     final MutableVertex doc1 = database.newVertex("Doc").set("id", 100L, "name", "Elon");
-    try (ByteArrayOutputStream arrayOut = new ByteArrayOutputStream(); ObjectOutput buffer = new ObjectOutputStream(arrayOut);) {
+    try (ByteArrayOutputStream arrayOut = new ByteArrayOutputStream(); ObjectOutput buffer = new ObjectOutputStream(arrayOut)) {
       doc1.writeExternal(buffer);
       buffer.flush();
 
@@ -112,7 +112,7 @@ public class JavaBinarySerializerTest extends TestHelper {
     v2.save();
     v1.newEdge("Edge", v2, true);
 
-    try (ByteArrayOutputStream arrayOut = new ByteArrayOutputStream(); ObjectOutput buffer = new ObjectOutputStream(arrayOut);) {
+    try (ByteArrayOutputStream arrayOut = new ByteArrayOutputStream(); ObjectOutput buffer = new ObjectOutputStream(arrayOut)) {
       v1.writeExternal(buffer);
       buffer.flush();
 
@@ -142,7 +142,7 @@ public class JavaBinarySerializerTest extends TestHelper {
     v2.save();
     MutableEdge edge1 = v1.newEdge("Edge", v2, true);
 
-    try (ByteArrayOutputStream arrayOut = new ByteArrayOutputStream(); ObjectOutput buffer = new ObjectOutputStream(arrayOut);) {
+    try (ByteArrayOutputStream arrayOut = new ByteArrayOutputStream(); ObjectOutput buffer = new ObjectOutputStream(arrayOut)) {
       edge1.writeExternal(buffer);
       buffer.flush();
 
