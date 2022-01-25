@@ -52,7 +52,7 @@ public class FunctionCall extends SimpleNode {
       return false;
     }
     Expression param = params.get(0);
-    if (param.mathExpression == null || !(param.mathExpression instanceof BaseExpression)) {
+    if (!(param.mathExpression instanceof BaseExpression)) {
 
       return false;
     }

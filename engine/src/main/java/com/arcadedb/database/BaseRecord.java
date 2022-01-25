@@ -67,7 +67,7 @@ public abstract class BaseRecord implements Record {
   public boolean equals(final Object o) {
     if (this == o)
       return true;
-    if (o == null || !(o instanceof Identifiable))
+    if (!(o instanceof Identifiable))
       return false;
 
     final RID pRID = ((Identifiable) o).getIdentity();

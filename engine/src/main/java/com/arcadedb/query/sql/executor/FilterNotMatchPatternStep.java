@@ -169,7 +169,7 @@ public class FilterNotMatchPatternStep extends AbstractExecutionStep {
 
   @Override
   public List<ExecutionStep> getSubSteps() {
-    return (List) subSteps;
+    return subSteps;
   }
 
   @Override

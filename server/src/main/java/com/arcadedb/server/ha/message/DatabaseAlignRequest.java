@@ -119,7 +119,6 @@ public class DatabaseAlignRequest extends HAAbstractCommand {
 
             LogManager.instance().log(this, Level.INFO, "File %d checksum %s <> leader %s: requesting the entire file from the leader", null,//
                 fileId, localFileChecksum, leaderFileChecksum);
-            continue;
           }
         }
 

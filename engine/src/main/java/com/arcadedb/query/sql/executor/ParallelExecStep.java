@@ -207,7 +207,7 @@ public class ParallelExecStep extends AbstractExecutionStep {
   }
 
   public List<ExecutionPlan> getSubExecutionPlans() {
-    return (List) subExecutionPlans;
+    return subExecutionPlans;
   }
 
   @Override

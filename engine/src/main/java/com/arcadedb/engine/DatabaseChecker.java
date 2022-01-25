@@ -199,8 +199,8 @@ public class DatabaseChecker {
       ((LinkedHashSet<RID>) result.get("deletedRecords")).addAll((Collection<RID>) stats.get("deletedRecords"));
     }
 
-    result.put("avgPageUsed", (Long) result.get("totalPages") > 0 ?
-        ((float) (Long) result.get("totalMaxOffset")) / (Long) result.get("totalPages") * 100F / (Long) result.get("pageSize") :
+    result.put("avgPageUsed", result.get("totalPages") > 0 ?
+        ((float) (Long) result.get("totalMaxOffset")) / result.get("totalPages") * 100F / result.get("pageSize") :
         0F);
   }
 

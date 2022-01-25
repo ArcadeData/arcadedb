@@ -99,7 +99,6 @@ public class TokenMgrException extends RuntimeException {
         } else {
           retval.append(ch);
         }
-        continue;
       }
     }
     return retval.toString();

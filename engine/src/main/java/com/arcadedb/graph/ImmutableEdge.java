@@ -57,7 +57,7 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
 
   public synchronized MutableEdge modify() {
     final Record recordInCache = database.getTransaction().getRecordFromCache(rid);
-    if (recordInCache != null && recordInCache != this && recordInCache instanceof MutableEdge)
+    if (recordInCache instanceof MutableEdge)
       return (MutableEdge) recordInCache;
 
     checkForLazyLoading();

@@ -62,7 +62,6 @@ public class DatabaseAsyncTransaction implements DatabaseAsyncTask {
         // RETRY
         lastException = e;
 
-        continue;
       } catch (Exception e) {
         if (database.getTransaction().isActive())
           database.rollback();

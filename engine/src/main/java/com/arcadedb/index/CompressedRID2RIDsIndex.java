@@ -291,11 +291,8 @@ public class CompressedRID2RIDsIndex {
           serializer.serializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, edgeRID);
           serializer.serializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, vertexRID);
 
-          if (previousEntryPos > 0)
             // THIS IS THE 3RD OR MAJOR ENTRY. APPEND THE POSITION OF THE PREVIOUS ENTRY
-            chunk.putInt(previousEntryPos);
-          else
-            chunk.putInt(0);
+            chunk.putInt(Math.max(previousEntryPos, 0));
 
           chunk.putInt(previousEntryOffset, newEntryPosition);
           ++totalEntries;

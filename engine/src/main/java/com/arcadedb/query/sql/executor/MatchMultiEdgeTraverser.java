@@ -98,7 +98,7 @@ public class MatchMultiEdgeTraverser extends MatchEdgeTraverser {
           }
         }
       }
-      nextStep = (List) rightSide;
+      nextStep = rightSide;
       result = rightSide;
     }
 

@@ -247,7 +247,7 @@ public class EmbeddedSchema implements Schema {
       throw new SchemaException("Bucket with id '" + id + "' was not found");
 
     final PaginatedComponent p = files.get(id);
-    if (p == null || !(p instanceof Bucket))
+    if (!(p instanceof Bucket))
       throw new SchemaException("Bucket with id '" + id + "' was not found");
     return (Bucket) p;
   }
