@@ -488,11 +488,11 @@ public class EmbeddedSchema implements Schema {
           saveConfiguration();
 
         }, false, 1, null, (error) -> {
-          for (int j = 0; j < indexes.length; j++) {
-            final IndexInternal indexToRemove = (IndexInternal) indexes[j];
-            if (indexToRemove != null)
-              indexToRemove.drop();
-          }
+            for (Index value : indexes) {
+                final IndexInternal indexToRemove = (IndexInternal) value;
+                if (indexToRemove != null)
+                    indexToRemove.drop();
+            }
         });
         return null;
       });

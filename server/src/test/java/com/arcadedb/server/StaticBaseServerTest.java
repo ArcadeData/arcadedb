@@ -348,10 +348,10 @@ public abstract class StaticBaseServerTest {
 
   protected static void deleteDatabaseFolders() {
     if (databases != null)
-      for (int i = 0; i < databases.length; ++i) {
-        if (databases[i] != null && databases[i].isOpen())
-          ((DatabaseInternal) databases[i]).getEmbedded().drop();
-      }
+        for (Database database : databases) {
+            if (database != null && database.isOpen())
+                ((DatabaseInternal) database).getEmbedded().drop();
+        }
 
     if (servers != null)
       for (int i = 0; i < getServerCount(); ++i)

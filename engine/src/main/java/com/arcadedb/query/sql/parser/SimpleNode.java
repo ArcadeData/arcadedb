@@ -110,9 +110,9 @@ public class SimpleNode implements Node {
    **/
   public Object childrenAccept(SqlParserVisitor visitor, Object data) {
     if (children != null) {
-      for (int i = 0; i < children.length; ++i) {
-        children[i].jjtAccept(visitor, data);
-      }
+        for (Node child : children) {
+            child.jjtAccept(visitor, data);
+        }
     }
     return data;
   }
@@ -140,12 +140,12 @@ public class SimpleNode implements Node {
   public void dump(String prefix) {
     System.out.println(toString(prefix));
     if (children != null) {
-      for (int i = 0; i < children.length; ++i) {
-        SimpleNode n = (SimpleNode) children[i];
-        if (n != null) {
-          n.dump(prefix + " ");
+        for (Node child : children) {
+            SimpleNode n = (SimpleNode) child;
+            if (n != null) {
+                n.dump(prefix + " ");
+            }
         }
-      }
     }
   }
 

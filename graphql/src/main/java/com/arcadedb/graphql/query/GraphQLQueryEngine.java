@@ -15,14 +15,14 @@
  */
 package com.arcadedb.graphql.query;
 
-import com.arcadedb.exception.CommandExecutionException;
+
 import com.arcadedb.exception.QueryParsingException;
 import com.arcadedb.graphql.schema.GraphQLSchema;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
 
-import java.lang.reflect.InvocationTargetException;
+
 import java.util.HashMap;
 import java.util.Map;
 

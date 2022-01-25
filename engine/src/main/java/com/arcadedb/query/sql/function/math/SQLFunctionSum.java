@@ -45,8 +45,7 @@ public class SQLFunctionSum extends SQLFunctionMathAbstract {
           sum((Number) n);
     } else {
       sum = null;
-      for (int i = 0; i < iParams.length; ++i)
-        sum((Number) iParams[i]);
+        for (Object iParam : iParams) sum((Number) iParam);
     }
     return sum;
   }

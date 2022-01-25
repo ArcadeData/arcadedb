@@ -56,11 +56,11 @@ public class PartitionedBucketSelectionStrategy extends RoundRobinBucketSelectio
             "Record of type '" + documentType.getName() + "' is not supported by partitioned bucket selection strategy built on type '" + type.getName() + "'");
 
       int hash = 0;
-      for (int i = 0; i < propertyNames.length; i++) {
-        Object value = record.get(propertyNames[i]);
-        if (value != null)
-          hash += value.hashCode();
-      }
+        for (String propertyName : propertyNames) {
+            Object value = record.get(propertyName);
+            if (value != null)
+                hash += value.hashCode();
+        }
       return (hash & 0x7fffffff) % total;
     }
 
@@ -71,11 +71,10 @@ public class PartitionedBucketSelectionStrategy extends RoundRobinBucketSelectio
   public int getBucketIdByKeys(final Object[] keyValues, final boolean async) {
     if (propertyNames != null) {
       int hash = 0;
-      for (int i = 0; i < keyValues.length; i++) {
-        Object value = keyValues[i];
-        if (value != null)
-          hash += value.hashCode();
-      }
+        for (Object value : keyValues) {
+            if (value != null)
+                hash += value.hashCode();
+        }
       return (hash & 0x7fffffff) % total;
     }
 

@@ -128,10 +128,10 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
       if (currVertexBucketId == bucketId && currVertexPosition == position) {
         if (edgeBucketFilter != null) {
           // FILTER BY EDGE BUCKETS
-          for (int i = 0; i < edgeBucketFilter.length; i++) {
-            if (currEdgeBucketId == edgeBucketFilter[i])
-              return true;
-          }
+            for (int j : edgeBucketFilter) {
+                if (currEdgeBucketId == j)
+                    return true;
+            }
         } else
           return true;
       }

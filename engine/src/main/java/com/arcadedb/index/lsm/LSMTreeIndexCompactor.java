@@ -180,11 +180,11 @@ public class LSMTreeIndexCompactor {
             final Object[] value = iter.getValue();
             if (value != null) {
               // NOT DELETED
-              for (int r = 0; r < value.length; ++r) {
-                final RID rid = (RID) value[r];
-                // ADD ALSO REMOVED RIDS. ONCE THE COMPACTING OF COMPACTED INDEXES (2nd LEVEL) IS DONE, REMOVED ENTRIES CAN BE REMOVED
-                rids.add(rid);
-              }
+                for (Object o : value) {
+                    final RID rid = (RID) o;
+                    // ADD ALSO REMOVED RIDS. ONCE THE COMPACTING OF COMPACTED INDEXES (2nd LEVEL) IS DONE, REMOVED ENTRIES CAN BE REMOVED
+                    rids.add(rid);
+                }
 
               if (!rids.isEmpty())
                 totalMergedValues += rids.size();

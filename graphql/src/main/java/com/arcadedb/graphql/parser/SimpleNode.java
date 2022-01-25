@@ -97,13 +97,13 @@ public class SimpleNode implements Node {
     if (children != null) {
       final Set<Class> set = Arrays.stream(excludes).collect(Collectors.toSet());
 
-      for (int i = 0; i < children.length; ++i) {
-        SimpleNode n = (SimpleNode) children[i];
-        if (set.contains(n.getClass()))
-          continue;
+      for (Node child : children) {
+            SimpleNode n = (SimpleNode) child;
+            if (set.contains(n.getClass()))
+                continue;
 
-        if (n != null)
-          buffer += "\n" + n.treeToString(prefix + " ");
+            if (n != null)
+                buffer += "\n" + n.treeToString(prefix + " ");
       }
     }
     return buffer;
