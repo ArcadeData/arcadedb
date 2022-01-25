@@ -111,7 +111,7 @@ public class ArcadeGremlin extends ArcadeQuery {
   }
 
   public ArcadeQuery setTimeout(final long timeout, final TimeUnit unit) {
-    this.timeout = unit.toMillis(timeout);
+    ArcadeGremlin.timeout = unit.toMillis(timeout);
     return this;
   }
 
