@@ -19,11 +19,9 @@
 package com.arcadedb;
 
 import com.arcadedb.database.Document;
-import com.arcadedb.database.DocumentCallback;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.async.AbstractAsyncResultsetCallback;
-import com.arcadedb.database.async.ErrorCallback;
-import com.arcadedb.database.async.OkCallback;
+import com.arcadedb.index.IndexCursor;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
@@ -31,7 +29,8 @@ import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.*;
+import java.util.concurrent.atomic.*;
 
 public class AsyncTest extends TestHelper {
   private static final int    TOT       = 10000;
@@ -115,6 +114,113 @@ public class AsyncTest extends TestHelper {
 
       Assertions.assertEquals(1, startCallbackInvoked.get());
       Assertions.assertEquals(database.countType(TYPE_NAME, true), nextCallbackInvoked.get());
+      Assertions.assertEquals(1, completeCallbackInvoked.get());
+      Assertions.assertEquals(0, errorCallbackInvoked.get());
+
+    } finally {
+      database.commit();
+    }
+  }
+
+  @Test
+  public void testCommandFetchVarargParamsNoCallback() {
+    database.begin();
+    try {
+      database.async().command("sql", "insert into " + TYPE_NAME + " set id = :id", null, Integer.MAX_VALUE);
+
+      database.async().waitCompletion(5_000);
+
+      final IndexCursor resultSet = database.lookupByKey(TYPE_NAME, "id", Integer.MAX_VALUE);
+
+      Assertions.assertTrue(resultSet.hasNext());
+      final Document record = resultSet.next().asDocument();
+      Assertions.assertEquals(Integer.MAX_VALUE, record.get("id"));
+
+    } finally {
+      database.commit();
+    }
+  }
+
+  @Test
+  public void testCommandFetchVarargParamsCallback() {
+    database.begin();
+    try {
+      final AtomicLong startCallbackInvoked = new AtomicLong();
+      final AtomicLong nextCallbackInvoked = new AtomicLong();
+      final AtomicLong completeCallbackInvoked = new AtomicLong();
+      final AtomicLong errorCallbackInvoked = new AtomicLong();
+
+      database.async().command("sql", "select from " + TYPE_NAME + " where id = ?", new AbstractAsyncResultsetCallback() {
+        @Override
+        public void onStart(ResultSet resultset) {
+          startCallbackInvoked.incrementAndGet();
+        }
+
+        @Override
+        public boolean onNext(Result result) {
+          nextCallbackInvoked.incrementAndGet();
+          return true;
+        }
+
+        @Override
+        public void onComplete() {
+          completeCallbackInvoked.incrementAndGet();
+        }
+
+        @Override
+        public void onError(Exception exception) {
+          errorCallbackInvoked.incrementAndGet();
+        }
+      }, 0);
+
+      database.async().waitCompletion(5_000);
+
+      Assertions.assertEquals(1, startCallbackInvoked.get());
+      Assertions.assertEquals(1, nextCallbackInvoked.get());
+      Assertions.assertEquals(1, completeCallbackInvoked.get());
+      Assertions.assertEquals(0, errorCallbackInvoked.get());
+
+    } finally {
+      database.commit();
+    }
+  }
+
+  @Test
+  public void testCommandFetchParamsMap() {
+    database.begin();
+    try {
+      final AtomicLong startCallbackInvoked = new AtomicLong();
+      final AtomicLong nextCallbackInvoked = new AtomicLong();
+      final AtomicLong completeCallbackInvoked = new AtomicLong();
+      final AtomicLong errorCallbackInvoked = new AtomicLong();
+
+      database.async().command("sql", "select from " + TYPE_NAME + " where id = :id", new AbstractAsyncResultsetCallback() {
+        @Override
+        public void onStart(ResultSet resultset) {
+          startCallbackInvoked.incrementAndGet();
+        }
+
+        @Override
+        public boolean onNext(Result result) {
+          nextCallbackInvoked.incrementAndGet();
+          return true;
+        }
+
+        @Override
+        public void onComplete() {
+          completeCallbackInvoked.incrementAndGet();
+        }
+
+        @Override
+        public void onError(Exception exception) {
+          errorCallbackInvoked.incrementAndGet();
+        }
+      }, Map.of("id", 0));
+
+      database.async().waitCompletion(5_000);
+
+      Assertions.assertEquals(1, startCallbackInvoked.get());
+      Assertions.assertEquals(1, nextCallbackInvoked.get());
       Assertions.assertEquals(1, completeCallbackInvoked.get());
       Assertions.assertEquals(0, errorCallbackInvoked.get());
 

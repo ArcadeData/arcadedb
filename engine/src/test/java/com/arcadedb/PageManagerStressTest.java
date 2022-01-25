@@ -22,7 +22,6 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
-import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.schema.DocumentType;
@@ -31,7 +30,7 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import performance.PerformanceTest;
 
-import java.util.UUID;
+import java.util.*;
 
 public class PageManagerStressTest {
   private static final int    TOT       = 100_000;

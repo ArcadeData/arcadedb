@@ -23,17 +23,19 @@ import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.log.LogManager;
 
-import java.util.logging.Level;
+import java.util.logging.*;
 
 public class DatabaseAsyncCreateRecord implements DatabaseAsyncTask {
   public final Record            record;
   public final Bucket            bucket;
-  public final NewRecordCallback callback;
+  public final NewRecordCallback onOkCallback;
+  public final ErrorCallback     onErrorCallback;
 
-  public DatabaseAsyncCreateRecord(final Record record, final Bucket bucket, final NewRecordCallback callback) {
+  public DatabaseAsyncCreateRecord(final Record record, final Bucket bucket, final NewRecordCallback callback, final ErrorCallback onErrorCallback) {
     this.record = record;
     this.bucket = bucket;
-    this.callback = callback;
+    this.onOkCallback = callback;
+    this.onErrorCallback = onErrorCallback;
   }
 
   @Override
@@ -41,13 +43,16 @@ public class DatabaseAsyncCreateRecord implements DatabaseAsyncTask {
     try {
       database.createRecordNoLock(record, bucket.getName());
 
-      if (callback != null)
-        callback.call(record);
+      if (onOkCallback != null)
+        onOkCallback.call(record);
 
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on executing async create operation (threadId=%d)", e, Thread.currentThread().getId());
 
       async.onError(e);
+
+      if (onErrorCallback != null)
+        onErrorCallback.call(e);
     }
   }
 

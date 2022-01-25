@@ -361,6 +361,11 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
   @Override
   public void createRecord(final MutableDocument record, final NewRecordCallback newRecordCallback) {
+    createRecord(record, newRecordCallback, null);
+  }
+
+  @Override
+  public void createRecord(final MutableDocument record, final NewRecordCallback newRecordCallback, final ErrorCallback errorCallback) {
     final DocumentType type = record.getType();
 
     if (record.getIdentity() == null) {
@@ -368,7 +373,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       final Bucket bucket = type.getBucketIdByRecord(record, false);
       final int slot = getSlot(bucket.getId());
 
-      scheduleTask(slot, new DatabaseAsyncCreateRecord(record, bucket, newRecordCallback), true, backPressurePercentage);
+      scheduleTask(slot, new DatabaseAsyncCreateRecord(record, bucket, newRecordCallback, errorCallback), true, backPressurePercentage);
 
     } else
       throw new IllegalArgumentException("Cannot create a new record because it is already persistent");
@@ -376,25 +381,35 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
   @Override
   public void createRecord(final Record record, final String bucketName, final NewRecordCallback newRecordCallback) {
+    createRecord(record, bucketName, newRecordCallback, null);
+  }
+
+  @Override
+  public void createRecord(final Record record, final String bucketName, final NewRecordCallback newRecordCallback, final ErrorCallback errorCallback) {
     final Bucket bucket = database.getSchema().getBucketByName(bucketName);
     final int slot = getSlot(bucket.getId());
 
     if (record.getIdentity() == null)
       // NEW
-      scheduleTask(slot, new DatabaseAsyncCreateRecord(record, bucket, newRecordCallback), true, backPressurePercentage);
+      scheduleTask(slot, new DatabaseAsyncCreateRecord(record, bucket, newRecordCallback, errorCallback), true, backPressurePercentage);
     else
       throw new IllegalArgumentException("Cannot create a new record because it is already persistent");
   }
 
   @Override
   public void updateRecord(final MutableDocument record, final UpdatedRecordCallback updateRecordCallback) {
+    updateRecord(record, updateRecordCallback, null);
+  }
+
+  @Override
+  public void updateRecord(final MutableDocument record, final UpdatedRecordCallback updateRecordCallback, final ErrorCallback errorCallback) {
     if (record.getIdentity() != null) {
       // UPDATE
       final DocumentType type = record.getType();
       final Bucket bucket = type.getBucketIdByRecord(record, false);
       final int slot = getSlot(bucket.getId());
 
-      scheduleTask(slot, new DatabaseAsyncUpdateRecord(record, updateRecordCallback), true, backPressurePercentage);
+      scheduleTask(slot, new DatabaseAsyncUpdateRecord(record, updateRecordCallback, errorCallback), true, backPressurePercentage);
 
     } else
       throw new IllegalArgumentException("Cannot updated a not persistent record");
