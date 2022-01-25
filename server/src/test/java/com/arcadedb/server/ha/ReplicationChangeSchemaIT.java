@@ -35,7 +35,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 public class ReplicationChangeSchemaIT extends ReplicationServerIT {
-  private final Database            databases[] = new Database[getServerCount()];
+  private final Database[]            databases = new Database[getServerCount()];
   private final Map<String, String> schemaFiles = new LinkedHashMap<>(getServerCount());
 
   @Test
