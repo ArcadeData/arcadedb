@@ -36,7 +36,7 @@ class MultiValueTest {
         assertThat(MultiValue.isMultiValue(List.class)).isTrue();
         assertThat(MultiValue.isMultiValue(Set.class)).isTrue();
         assertThat(MultiValue.isMultiValue(Collection.class)).isTrue();
-        assertThat(MultiValue.isMultiValue(new Object[]{}.getClass())).isTrue();
+        assertThat(MultiValue.isMultiValue(Object[].class)).isTrue();
         assertThat(MultiValue.isMultiValue(Iterable.class)).isTrue();
         assertThat(MultiValue.isMultiValue(MultiIterator.class)).isTrue();
         assertThat(MultiValue.isMultiValue(ResultSet.class)).isTrue();

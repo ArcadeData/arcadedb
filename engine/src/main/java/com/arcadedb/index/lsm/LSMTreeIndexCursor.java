@@ -326,8 +326,8 @@ public class LSMTreeIndexCursor implements IndexCursor {
           // MERGE VALUES
           final RID[] newArray = Arrays.copyOf(currentValues, currentValues.length + tempCurrentValues.length);
 
-          for (int k = currentValues.length; k < newArray.length; ++k)
-            newArray[k] = tempCurrentValues[k - currentValues.length];
+            if (newArray.length - currentValues.length >= 0)
+                System.arraycopy(tempCurrentValues, currentValues.length - currentValues.length, newArray, currentValues.length, newArray.length - currentValues.length);
           currentValues = newArray;
         }
 
