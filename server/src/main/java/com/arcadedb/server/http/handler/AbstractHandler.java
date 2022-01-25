@@ -55,9 +55,7 @@ public abstract class AbstractHandler implements HttpHandler {
     //e.startBlocking();
     e.getRequestReceiver().receiveFullBytes(
         // OK
-        (exchange, data) -> {
-          result.append(new String(data, DatabaseFactory.getDefaultCharset()));
-        },
+        (exchange, data) -> result.append(new String(data, DatabaseFactory.getDefaultCharset())),
         // ERROR
         (exchange, err) -> {
           LogManager.instance().log(this, Level.SEVERE, "getFullBytes completed with an error: %s", err, err.getMessage());

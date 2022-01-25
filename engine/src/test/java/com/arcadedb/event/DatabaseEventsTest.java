@@ -71,9 +71,7 @@ public class DatabaseEventsTest extends TestHelper {
   @Test
   public void testAfterCreate() {
     final AtomicInteger counter = new AtomicInteger();
-    final AfterRecordCreateListener listener = record -> {
-      counter.incrementAndGet();
-    };
+    final AfterRecordCreateListener listener = record -> counter.incrementAndGet();
 
     database.getEvents().registerListener(listener);
     try {
@@ -141,9 +139,7 @@ public class DatabaseEventsTest extends TestHelper {
   @Test
   public void testAfterUpdate() {
     final AtomicInteger counter = new AtomicInteger();
-    final AfterRecordUpdateListener listener = record -> {
-      counter.incrementAndGet();
-    };
+    final AfterRecordUpdateListener listener = record -> counter.incrementAndGet();
 
     database.getEvents().registerListener(listener);
     try {
@@ -212,9 +208,7 @@ public class DatabaseEventsTest extends TestHelper {
   @Test
   public void testAfterDelete() {
     final AtomicInteger counter = new AtomicInteger();
-    final AfterRecordDeleteListener listener = record -> {
-      counter.incrementAndGet();
-    };
+    final AfterRecordDeleteListener listener = record -> counter.incrementAndGet();
 
     database.getEvents().registerListener(listener);
     try {

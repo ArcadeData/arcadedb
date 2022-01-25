@@ -99,9 +99,7 @@ public class NullValuesIndexTest extends TestHelper {
       database.begin();
     });
 
-    database.transaction(() -> {
-      Assertions.assertEquals(database.countType(TYPE_NAME, true), TOT + 1);
-    });
+    database.transaction(() -> Assertions.assertEquals(database.countType(TYPE_NAME, true), TOT + 1));
 
     database.close();
     database = factory.open();
@@ -126,9 +124,7 @@ public class NullValuesIndexTest extends TestHelper {
       database.begin();
     });
 
-    database.transaction(() -> {
-      Assertions.assertEquals(database.countType(TYPE_NAME, true), TOT + TOT);
-    });
+    database.transaction(() -> Assertions.assertEquals(database.countType(TYPE_NAME, true), TOT + TOT));
   }
 
 }

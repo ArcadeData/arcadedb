@@ -108,9 +108,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
       LogManager.instance().log(this, Level.INFO, "Importing the following document properties: %s", null, properties);
 
-      database.async().onError(exception -> {
-        LogManager.instance().log(this, Level.SEVERE, "Error on inserting documents", exception);
-      });
+      database.async().onError(exception -> LogManager.instance().log(this, Level.SEVERE, "Error on inserting documents", exception));
 
       String[] row;
       for (long line = 0; (row = csvParser.parseNext()) != null; ++line) {
@@ -193,9 +191,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
     final long beginTime = System.currentTimeMillis();
 
-    database.async().onError(exception -> {
-      LogManager.instance().log(this, Level.SEVERE, "Error on inserting vertices", exception);
-    });
+    database.async().onError(exception -> LogManager.instance().log(this, Level.SEVERE, "Error on inserting vertices", exception));
 
     long skipEntries = settings.verticesSkipEntries != null ? settings.verticesSkipEntries.longValue() : 0;
     if (settings.verticesSkipEntries == null)
@@ -317,9 +313,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     context.graphImporter = new GraphImporter(database, (int) expectedVertices, (int) expectedEdges, Type.valueOf(settings.typeIdType.toUpperCase()));
     context.graphImporter.startImportingEdges();
 
-    database.async().onError(exception -> {
-      LogManager.instance().log(this, Level.SEVERE, "Error on inserting edges", exception);
-    });
+    database.async().onError(exception -> LogManager.instance().log(this, Level.SEVERE, "Error on inserting edges", exception));
 
     long skipEntries = settings.edgesSkipEntries != null ? settings.edgesSkipEntries.longValue() : 0;
     if (settings.edgesSkipEntries == null)

@@ -90,9 +90,7 @@ public class WebSocketClientHelper implements AutoCloseable {
   @Override
   public void close() throws IOException {
     LogManager.instance().log(this, Level.FINE, "WS client send close");
-    CodeUtils.executeIgnoringExceptions(() -> {
-      WebSockets.sendCloseBlocking(CloseMessage.NORMAL_CLOSURE, null, this.channel);
-    });
+    CodeUtils.executeIgnoringExceptions(() -> WebSockets.sendCloseBlocking(CloseMessage.NORMAL_CLOSURE, null, this.channel));
     CodeUtils.executeIgnoringExceptions(this.channel::flush);
     CodeUtils.executeIgnoringExceptions(this.channel::close);
     CodeUtils.executeIgnoringExceptions(pool::close);

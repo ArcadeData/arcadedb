@@ -310,9 +310,7 @@ public class ServerProfilingIT {
       expectedSecurityException(() -> database.iterateType("Document1", true));
       expectedSecurityException(() -> database.lookupByRID(doc.getIdentity(), true));
 
-      database.transaction(() -> {
-        database.deleteRecord(doc);
-      });
+      database.transaction(() -> database.deleteRecord(doc));
 
       // SWITCH TO ROOT TO DROP THE SCHEMA
       setCurrentUser("root", database);

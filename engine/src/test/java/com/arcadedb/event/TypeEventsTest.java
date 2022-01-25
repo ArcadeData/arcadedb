@@ -69,9 +69,7 @@ public class TypeEventsTest extends TestHelper {
   @Test
   public void testAfterCreate() {
     final AtomicInteger counter = new AtomicInteger();
-    final AfterRecordCreateListener listener = record -> {
-      counter.incrementAndGet();
-    };
+    final AfterRecordCreateListener listener = record -> counter.incrementAndGet();
 
     database.getSchema().getType("Vertex").getEvents().registerListener(listener);
     try {
@@ -210,9 +208,7 @@ public class TypeEventsTest extends TestHelper {
   @Test
   public void testAfterDelete() {
     final AtomicInteger counter = new AtomicInteger();
-    final AfterRecordDeleteListener listener = record -> {
-      counter.incrementAndGet();
-    };
+    final AfterRecordDeleteListener listener = record -> counter.incrementAndGet();
 
     database.getSchema().getType("Vertex").getEvents().registerListener(listener);
     try {

@@ -46,9 +46,7 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
     Thread.sleep(300);
 
     // CHECK THE SCHEMA HAS BEEN PROPAGATED
-    testEachServer((serverIndex) -> {
-      command(serverIndex, "select from VertexType" + serverIndex);
-    });
+    testEachServer((serverIndex) -> command(serverIndex, "select from VertexType" + serverIndex));
   }
 
   @Test
@@ -101,9 +99,7 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
 
   @Test
   public void checkRecordCreate() throws Exception {
-    testEachServer((serverIndex) -> {
-      createRecord(serverIndex, "{\"@type\":\"Person\",\"name\":\"Jay\",\"surname\":\"Miner\",\"age\":69}");
-    });
+    testEachServer((serverIndex) -> createRecord(serverIndex, "{\"@type\":\"Person\",\"name\":\"Jay\",\"surname\":\"Miner\",\"age\":69}"));
   }
 
   @Test

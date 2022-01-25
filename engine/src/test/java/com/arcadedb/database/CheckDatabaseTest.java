@@ -84,9 +84,7 @@ public class CheckDatabaseTest extends TestHelper {
 
   @Test
   public void checkRegularDeleteEdges() {
-    database.transaction(() -> {
-      database.command("sql", "delete from Knows");
-    });
+    database.transaction(() -> database.command("sql", "delete from Knows"));
 
     ResultSet result = database.command("sql", "check database");
     Assertions.assertTrue(result.hasNext());
