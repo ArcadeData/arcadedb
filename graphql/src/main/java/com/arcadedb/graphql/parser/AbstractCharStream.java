@@ -28,7 +28,7 @@ public abstract class AbstractCharStream implements CharStream {
    */
   public static final int DEFAULT_BUF_SIZE = 4096;
 
-  static final int hexval(final char c) throws java.io.IOException {
+  static  int hexval(final char c) throws java.io.IOException {
     switch (c) {
     case '0':
       return 0;

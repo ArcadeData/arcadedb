@@ -224,7 +224,7 @@ public class FileUtils {
   }
 
   @SuppressWarnings("resource")
-  public static final void copyFile(final File source, final File destination) throws IOException {
+  public static void copyFile(final File source, final File destination) throws IOException {
     try (FileInputStream fis = new FileInputStream(source); FileOutputStream fos = new FileOutputStream(destination)) {
       final FileChannel sourceChannel = fis.getChannel();
       final FileChannel targetChannel = fos.getChannel();
@@ -232,7 +232,7 @@ public class FileUtils {
     }
   }
 
-  public static final void copyDirectory(final File source, final File destination) throws IOException {
+  public static void copyDirectory(final File source, final File destination) throws IOException {
     if (!destination.exists())
       destination.mkdirs();
 

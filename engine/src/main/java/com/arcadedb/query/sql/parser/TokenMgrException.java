@@ -63,7 +63,7 @@ public class TokenMgrException extends RuntimeException {
    * Replaces unprintable characters by their escaped (or unicode escaped)
    * equivalents in the given string
    */
-  protected static final String addEscapes(String str) {
+  protected static String addEscapes(String str) {
     StringBuilder retval = new StringBuilder();
     for (int i = 0; i < str.length(); i++) {
       final char ch = str.charAt(i);
