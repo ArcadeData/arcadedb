@@ -103,90 +103,88 @@ public class FullBackupIT {
 
     final Thread[] threads = new Thread[CONCURRENT_THREADS];
 
-    final Database importedDatabase = importDatabase();
-    try {
+      try (Database importedDatabase = importDatabase()) {
 
-      final VertexType type = importedDatabase.getSchema().createVertexType("BackupTest", CONCURRENT_THREADS);
+          final VertexType type = importedDatabase.getSchema().createVertexType("BackupTest", CONCURRENT_THREADS);
 
-      importedDatabase.transaction(() -> {
-        type.createProperty("thread", Type.INTEGER);
-        type.createProperty("id", Type.INTEGER);
-        type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, new String[] { "thread", "id" });
-        type.setBucketSelectionStrategy(new ThreadBucketSelectionStrategy() {
-          @Override
-          public int getBucketIdByRecord(Document record, boolean async) {
-            return record.getInteger("thread");
+          importedDatabase.transaction(() -> {
+              type.createProperty("thread", Type.INTEGER);
+              type.createProperty("id", Type.INTEGER);
+              type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, new String[]{"thread", "id"});
+              type.setBucketSelectionStrategy(new ThreadBucketSelectionStrategy() {
+                  @Override
+                  public int getBucketIdByRecord(Document record, boolean async) {
+                      return record.getInteger("thread");
+                  }
+              });
+          });
+
+          for (int i = 0; i < CONCURRENT_THREADS; i++) {
+              final int threadId = i;
+              final Bucket threadBucket = type.getBuckets(false).get(i);
+
+              threads[i] = new Thread("Inserter-" + i) {
+                  public void run() {
+                      final AtomicInteger totalPerThread = new AtomicInteger();
+                      for (int j = 0; j < 500; j++) {
+                          importedDatabase.begin();
+                          for (int k = 0; k < 500; k++) {
+                              MutableVertex v = importedDatabase.newVertex("BackupTest").set("thread", threadId).set("id", totalPerThread.getAndIncrement()).save();
+                              Assertions.assertEquals(threadBucket.getId(), v.getIdentity().getBucketId());
+
+                              if (k + 1 % 100 == 0) {
+                                  importedDatabase.commit();
+                                  importedDatabase.begin();
+                              }
+                          }
+                          importedDatabase.commit();
+                      }
+
+                  }
+              };
           }
-        });
-      });
 
-      for (int i = 0; i < CONCURRENT_THREADS; i++) {
-        final int threadId = i;
-        final Bucket threadBucket = type.getBuckets(false).get(i);
+          // START THREADS 300MS DISTANCE FROM EACH OTHER
+          for (int i = 0; i < CONCURRENT_THREADS; i++) {
+              threads[i].start();
+              Thread.sleep(300);
+          }
 
-        threads[i] = new Thread("Inserter-" + i) {
-          public void run() {
-            final AtomicInteger totalPerThread = new AtomicInteger();
-            for (int j = 0; j < 500; j++) {
-              importedDatabase.begin();
-              for (int k = 0; k < 500; k++) {
-                MutableVertex v = importedDatabase.newVertex("BackupTest").set("thread", threadId).set("id", totalPerThread.getAndIncrement()).save();
-                Assertions.assertEquals(threadBucket.getId(), v.getIdentity().getBucketId());
+          // EXECUTE 10 BACKUPS EVERY SECOND
+          for (int i = 0; i < CONCURRENT_THREADS; i++) {
+              Assertions.assertFalse(importedDatabase.isTransactionActive());
+              final long totalVertices = importedDatabase.countType("BackupTest", true);
+              new Backup(importedDatabase, FILE + "_" + i).setVerboseLevel(1).backupDatabase();
+              Thread.sleep(1000);
+          }
 
-                if (k + 1 % 100 == 0) {
-                  importedDatabase.commit();
-                  importedDatabase.begin();
-                }
+          for (int i = 0; i < CONCURRENT_THREADS; i++)
+              threads[i].join();
+
+          for (int i = 0; i < CONCURRENT_THREADS; i++) {
+              final File file = new File(FILE + "_" + i);
+              Assertions.assertTrue(file.exists());
+              Assertions.assertTrue(file.length() > 0);
+
+              final String databasePath = DATABASE_PATH + "_restored_" + i;
+
+              new Restore(FILE + "_" + i, databasePath).setVerboseLevel(1).restoreDatabase();
+
+              try (Database restoredDatabase = new DatabaseFactory(databasePath).open(PaginatedFile.MODE.READ_ONLY)) {
+                  // VERIFY ONLY WHOLE TRANSACTION ARE WRITTEN
+                  Assertions.assertTrue(restoredDatabase.countType("BackupTest", true) % 500 == 0);
               }
-              importedDatabase.commit();
-            }
-
           }
-        };
+
+      } finally {
+
+          Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
+
+          for (int i = 0; i < CONCURRENT_THREADS; i++) {
+              new File(FILE + "_" + i).delete();
+              FileUtils.deleteRecursively(new File(DATABASE_PATH + "_restored_" + i));
+          }
       }
-
-      // START THREADS 300MS DISTANCE FROM EACH OTHER
-      for (int i = 0; i < CONCURRENT_THREADS; i++) {
-        threads[i].start();
-        Thread.sleep(300);
-      }
-
-      // EXECUTE 10 BACKUPS EVERY SECOND
-      for (int i = 0; i < CONCURRENT_THREADS; i++) {
-        Assertions.assertFalse(importedDatabase.isTransactionActive());
-        final long totalVertices = importedDatabase.countType("BackupTest", true);
-        new Backup(importedDatabase, FILE + "_" + i).setVerboseLevel(1).backupDatabase();
-        Thread.sleep(1000);
-      }
-
-      for (int i = 0; i < CONCURRENT_THREADS; i++)
-        threads[i].join();
-
-      for (int i = 0; i < CONCURRENT_THREADS; i++) {
-        final File file = new File(FILE + "_" + i);
-        Assertions.assertTrue(file.exists());
-        Assertions.assertTrue(file.length() > 0);
-
-        final String databasePath = DATABASE_PATH + "_restored_" + i;
-
-        new Restore(FILE + "_" + i, databasePath).setVerboseLevel(1).restoreDatabase();
-
-        try (Database restoredDatabase = new DatabaseFactory(databasePath).open(PaginatedFile.MODE.READ_ONLY)) {
-          // VERIFY ONLY WHOLE TRANSACTION ARE WRITTEN
-          Assertions.assertTrue(restoredDatabase.countType("BackupTest", true) % 500 == 0);
-        }
-      }
-
-    } finally {
-      importedDatabase.close();
-
-      Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
-
-      for (int i = 0; i < CONCURRENT_THREADS; i++) {
-        new File(FILE + "_" + i).delete();
-        FileUtils.deleteRecursively(new File(DATABASE_PATH + "_restored_" + i));
-      }
-    }
   }
 
   @Test

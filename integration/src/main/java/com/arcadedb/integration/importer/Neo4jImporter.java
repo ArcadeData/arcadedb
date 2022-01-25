@@ -445,36 +445,33 @@ public class Neo4jImporter {
   private void readFile(Callable<Void, JSONObject> callback) throws IOException {
     inputStream = file.getName().endsWith("gz") ? new GZIPInputStream(new FileInputStream(file)) : new FileInputStream(file);
     try {
-      final BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, DatabaseFactory.getDefaultCharset()));
-      try {
-        for (long lineNumber = 0; reader.ready(); ++lineNumber) {
-          final String line = reader.readLine();
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, DatabaseFactory.getDefaultCharset()))) {
+            for (long lineNumber = 0; reader.ready(); ++lineNumber) {
+                final String line = reader.readLine();
 
-          try {
-            final JSONObject json = new JSONObject(line);
+                try {
+                    final JSONObject json = new JSONObject(line);
 
-            switch (json.getString("type")) {
-            case "node":
-              callback.call(json);
-              break;
+                    switch (json.getString("type")) {
+                        case "node":
+                            callback.call(json);
+                            break;
 
-            case "relationship":
-              callback.call(json);
-              break;
+                        case "relationship":
+                            callback.call(json);
+                            break;
 
-            default:
-              log("Invalid 'type' content on line %d of the input JSONL file. The line will be ignored. JSON: %s", lineNumber, line);
-              ++errors;
+                        default:
+                            log("Invalid 'type' content on line %d of the input JSONL file. The line will be ignored. JSON: %s", lineNumber, line);
+                            ++errors;
+                    }
+
+                } catch (JSONException e) {
+                    log("Error on parsing json on line %d of the input JSONL file. The line will be ignored. JSON: %s", lineNumber, line);
+                    ++errors;
+                }
             }
-
-          } catch (JSONException e) {
-            log("Error on parsing json on line %d of the input JSONL file. The line will be ignored. JSON: %s", lineNumber, line);
-            ++errors;
-          }
         }
-      } finally {
-        reader.close();
-      }
     } finally {
       inputStream.close();
       inputStream = null;
