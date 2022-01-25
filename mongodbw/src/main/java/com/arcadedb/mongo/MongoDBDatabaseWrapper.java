@@ -119,8 +119,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         final Document doc = super.next().getProperty("value");
 
         final Map<String, Object> values = new HashMap<>(doc.size());
-        for (Map.Entry<String, Object> entry : doc.entrySet())
-          values.put(entry.getKey(), entry.getValue());
+          values.putAll(doc);
 
         return new ResultInternal(values);
       }
