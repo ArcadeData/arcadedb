@@ -65,35 +65,32 @@ public class ReplicationSpeedQuorumMajorityIT extends BasePerformanceTest {
     }
 
     final Database database = getDatabase(0);
-    database.transaction(new Database.TransactionScope() {
-      @Override
-      public void execute() {
-        if (isPopulateDatabase()) {
-          Assertions.assertFalse(database.getSchema().existsType("Device"));
+    database.transaction(() -> {
+      if (isPopulateDatabase()) {
+        Assertions.assertFalse(database.getSchema().existsType("Device"));
 
-          VertexType v = database.getSchema().createVertexType("Device", parallel);
+        VertexType v = database.getSchema().createVertexType("Device", parallel);
 
-          v.createProperty("id", String.class);
-          v.createProperty("lastModifiedUserId", String.class);
-          v.createProperty("createdDate", String.class);
-          v.createProperty("assocJointClosureId", String.class);
-          v.createProperty("HolderSpec_Name", String.class);
-          v.createProperty("number", String.class);
-          v.createProperty("relativeName", String.class);
-          v.createProperty("Name", String.class);
-          v.createProperty("holderGroupName", String.class);
-          v.createProperty("slot2slottype", String.class);
-          v.createProperty("inventoryStatus", String.class);
-          v.createProperty("lastModifiedDate", String.class);
-          v.createProperty("createdUserId", String.class);
-          v.createProperty("orientation", String.class);
-          v.createProperty("operationalStatus", String.class);
-          v.createProperty("supplierName", String.class);
+        v.createProperty("id", String.class);
+        v.createProperty("lastModifiedUserId", String.class);
+        v.createProperty("createdDate", String.class);
+        v.createProperty("assocJointClosureId", String.class);
+        v.createProperty("HolderSpec_Name", String.class);
+        v.createProperty("number", String.class);
+        v.createProperty("relativeName", String.class);
+        v.createProperty("Name", String.class);
+        v.createProperty("holderGroupName", String.class);
+        v.createProperty("slot2slottype", String.class);
+        v.createProperty("inventoryStatus", String.class);
+        v.createProperty("lastModifiedDate", String.class);
+        v.createProperty("createdUserId", String.class);
+        v.createProperty("orientation", String.class);
+        v.createProperty("operationalStatus", String.class);
+        v.createProperty("supplierName", String.class);
 
-          database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "id" }, 2 * 1024 * 1024);
-          database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "number" }, 2 * 1024 * 1024);
-          database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "relativeName" }, 2 * 1024 * 1024);
-        }
+        database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "id" }, 2 * 1024 * 1024);
+        database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "number" }, 2 * 1024 * 1024);
+        database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "relativeName" }, 2 * 1024 * 1024);
       }
     });
 

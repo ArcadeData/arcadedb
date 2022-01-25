@@ -30,49 +30,46 @@ public class PolymorphicTest extends TestHelper {
 
   @Override
   protected void beginTest() {
-    database.transaction(new Database.TransactionScope() {
-      @Override
-      public void execute() {
-        //------------
-        // VEHICLES VERTICES
-        //------------
-        VertexType vehicle = database.getSchema().createVertexType("Vehicle", 3);
-        vehicle.createProperty("brand", String.class);
+    database.transaction(() -> {
+      //------------
+      // VEHICLES VERTICES
+      //------------
+      VertexType vehicle = database.getSchema().createVertexType("Vehicle", 3);
+      vehicle.createProperty("brand", String.class);
 
-        VertexType motorcycle = database.getSchema().createVertexType("Motorcycle", 3);
-        motorcycle.addSuperType("Vehicle");
+      VertexType motorcycle = database.getSchema().createVertexType("Motorcycle", 3);
+      motorcycle.addSuperType("Vehicle");
 
-        try {
-          motorcycle.createProperty("brand", String.class);
-          Assertions.fail("Expected to fail by creating the same property name as the parent type");
-        } catch (SchemaException e) {
-        }
-
-        Assertions.assertTrue(database.getSchema().getType("Motorcycle").instanceOf("Vehicle"));
-        database.getSchema().createVertexType("Car", 3).addSuperType("Vehicle");
-        Assertions.assertTrue(database.getSchema().getType("Car").instanceOf("Vehicle"));
-
-        database.getSchema().createVertexType("Supercar", 3).addSuperType("Car");
-        Assertions.assertTrue(database.getSchema().getType("Supercar").instanceOf("Car"));
-        Assertions.assertTrue(database.getSchema().getType("Supercar").instanceOf("Vehicle"));
-
-        //------------
-        // PEOPLE VERTICES
-        //------------
-        VertexType person = database.getSchema().createVertexType("Person");
-        database.getSchema().createVertexType("Client").addSuperType(person);
-        Assertions.assertTrue(database.getSchema().getType("Client").instanceOf("Person"));
-        Assertions.assertFalse(database.getSchema().getType("Client").instanceOf("Vehicle"));
-
-        //------------
-        // EDGES
-        //------------
-        database.getSchema().createEdgeType("Drives");
-        database.getSchema().createEdgeType("Owns").addSuperType("Drives");
-
-        Assertions.assertTrue(database.getSchema().getType("Owns").instanceOf("Drives"));
-        Assertions.assertFalse(database.getSchema().getType("Owns").instanceOf("Vehicle"));
+      try {
+        motorcycle.createProperty("brand", String.class);
+        Assertions.fail("Expected to fail by creating the same property name as the parent type");
+      } catch (SchemaException e) {
       }
+
+      Assertions.assertTrue(database.getSchema().getType("Motorcycle").instanceOf("Vehicle"));
+      database.getSchema().createVertexType("Car", 3).addSuperType("Vehicle");
+      Assertions.assertTrue(database.getSchema().getType("Car").instanceOf("Vehicle"));
+
+      database.getSchema().createVertexType("Supercar", 3).addSuperType("Car");
+      Assertions.assertTrue(database.getSchema().getType("Supercar").instanceOf("Car"));
+      Assertions.assertTrue(database.getSchema().getType("Supercar").instanceOf("Vehicle"));
+
+      //------------
+      // PEOPLE VERTICES
+      //------------
+      VertexType person = database.getSchema().createVertexType("Person");
+      database.getSchema().createVertexType("Client").addSuperType(person);
+      Assertions.assertTrue(database.getSchema().getType("Client").instanceOf("Person"));
+      Assertions.assertFalse(database.getSchema().getType("Client").instanceOf("Vehicle"));
+
+      //------------
+      // EDGES
+      //------------
+      database.getSchema().createEdgeType("Drives");
+      database.getSchema().createEdgeType("Owns").addSuperType("Drives");
+
+      Assertions.assertTrue(database.getSchema().getType("Owns").instanceOf("Drives"));
+      Assertions.assertFalse(database.getSchema().getType("Owns").instanceOf("Vehicle"));
     });
 
     final Database db = database;
@@ -176,13 +173,10 @@ public class PolymorphicTest extends TestHelper {
   private int scanAndCountType(final Database db, final String type, final boolean polymorphic) {
     // NON POLYMORPHIC COUNTING
     final AtomicInteger counter = new AtomicInteger();
-    db.scanType(type, polymorphic, new DocumentCallback() {
-      @Override
-      public boolean onRecord(Document record) {
-        Assertions.assertTrue(db.getSchema().getType(record.getTypeName()).instanceOf(type));
-        counter.incrementAndGet();
-        return true;
-      }
+    db.scanType(type, polymorphic, record -> {
+      Assertions.assertTrue(db.getSchema().getType(record.getTypeName()).instanceOf(type));
+      counter.incrementAndGet();
+      return true;
     });
     return counter.get();
   }

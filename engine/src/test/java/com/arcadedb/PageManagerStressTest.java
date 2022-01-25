@@ -74,12 +74,9 @@ public class PageManagerStressTest {
       database.async().setTransactionUseWAL(true);
       database.async().setTransactionSync(WALFile.FLUSH_TYPE.NO);
 
-      database.async().onError(new ErrorCallback() {
-        @Override
-        public void call(Throwable exception) {
-          System.out.println("ERROR: " + exception);
-          exception.printStackTrace();
-        }
+      database.async().onError(exception -> {
+        System.out.println("ERROR: " + exception);
+        exception.printStackTrace();
       });
 
       long row = 0;

@@ -112,16 +112,13 @@ public class GraphImporter {
       sourceVertex = database.newVertex(vertexTypeName);
       sourceVertex.set(vertexProperties);
 
-      database.async().createRecord(sourceVertex, new NewRecordCallback() {
-        @Override
-        public void call(final Record newDocument) {
-          // PRE-CREATE OUT/IN CHUNKS TO SPEEDUP EDGE CREATION
-          final DatabaseInternal db = database;
-          db.getGraphEngine().createOutEdgeChunk(sourceVertex);
-          db.getGraphEngine().createInEdgeChunk(sourceVertex);
+      database.async().createRecord(sourceVertex, newDocument -> {
+        // PRE-CREATE OUT/IN CHUNKS TO SPEEDUP EDGE CREATION
+        final DatabaseInternal db = database;
+        db.getGraphEngine().createOutEdgeChunk(sourceVertex);
+        db.getGraphEngine().createInEdgeChunk(sourceVertex);
 
-          verticesIndex.put(transformedVertexId, newDocument.getIdentity());
-        }
+        verticesIndex.put(transformedVertexId, newDocument.getIdentity());
       });
     }
   }

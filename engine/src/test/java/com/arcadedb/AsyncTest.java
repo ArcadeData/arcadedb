@@ -40,12 +40,9 @@ public class AsyncTest extends TestHelper {
     try {
       final AtomicLong callbackInvoked = new AtomicLong();
 
-      database.async().scanType(TYPE_NAME, true, new DocumentCallback() {
-        @Override
-        public boolean onRecord(Document record) {
-          callbackInvoked.incrementAndGet();
-          return true;
-        }
+      database.async().scanType(TYPE_NAME, true, record -> {
+        callbackInvoked.incrementAndGet();
+        return true;
       });
 
       Assertions.assertEquals(TOT, callbackInvoked.get());
@@ -65,14 +62,11 @@ public class AsyncTest extends TestHelper {
     try {
       final AtomicLong callbackInvoked = new AtomicLong();
 
-      database.async().scanType(TYPE_NAME, true, new DocumentCallback() {
-        @Override
-        public boolean onRecord(Document record) {
-          if (callbackInvoked.get() > 9)
-            return false;
+      database.async().scanType(TYPE_NAME, true, record -> {
+        if (callbackInvoked.get() > 9)
+          return false;
 
-          return callbackInvoked.getAndIncrement() < 10;
-        }
+        return callbackInvoked.getAndIncrement() < 10;
       });
 
       Assertions.assertTrue(callbackInvoked.get() < 20);
@@ -222,19 +216,9 @@ public class AsyncTest extends TestHelper {
 
     database.async().setCommitEvery(5000);
     database.async().setParallelLevel(3);
-    database.async().onOk(new OkCallback() {
-      @Override
-      public void call() {
-        okCallbackInvoked.incrementAndGet();
-      }
-    });
+    database.async().onOk(() -> okCallbackInvoked.incrementAndGet());
 
-    database.async().onError(new ErrorCallback() {
-      @Override
-      public void call(Throwable exception) {
-        Assertions.fail("Error on creating async record", exception);
-      }
-    });
+    database.async().onError(exception -> Assertions.fail("Error on creating async record", exception));
 
     final DocumentType type = database.getSchema().createDocumentType(TYPE_NAME, 3);
     type.createProperty("id", Integer.class);

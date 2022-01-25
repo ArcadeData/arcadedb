@@ -102,12 +102,7 @@ public class XMLImporterFormat implements FormatImporter {
 
             final MutableVertex record = database.newVertex(entityName);
             record.fromMap(object);
-            database.async().createRecord(record, new NewRecordCallback() {
-              @Override
-              public void call(final Record newDocument) {
-                context.createdVertices.incrementAndGet();
-              }
-            });
+            database.async().createRecord(record, newDocument -> context.createdVertices.incrementAndGet());
           }
           break;
 

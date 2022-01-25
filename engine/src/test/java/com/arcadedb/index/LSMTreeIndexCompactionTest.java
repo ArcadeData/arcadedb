@@ -202,12 +202,7 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
   }
 
   private void checkLookups(final int step, final int expectedItems) {
-    database.transaction(new Database.TransactionScope() {
-      @Override
-      public void execute() {
-        Assertions.assertEquals(TOT * expectedItems, database.countType(TYPE_NAME, false));
-      }
-    });
+    database.transaction(() -> Assertions.assertEquals(TOT * expectedItems, database.countType(TYPE_NAME, false)));
 
     LogManager.instance().log(this, Level.FINE, "TEST: Lookup all the keys...");
 

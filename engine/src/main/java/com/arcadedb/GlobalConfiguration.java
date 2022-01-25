@@ -118,12 +118,7 @@ public enum GlobalConfiguration {
       }
       return value;
     }
-  }, new Callable<>() {
-    @Override
-    public Object call(final Object value) {
-      return Runtime.getRuntime().maxMemory() / 4 / 1024 / 1024;
-    }
-  }),
+  }, value -> Runtime.getRuntime().maxMemory() / 4 / 1024 / 1024),
 
   INITIAL_PAGE_CACHE_SIZE("arcadedb.initialPageCacheSize", "Initial number of entries for page cache", Integer.class, 65535),
 
