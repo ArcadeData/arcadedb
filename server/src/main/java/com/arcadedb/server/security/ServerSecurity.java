@@ -113,7 +113,7 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
         }
       } catch (JSONException e) {
         groupRepository.saveInError(e);
-        for (JSONObject userJson : usersRepository.createDefault()) {
+        for (JSONObject userJson : SecurityUserFileRepository.createDefault()) {
           final ServerSecurityUser user = new ServerSecurityUser(server, userJson);
           users.put(user.getName(), user);
         }
