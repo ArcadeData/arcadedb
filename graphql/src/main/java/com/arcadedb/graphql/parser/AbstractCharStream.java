@@ -188,14 +188,14 @@ public abstract class AbstractCharStream implements CharStream {
     // Number of chars to be preserved
     final int nPreservedChars = bufsize - tokenBegin;
 
-    if (bWrapAround) {
+      System.arraycopy(buffer, tokenBegin, newbuffer, 0, nPreservedChars);
+      if (bWrapAround) {
       // Move from offset "tokenBegin" to offset 0
       // arraycopy(src, srcPos, dest, destPos, length)
 
       // copy the "tail end" to the "start" (index 0) of the new buffer array
-      System.arraycopy(buffer, tokenBegin, newbuffer, 0, nPreservedChars);
 
-      // copy the remaining "wrap around" content of the buffer from the start of the original buffer (starting at srcPos index 0)
+          // copy the remaining "wrap around" content of the buffer from the start of the original buffer (starting at srcPos index 0)
       System.arraycopy(buffer, 0, newbuffer, nPreservedChars, bufpos);
 
       // swap the new buffer in place of the old buffer
@@ -210,12 +210,10 @@ public abstract class AbstractCharStream implements CharStream {
       m_aBufColumn = newbufcolumn;
 
       bufpos += nPreservedChars;
-      maxNextCharInd = bufpos;
-    } else {
+      } else {
       // Move from offset "tokenBegin" to offset 0
 
-      System.arraycopy(buffer, tokenBegin, newbuffer, 0, nPreservedChars);
-      buffer = newbuffer;
+          buffer = newbuffer;
 
       System.arraycopy(m_aBufLine, tokenBegin, newbufline, 0, nPreservedChars);
       m_aBufLine = newbufline;
@@ -224,10 +222,10 @@ public abstract class AbstractCharStream implements CharStream {
       m_aBufColumn = newbufcolumn;
 
       bufpos -= tokenBegin;
+      }
       maxNextCharInd = bufpos;
-    }
 
-    // Increase buffer size
+      // Increase buffer size
     bufsize = nNewBufSize;
     available = nNewBufSize;
     tokenBegin = 0;
