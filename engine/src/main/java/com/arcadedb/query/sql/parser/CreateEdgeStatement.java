@@ -135,7 +135,7 @@ public class CreateEdgeStatement extends Statement {
       return false;
     if (rightExpression != null ? !rightExpression.equals(that.rightExpression) : that.rightExpression != null)
       return false;
-    if (ifNotExists = !that.ifNotExists)
+    if (ifNotExists != that.ifNotExists)
       return false;
     if (body != null ? !body.equals(that.body) : that.body != null)
       return false;
