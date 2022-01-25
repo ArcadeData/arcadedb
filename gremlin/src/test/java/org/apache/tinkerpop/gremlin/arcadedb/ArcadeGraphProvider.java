@@ -64,18 +64,18 @@ public class ArcadeGraphProvider extends AbstractGraphProvider {
     IGNORED_TESTS.put(IoGraphTest.class, Arrays.asList("shouldReadWriteClassicToFileWithHelpers[graphml]", "shouldReadWriteModernToFileWithHelpers[graphml]"));
   }
 
-  private static final Set<Class> IMPLEMENTATIONS = new HashSet<Class>() {{
-    add(ArcadeEdge.class);
-    add(ArcadeElement.class);
-    add(ArcadeGraph.class);
-    add(ArcadeGraphFeatures.class);
-    add(ArcadeGraphTransaction.class);
-    add(ArcadeGremlin.class);
-    add(ArcadeProperty.class);
-    add(ArcadeVariableFeatures.class);
-    add(ArcadeVertex.class);
-    add(ArcadeVertexProperty.class);
-    add(RID.class);
+  private static final Set<Class> IMPLEMENTATIONS = new HashSet<>() {{
+      add(ArcadeEdge.class);
+      add(ArcadeElement.class);
+      add(ArcadeGraph.class);
+      add(ArcadeGraphFeatures.class);
+      add(ArcadeGraphTransaction.class);
+      add(ArcadeGremlin.class);
+      add(ArcadeProperty.class);
+      add(ArcadeVariableFeatures.class);
+      add(ArcadeVertex.class);
+      add(ArcadeVertexProperty.class);
+      add(RID.class);
   }};
 
   @Override
