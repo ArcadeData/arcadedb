@@ -39,17 +39,17 @@ public class MathExpressionTest {
 
       Assertions.assertEquals(op.apply((short) 1, (short) 1).getClass(), Integer.class);
 
-      Assertions.assertEquals(op.apply(1l, 1l).getClass(), Long.class);
+      Assertions.assertEquals(op.apply(1L, 1L).getClass(), Long.class);
       Assertions.assertEquals(op.apply(1f, 1f).getClass(), Float.class);
       Assertions.assertEquals(op.apply(1d, 1d).getClass(), Double.class);
       Assertions.assertEquals(op.apply(BigDecimal.ONE, BigDecimal.ONE).getClass(), BigDecimal.class);
 
-      Assertions.assertEquals(op.apply(1l, 1).getClass(), Long.class);
+      Assertions.assertEquals(op.apply(1L, 1).getClass(), Long.class);
       Assertions.assertEquals(op.apply(1f, 1).getClass(), Float.class);
       Assertions.assertEquals(op.apply(1d, 1).getClass(), Double.class);
       Assertions.assertEquals(op.apply(BigDecimal.ONE, 1).getClass(), BigDecimal.class);
 
-      Assertions.assertEquals(op.apply(1, 1l).getClass(), Long.class);
+      Assertions.assertEquals(op.apply(1, 1L).getClass(), Long.class);
       Assertions.assertEquals(op.apply(1, 1f).getClass(), Float.class);
       Assertions.assertEquals(op.apply(1, 1d).getClass(), Double.class);
       Assertions.assertEquals(op.apply(1, BigDecimal.ONE).getClass(), BigDecimal.class);

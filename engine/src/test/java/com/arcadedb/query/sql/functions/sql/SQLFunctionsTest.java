@@ -74,7 +74,7 @@ public class SQLFunctionsTest {
     for (ResultSet it = result; it.hasNext(); ) {
       Result d = it.next();
       Assertions.assertNotNull(d.getProperty("min"));
-      Assertions.assertEquals(((Number) d.getProperty("min")).longValue(), 0l);
+      Assertions.assertEquals(((Number) d.getProperty("min")).longValue(), 0L);
     }
   }
 

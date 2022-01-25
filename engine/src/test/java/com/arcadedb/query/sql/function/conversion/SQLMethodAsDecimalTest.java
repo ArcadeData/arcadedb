@@ -47,7 +47,7 @@ class SQLMethodAsDecimalTest {
 
     @Test
     void testLongToDecimal() {
-        Object result = method.execute(10l, null, null, 10l, null);
+        Object result = method.execute(10L, null, null, 10L, null);
         assertThat(result).isInstanceOf(BigDecimal.class);
         assertThat(result).isEqualTo(new BigDecimal("10"));
     }

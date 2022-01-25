@@ -41,21 +41,21 @@ class SQLMethodAsLongTest {
     void testStringToLong() {
         Object result = method.execute(null, null, null, "10", null);
         assertThat(result).isInstanceOf(Long.class);
-        assertThat(result).isEqualTo(10l);
+        assertThat(result).isEqualTo(10L);
     }
 
     @Test
     void testLongToLong() {
-        Object result = method.execute(null, null, null, 10l, null);
+        Object result = method.execute(null, null, null, 10L, null);
         assertThat(result).isInstanceOf(Long.class);
-        assertThat(result).isEqualTo(10l);
+        assertThat(result).isEqualTo(10L);
     }
 
     @Test
     void testIntegerToLong() {
         Object result = method.execute(null, null, null, 10, null);
         assertThat(result).isInstanceOf(Long.class);
-        assertThat(result).isEqualTo(10l);
+        assertThat(result).isEqualTo(10L);
     }
 
     @Test

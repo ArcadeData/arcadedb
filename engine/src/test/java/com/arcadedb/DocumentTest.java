@@ -53,7 +53,7 @@ public class DocumentTest extends TestHelper {
 
       doc.set("string", "test");
       doc.set("int", 33);
-      doc.set("long", 33l);
+      doc.set("long", 33L);
       doc.set("float", 33.33f);
       doc.set("double", 33.33d);
       doc.set("decimal", new BigDecimal("33.33"));
@@ -61,7 +61,7 @@ public class DocumentTest extends TestHelper {
       doc.set("datetime", now);
 
       Assertions.assertEquals(33, doc.get("int"));
-      Assertions.assertEquals(33l, doc.get("long"));
+      Assertions.assertEquals(33L, doc.get("long"));
       Assertions.assertEquals(33.33f, doc.get("float"));
       Assertions.assertEquals(33.33d, doc.get("double"));
       Assertions.assertEquals(new BigDecimal("33.33"), doc.get("decimal"));

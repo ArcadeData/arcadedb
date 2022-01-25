@@ -74,7 +74,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     long skipEntries = settings.documentsSkipEntries != null ? settings.documentsSkipEntries.longValue() : 0;
     if (settings.documentsHeader == null && settings.documentsSkipEntries == null)
       // BY DEFAULT SKIP THE FIRST LINE AS HEADER
-      skipEntries = 1l;
+      skipEntries = 1L;
 
     try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream(), DatabaseFactory.getDefaultCharset())) {
       csvParser.beginParsing(inputFileReader);
@@ -192,7 +192,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     long skipEntries = settings.verticesSkipEntries != null ? settings.verticesSkipEntries.longValue() : 0;
     if (settings.verticesSkipEntries == null)
       // BY DEFAULT SKIP THE FIRST LINE AS HEADER
-      skipEntries = 1l;
+      skipEntries = 1L;
 
     try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream(), DatabaseFactory.getDefaultCharset())) {
       csvParser.beginParsing(inputFileReader);
@@ -314,7 +314,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     long skipEntries = settings.edgesSkipEntries != null ? settings.edgesSkipEntries.longValue() : 0;
     if (settings.edgesSkipEntries == null)
       // BY DEFAULT SKIP THE FIRST LINE AS HEADER
-      skipEntries = 1l;
+      skipEntries = 1L;
 
     try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream(), DatabaseFactory.getDefaultCharset())) {
       csvParser.beginParsing(inputFileReader);
@@ -453,7 +453,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       skipEntries = settings.verticesSkipEntries != null ? settings.verticesSkipEntries.longValue() : 0;
       if (settings.verticesSkipEntries == null)
         // BY DEFAULT SKIP THE FIRST LINE AS HEADER
-        skipEntries = 1l;
+        skipEntries = 1L;
       break;
 
     case EDGE:
@@ -461,7 +461,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       skipEntries = settings.edgesSkipEntries != null ? settings.edgesSkipEntries.longValue() : 0;
       if (settings.edgesSkipEntries == null)
         // BY DEFAULT SKIP THE FIRST LINE AS HEADER
-        skipEntries = 1l;
+        skipEntries = 1L;
       break;
 
     case DOCUMENT:
@@ -469,7 +469,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       skipEntries = settings.documentsSkipEntries != null ? settings.documentsSkipEntries.longValue() : 0;
       if (settings.documentsSkipEntries == null)
         // BY DEFAULT SKIP THE FIRST LINE AS HEADER
-        skipEntries = 1l;
+        skipEntries = 1L;
       break;
 
     default:

@@ -311,7 +311,7 @@ public enum Type {
         if (iValue instanceof Long)
           return iValue;
         else if (iValue instanceof String)
-          return ((String) iValue).isEmpty() ? 0l : Long.parseLong((String) iValue);
+          return ((String) iValue).isEmpty() ? 0L : Long.parseLong((String) iValue);
         else if (iValue instanceof Date)
           return ((Date) iValue).getTime();
         else

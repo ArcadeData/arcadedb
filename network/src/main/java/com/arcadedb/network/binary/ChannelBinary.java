@@ -117,12 +117,12 @@ public abstract class ChannelBinary extends Channel implements ChannelDataInput,
 
     if (debug) {
       LogManager.instance().log(this, Level.INFO, "%s - Reading unsigned int (4 bytes)...", null, socket.getRemoteSocketAddress());
-      final long value = in.readInt() & 0xffffffffl;
+      final long value = in.readInt() & 0xffffffffL;
       LogManager.instance().log(this, Level.INFO, "%s - Read unsigned int: %d", null, socket.getRemoteSocketAddress(), value);
       return value;
     }
 
-    return in.readInt() & 0xffffffffl;
+    return in.readInt() & 0xffffffffL;
   }
 
   public long readLong() throws IOException {

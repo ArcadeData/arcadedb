@@ -85,7 +85,7 @@ public class GraphEngine {
 
     final DatabaseInternal database = (DatabaseInternal) fromVertex.getDatabase();
 
-    final RID edgeRID = new RID(database, database.getSchema().getType(edgeTypeName).getFirstBucketId(), -1l);
+    final RID edgeRID = new RID(database, database.getSchema().getType(edgeTypeName).getFirstBucketId(), -1L);
 
     final ImmutableLightEdge edge = new ImmutableLightEdge(database, database.getSchema().getType(edgeTypeName), edgeRID, fromVertexRID,
         toVertex.getIdentity());

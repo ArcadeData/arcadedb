@@ -69,7 +69,7 @@ public class EmptyIndexCursor implements IndexCursor {
 
   @Override
   public long size() {
-    return 0l;
+    return 0L;
   }
 
   @Override

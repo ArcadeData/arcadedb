@@ -142,7 +142,7 @@ public class ArcadeFilterByIndexStep<S, E extends Element> extends AbstractStep<
     while (true) {
       if (this.iterator.hasNext()) {
         return this.isStart ?
-            this.getTraversal().getTraverserGenerator().generate(this.iterator.next(), (Step) this, 1l) :
+            this.getTraversal().getTraverserGenerator().generate(this.iterator.next(), (Step) this, 1L) :
             this.head.split(this.iterator.next(), this);
       } else {
         if (this.isStart) {

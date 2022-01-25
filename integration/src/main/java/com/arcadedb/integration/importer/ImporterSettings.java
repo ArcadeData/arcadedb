@@ -40,7 +40,7 @@ public class ImporterSettings {
   public Long   verticesSkipEntries       = null;
   public String vertexTypeName            = "Node";
   public String vertexPropertiesInclude   = "*";
-  public long   expectedVertices          = 0l;
+  public long   expectedVertices          = 0L;
 
   public String  edges;
   public String  edgesFileType;
@@ -49,7 +49,7 @@ public class ImporterSettings {
   public Long    edgesSkipEntries       = null;
   public String  edgeTypeName           = "Relationship";
   public String  edgePropertiesInclude  = "*";
-  public long    expectedEdges          = 0l;
+  public long    expectedEdges          = 0L;
   public long    maxRAMIncomingEdges    = 256 * 1024 * 1024; // 256MB
   public String  edgeFromField          = null;
   public String  edgeToField            = null;

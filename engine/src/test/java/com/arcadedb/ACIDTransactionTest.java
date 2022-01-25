@@ -315,7 +315,7 @@ public class ACIDTransactionTest extends TestHelper {
             final List<Document> history = new ArrayList<>();
             for (int e = 0; e < TOT_MINS; ++e) {
               final MutableDocument embedded = ((DatabaseInternal) database).newEmbeddedDocument(null, "Aggregate");
-              embedded.set("volume", 1_000_000l);
+              embedded.set("volume", 1_000_000L);
               history.add(embedded);
             }
 

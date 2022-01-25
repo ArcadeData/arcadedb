@@ -58,7 +58,7 @@ public class SerializerTest extends TestHelper {
     binary.putInt(Integer.MIN_VALUE);
     binary.putInt(Integer.MAX_VALUE);
 
-    binary.putLong(0l);
+    binary.putLong(0L);
     binary.putLong(Long.MIN_VALUE);
     binary.putLong(Long.MAX_VALUE);
 
@@ -123,8 +123,8 @@ public class SerializerTest extends TestHelper {
     Assertions.assertEquals(Integer.MAX_VALUE, binary.getInt());
     Assertions.assertEquals(Integer.MAX_VALUE, buffer.getInt());
 
-    Assertions.assertEquals(0l, binary.getLong());
-    Assertions.assertEquals(0l, buffer.getLong());
+    Assertions.assertEquals(0L, binary.getLong());
+    Assertions.assertEquals(0L, buffer.getLong());
 
     Assertions.assertEquals(Long.MIN_VALUE, binary.getLong());
     Assertions.assertEquals(Long.MIN_VALUE, buffer.getLong());

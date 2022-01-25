@@ -68,7 +68,7 @@ public class OrientDBImporter {
   private       int                        batchSize                       = 10_000;
   private       PHASE                      phase                           = PHASE.OFF; // phase1 = create DB and cache edges in RAM, phase2 = create vertices and edges
   private       long                       skippedRecordBecauseNullKey     = 0L;
-  private       long                       skippedEdgeBecauseMissingVertex = 0l;
+  private       long                       skippedEdgeBecauseMissingVertex = 0L;
   private       long                       beginTime;
   private       long                       beginTimeRecordsCreation;
   private       long                       beginTimeEdgeCreation;

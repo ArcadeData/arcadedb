@@ -34,7 +34,7 @@ public class RDFImporterFormat extends CSVImporterFormat {
     long skipEntries = settings.edgesSkipEntries != null ? settings.edgesSkipEntries.longValue() : 0;
     if (settings.edgesSkipEntries == null)
       // BY DEFAULT SKIP THE FIRST LINE AS HEADER
-      skipEntries = 1l;
+      skipEntries = 1L;
 
     try (final InputStreamReader inputFileReader = new InputStreamReader(parser.getInputStream(), DatabaseFactory.getDefaultCharset())) {
       csvParser.beginParsing(inputFileReader);

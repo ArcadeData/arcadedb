@@ -45,7 +45,7 @@ class SQLMethodAsFloatTest {
 
     @Test
     void testLongToFloat() {
-        Object result = method.execute(null, null, null, 10l, null);
+        Object result = method.execute(null, null, null, 10L, null);
         assertThat(result).isInstanceOf(Float.class);
         assertThat(result).isEqualTo(10.0f);
     }
