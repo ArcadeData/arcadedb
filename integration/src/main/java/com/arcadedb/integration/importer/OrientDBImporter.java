@@ -542,12 +542,8 @@ public class OrientDBImporter {
 
     context.createdEdges.incrementAndGet();
 
-    Long edgesByVertexType = totalEdgesByVertexType.get(className);
-    if (edgesByVertexType == null) {
-      edgesByVertexType = 0L;
-      totalEdgesByVertexType.put(className, edgesByVertexType);
-    }
-    totalEdgesByVertexType.put(className, edgesByVertexType + 1);
+      Long edgesByVertexType = totalEdgesByVertexType.computeIfAbsent(className, k -> 0L);
+      totalEdgesByVertexType.put(className, edgesByVertexType + 1);
 
     incrementRecordByClass(className);
   }
@@ -983,11 +979,7 @@ public class OrientDBImporter {
   }
 
   private void incrementRecordByClass(final String className) {
-    Long recordsByClass = totalRecordByType.get(className);
-    if (recordsByClass == null) {
-      recordsByClass = 0L;
-      totalRecordByType.put(className, recordsByClass);
-    }
-    totalRecordByType.put(className, recordsByClass + 1);
+      Long recordsByClass = totalRecordByType.computeIfAbsent(className, k -> 0L);
+      totalRecordByType.put(className, recordsByClass + 1);
   }
 }
