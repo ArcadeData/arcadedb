@@ -80,7 +80,7 @@ public class EmbeddedSchema implements Schema {
   private              boolean                    dirtyConfiguration      = false;
   private              boolean                    loadInRamCompleted      = false;
   private              boolean                    multipleUpdate          = false;
-  private              AtomicLong                 versionSerial           = new AtomicLong();
+  private final       AtomicLong                 versionSerial           = new AtomicLong();
 
   public EmbeddedSchema(final DatabaseInternal database, final String databasePath, final SecurityManager security) {
     this.database = database;

@@ -69,9 +69,9 @@ public class PostgresNetworkExecutor extends Thread {
   private final        Map<String, Object>                            connectionProperties       = new HashMap<>();
   private              boolean                                        explicitTransactionStarted = false;
   private              boolean                                        errorInTransaction         = false;
-  private              Set<String>                                    ignoreQueriesAppNames      = new HashSet<>(//
+  private final        Set<String>                                    ignoreQueriesAppNames      = new HashSet<>(//
       List.of("dbvis", "Database Navigator - Pool"));
-  private              Set<String>                                    ignoreQueries              = new HashSet<>(//
+  private  final     Set<String>                                    ignoreQueries              = new HashSet<>(//
       List.of(//
           "select distinct PRIVILEGE_TYPE as PRIVILEGE_NAME from INFORMATION_SCHEMA.USAGE_PRIVILEGES order by PRIVILEGE_TYPE asc",//
           "SELECT oid, typname FROM pg_type"));

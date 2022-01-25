@@ -44,8 +44,8 @@ import java.util.Map;
 import java.util.Set;
 
 public class GraphQLSchema {
-  private Database                          database;
-  private Map<String, ObjectTypeDefinition> objectTypeDefinitionMap = new HashMap<>();
+  private final Database                          database;
+  private final Map<String, ObjectTypeDefinition> objectTypeDefinitionMap = new HashMap<>();
   private ObjectTypeDefinition              queryDefinition;
 
   public GraphQLSchema(Database database) {

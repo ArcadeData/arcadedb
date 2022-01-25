@@ -52,7 +52,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
   private Vertex      currentTo;
   private MutableEdge edgeToUpdate; // for upsert
   private boolean     finished = false;
-  private List        toList   = new ArrayList<>();
+  private final List        toList   = new ArrayList<>();
   private Index       uniqueIndex;
 
   private boolean inited = false;

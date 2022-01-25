@@ -54,9 +54,9 @@ public class Neo4jImporter {
   private              String                         inputFile;
   private              boolean                        overwriteDatabase     = false;
   private              Type                           typeForDecimals       = Type.DECIMAL;
-  private              Map<String, Long>              totalVerticesByType   = new HashMap<>();
+  private  final       Map<String, Long>              totalVerticesByType   = new HashMap<>();
   private              long                           totalVerticesParsed   = 0L;
-  private              Map<String, Long>              totalEdgesByType      = new HashMap<>();
+  private  final       Map<String, Long>              totalEdgesByType      = new HashMap<>();
   private              long                           totalEdgesParsed      = 0L;
   private              long                           totalAttributesParsed = 0L;
   private              long                           errors                = 0L;

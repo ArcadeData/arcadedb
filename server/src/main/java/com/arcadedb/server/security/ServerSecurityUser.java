@@ -32,7 +32,7 @@ public class ServerSecurityUser implements SecurityUser {
   private final String                                                name;
   private       Set<String>                                           databasesNames;
   private       String                                                password;
-  private       ConcurrentHashMap<String, ServerSecurityDatabaseUser> databaseCache = new ConcurrentHashMap();
+  private final ConcurrentHashMap<String, ServerSecurityDatabaseUser> databaseCache = new ConcurrentHashMap();
 
   public ServerSecurityUser(final ArcadeDBServer server, final JSONObject userConfiguration) {
     this.server = server;
