@@ -137,7 +137,7 @@ public class GraphQLResultSet implements ResultSet {
                 final Vertex vertex = current.getElement().get().asVertex();
                 final Iterable<Vertex> connected = type != null ? vertex.getVertices(direction, type) : vertex.getVertices(direction);
                 projectionValue = connected;
-              } else if (current.getIdentity() != null) {
+              } else if (current.getIdentity().isPresent()) {
                 final Vertex vertex = current.getIdentity().get().asVertex();
                 final Iterable<Vertex> connected = type != null ? vertex.getVertices(direction, type) : vertex.getVertices(direction);
                 projectionValue = connected;
