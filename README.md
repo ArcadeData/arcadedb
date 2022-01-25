@@ -1,4 +1,5 @@
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](https://opensource.org/licenses/Apache-2.0)
+[![REUSE status](https://api.reuse.software/badge/github.com/ArcadeData/arcadedb)](https://api.reuse.software/info/github.com/ArcadeData/arcadedb)
 [![Maven Central](https://maven-badges.herokuapp.com/maven-central/com.arcadedb/arcadedb-parent/badge.svg)](https://maven-badges.herokuapp.com/maven-central/com.arcadedb/arcadedb-parent)
 
 [![Java CI - deploy](https://github.com/ArcadeData/arcadedb/actions/workflows/mvn-deploy.yml/badge.svg)](https://github.com/ArcadeData/arcadedb/actions/workflows/mvn-deploy.yml)
