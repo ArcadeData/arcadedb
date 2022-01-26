@@ -18,20 +18,9 @@
  */
 package com.arcadedb.database.async;
 
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultSet;
-
+/**
+ * Deprecated, implement directly from interface @{@link AsyncResultsetCallback} which provides default empty methods for convenience.
+ */
+@Deprecated
 public abstract class AbstractAsyncResultsetCallback implements AsyncResultsetCallback {
-  public void onStart(ResultSet resultset) {
-  }
-
-  public boolean onNext(Result result) {
-    return false;
-  }
-
-  public void onComplete() {
-  }
-
-  public void onError(Exception exception) {
-  }
 }

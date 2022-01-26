@@ -39,24 +39,29 @@ public interface AsyncResultsetCallback {
    *
    * @param resultset result set to fetch
    */
-  void onStart(ResultSet resultset);
+  default void onStart(ResultSet resultset) {
+  }
 
   /**
    * Invoked per single result in the result set.
    *
    * @return true to continue fetching otherwise false. If false is returned, the fetching stops and the {@link #onComplete()} method is never invoked.
    */
-  boolean onNext(Result result);
+  default boolean onNext(Result result) {
+    return true;
+  }
 
   /**
    * Invoked when the fetching of the entire result set has been completed.
    */
-  void onComplete();
+  default void onComplete() {
+  }
 
   /**
    * Invoked in case of an error in the execution or fetching of the result set.
    *
    * @param exception The exception caught
    */
-  void onError(Exception exception);
+  default void onError(Exception exception) {
+  }
 }

@@ -20,13 +20,13 @@ package performance;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.database.async.AbstractAsyncResultsetCallback;
+import com.arcadedb.database.async.AsyncResultsetCallback;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Assertions;
 
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.*;
 
 public class PerformanceParsing {
   private static final String TYPE_NAME = "Person";
@@ -57,7 +57,7 @@ public class PerformanceParsing {
 
       for (int i = 0; i < MAX_LOOPS; ++i) {
 
-        database.async().query("SQL", "select from " + TYPE_NAME + " limit 1", new AbstractAsyncResultsetCallback() {
+        database.async().query("SQL", "select from " + TYPE_NAME + " limit 1", new AsyncResultsetCallback() {
           @Override
           public void onStart(final ResultSet rs) {
             ok.incrementAndGet();
