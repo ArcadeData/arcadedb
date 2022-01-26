@@ -892,6 +892,14 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
   @Override
   public void deleteRecord(final Record record) {
+    executeInReadLock(() -> {
+      deleteRecordNoLock(record);
+      return null;
+    });
+  }
+
+  @Override
+  public void deleteRecordNoLock(final Record record) {
     if (record.getIdentity() == null)
       throw new IllegalArgumentException("Cannot delete a non persistent record");
 
@@ -905,40 +913,37 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
       if (!((RecordEventsRegistry) ((Document) record).getType().getEvents()).onBeforeDelete(record))
         return;
 
-    executeInReadLock(() -> {
-      boolean success = false;
-      final boolean implicitTransaction = checkTransactionIsActive(autoTransaction);
+    boolean success = false;
+    final boolean implicitTransaction = checkTransactionIsActive(autoTransaction);
 
-      try {
-        final Bucket bucket = schema.getBucketById(record.getIdentity().getBucketId());
+    try {
+      final Bucket bucket = schema.getBucketById(record.getIdentity().getBucketId());
 
-        if (record instanceof Document)
-          indexer.deleteDocument((Document) record);
+      if (record instanceof Document)
+        indexer.deleteDocument((Document) record);
 
-        if (record instanceof Edge) {
-          graphEngine.deleteEdge((Edge) record);
-        } else if (record instanceof Vertex) {
-          graphEngine.deleteVertex((VertexInternal) record);
-        } else
-          bucket.deleteRecord(record.getIdentity());
+      if (record instanceof Edge) {
+        graphEngine.deleteEdge((Edge) record);
+      } else if (record instanceof Vertex) {
+        graphEngine.deleteVertex((VertexInternal) record);
+      } else
+        bucket.deleteRecord(record.getIdentity());
 
-        success = true;
+      success = true;
 
-        // INVOKE EVENT CALLBACKS
-        events.onAfterDelete(record);
-        if (record instanceof Document)
-          ((RecordEventsRegistry) ((Document) record).getType().getEvents()).onAfterDelete(record);
+      // INVOKE EVENT CALLBACKS
+      events.onAfterDelete(record);
+      if (record instanceof Document)
+        ((RecordEventsRegistry) ((Document) record).getType().getEvents()).onAfterDelete(record);
 
-      } finally {
-        if (implicitTransaction) {
-          if (success)
-            wrappedDatabaseInstance.commit();
-          else
-            wrappedDatabaseInstance.rollback();
-        }
+    } finally {
+      if (implicitTransaction) {
+        if (success)
+          wrappedDatabaseInstance.commit();
+        else
+          wrappedDatabaseInstance.rollback();
       }
-      return null;
-    });
+    }
   }
 
   @Override

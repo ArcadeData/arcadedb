@@ -304,6 +304,11 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
+  public void deleteRecordNoLock(final Record record) {
+    proxied.deleteRecordNoLock(record);
+  }
+
+  @Override
   public DocumentIndexer getIndexer() {
     return proxied.getIndexer();
   }

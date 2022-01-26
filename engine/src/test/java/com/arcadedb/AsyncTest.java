@@ -59,6 +59,64 @@ public class AsyncTest extends TestHelper {
   }
 
   @Test
+  public void testSyncScanAndAsyncUpdate() {
+    database.begin();
+    try {
+      final AtomicLong callbackInvoked = new AtomicLong();
+      final AtomicLong updatedRecords = new AtomicLong();
+
+      database.scanType(TYPE_NAME, true, record -> {
+        callbackInvoked.incrementAndGet();
+        database.async().updateRecord(record.modify().set("updated", true), newRecord -> updatedRecords.incrementAndGet());
+        return true;
+      });
+
+      database.async().waitCompletion();
+
+      Assertions.assertEquals(TOT, callbackInvoked.get());
+      Assertions.assertEquals(TOT, updatedRecords.get());
+
+      final ResultSet resultSet = database.query("sql", "select count(*) as count from " + TYPE_NAME + " where updated = true");
+
+      Assertions.assertTrue(resultSet.hasNext());
+      Assertions.assertEquals(TOT, ((Number) resultSet.next().getProperty("count")).intValue());
+
+    } finally {
+      database.commit();
+    }
+  }
+
+  @Test
+  public void testAsyncDelete() {
+    database.begin();
+    try {
+      final AtomicLong callbackInvoked = new AtomicLong();
+      final AtomicLong deletedRecords = new AtomicLong();
+
+      database.scanType(TYPE_NAME, true, record -> {
+        callbackInvoked.incrementAndGet();
+        database.async().deleteRecord(record.modify().set("updated", true), newRecord -> deletedRecords.incrementAndGet());
+        return true;
+      });
+
+      database.async().waitCompletion();
+
+      Assertions.assertEquals(TOT, callbackInvoked.get());
+      Assertions.assertEquals(TOT, deletedRecords.get());
+
+      final ResultSet resultSet = database.query("sql", "select count(*) as count from " + TYPE_NAME + " where updated = true");
+
+      Assertions.assertTrue(resultSet.hasNext());
+      Assertions.assertEquals(0, ((Number) resultSet.next().getProperty("count")).intValue());
+
+      populateDatabase();
+
+    } finally {
+      database.commit();
+    }
+  }
+
+  @Test
   public void testScanInterrupt() {
     database.begin();
     try {
@@ -381,6 +439,12 @@ public class AsyncTest extends TestHelper {
 
     database.commit();
 
+    populateDatabase();
+
+    Assertions.assertTrue(okCallbackInvoked.get() > 0);
+  }
+
+  private void populateDatabase() {
     for (int i = 0; i < TOT; ++i) {
       final MutableDocument v = database.newDocument(TYPE_NAME);
       v.set("id", i);
@@ -388,11 +452,8 @@ public class AsyncTest extends TestHelper {
       v.set("surname", "Miner");
 
       database.async().createRecord(v, null);
-
     }
 
     database.async().waitCompletion();
-
-    Assertions.assertTrue(okCallbackInvoked.get() > 0);
   }
 }

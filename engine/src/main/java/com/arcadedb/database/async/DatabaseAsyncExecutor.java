@@ -184,7 +184,7 @@ public interface DatabaseAsyncExecutor {
    * Schedules the request to update a record. If the record is updated successfully, the callback @{@link UpdatedRecordCallback} is executed.
    *
    * @param record               Record to update
-   * @param updateRecordCallback Callback invoked after the record has been created
+   * @param updateRecordCallback Callback invoked after the record has been updated
    */
   void updateRecord(MutableDocument record, UpdatedRecordCallback updateRecordCallback);
 
@@ -192,10 +192,27 @@ public interface DatabaseAsyncExecutor {
    * Schedules the request to update a record. If the record is updated successfully, the callback @{@link UpdatedRecordCallback} is executed.
    *
    * @param record               Record to update
-   * @param updateRecordCallback Callback invoked after the record has been created
+   * @param updateRecordCallback Callback invoked after the record has been updated
    * @param errorCallback        Callback invoked in case of error
    */
   void updateRecord(MutableDocument record, UpdatedRecordCallback updateRecordCallback, final ErrorCallback errorCallback);
+
+  /**
+   * Schedules the request to delete a record. If the record is deleted successfully, the callback @{@link DeletedRecordCallback} is executed.
+   *
+   * @param record               Record to delete
+   * @param deleteRecordCallback Callback invoked after the record has been deleted
+   */
+  void deleteRecord(Record record, DeletedRecordCallback deleteRecordCallback);
+
+  /**
+   * Schedules the request to delete a record. If the record is deleted successfully, the callback @{@link DeletedRecordCallback} is executed.
+   *
+   * @param record               Record to delete
+   * @param deleteRecordCallback Callback invoked after the record has been deleted
+   * @param errorCallback        Callback invoked in case of error
+   */
+  void deleteRecord(Record record, DeletedRecordCallback deleteRecordCallback, final ErrorCallback errorCallback);
 
   /**
    * Schedules the creation of an edge between two vertices. If the edge is created successfully, the callback @{@link NewEdgeCallback} is executed.

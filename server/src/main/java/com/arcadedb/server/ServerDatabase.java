@@ -281,6 +281,11 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
+  public void deleteRecordNoLock(final Record record) {
+    wrapped.deleteRecordNoLock(record);
+  }
+
+  @Override
   public void deleteRecord(final Record record) {
     wrapped.deleteRecord(record);
   }

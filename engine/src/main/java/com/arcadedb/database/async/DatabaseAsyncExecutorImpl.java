@@ -405,14 +405,27 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   public void updateRecord(final MutableDocument record, final UpdatedRecordCallback updateRecordCallback, final ErrorCallback errorCallback) {
     if (record.getIdentity() != null) {
       // UPDATE
-      final DocumentType type = record.getType();
-      final Bucket bucket = type.getBucketIdByRecord(record, false);
-      final int slot = getSlot(bucket.getId());
-
+      final int slot = getSlot(record.getIdentity().getBucketId());
       scheduleTask(slot, new DatabaseAsyncUpdateRecord(record, updateRecordCallback, errorCallback), true, backPressurePercentage);
 
     } else
       throw new IllegalArgumentException("Cannot updated a not persistent record");
+  }
+
+  @Override
+  public void deleteRecord(final Record record, final DeletedRecordCallback deleteRecordCallback) {
+    deleteRecord(record, deleteRecordCallback, null);
+  }
+
+  @Override
+  public void deleteRecord(final Record record, final DeletedRecordCallback deleteRecordCallback, final ErrorCallback errorCallback) {
+    if (record.getIdentity() != null) {
+      // DELETE
+      final int slot = getSlot(record.getIdentity().getBucketId());
+      scheduleTask(slot, new DatabaseAsyncDeleteRecord(record, deleteRecordCallback, errorCallback), true, backPressurePercentage);
+
+    } else
+      throw new IllegalArgumentException("Cannot delete a not persistent record");
   }
 
   @Override

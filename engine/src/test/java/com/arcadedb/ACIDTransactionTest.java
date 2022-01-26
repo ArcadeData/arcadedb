@@ -184,7 +184,7 @@ public class ACIDTransactionTest extends TestHelper {
         @Override
         public Void call() throws IOException {
           if (commits.incrementAndGet() > TOT - 1) {
-            LogManager.instance().log(this, Level.INFO, "TEST: Causing IOException at commit %d...",  commits.get());
+            LogManager.instance().log(this, Level.INFO, "TEST: Causing IOException at commit %d...", commits.get());
             throw new IOException("Test IO Exception");
           }
           return null;

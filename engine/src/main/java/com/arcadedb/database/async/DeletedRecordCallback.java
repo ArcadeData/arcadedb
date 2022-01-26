@@ -21,10 +21,10 @@ package com.arcadedb.database.async;
 import com.arcadedb.database.Record;
 
 /**
- * Interface used in `async().updateRecord()` API.
+ * Interface used in `async().deleteRecord()` API.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public interface UpdatedRecordCallback {
+public interface DeletedRecordCallback {
   void call(Record newRecord);
 }

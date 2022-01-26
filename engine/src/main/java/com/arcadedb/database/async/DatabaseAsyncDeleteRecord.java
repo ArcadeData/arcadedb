@@ -19,21 +19,20 @@
 package com.arcadedb.database.async;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.Record;
-import com.arcadedb.engine.Bucket;
+import com.arcadedb.database.RecordEventsRegistry;
 import com.arcadedb.log.LogManager;
 
 import java.util.logging.*;
 
-public class DatabaseAsyncCreateRecord implements DatabaseAsyncTask {
-  public final Record            record;
-  public final Bucket            bucket;
-  public final NewRecordCallback onOkCallback;
-  public final ErrorCallback     onErrorCallback;
+public class DatabaseAsyncDeleteRecord implements DatabaseAsyncTask {
+  public final Record                record;
+  public final DeletedRecordCallback onOkCallback;
+  public final ErrorCallback         onErrorCallback;
 
-  public DatabaseAsyncCreateRecord(final Record record, final Bucket bucket, final NewRecordCallback callback, final ErrorCallback onErrorCallback) {
+  public DatabaseAsyncDeleteRecord(final Record record, final DeletedRecordCallback callback, final ErrorCallback onErrorCallback) {
     this.record = record;
-    this.bucket = bucket;
     this.onOkCallback = callback;
     this.onErrorCallback = onErrorCallback;
   }
@@ -41,13 +40,25 @@ public class DatabaseAsyncCreateRecord implements DatabaseAsyncTask {
   @Override
   public void execute(DatabaseAsyncExecutorImpl.AsyncThread async, DatabaseInternal database) {
     try {
-      database.createRecordNoLock(record, bucket.getName());
+      // INVOKE EVENT CALLBACKS
+      if (!((RecordEventsRegistry) database.getEvents()).onBeforeDelete(record))
+        return;
+      if (record instanceof Document)
+        if (!((RecordEventsRegistry) ((Document) record).getType().getEvents()).onBeforeDelete(record))
+          return;
+
+      database.deleteRecordNoLock(record);
+
+      // INVOKE EVENT CALLBACKS
+      ((RecordEventsRegistry) database.getEvents()).onAfterDelete(record);
+      if (record instanceof Document)
+        ((RecordEventsRegistry) ((Document) record).getType().getEvents()).onAfterDelete(record);
 
       if (onOkCallback != null)
         onOkCallback.call(record);
 
     } catch (Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error on executing async create record operation (threadId=%d)", e, Thread.currentThread().getId());
+      LogManager.instance().log(this, Level.SEVERE, "Error on executing async delete record operation (threadId=%d)", e, Thread.currentThread().getId());
 
       async.onError(e);
 
@@ -58,6 +69,6 @@ public class DatabaseAsyncCreateRecord implements DatabaseAsyncTask {
 
   @Override
   public String toString() {
-    return "CreateRecord(" + record + ")";
+    return "DeleteRecord(" + record + ")";
   }
 }

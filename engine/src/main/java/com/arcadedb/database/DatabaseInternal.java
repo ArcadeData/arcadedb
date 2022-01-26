@@ -94,6 +94,8 @@ public interface DatabaseInternal extends Database {
 
   void updateRecordNoLock(Record record);
 
+  void deleteRecordNoLock(Record record);
+
   void kill();
 
   DocumentIndexer getIndexer();
