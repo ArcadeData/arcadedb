@@ -36,7 +36,7 @@ import com.arcadedb.database.RecordCallback;
 import com.arcadedb.database.RecordEvents;
 import com.arcadedb.database.RecordFactory;
 import com.arcadedb.database.TransactionContext;
-import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
+import com.arcadedb.database.async.DatabaseAsyncExecutor;
 import com.arcadedb.database.async.ErrorCallback;
 import com.arcadedb.database.async.OkCallback;
 import com.arcadedb.engine.ErrorRecordCallback;
@@ -344,7 +344,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
-  public DatabaseAsyncExecutorImpl async() {
+  public DatabaseAsyncExecutor async() {
     return proxied.async();
   }
 

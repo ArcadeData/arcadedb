@@ -57,7 +57,7 @@ public class PerformanceParsing {
 
       for (int i = 0; i < MAX_LOOPS; ++i) {
 
-        database.async().command("SQL", "select from " + TYPE_NAME + " limit 1", new AbstractAsyncResultsetCallback() {
+        database.async().query("SQL", "select from " + TYPE_NAME + " limit 1", new AbstractAsyncResultsetCallback() {
           @Override
           public void onStart(final ResultSet rs) {
             ok.incrementAndGet();
