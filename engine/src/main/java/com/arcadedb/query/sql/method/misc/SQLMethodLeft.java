@@ -49,6 +49,6 @@ public class SQLMethodLeft extends AbstractSQLMethod {
     final String valueAsString = iThis.toString();
 
     final int len = Integer.parseInt(iParams[0].toString());
-    return valueAsString.substring(0, len <= valueAsString.length() ? len : valueAsString.length());
+    return valueAsString.substring(0, Math.min(len, valueAsString.length()));
   }
 }
