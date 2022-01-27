@@ -756,8 +756,7 @@ public class DocumentType {
   }
 
   protected Map<String, Property> getPolymorphicProperties() {
-    final Map<String, Property> allProperties = new HashMap<>();
-    allProperties.putAll(properties);
+      final Map<String, Property> allProperties = new HashMap<>(properties);
 
     for (DocumentType p : superTypes)
       allProperties.putAll(p.getPolymorphicProperties());

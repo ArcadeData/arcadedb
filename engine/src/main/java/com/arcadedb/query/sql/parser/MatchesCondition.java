@@ -215,8 +215,7 @@ public class MatchesCondition extends BooleanExpression {
 
   @Override
   public List<String> getMatchPatternInvolvedAliases() {
-    List<String> result = new ArrayList<>();
-    result.addAll(expression.getMatchPatternInvolvedAliases());
+      List<String> result = new ArrayList<>(expression.getMatchPatternInvolvedAliases());
     if (rightExpression != null) {
       result.addAll(rightExpression.getMatchPatternInvolvedAliases());
     }

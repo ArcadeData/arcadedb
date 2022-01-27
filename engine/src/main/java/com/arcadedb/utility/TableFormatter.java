@@ -546,9 +546,8 @@ public class TableFormatter {
     lastResultShrunk = false;
     if (width > maxWidthSize) {
       // SCALE COLUMNS AUTOMATICALLY
-      final List<Entry<String, Integer>> orderedColumns = new ArrayList<Entry<String, Integer>>();
-      orderedColumns.addAll(columns.entrySet());
-      Collections.sort(orderedColumns, (o1, o2) -> o1.getValue().compareTo(o2.getValue()));
+      final List<Entry<String, Integer>> orderedColumns = new ArrayList<Entry<String, Integer>>(columns.entrySet());
+      orderedColumns.sort(Comparator.comparing(Entry::getValue));
 
       lastResultShrunk = true;
 
