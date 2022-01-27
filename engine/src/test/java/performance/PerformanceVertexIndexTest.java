@@ -187,37 +187,35 @@ public class PerformanceVertexIndexTest {
   }
 
   private void checkLookups(final int step) {
-    Database database = new DatabaseFactory(PerformanceTest.DATABASE_PATH).open(PaginatedFile.MODE.READ_ONLY);
-    long begin = System.currentTimeMillis();
 
-    try {
-      LogManager.instance().log(this, Level.INFO, "TEST: Lookup for keys...");
+      try (Database database = new DatabaseFactory(PerformanceTest.DATABASE_PATH).open(PaginatedFile.MODE.READ_ONLY)) {
+          long begin = System.currentTimeMillis();
+          LogManager.instance().log(this, Level.INFO, "TEST: Lookup for keys...");
 
-      begin = System.currentTimeMillis();
-
-      int checked = 0;
-
-      for (long id = 0; id < TOT; id += step) {
-        final IndexCursor records = database.lookupByKey(TYPE_NAME, new String[] { "id" }, new Object[] { id });
-        Assertions.assertNotNull(records);
-        Assertions.assertEquals(1, records.size(), "Wrong result for lookup of key " + id);
-
-        final Document record = (Document) records.next().getRecord();
-        Assertions.assertEquals("" + id, record.get("id"));
-
-        checked++;
-
-        if (checked % 10000 == 0) {
-          long delta = System.currentTimeMillis() - begin;
-          if (delta < 1)
-            delta = 1;
-          LogManager.instance().log(this, Level.INFO, "Checked " + checked + " lookups in " + delta + "ms = " + (10000 / delta) + " lookups/msec");
           begin = System.currentTimeMillis();
-        }
+
+          int checked = 0;
+
+          for (long id = 0; id < TOT; id += step) {
+              final IndexCursor records = database.lookupByKey(TYPE_NAME, new String[]{"id"}, new Object[]{id});
+              Assertions.assertNotNull(records);
+              Assertions.assertEquals(1, records.size(), "Wrong result for lookup of key " + id);
+
+              final Document record = (Document) records.next().getRecord();
+              Assertions.assertEquals("" + id, record.get("id"));
+
+              checked++;
+
+              if (checked % 10000 == 0) {
+                  long delta = System.currentTimeMillis() - begin;
+                  if (delta < 1)
+                      delta = 1;
+                  LogManager.instance().log(this, Level.INFO, "Checked " + checked + " lookups in " + delta + "ms = " + (10000 / delta) + " lookups/msec");
+                  begin = System.currentTimeMillis();
+              }
+          }
+      } finally {
+          LogManager.instance().log(this, Level.INFO, "TEST: Lookup finished in " + (System.currentTimeMillis() - begin) + "ms");
       }
-    } finally {
-      database.close();
-      LogManager.instance().log(this, Level.INFO, "TEST: Lookup finished in " + (System.currentTimeMillis() - begin) + "ms");
-    }
   }
 }

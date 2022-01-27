@@ -309,29 +309,23 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     final List<String> tokens = new ArrayList<>();
 
     for (Object t : text) {
-      final TokenStream tokenizer = analyzer.tokenStream("contents", t.toString());
-      try {
-        tokenizer.reset();
-        final CharTermAttribute termAttribute = tokenizer.getAttribute(CharTermAttribute.class);
+        try (TokenStream tokenizer = analyzer.tokenStream("contents", t.toString())) {
+            tokenizer.reset();
+            final CharTermAttribute termAttribute = tokenizer.getAttribute(CharTermAttribute.class);
 
-        try {
-          while (tokenizer.incrementToken()) {
-            String token = termAttribute.toString();
-            tokens.add(token);
-          }
+            try {
+                while (tokenizer.incrementToken()) {
+                    String token = termAttribute.toString();
+                    tokens.add(token);
+                }
 
+            } catch (IOException e) {
+                throw new IndexException("Error on analyzing text", e);
+            }
         } catch (IOException e) {
-          throw new IndexException("Error on analyzing text", e);
+            throw new IndexException("Error on tokenizer", e);
         }
-      } catch (IOException e) {
-        throw new IndexException("Error on tokenizer", e);
-      } finally {
-        try {
-          tokenizer.close();
-        } catch (IOException e) {
-          // IGNORE IT
-        }
-      }
+        // IGNORE IT
     }
     return tokens;
   }

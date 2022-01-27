@@ -33,29 +33,26 @@ public class PerformanceScan {
   private void run() {
     final Database database = new DatabaseFactory(PerformanceTest.DATABASE_PATH).open();
 
-    database.async().setParallelLevel(4);
+      try (database) {
+          database.async().setParallelLevel(4);
+          for (int i = 0; i < MAX_LOOPS; ++i) {
+              final long begin = System.currentTimeMillis();
 
-    try {
-      for (int i = 0; i < MAX_LOOPS; ++i) {
-        final long begin = System.currentTimeMillis();
+              final AtomicInteger row = new AtomicInteger();
 
-        final AtomicInteger row = new AtomicInteger();
+              database.async().scanType(USERTYPE_NAME, true, record -> {
+                  final ImmutableDocument document = ((ImmutableDocument) record);
 
-        database.async().scanType(USERTYPE_NAME, true, record -> {
-          final ImmutableDocument document = ((ImmutableDocument) record);
+                  document.get("id");
 
-          document.get("id");
+                  if (row.incrementAndGet() % 10000000 == 0)
+                      System.out.println("- Scanned " + row.get() + " elements in " + (System.currentTimeMillis() - begin) + "ms");
 
-          if (row.incrementAndGet() % 10000000 == 0)
-            System.out.println("- Scanned " + row.get() + " elements in " + (System.currentTimeMillis() - begin) + "ms");
+                  return true;
+              });
 
-          return true;
-        });
-
-        System.out.println("Found " + row.get() + " elements in " + (System.currentTimeMillis() - begin) + "ms");
+              System.out.println("Found " + row.get() + " elements in " + (System.currentTimeMillis() - begin) + "ms");
+          }
       }
-    } finally {
-      database.close();
-    }
   }
 }
