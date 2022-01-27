@@ -393,8 +393,6 @@ public class RemoteDatabase extends RWLockContext {
           connection.disconnect();
         }
 
-      } catch (RemoteException e) {
-        throw e;
       } catch (IOException | ServerIsNotTheLeaderException e) {
         lastException = e;
 
@@ -416,7 +414,7 @@ public class RemoteDatabase extends RWLockContext {
               .log(this, Level.WARNING, "Remote server (%s:%d) seems unreachable, switching to server %s:%d...", null, currentConnectToServer.getFirst(),
                   currentConnectToServer.getSecond(), connectToServer.getFirst(), connectToServer.getSecond());
 
-      } catch (NeedRetryException | DuplicatedKeyException | TransactionException | TimeoutException e) {
+      } catch (RemoteException | NeedRetryException | DuplicatedKeyException | TransactionException | TimeoutException e) {
         throw e;
       } catch (Exception e) {
         throw new RemoteException("Error on executing remote operation " + operation + " (cause: " + e.getMessage() + ")", e);

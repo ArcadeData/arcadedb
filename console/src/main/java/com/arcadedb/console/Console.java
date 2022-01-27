@@ -105,13 +105,11 @@ public class Console {
 
           lineReader.getHistory().save();
 
-        } catch (UserInterruptException e) {
-          return;
-        } catch (EndOfFileException e) {
+        } catch (UserInterruptException | EndOfFileException e) {
           return;
         }
 
-        try {
+          try {
           if (!parse(line, false))
             return;
         } catch (Exception e) {
@@ -205,10 +203,7 @@ public class Console {
       }
 
       return true;
-    } catch (IOException e) {
-      outputError(e);
-      throw e;
-    } catch (RuntimeException e) {
+    } catch (IOException | RuntimeException e) {
       outputError(e);
       throw e;
     }
