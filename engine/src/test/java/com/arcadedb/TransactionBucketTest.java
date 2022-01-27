@@ -53,8 +53,7 @@ public class TransactionBucketTest extends TestHelper {
       Assertions.assertNotNull(record);
 
       Set<String> prop = new HashSet<String>();
-      for (String p : ((Document) record).getPropertyNames())
-        prop.add(p);
+        prop.addAll(((Document) record).getPropertyNames());
 
       Assertions.assertEquals(3, ((Document) record).getPropertyNames().size(), 9);
       Assertions.assertTrue(prop.contains("id"));
@@ -83,8 +82,7 @@ public class TransactionBucketTest extends TestHelper {
       Assertions.assertNotNull(record);
 
       Set<String> prop = new HashSet<String>();
-      for (String p : record.getPropertyNames())
-        prop.add(p);
+        prop.addAll(record.getPropertyNames());
 
       Assertions.assertEquals(3, record.getPropertyNames().size(), 9);
       Assertions.assertTrue(prop.contains("id"));
@@ -112,8 +110,7 @@ public class TransactionBucketTest extends TestHelper {
       Assertions.assertEquals(record, record2);
 
       Set<String> prop = new HashSet<String>();
-      for (String p : record2.getPropertyNames())
-        prop.add(p);
+        prop.addAll(record2.getPropertyNames());
 
       Assertions.assertEquals(record2.getPropertyNames().size(), 3);
       Assertions.assertTrue(prop.contains("id"));
