@@ -33,6 +33,7 @@ import java.util.*;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
+import java.util.stream.Stream;
 
 public class TransactionManager {
   private static final long MAX_LOG_FILE_SIZE = 64 * 1024 * 1024;
@@ -126,7 +127,7 @@ public class TransactionManager {
       final File dir = new File(database.getDatabasePath());
       File[] walFiles = dir.listFiles((dir1, name) -> name.endsWith(".wal"));
       if (walFiles != null) {
-        Arrays.forEach(File::delete);
+        Stream.of(walFiles).forEach(File::delete);
         walFiles = dir.listFiles((dir1, name) -> name.endsWith(".wal"));
       }
 
