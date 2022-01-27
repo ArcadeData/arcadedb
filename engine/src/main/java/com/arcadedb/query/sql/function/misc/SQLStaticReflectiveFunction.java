@@ -182,13 +182,15 @@ public class SQLStaticReflectiveFunction extends SQLFunctionAbstract {
         return false;
       } else if (Float.TYPE.equals(fromClass)) {
         return Double.TYPE.equals(iToClass);
-      } else if (Character.TYPE.equals(fromClass)) {
-        return Integer.TYPE.equals(iToClass) || Long.TYPE.equals(iToClass) || Float.TYPE.equals(iToClass) || Double.TYPE.equals(iToClass);
-      } else if (Short.TYPE.equals(fromClass)) {
-        return Integer.TYPE.equals(iToClass) || Long.TYPE.equals(iToClass) || Float.TYPE.equals(iToClass) || Double.TYPE.equals(iToClass);
-      } else if (Byte.TYPE.equals(fromClass)) {
-        return Short.TYPE.equals(iToClass) || Integer.TYPE.equals(iToClass) || Long.TYPE.equals(iToClass) || Float.TYPE.equals(iToClass) || Double.TYPE.equals(
-            iToClass);
+      } else {
+          boolean isNumericType = Integer.TYPE.equals(iToClass) || Long.TYPE.equals(iToClass) || Float.TYPE.equals(iToClass) || Double.TYPE.equals(iToClass);
+          if (Character.TYPE.equals(fromClass)) {
+            return isNumericType;
+          } else if (Short.TYPE.equals(fromClass)) {
+            return isNumericType;
+          } else if (Byte.TYPE.equals(fromClass)) {
+            return Short.TYPE.equals(iToClass) || isNumericType;
+          }
       }
       // this should never happen
       return false;
