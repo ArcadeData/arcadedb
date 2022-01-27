@@ -166,7 +166,7 @@ public class FilterNotMatchPatternStep extends AbstractExecutionStep {
         return result;
       }
     });
-    subSteps.forEach(step -> plan.chain(step));
+    subSteps.forEach(plan::chain);
     return plan;
   }
 

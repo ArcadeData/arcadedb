@@ -63,7 +63,7 @@ public class SkipExecutionStep extends AbstractExecutionStep {
 
   @Override
   public void close() {
-    prev.ifPresent(x -> x.close());
+    prev.ifPresent(ExecutionStepInternal::close);
   }
 
   @Override

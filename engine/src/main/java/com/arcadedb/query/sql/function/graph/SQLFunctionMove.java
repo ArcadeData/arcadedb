@@ -58,7 +58,7 @@ public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
 
     final String[] labels;
     if (iParameters != null && iParameters.length > 0 && iParameters[0] != null)
-      labels = MultiValue.array(iParameters, String.class, iArgument -> FileUtils.getStringContent(iArgument));
+      labels = MultiValue.array(iParameters, String.class, FileUtils::getStringContent);
     else
       labels = null;
 

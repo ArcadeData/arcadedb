@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.query.sql.parser.Unwind;
 
 import java.util.*;
@@ -43,7 +44,7 @@ public class UnwindStep extends AbstractExecutionStep {
   public UnwindStep(Unwind unwind, CommandContext ctx, boolean profilingEnabled) {
     super(ctx, profilingEnabled);
     this.unwind = unwind;
-    unwindFields = unwind.getItems().stream().map(x -> x.getStringValue()).collect(Collectors.toList());
+    unwindFields = unwind.getItems().stream().map(Identifier::getStringValue).collect(Collectors.toList());
   }
 
   @Override

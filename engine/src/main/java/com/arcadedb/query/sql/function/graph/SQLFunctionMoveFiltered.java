@@ -47,7 +47,7 @@ public abstract class SQLFunctionMoveFiltered extends SQLFunctionMove implements
       final Object[] iParameters, final Iterable<Identifiable> iPossibleResults, final CommandContext iContext) {
     final String[] labels;
     if (iParameters != null && iParameters.length > 0 && iParameters[0] != null)
-      labels = MultiValue.array(iParameters, String.class, iArgument -> FileUtils.getStringContent(iArgument));
+      labels = MultiValue.array(iParameters, String.class, FileUtils::getStringContent);
     else
       labels = null;
 

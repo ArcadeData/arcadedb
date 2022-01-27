@@ -47,7 +47,7 @@ public class DepthFirstTraverseStep extends AbstractTraverseStep {
       ((ResultInternal) item).setMetadata("$depth", 0);
 
       final List stack = new ArrayList();
-      item.getIdentity().ifPresent(x -> stack.add(x));
+      item.getIdentity().ifPresent(stack::add);
       ((ResultInternal) item).setMetadata("$stack", stack);
 
       final List<Identifiable> path = new ArrayList<>();

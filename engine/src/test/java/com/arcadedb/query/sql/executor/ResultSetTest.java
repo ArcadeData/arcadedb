@@ -35,7 +35,7 @@ public class ResultSetTest {
       item.setProperty("i", i);
       rs.add(item);
     }
-    Optional<Integer> result = rs.stream().map(x -> (int) x.getProperty("i")).reduce((a, b) -> a + b);
+    Optional<Integer> result = rs.stream().map(x -> (int) x.getProperty("i")).reduce(Integer::sum);
     Assertions.assertTrue(result.isPresent());
     Assertions.assertEquals(45, result.get().intValue());
   }
@@ -48,7 +48,7 @@ public class ResultSetTest {
       item.setProperty("i", i);
       rs.add(item);
     }
-    Optional<Integer> result = rs.vertexStream().map(x -> (int) x.get("i")).reduce((a, b) -> a + b);
+    Optional<Integer> result = rs.vertexStream().map(x -> (int) x.get("i")).reduce(Integer::sum);
     Assertions.assertFalse(result.isPresent());
   }
 
@@ -60,7 +60,7 @@ public class ResultSetTest {
       item.setProperty("i", i);
       rs.add(item);
     }
-    Optional<Integer> result = rs.vertexStream().map(x -> (int) x.get("i")).reduce((a, b) -> a + b);
+    Optional<Integer> result = rs.vertexStream().map(x -> (int) x.get("i")).reduce(Integer::sum);
     Assertions.assertFalse(result.isPresent());
   }
 }

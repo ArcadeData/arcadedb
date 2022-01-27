@@ -155,7 +155,7 @@ public class FetchFromClustersExecutionStep extends AbstractExecutionStep {
     for (ExecutionStep step : subSteps) {
       ((AbstractExecutionStep) step).sendTimeout();
     }
-    prev.ifPresent(p -> p.sendTimeout());
+    prev.ifPresent(ExecutionStepInternal::sendTimeout);
   }
 
   @Override
@@ -163,7 +163,7 @@ public class FetchFromClustersExecutionStep extends AbstractExecutionStep {
     for (ExecutionStep step : subSteps) {
       ((AbstractExecutionStep) step).close();
     }
-    prev.ifPresent(p -> p.close());
+    prev.ifPresent(ExecutionStepInternal::close);
   }
 
   @Override
@@ -193,7 +193,7 @@ public class FetchFromClustersExecutionStep extends AbstractExecutionStep {
 
   @Override
   public long getCost() {
-    return subSteps.stream().map(x -> x.getCost()).reduce((a, b) -> a + b).orElse(-1L);
+    return subSteps.stream().map(ExecutionStep::getCost).reduce(Long::sum).orElse(-1L);
   }
 
   @Override

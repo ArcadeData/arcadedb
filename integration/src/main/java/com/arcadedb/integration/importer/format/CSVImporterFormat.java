@@ -354,7 +354,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         }
       }
 
-      context.graphImporter.close(linked -> context.linkedEdges.addAndGet(linked));
+      context.graphImporter.close(context.linkedEdges::addAndGet);
 
     } catch (IOException e) {
       throw new ImportException("Error on importing CSV", e);

@@ -73,7 +73,7 @@ public class DatabaseChecker {
       if (affectedBuckets.contains(index.getAssociatedBucketId()))
         affectedIndexes.add(index);
 
-    final Set<String> rebuildIndexes = affectedIndexes.stream().map(x -> x.getName()).collect(Collectors.toSet());
+    final Set<String> rebuildIndexes = affectedIndexes.stream().map(Index::getName).collect(Collectors.toSet());
     result.put("rebuiltIndexes", rebuildIndexes);
 
     if (verboseLevel > 0)

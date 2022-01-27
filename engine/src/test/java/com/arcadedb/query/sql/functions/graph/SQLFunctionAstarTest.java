@@ -26,6 +26,7 @@ import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.function.graph.SQLFunctionAstar;
 import com.arcadedb.query.sql.function.graph.SQLHeuristicFormula;
@@ -429,7 +430,7 @@ public class SQLFunctionAstarTest {
           + ", 'weight', {'direction':'out', 'parallel':true, 'edgeTypeNames':'has_path'}))");
 
       List result = new ArrayList();
-      for (Object x : r.stream().map(x -> x.toElement()).collect(Collectors.toList())) {
+      for (Object x : r.stream().map(Result::toElement).collect(Collectors.toList())) {
         result.add(x);
       }
       try (ResultSet rs = graph.query("sql", "select count(*) as count from has_path")) {

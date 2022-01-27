@@ -437,7 +437,7 @@ public class SelectExecutionPlanner {
       if (typez == null) {
         return null;
       }
-      int[] bucketIds = typez.getBuckets(true).stream().mapToInt(x -> x.getId()).toArray();
+      int[] bucketIds = typez.getBuckets(true).stream().mapToInt(com.arcadedb.engine.Bucket::getId).toArray();
       for (int bucketId : bucketIds) {
         String bucketName = db.getSchema().getBucketById(bucketId).getName();
         if (bucketName != null) {
@@ -1621,7 +1621,7 @@ public class SelectExecutionPlanner {
       throw new CommandExecutionException("Type not found: " + queryTarget.getStringValue());
     }
 
-    for (RangeIndex idx : typez.getAllIndexes(true).stream().filter(i -> i.supportsOrderedIterations()).collect(Collectors.toList())) {
+    for (RangeIndex idx : typez.getAllIndexes(true).stream().filter(TypeIndex::supportsOrderedIterations).collect(Collectors.toList())) {
       List<String> indexFields = idx.getPropertyNames();
       if (indexFields.size() < info.orderBy.getItems().size()) {
         continue;
@@ -1665,7 +1665,7 @@ public class SelectExecutionPlanner {
 
     List<ExecutionStepInternal> result = handleClassAsTargetWithIndex(targetClass.getStringValue(), filterClusters, info, ctx, profilingEnabled);
     if (result != null) {
-      result.forEach(x -> plan.chain(x));
+      result.forEach(plan::chain);
       info.whereClause = null;
       info.flattenedWhereClause = null;
       return true;
@@ -1689,7 +1689,7 @@ public class SelectExecutionPlanner {
         return false;
       }
       SelectExecutionPlan subPlan = new SelectExecutionPlan(ctx);
-      subSteps.forEach(x -> subPlan.chain(x));
+      subSteps.forEach(subPlan::chain);
       subTypePlans.add(subPlan);
     }
     if (subTypePlans.size() > 0) {
@@ -1756,7 +1756,7 @@ public class SelectExecutionPlanner {
           return null;
         }
         SelectExecutionPlan subPlan = new SelectExecutionPlan(ctx);
-        subSteps.forEach(x -> subPlan.chain(x));
+        subSteps.forEach(subPlan::chain);
         subTypePlans.add(subPlan);
       }
       if (subTypePlans.size() > 0) {
@@ -2026,7 +2026,7 @@ public class SelectExecutionPlanner {
     if (sortedDescriptors.isEmpty()) {
       descriptors = Collections.emptyList();
     } else {
-      descriptors = sortedDescriptors.stream().filter(x -> x.getFirst().equals(sortedDescriptors.get(0).getFirst())).map(x -> x.getSecond())
+      descriptors = sortedDescriptors.stream().filter(x -> x.getFirst().equals(sortedDescriptors.get(0).getFirst())).map(Pair::getSecond)
           .collect(Collectors.toList());
     }
 

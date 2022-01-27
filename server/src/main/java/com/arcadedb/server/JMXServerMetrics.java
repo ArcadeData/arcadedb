@@ -43,12 +43,12 @@ public class JMXServerMetrics implements ServerMetrics {
   @Override
   public MetricTimer timer(final String name) {
     final Timer.Context t = metricsRegistry.timer(name).time();
-    return () -> t.stop();
+    return t::stop;
   }
 
   @Override
   public MetricMeter meter(final String name) {
     final Meter m = metricsRegistry.meter(name);
-    return () -> m.mark();
+    return m::mark;
   }
 }

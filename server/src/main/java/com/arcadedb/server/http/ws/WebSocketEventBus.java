@@ -44,9 +44,9 @@ public class WebSocketEventBus {
   }
 
   public void stop() {
-    subscribers.values().forEach(x -> x.values().forEach(y -> y.close()));
+    subscribers.values().forEach(x -> x.values().forEach(EventWatcherSubscription::close));
     subscribers.clear();
-    databaseWatchers.values().forEach(x -> x.shutdown());
+    databaseWatchers.values().forEach(DatabaseEventWatcherThread::shutdown);
     databaseWatchers.clear();
   }
 

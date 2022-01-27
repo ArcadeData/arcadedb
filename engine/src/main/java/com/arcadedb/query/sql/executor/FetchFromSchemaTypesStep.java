@@ -55,7 +55,7 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
       try {
         final Schema schema = ctx.getDatabase().getSchema();
 
-        final List<String> orderedTypes = schema.getTypes().stream().map(x -> x.getName()).sorted(String::compareToIgnoreCase).collect(Collectors.toList());
+        final List<String> orderedTypes = schema.getTypes().stream().map(DocumentType::getName).sorted(String::compareToIgnoreCase).collect(Collectors.toList());
         for (String typeName : orderedTypes) {
           final DocumentType type = schema.getType(typeName);
 
@@ -75,10 +75,10 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
 
           r.setProperty("type", t);
 
-          List<String> parents = type.getSuperTypes().stream().map(pt -> pt.getName()).collect(Collectors.toList());
+          List<String> parents = type.getSuperTypes().stream().map(DocumentType::getName).collect(Collectors.toList());
           r.setProperty("parentTypes", parents);
 
-          final List<ResultInternal> propertiesTypes = type.getPropertyNames().stream().sorted(String::compareToIgnoreCase).map(name -> type.getProperty(name))
+          final List<ResultInternal> propertiesTypes = type.getPropertyNames().stream().sorted(String::compareToIgnoreCase).map(type::getProperty)
               .map(property -> {
                 final ResultInternal propRes = new ResultInternal();
                 propRes.setProperty("id", property.getId());

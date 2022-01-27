@@ -131,7 +131,7 @@ public class FetchFromRidsStep extends AbstractExecutionStep {
   public Result serialize() {
     ResultInternal result = ExecutionStepInternal.basicSerialize(this);
     if (rids != null) {
-      result.setProperty("rids", rids.stream().map(x -> x.toString()).collect(Collectors.toList()));
+      result.setProperty("rids", rids.stream().map(RID::toString).collect(Collectors.toList()));
     }
     return result;
   }

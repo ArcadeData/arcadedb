@@ -47,7 +47,7 @@ public class UpdateExecutionPlanner {
     this.target = oUpdateStatement.getTarget().copy();
     this.whereClause = oUpdateStatement.getWhereClause() == null ? null : oUpdateStatement.getWhereClause().copy();
     this.operations =
-        oUpdateStatement.getOperations() == null ? null : oUpdateStatement.getOperations().stream().map(x -> x.copy()).collect(Collectors.toList());
+        oUpdateStatement.getOperations() == null ? null : oUpdateStatement.getOperations().stream().map(UpdateOperations::copy).collect(Collectors.toList());
     this.upsert = oUpdateStatement.isUpsert();
 
     this.returnBefore = oUpdateStatement.isReturnBefore();

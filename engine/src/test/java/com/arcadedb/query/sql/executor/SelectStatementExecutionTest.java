@@ -24,6 +24,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.index.Index;
@@ -3388,7 +3389,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     if (clusterIds.length < 3) {
       return;
     }
-    System.arraycopy(clazz.getBuckets(false).stream().mapToInt(x -> x.getId()).toArray(), 0, clusterIds, 0, clusterIds.length);
+    System.arraycopy(clazz.getBuckets(false).stream().mapToInt(Bucket::getId).toArray(), 0, clusterIds, 0, clusterIds.length);
     Arrays.sort(clusterIds);
 
     for (int i = 0; i < clusterIds.length; i++) {
@@ -3424,7 +3425,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     if (clusterIds.length < 3) {
       return;
     }
-    System.arraycopy(clazz.getBuckets(false).stream().mapToInt(x -> x.getId()).toArray(), 0, clusterIds, 0, clusterIds.length);
+    System.arraycopy(clazz.getBuckets(false).stream().mapToInt(Bucket::getId).toArray(), 0, clusterIds, 0, clusterIds.length);
     Arrays.sort(clusterIds);
 
     for (int i = 0; i < clusterIds.length; i++) {

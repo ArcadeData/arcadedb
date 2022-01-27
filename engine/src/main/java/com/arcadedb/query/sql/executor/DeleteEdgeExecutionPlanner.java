@@ -45,7 +45,7 @@ public class DeleteEdgeExecutionPlanner {
       this.rids = new ArrayList<>();
       rids.add(stm.getRid().copy());
     } else {
-      this.rids = stm.getRids() == null ? null : stm.getRids().stream().map(x -> x.copy()).collect(Collectors.toList());
+      this.rids = stm.getRids() == null ? null : stm.getRids().stream().map(Rid::copy).collect(Collectors.toList());
     }
 
     this.leftExpression = stm.getLeftExpression() == null ? null : stm.getLeftExpression().copy();

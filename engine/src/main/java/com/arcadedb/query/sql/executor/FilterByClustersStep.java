@@ -23,6 +23,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -46,7 +47,7 @@ public class FilterByClustersStep extends AbstractExecutionStep {
 
   private void init(Database db) {
     if (this.bucketIds == null) {
-      this.bucketIds = clusters.stream().filter(x -> x != null).map(x -> db.getSchema().getBucketByName(x).getId()).collect(Collectors.toSet());
+      this.bucketIds = clusters.stream().filter(Objects::nonNull).map(x -> db.getSchema().getBucketByName(x).getId()).collect(Collectors.toSet());
     }
   }
 

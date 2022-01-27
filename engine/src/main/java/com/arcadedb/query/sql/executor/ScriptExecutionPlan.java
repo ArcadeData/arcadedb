@@ -152,7 +152,7 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
     result.setProperty("javaType", getClass().getName());
     result.setProperty("cost", getCost());
     result.setProperty("prettyPrint", prettyPrint(0, 2));
-    result.setProperty("steps", steps == null ? null : steps.stream().map(x -> x.toResult()).collect(Collectors.toList()));
+    result.setProperty("steps", steps == null ? null : steps.stream().map(ExecutionStep::toResult).collect(Collectors.toList()));
     return result;
   }
 

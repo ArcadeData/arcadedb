@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
@@ -76,7 +77,7 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
       throw new CommandExecutionException("Type " + className + " not found");
     }
 
-    final int[] typeBuckets = type.getBuckets(true).stream().mapToInt(x -> x.getId()).distinct().sorted().toArray();
+    final int[] typeBuckets = type.getBuckets(true).stream().mapToInt(Bucket::getId).distinct().sorted().toArray();
     List<Integer> filteredTypeBuckets = new ArrayList<>();
     for (int bucketId : typeBuckets) {
       String bucketName = ctx.getDatabase().getSchema().getBucketById(bucketId).getName();
@@ -213,7 +214,7 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
     for (ExecutionStep step : getSubSteps()) {
       ((AbstractExecutionStep) step).sendTimeout();
     }
-    prev.ifPresent(p -> p.sendTimeout());
+    prev.ifPresent(ExecutionStepInternal::sendTimeout);
   }
 
   @Override
@@ -221,7 +222,7 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
     for (ExecutionStep step : getSubSteps()) {
       ((AbstractExecutionStep) step).close();
     }
-    prev.ifPresent(p -> p.close());
+    prev.ifPresent(ExecutionStepInternal::close);
   }
 
   @Override
@@ -246,7 +247,7 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
 
   @Override
   public long getCost() {
-    return getSubSteps().stream().map(x -> x.getCost()).reduce((a, b) -> a + b).orElse(0L);
+    return getSubSteps().stream().map(ExecutionStep::getCost).reduce(Long::sum).orElse(0L);
   }
 
   @Override

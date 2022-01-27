@@ -53,7 +53,7 @@ public interface ExecutionStep {
     result.setProperty(InternalExecutionPlan.JAVA_TYPE, getClass().getName());
     result.setProperty("cost", getCost());
     result.setProperty("subSteps",
-        getSubSteps() == null ? null : getSubSteps().stream().map(x -> x.toResult()).collect(Collectors.toList()));
+        getSubSteps() == null ? null : getSubSteps().stream().map(ExecutionStep::toResult).collect(Collectors.toList()));
     result.setProperty("description", getDescription());
     return result;
   }
