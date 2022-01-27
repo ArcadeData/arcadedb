@@ -826,7 +826,7 @@ public class EmbeddedSchema implements Schema {
     if (buckets > 32)
       throw new IllegalArgumentException("Cannot create " + buckets + " buckets: maximum is 32");
 
-    if (typeName.indexOf(",") > -1)
+    if (typeName.contains(","))
       throw new IllegalArgumentException("Type name '" + typeName + "' contains non valid characters");
 
     if (types.containsKey(typeName))
@@ -921,7 +921,7 @@ public class EmbeddedSchema implements Schema {
     if (buckets > 32)
       throw new IllegalArgumentException("Cannot create " + buckets + " buckets: maximum is 32");
 
-    if (typeName.indexOf(",") > -1)
+    if (typeName.contains(","))
       throw new IllegalArgumentException("Vertex type name '" + typeName + "' contains non valid characters");
 
     if (types.containsKey(typeName))
@@ -1013,7 +1013,7 @@ public class EmbeddedSchema implements Schema {
     if (buckets > 32)
       throw new IllegalArgumentException("Cannot create " + buckets + " buckets: maximum is 32");
 
-    if (typeName.indexOf(",") > -1)
+    if (typeName.contains(","))
       throw new IllegalArgumentException("Edge type name '" + typeName + "' contains non valid characters");
 
     if (types.containsKey(typeName))
