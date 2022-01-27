@@ -101,10 +101,10 @@ public class SQLFunctionPercentile extends SQLFunctionAbstract {
   }
 
   private Number evaluate(final List<Number> iValues, final double iQuantile) {
-    Collections.sort(iValues, (o1, o2) -> {
-      final double d1 = o1.doubleValue();
-      final double d2 = o2.doubleValue();
-      return Double.compare(d1, d2);
+    iValues.sort((o1, o2) -> {
+        final double d1 = o1.doubleValue();
+        final double d2 = o2.doubleValue();
+        return Double.compare(d1, d2);
     });
 
     final double n = iValues.size();

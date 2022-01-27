@@ -132,10 +132,10 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
       list.add(new IndexCursorEntry(keys, entry.getKey(), entry.getValue().get()));
 
     if (list.size() > 1)
-      Collections.sort(list, (o1, o2) -> {
-        if (o1.score == o2.score)
-          return 0;
-        return o1.score < o2.score ? -1 : 1;
+      list.sort((o1, o2) -> {
+          if (o1.score == o2.score)
+              return 0;
+          return o1.score < o2.score ? -1 : 1;
       });
 
     return new TempIndexCursor(list);
