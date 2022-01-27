@@ -88,8 +88,7 @@ public class Pattern {
    * @return
    */
   public List<Pattern> getDisjointPatterns() {
-    Map<PatternNode, String> reverseMap = new IdentityHashMap<>();
-    reverseMap.putAll(this.aliasToNode.entrySet().stream().collect(Collectors.toMap(Map.Entry::getValue, Map.Entry::getKey)));
+      Map<PatternNode, String> reverseMap = new IdentityHashMap<>(this.aliasToNode.entrySet().stream().collect(Collectors.toMap(Map.Entry::getValue, Map.Entry::getKey)));
 
     List<Pattern> result = new ArrayList<>();
     while (!reverseMap.isEmpty()) {

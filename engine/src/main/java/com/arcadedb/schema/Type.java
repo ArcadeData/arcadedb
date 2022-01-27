@@ -362,8 +362,7 @@ public enum Type {
         // we will add all of the items in the collection to a set.  Otherwise
         // we will create a singleton set with only the value in it.
         if (iValue instanceof Collection<?>) {
-          final Set<Object> set = new HashSet<Object>();
-          set.addAll((Collection<? extends Object>) iValue);
+            final Set<Object> set = new HashSet<Object>((Collection<? extends Object>) iValue);
           return set;
         } else {
           return Collections.singleton(iValue);
@@ -374,8 +373,7 @@ public enum Type {
         // we will add all of the items in the collection to a List.  Otherwise
         // we will create a singleton List with only the value in it.
         if (iValue instanceof Collection<?>) {
-          final List<Object> list = new ArrayList<Object>();
-          list.addAll((Collection<? extends Object>) iValue);
+            final List<Object> list = new ArrayList<Object>((Collection<? extends Object>) iValue);
           return list;
         } else {
           return Collections.singletonList(iValue);
@@ -386,8 +384,7 @@ public enum Type {
         // we will return a list if the value is a collection or
         // a singleton set if the value is not a collection.
         if (iValue instanceof Collection<?>) {
-          final List<Object> set = new ArrayList<Object>();
-          set.addAll((Collection<? extends Object>) iValue);
+            final List<Object> set = new ArrayList<Object>((Collection<? extends Object>) iValue);
           return set;
         } else {
           return Collections.singleton(iValue);
