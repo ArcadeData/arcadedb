@@ -142,18 +142,18 @@ public class SQLFunctionAbsoluteValueTest {
 
     @Test
     public void testPositiveBigDecimal() {
-        function.execute(null, null, null, new Object[]{new BigDecimal(10.5D)}, null);
+        function.execute(null, null, null, new Object[]{new BigDecimal("10.5")}, null);
         Object result = function.getResult();
         assertTrue(result instanceof BigDecimal);
-        assertEquals(result, new BigDecimal(10.5D));
+        assertEquals(result, new BigDecimal("10.5"));
     }
 
     @Test
     public void testNegativeBigDecimal() {
-        function.execute(null, null, null, new Object[]{new BigDecimal(-10.5D)}, null);
+        function.execute(null, null, null, new Object[]{BigDecimal.valueOf(-10.5D)}, null);
         Object result = function.getResult();
         assertTrue(result instanceof BigDecimal);
-        assertEquals(result, new BigDecimal(10.5D));
+        assertEquals(result, new BigDecimal("10.5"));
     }
 
     @Test

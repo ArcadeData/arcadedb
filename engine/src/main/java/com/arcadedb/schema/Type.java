@@ -513,7 +513,7 @@ public enum Type {
       else if (b instanceof Double)
         return a.floatValue() + b.doubleValue();
       else if (b instanceof BigDecimal)
-        return new BigDecimal(a.floatValue()).add((BigDecimal) b);
+        return BigDecimal.valueOf(a.floatValue()).add((BigDecimal) b);
 
     } else if (a instanceof Double) {
       if (b instanceof Integer)
@@ -527,7 +527,7 @@ public enum Type {
       else if (b instanceof Double)
         return a.doubleValue() + b.doubleValue();
       else if (b instanceof BigDecimal)
-        return new BigDecimal(a.doubleValue()).add((BigDecimal) b);
+        return BigDecimal.valueOf(a.doubleValue()).add((BigDecimal) b);
 
     } else if (a instanceof BigDecimal) {
       if (b instanceof Integer)
@@ -537,9 +537,9 @@ public enum Type {
       else if (b instanceof Short)
         return ((BigDecimal) a).add(new BigDecimal(b.shortValue()));
       else if (b instanceof Float)
-        return ((BigDecimal) a).add(new BigDecimal(b.floatValue()));
+        return ((BigDecimal) a).add(BigDecimal.valueOf(b.floatValue()));
       else if (b instanceof Double)
-        return ((BigDecimal) a).add(new BigDecimal(b.doubleValue()));
+        return ((BigDecimal) a).add(BigDecimal.valueOf(b.doubleValue()));
       else if (b instanceof BigDecimal)
         return ((BigDecimal) a).add((BigDecimal) b);
 
@@ -622,7 +622,7 @@ public enum Type {
       else if (b instanceof Double)
         return a.floatValue() - b.doubleValue();
       else if (b instanceof BigDecimal)
-        return new BigDecimal(a.floatValue()).subtract((BigDecimal) b);
+        return BigDecimal.valueOf(a.floatValue()).subtract((BigDecimal) b);
 
     } else if (a instanceof Double) {
       if (b instanceof Integer)
@@ -636,7 +636,7 @@ public enum Type {
       else if (b instanceof Double)
         return a.doubleValue() - b.doubleValue();
       else if (b instanceof BigDecimal)
-        return new BigDecimal(a.doubleValue()).subtract((BigDecimal) b);
+        return BigDecimal.valueOf(a.doubleValue()).subtract((BigDecimal) b);
 
     } else if (a instanceof BigDecimal) {
       if (b instanceof Integer)
@@ -646,9 +646,9 @@ public enum Type {
       else if (b instanceof Short)
         return ((BigDecimal) a).subtract(new BigDecimal(b.shortValue()));
       else if (b instanceof Float)
-        return ((BigDecimal) a).subtract(new BigDecimal(b.floatValue()));
+        return ((BigDecimal) a).subtract(BigDecimal.valueOf(b.floatValue()));
       else if (b instanceof Double)
-        return ((BigDecimal) a).subtract(new BigDecimal(b.doubleValue()));
+        return ((BigDecimal) a).subtract(BigDecimal.valueOf(b.doubleValue()));
       else if (b instanceof BigDecimal)
         return ((BigDecimal) a).subtract((BigDecimal) b);
 
@@ -705,14 +705,14 @@ public enum Type {
       if (max instanceof Double)
         context = context.doubleValue();
       else if (max instanceof BigDecimal)
-        context = new BigDecimal(context.floatValue());
+        context = BigDecimal.valueOf(context.floatValue());
       else if (max instanceof Byte || max instanceof Short || max instanceof Integer || max instanceof Long)
         max = max.floatValue();
 
     } else if (context instanceof Double) {
       // DOUBLE
       if (max instanceof BigDecimal)
-        context = new BigDecimal(context.doubleValue());
+        context = BigDecimal.valueOf(context.doubleValue());
       else if (max instanceof Byte || max instanceof Short || max instanceof Integer || max instanceof Long || max instanceof Float)
         max = max.doubleValue();
 
@@ -721,9 +721,9 @@ public enum Type {
       if (max instanceof Integer)
         max = new BigDecimal((Integer) max);
       else if (max instanceof Float)
-        max = new BigDecimal((Float) max);
+        max = BigDecimal.valueOf((Float) max);
       else if (max instanceof Double)
-        max = new BigDecimal((Double) max);
+        max = BigDecimal.valueOf((Double) max);
       else if (max instanceof Short)
         max = new BigDecimal((Short) max);
       else if (max instanceof Byte)
