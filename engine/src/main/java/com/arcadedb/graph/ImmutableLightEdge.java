@@ -117,10 +117,9 @@ public class ImmutableLightEdge extends ImmutableDocument implements LightEdge {
 
   @Override
   public synchronized String toString() {
-    final StringBuilder buffer = new StringBuilder();
-    buffer.append(out.toString());
-    buffer.append("<->");
-    buffer.append(in.toString());
-    return buffer.toString();
+      String buffer = out.toString() +
+              "<->" +
+              in.toString();
+    return buffer;
   }
 }
