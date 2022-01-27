@@ -187,12 +187,10 @@ public class PerformanceVertexIndexTest {
   }
 
   private void checkLookups(final int step) {
-
+      long begin = System.currentTimeMillis();
       try (Database database = new DatabaseFactory(PerformanceTest.DATABASE_PATH).open(PaginatedFile.MODE.READ_ONLY)) {
-          long begin = System.currentTimeMillis();
-          LogManager.instance().log(this, Level.INFO, "TEST: Lookup for keys...");
 
-          begin = System.currentTimeMillis();
+          LogManager.instance().log(this, Level.INFO, "TEST: Lookup for keys...");
 
           int checked = 0;
 
