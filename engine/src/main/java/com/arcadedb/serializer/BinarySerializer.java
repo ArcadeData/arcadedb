@@ -253,7 +253,7 @@ public class BinarySerializer {
     case BinaryTypes.TYPE_NULL:
       break;
     case BinaryTypes.TYPE_COMPRESSED_STRING:
-      content.putUnsignedNumber(((Integer) value).intValue());
+      content.putUnsignedNumber((Integer) value);
       break;
     case BinaryTypes.TYPE_BINARY:
       if (value instanceof byte[])

@@ -34,7 +34,7 @@ public class RDFImporterFormat extends CSVImporterFormat {
       final ImporterContext context, final ImporterSettings settings) throws ImportException {
     AbstractParser csvParser = createCSVParser(settings, ",");
 
-    long skipEntries = settings.edgesSkipEntries != null ? settings.edgesSkipEntries.longValue() : 0;
+    long skipEntries = settings.edgesSkipEntries != null ? settings.edgesSkipEntries : 0;
     if (settings.edgesSkipEntries == null)
       // BY DEFAULT SKIP THE FIRST LINE AS HEADER
       skipEntries = 1l;
