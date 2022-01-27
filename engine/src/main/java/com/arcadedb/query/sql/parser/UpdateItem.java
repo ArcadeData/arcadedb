@@ -151,7 +151,7 @@ public class UpdateItem extends SimpleNode {
   private Object convertToPropertyType(final ResultInternal res, final Identifier attrName, Object newValue) {
     final Document doc = res.toElement();
     Optional<DocumentType> optSchema = Optional.ofNullable(doc.getType());
-    if (!optSchema.isPresent()) {
+    if (optSchema.isEmpty()) {
       return newValue;
     }
 
