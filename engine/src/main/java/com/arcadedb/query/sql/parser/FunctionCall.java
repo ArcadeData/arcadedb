@@ -36,7 +36,7 @@ public class FunctionCall extends SimpleNode {
 
   protected Identifier name;
 
-  protected List<Expression> params = new ArrayList<Expression>();
+  protected List<Expression> params = new ArrayList<>();
 
   public FunctionCall(int id) {
     super(id);
@@ -93,7 +93,7 @@ public class FunctionCall extends SimpleNode {
   }
 
   private Object execute(Object targetObjects, CommandContext ctx, String name) {
-    List<Object> paramValues = new ArrayList<Object>();
+    List<Object> paramValues = new ArrayList<>();
 
     Object record = null;
 

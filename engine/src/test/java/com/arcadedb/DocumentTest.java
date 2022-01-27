@@ -124,7 +124,7 @@ public class DocumentTest extends TestHelper {
       doc.set("name", "Tim");
       final EmbeddedDocument embeddedObj = (EmbeddedDocument) doc.newEmbeddedDocument("ConversionTest", "embeddedObj").set("embeddedObj", true);
 
-      final List<EmbeddedDocument> embeddedList = new ArrayList<EmbeddedDocument>();
+      final List<EmbeddedDocument> embeddedList = new ArrayList<>();
       doc.set("embeddedList", embeddedList);
       doc.newEmbeddedDocument("ConversionTest", "embeddedList").set("embeddedList", true);
 

@@ -212,13 +212,13 @@ public class MultiIterator<T> implements Iterator<T>, Iterable<T> {
             final int arraySize = Array.getLength(next);
             if (arraySize > 0) {
               if (arraySize == 1)
-                partialIterator = new IterableObject<T>((T) Array.get(next, 0));
+                partialIterator = new IterableObject<>((T) Array.get(next, 0));
               else
                 partialIterator = new IterableObjectArray<T>(next).iterator();
               return true;
             }
           } else {
-            partialIterator = new IterableObject<T>((T) next);
+            partialIterator = new IterableObject<>((T) next);
             return true;
           }
         }

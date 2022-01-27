@@ -94,16 +94,16 @@ public class ArcadeFilterByTypeStep<S, E extends Element> extends AbstractStep<S
         throw new IllegalArgumentException("Type '" + typeName + "' is not an edge type");
 
       final Iterator<Record> rawIterator = graph.getDatabase().iterateType(typeName, true);
-      iteratorSupplier = () -> new Iterator<E>() {
-        @Override
-        public boolean hasNext() {
-          return rawIterator.hasNext();
-        }
+      iteratorSupplier = () -> new Iterator<>() {
+          @Override
+          public boolean hasNext() {
+              return rawIterator.hasNext();
+          }
 
-        @Override
-        public E next() {
-          return (E) new ArcadeEdge(graph, rawIterator.next().asEdge());
-        }
+          @Override
+          public E next() {
+              return (E) new ArcadeEdge(graph, rawIterator.next().asEdge());
+          }
       };
     } else
       throw new IllegalArgumentException("Unsupported returning class '" + returnClass + "'");

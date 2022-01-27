@@ -29,7 +29,7 @@ import java.util.stream.Collectors;
  * Created by luigidellaquila on 28/07/15.
  */
 public class Pattern {
-  public Map<String, PatternNode> aliasToNode = new LinkedHashMap<String, PatternNode>();
+  public Map<String, PatternNode> aliasToNode = new LinkedHashMap<>();
   public int                      numOfEdges  = 0;
 
   public void addExpression(MatchExpression expression) {

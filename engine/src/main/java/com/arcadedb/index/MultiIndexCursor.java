@@ -196,7 +196,7 @@ public class MultiIndexCursor implements IndexCursor {
   }
 
   private void initCursors() {
-    cursorsNextValues = new ArrayList<Identifiable>(cursors.size());
+    cursorsNextValues = new ArrayList<>(cursors.size());
     for (int i = 0; i < cursors.size(); ++i) {
       cursorsNextValues.add(null);
 
