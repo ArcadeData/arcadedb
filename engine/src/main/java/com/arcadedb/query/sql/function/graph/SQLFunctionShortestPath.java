@@ -95,7 +95,7 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
 
     if (source instanceof Identifiable) {
       final Document elem = (Document) ((Identifiable) source).getRecord();
-      if (elem == null || !(elem instanceof Vertex))
+      if (!(elem instanceof Vertex))
         throw new IllegalArgumentException("The sourceVertex must be a vertex record");
 
       ctx.sourceVertex = (Vertex) elem;
@@ -117,7 +117,7 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
 
     if (dest instanceof Identifiable) {
       Document elem = (Document) ((Identifiable) dest).getRecord();
-      if (elem == null || !(elem instanceof Vertex))
+      if (!(elem instanceof Vertex))
         throw new IllegalArgumentException("The destinationVertex must be a vertex record");
 
       ctx.destinationVertex = (Vertex) elem;
