@@ -202,7 +202,7 @@ public class ArraySingleValuesSelector extends SimpleNode {
     List values = this.items.stream().map(x -> x.getValue(originalRecord, null, ctx)).collect(Collectors.toList());
     if (currentValue instanceof List) {
       List<Object> list = (List) currentValue;
-      Collections.sort(values, this::compareKeysForRemoval);
+      values.sort(this::compareKeysForRemoval);
       for (Object val : values) {
         if (val instanceof Integer) {
           list.remove((int) (Integer) val);
