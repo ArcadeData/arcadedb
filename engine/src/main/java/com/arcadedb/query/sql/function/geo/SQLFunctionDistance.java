@@ -47,7 +47,7 @@ public class SQLFunctionDistance extends SQLFunctionAbstract {
       if (iParams[i] == null)
         return null;
 
-      values[i] = ((Double) Type.convert(iContext.getDatabase(), iParams[i], Double.class)).doubleValue();
+      values[i] = (Double) Type.convert(iContext.getDatabase(), iParams[i], Double.class);
     }
 
     final double deltaLat = Math.toRadians(values[2] - values[0]);

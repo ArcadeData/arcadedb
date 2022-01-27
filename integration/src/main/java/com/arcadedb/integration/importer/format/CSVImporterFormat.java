@@ -74,7 +74,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
     final long beginTime = System.currentTimeMillis();
 
-    long skipEntries = settings.documentsSkipEntries != null ? settings.documentsSkipEntries.longValue() : 0;
+    long skipEntries = settings.documentsSkipEntries != null ? settings.documentsSkipEntries : 0;
     if (settings.documentsHeader == null && settings.documentsSkipEntries == null)
       // BY DEFAULT SKIP THE FIRST LINE AS HEADER
       skipEntries = 1l;
@@ -191,7 +191,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
     database.async().onError(exception -> LogManager.instance().log(this, Level.SEVERE, "Error on inserting vertices", exception));
 
-    long skipEntries = settings.verticesSkipEntries != null ? settings.verticesSkipEntries.longValue() : 0;
+    long skipEntries = settings.verticesSkipEntries != null ? settings.verticesSkipEntries : 0;
     if (settings.verticesSkipEntries == null)
       // BY DEFAULT SKIP THE FIRST LINE AS HEADER
       skipEntries = 1l;
@@ -311,7 +311,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
     database.async().onError(exception -> LogManager.instance().log(this, Level.SEVERE, "Error on inserting edges", exception));
 
-    long skipEntries = settings.edgesSkipEntries != null ? settings.edgesSkipEntries.longValue() : 0;
+    long skipEntries = settings.edgesSkipEntries != null ? settings.edgesSkipEntries : 0;
     if (settings.edgesSkipEntries == null)
       // BY DEFAULT SKIP THE FIRST LINE AS HEADER
       skipEntries = 1l;
@@ -448,7 +448,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     switch (entityType) {
     case VERTEX:
       header = settings.verticesHeader;
-      skipEntries = settings.verticesSkipEntries != null ? settings.verticesSkipEntries.longValue() : 0;
+      skipEntries = settings.verticesSkipEntries != null ? settings.verticesSkipEntries : 0;
       if (settings.verticesSkipEntries == null)
         // BY DEFAULT SKIP THE FIRST LINE AS HEADER
         skipEntries = 1l;
@@ -456,7 +456,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
     case EDGE:
       header = settings.edgesHeader;
-      skipEntries = settings.edgesSkipEntries != null ? settings.edgesSkipEntries.longValue() : 0;
+      skipEntries = settings.edgesSkipEntries != null ? settings.edgesSkipEntries : 0;
       if (settings.edgesSkipEntries == null)
         // BY DEFAULT SKIP THE FIRST LINE AS HEADER
         skipEntries = 1l;
@@ -464,7 +464,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
     case DOCUMENT:
       header = settings.documentsHeader;
-      skipEntries = settings.documentsSkipEntries != null ? settings.documentsSkipEntries.longValue() : 0;
+      skipEntries = settings.documentsSkipEntries != null ? settings.documentsSkipEntries : 0;
       if (settings.documentsSkipEntries == null)
         // BY DEFAULT SKIP THE FIRST LINE AS HEADER
         skipEntries = 1l;

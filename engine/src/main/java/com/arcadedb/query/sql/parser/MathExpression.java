@@ -162,7 +162,7 @@ public class MathExpression extends SimpleNode {
       @Override
       public Number apply(Integer left, Integer right) {
         final Integer sum = left + right;
-        if (sum < 0 && left.intValue() > 0 && right.intValue() > 0)
+        if (sum < 0 && left > 0 && right > 0)
           // SPECIAL CASE: UPGRADE TO LONG
           return left.longValue() + right;
         return sum;
@@ -212,7 +212,7 @@ public class MathExpression extends SimpleNode {
       @Override
       public Number apply(Integer left, Integer right) {
         int result = left - right;
-        if (result > 0 && left.intValue() < 0 && right.intValue() > 0)
+        if (result > 0 && left < 0 && right > 0)
           // SPECIAL CASE: UPGRADE TO LONG
           return left.longValue() - right;
 

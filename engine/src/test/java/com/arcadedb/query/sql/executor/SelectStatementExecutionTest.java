@@ -2092,7 +2092,7 @@ public class SelectStatementExecutionTest extends TestHelper {
       Assertions.assertNotNull(item.getProperty("iSeq"));
       Integer first = item.getProperty("i");
       Integer second = item.getProperty("iSeq");
-      Assertions.assertTrue(first + second == 0 || second.intValue() % first.intValue() == 0);
+      Assertions.assertTrue(first + second == 0 || second % first == 0);
     }
     Assertions.assertFalse(result.hasNext());
     result.close();
@@ -2126,7 +2126,7 @@ public class SelectStatementExecutionTest extends TestHelper {
       Assertions.assertNotNull(item.getProperty("iSeq"));
       Integer first = item.getProperty("i");
       Integer second = item.getProperty("iSeq");
-      Assertions.assertTrue(first + second == 0 || second.intValue() % first.intValue() == 0);
+      Assertions.assertTrue(first + second == 0 || second % first == 0);
     }
     Assertions.assertFalse(result.hasNext());
     result.close();
