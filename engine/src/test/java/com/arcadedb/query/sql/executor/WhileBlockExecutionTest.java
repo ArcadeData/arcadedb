@@ -51,7 +51,7 @@ public class WhileBlockExecutionTest extends TestHelper {
     int sum = 0;
     while (results.hasNext()) {
       Result item = results.next();
-      sum += (Integer) item.getProperty("value");
+      sum += item.getProperty("value");
       tot++;
     }
     Assertions.assertEquals(3, tot);
@@ -83,7 +83,7 @@ public class WhileBlockExecutionTest extends TestHelper {
     int sum = 0;
     while (results.hasNext()) {
       Result item = results.next();
-      sum += (Integer) item.getProperty("value");
+      sum += item.getProperty("value");
       tot++;
     }
     Assertions.assertEquals(2, tot);

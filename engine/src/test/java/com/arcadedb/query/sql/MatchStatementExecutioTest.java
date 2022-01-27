@@ -1817,7 +1817,7 @@ public class MatchStatementExecutioTest extends TestHelper {
     for (int i = 0; i < 4; i++) {
       Assertions.assertTrue(result.hasNext());
       Result item = result.next();
-      sum += (Integer) item.getProperty("num");
+      sum += item.getProperty("num");
     }
 
     Assertions.assertFalse(result.hasNext());

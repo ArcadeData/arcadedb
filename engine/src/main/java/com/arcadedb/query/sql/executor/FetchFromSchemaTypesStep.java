@@ -89,7 +89,7 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
           r.setProperty("properties", propertiesTypes);
 
           final List<ResultInternal> indexes = type.getAllIndexes(false).stream().sorted(Comparator.comparing(Index::getName)).map(typeIndex -> {
-            final IndexInternal typeIndexInternal = (IndexInternal) typeIndex;
+            final IndexInternal typeIndexInternal = typeIndex;
             final ResultInternal propRes = new ResultInternal();
             propRes.setProperty("name", typeIndexInternal.getName());
             propRes.setProperty("typeName", typeIndexInternal.getTypeName());

@@ -193,7 +193,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
 
             Assertions.assertNotNull(value);
 
-            int fieldValue = (int) value.getProperty("id");
+            int fieldValue = value.getProperty("id");
             Assertions.assertTrue(fieldValue >= i && fieldValue <= i + 1);
 
             total++;
