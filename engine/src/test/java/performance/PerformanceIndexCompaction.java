@@ -40,27 +40,28 @@ public class PerformanceIndexCompaction {
   private void run() throws IOException, InterruptedException {
     GlobalConfiguration.INDEX_COMPACTION_RAM_MB.setValue(5);
 
-      try (Database database = new DatabaseFactory(PerformanceTest.DATABASE_PATH).open(PaginatedFile.MODE.READ_WRITE)) {
-          final long begin = System.currentTimeMillis();
-          System.out.println("Compacting all indexes...");
+    final long begin = System.currentTimeMillis();
+    try (Database database = new DatabaseFactory(PerformanceTest.DATABASE_PATH).open(PaginatedFile.MODE.READ_WRITE)) {
 
-          final long total = database.countType("Device", true);
-          long totalIndexed = countIndexedItems(database);
-          LogManager.instance().log(this, Level.INFO, "Total indexes items %d", totalIndexed);
+      System.out.println("Compacting all indexes...");
 
-          for (Index index : database.getSchema().getIndexes())
-              Assertions.assertTrue(((IndexInternal) index).compact());
+      final long total = database.countType("Device", true);
+      long totalIndexed = countIndexedItems(database);
+      LogManager.instance().log(this, Level.INFO, "Total indexes items %d", totalIndexed);
 
-          long totalIndexed2 = countIndexedItems(database);
+      for (Index index : database.getSchema().getIndexes())
+          Assertions.assertTrue(((IndexInternal) index).compact());
 
-          Assertions.assertEquals(total, totalIndexed);
-          Assertions.assertEquals(totalIndexed, totalIndexed2);
+      long totalIndexed2 = countIndexedItems(database);
 
-          System.out.println("Compaction done");
+      Assertions.assertEquals(total, totalIndexed);
+      Assertions.assertEquals(totalIndexed, totalIndexed2);
 
-      } finally {
-          System.out.println("Compaction finished in " + (System.currentTimeMillis() - begin) + "ms");
-      }
+      System.out.println("Compaction done");
+
+    } finally {
+      System.out.println("Compaction finished in " + (System.currentTimeMillis() - begin) + "ms");
+    }
 
   }
 
