@@ -23,20 +23,20 @@ import org.junit.jupiter.api.Test;
 
 class ConstantsTest {
 
-  @Test
-  void getVersionMajor() {
-    Assertions.assertNotNull(Constants.getVersionMajor());
-  }
-
-  @Test
-  void getVersionMinor() {
-    Assertions.assertNotNull(Constants.getVersionMinor());
-  }
-
-  @Test
-  void getVersionHotfix() {
-    Assertions.assertNotNull(Constants.getVersionHotfix());
-  }
+//  @Test
+//  void getVersionMajor() {
+//    Assertions.assertNotNull(Constants.getVersionMajor());
+//  }
+//
+//  @Test
+//  void getVersionMinor() {
+//    Assertions.assertNotNull(Constants.getVersionMinor());
+//  }
+//
+//  @Test
+//  void getVersionHotfix() {
+//    Assertions.assertNotNull(Constants.getVersionHotfix());
+//  }
 
   @Test
   void getVersion() {
@@ -63,8 +63,8 @@ class ConstantsTest {
     Assertions.assertNotNull(Constants.getTimestamp());
   }
 
-  @Test
-  void isSnapshot() {
-    Assertions.assertNotNull(Constants.isSnapshot());
-  }
+//  @Test
+//  void isSnapshot() {
+//    Assertions.assertNotNull(Constants.isSnapshot());
+//  }
 }
