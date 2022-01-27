@@ -114,7 +114,7 @@ public class FullBackupIT {
       importedDatabase.transaction(() -> {
         type.createProperty("thread", Type.INTEGER);
         type.createProperty("id", Type.INTEGER);
-        type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, new String[] { "thread", "id" });
+        type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "thread", "id");
         type.setBucketSelectionStrategy(new ThreadBucketSelectionStrategy() {
           @Override
           public int getBucketIdByRecord(Document record, boolean async) {
