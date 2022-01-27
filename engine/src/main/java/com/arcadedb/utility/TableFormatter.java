@@ -116,27 +116,24 @@ public class TableFormatter {
     final Map<String, Integer> columns = parseColumns(rows, limit);
 
     if (columnSorting != null) {
-      Collections.sort(rows, new Comparator<Object>() {
-        @Override
-        public int compare(final Object o1, final Object o2) {
-          final Document doc1 = (Document) ((Identifiable) o1).getRecord();
-          final Document doc2 = (Document) ((Identifiable) o2).getRecord();
-          final Object value1 = doc1.get(columnSorting.getFirst());
-          final Object value2 = doc2.get(columnSorting.getFirst());
-          final boolean ascending = columnSorting.getSecond();
+      Collections.sort(rows, (Comparator<Object>) (o1, o2) -> {
+        final Document doc1 = (Document) ((Identifiable) o1).getRecord();
+        final Document doc2 = (Document) ((Identifiable) o2).getRecord();
+        final Object value1 = doc1.get(columnSorting.getFirst());
+        final Object value2 = doc2.get(columnSorting.getFirst());
+        final boolean ascending = columnSorting.getSecond();
 
-          final int result;
-          if (value2 == null)
-            result = 1;
-          else if (value1 == null)
-            result = 0;
-          else if (value1 instanceof Comparable)
-            result = BinaryComparator.compareTo(value1, value2);
-          else
-            result = BinaryComparator.compareTo(value1.toString(), value2.toString());
+        final int result;
+        if (value2 == null)
+          result = 1;
+        else if (value1 == null)
+          result = 0;
+        else if (value1 instanceof Comparable)
+          result = BinaryComparator.compareTo(value1, value2);
+        else
+          result = BinaryComparator.compareTo(value1.toString(), value2.toString());
 
-          return ascending ? result : result * -1;
-        }
+        return ascending ? result : result * -1;
       });
     }
 

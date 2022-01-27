@@ -52,12 +52,7 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
 
   protected Map<Vertex, Double>   gScore = new HashMap<Vertex, Double>();
   protected Map<Vertex, Double>   fScore = new HashMap<Vertex, Double>();
-  protected PriorityQueue<Vertex> open   = new PriorityQueue<Vertex>(1, new Comparator<Vertex>() {
-
-    public int compare(Vertex nodeA, Vertex nodeB) {
-      return Double.compare(fScore.get(nodeA), fScore.get(nodeB));
-    }
-  });
+  protected PriorityQueue<Vertex> open   = new PriorityQueue<Vertex>(1, (nodeA, nodeB) -> Double.compare(fScore.get(nodeA), fScore.get(nodeB)));
 
   public SQLFunctionAstar() {
     super(NAME, 3, 4);
