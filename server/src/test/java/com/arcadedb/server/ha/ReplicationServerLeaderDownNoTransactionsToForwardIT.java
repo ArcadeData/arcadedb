@@ -119,12 +119,9 @@ public class ReplicationServerLeaderDownNoTransactionsToForwardIT extends Replic
           if (messages.incrementAndGet() > 10 && getServer(0).isStarted()) {
             testLog("TEST: Stopping the Leader...");
 
-            executeAsynchronously(new Callable() {
-              @Override
-              public Object call() {
-                getServer(0).stop();
-                return null;
-              }
+            executeAsynchronously(() -> {
+              getServer(0).stop();
+              return null;
             });
           }
         }

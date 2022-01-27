@@ -239,13 +239,10 @@ public class ACIDTransactionTest extends TestHelper {
     db.async().onError(exception -> errors.incrementAndGet());
 
     try {
-      ((DatabaseInternal) db).registerCallback(DatabaseInternal.CALLBACK_EVENT.TX_AFTER_WAL_WRITE, new Callable<Void>() {
-        @Override
-        public Void call() throws IOException {
-          if (total.incrementAndGet() > TOT - 10)
+      ((DatabaseInternal) db).registerCallback(DatabaseInternal.CALLBACK_EVENT.TX_AFTER_WAL_WRITE, () -> {
+        if (total.incrementAndGet() > TOT - 10)
             throw new IOException("Test IO Exception");
-          return null;
-        }
+        return null;
       });
 
       for (; total.get() < TOT; total.incrementAndGet()) {
