@@ -2057,13 +2057,12 @@ public class SelectStatementExecutionTest extends TestHelper {
     while (resultSet.hasNext()) {
       Result result = resultSet.next();
       Iterable edge = result.getProperty("$x");
-      Iterator<Identifiable> iter = edge.iterator();
-      while (iter.hasNext()) {
-        MutableVertex tMutableVertex = (MutableVertex) database.lookupByRID(iter.next().getIdentity(), true);
-        if (doc2Id.equals(tMutableVertex.getIdentity())) {
-          ++counter;
+        for (Identifiable identifiable : (Iterable<Identifiable>) edge) {
+            MutableVertex tMutableVertex = (MutableVertex) database.lookupByRID(identifiable.getIdentity(), true);
+            if (doc2Id.equals(tMutableVertex.getIdentity())) {
+                ++counter;
+            }
         }
-      }
     }
     Assertions.assertEquals(1, counter);
     resultSet.close();

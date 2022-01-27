@@ -767,12 +767,10 @@ public class TypeLSMTreeIndexTest extends TestHelper {
 
       LogManager.instance().log(this, Level.FINE, "FOUND %d ENTRIES", null, result.size());
 
-      Iterator<Map.Entry<Integer, Integer>> it = result.entrySet().iterator();
-      while (it.hasNext()) {
-        Map.Entry<Integer, Integer> next = it.next();
-        if (next.getValue() > 1)
-          LogManager.instance().log(this, Level.FINE, "- %d = %d", null, next.getKey(), next.getValue());
-      }
+        for (Map.Entry<Integer, Integer> next : result.entrySet()) {
+            if (next.getValue() > 1)
+                LogManager.instance().log(this, Level.FINE, "- %d = %d", null, next.getKey(), next.getValue());
+        }
     }
 
     Assertions.assertEquals(total, crossThreadsInserted.get());
