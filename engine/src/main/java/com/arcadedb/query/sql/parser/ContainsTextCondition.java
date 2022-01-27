@@ -51,7 +51,7 @@ public class ContainsTextCondition extends BooleanExpression {
       return false;
     }
 
-    return ((String) leftValue).indexOf((String) rightValue) > -1;
+    return ((String) leftValue).contains((String) rightValue);
   }
 
   @Override
@@ -65,7 +65,7 @@ public class ContainsTextCondition extends BooleanExpression {
       return false;
     }
 
-    return ((String) leftValue).indexOf((String) rightValue) > -1;
+    return ((String) leftValue).contains((String) rightValue);
   }
 
   public void toString(Map<String, Object> params, StringBuilder builder) {
