@@ -761,11 +761,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
       final Map<Integer, Integer> result = new HashMap<>();
       database.scanType(TYPE_NAME, true, record -> {
         final int id = (int) record.get("id");
-        Integer key = result.get(id);
-        if (key == null)
-          result.put(id, 1);
-        else
-          result.put(id, key + 1);
+          result.merge(id, 1, Integer::sum);
         return true;
       });
 

@@ -171,12 +171,8 @@ public class TableFormatter {
   }
 
   public void setColumnMetadata(final String columnName, final String metadataName, final String metadataValue) {
-    Map<String, String> metadata = columnMetadata.get(columnName);
-    if (metadata == null) {
-      metadata = new LinkedHashMap<String, String>();
-      columnMetadata.put(columnName, metadata);
-    }
-    metadata.put(metadataName, metadataValue);
+      Map<String, String> metadata = columnMetadata.computeIfAbsent(columnName, k -> new LinkedHashMap<String, String>());
+      metadata.put(metadataName, metadataValue);
   }
 
   public int getMaxWidthSize() {

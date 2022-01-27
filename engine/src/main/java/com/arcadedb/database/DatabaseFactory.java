@@ -120,12 +120,8 @@ public class DatabaseFactory implements AutoCloseable {
    * Test only API
    */
   public void registerCallback(final DatabaseInternal.CALLBACK_EVENT event, Callable<Void> callback) {
-    List<Callable<Void>> callbacks = this.callbacks.get(event);
-    if (callbacks == null) {
-      callbacks = new ArrayList<>();
-      this.callbacks.put(event, callbacks);
-    }
-    callbacks.add(callback);
+      List<Callable<Void>> callbacks = this.callbacks.computeIfAbsent(event, k -> new ArrayList<>());
+      callbacks.add(callback);
   }
 
   public static Database getActiveDatabaseInstance(final String databasePath) {

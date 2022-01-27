@@ -688,12 +688,8 @@ public class DocumentType {
   protected void addIndexInternal(final IndexInternal index, final int bucketId, final String[] propertyNames) {
     index.setMetadata(name, propertyNames, bucketId);
 
-    List<IndexInternal> list = bucketIndexesByBucket.get(bucketId);
-    if (list == null) {
-      list = new ArrayList<>();
-      bucketIndexesByBucket.put(bucketId, list);
-    }
-    list.add(index);
+      List<IndexInternal> list = bucketIndexesByBucket.computeIfAbsent(bucketId, k -> new ArrayList<>());
+      list.add(index);
 
     final List<String> propertyList = Arrays.asList(propertyNames);
 

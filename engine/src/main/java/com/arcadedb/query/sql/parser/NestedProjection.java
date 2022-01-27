@@ -161,7 +161,7 @@ public class NestedProjection extends SimpleNode {
       for (NestedProjectionItem item : includeItems) {
         String alias = item.alias != null ? item.alias.getStringValue() : item.expression.getDefaultAlias().getStringValue();
         ResultInternal elem = new ResultInternal();
-        input.entrySet().forEach(x -> elem.setProperty(x.getKey(), x.getValue()));
+        input.forEach((key, value1) -> elem.setProperty(key, value1));
         Object value = item.expression.execute(elem, ctx);
         if (item.expansion != null) {
           value = item.expand(expression, alias, value, ctx, recursion - 1);
