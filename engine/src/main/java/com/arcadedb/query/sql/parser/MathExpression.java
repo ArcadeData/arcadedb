@@ -570,13 +570,13 @@ public class MathExpression extends SimpleNode {
         else if (b instanceof Double)
           return operation.apply(a.doubleValue(), b.doubleValue());
         else if (b instanceof BigDecimal)
-          return operation.apply(new BigDecimal((Float) a), (BigDecimal) b);
+          return operation.apply(BigDecimal.valueOf((Float) a), (BigDecimal) b);
 
       } else if (a instanceof Double) {
         if (b instanceof Short || b instanceof Integer || b instanceof Long || b instanceof Float || b instanceof Double)
           return operation.apply(a.doubleValue(), b.doubleValue());
         else if (b instanceof BigDecimal)
-          return operation.apply(new BigDecimal((Double) a), (BigDecimal) b);
+          return operation.apply(BigDecimal.valueOf((Double) a), (BigDecimal) b);
 
       } else if (a instanceof BigDecimal) {
         if (b instanceof Integer)
@@ -586,9 +586,9 @@ public class MathExpression extends SimpleNode {
         else if (b instanceof Short)
           return operation.apply((BigDecimal) a, new BigDecimal((Short) b));
         else if (b instanceof Float)
-          return operation.apply((BigDecimal) a, new BigDecimal((Float) b));
+          return operation.apply((BigDecimal) a, BigDecimal.valueOf((Float) b));
         else if (b instanceof Double)
-          return operation.apply((BigDecimal) a, new BigDecimal((Double) b));
+          return operation.apply((BigDecimal) a, BigDecimal.valueOf((Double) b));
         else if (b instanceof BigDecimal)
           return operation.apply((BigDecimal) a, (BigDecimal) b);
       }

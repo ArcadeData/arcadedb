@@ -155,7 +155,7 @@ public class SerializerTest extends TestHelper {
       v.set("maxShort", Short.MAX_VALUE);
       v.set("minByte", Byte.MIN_VALUE);
       v.set("maxByte", Byte.MAX_VALUE);
-      v.set("decimal", new BigDecimal(9876543210.0123456789));
+      v.set("decimal", new BigDecimal("9876543210.0123456789"));
       v.set("string", "Miner");
 
       final Binary buffer = serializer.serialize(database, v);
@@ -181,7 +181,7 @@ public class SerializerTest extends TestHelper {
       Assertions.assertEquals(Byte.MAX_VALUE, record2.get("maxByte"));
 
       Assertions.assertTrue(record2.get("decimal") instanceof BigDecimal);
-      Assertions.assertEquals(new BigDecimal(9876543210.0123456789), record2.get("decimal"));
+      Assertions.assertEquals(new BigDecimal("9876543210.0123456789"), record2.get("decimal"));
       Assertions.assertEquals("Miner", record2.get("string"));
     });
   }
