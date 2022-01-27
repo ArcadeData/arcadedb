@@ -154,12 +154,8 @@ public class ServerProfilingIT {
       expectedSecurityException(() -> database.newVertex("Vertex1").save());
       database.newDocument("Document1").save();
       database.iterateType("Document1", true);
-      database.transaction(() -> {
-        database.iterateType("Document1", true).next().asDocument().modify().set("modified", true).save();
-      });
-      database.transaction(() -> {
-        database.iterateType("Document1", true).next().asDocument().delete();
-      });
+      database.transaction(() -> database.iterateType("Document1", true).next().asDocument().modify().set("modified", true).save());
+      database.transaction(() -> database.iterateType("Document1", true).next().asDocument().delete());
 
       setCurrentUser("root", database);
       dropSchema(database);
@@ -269,9 +265,7 @@ public class ServerProfilingIT {
       expectedSecurityException(() -> database.iterateType("Document1", true));
       expectedSecurityException(() -> database.lookupByRID(validRID, true));
 
-      database.transaction(() -> {
-        v.modify().set("justModified", true).save();
-      });
+      database.transaction(() -> v.modify().set("justModified", true).save());
 
       // SWITCH TO ROOT TO DROP THE SCHEMA
       setCurrentUser("root", database);

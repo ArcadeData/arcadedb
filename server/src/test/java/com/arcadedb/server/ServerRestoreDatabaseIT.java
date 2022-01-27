@@ -64,9 +64,7 @@ public class ServerRestoreDatabaseIT extends BaseGraphServerTest {
     Database database = new DatabaseFactory("./target/databases/" + getDatabaseName()).create();
 
     database.getSchema().createDocumentType("testDoc");
-    database.transaction(() -> {
-      database.newDocument("testDoc").set("prop", "value").save();
-    });
+    database.transaction(() -> database.newDocument("testDoc").set("prop", "value").save());
 
     final ResultSet result = database.command("sql", "backup database file://" + backupFile.getName());
     Assertions.assertTrue(result.hasNext());
