@@ -229,8 +229,8 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   public Map<String, Long> getStats() {
     checkIsValid();
     final Map<String, Long> stats = new HashMap<>();
-    for (Index index : indexesOnBuckets)
-      stats.putAll(((IndexInternal) index).getStats());
+    for (IndexInternal index : indexesOnBuckets)
+      stats.putAll(index.getStats());
     return stats;
   }
 

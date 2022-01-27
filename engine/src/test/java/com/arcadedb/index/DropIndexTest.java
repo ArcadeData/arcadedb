@@ -48,7 +48,7 @@ public class DropIndexTest extends TestHelper {
     type.createProperty("id", Integer.class);
     type.createProperty("name", String.class);
 
-    final Index typeIndex = database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
+    final TypeIndex typeIndex = database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
     final Index typeIndex2 = database.getSchema()
         .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, TYPE_NAME, new String[] { "name" }, PAGE_SIZE, LSMTreeIndexAbstract.NULL_STRATEGY.SKIP, null);
 
@@ -73,7 +73,7 @@ public class DropIndexTest extends TestHelper {
 
       database.begin();
 
-      final Index[] subIndexes = ((TypeIndex) typeIndex).getIndexesOnBuckets();
+      final Index[] subIndexes = typeIndex.getIndexesOnBuckets();
 
       database.getSchema().dropIndex(typeIndex.getName());
 

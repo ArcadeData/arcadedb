@@ -218,12 +218,12 @@ public class RemoteDatabase extends RWLockContext {
     Map<String, Object> params = mapArgs(args);
 
     return (ResultSet) databaseCommand("command", language, command, params, true, (connection, response) -> {
-      final ResultSet resultSet = new InternalResultSet();
+      final InternalResultSet resultSet = new InternalResultSet();
 
       final JSONArray resultArray = response.getJSONArray("result");
       for (int i = 0; i < resultArray.length(); ++i) {
         final JSONObject result = resultArray.getJSONObject(i);
-        ((InternalResultSet) resultSet).add(new ResultInternal(result.toMap()));
+        resultSet.add(new ResultInternal(result.toMap()));
       }
 
       return resultSet;
@@ -234,12 +234,12 @@ public class RemoteDatabase extends RWLockContext {
     Map<String, Object> params = mapArgs(args);
 
     return (ResultSet) databaseCommand("query", language, command, params, false, (connection, response) -> {
-      final ResultSet resultSet = new InternalResultSet();
+      final InternalResultSet resultSet = new InternalResultSet();
 
       final JSONArray resultArray = response.getJSONArray("result");
       for (int i = 0; i < resultArray.length(); ++i) {
         final JSONObject result = resultArray.getJSONObject(i);
-        ((InternalResultSet) resultSet).add(new ResultInternal(result.toMap()));
+        resultSet.add(new ResultInternal(result.toMap()));
       }
 
       return resultSet;

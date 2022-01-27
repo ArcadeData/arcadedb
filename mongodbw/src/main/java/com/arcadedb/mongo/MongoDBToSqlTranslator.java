@@ -32,11 +32,11 @@ public class MongoDBToSqlTranslator {
 
   protected static void buildExpression(final StringBuilder buffer, final Document query) {
     for (Map.Entry<String, Object> entry : query.entrySet()) {
-      final Object key = entry.getKey();
+      final String key = entry.getKey();
       final Object value = entry.getValue();
 
-      if (key instanceof String && ((String) key).startsWith("$"))
-        buildExpression(buffer, (String) key, value);
+      if (key instanceof String && key.startsWith("$"))
+        buildExpression(buffer, key, value);
       else if (value instanceof Document) {
         buildAnd(buffer, key, value);
       } else if (value instanceof List) {

@@ -46,7 +46,7 @@ public class LSMTreeFullTextIndexTest extends TestHelper {
 
         final DocumentType type = database.getSchema().createDocumentType(TYPE_NAME, 1);
         type.createProperty("text", String.class);
-        Index typeIndex = database.getSchema().createTypeIndex(Schema.INDEX_TYPE.FULL_TEXT, false, TYPE_NAME, new String[] { "text" }, PAGE_SIZE);
+        TypeIndex typeIndex = database.getSchema().createTypeIndex(Schema.INDEX_TYPE.FULL_TEXT, false, TYPE_NAME, new String[] { "text" }, PAGE_SIZE);
 
         Assertions.assertTrue(database.getSchema().existsType(TYPE_NAME));
 
@@ -83,8 +83,8 @@ public class LSMTreeFullTextIndexTest extends TestHelper {
 
         LogManager.instance().log(this, Level.FINE, "Committed");
 
-        final List<String> keywords = ((LSMTreeFullTextIndex) ((TypeIndex) typeIndex).getIndexesOnBuckets()[0]).analyzeText(
-            ((LSMTreeFullTextIndex) ((TypeIndex) typeIndex).getIndexesOnBuckets()[0]).getAnalyzer(), new Object[] { text });
+        final List<String> keywords = ((LSMTreeFullTextIndex) typeIndex.getIndexesOnBuckets()[0]).analyzeText(
+            ((LSMTreeFullTextIndex) typeIndex.getIndexesOnBuckets()[0]).getAnalyzer(), new Object[] { text });
         Assertions.assertFalse(keywords.isEmpty());
 
         LogManager.instance().log(this, Level.FINE, "Checking keywords...");
@@ -92,7 +92,7 @@ public class LSMTreeFullTextIndexTest extends TestHelper {
         for (String k : keywords) {
           int totalPerKeyword = 0;
 
-          for (Index idx : ((TypeIndex) typeIndex).getIndexesOnBuckets()) {
+          for (Index idx : typeIndex.getIndexesOnBuckets()) {
             if (idx instanceof TypeIndex)
               continue;
 

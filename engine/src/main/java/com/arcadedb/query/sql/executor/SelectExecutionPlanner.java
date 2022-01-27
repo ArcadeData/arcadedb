@@ -1621,7 +1621,7 @@ public class SelectExecutionPlanner {
       throw new CommandExecutionException("Type not found: " + queryTarget.getStringValue());
     }
 
-    for (Index idx : typez.getAllIndexes(true).stream().filter(i -> i.supportsOrderedIterations()).collect(Collectors.toList())) {
+    for (RangeIndex idx : typez.getAllIndexes(true).stream().filter(i -> i.supportsOrderedIterations()).collect(Collectors.toList())) {
       List<String> indexFields = idx.getPropertyNames();
       if (indexFields.size() < info.orderBy.getItems().size()) {
         continue;
@@ -1645,7 +1645,7 @@ public class SelectExecutionPlanner {
         }
       }
       if (indexFound && orderType != null) {
-        plan.chain(new FetchFromIndexValuesStep((RangeIndex) idx, orderType.equals(OrderByItem.ASC), ctx, profilingEnabled));
+        plan.chain(new FetchFromIndexValuesStep(idx, orderType.equals(OrderByItem.ASC), ctx, profilingEnabled));
         int[] filterClusterIds = null;
         if (filterClusters != null) {
           filterClusterIds = filterClusters.stream().map(name -> ctx.getDatabase().getSchema().getBucketByName(name).getId()).mapToInt(i -> i).toArray();

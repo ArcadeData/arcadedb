@@ -220,8 +220,8 @@ public class TransactionIndexContext {
         for (Bucket b : buckets)
           modifiedFiles.add(b.getId());
 
-        for (Index typeIndex : type.getAllIndexes(true))
-          for (Index idx : ((TypeIndex) typeIndex).getIndexesOnBuckets())
+        for (TypeIndex typeIndex : type.getAllIndexes(true))
+          for (Index idx : typeIndex.getIndexesOnBuckets())
             modifiedFiles.add(((IndexInternal) idx).getFileId());
       } else
         modifiedFiles.add(index.getAssociatedBucketId());

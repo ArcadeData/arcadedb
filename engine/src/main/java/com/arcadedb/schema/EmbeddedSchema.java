@@ -1135,7 +1135,7 @@ public class EmbeddedSchema implements Schema {
         final JSONArray schemaBucket = schemaType.getJSONArray("buckets");
         if (schemaBucket != null) {
           for (int i = 0; i < schemaBucket.length(); ++i) {
-            final PaginatedComponent bucket = bucketMap.get(schemaBucket.getString(i));
+            final Bucket bucket = bucketMap.get(schemaBucket.getString(i));
             if (bucket == null) {
               LogManager.instance()
                   .log(this, Level.WARNING, "Cannot find bucket '%s' for type '%s', removing it from type configuration", null, schemaBucket.getString(i),
@@ -1147,7 +1147,7 @@ public class EmbeddedSchema implements Schema {
 
               saveConfiguration = true;
             } else
-              type.addBucketInternal((Bucket) bucket);
+              type.addBucketInternal(bucket);
           }
         }
 

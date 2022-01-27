@@ -80,7 +80,7 @@ public class MVCCTest extends TestHelper {
             Assertions.assertTrue(tx.getModifiedPages() == 0);
             Assertions.assertNull(tx.getPageCounter(1));
 
-            final MutableDocument doc = database.newVertex("Transaction");
+            final MutableVertex doc = database.newVertex("Transaction");
             doc.set("uuid", UUID.randomUUID().toString());
             doc.set("date", new Date());
             doc.set("amount", rnd.nextInt(TOT_ACCOUNT));
@@ -92,7 +92,7 @@ public class MVCCTest extends TestHelper {
 
             Identifiable account = accounts.next();
 
-            ((MutableVertex) doc).newEdge("PurchasedBy", account, true, "date", new Date());
+            doc.newEdge("PurchasedBy", account, true, "date", new Date());
           }, 0);
         }
 

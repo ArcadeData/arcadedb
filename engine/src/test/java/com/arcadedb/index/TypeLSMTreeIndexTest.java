@@ -76,12 +76,12 @@ public class TypeLSMTreeIndexTest extends TestHelper {
       for (int i = 0; i < TOT; ++i) {
         int total = 0;
 
-        for (Index index : indexes) {
+        for (RangeIndex index : indexes) {
           Assertions.assertNotNull(index);
 
           final IndexCursor iterator;
           try {
-            iterator = ((RangeIndex) index).range(true, new Object[] { i }, true, new Object[] { i }, true);
+            iterator = index.range(true, new Object[] { i }, true, new Object[] { i }, true);
             Assertions.assertNotNull(iterator);
 
             while (iterator.hasNext()) {
@@ -115,11 +115,11 @@ public class TypeLSMTreeIndexTest extends TestHelper {
       for (int i = 0; i < TOT - 1; ++i) {
         int total = 0;
 
-        for (Index index : indexes) {
+        for (RangeIndex index : indexes) {
           Assertions.assertNotNull(index);
 
           final IndexCursor iterator;
-          iterator = ((RangeIndex) index).range(true, new Object[] { i }, true, new Object[] { i + 1 }, true);
+          iterator = index.range(true, new Object[] { i }, true, new Object[] { i + 1 }, true);
           Assertions.assertNotNull(iterator);
 
           while (iterator.hasNext()) {
@@ -150,11 +150,11 @@ public class TypeLSMTreeIndexTest extends TestHelper {
       for (int i = TOT - 1; i > 0; --i) {
         int total = 0;
 
-        for (Index index : indexes) {
+        for (RangeIndex index : indexes) {
           Assertions.assertNotNull(index);
 
           final IndexCursor iterator;
-          iterator = ((RangeIndex) index).range(false, new Object[] { i }, true, new Object[] { i - 1 }, true);
+          iterator = index.range(false, new Object[] { i }, true, new Object[] { i - 1 }, true);
           Assertions.assertNotNull(iterator);
 
           while (iterator.hasNext()) {
@@ -221,12 +221,12 @@ public class TypeLSMTreeIndexTest extends TestHelper {
       int total = 0;
 
       final List<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
-      for (Index index : indexes) {
+      for (RangeIndex index : indexes) {
         Assertions.assertNotNull(index);
 
         final IndexCursor iterator;
         try {
-          iterator = ((RangeIndex) index).iterator(true);
+          iterator = index.iterator(true);
 
 //            LogManager.instance()
 //                .log(this, Level.INFO, "*****************************************************************************\nCURSOR BEGIN%s", iterator.dumpStats());
@@ -268,12 +268,12 @@ public class TypeLSMTreeIndexTest extends TestHelper {
       int total = 0;
 
       final List<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
-      for (Index index : indexes) {
+      for (RangeIndex index : indexes) {
         Assertions.assertNotNull(index);
 
         final IndexCursor iterator;
         try {
-          iterator = ((RangeIndex) index).iterator(false);
+          iterator = index.iterator(false);
           Assertions.assertNotNull(iterator);
 
           while (iterator.hasNext()) {
@@ -302,12 +302,12 @@ public class TypeLSMTreeIndexTest extends TestHelper {
       int total = 0;
 
       final List<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
-      for (Index index : indexes) {
+      for (RangeIndex index : indexes) {
         Assertions.assertNotNull(index);
 
         final IndexCursor iterator;
         try {
-          iterator = ((RangeIndex) index).iterator(true, new Object[] { 10 }, true);
+          iterator = index.iterator(true, new Object[] { 10 }, true);
 
           Assertions.assertNotNull(iterator);
 
@@ -335,12 +335,12 @@ public class TypeLSMTreeIndexTest extends TestHelper {
       int total = 0;
 
       final List<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
-      for (Index index : indexes) {
+      for (RangeIndex index : indexes) {
         Assertions.assertNotNull(index);
 
         final IndexCursor iterator;
         try {
-          iterator = ((RangeIndex) index).iterator(true, new Object[] { 10 }, false);
+          iterator = index.iterator(true, new Object[] { 10 }, false);
 
           Assertions.assertNotNull(iterator);
 
@@ -368,12 +368,12 @@ public class TypeLSMTreeIndexTest extends TestHelper {
       int total = 0;
 
       final List<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
-      for (Index index : indexes) {
+      for (RangeIndex index : indexes) {
         Assertions.assertNotNull(index);
 
         final IndexCursor iterator;
         try {
-          iterator = ((RangeIndex) index).iterator(false, new Object[] { 9 }, true);
+          iterator = index.iterator(false, new Object[] { 9 }, true);
           Assertions.assertNotNull(iterator);
 
           while (iterator.hasNext()) {
@@ -400,12 +400,12 @@ public class TypeLSMTreeIndexTest extends TestHelper {
       int total = 0;
 
       final List<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
-      for (Index index : indexes) {
+      for (RangeIndex index : indexes) {
         Assertions.assertNotNull(index);
 
         final IndexCursor iterator;
         try {
-          iterator = ((RangeIndex) index).iterator(false, new Object[] { 9 }, false);
+          iterator = index.iterator(false, new Object[] { 9 }, false);
           Assertions.assertNotNull(iterator);
 
           while (iterator.hasNext()) {
@@ -432,12 +432,12 @@ public class TypeLSMTreeIndexTest extends TestHelper {
       int total = 0;
 
       final List<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
-      for (Index index : indexes) {
+      for (RangeIndex index : indexes) {
         Assertions.assertNotNull(index);
 
         final IndexCursor iterator;
         try {
-          iterator = ((RangeIndex) index).range(true, new Object[] { 10 }, true, new Object[] { 19 }, true);
+          iterator = index.range(true, new Object[] { 10 }, true, new Object[] { 19 }, true);
           Assertions.assertNotNull(iterator);
 
           while (iterator.hasNext()) {
@@ -469,12 +469,12 @@ public class TypeLSMTreeIndexTest extends TestHelper {
       int total = 0;
 
       final List<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
-      for (Index index : indexes) {
+      for (RangeIndex index : indexes) {
         Assertions.assertNotNull(index);
 
         final IndexCursor iterator;
         try {
-          iterator = ((RangeIndex) index).range(true, new Object[] { 10 }, true, new Object[] { 19 }, false);
+          iterator = index.range(true, new Object[] { 10 }, true, new Object[] { 19 }, false);
           Assertions.assertNotNull(iterator);
 
           while (iterator.hasNext()) {
@@ -506,12 +506,12 @@ public class TypeLSMTreeIndexTest extends TestHelper {
       int total = 0;
 
       final List<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
-      for (Index index : indexes) {
+      for (RangeIndex index : indexes) {
         Assertions.assertNotNull(index);
 
         final IndexCursor iterator;
         try {
-          iterator = ((RangeIndex) index).range(true, new Object[] { 10 }, false, new Object[] { 19 }, true);
+          iterator = index.range(true, new Object[] { 10 }, false, new Object[] { 19 }, true);
           Assertions.assertNotNull(iterator);
 
           while (iterator.hasNext()) {
@@ -543,12 +543,12 @@ public class TypeLSMTreeIndexTest extends TestHelper {
       int total = 0;
 
       final List<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
-      for (Index index : indexes) {
+      for (RangeIndex index : indexes) {
         Assertions.assertNotNull(index);
 
         final IndexCursor iterator;
         try {
-          iterator = ((RangeIndex) index).range(false, new Object[] { 19 }, false, new Object[] { 10 }, true);
+          iterator = index.range(false, new Object[] { 19 }, false, new Object[] { 10 }, true);
           Assertions.assertNotNull(iterator);
 
           while (iterator.hasNext()) {
@@ -580,12 +580,12 @@ public class TypeLSMTreeIndexTest extends TestHelper {
       int total = 0;
 
       final List<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
-      for (Index index : indexes) {
+      for (RangeIndex index : indexes) {
         Assertions.assertNotNull(index);
 
         final IndexCursor iterator;
         try {
-          iterator = ((RangeIndex) index).range(true, new Object[] { 10 }, false, new Object[] { 19 }, false);
+          iterator = index.range(true, new Object[] { 10 }, false, new Object[] { 19 }, false);
           Assertions.assertNotNull(iterator);
 
           while (iterator.hasNext()) {
@@ -617,12 +617,12 @@ public class TypeLSMTreeIndexTest extends TestHelper {
       int total = 0;
 
       final List<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
-      for (Index index : indexes) {
+      for (RangeIndex index : indexes) {
         Assertions.assertNotNull(index);
 
         final IndexCursor iterator;
         try {
-          iterator = ((RangeIndex) index).range(false, new Object[] { 19 }, false, new Object[] { 10 }, false);
+          iterator = index.range(false, new Object[] { 19 }, false, new Object[] { 10 }, false);
           Assertions.assertNotNull(iterator);
 
           while (iterator.hasNext()) {
@@ -792,7 +792,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
 
       final DocumentType type = database.getSchema().createDocumentType(TYPE_NAME, 3);
       type.createProperty("id", Integer.class);
-      final Index typeIndex = database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
+      final TypeIndex typeIndex = database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
 
       for (int i = 0; i < TOT; ++i) {
         final MutableDocument v = database.newDocument(TYPE_NAME);
@@ -806,8 +806,8 @@ public class TypeLSMTreeIndexTest extends TestHelper {
       database.commit();
       database.begin();
 
-      for (Index index : ((TypeIndex) typeIndex).getIndexesOnBuckets()) {
-        Assertions.assertTrue(((IndexInternal) index).getStats().get("pages") > 1);
+      for (IndexInternal index : typeIndex.getIndexesOnBuckets()) {
+        Assertions.assertTrue(index.getStats().get("pages") > 1);
       }
     });
   }

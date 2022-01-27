@@ -39,7 +39,7 @@ public class NullValuesIndexTest extends TestHelper {
     final DocumentType type = database.getSchema().createDocumentType(TYPE_NAME, 3);
     type.createProperty("id", Integer.class);
     type.createProperty("name", String.class);
-    final Index indexes = database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
+    final TypeIndex indexes = database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
     final Index indexes2 = database.getSchema()
         .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, TYPE_NAME, new String[] { "name" }, PAGE_SIZE, LSMTreeIndexAbstract.NULL_STRATEGY.ERROR, null);
 
@@ -60,8 +60,8 @@ public class NullValuesIndexTest extends TestHelper {
         database.commit();
         database.begin();
 
-        for (Index index : ((TypeIndex) indexes).getIndexesOnBuckets()) {
-          Assertions.assertTrue(((IndexInternal) index).getStats().get("pages") > 1);
+        for (IndexInternal index : indexes.getIndexesOnBuckets()) {
+          Assertions.assertTrue(index.getStats().get("pages") > 1);
         }
       });
       Assertions.fail();
