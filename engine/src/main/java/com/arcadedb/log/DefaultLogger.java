@@ -35,7 +35,7 @@ public class DefaultLogger implements Logger {
   private static final String                                          DEFAULT_LOG                  = "com.arcadedb";
   private static final String                                          ENV_INSTALL_CUSTOM_FORMATTER = "arcadedb.installCustomFormatter";
   private static final DefaultLogger                                   instance                     = new DefaultLogger();
-  private final        ConcurrentMap<String, java.util.logging.Logger> loggersCache                 = new ConcurrentHashMap<String, java.util.logging.Logger>();
+  private final        ConcurrentMap<String, java.util.logging.Logger> loggersCache                 = new ConcurrentHashMap<>();
 
   public DefaultLogger() {
     installCustomFormatter();

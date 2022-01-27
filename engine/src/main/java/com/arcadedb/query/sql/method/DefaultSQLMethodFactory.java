@@ -37,7 +37,7 @@ import java.util.Map;
  * @author Johann Sorel (Geomatys)
  */
 public class DefaultSQLMethodFactory implements SQLMethodFactory {
-  private final Map<String, Object> methods = new HashMap<String, Object>();
+  private final Map<String, Object> methods = new HashMap<>();
 
   public DefaultSQLMethodFactory() {
     register(SQLMethodAppend.NAME, new SQLMethodAppend());

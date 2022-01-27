@@ -180,15 +180,15 @@ public class ACIDTransactionTest extends TestHelper {
     final AtomicInteger commits = new AtomicInteger(0);
 
     try {
-      ((DatabaseInternal) db).registerCallback(DatabaseInternal.CALLBACK_EVENT.TX_AFTER_WAL_WRITE, new Callable<Void>() {
-        @Override
-        public Void call() throws IOException {
-          if (commits.incrementAndGet() > TOT - 1) {
-            LogManager.instance().log(this, Level.INFO, "TEST: Causing IOException at commit %d...", commits.get());
-            throw new IOException("Test IO Exception");
+      ((DatabaseInternal) db).registerCallback(DatabaseInternal.CALLBACK_EVENT.TX_AFTER_WAL_WRITE, new Callable<>() {
+          @Override
+          public Void call() throws IOException {
+              if (commits.incrementAndGet() > TOT - 1) {
+                  LogManager.instance().log(this, Level.INFO, "TEST: Causing IOException at commit %d...", commits.get());
+                  throw new IOException("Test IO Exception");
+              }
+              return null;
           }
-          return null;
-        }
       });
 
       for (; total.get() < TOT; total.incrementAndGet()) {
@@ -241,7 +241,7 @@ public class ACIDTransactionTest extends TestHelper {
     try {
       ((DatabaseInternal) db).registerCallback(DatabaseInternal.CALLBACK_EVENT.TX_AFTER_WAL_WRITE, () -> {
         if (total.incrementAndGet() > TOT - 10)
-            throw new IOException("Test IO Exception");
+          throw new IOException("Test IO Exception");
         return null;
       });
 

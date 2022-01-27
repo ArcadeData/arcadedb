@@ -68,7 +68,7 @@ public class DatabaseChecker {
     for (RID rid : (Collection<RID>) result.get("corruptedRecords"))
       affectedBuckets.add(rid.getBucketId());
 
-    final Set<Index> affectedIndexes = new HashSet<Index>();
+    final Set<Index> affectedIndexes = new HashSet<>();
     for (Index index : database.getSchema().getIndexes())
       if (affectedBuckets.contains(index.getAssociatedBucketId()))
         affectedIndexes.add(index);
