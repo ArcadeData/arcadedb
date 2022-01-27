@@ -512,8 +512,7 @@ public class DocumentType {
 
     final Set<String> properties = new HashSet<>(propertiesN.length + 1);
     properties.add(property1);
-    for (String p : propertiesN)
-      properties.add(p);
+      Collections.addAll(properties, propertiesN);
 
     for (Map.Entry<List<String>, TypeIndex> entry : indexesByProperties.entrySet()) {
       for (String prop : entry.getKey()) {

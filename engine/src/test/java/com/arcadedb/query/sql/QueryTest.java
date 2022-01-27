@@ -68,8 +68,7 @@ public class QueryTest extends TestHelper {
         Assertions.assertNotNull(record);
 
         Set<String> prop = new HashSet<>();
-        for (String p : record.getPropertyNames())
-          prop.add(p);
+          prop.addAll(record.getPropertyNames());
 
         Assertions.assertEquals(3, record.getPropertyNames().size(), 9);
         Assertions.assertTrue(prop.contains("id"));

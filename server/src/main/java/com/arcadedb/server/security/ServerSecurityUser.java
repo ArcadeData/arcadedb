@@ -61,8 +61,7 @@ public class ServerSecurityUser implements SecurityUser {
     final Set<Object> groupSet;
     if (userDatabases.has(databaseName)) {
       groupSet = new HashSet(userDatabases.getJSONArray(databaseName).toList());
-      for (String group : groups)
-        groupSet.add(group);
+        Collections.addAll(groupSet, groups);
     } else {
       groupSet = new HashSet(Arrays.asList(groups));
       newDatabaseName.add(databaseName);

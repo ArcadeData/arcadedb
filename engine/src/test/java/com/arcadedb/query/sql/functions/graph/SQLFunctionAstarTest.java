@@ -430,9 +430,7 @@ public class SQLFunctionAstarTest {
           + ", 'weight', {'direction':'out', 'parallel':true, 'edgeTypeNames':'has_path'}))");
 
       List result = new ArrayList();
-      for (Object x : r.stream().map(Result::toElement).collect(Collectors.toList())) {
-        result.add(x);
-      }
+        result.addAll(r.stream().map(Result::toElement).collect(Collectors.toList()));
       try (ResultSet rs = graph.query("sql", "select count(*) as count from has_path")) {
         assertEquals((Object) 16L, rs.next().getProperty("count"));
       }
