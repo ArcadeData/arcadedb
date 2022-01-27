@@ -18,24 +18,22 @@
  */
 package com.arcadedb.query.sql.functions.graph;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.function.graph.SQLFunctionAstar;
 import com.arcadedb.query.sql.function.graph.SQLHeuristicFormula;
 import org.junit.jupiter.api.Test;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.stream.Collectors;
+import java.util.*;
+import java.util.stream.*;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /*
  * @author Saeed Tabrizi (saeed a_t  nowcando.com)
