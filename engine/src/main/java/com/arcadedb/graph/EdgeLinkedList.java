@@ -171,36 +171,34 @@ public class EdgeLinkedList {
 
     Vertex currentVertex = vertex;
 
-    for (int i = 0; i < entries.size(); ++i) {
-      final Pair<Identifiable, Identifiable> entry = entries.get(i);
+      for (final Pair<Identifiable, Identifiable> entry : entries) {
+          final RID edgeRID = entry.getFirst() != null ? entry.getFirst().getIdentity() : null;
+          final RID vertexRID = entry.getSecond().getIdentity();
 
-      final RID edgeRID = entry.getFirst() != null ? entry.getFirst().getIdentity() : null;
-      final RID vertexRID = entry.getSecond().getIdentity();
+          if (first.add(edgeRID, vertexRID))
+              recordsToUpdate.add(first);
+          else {
+              // CHUNK FULL, ALLOCATE A NEW ONE
+              final MutableEdgeSegment newChunk = new MutableEdgeSegment(database, computeBestSize());
 
-      if (first.add(edgeRID, vertexRID))
-        recordsToUpdate.add(first);
-      else {
-        // CHUNK FULL, ALLOCATE A NEW ONE
-        final MutableEdgeSegment newChunk = new MutableEdgeSegment(database, computeBestSize());
+              newChunk.add(edgeRID, vertexRID);
+              newChunk.setNext(first);
 
-        newChunk.add(edgeRID, vertexRID);
-        newChunk.setNext(first);
+              database.createRecord(newChunk, database.getSchema().getBucketById(first.getIdentity().getBucketId()).getName());
 
-        database.createRecord(newChunk, database.getSchema().getBucketById(first.getIdentity().getBucketId()).getName());
+              final MutableVertex modifiableV = currentVertex.modify();
+              currentVertex = modifiableV;
 
-        final MutableVertex modifiableV = currentVertex.modify();
-        currentVertex = modifiableV;
+              if (direction == Vertex.DIRECTION.OUT)
+                  modifiableV.setOutEdgesHeadChunk(newChunk.getIdentity());
+              else
+                  modifiableV.setInEdgesHeadChunk(newChunk.getIdentity());
 
-        if (direction == Vertex.DIRECTION.OUT)
-          modifiableV.setOutEdgesHeadChunk(newChunk.getIdentity());
-        else
-          modifiableV.setInEdgesHeadChunk(newChunk.getIdentity());
+              first = newChunk;
 
-        first = newChunk;
-
-        recordsToUpdate.add(modifiableV);
+              recordsToUpdate.add(modifiableV);
+          }
       }
-    }
 
     for (Record r : recordsToUpdate)
       database.updateRecord(r);

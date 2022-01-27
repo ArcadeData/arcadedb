@@ -178,8 +178,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     stats.queueSize = 0;
 
     if (executorThreads != null)
-      for (int i = 0; i < executorThreads.length; ++i)
-        stats.queueSize += executorThreads[i].queue.size();
+        for (AsyncThread executorThread : executorThreads) stats.queueSize += executorThread.queue.size();
 
     return stats;
   }
@@ -278,19 +277,19 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     long currentTimeout = timeout;
     final long beginTime = System.currentTimeMillis();
 
-    for (int i = 0; i < semaphores.length; ++i)
-      try {
-        semaphores[i].waitForCompetition(currentTimeout);
+      for (DatabaseAsyncCompletion semaphore : semaphores)
+          try {
+              semaphore.waitForCompetition(currentTimeout);
 
-        // UPDATE THE TIMEOUT
-        currentTimeout = timeout - (System.currentTimeMillis() - beginTime);
-        if (currentTimeout < 1)
-          return false;
+              // UPDATE THE TIMEOUT
+              currentTimeout = timeout - (System.currentTimeMillis() - beginTime);
+              if (currentTimeout < 1)
+                  return false;
 
-      } catch (InterruptedException e) {
-        Thread.currentThread().interrupt();
-        return false;
-      }
+          } catch (InterruptedException e) {
+              Thread.currentThread().interrupt();
+              return false;
+          }
 
     return true;
   }
@@ -539,8 +538,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   public void kill() {
     if (executorThreads != null) {
       // WAIT FOR SHUTDOWN, MAX 1S EACH
-      for (int i = 0; i < executorThreads.length; ++i)
-        executorThreads[i].forceShutdown = true;
+        for (AsyncThread executorThread : executorThreads) executorThread.forceShutdown = true;
       executorThreads = null;
     }
   }
@@ -603,11 +601,11 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     if (executorThreads != null) {
       try {
         // WAIT FOR SHUTDOWN, MAX 1S EACH
-        for (int i = 0; i < executorThreads.length; ++i) {
-          executorThreads[i].shutdown = true;
-          executorThreads[i].queue.put(FORCE_EXIT);
-          executorThreads[i].join(10000);
-        }
+          for (AsyncThread executorThread : executorThreads) {
+              executorThread.shutdown = true;
+              executorThread.queue.put(FORCE_EXIT);
+              executorThread.join(10000);
+          }
       } catch (InterruptedException e) {
         // IGNORE IT
         Thread.currentThread().interrupt();

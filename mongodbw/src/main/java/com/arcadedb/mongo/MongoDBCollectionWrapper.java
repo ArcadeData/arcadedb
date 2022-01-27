@@ -186,10 +186,9 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
           int var3 = var2.length;
 
           final StringBuilder s = new StringBuilder();
-          for (int var4 = 0; var4 < var3; ++var4) {
-            byte b = var2[var4];
-            s.append(String.format("%02x", b));
-          }
+            for (byte b : var2) {
+                s.append(String.format("%02x", b));
+            }
 
           record.set(p.getKey(), s.toString());
         } else

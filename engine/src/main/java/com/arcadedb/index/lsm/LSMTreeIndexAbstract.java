@@ -423,8 +423,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     serializer.serializeValue(database, buffer, BinaryTypes.TYPE_INT, values.length);
 
     // WRITE VALUES
-    for (int i = 0; i < values.length; ++i)
-      serializer.serializeValue(database, buffer, valueType, values[i]);
+      for (Object value : values) serializer.serializeValue(database, buffer, valueType, value);
   }
 
   private void writeEntryValue(final Binary buffer, final Object value) {
@@ -484,9 +483,9 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     if (keys == null)
       return true;
 
-    for (int i = 0; i < keys.length; ++i)
-      if (keys[i] == null)
-        return true;
+      for (Object key : keys)
+          if (key == null)
+              return true;
 
     return false;
   }
@@ -496,10 +495,10 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
       return keys;
 
     if (keys != null)
-      for (int i = 0; i < keys.length; ++i)
-        if (keys[i] == null)
-          throw new IllegalArgumentException(
-              "Indexed key " + mainIndex.getTypeName() + mainIndex.propertyNames + " cannot be NULL (" + Arrays.toString(keys) + ")");
+        for (Object key : keys)
+            if (key == null)
+                throw new IllegalArgumentException(
+                        "Indexed key " + mainIndex.getTypeName() + mainIndex.propertyNames + " cannot be NULL (" + Arrays.toString(keys) + ")");
     return keys;
   }
 

@@ -116,10 +116,10 @@ public class DatabaseEventsRegistry implements DatabaseEvents {
     if (beforeCreateListeners.isEmpty())
       return true;
 
-    for (int i = 0; i < beforeCreateListeners.size(); i++) {
-      if (!beforeCreateListeners.get(i).onBeforeCreate(record))
-        return false;
-    }
+      for (BeforeRecordCreateListener beforeCreateListener : beforeCreateListeners) {
+          if (!beforeCreateListener.onBeforeCreate(record))
+              return false;
+      }
     return true;
   }
 
@@ -127,10 +127,10 @@ public class DatabaseEventsRegistry implements DatabaseEvents {
     if (beforeUpdateListeners.isEmpty())
       return true;
 
-    for (int i = 0; i < beforeUpdateListeners.size(); i++) {
-      if (!beforeUpdateListeners.get(i).onBeforeUpdate(record))
-        return false;
-    }
+      for (BeforeRecordUpdateListener beforeUpdateListener : beforeUpdateListeners) {
+          if (!beforeUpdateListener.onBeforeUpdate(record))
+              return false;
+      }
     return true;
   }
 
@@ -138,10 +138,10 @@ public class DatabaseEventsRegistry implements DatabaseEvents {
     if (beforeDeleteListeners.isEmpty())
       return true;
 
-    for (int i = 0; i < beforeDeleteListeners.size(); i++) {
-      if (!beforeDeleteListeners.get(i).onBeforeDelete(record))
-        return false;
-    }
+      for (BeforeRecordDeleteListener beforeDeleteListener : beforeDeleteListeners) {
+          if (!beforeDeleteListener.onBeforeDelete(record))
+              return false;
+      }
     return true;
   }
 
@@ -149,23 +149,20 @@ public class DatabaseEventsRegistry implements DatabaseEvents {
     if (afterCreateListeners.isEmpty())
       return;
 
-    for (int i = 0; i < afterCreateListeners.size(); i++)
-      afterCreateListeners.get(i).onAfterCreate(record);
+      for (AfterRecordCreateListener afterCreateListener : afterCreateListeners) afterCreateListener.onAfterCreate(record);
   }
 
   public void onAfterUpdate(final Record record) {
     if (afterUpdateListeners.isEmpty())
       return;
 
-    for (int i = 0; i < afterUpdateListeners.size(); i++)
-      afterUpdateListeners.get(i).onAfterUpdate(record);
+      for (AfterRecordUpdateListener afterUpdateListener : afterUpdateListeners) afterUpdateListener.onAfterUpdate(record);
   }
 
   public void onAfterDelete(final Record record) {
     if (afterDeleteListeners.isEmpty())
       return;
 
-    for (int i = 0; i < afterDeleteListeners.size(); i++)
-      afterDeleteListeners.get(i).onAfterDelete(record);
+      for (AfterRecordDeleteListener afterDeleteListener : afterDeleteListeners) afterDeleteListener.onAfterDelete(record);
   }
 }

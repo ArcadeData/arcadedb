@@ -115,12 +115,11 @@ public class DocumentType {
                 LogManager.instance()
                     .log(this, Level.WARNING, "Error on creating implicit indexes from super type '" + superType.getName() + "': key types is null");
               } else {
-                for (int i = 0; i < buckets.size(); i++) {
-                  final Bucket bucket = buckets.get(i);
-                  schema.createBucketIndex(schema.getType(index.getTypeName()), index.getKeyTypes(), bucket, name, index.getType(), index.isUnique(),
-                      LSMTreeIndexAbstract.DEF_PAGE_SIZE, index.getNullStrategy(), null,
-                      index.getPropertyNames().toArray(new String[index.getPropertyNames().size()]));
-                }
+                  for (final Bucket bucket : buckets) {
+                      schema.createBucketIndex(schema.getType(index.getTypeName()), index.getKeyTypes(), bucket, name, index.getType(), index.isUnique(),
+                              LSMTreeIndexAbstract.DEF_PAGE_SIZE, index.getNullStrategy(), null,
+                              index.getPropertyNames().toArray(new String[index.getPropertyNames().size()]));
+                  }
               }
             }
           }, false);

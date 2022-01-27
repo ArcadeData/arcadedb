@@ -85,8 +85,7 @@ public class GraphImporter {
 
     database.async().waitCompletion();
 
-    for (int i = 0; i < threadContexts.length; ++i)
-      threadContexts[i].incomingConnectionsIndexThread.setReadOnly();
+      for (GraphImporterThreadContext threadContext : threadContexts) threadContext.incomingConnectionsIndexThread.setReadOnly();
 
     createIncomingEdges(database, callback);
 
@@ -142,8 +141,8 @@ public class GraphImporter {
 
     status = STATUS.IMPORTING_EDGE;
 
-    for (int i = 0; i < threadContexts.length; ++i)
-      threadContexts[i].vertexIndexThreadBuffer = verticesIndex.getInternalBuffer().slice();
+      for (GraphImporterThreadContext threadContext : threadContexts)
+          threadContext.vertexIndexThreadBuffer = verticesIndex.getInternalBuffer().slice();
   }
 
   public CompressedAny2RIDIndex<Object> getVerticesIndex() {
@@ -166,16 +165,15 @@ public class GraphImporter {
 
       ++browsedVertices;
 
-      for (int t = 0; t < threadContexts.length; ++t) {
-        final List<Pair<RID, RID>> edges = threadContexts[t].incomingConnectionsIndexThread.get(destinationVertex);
-        if (edges != null) {
-          for (int e = 0; e < edges.size(); ++e) {
-            final Pair<RID, RID> edge = edges.get(e);
-            connections.add(new Pair<>(edge.getFirst(), edge.getSecond()));
-            ++browsedEdges;
-          }
+        for (GraphImporterThreadContext threadContext : threadContexts) {
+            final List<Pair<RID, RID>> edges = threadContext.incomingConnectionsIndexThread.get(destinationVertex);
+            if (edges != null) {
+                for (final Pair<RID, RID> edge : edges) {
+                    connections.add(new Pair<>(edge.getFirst(), edge.getSecond()));
+                    ++browsedEdges;
+                }
+            }
         }
-      }
 
       if (!connections.isEmpty()) {
         final DatabaseAsyncExecutorImpl async = (DatabaseAsyncExecutorImpl) database.async();

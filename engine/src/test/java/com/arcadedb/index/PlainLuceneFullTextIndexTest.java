@@ -109,10 +109,10 @@ public class PlainLuceneFullTextIndexTest {
 
       Assertions.assertEquals(501, hits.length);
       // Iterate through the results:
-      for (int i = 0; i < hits.length; i++) {
-        Document hitDoc = searcher.doc(hits[i].doc);
-        //System.out.print(hitDoc.get("id") + " - ");
-      }
+        for (ScoreDoc hit : hits) {
+            Document hitDoc = searcher.doc(hit.doc);
+            //System.out.print(hitDoc.get("id") + " - ");
+        }
 
       reader.close();
       directory.close();

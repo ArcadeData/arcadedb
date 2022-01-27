@@ -55,12 +55,11 @@ public class DatabaseAlignResponse extends HAAbstractCommand {
       stream.putInt(0);
     else {
       stream.putInt(alignedPages.size());
-      for (int i = 0; i < alignedPages.size(); i++) {
-        final int[] page = alignedPages.get(i);
-        stream.putInt(page[0]);
-        stream.putInt(page[1]);
-        stream.putInt(page[2]);
-      }
+        for (final int[] page : alignedPages) {
+            stream.putInt(page[0]);
+            stream.putInt(page[1]);
+            stream.putInt(page[2]);
+        }
     }
   }
 

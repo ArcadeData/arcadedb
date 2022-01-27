@@ -118,10 +118,9 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
         final MutableDocument document = database.newDocument(settings.documentTypeName);
 
-        for (int p = 0; p < properties.size(); ++p) {
-          final AnalyzedProperty prop = properties.get(p);
-          document.set(prop.getName(), row[prop.getIndex()]);
-        }
+          for (final AnalyzedProperty prop : properties) {
+              document.set(prop.getName(), row[prop.getIndex()]);
+          }
 
         document.save();
 

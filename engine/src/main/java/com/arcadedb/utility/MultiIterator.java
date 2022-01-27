@@ -125,22 +125,22 @@ public class MultiIterator<T> implements Iterator<T>, Iterable<T> {
     // SUM ALL THE COLLECTION SIZES
     int size = 0;
     final int totSources = sources.size();
-    for (int i = 0; i < totSources; ++i) {
-      if (timeout > -1L && System.currentTimeMillis() - beginTime > timeout)
-        throw new TimeoutException("Timeout on iteration");
+      for (Object source : sources) {
+          if (timeout > -1L && System.currentTimeMillis() - beginTime > timeout)
+              throw new TimeoutException("Timeout on iteration");
 
-      final Object o = sources.get(i);
+          final Object o = source;
 
-      if (o != null)
-        if (o instanceof Collection<?>)
-          size += ((Collection<?>) o).size();
-        else if (o instanceof Map<?, ?>)
-          size += ((Map<?, ?>) o).size();
-        else if (o.getClass().isArray())
-          size += Array.getLength(o);
-        else
-          size++;
-    }
+          if (o != null)
+              if (o instanceof Collection<?>)
+                  size += ((Collection<?>) o).size();
+              else if (o instanceof Map<?, ?>)
+                  size += ((Map<?, ?>) o).size();
+              else if (o.getClass().isArray())
+                  size += Array.getLength(o);
+              else
+                  size++;
+      }
     return size;
   }
 
@@ -171,16 +171,14 @@ public class MultiIterator<T> implements Iterator<T>, Iterable<T> {
 
   public boolean contains(final Object value) {
     final int totSources = sources.size();
-    for (int i = 0; i < totSources; ++i) {
-      Object o = sources.get(i);
-
-      if (o != null) {
-        if (o instanceof Collection<?>) {
-          if (((Collection<?>) o).contains(value))
-            return true;
-        }
+      for (Object o : sources) {
+          if (o != null) {
+              if (o instanceof Collection<?>) {
+                  if (((Collection<?>) o).contains(value))
+                      return true;
+              }
+          }
       }
-    }
 
     return false;
   }

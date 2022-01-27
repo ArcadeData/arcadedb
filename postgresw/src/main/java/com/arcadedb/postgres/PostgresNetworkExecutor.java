@@ -955,12 +955,12 @@ public class PostgresNetworkExecutor extends Thread {
       if (expectedMessageCodes != null && expectedMessageCodes.length > 0) {
         // VALIDATE MESSAGES
         boolean valid = false;
-        for (int i = 0; i < expectedMessageCodes.length; i++) {
-          if (type == expectedMessageCodes[i]) {
-            valid = true;
-            break;
+          for (char expectedMessageCode : expectedMessageCodes) {
+              if (type == expectedMessageCode) {
+                  valid = true;
+                  break;
+              }
           }
-        }
 
         if (!valid) {
           // READ TILL THE END OF THE MESSAGE

@@ -214,9 +214,9 @@ public class PostCommandHandler extends DatabaseAbstractHandler {
     } else if (value instanceof Result) {
       analyzeResultContent(database, serializerImpl, includedVertices, vertices, edges, (Result) value);
     } else if (value instanceof Collection) {
-      for (Iterator<?> it = ((Collection<?>) value).iterator(); it.hasNext(); ) {
-        analyzePropertyValue(database, serializerImpl, includedVertices, vertices, edges, it.next());
-      }
+        for (Object o : (Collection<?>) value) {
+            analyzePropertyValue(database, serializerImpl, includedVertices, vertices, edges, o);
+        }
     }
   }
 

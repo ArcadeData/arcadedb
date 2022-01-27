@@ -68,10 +68,10 @@ public class SQLFunctionCoalesce extends SQLFunctionAbstract {
   public Object execute( Object iThis, Identifiable iCurrentRecord, Object iCurrentResult, final Object[] iParams,
       CommandContext iContext) {
     int length = iParams.length;
-    for (int i = 0; i < length; i++) {
-      if (iParams[i] != null)
-        return iParams[i];
-    }
+      for (Object iParam : iParams) {
+          if (iParam != null)
+              return iParam;
+      }
     return null;
   }
 

@@ -303,11 +303,11 @@ public class RedisNetworkExecutor extends Thread {
     value.append("*");
     value.append(records.size());
 
-    for (int i = 0; i < records.size(); i++) {
-      appendCrLf();
-      final Record record = records.get(i);
-      respondValue(record != null ? record.toJSON() : null, true);
-    }
+      for (Record item : records) {
+          appendCrLf();
+          final Record record = item;
+          respondValue(record != null ? record.toJSON() : null, true);
+      }
   }
 
   private void hSet(final List<Object> list) {

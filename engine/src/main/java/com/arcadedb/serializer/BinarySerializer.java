@@ -324,12 +324,11 @@ public class BinarySerializer {
       if (value instanceof Collection) {
         final Collection list = (Collection) value;
         content.putUnsignedNumber(list.size());
-        for (Iterator it = list.iterator(); it.hasNext(); ) {
-          final Object entryValue = it.next();
-          final byte entryType = BinaryTypes.getTypeFromValue(entryValue);
-          content.putByte(entryType);
-          serializeValue(database, content, entryType, entryValue);
-        }
+          for (final Object entryValue : list) {
+              final byte entryType = BinaryTypes.getTypeFromValue(entryValue);
+              content.putByte(entryType);
+              serializeValue(database, content, entryType, entryValue);
+          }
       } else if (value instanceof Object[]) {
         // ARRAY
         final Object[] array = (Object[]) value;
@@ -343,16 +342,14 @@ public class BinarySerializer {
         final Iterable iter = (Iterable) value;
 
         final List list = new ArrayList();
-        for (Iterator it = iter.iterator(); it.hasNext(); )
-          list.add(it.next());
+          for (Object o : iter) list.add(o);
 
         content.putUnsignedNumber(list.size());
-        for (Iterator it = list.iterator(); it.hasNext(); ) {
-          final Object entryValue = it.next();
-          final byte entryType = BinaryTypes.getTypeFromValue(entryValue);
-          content.putByte(entryType);
-          serializeValue(database, content, entryType, entryValue);
-        }
+          for (final Object entryValue : list) {
+              final byte entryType = BinaryTypes.getTypeFromValue(entryValue);
+              content.putByte(entryType);
+              serializeValue(database, content, entryType, entryValue);
+          }
       } else {
         // ARRAY
         final int length = Array.getLength(value);

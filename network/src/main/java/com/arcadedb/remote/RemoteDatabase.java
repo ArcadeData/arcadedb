@@ -513,22 +513,20 @@ public class RemoteDatabase extends RWLockContext {
     final Pair<String, Integer> oldLeader = leaderServer;
 
     // ASK REPLICA FIRST
-    for (int replicaIdx = 0; replicaIdx < replicaServerList.size(); ++replicaIdx) {
-      Pair<String, Integer> connectToServer = replicaServerList.get(replicaIdx);
+      for (Pair<String, Integer> connectToServer : replicaServerList) {
+          currentServer = connectToServer.getFirst();
+          currentPort = connectToServer.getSecond();
 
-      currentServer = connectToServer.getFirst();
-      currentPort = connectToServer.getSecond();
+          try {
+              requestClusterConfiguration();
+          } catch (Exception e) {
+              // IGNORE< TRY NEXT
+              continue;
+          }
 
-      try {
-        requestClusterConfiguration();
-      } catch (Exception e) {
-        // IGNORE< TRY NEXT
-        continue;
+          if (leaderServer != null)
+              return true;
       }
-
-      if (leaderServer != null)
-        return true;
-    }
 
     if (oldLeader != null) {
       // RESET LEADER SERVER TO AVOID LOOP

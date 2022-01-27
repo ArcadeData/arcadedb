@@ -735,16 +735,15 @@ public class TypeLSMTreeIndexTest extends TestHelper {
       });
     }
 
-    for (int i = 0; i < threads.length; ++i)
-      threads[i].start();
+      for (Thread thread : threads) thread.start();
 
-    for (int i = 0; i < threads.length; ++i) {
-      try {
-        threads[i].join();
-      } catch (InterruptedException e) {
-        e.printStackTrace();
+      for (Thread thread : threads) {
+          try {
+              thread.join();
+          } catch (InterruptedException e) {
+              e.printStackTrace();
+          }
       }
-    }
 
     LogManager.instance()
         .log(this, Level.FINE, "%s Completed (inserted=%d needRetryExceptions=%d duplicatedExceptions=%d)", null, getClass(), crossThreadsInserted.get(),

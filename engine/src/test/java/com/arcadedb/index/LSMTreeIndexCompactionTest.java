@@ -222,11 +222,10 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
 
         Assertions.assertEquals(expectedItems, records.size(), "Wrong result for lookup of key " + id);
 
-        for (Iterator<Identifiable> it = records.iterator(); it.hasNext(); ) {
-          final Identifiable rid = it.next();
-          final Document record = (Document) rid.getRecord();
-          Assertions.assertEquals("" + id, record.get("id"));
-        }
+          for (final Identifiable rid : records) {
+              final Document record = (Document) rid.getRecord();
+              Assertions.assertEquals("" + id, record.get("id"));
+          }
 
         checked++;
 

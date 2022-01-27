@@ -167,24 +167,22 @@ public class GraphEngine {
     final List<Edge> edges = new ArrayList<>(connections.size());
     final List<Pair<Identifiable, Identifiable>> outEdgePairs = new ArrayList<>();
 
-    for (int i = 0; i < connections.size(); ++i) {
-      final CreateEdgeOperation connection = connections.get(i);
+      for (final CreateEdgeOperation connection : connections) {
+          final MutableEdge edge;
 
-      final MutableEdge edge;
+          final Identifiable destinationVertex = connection.destinationVertex;
 
-      final Identifiable destinationVertex = connection.destinationVertex;
+          edge = new MutableEdge(database, database.getSchema().getType(connection.edgeTypeName), sourceVertexRID, destinationVertex.getIdentity());
 
-      edge = new MutableEdge(database, database.getSchema().getType(connection.edgeTypeName), sourceVertexRID, destinationVertex.getIdentity());
+          if (connection.edgeProperties != null && connection.edgeProperties.length > 0)
+              setProperties(edge, connection.edgeProperties);
 
-      if (connection.edgeProperties != null && connection.edgeProperties.length > 0)
-        setProperties(edge, connection.edgeProperties);
+          edge.save();
 
-      edge.save();
+          outEdgePairs.add(new Pair<>(edge, destinationVertex));
 
-      outEdgePairs.add(new Pair<>(edge, destinationVertex));
-
-      edges.add(edge);
-    }
+          edges.add(edge);
+      }
 
     sourceVertex = sourceVertex.modify();
 
@@ -194,10 +192,9 @@ public class GraphEngine {
     outLinkedList.addAll(outEdgePairs);
 
     if (bidirectional) {
-      for (int i = 0; i < outEdgePairs.size(); ++i) {
-        final Pair<Identifiable, Identifiable> edge = outEdgePairs.get(i);
-        connectIncomingEdge(edge.getSecond(), edge.getFirst().getIdentity(), sourceVertexRID);
-      }
+        for (final Pair<Identifiable, Identifiable> edge : outEdgePairs) {
+            connectIncomingEdge(edge.getSecond(), edge.getFirst().getIdentity(), sourceVertexRID);
+        }
     }
 
     return edges;

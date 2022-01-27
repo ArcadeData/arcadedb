@@ -53,8 +53,7 @@ public class SQLFunctionAverage extends SQLFunctionMathAbstract {
 
     } else {
       sum = null;
-      for (int i = 0; i < iParams.length; ++i)
-        sum((Number) iParams[i]);
+        for (Object iParam : iParams) sum((Number) iParam);
     }
 
     return getResult();

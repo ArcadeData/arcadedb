@@ -3391,11 +3391,11 @@ public class SelectStatementExecutionTest extends TestHelper {
     System.arraycopy(clazz.getBuckets(false).stream().mapToInt(Bucket::getId).toArray(), 0, clusterIds, 0, clusterIds.length);
     Arrays.sort(clusterIds);
 
-    for (int i = 0; i < clusterIds.length; i++) {
-      MutableDocument elem = database.newDocument(className);
-      elem.set("cid", clusterIds[i]);
-      elem.save(database.getSchema().getBucketById(clusterIds[i]).getName());
-    }
+      for (int clusterId : clusterIds) {
+          MutableDocument elem = database.newDocument(className);
+          elem.set("cid", clusterId);
+          elem.save(database.getSchema().getBucketById(clusterId).getName());
+      }
     database.commit();
 
     ResultSet result = database.query("sql", "select from " + className + " where @rid >= #" + clusterIds[1] + ":0");
@@ -3427,11 +3427,11 @@ public class SelectStatementExecutionTest extends TestHelper {
     System.arraycopy(clazz.getBuckets(false).stream().mapToInt(Bucket::getId).toArray(), 0, clusterIds, 0, clusterIds.length);
     Arrays.sort(clusterIds);
 
-    for (int i = 0; i < clusterIds.length; i++) {
-      MutableDocument elem = database.newDocument(className);
-      elem.set("cid", clusterIds[i]);
-      elem.save(database.getSchema().getBucketById(clusterIds[i]).getName());
-    }
+      for (int clusterId : clusterIds) {
+          MutableDocument elem = database.newDocument(className);
+          elem.set("cid", clusterId);
+          elem.save(database.getSchema().getBucketById(clusterId).getName());
+      }
     database.commit();
 
     Map<String, Object> params = new HashMap<>();

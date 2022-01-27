@@ -70,8 +70,7 @@ public class JSONSerializer {
     } else if (value instanceof Collection) {
       final Collection c = (Collection) value;
       final JSONArray array = new JSONArray();
-      for (Iterator it = c.iterator(); it.hasNext(); )
-        array.put(convertToJSONType(it.next()));
+        for (Object o : c) array.put(convertToJSONType(o));
       value = array;
     } else if (value instanceof Date)
       value = ((Date) value).getTime();

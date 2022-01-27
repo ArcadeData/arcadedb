@@ -355,20 +355,20 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
       Map<String, Double> pList = new HashMap<String, Double>();
       Map<String, Double> gList = new HashMap<String, Double>();
       parent = parent == null ? node : parent;
-      for (int i = 0; i < paramVertexAxisNames.length; i++) {
-        Double s = doubleOrDefault(paramSourceVertex.get(paramVertexAxisNames[i]), 0);
-        Double c = doubleOrDefault(node.get(paramVertexAxisNames[i]), 0);
-        Double g = doubleOrDefault(target.get(paramVertexAxisNames[i]), 0);
-        Double p = doubleOrDefault(parent.get(paramVertexAxisNames[i]), 0);
-        if (s != null)
-          sList.put(paramVertexAxisNames[i], s);
-        if (c != null)
-          cList.put(paramVertexAxisNames[i], s);
-        if (g != null)
-          gList.put(paramVertexAxisNames[i], g);
-        if (p != null)
-          pList.put(paramVertexAxisNames[i], p);
-      }
+        for (String paramVertexAxisName : paramVertexAxisNames) {
+            Double s = doubleOrDefault(paramSourceVertex.get(paramVertexAxisName), 0);
+            Double c = doubleOrDefault(node.get(paramVertexAxisName), 0);
+            Double g = doubleOrDefault(target.get(paramVertexAxisName), 0);
+            Double p = doubleOrDefault(parent.get(paramVertexAxisName), 0);
+            if (s != null)
+                sList.put(paramVertexAxisName, s);
+            if (c != null)
+                cList.put(paramVertexAxisName, s);
+            if (g != null)
+                gList.put(paramVertexAxisName, g);
+            if (p != null)
+                pList.put(paramVertexAxisName, p);
+        }
       switch (paramHeuristicFormula) {
       case MANHATAN:
         hresult = getManhatanHeuristicCost(paramVertexAxisNames, sList, cList, pList, gList, currentDepth, paramDFactor);

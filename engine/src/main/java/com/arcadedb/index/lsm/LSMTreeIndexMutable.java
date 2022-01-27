@@ -367,8 +367,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
       pos += INT_SERIALIZED_SIZE;
 
       currentPage.writeByte(pos++, (byte) binaryKeyTypes.length);
-      for (int i = 0; i < binaryKeyTypes.length; ++i)
-        currentPage.writeByte(pos++, binaryKeyTypes[i]);
+        for (byte binaryKeyType : binaryKeyTypes) currentPage.writeByte(pos++, binaryKeyType);
     }
 
     ++currentMutablePages;
