@@ -275,7 +275,7 @@ public class MatchExecutionPlanner {
     for (Map.Entry<String, Long> root : estimatedRootEntries.entrySet()) {
       rootWeights.add(new Pair<>(root.getValue(), root.getKey()));
     }
-    rootWeights.sort((o1, o2) -> o1.getFirst().compareTo(o2.getFirst()));
+    rootWeights.sort(Comparator.comparing(Pair::getFirst));
 
     // Add the starting vertices, in the correct order, to an ordered set.
     Set<String> remainingStarts = new LinkedHashSet<>();
@@ -534,7 +534,7 @@ public class MatchExecutionPlanner {
     for (Map.Entry<String, Long> root : estimatedRootEntries.entrySet()) {
       rootWeights.add(new Pair<>(root.getValue(), root.getKey()));
     }
-    rootWeights.sort((o1, o2) -> o1.getFirst().compareTo(o2.getFirst()));
+    rootWeights.sort(Comparator.comparing(Pair::getFirst));
 
     Set<PatternEdge> traversedEdges = new HashSet<>();
     Set<PatternNode> traversedNodes = new HashSet<>();

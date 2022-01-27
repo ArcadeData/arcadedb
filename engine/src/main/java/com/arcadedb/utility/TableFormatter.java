@@ -545,7 +545,7 @@ public class TableFormatter {
       // SCALE COLUMNS AUTOMATICALLY
       final List<Entry<String, Integer>> orderedColumns = new ArrayList<Entry<String, Integer>>();
       orderedColumns.addAll(columns.entrySet());
-      orderedColumns.sort((o1, o2) -> o1.getValue().compareTo(o2.getValue()));
+      orderedColumns.sort(Comparator.comparing(Entry::getValue));
 
       lastResultShrunk = true;
 
