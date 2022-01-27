@@ -259,9 +259,7 @@ public class TransactionTypeTest extends TestHelper {
   public void testNestedTx() {
     database.transaction(() -> {
       database.newDocument(TYPE_NAME).set("id", -1, "tx", 1).save();
-      database.transaction(() -> {
-        database.newDocument(TYPE_NAME).set("id", -2, "tx", 2).save();
-      });
+      database.transaction(() -> database.newDocument(TYPE_NAME).set("id", -2, "tx", 2).save());
     });
 
     Assertions.assertEquals(0, database.query("sql", "select from " + TYPE_NAME + " where tx = 0").countEntries());

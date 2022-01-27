@@ -137,9 +137,7 @@ public class TypeEventsTest extends TestHelper {
   @Test
   public void testAfterUpdate() {
     final AtomicInteger counter = new AtomicInteger();
-    final AfterRecordUpdateListener listener = record -> {
-      counter.incrementAndGet();
-    };
+    final AfterRecordUpdateListener listener = record -> counter.incrementAndGet();
 
     database.getSchema().getType("Vertex").getEvents().registerListener(listener);
     try {
