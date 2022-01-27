@@ -67,7 +67,7 @@ public class MatchStatement extends Statement {
     this.returnNestedProjections = returnNestedProjections;
   }
 
-  public class MatchContext {
+  public static class MatchContext {
     int currentEdgeNumber = 0;
 
     Map<String, Iterable>     candidates   = new LinkedHashMap<String, Iterable>();

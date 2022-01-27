@@ -61,7 +61,7 @@ public class TransactionContext implements Transaction {
 
   public enum STATUS {INACTIVE, BEGUN, COMMIT_1ST_PHASE, COMMIT_2ND_PHASE}
 
-  public class TransactionPhase1 {
+  public static class TransactionPhase1 {
     public final Binary            result;
     public final List<MutablePage> modifiedPages;
 
