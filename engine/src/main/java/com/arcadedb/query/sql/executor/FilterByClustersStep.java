@@ -151,7 +151,7 @@ public class FilterByClustersStep extends AbstractExecutionStep {
   @Override
   public String prettyPrint(int depth, int indent) {
     return ExecutionStepInternal.getIndent(depth, indent) + "+ FILTER ITEMS BY CLUSTERS \n" + ExecutionStepInternal.getIndent(depth, indent) + "  "
-        + clusters.stream().collect(Collectors.joining(", "));
+        + String.join(", ", clusters);
   }
 
   @Override

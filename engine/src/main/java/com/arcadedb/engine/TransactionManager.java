@@ -126,7 +126,7 @@ public class TransactionManager {
       final File dir = new File(database.getDatabasePath());
       File[] walFiles = dir.listFiles((dir1, name) -> name.endsWith(".wal"));
       if (walFiles != null) {
-        Arrays.asList(walFiles).stream().forEach(File::delete);
+        Arrays.forEach(File::delete);
         walFiles = dir.listFiles((dir1, name) -> name.endsWith(".wal"));
       }
 

@@ -1665,7 +1665,7 @@ public class SelectExecutionPlanner {
 
     List<ExecutionStepInternal> result = handleClassAsTargetWithIndex(targetClass.getStringValue(), filterClusters, info, ctx, profilingEnabled);
     if (result != null) {
-      result.stream().forEach(x -> plan.chain(x));
+      result.forEach(x -> plan.chain(x));
       info.whereClause = null;
       info.flattenedWhereClause = null;
       return true;
@@ -1689,7 +1689,7 @@ public class SelectExecutionPlanner {
         return false;
       }
       SelectExecutionPlan subPlan = new SelectExecutionPlan(ctx);
-      subSteps.stream().forEach(x -> subPlan.chain(x));
+      subSteps.forEach(x -> subPlan.chain(x));
       subTypePlans.add(subPlan);
     }
     if (subTypePlans.size() > 0) {
@@ -1756,7 +1756,7 @@ public class SelectExecutionPlanner {
           return null;
         }
         SelectExecutionPlan subPlan = new SelectExecutionPlan(ctx);
-        subSteps.stream().forEach(x -> subPlan.chain(x));
+        subSteps.forEach(x -> subPlan.chain(x));
         subTypePlans.add(subPlan);
       }
       if (subTypePlans.size() > 0) {
