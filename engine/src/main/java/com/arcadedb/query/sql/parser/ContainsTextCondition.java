@@ -26,6 +26,7 @@ import com.arcadedb.query.sql.executor.Result;
 
 import java.util.*;
 
+@SuppressWarnings("ALL")
 public class ContainsTextCondition extends BooleanExpression {
 
   protected Expression left;
