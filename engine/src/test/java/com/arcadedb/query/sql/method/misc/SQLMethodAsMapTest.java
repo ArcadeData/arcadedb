@@ -116,7 +116,7 @@ public class SQLMethodAsMapTest {
     @Test
     public void testOtherValue() {
         // The expected behavior is to return null.
-        Object result = function.execute(null, null, null, Integer.valueOf(4), null);
+        Object result = function.execute(null, null, null, 4, null);
         assertEquals(result, null);
     }
 }

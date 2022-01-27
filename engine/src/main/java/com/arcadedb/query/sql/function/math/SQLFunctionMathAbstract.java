@@ -37,13 +37,13 @@ public abstract class SQLFunctionMathAbstract extends SQLFunctionConfigurableAbs
     if (iClass != iContext.getClass()) {
       // CHANGE TYPE
       if (iClass == Long.class)
-        iContext = Long.valueOf(((Number) iContext).longValue());
+        iContext = ((Number) iContext).longValue();
       else if (iClass == Short.class)
-        iContext = Short.valueOf(((Number) iContext).shortValue());
+        iContext = ((Number) iContext).shortValue();
       else if (iClass == Float.class)
-        iContext = Float.valueOf(((Number) iContext).floatValue());
+        iContext = ((Number) iContext).floatValue();
       else if (iClass == Double.class)
-        iContext = Double.valueOf(((Number) iContext).doubleValue());
+        iContext = ((Number) iContext).doubleValue();
     }
 
     return (Number) iContext;
