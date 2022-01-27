@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.schema.DocumentType;
 import org.json.JSONObject;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -39,9 +40,9 @@ public class AlterTypeExecutionTest extends TestHelper {
     database.command("sql", "ALTER TYPE Car SUPERTYPE +Vehicle");
 
     Assertions.assertEquals(1, database.getSchema().getType("Car").getSuperTypes().size());
-    Assertions.assertTrue(database.getSchema().getType("Car").getSuperTypes().stream().map(x -> x.getName()).collect(Collectors.toSet()).contains("Vehicle"));
+    Assertions.assertTrue(database.getSchema().getType("Car").getSuperTypes().stream().map(DocumentType::getName).collect(Collectors.toSet()).contains("Vehicle"));
     Assertions.assertEquals(1, database.getSchema().getType("Vehicle").getSubTypes().size());
-    Assertions.assertTrue(database.getSchema().getType("Vehicle").getSubTypes().stream().map(x -> x.getName()).collect(Collectors.toSet()).contains("Car"));
+    Assertions.assertTrue(database.getSchema().getType("Vehicle").getSubTypes().stream().map(DocumentType::getName).collect(Collectors.toSet()).contains("Car"));
     Assertions.assertTrue(database.getSchema().getType("Vehicle").isSuperTypeOf("Car"));
 
     database.command("sql", "CREATE VERTEX TYPE Suv");
@@ -51,7 +52,7 @@ public class AlterTypeExecutionTest extends TestHelper {
     Assertions.assertEquals(1, database.getSchema().getType("Suv").getSuperTypes().size());
     Assertions.assertTrue(database.getSchema().getType("Car").isSuperTypeOf("Suv"));
     Assertions.assertEquals(1, database.getSchema().getType("Car").getSubTypes().size());
-    Assertions.assertTrue(database.getSchema().getType("Car").getSubTypes().stream().map(x -> x.getName()).collect(Collectors.toSet()).contains("Suv"));
+    Assertions.assertTrue(database.getSchema().getType("Car").getSubTypes().stream().map(DocumentType::getName).collect(Collectors.toSet()).contains("Suv"));
     Assertions.assertTrue(database.getSchema().getType("Car").isSuperTypeOf("Suv"));
 
     database.command("sql", "ALTER TYPE Car SUPERTYPE -Vehicle");
@@ -64,7 +65,7 @@ public class AlterTypeExecutionTest extends TestHelper {
     Assertions.assertTrue(database.getSchema().getType("Vehicle").isSuperTypeOf("Suv"));
     Assertions.assertEquals(1, database.getSchema().getType("Car").getSubTypes().size());
     Assertions.assertEquals(1, database.getSchema().getType("Vehicle").getSubTypes().size());
-    Assertions.assertTrue(database.getSchema().getType("Car").getSubTypes().stream().map(x -> x.getName()).collect(Collectors.toSet()).contains("Suv"));
+    Assertions.assertTrue(database.getSchema().getType("Car").getSubTypes().stream().map(DocumentType::getName).collect(Collectors.toSet()).contains("Suv"));
     Assertions.assertTrue(database.getSchema().getType("Car").isSuperTypeOf("Suv"));
     Assertions.assertTrue(database.getSchema().getType("Vehicle").isSuperTypeOf("Suv"));
   }

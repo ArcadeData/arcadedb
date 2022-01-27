@@ -427,7 +427,7 @@ public class AsyncTest extends TestHelper {
 
     database.async().setCommitEvery(5000);
     database.async().setParallelLevel(3);
-    database.async().onOk(() -> okCallbackInvoked.incrementAndGet());
+    database.async().onOk(okCallbackInvoked::incrementAndGet);
 
     database.async().onError(exception -> Assertions.fail("Error on creating async record", exception));
 
