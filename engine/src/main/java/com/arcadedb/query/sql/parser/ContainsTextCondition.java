@@ -41,34 +41,32 @@ public class ContainsTextCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(Identifiable currentRecord, CommandContext ctx) {
-    Object leftValue = left.execute(currentRecord, ctx);
-    if (leftValue == null || !(leftValue instanceof String)) {
+  public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
+    final Object leftValue = left.execute(currentRecord, ctx);
+    if (!(leftValue instanceof String))
       return false;
-    }
-    Object rightValue = right.execute(currentRecord, ctx);
-    if (rightValue == null || !(rightValue instanceof String)) {
+
+    final Object rightValue = right.execute(currentRecord, ctx);
+    if (!(rightValue instanceof String))
       return false;
-    }
 
     return ((String) leftValue).contains((String) rightValue);
   }
 
   @Override
-  public boolean evaluate(Result currentRecord, CommandContext ctx) {
-    Object leftValue = left.execute(currentRecord, ctx);
-    if (leftValue == null || !(leftValue instanceof String)) {
+  public boolean evaluate(final Result currentRecord,final  CommandContext ctx) {
+    final Object leftValue = left.execute(currentRecord, ctx);
+    if (!(leftValue instanceof String))
       return false;
-    }
-    Object rightValue = right.execute(currentRecord, ctx);
-    if (rightValue == null || !(rightValue instanceof String)) {
+
+    final Object rightValue = right.execute(currentRecord, ctx);
+    if (!(rightValue instanceof String))
       return false;
-    }
 
     return ((String) leftValue).contains((String) rightValue);
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     left.toString(params, builder);
     builder.append(" CONTAINSTEXT ");
     right.toString(params, builder);
@@ -93,7 +91,7 @@ public class ContainsTextCondition extends BooleanExpression {
 
   @Override
   protected List<Object> getExternalCalculationConditions() {
-    List<Object> result = new ArrayList<Object>();
+    final List<Object> result = new ArrayList<Object>();
     if (!left.supportsBasicCalculation()) {
       result.add(left);
     }
@@ -104,7 +102,7 @@ public class ContainsTextCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean needsAliases(Set<String> aliases) {
+  public boolean needsAliases(final Set<String> aliases) {
     if (!left.needsAliases(aliases)) {
       return true;
     }
@@ -113,14 +111,14 @@ public class ContainsTextCondition extends BooleanExpression {
 
   @Override
   public ContainsTextCondition copy() {
-    ContainsTextCondition result = new ContainsTextCondition(-1);
+    final ContainsTextCondition result = new ContainsTextCondition(-1);
     result.left = left.copy();
     result.right = right.copy();
     return result;
   }
 
   @Override
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
     left.extractSubQueries(collector);
     right.extractSubQueries(collector);
   }
@@ -131,13 +129,13 @@ public class ContainsTextCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    ContainsTextCondition that = (ContainsTextCondition) o;
+    final ContainsTextCondition that = (ContainsTextCondition) o;
 
     if (left != null ? !left.equals(that.left) : that.left != null)
       return false;
@@ -153,10 +151,10 @@ public class ContainsTextCondition extends BooleanExpression {
 
   @Override
   public List<String> getMatchPatternInvolvedAliases() {
-    List<String> leftX = left == null ? null : left.getMatchPatternInvolvedAliases();
-    List<String> rightX = right == null ? null : right.getMatchPatternInvolvedAliases();
+    final  List<String> leftX = left == null ? null : left.getMatchPatternInvolvedAliases();
+    final  List<String> rightX = right == null ? null : right.getMatchPatternInvolvedAliases();
 
-    List<String> result = new ArrayList<String>();
+    final List<String> result = new ArrayList<String>();
     if (leftX != null) {
       result.addAll(leftX);
     }
