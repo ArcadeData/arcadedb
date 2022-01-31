@@ -27,7 +27,29 @@ import java.util.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class MultiValueTest {
+  @Test
+  void testMultivaluesClasses() {
+    assertThat(MultiValue.isMultiValue(Map.class)).isTrue();
+    assertThat(MultiValue.isMultiValue(List.class)).isTrue();
+    assertThat(MultiValue.isMultiValue(Set.class)).isTrue();
+    assertThat(MultiValue.isMultiValue(Collection.class)).isTrue();
+    assertThat(MultiValue.isMultiValue(Object[].class)).isTrue();
+    assertThat(MultiValue.isMultiValue(Iterable.class)).isTrue();
+    assertThat(MultiValue.isMultiValue(MultiIterator.class)).isTrue();
+    assertThat(MultiValue.isMultiValue(ResultSet.class)).isTrue();
+  }
 
+  @Test
+  void testMultivaluesObjects() {
+    assertThat(MultiValue.isMultiValue(Map.of())).isTrue();
+    assertThat(MultiValue.isMultiValue(List.of())).isTrue();
+    assertThat(MultiValue.isMultiValue(Set.of())).isTrue();
+    assertThat(MultiValue.isMultiValue(new Object[] {})).isTrue();
+    //iterable
+    assertThat(MultiValue.isMultiValue(new EmptyIndexCursor())).isTrue();
+    assertThat(MultiValue.isMultiValue(new MultiIterator())).isTrue();
+    assertThat(MultiValue.isMultiValue(new InternalResultSet())).isTrue();
+  }
 
     @Test
     void testMultivaluesClasses() {
