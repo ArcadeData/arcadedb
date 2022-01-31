@@ -18,21 +18,17 @@
  */
 package com.arcadedb.server;
 
-import static com.arcadedb.server.http.HttpSessionManager.ARCADEDB_SESSION_ID;
-
 import com.arcadedb.log.LogManager;
 import org.json.JSONObject;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
-import java.io.OutputStreamWriter;
-import java.io.PrintWriter;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.util.Base64;
-import java.util.HashMap;
-import java.util.logging.Level;
+import java.io.*;
+import java.net.*;
+import java.util.*;
+import java.util.logging.*;
+
+import static com.arcadedb.server.http.HttpSessionManager.ARCADEDB_SESSION_ID;
 
 public class HTTPTransactionIT extends BaseGraphServerTest {
 
@@ -50,7 +46,7 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
       String sessionId;
       try {
         final String response = readResponse(connection);
-        LogManager.instance().log(this, Level.INFO, "Response: ", null, response);
+        LogManager.instance().log(this, Level.FINE, "Response: ", null, response);
         Assertions.assertEquals(204, connection.getResponseCode());
         sessionId = connection.getHeaderField(ARCADEDB_SESSION_ID).trim();
 
@@ -85,7 +81,7 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
 
         Assertions.assertEquals(200, connection.getResponseCode());
         Assertions.assertEquals("OK", connection.getResponseMessage());
-        LogManager.instance().log(this, Level.INFO, "Response: ", null, response);
+        LogManager.instance().log(this, Level.FINE, "Response: ", null, response);
         final JSONObject responseAsJson = new JSONObject(response);
         Assertions.assertTrue(responseAsJson.has("result"));
         rid = responseAsJson.getString("result");
@@ -117,7 +113,7 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
 
       try {
         final String response = readResponse(connection);
-        LogManager.instance().log(this, Level.INFO, "Response: ", null, response);
+        LogManager.instance().log(this, Level.FINE, "Response: ", null, response);
         Assertions.assertEquals(200, connection.getResponseCode());
         Assertions.assertEquals("OK", connection.getResponseMessage());
         Assertions.assertTrue(response.contains("Person"));
@@ -138,7 +134,7 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
 
       try {
         final String response = readResponse(connection);
-        LogManager.instance().log(this, Level.INFO, "Response: ", null, response);
+        LogManager.instance().log(this, Level.FINE, "Response: ", null, response);
         Assertions.assertEquals(200, connection.getResponseCode());
         Assertions.assertEquals("OK", connection.getResponseMessage());
         Assertions.assertTrue(response.contains("Person"));
@@ -157,7 +153,7 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
 
       try {
         final String response = readResponse(connection);
-        LogManager.instance().log(this, Level.INFO, "Response: ", null, response);
+        LogManager.instance().log(this, Level.FINE, "Response: ", null, response);
         Assertions.assertEquals(204, connection.getResponseCode());
         Assertions.assertNull(connection.getHeaderField(ARCADEDB_SESSION_ID));
 
@@ -183,7 +179,7 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
 
     try {
       final String response = readResponse(connection);
-      LogManager.instance().log(this, Level.INFO, "Response: ", null, response);
+      LogManager.instance().log(this, Level.FINE, "Response: ", null, response);
       final JSONObject responseAsJson = new JSONObject(response);
       Assertions.assertTrue(responseAsJson.has("result"));
       final JSONObject object = responseAsJson.getJSONObject("result");

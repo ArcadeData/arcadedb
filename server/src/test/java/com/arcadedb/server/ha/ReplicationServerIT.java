@@ -75,7 +75,7 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
 
     Assertions.assertEquals(1, db.countType(VERTEX1_TYPE_NAME, true), "TEST: Check for vertex count for server" + 0);
 
-    LogManager.instance().log(this, Level.INFO, "TEST: Executing %s transactions with %d vertices each...", null, getTxs(), getVerticesPerTx());
+    LogManager.instance().log(this, Level.FINE, "TEST: Executing %s transactions with %d vertices each...", null, getTxs(), getVerticesPerTx());
 
     final long total = getTxs() * getVerticesPerTx();
     long counter = 0;
@@ -96,7 +96,7 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
           break;
 
         } catch (TransactionException | NeedRetryException e) {
-          LogManager.instance().log(this, Level.INFO, "TEST: - RECEIVED ERROR: %s (RETRY %d/%d)", null, e.toString(), retry, getMaxRetry());
+          LogManager.instance().log(this, Level.FINE, "TEST: - RECEIVED ERROR: %s (RETRY %d/%d)", null, e.toString(), retry, getMaxRetry());
           if (retry >= getMaxRetry() - 1)
             throw e;
           counter = lastGoodCounter;
@@ -106,7 +106,7 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
       }
 
       if (counter % (total / 10) == 0) {
-        LogManager.instance().log(this, Level.INFO, "TEST: - Progress %d/%d", null, counter, (getTxs() * getVerticesPerTx()));
+        LogManager.instance().log(this, Level.FINE, "TEST: - Progress %d/%d", null, counter, (getTxs() * getVerticesPerTx()));
         if (isPrintingConfigurationAtEveryStep())
           getLeaderServer().getHA().printClusterConfiguration();
       }
@@ -182,7 +182,7 @@ public abstract class ReplicationServerIT extends BaseGraphServerTest {
           ++total;
         }
 
-        LogManager.instance().log(this, Level.INFO, "TEST: Entries in the index (%d) >= records in database (%d)", null, total, recordInDb);
+        LogManager.instance().log(this, Level.FINE, "TEST: Entries in the index (%d) >= records in database (%d)", null, total, recordInDb);
 
         final Map<RID, Set<String>> ridsFoundInIndex = new HashMap<>();
         long total2 = 0;

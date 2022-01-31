@@ -41,7 +41,7 @@ public class ReplicationServerQuorumMajority1ServerOutIT extends ReplicationServ
         public void onEvent(final TYPE type, final Object object, final ArcadeDBServer server) {
           if (type == TYPE.REPLICA_MSG_RECEIVED) {
             if (messages.incrementAndGet() > 100) {
-              LogManager.instance().log(this, Level.INFO, "TEST: Stopping Replica 2...");
+              LogManager.instance().log(this, Level.FINE, "TEST: Stopping Replica 2...");
               getServer(2).stop();
             }
           }

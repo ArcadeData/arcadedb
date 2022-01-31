@@ -64,7 +64,7 @@ public class ReplicationServerReplicaRestartForceDbInstallIT extends Replication
             // SLOW DOWN A SERVER AFTER 5TH MESSAGE
             if (totalMessages.incrementAndGet() > 5) {
               try {
-                LogManager.instance().log(this, Level.INFO, "TEST: Slowing down response from replica server 2...");
+                LogManager.instance().log(this, Level.FINE, "TEST: Slowing down response from replica server 2...");
                 Thread.sleep(10000);
               } catch (InterruptedException e) {
                 // IGNORE IT
@@ -74,10 +74,10 @@ public class ReplicationServerReplicaRestartForceDbInstallIT extends Replication
             }
           } else {
             if (type == TYPE.REPLICA_HOT_RESYNC) {
-              LogManager.instance().log(this, Level.INFO, "TEST: Received hot resync request");
+              LogManager.instance().log(this, Level.FINE, "TEST: Received hot resync request");
               hotResync = true;
             } else if (type == TYPE.REPLICA_FULL_RESYNC) {
-              LogManager.instance().log(this, Level.INFO, "TEST: Received full resync request");
+              LogManager.instance().log(this, Level.FINE, "TEST: Received full resync request");
               fullResync = true;
             }
           }
@@ -91,7 +91,7 @@ public class ReplicationServerReplicaRestartForceDbInstallIT extends Replication
           // AS SOON AS SERVER 2 IS OFFLINE, A CLEAN OF REPLICATION LOG AND RESTART IS EXECUTED
           if ("ArcadeDB_2".equals(object) && type == TYPE.REPLICA_OFFLINE && firstTimeServerShutdown) {
             LogManager.instance()
-                .log(this, Level.INFO, "TEST: Stopping Replica 2, removing latency, delete the replication log file and restart the server...");
+                .log(this, Level.FINE, "TEST: Stopping Replica 2, removing latency, delete the replication log file and restart the server...");
             slowDown = false;
             firstTimeServerShutdown = false;
 

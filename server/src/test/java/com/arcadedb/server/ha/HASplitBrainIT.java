@@ -78,7 +78,7 @@ public class HASplitBrainIT extends ReplicationServerIT {
               } else
                 testLog("AFTER REJOINING -> ALLOWED CONNECTION TO THE ADDRESS " + connectTo + "  FROM " + server);
             } else
-              LogManager.instance().log(this, Level.INFO, "ALLOWED CONNECTION FROM SERVER %s TO %s...", null, server.getServerName(), connectTo);
+              LogManager.instance().log(this, Level.FINE, "ALLOWED CONNECTION FROM SERVER %s TO %s...", null, server.getServerName(), connectTo);
           } else {
             // SERVERS 0-2
             if (port == 2427 || port == 2428) {
@@ -88,7 +88,7 @@ public class HASplitBrainIT extends ReplicationServerIT {
               } else
                 testLog("AFTER REJOINING -> ALLOWED CONNECTION TO THE ADDRESS " + connectTo + "  FROM " + server);
             } else
-              LogManager.instance().log(this, Level.INFO, "ALLOWED CONNECTION FROM SERVER %s TO %s...", null, server.getServerName(), connectTo);
+              LogManager.instance().log(this, Level.FINE, "ALLOWED CONNECTION FROM SERVER %s TO %s...", null, server.getServerName(), connectTo);
           }
         }
       }

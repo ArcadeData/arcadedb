@@ -72,7 +72,7 @@ public abstract class StaticBaseServerTest {
     setTestConfiguration();
     checkArcadeIsTotallyDown();
 
-    LogManager.instance().log(StaticBaseServerTest.class, Level.INFO, "Starting test...");
+    LogManager.instance().log(StaticBaseServerTest.class, Level.FINE, "Starting test...");
 
     deleteDatabaseFolders();
 
@@ -148,7 +148,7 @@ public abstract class StaticBaseServerTest {
     }
 
     // CLOSE ALL DATABASES BEFORE STARTING THE SERVERS
-    LogManager.instance().log(StaticBaseServerTest.class, Level.INFO, "TEST: Closing databases before starting");
+    LogManager.instance().log(StaticBaseServerTest.class, Level.FINE, "TEST: Closing databases before starting");
     for (int i = 0; i < databases.length; ++i) {
       databases[i].close();
       databases[i] = null;
@@ -183,14 +183,14 @@ public abstract class StaticBaseServerTest {
     } finally {
 
       try {
-        LogManager.instance().log(StaticBaseServerTest.class, Level.INFO, "END OF THE TEST: Check DBS are identical...");
+        LogManager.instance().log(StaticBaseServerTest.class, Level.FINE, "END OF THE TEST: Check DBS are identical...");
         checkDatabasesAreIdentical();
       } finally {
 
-        LogManager.instance().log(StaticBaseServerTest.class, Level.INFO, "TEST: Stopping servers...");
+        LogManager.instance().log(StaticBaseServerTest.class, Level.FINE, "TEST: Stopping servers...");
         stopServers();
 
-        LogManager.instance().log(StaticBaseServerTest.class, Level.INFO, "END OF THE TEST: Cleaning test...");
+        LogManager.instance().log(StaticBaseServerTest.class, Level.FINE, "END OF THE TEST: Cleaning test...");
         if (dropDatabasesAtTheEnd())
           deleteDatabaseFolders();
 
@@ -331,7 +331,7 @@ public abstract class StaticBaseServerTest {
     final int onlineReplicas = leader.getHA().getOnlineReplicas();
     if (1 + onlineReplicas < getServerCount()) {
       // NOT ALL THE SERVERS ARE UP, AVOID A QUORUM ERROR
-      LogManager.instance().log(this, Level.INFO, "TEST: Not all the servers are ONLINE (%d), skip this crash...", null, onlineReplicas);
+      LogManager.instance().log(this, Level.FINE, "TEST: Not all the servers are ONLINE (%d), skip this crash...", null, onlineReplicas);
       leader.getHA().printClusterConfiguration();
       return false;
     }
@@ -369,7 +369,7 @@ public abstract class StaticBaseServerTest {
     final int[] servers2Check = getServerToCheck();
 
     if (servers2Check.length > 1) {
-      LogManager.instance().log(StaticBaseServerTest.class, Level.INFO, "END OF THE TEST: Check DBS are identical...");
+      LogManager.instance().log(StaticBaseServerTest.class, Level.FINE, "END OF THE TEST: Check DBS are identical...");
 
       for (int i = 1; i < servers2Check.length; ++i) {
         final DatabaseInternal db1 = (DatabaseInternal) getServerDatabase(servers2Check[0], getDatabaseName());
@@ -380,15 +380,15 @@ public abstract class StaticBaseServerTest {
         DatabaseContext.INSTANCE.init(db2);
 
         LogManager.instance()
-            .log(StaticBaseServerTest.class, Level.INFO, "TEST: Comparing databases '%s' and '%s' are identical...", null, db1.getDatabasePath(),
+            .log(StaticBaseServerTest.class, Level.FINE, "TEST: Comparing databases '%s' and '%s' are identical...", null, db1.getDatabasePath(),
                 db2.getDatabasePath());
         try {
           new DatabaseComparator().compare(db1, db2);
-          LogManager.instance().log(StaticBaseServerTest.class, Level.INFO, "TEST: OK databases '%s' and '%s' are identical", null, db1.getDatabasePath(),
+          LogManager.instance().log(StaticBaseServerTest.class, Level.FINE, "TEST: OK databases '%s' and '%s' are identical", null, db1.getDatabasePath(),
               db2.getDatabasePath());
         } catch (RuntimeException e) {
           LogManager.instance()
-              .log(StaticBaseServerTest.class, Level.INFO, "ERROR on comparing databases '%s' and '%s': %s", null, db1.getDatabasePath(), db2.getDatabasePath(),
+              .log(StaticBaseServerTest.class, Level.FINE, "ERROR on comparing databases '%s' and '%s': %s", null, db1.getDatabasePath(), db2.getDatabasePath(),
                   e.getMessage());
           throw e;
         }
@@ -397,9 +397,9 @@ public abstract class StaticBaseServerTest {
   }
 
   protected static void testLog(final String msg, final Object... args) {
-    LogManager.instance().log(StaticBaseServerTest.class, Level.INFO, "***********************************************************************************");
-    LogManager.instance().log(StaticBaseServerTest.class, Level.INFO, "TEST: " + msg, args);
-    LogManager.instance().log(StaticBaseServerTest.class, Level.INFO, "***********************************************************************************");
+    LogManager.instance().log(StaticBaseServerTest.class, Level.FINE, "***********************************************************************************");
+    LogManager.instance().log(StaticBaseServerTest.class, Level.FINE, "TEST: " + msg, args);
+    LogManager.instance().log(StaticBaseServerTest.class, Level.FINE, "***********************************************************************************");
   }
 
   protected void testEachServer(Callback callback) throws Exception {

@@ -63,7 +63,7 @@ public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT 
     final RemoteDatabase db = new RemoteDatabase(server1AddressParts[0], Integer.parseInt(server1AddressParts[1]), getDatabaseName(), "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
-    LogManager.instance().log(this, Level.INFO, "Executing %s transactions with %d vertices each...", null, getTxs(), getVerticesPerTx());
+    LogManager.instance().log(this, Level.FINE, "Executing %s transactions with %d vertices each...", null, getTxs(), getVerticesPerTx());
 
     long counter = 0;
     final int maxRetry = 10;
@@ -105,13 +105,13 @@ public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT 
       }
 
       if (counter % 1000 == 0) {
-        LogManager.instance().log(this, Level.INFO, "- Progress %d/%d", null, counter, (getTxs() * getVerticesPerTx()));
+        LogManager.instance().log(this, Level.FINE, "- Progress %d/%d", null, counter, (getTxs() * getVerticesPerTx()));
         if (isPrintingConfigurationAtEveryStep())
           getLeaderServer().getHA().printClusterConfiguration();
       }
     }
 
-    LogManager.instance().log(this, Level.INFO, "Done");
+    LogManager.instance().log(this, Level.FINE, "Done");
 
     try {
       Thread.sleep(1000);
@@ -126,7 +126,7 @@ public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT 
 
     onAfterTest();
 
-    LogManager.instance().log(this, Level.INFO, "TEST Restart = %d", null, restarts);
+    LogManager.instance().log(this, Level.FINE, "TEST Restart = %d", null, restarts);
     Assertions.assertTrue(restarts.get() >= getServerCount());
   }
 
@@ -145,7 +145,7 @@ public class ReplicationServerLeaderChanges3TimesIT extends ReplicationServerIT 
           messagesPerRestart.incrementAndGet();
 
           if (getServer(leaderName).isStarted() && messagesPerRestart.get() > getTxs() / (getServerCount() * 2) && restarts.get() < getServerCount()) {
-            LogManager.instance().log(this, Level.INFO, "TEST: Found online replicas %d", null, getServer(leaderName).getHA().getOnlineReplicas());
+            LogManager.instance().log(this, Level.FINE, "TEST: Found online replicas %d", null, getServer(leaderName).getHA().getOnlineReplicas());
 
             if (getServer(leaderName).getHA().getOnlineReplicas() < getServerCount() - 1) {
               // NOT ALL THE SERVERS ARE UP, AVOID A QUORUM ERROR

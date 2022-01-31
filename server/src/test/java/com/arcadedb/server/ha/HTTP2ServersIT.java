@@ -62,7 +62,7 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
 
       try {
         final String response = readResponse(connection);
-        LogManager.instance().log(this, Level.INFO, "TEST: Response: %s", null, response);
+        LogManager.instance().log(this, Level.FINE, "TEST: Response: %s", null, response);
         Assertions.assertEquals(200, connection.getResponseCode());
         Assertions.assertEquals("OK", connection.getResponseMessage());
         Assertions.assertTrue(response.contains("V1"));
@@ -86,7 +86,7 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
 
       try {
         final String response = readResponse(connection);
-        LogManager.instance().log(this, Level.INFO, "TEST: Response: %s", null, response);
+        LogManager.instance().log(this, Level.FINE, "TEST: Response: %s", null, response);
         Assertions.assertEquals(200, connection.getResponseCode());
         Assertions.assertEquals("OK", connection.getResponseMessage());
         Assertions.assertTrue(response.contains("V1"));
@@ -105,7 +105,7 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
   @Test
   public void checkDeleteGraphElements() throws Exception {
     testEachServer((serverIndex) -> {
-      LogManager.instance().log(this, Level.INFO, "TESTS SERVER " + serverIndex);
+      LogManager.instance().log(this, Level.FINE, "TESTS SERVER " + serverIndex);
 
       String v1 = new JSONObject(createRecord(serverIndex, "{\"@type\":\"V1\",\"name\":\"Jay\",\"surname\":\"Miner\",\"age\":69}")).getString("result");
 

@@ -58,20 +58,20 @@ public class IndexOperations3ServersIT extends BaseGraphServerTest {
     v.createProperty("uuid", String.class);
     database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Person", "uuid");
 
-    LogManager.instance().log(this, Level.INFO, "Inserting 1M records with 2 indexes...");
+    LogManager.instance().log(this, Level.FINE, "Inserting 1M records with 2 indexes...");
     // CREATE 1M RECORD IN 10 TX CHUNKS OF 100K EACH
     database.transaction(() -> insertRecords(database));
 
     testEachServer((serverIndex) -> {
-      LogManager.instance().log(this, Level.INFO, "Rebuild index Person[id] on server %s...", getServer(serverIndex).getHA().getServerName());
+      LogManager.instance().log(this, Level.FINE, "Rebuild index Person[id] on server %s...", getServer(serverIndex).getHA().getServerName());
       String response1 = command(serverIndex, "rebuild index `Person[id]`");
       Assertions.assertEquals(TOTAL_RECORDS, new JSONObject(response1).getJSONArray("result").getJSONObject(0).getLong("totalIndexed"));
 
-      LogManager.instance().log(this, Level.INFO, "Rebuild index Person[uuid] on server %s...", getServer(serverIndex).getHA().getServerName());
+      LogManager.instance().log(this, Level.FINE, "Rebuild index Person[uuid] on server %s...", getServer(serverIndex).getHA().getServerName());
       String response2 = command(serverIndex, "rebuild index `Person[uuid]`");
       Assertions.assertEquals(TOTAL_RECORDS, new JSONObject(response2).getJSONArray("result").getJSONObject(0).getLong("totalIndexed"));
 
-      LogManager.instance().log(this, Level.INFO, "Rebuild index * on server %s...", getServer(serverIndex).getHA().getServerName());
+      LogManager.instance().log(this, Level.FINE, "Rebuild index * on server %s...", getServer(serverIndex).getHA().getServerName());
       String response3 = command(serverIndex, "rebuild index *");
       Assertions.assertEquals(TOTAL_RECORDS * 2, new JSONObject(response3).getJSONArray("result").getJSONObject(0).getLong("totalIndexed"));
     });
@@ -82,7 +82,7 @@ public class IndexOperations3ServersIT extends BaseGraphServerTest {
     final Database database = getServerDatabase(0, getDatabaseName());
     VertexType v = database.getSchema().createVertexType("Person", 3);
 
-    LogManager.instance().log(this, Level.INFO, "Inserting 1M records without indexes first...");
+    LogManager.instance().log(this, Level.FINE, "Inserting 1M records without indexes first...");
     // CREATE 1M RECORD IN 10 TX CHUNKS OF 100K EACH
     database.transaction(() -> insertRecords(database));
 
@@ -92,15 +92,15 @@ public class IndexOperations3ServersIT extends BaseGraphServerTest {
     database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Person", "uuid");
 
     testEachServer((serverIndex) -> {
-      LogManager.instance().log(this, Level.INFO, "Rebuild index Person[id] on server %s...", getServer(serverIndex).getHA().getServerName());
+      LogManager.instance().log(this, Level.FINE, "Rebuild index Person[id] on server %s...", getServer(serverIndex).getHA().getServerName());
       String response1 = command(serverIndex, "rebuild index `Person[id]`");
       Assertions.assertEquals(TOTAL_RECORDS, new JSONObject(response1).getJSONArray("result").getJSONObject(0).getLong("totalIndexed"));
 
-      LogManager.instance().log(this, Level.INFO, "Rebuild index Person[uuid] on server %s...", getServer(serverIndex).getHA().getServerName());
+      LogManager.instance().log(this, Level.FINE, "Rebuild index Person[uuid] on server %s...", getServer(serverIndex).getHA().getServerName());
       String response2 = command(serverIndex, "rebuild index `Person[uuid]`");
       Assertions.assertEquals(TOTAL_RECORDS, new JSONObject(response2).getJSONArray("result").getJSONObject(0).getLong("totalIndexed"));
 
-      LogManager.instance().log(this, Level.INFO, "Rebuild index * on server %s...", getServer(serverIndex).getHA().getServerName());
+      LogManager.instance().log(this, Level.FINE, "Rebuild index * on server %s...", getServer(serverIndex).getHA().getServerName());
       String response3 = command(serverIndex, "rebuild index *");
       Assertions.assertEquals(TOTAL_RECORDS * 2, new JSONObject(response3).getJSONArray("result").getJSONObject(0).getLong("totalIndexed"));
     });
@@ -112,7 +112,7 @@ public class IndexOperations3ServersIT extends BaseGraphServerTest {
     VertexType v = database.getSchema().createVertexType("Person", 3);
 
     testEachServer((serverIndex) -> {
-      LogManager.instance().log(this, Level.INFO, "Inserting 1M records without indexes first...");
+      LogManager.instance().log(this, Level.FINE, "Inserting 1M records without indexes first...");
       // CREATE 1M RECORD IN 10 TX CHUNKS OF 100K EACH
       database.transaction(() -> insertRecords(database));
 
@@ -146,7 +146,7 @@ public class IndexOperations3ServersIT extends BaseGraphServerTest {
     VertexType v = database.getSchema().createVertexType("Person", 3);
 
     testEachServer((serverIndex) -> {
-      LogManager.instance().log(this, Level.INFO, "Inserting 1M records without indexes first...");
+      LogManager.instance().log(this, Level.FINE, "Inserting 1M records without indexes first...");
       // CREATE 2M RECORD WITH ID DUPLICATED
       database.transaction(() -> {
         insertRecords(database);

@@ -54,7 +54,7 @@ public class ReplicationServerLeaderDownNoTransactionsToForwardIT extends Replic
     final RemoteDatabase db = new RemoteDatabase(server1AddressParts[0], Integer.parseInt(server1AddressParts[1]), getDatabaseName(), "root",
         BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
-    LogManager.instance().log(this, Level.INFO, "Executing %s transactions with %d vertices each...", null, getTxs(), getVerticesPerTx());
+    LogManager.instance().log(this, Level.FINE, "Executing %s transactions with %d vertices each...", null, getTxs(), getVerticesPerTx());
 
     long counter = 0;
 
@@ -89,13 +89,13 @@ public class ReplicationServerLeaderDownNoTransactionsToForwardIT extends Replic
       }
 
       if (counter % 1000 == 0) {
-        LogManager.instance().log(this, Level.INFO, "- Progress %d/%d", null, counter, (getTxs() * getVerticesPerTx()));
+        LogManager.instance().log(this, Level.FINE, "- Progress %d/%d", null, counter, (getTxs() * getVerticesPerTx()));
         if (isPrintingConfigurationAtEveryStep())
           getLeaderServer().getHA().printClusterConfiguration();
       }
     }
 
-    LogManager.instance().log(this, Level.INFO, "Done");
+    LogManager.instance().log(this, Level.FINE, "Done");
 
     try {
       Thread.sleep(1000);
