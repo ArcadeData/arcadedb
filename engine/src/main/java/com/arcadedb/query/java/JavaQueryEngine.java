@@ -22,11 +22,9 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.QueryParsingException;
 import com.arcadedb.query.QueryEngine;
-import com.arcadedb.query.polyglot.GraalPolyglotEngine;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.graalvm.polyglot.Engine;
 
 import java.lang.reflect.*;
 import java.util.*;
@@ -100,7 +98,7 @@ public class JavaQueryEngine implements QueryEngine {
     }
 
     public static Iterable<String> getSupportedLanguages() {
-      return GraalPolyglotEngine.newBuilder(null, Engine.create()).build().getSupportedLanguages();
+      return Collections.singleton("Java");
     }
   }
 
