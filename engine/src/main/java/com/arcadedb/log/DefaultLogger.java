@@ -21,11 +21,10 @@ package com.arcadedb.log;
 import com.arcadedb.utility.AnsiLogFormatter;
 import com.arcadedb.utility.SystemVariableResolver;
 
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
-import java.util.logging.ConsoleHandler;
-import java.util.logging.Handler;
-import java.util.logging.Level;
+import java.io.*;
+import java.util.concurrent.*;
+import java.util.logging.LogManager;
+import java.util.logging.*;
 
 /**
  * Default Logger implementation that writes to the Java Logging Framework.
@@ -35,6 +34,7 @@ public class DefaultLogger implements Logger {
   private static final String                                          DEFAULT_LOG                  = "com.arcadedb";
   private static final String                                          ENV_INSTALL_CUSTOM_FORMATTER = "arcadedb.installCustomFormatter";
   private static final DefaultLogger                                   instance                     = new DefaultLogger();
+  private static final String                                          FILE_LOG_PROPERTIES          = "arcadedb-log.properties";
   private final        ConcurrentMap<String, java.util.logging.Logger> loggersCache                 = new ConcurrentHashMap<>();
 
   public DefaultLogger() {
@@ -46,6 +46,26 @@ public class DefaultLogger implements Logger {
   }
 
   public void installCustomFormatter() {
+
+    InputStream stream = getClass().getClassLoader().getResourceAsStream(FILE_LOG_PROPERTIES);
+    if (stream == null) {
+      try {
+        stream = new FileInputStream(FILE_LOG_PROPERTIES);
+      } catch (FileNotFoundException e) {
+        // USE DEFAULT SETTINGS
+      }
+    }
+
+    if (stream != null)
+      try {
+        LogManager.getLogManager().readConfiguration(stream);
+      } catch (IOException e) {
+        // NOT FOUND, APPLY DEFAULTS
+        System.err.println("Cannot find ArcadeDB log file `arcadedb-log.properties`. Using default settings");
+      }
+    else
+      System.err.println("Cannot find ArcadeDB log file `arcadedb-log.properties`. Using default settings");
+
     final boolean installCustomFormatter = Boolean.parseBoolean(
         SystemVariableResolver.INSTANCE.resolveSystemVariables("${" + ENV_INSTALL_CUSTOM_FORMATTER + "}", "true"));
 
@@ -72,10 +92,9 @@ public class DefaultLogger implements Logger {
     }
   }
 
-  public void log(final Object requester, Level level, String message, final Throwable exception, final String context, final Object arg1,
-      final Object arg2, final Object arg3, final Object arg4, final Object arg5, final Object arg6, final Object arg7, final Object arg8, final Object arg9,
-      final Object arg10, final Object arg11, final Object arg12, final Object arg13, final Object arg14, final Object arg15, final Object arg16,
-      final Object arg17) {
+  public void log(final Object requester, Level level, String message, final Throwable exception, final String context, final Object arg1, final Object arg2,
+      final Object arg3, final Object arg4, final Object arg5, final Object arg6, final Object arg7, final Object arg8, final Object arg9, final Object arg10,
+      final Object arg11, final Object arg12, final Object arg13, final Object arg14, final Object arg15, final Object arg16, final Object arg17) {
     if (message == null)
       return;
 

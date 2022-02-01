@@ -402,3 +402,4 @@ server/backups
 *~
 .java-version
 .run/
+integration/server-users.jsonl
