@@ -27,43 +27,41 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 public class RemoteDatabaseQueriesTest extends ArcadeContainerTemplate {
+  private RemoteDatabase database;
 
-    private RemoteDatabase database;
+  @BeforeEach
+  void setUp() {
+    database = new RemoteDatabase(host, httpPort, "beer", "root", "playwithdata");
+    // ENLARGE THE TIMEOUT TO PASS THESE TESTS ON CI (GITHUB ACTIONS)
+    database.setTimeout(60_000);
+  }
 
-    @BeforeEach
-    void setUp() {
-        database = new RemoteDatabase(host, httpPort, "beer", "root", "playwithdata");
-        database.setTimeout(10000);
-    }
+  @AfterEach
+  void tearDown() {
+    database.close();
+  }
 
-    @AfterEach
-    void tearDown() {
-        database.close();
-    }
+  @Test
+  void simpleSQLQuery() {
+    database.transaction(() -> {
+      ResultSet result = database.query("SQL", "select from Beer limit 10");
+      assertThat(result.countEntries()).isEqualTo(10);
+    });
+  }
 
-    @Test
-    void simpleSQLQuery() {
-        database.transaction(() -> {
-            ResultSet result = database.query("SQL", "select from Beer limit 10");
-            assertThat(result.countEntries()).isEqualTo(10);
-        });
+  @Test
+  void simpleGremlinQuery() {
+    database.transaction(() -> {
+      ResultSet result = database.query("gremlin", "g.V().limit(10)");
+      assertThat(result.countEntries()).isEqualTo(10);
+    });
+  }
 
-    }
-
-    @Test
-    void simpleGremlinQuery() {
-        database.transaction(() -> {
-            ResultSet result = database.query("gremlin", "g.V().limit(10)");
-            assertThat(result.countEntries()).isEqualTo(10);
-        });
-    }
-
-    @Test
-    void simpleCypherQuery() {
-        database.transaction(() -> {
-            ResultSet result = database.query("cypher", "MATCH(p:Beer) RETURN * LIMIT 10");
-            assertThat(result.countEntries()).isEqualTo(10);
-        });
-    }
-
+  @Test
+  void simpleCypherQuery() {
+    database.transaction(() -> {
+      ResultSet result = database.query("cypher", "MATCH(p:Beer) RETURN * LIMIT 10");
+      assertThat(result.countEntries()).isEqualTo(10);
+    });
+  }
 }

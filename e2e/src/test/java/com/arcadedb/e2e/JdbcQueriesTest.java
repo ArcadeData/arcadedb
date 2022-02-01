@@ -23,79 +23,75 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.sql.Connection;
-import java.sql.DriverManager;
-import java.sql.SQLException;
-import java.sql.Statement;
-import java.util.Properties;
+import java.sql.*;
+import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 public class JdbcQueriesTest extends ArcadeContainerTemplate {
 
-    private Connection conn;
+  private Connection conn;
 
-    @BeforeAll
-    static void beforeAll() throws ClassNotFoundException {
-        Class.forName("org.postgresql.Driver");
+  @BeforeAll
+  static void beforeAll() throws ClassNotFoundException {
+    Class.forName("org.postgresql.Driver");
+  }
+
+  @BeforeEach
+  void setUp() throws Exception {
+    Properties props = new Properties();
+    props.setProperty("user", "root");
+    props.setProperty("password", "playwithdata");
+    props.setProperty("ssl", "false");
+
+    conn = DriverManager.getConnection("jdbc:postgresql://" + host + ":" + pgsqlPort + "/beer", props);
+  }
+
+  @AfterEach
+  void tearDown() throws SQLException {
+    conn.close();
+  }
+
+  @Test
+  void simpleSQLQuery() throws Exception {
+
+    try (Statement st = conn.createStatement()) {
+
+      try (java.sql.ResultSet rs = st.executeQuery("SELECT * FROM Beer limit 1")) {
+        assertThat(rs.next()).isTrue();
+
+        assertThat(rs.getString("name")).isNotBlank();
+
+        assertThat(rs.next()).isFalse();
+      }
     }
+  }
 
-    @BeforeEach
-    void setUp() throws Exception {
-        Properties props = new Properties();
-        props.setProperty("user", "root");
-        props.setProperty("password", "playwithdata");
-        props.setProperty("ssl", "false");
+  @Test
+  void simpleGremlinQuery() throws Exception {
+    try (Statement st = conn.createStatement()) {
 
-        conn = DriverManager.getConnection("jdbc:postgresql://" + host + ":" + pgsqlPort + "/beer", props);
+      try (java.sql.ResultSet rs = st.executeQuery("{gremlin}g.V().limit(1)")) {
+        assertThat(rs.next()).isTrue();
+
+        assertThat(rs.getString("name")).isNotBlank();
+
+        assertThat(rs.next()).isFalse();
+      }
     }
+  }
 
-    @AfterEach
-    void tearDown() throws SQLException {
-        conn.close();
+  @Test
+  void simpleCypherQuery() throws Exception {
+    try (Statement st = conn.createStatement()) {
+
+      try (java.sql.ResultSet rs = st.executeQuery("{cypher}MATCH(p:Beer) RETURN * LIMIT 1")) {
+        assertThat(rs.next()).isTrue();
+
+        assertThat(rs.getString("name")).isNotBlank();
+
+        assertThat(rs.next()).isFalse();
+      }
     }
-
-    @Test
-    void simpleSQLQuery() throws Exception {
-
-        try (Statement st = conn.createStatement()) {
-
-            try (java.sql.ResultSet rs = st.executeQuery("SELECT * FROM Beer limit 1")) {
-                assertThat(rs.next()).isTrue();
-
-                assertThat(rs.getString("name")).isNotBlank();
-
-                assertThat(rs.next()).isFalse();
-            }
-        }
-    }
-
-    @Test
-    void simpleGremlinQuery() throws Exception {
-
-        try (Statement st = conn.createStatement()) {
-
-            try (java.sql.ResultSet rs = st.executeQuery("{gremlin}g.V().limit(1)")) {
-                assertThat(rs.next()).isTrue();
-
-                assertThat(rs.getString("name")).isNotBlank();
-
-                assertThat(rs.next()).isFalse();
-            }
-        }
-    }
-    @Test
-    void simpleCypherQuery() throws Exception {
-
-        try (Statement st = conn.createStatement()) {
-
-            try (java.sql.ResultSet rs = st.executeQuery("{cypher}MATCH(p:Beer) RETURN * LIMIT 1")) {
-                assertThat(rs.next()).isTrue();
-
-                assertThat(rs.getString("name")).isNotBlank();
-
-                assertThat(rs.next()).isFalse();
-            }
-        }
-    }
+  }
 }
