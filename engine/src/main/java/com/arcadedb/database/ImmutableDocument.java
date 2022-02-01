@@ -22,8 +22,7 @@ import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.schema.DocumentType;
 import org.json.JSONObject;
 
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 
 /**
  * Immutable document implementation. To modify the record, you need to get the mutable representation by calling {@link #modify()}. This implementation keeps the
@@ -40,6 +39,9 @@ public class ImmutableDocument extends BaseDocument {
 
   @Override
   public synchronized boolean has(final String propertyName) {
+    if (propertyName == null)
+      return false;
+
     checkForLazyLoading();
     final Map<String, Object> map = database.getSerializer()
         .deserializeProperties(database, buffer, new EmbeddedModifierProperty(this, propertyName), propertyName);
@@ -48,6 +50,9 @@ public class ImmutableDocument extends BaseDocument {
 
   @Override
   public synchronized Object get(final String propertyName) {
+    if (propertyName == null)
+      return null;
+
     checkForLazyLoading();
     final Map<String, Object> map = database.getSerializer()
         .deserializeProperties(database, buffer, new EmbeddedModifierProperty(this, propertyName), propertyName);

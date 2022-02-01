@@ -53,11 +53,6 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
     }
   }
 
-  @Override
-  public Object get(final String propertyName) {
-    return super.get(propertyName);
-  }
-
   public synchronized MutableEdge modify() {
     final Record recordInCache = database.getTransaction().getRecordFromCache(rid);
     if (recordInCache != this && recordInCache instanceof MutableEdge)

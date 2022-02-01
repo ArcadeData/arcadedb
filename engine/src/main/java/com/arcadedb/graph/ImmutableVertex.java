@@ -72,6 +72,9 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
 
   @Override
   public synchronized Object get(final String propertyName) {
+    if (propertyName == null)
+      return null;
+
     checkForLazyLoading();
     final Map<String, Object> map = database.getSerializer()
         .deserializeProperties(database, buffer, new EmbeddedModifierProperty(this, propertyName), propertyName);

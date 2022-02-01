@@ -31,11 +31,8 @@ import org.apache.tinkerpop.gremlin.process.traversal.step.util.HasContainer;
 import org.apache.tinkerpop.gremlin.process.traversal.strategy.AbstractTraversalStrategy;
 import org.apache.tinkerpop.gremlin.process.traversal.strategy.optimization.InlineFilterStrategy;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Set;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
+import java.util.*;
+import java.util.stream.*;
 
 /**
  * Replaces default traversal steps to speedup execution. This is used only when the traversal has a GraphStep (vertices or edges) and HasStep (label eq(X)).
@@ -73,7 +70,7 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
               if (totalLabels > 1)
                 break;
 
-              if (c.getBiPredicate().equals(Compare.eq))
+              if (c.getBiPredicate().equals(Compare.eq) && c.getValue() != null)
                 typeNameToMatch = c.getValue().toString();
             }
           }
