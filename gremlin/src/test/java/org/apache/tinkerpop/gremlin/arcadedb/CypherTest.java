@@ -173,6 +173,9 @@ public class CypherTest {
     }
   }
 
+  /**
+   * https://github.com/ArcadeData/arcadedb/issues/314
+   */
   @Test
   public void testIssue314() throws ExecutionException, InterruptedException {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testcypher");
