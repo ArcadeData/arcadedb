@@ -34,8 +34,8 @@ public class ConsoleTest {
 
   @BeforeEach
   public void populate() throws IOException {
-    FileUtils.deleteRecursively(new File("target/databases"));
-    console = new Console(false).setRootPath("target");
+    FileUtils.deleteRecursively(new File("./target/databases"));
+    console = new Console(false).setRootPath("./target");
     Assertions.assertTrue(console.parse("create database " + DB_NAME, false));
   }
 

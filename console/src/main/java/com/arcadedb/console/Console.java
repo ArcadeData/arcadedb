@@ -76,7 +76,7 @@ public class Console {
   }
 
   public Console(final boolean interactive) throws IOException {
-    setRootPath("");
+    setRootPath(".");
 
     GlobalConfiguration.PROFILE.setValue("low-cpu");
 
@@ -149,11 +149,11 @@ public class Console {
     this.rootDirectory = rootDirectory;
 
     if (this.rootDirectory == null || this.rootDirectory.isEmpty())
-      this.rootDirectory = "";
+      this.rootDirectory = ".";
     else if (this.rootDirectory.endsWith("/"))
       this.rootDirectory = this.rootDirectory.substring(0, this.rootDirectory.length() - 1);
 
-    if (!new File(this.rootDirectory + "config").exists() && new File(this.rootDirectory + "../config").exists()) {
+    if (!new File(this.rootDirectory + "/config").exists() && new File(this.rootDirectory + "/../config").exists()) {
       databaseDirectory = new File(this.rootDirectory).getAbsoluteFile().getParentFile().getPath() + "/databases/";
     } else
       databaseDirectory = this.rootDirectory + "/databases/";

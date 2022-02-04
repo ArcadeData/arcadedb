@@ -57,6 +57,10 @@
             <outputDirectory>databases</outputDirectory>
             <excludes><exclude>**/*</exclude></excludes>
         </fileSet>
+        <fileSet> <!-- Create empty directory -->
+            <outputDirectory>log</outputDirectory>
+            <excludes><exclude>**/*</exclude></excludes>
+        </fileSet>
 
     </fileSets>
 
