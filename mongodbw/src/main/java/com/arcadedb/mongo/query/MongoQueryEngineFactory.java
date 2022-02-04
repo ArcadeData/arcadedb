@@ -44,7 +44,7 @@ public class MongoQueryEngineFactory implements QueryEngine.QueryEngineFactory {
       database.setWrapper(MongoQueryEngine.ENGINE_NAME, engine);
       return (MongoQueryEngine) engine;
 
-    } catch (Exception e) {
+    } catch (Throwable e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on initializing Mongo query engine", e);
       throw new QueryParsingException("Error on initializing Mongo query engine", e);
     }

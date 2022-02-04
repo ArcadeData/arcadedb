@@ -43,7 +43,7 @@ public class CypherQueryEngineFactory implements QueryEngine.QueryEngineFactory 
       database.setWrapper(CypherQueryEngine.ENGINE_NAME, engine);
       return (CypherQueryEngine) engine;
 
-    } catch (Exception e) {
+    } catch (Throwable e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on initializing Cypher query engine", e);
       throw new QueryParsingException("Error on initializing Cypher query engine", e);
     }

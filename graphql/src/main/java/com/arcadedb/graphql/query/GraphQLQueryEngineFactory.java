@@ -45,7 +45,7 @@ public class GraphQLQueryEngineFactory implements QueryEngine.QueryEngineFactory
       database.setWrapper(ENGINE_NAME, engine);
       return engine;
 
-    } catch (Exception e) {
+    } catch (Throwable e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on initializing GraphQL query engine", e);
       throw new QueryParsingException("Error on initializing GraphQL query engine", e);
     }

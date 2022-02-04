@@ -20,6 +20,7 @@ package org.apache.tinkerpop.gremlin.arcadedb;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.QueryParsingException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -32,8 +33,8 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.File;
-import java.util.concurrent.ExecutionException;
+import java.io.*;
+import java.util.concurrent.*;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
@@ -44,7 +45,7 @@ public class CypherTest {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testcypher");
     try {
 
-      graph.getDatabase().getSchema().createVertexType("Person");
+      graph.getDatabase().getSchema().getOrCreateVertexType("Person");
 
       graph.getDatabase().transaction(() -> {
         for (int i = 0; i < 50; i++)
@@ -166,6 +167,36 @@ public class CypherTest {
       Assertions.assertTrue(result.hasNext());
       final Result row = result.next();
       Assertions.assertNotNull(row.getIdentity().get());
+
+    } finally {
+      graph.drop();
+    }
+  }
+
+  @Test
+  public void testIssue314() throws ExecutionException, InterruptedException {
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testcypher");
+    try {
+
+      graph.getDatabase().getSchema().getOrCreateVertexType("Person");
+
+      ResultSet p1 = graph.cypher("CREATE (p:Person {label:\"First\"}) return p").execute();
+      Assertions.assertTrue(p1.hasNext());
+      RID p1RID = p1.next().getIdentity().get();
+
+      ResultSet p2 = graph.cypher("CREATE (p:Person {label:\"Second\"}) return p").execute();
+      Assertions.assertTrue(p2.hasNext());
+      RID p2RID = p2.next().getIdentity().get();
+
+      final ArcadeCypher query = graph.cypher("MATCH (a),(b) WHERE a.label = \"First\" AND b.label = \"Second\" RETURN a,b");
+      final ResultSet result = query.execute();
+
+      Assertions.assertTrue(result.hasNext());
+      final Result row = result.next();
+      Assertions.assertNotNull(row.getProperty("a"));
+      Assertions.assertEquals(p1RID, ((Result) row.getProperty("a")).getIdentity().get());
+      Assertions.assertNotNull(row.getProperty("b"));
+      Assertions.assertEquals(p2RID, ((Result) row.getProperty("b")).getIdentity().get());
 
     } finally {
       graph.drop();
