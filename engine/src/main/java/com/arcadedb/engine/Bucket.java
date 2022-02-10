@@ -42,8 +42,15 @@ import static com.arcadedb.database.Binary.LONG_SERIALIZED_SIZE;
 
 /**
  * PAGE CONTENT = [version(long:8),recordCountInPage(short:2),recordOffsetsInPage(2048*uint=8192)]
- * <br>
- * Record size is the length of the record or -1 if a placeholder is stored and -2 for the placeholder itself.
+ * <br><br>
+ * Record size is the length of the record:
+ * <ul>
+ * <li>0 = deleted record</li>
+ * <li>-1 = placeholder pointer that points to another record in another page</li>
+ * <li><-1 = placeholder content pointed from another record in another page</li>
+ * </ul>
+ * The record size is stored as a varint (variable integer size). The minimum size of a record stored in a page is 5 bytes. If the record is smaller than 5 bytes,
+ * it is filled with blanks.
  */
 public class Bucket extends PaginatedComponent {
   public static final    String BUCKET_EXT                       = "bucket";
@@ -52,6 +59,8 @@ public class Bucket extends PaginatedComponent {
   protected static final int    PAGE_RECORD_COUNT_IN_PAGE_OFFSET = 0;
   protected static final int    PAGE_RECORD_TABLE_OFFSET         = PAGE_RECORD_COUNT_IN_PAGE_OFFSET + Binary.SHORT_SERIALIZED_SIZE;
   private static final   int    DEF_MAX_RECORDS_IN_PAGE          = 2048;
+  private static final   int    MINIMUM_RECORD_SIZE              = 5;    // RECORD SIZE CANNOT BE < 5 BYTES IN CASE OF UPDATE AND PLACEHOLDER, 5 BYTES IS THE SPACE REQUIRED TO HOST THE PLACEHOLDER
+  private static final   long   RECORD_PLACEHOLDER_POINTER       = -1L;    // USE -1 AS SIZE TO STORE A PLACEHOLDER (THAT POINTS TO A RECORD ON ANOTHER PAGE)
 
   protected final int contentHeaderSize;
   private final   int maxRecordsInPage = DEF_MAX_RECORDS_IN_PAGE;
@@ -132,7 +141,7 @@ public class Bucket extends PaginatedComponent {
 
       final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
 
-      return recordSize[0] > 0 || recordSize[0] == -1;
+      return recordSize[0] > 0 || recordSize[0] == RECORD_PLACEHOLDER_POINTER;
 
     } catch (IOException e) {
       throw new DatabaseOperationException("Error on checking record existence for " + rid);
@@ -175,9 +184,10 @@ public class Bucket extends PaginatedComponent {
                 if (!callback.onRecord(rid, view))
                   return;
 
-              } else if (recordSize[0] == -1) {
-                // PLACEHOLDER
-                final Binary view = getRecordInternal(new RID(database, id, page.readLong((int) (recordPositionInPage + recordSize[1]))), true);
+              } else if (recordSize[0] == RECORD_PLACEHOLDER_POINTER) {
+                // LOAD PLACEHOLDER CONTENT
+                final RID placeHolderPointer = new RID(database, id, page.readLong((int) (recordPositionInPage + recordSize[1])));
+                final Binary view = getRecordInternal(placeHolderPointer, true);
                 if (view != null && !callback.onRecord(rid, view))
                   return;
               }
@@ -263,7 +273,7 @@ public class Bucket extends PaginatedComponent {
 
             final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
 
-            if (recordSize[0] > 0 || recordSize[0] == -1)
+            if (recordSize[0] > 0 || recordSize[0] == RECORD_PLACEHOLDER_POINTER)
               total++;
 
           }
@@ -335,14 +345,14 @@ public class Bucket extends PaginatedComponent {
               if (recordSize[0] == 0) {
                 pageDeletedRecords++;
                 totalDeletedRecords++;
-              } else if (recordSize[0] < -1) {
+              } else if (recordSize[0] < RECORD_PLACEHOLDER_POINTER) {
                 pageSurrogateRecords++;
                 totalSurrogateRecords++;
                 recordSize[0] *= -1;
-              } else if (recordSize[0] == -1) {
+              } else if (recordSize[0] == RECORD_PLACEHOLDER_POINTER) {
                 pagePlaceholderRecords++;
                 totalPlaceholderRecords++;
-                recordSize[0] = 5;
+                recordSize[0] = MINIMUM_RECORD_SIZE;
               } else {
                 pageActiveRecords++;
                 totalActiveRecords++;
@@ -429,7 +439,7 @@ public class Bucket extends PaginatedComponent {
     return stats;
   }
 
-  Binary getRecordInternal(final RID rid, final boolean readPlaceHolder) {
+  Binary getRecordInternal(final RID rid, final boolean readPlaceHolderContent) {
     final int pageId = (int) (rid.getPosition() / maxRecordsInPage);
     final int positionInPage = (int) (rid.getPosition() % maxRecordsInPage);
 
@@ -457,17 +467,18 @@ public class Bucket extends PaginatedComponent {
         // DELETED
         return null;
 
-      if (recordSize[0] < -1) {
-        if (!readPlaceHolder)
+      if (recordSize[0] < RECORD_PLACEHOLDER_POINTER) {
+        if (!readPlaceHolderContent)
           // PLACEHOLDER
           return null;
 
         recordSize[0] *= -1;
       }
 
-      if (recordSize[0] == -1) {
+      if (recordSize[0] == RECORD_PLACEHOLDER_POINTER) {
         // FOUND PLACEHOLDER, LOAD THE REAL RECORD
-        return getRecordInternal(new RID(database, rid.getBucketId(), page.readLong((int) (recordPositionInPage + recordSize[1]))), true);
+        final RID placeHolderPointer = new RID(database, rid.getBucketId(), page.readLong((int) (recordPositionInPage + recordSize[1])));
+        return getRecordInternal(placeHolderPointer, true);
       }
 
       final int recordContentPositionInPage = (int) (recordPositionInPage + recordSize[1]);
@@ -488,8 +499,8 @@ public class Bucket extends PaginatedComponent {
           "Record too big to be stored in bucket '" + name + "' (" + id + "), size=" + buffer.size() + " max=" + (pageSize - contentHeaderSize)
               + ". Change the `arcadedb.bucketDefaultPageSize` database settings and try again");
 
-    // RECORD SIZE CANNOT BE < 5 BYTES IN CASE OF UPDATE AND PLACEHOLDER, 5 BYTES IS THE SPACE REQUIRED TO HOST THE PLACEHOLDER
-    while (buffer.size() < 5)
+    // RECORD SIZE CANNOT BE < 5 BYTES IN CASE OF UPDATE AND PLACEHOLDER, 5 BYTES IS THE SPACE REQUIRED TO HOST THE PLACEHOLDER. FILL THE DIFFERENCE WITH BLANK (0)
+    while (buffer.size() < MINIMUM_RECORD_SIZE)
       buffer.putByte(buffer.size() - 1, (byte) 0);
 
     try {
@@ -504,7 +515,7 @@ public class Bucket extends PaginatedComponent {
         lastPage = database.getTransaction().getPageToModify(new PageId(file.getFileId(), txPageCounter - 1), pageSize, false);
         recordCountInPage = lastPage.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
         if (recordCountInPage >= maxRecordsInPage)
-          // RECORD TOO BIG FOR THIS PAGE, USE A NEW PAGE
+          // MAX NUMBER OF RECORDS IN A PAGE REACHED, USE A NEW PAGE
           createNewPage = true;
         else if (recordCountInPage > 0) {
           // GET FIRST EMPTY POSITION
@@ -516,10 +527,13 @@ public class Bucket extends PaginatedComponent {
           final long[] lastRecordSize = lastPage.readNumberAndSize(lastRecordPositionInPage);
 
           if (lastRecordSize[0] > 0)
+            // RECORD PRESENT, CONSIDER THE RECORD SIZE + VARINT SIZE
             newPosition = lastRecordPositionInPage + (int) lastRecordSize[0] + (int) lastRecordSize[1];
-          else if (lastRecordSize[0] == -1)
+          else if (lastRecordSize[0] == RECORD_PLACEHOLDER_POINTER)
+            // PLACEHOLDER, CONSIDER NEXT 9 BYTES
             newPosition = lastRecordPositionInPage + LONG_SERIALIZED_SIZE + 1;
           else
+            // PLACEHOLDER CONTENT, CONSIDER THE RECORD SIZE (CONVERTED FROM NEGATIVE NUMBER) + VARINT SIZE
             newPosition = lastRecordPositionInPage + (int) (-1 * lastRecordSize[0]) + (int) lastRecordSize[1];
 
           if (newPosition + INT_SERIALIZED_SIZE + buffer.size() > lastPage.getMaxContentSize())
@@ -562,7 +576,7 @@ public class Bucket extends PaginatedComponent {
     }
   }
 
-  private boolean updateRecordInternal(final Record record, final RID rid, final boolean updatePlaceholder) {
+  private boolean updateRecordInternal(final Record record, final RID rid, final boolean updatePlaceholderContent) {
     if (rid.getPosition() < 0)
       throw new IllegalArgumentException("Cannot update a record with invalid RID");
 
@@ -589,43 +603,43 @@ public class Bucket extends PaginatedComponent {
         throw new RecordNotFoundException("Record " + rid + " not found", rid);
 
       final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
-      if (recordSize[0] == 0)
+      if (recordSize[0] == 0L)
         // DELETED
         throw new RecordNotFoundException("Record " + rid + " not found", rid);
 
       boolean isPlaceHolder = false;
-      if (recordSize[0] < -1) {
-        if (!updatePlaceholder)
+      if (recordSize[0] < RECORD_PLACEHOLDER_POINTER) {
+        if (!updatePlaceholderContent)
           throw new RecordNotFoundException("Record " + rid + " not found", rid);
 
         isPlaceHolder = true;
-        recordSize[0] *= -1;
+        recordSize[0] *= -1L;
 
-      } else if (recordSize[0] == -1) {
+      } else if (recordSize[0] == RECORD_PLACEHOLDER_POINTER) {
 
         // FOUND A RECORD POINTED FROM A PLACEHOLDER
-        final RID placeHolderRID = new RID(database, id, page.readLong((int) (recordPositionInPage + recordSize[1])));
-        if (updateRecordInternal(record, placeHolderRID, true))
+        final RID placeHolderContentRID = new RID(database, id, page.readLong((int) (recordPositionInPage + recordSize[1])));
+        if (updateRecordInternal(record, placeHolderContentRID, true))
           return true;
 
         // DELETE OLD PLACEHOLDER
-        deleteRecordInternal(placeHolderRID, true);
+        deleteRecordInternal(placeHolderContentRID, true);
 
         recordSize[0] = LONG_SERIALIZED_SIZE;
-        recordSize[1] = 1;
+        recordSize[1] = 1L;
       }
 
       if (buffer.size() > recordSize[0]) {
-        // MAKE ROOM IN THE PAGE IF POSSIBLE
+        // UPDATED RECORD IS LARGER THAN THE PREVIOUS VERSION: MAKE ROOM IN THE PAGE IF POSSIBLE
 
         final int lastRecordPositionInPage = (int) page.readUnsignedInt(PAGE_RECORD_TABLE_OFFSET + (recordCountInPage - 1) * INT_SERIALIZED_SIZE);
         final long[] lastRecordSize = page.readNumberAndSize(lastRecordPositionInPage);
 
-        if (lastRecordSize[0] == -1) {
+        if (lastRecordSize[0] == RECORD_PLACEHOLDER_POINTER) {
           lastRecordSize[0] = LONG_SERIALIZED_SIZE;
-          lastRecordSize[1] = 1;
-        } else if (lastRecordSize[0] < -1) {
-          lastRecordSize[0] *= -1;
+          lastRecordSize[1] = 1L;
+        } else if (lastRecordSize[0] < RECORD_PLACEHOLDER_POINTER) {
+          lastRecordSize[0] *= -1L;
         }
 
         final int pageOccupied = (int) (lastRecordPositionInPage + lastRecordSize[0] + lastRecordSize[1]);
@@ -674,20 +688,19 @@ public class Bucket extends PaginatedComponent {
           // STORE THE RECORD SOMEWHERE ELSE AND CREATE HERE A PLACEHOLDER THAT POINTS TO THE NEW POSITION. IN THIS WAY THE RID IS PRESERVED
           final RID realRID = createRecordInternal(record, true);
 
-          final int bytesWritten = page.writeNumber(recordPositionInPage, -1);
+          final int bytesWritten = page.writeNumber(recordPositionInPage, RECORD_PLACEHOLDER_POINTER);
           page.writeLong(recordPositionInPage + bytesWritten, realRID.getPosition());
           LogManager.instance().log(this, Level.FINE, "Updated record %s by allocating new space with a placeholder (page=%s threadId=%d)", null, rid, page,
               Thread.currentThread().getId());
         }
       } else {
-
+        // UPDATED RECORD CONTENT IS NOT LARGER THAN PREVIOUS VERSION: OVERWRITE THE CONTENT
         recordSize[1] = page.writeNumber(recordPositionInPage, isPlaceHolder ? -1L * buffer.size() : buffer.size());
         final int recordContentPositionInPage = (int) (recordPositionInPage + recordSize[1]);
         page.writeByteArray(recordContentPositionInPage, buffer.toByteArray());
 
         LogManager.instance().log(this, Level.FINE, "Updated record %s with the same size or less as before (page=%s threadId=%d)", null, rid, page,
             Thread.currentThread().getId());
-
       }
 
       ((RecordInternal) record).setBuffer(buffer.copy());
@@ -695,11 +708,11 @@ public class Bucket extends PaginatedComponent {
       return true;
 
     } catch (IOException e) {
-      throw new DatabaseOperationException("Error on update record " + rid);
+      throw new DatabaseOperationException("Error on update record " + rid, e);
     }
   }
 
-  private void deleteRecordInternal(final RID rid, final boolean deletePlaceholder) {
+  private void deleteRecordInternal(final RID rid, final boolean deletePlaceholderContent) {
     final int pageId = (int) (rid.getPosition() / maxRecordsInPage);
     final int positionInPage = (int) (rid.getPosition() % maxRecordsInPage);
 
@@ -718,32 +731,37 @@ public class Bucket extends PaginatedComponent {
         throw new RecordNotFoundException("Record " + rid + " not found", rid);
 
       final int recordPositionInPage = (int) page.readUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE);
-      if (recordPositionInPage == 0)
+      if (recordPositionInPage < 1)
         // CLEANED CORRUPTED RECORD
         throw new RecordNotFoundException("Record " + rid + " not found", rid);
 
       // AVOID DELETION OF CONTENT IN CORRUPTED RECORD
-      if (recordPositionInPage > 0 && recordPositionInPage < page.getContentSize()) {
-        final long[] removedRecordSize = page.readNumberAndSize(recordPositionInPage);
-        if (removedRecordSize[0] == 0)
+      if (recordPositionInPage < page.getContentSize()) {
+        final long[] recordSize = page.readNumberAndSize(recordPositionInPage);
+        if (recordSize[0] == 0)
           // ALREADY DELETED
           throw new RecordNotFoundException("Record " + rid + " not found", rid);
 
-        if (removedRecordSize[0] < -1) {
-          if (!deletePlaceholder)
+        if (recordSize[0] == RECORD_PLACEHOLDER_POINTER) {
+          // FOUND PLACEHOLDER POINTER: DELETE THE PLACEHOLDER CONTENT FIRST
+          final RID placeHolderContentRID = new RID(database, id, page.readLong((int) (recordPositionInPage + recordSize[1])));
+          deleteRecordInternal(placeHolderContentRID, true);
+
+        } else if (recordSize[0] < RECORD_PLACEHOLDER_POINTER) {
+          if (!deletePlaceholderContent)
             // CANNOT DELETE A PLACEHOLDER DIRECTLY
             throw new RecordNotFoundException("Record " + rid + " not found", rid);
-          removedRecordSize[0] *= -1;
         }
 
         // CONTENT SIZE = 0 MEANS DELETED
-        page.writeNumber(recordPositionInPage, 0);
+        page.writeNumber(recordPositionInPage, 0L);
 
       } else {
         // CORRUPTED RECORD: WRITE ZERO AS POINTER TO RECORD
-        page.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE, 0);
+        page.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE, 0L);
       }
 
+      // TODO: EVALUATE COMPACTING THE PAGE FOR REUSING THE SPACE
 //      recordPositionInPage++;
 //
 //      AVOID COMPACTION DURING DELETE
@@ -765,7 +783,7 @@ public class Bucket extends PaginatedComponent {
       LogManager.instance().log(this, Level.FINE, "Deleted record %s (page=%s threadId=%d)", null, rid, page, Thread.currentThread().getId());
 
     } catch (IOException e) {
-      throw new DatabaseOperationException("Error on deletion of record " + rid);
+      throw new DatabaseOperationException("Error on deletion of record " + rid, e);
     }
   }
 }

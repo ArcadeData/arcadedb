@@ -21,12 +21,11 @@ package com.arcadedb.database;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.UnsignedBytesComparator;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.nio.ByteBuffer;
-import java.util.Arrays;
-import java.util.concurrent.Callable;
-import java.util.logging.Level;
+import java.io.*;
+import java.nio.*;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.logging.*;
 
 /**
  * Binary data type. It is backed by Java Byte Buffers.
@@ -303,6 +302,11 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
     return buffer.get();
   }
 
+  /**
+   * Reads a signed number.
+   *
+   * @return An array of longs with the signed number in the 1st position and the occupied bytes on the 2nd position.
+   */
   @Override
   public long[] getNumberAndSize(final int index) {
     position(index);
@@ -339,6 +343,11 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
     return value | (b << i);
   }
 
+  /**
+   * Reads an unsigned number.
+   *
+   * @return An array of longs with the unsigned number in the 1st position and the occupied bytes on the 2nd position.
+   */
   @Override
   public long[] getUnsignedNumberAndSize() {
     long value = 0L;
@@ -398,7 +407,7 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
 
   @Override
   public String getString() {
-    return new String(getBytes(),DatabaseFactory.getDefaultCharset());
+    return new String(getBytes(), DatabaseFactory.getDefaultCharset());
   }
 
   @Override

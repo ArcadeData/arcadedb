@@ -22,9 +22,8 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.exception.ArcadeDBException;
 
-import java.nio.ByteBuffer;
-import java.util.Arrays;
-import java.util.Objects;
+import java.nio.*;
+import java.util.*;
 
 /**
  * Low level base page implementation of (default) 65536 bytes (2 exp 16 = 65Kb). The first 4 bytes (the header) are reserved to
@@ -110,6 +109,11 @@ public abstract class BasePage {
     return version;
   }
 
+  /**
+   * Reads an unsigned number.
+   *
+   * @return An array of longs with the unsigned number in the 1st position and the occupied bytes on the 2nd position.
+   */
   public long[] readNumberAndSize(final int index) {
     return this.content.getNumberAndSize(PAGE_HEADER_SIZE + index);
   }
