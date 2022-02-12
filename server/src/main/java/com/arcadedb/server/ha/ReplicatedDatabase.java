@@ -289,8 +289,8 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
-  public void createRecordNoLock(final Record record, final String bucketName) {
-    proxied.createRecordNoLock(record, bucketName);
+  public void createRecordNoLock(final Record record, final String bucketName, boolean discardRecordAfter) {
+    proxied.createRecordNoLock(record, bucketName, false);
   }
 
   @Override
@@ -299,8 +299,8 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
-  public void updateRecordNoLock(final Record record) {
-    proxied.updateRecordNoLock(record);
+  public void updateRecordNoLock(final Record record, boolean discardRecordAfter) {
+    proxied.updateRecordNoLock(record, discardRecordAfter);
   }
 
   @Override

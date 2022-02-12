@@ -88,11 +88,11 @@ public interface DatabaseInternal extends Database {
 
   void createRecord(Record record, String bucketName);
 
-  void createRecordNoLock(Record record, String bucketName);
+  void createRecordNoLock(Record record, String bucketName, boolean discardRecordAfter);
 
   void updateRecord(Record record);
 
-  void updateRecordNoLock(Record record);
+  void updateRecordNoLock(Record record, boolean discardRecordAfter);
 
   void deleteRecordNoLock(Record record);
 

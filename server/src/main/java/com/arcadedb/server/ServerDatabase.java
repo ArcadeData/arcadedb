@@ -268,16 +268,16 @@ public class ServerDatabase implements DatabaseInternal {
     wrapped.createRecord(record, bucketName);
   }
 
-  public void createRecordNoLock(final Record record, final String bucketName) {
-    wrapped.createRecordNoLock(record, bucketName);
+  public void createRecordNoLock(final Record record, final String bucketName, boolean discardRecordAfter) {
+    wrapped.createRecordNoLock(record, bucketName, false);
   }
 
   public void updateRecord(final Record record) {
     wrapped.updateRecord(record);
   }
 
-  public void updateRecordNoLock(final Record record) {
-    wrapped.updateRecordNoLock(record);
+  public void updateRecordNoLock(final Record record, boolean discardRecordAfter) {
+    wrapped.updateRecordNoLock(record, discardRecordAfter);
   }
 
   @Override

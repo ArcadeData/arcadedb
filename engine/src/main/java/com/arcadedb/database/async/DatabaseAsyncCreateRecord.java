@@ -41,7 +41,7 @@ public class DatabaseAsyncCreateRecord implements DatabaseAsyncTask {
   @Override
   public void execute(DatabaseAsyncExecutorImpl.AsyncThread async, DatabaseInternal database) {
     try {
-      database.createRecordNoLock(record, bucket.getName());
+      database.createRecordNoLock(record, bucket.getName(), onOkCallback == null);
 
       if (onOkCallback != null)
         onOkCallback.call(record);

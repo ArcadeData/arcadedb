@@ -726,7 +726,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   @Override
   public void createRecord(final MutableDocument record) {
     executeInReadLock(() -> {
-      createRecordNoLock(record, null);
+      createRecordNoLock(record, null, false);
       return null;
     });
   }
@@ -739,13 +739,13 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   @Override
   public void createRecord(final Record record, final String bucketName) {
     executeInReadLock(() -> {
-      createRecordNoLock(record, bucketName);
+      createRecordNoLock(record, bucketName, false);
       return null;
     });
   }
 
   @Override
-  public void createRecordNoLock(final Record record, final String bucketName) {
+  public void createRecordNoLock(final Record record, final String bucketName, final boolean discardRecordAfter) {
     if (record.getIdentity() != null)
       throw new IllegalArgumentException("Cannot create record " + record.getIdentity() + " because it is already persistent");
 
@@ -772,7 +772,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
       } else
         bucket = schema.getBucketByName(bucketName);
 
-      ((RecordInternal) record).setIdentity(bucket.createRecord(record));
+      ((RecordInternal) record).setIdentity(bucket.createRecord(record, discardRecordAfter));
       getTransaction().updateRecordInCache(record);
 
       if (record instanceof MutableDocument) {
@@ -840,7 +840,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
           throw new DatabaseOperationException("Error on update the record " + record.getIdentity() + " in transaction", e);
         }
       } else
-        updateRecordNoLock(record);
+        updateRecordNoLock(record, false);
 
       // INVOKE EVENT CALLBACKS
       events.onAfterUpdate(record);
@@ -852,7 +852,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   }
 
   @Override
-  public void updateRecordNoLock(final Record record) {
+  public void updateRecordNoLock(final Record record, final boolean discardRecordAfter) {
     boolean success = false;
     final boolean implicitTransaction = checkTransactionIsActive(autoTransaction);
 
@@ -868,12 +868,12 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
         final Document originalRecord = (Document) recordFactory.newImmutableRecord(this, ((Document) record).getType(), record.getIdentity(), originalBuffer,
             null);
 
-        schema.getBucketById(record.getIdentity().getBucketId()).updateRecord(record);
+        schema.getBucketById(record.getIdentity().getBucketId()).updateRecord(record, discardRecordAfter);
 
         indexer.updateDocument(originalRecord, (Document) record, indexes);
       } else
         // NO INDEXES
-        schema.getBucketById(record.getIdentity().getBucketId()).updateRecord(record);
+        schema.getBucketById(record.getIdentity().getBucketId()).updateRecord(record, discardRecordAfter);
 
       getTransaction().updateRecordInCache(record);
       getTransaction().removeImmutableRecordsOfSamePage(record.getIdentity());

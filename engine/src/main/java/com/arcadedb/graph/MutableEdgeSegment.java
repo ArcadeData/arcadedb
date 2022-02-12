@@ -18,13 +18,18 @@
  */
 package com.arcadedb.graph;
 
-import com.arcadedb.database.*;
+import com.arcadedb.database.BaseRecord;
+import com.arcadedb.database.Binary;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.RID;
+import com.arcadedb.database.RecordInternal;
 import com.arcadedb.serializer.BinaryTypes;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.util.Set;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.*;
+import java.util.concurrent.atomic.*;
 
 public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, RecordInternal {
   public static final byte RECORD_TYPE            = 3;
@@ -75,7 +80,7 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
 
     if (used + ridSerialized.size() <= bufferSize) {
       // APPEND AT THE END OF THE CURRENT CHUNK
-      buffer.putByteArray(used, ridSerialized.getContent(), ridSerialized.size());
+      buffer.putByteArray(used, ridSerialized.getContent(), ridSerialized.getContentBeginOffset(), ridSerialized.size());
 
       // UPDATE USED BYTES
       buffer.putInt(Binary.BYTE_SERIALIZED_SIZE, used + ridSerialized.size());

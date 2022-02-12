@@ -434,7 +434,7 @@ public class TransactionContext implements Transaction {
     if (updatedRecords != null) {
       for (Record rec : updatedRecords.values())
         try {
-          database.updateRecordNoLock(rec);
+          database.updateRecordNoLock(rec, false);
         } catch (RecordNotFoundException e) {
           // DELETED IN TRANSACTION, THIS IS FULLY MANAGED TO NEVER HAPPEN, BUT IF IT DOES DUE TO THE INTRODUCTION OF A BUG, JUST LOG SOMETHING AND MOVE ON
           LogManager.instance().log(this, Level.WARNING, "Attempt to update the delete record %s in transaction", rec.getIdentity());

@@ -93,7 +93,7 @@ public class MutablePage extends BasePage implements TrackableContent {
 
   public int writeBytes(int index, final byte[] content) {
     index += PAGE_HEADER_SIZE;
-    final int varSizeBytesUsed = this.content.getVarSize(content.length);
+    final int varSizeBytesUsed = Binary.getUnsignedNumberSpace(content.length);
     checkBoundariesOnWrite(index, varSizeBytesUsed + content.length);
     return this.content.putBytes(index, content);
   }
@@ -102,6 +102,12 @@ public class MutablePage extends BasePage implements TrackableContent {
     index += PAGE_HEADER_SIZE;
     checkBoundariesOnWrite(index, content.length);
     this.content.putByteArray(index, content);
+  }
+
+  public void writeByteArray(int index, final byte[] content, final int contentOffset, final int contentSize) {
+    index += PAGE_HEADER_SIZE;
+    checkBoundariesOnWrite(index, contentSize);
+    this.content.putByteArray(index, content, contentOffset, contentSize);
   }
 
   public int writeString(final int index, final String content) {

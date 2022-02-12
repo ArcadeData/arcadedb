@@ -21,10 +21,7 @@ package com.arcadedb.database;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.security.SecurityDatabaseUser;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 /**
  * Thread local to store transaction data.
@@ -118,7 +115,7 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
 
     public Binary getTemporaryBuffer1() {
       if (temporaryBuffer1 == null) {
-        temporaryBuffer1 = new Binary(8192);
+        temporaryBuffer1 = new Binary(8192, true);
         temporaryBuffer1.setAllocationChunkSize(1024);
       }
       temporaryBuffer1.clear();
@@ -127,7 +124,7 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
 
     public Binary getTemporaryBuffer2() {
       if (temporaryBuffer2 == null) {
-        temporaryBuffer2 = new Binary(8192);
+        temporaryBuffer2 = new Binary(8192, true);
         temporaryBuffer2.setAllocationChunkSize(1024);
       }
       temporaryBuffer2.clear();
