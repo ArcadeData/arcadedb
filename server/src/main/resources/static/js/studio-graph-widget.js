@@ -210,6 +210,9 @@ function createVertex(vertex){
   else
     label = vertex["p"][label];
 
+  if( label == null )
+    label = "";
+
   return { id: vertex["r"], label: label, size: (70 + ( 2 * label.length ) ), type: type,
            weight: vertex["i"] + vertex["o"],
            properties: vertex["p"] };
@@ -227,6 +230,9 @@ function createEdge(edge){
     label = type;
   else
     label = edge["p"][label];
+
+  if( label == null )
+    label = "";
 
   return { id: edge["r"], label: label, type: type, source: edge["o"], target: edge["i"], properties: edge["p"] };
 }
