@@ -1777,7 +1777,7 @@ public class SelectExecutionPlanner {
       throw new CommandExecutionException("Cannot find type " + targetClass);
     }
 
-    final List<TypeIndex> indexes = typez.getAllIndexes(true);
+    final Collection<TypeIndex> indexes = typez.getAllIndexes(true);
 
     List<IndexSearchDescriptor> indexSearchDescriptors = info.flattenedWhereClause.stream().map(x -> findBestIndexFor(ctx, indexes, x, typez))
         .filter(Objects::nonNull).collect(Collectors.toList());
@@ -1978,7 +1978,7 @@ public class SelectExecutionPlanner {
    *
    * @return
    */
-  private List<IndexSearchDescriptor> findBestIndexesFor(final CommandContext ctx, final List<TypeIndex> indexes, final AndBlock block,
+  private List<IndexSearchDescriptor> findBestIndexesFor(final CommandContext ctx, final Collection<TypeIndex> indexes, final AndBlock block,
       final DocumentType typez) {
     final Iterator<IndexSearchDescriptor> it = indexes.stream()
         //.filter(index -> index.getInternal().canBeUsedInEqualityOperators())
@@ -2003,7 +2003,7 @@ public class SelectExecutionPlanner {
    *
    * @return
    */
-  private IndexSearchDescriptor findBestIndexFor(CommandContext ctx, List<TypeIndex> indexes, AndBlock block, DocumentType clazz) {
+  private IndexSearchDescriptor findBestIndexFor(CommandContext ctx, Collection<TypeIndex> indexes, AndBlock block, DocumentType clazz) {
     // get all valid index descriptors
     List<IndexSearchDescriptor> descriptors = indexes.stream().map(index -> buildIndexSearchDescriptor(ctx, index, block, clazz)).filter(Objects::nonNull)
         .filter(x -> x.keyCondition != null).filter(x -> x.keyCondition.getSubBlocks().size() > 0).collect(Collectors.toList());

@@ -56,18 +56,21 @@ public class BinaryTypes {
   public static byte getTypeFromValue(final Object value) {
     final byte type;
 
+    // ORDERED BY THE MOST COMMON FIRST
     if (value == null)
       type = TYPE_NULL;
     else if (value instanceof String)
       type = TYPE_STRING;
-    else if (value instanceof Byte)
-      type = TYPE_BYTE;
-    else if (value instanceof Short)
-      type = TYPE_SHORT;
     else if (value instanceof Integer)
       type = TYPE_INT;
     else if (value instanceof Long)
       type = TYPE_LONG;
+    else if (value instanceof RID)
+      type = TYPE_COMPRESSED_RID;
+    else if (value instanceof Byte)
+      type = TYPE_BYTE;
+    else if (value instanceof Short)
+      type = TYPE_SHORT;
     else if (value instanceof Float)
       type = TYPE_FLOAT;
     else if (value instanceof Double)
@@ -80,8 +83,6 @@ public class BinaryTypes {
       type = TYPE_BOOLEAN;
     else if (value instanceof byte[])
       type = TYPE_BINARY;
-    else if (value instanceof RID)
-      type = TYPE_COMPRESSED_RID;
     else if (value instanceof UUID)
       type = TYPE_UUID;
     else if (value instanceof Map)

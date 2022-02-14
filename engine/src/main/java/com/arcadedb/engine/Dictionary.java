@@ -26,28 +26,24 @@ import com.arcadedb.exception.SchemaException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.logging.Level;
+import java.io.*;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+import java.util.logging.*;
 
 /**
  * HEADER = [itemCount(int:4),pageSize(int:4)] CONTENT-PAGES = [propertyName(string)]
  * <br>
  */
 public class Dictionary extends PaginatedComponent {
-  public static final  String               DICT_EXT               = "dict";
-  public static final  int                  DEF_PAGE_SIZE          = 65536 * 5;
-  private static final int                  CURRENT_VERSION        = 0;
-  private              List<String>         dictionary             = new CopyOnWriteArrayList<>();
-  private              Map<String, Integer> dictionaryMap          = new ConcurrentHashMap<>();
+  public static final  String                         DICT_EXT               = "dict";
+  public static final  int                            DEF_PAGE_SIZE          = 65536 * 5;
+  private static final int                            CURRENT_VERSION        = 0;
+  private              List<String>                   dictionary             = new CopyOnWriteArrayList<>();
+  private              ConcurrentMap<String, Integer> dictionaryMap          = new ConcurrentHashMap<>(1024);
   // THIS IS LEGACY BECAUSE THE NUMBER OF ITEMS WAS STORED IN THE HEADER. NOW THE DICTIONARY IS POPULATED FROM THE ACTUAL CONTENT IN THE PAGES
-  private static final int                  DICTIONARY_HEADER_SIZE = Binary.INT_SERIALIZED_SIZE;
+  private static final int                            DICTIONARY_HEADER_SIZE = Binary.INT_SERIALIZED_SIZE;
 
   public static class PaginatedComponentFactoryHandler implements PaginatedComponentFactory.PaginatedComponentFactoryHandler {
     @Override
@@ -241,7 +237,7 @@ public class Dictionary extends PaginatedComponent {
       for (int i = 0; header.getBufferPosition() < header.getContentSize(); ++i)
         newDictionary.add(header.readString());
 
-      final Map<String, Integer> newDictionaryMap = new ConcurrentHashMap<>();
+      final ConcurrentMap<String, Integer> newDictionaryMap = new ConcurrentHashMap<>();
       for (int i = 0; i < newDictionary.size(); ++i)
         newDictionaryMap.putIfAbsent(newDictionary.get(i), i);
 

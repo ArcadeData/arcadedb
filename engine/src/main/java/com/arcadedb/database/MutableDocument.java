@@ -37,7 +37,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
 
   protected MutableDocument(final Database database, final DocumentType type, final RID rid) {
     super(database, type, rid, null);
-    this.map = new LinkedHashMap<>(type.getPropertyNames().size());
+    this.map = new LinkedHashMap<>();
   }
 
   protected MutableDocument(final Database database, final DocumentType type, final RID rid, final Binary buffer) {

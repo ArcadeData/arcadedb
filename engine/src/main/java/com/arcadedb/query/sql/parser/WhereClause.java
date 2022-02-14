@@ -86,7 +86,7 @@ public class WhereClause extends SimpleNode {
 
     long indexesCount = 0L;
     List<AndBlock> flattenedConditions = flatten();
-    List<TypeIndex> indexes = oClass.getAllIndexes(true);
+    Collection<TypeIndex> indexes = oClass.getAllIndexes(true);
     for (AndBlock condition : flattenedConditions) {
 
       List<BinaryCondition> indexedFunctConditions = condition.getIndexedFunctionConditions(oClass, ctx.getDatabase());

@@ -34,8 +34,8 @@ import com.arcadedb.log.LogManager;
 import org.json.JSONObject;
 
 import java.util.*;
-import java.util.concurrent.Callable;
-import java.util.logging.Level;
+import java.util.concurrent.*;
+import java.util.logging.*;
 
 public class DocumentType {
   protected final EmbeddedSchema                    schema;
@@ -104,7 +104,7 @@ public class DocumentType {
       superType.subTypes.add(this);
 
       // CREATE INDEXES AUTOMATICALLY ON PROPERTIES DEFINED IN SUPER TYPES
-      final List<TypeIndex> indexes = getAllIndexes(true);
+      final Collection<TypeIndex> indexes = new ArrayList<>(getAllIndexes(true));
       indexes.removeAll(indexesByProperties.values());
 
       if (createIndexes) {
@@ -482,9 +482,9 @@ public class DocumentType {
     return prop;
   }
 
-  public List<TypeIndex> getAllIndexes(final boolean polymorphic) {
+  public Collection<TypeIndex> getAllIndexes(final boolean polymorphic) {
     if (!polymorphic || superTypes.isEmpty())
-      return new ArrayList<>(indexesByProperties.values());
+      return Collections.unmodifiableCollection(indexesByProperties.values());
 
     final List<TypeIndex> list = new ArrayList<>(indexesByProperties.values());
 
@@ -492,14 +492,20 @@ public class DocumentType {
       for (DocumentType t : superTypes)
         list.addAll(t.getAllIndexes(true));
 
-    return list;
+    return Collections.unmodifiableCollection(list);
   }
 
   public List<Index> getPolymorphicBucketIndexByBucketId(final int bucketId) {
     final List<IndexInternal> r = bucketIndexesByBucket.get(bucketId);
-    if (r != null && superTypes.isEmpty())
-      // MOST COMMON CASE, SAVE CREATING AND COPYING TO A NEW ARRAY
-      return Collections.unmodifiableList(r);
+
+    if (superTypes.isEmpty()) {
+      // MOST COMMON CASES, OPTIMIZATION AVOIDING CREATING NEW LISTS
+      if (r == null)
+        return Collections.emptyList();
+      else
+        // MOST COMMON CASE, SAVE CREATING AND COPYING TO A NEW ARRAY
+        return Collections.unmodifiableList(r);
+    }
 
     final List<Index> result = r != null ? new ArrayList<>(r) : new ArrayList<>();
     for (DocumentType t : superTypes)
@@ -513,7 +519,7 @@ public class DocumentType {
 
     final Set<String> properties = new HashSet<>(propertiesN.length + 1);
     properties.add(property1);
-      Collections.addAll(properties, propertiesN);
+    Collections.addAll(properties, propertiesN);
 
     for (Map.Entry<List<String>, TypeIndex> entry : indexesByProperties.entrySet()) {
       for (String prop : entry.getKey()) {
@@ -756,7 +762,7 @@ public class DocumentType {
   }
 
   protected Map<String, Property> getPolymorphicProperties() {
-      final Map<String, Property> allProperties = new HashMap<>(properties);
+    final Map<String, Property> allProperties = new HashMap<>(properties);
 
     for (DocumentType p : superTypes)
       allProperties.putAll(p.getPolymorphicProperties());

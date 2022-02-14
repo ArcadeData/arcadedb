@@ -21,7 +21,6 @@ package com.arcadedb.index;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
-import com.arcadedb.database.DocumentCallback;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.DuplicatedKeyException;
@@ -35,8 +34,8 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.logging.Level;
+import java.util.concurrent.atomic.*;
+import java.util.logging.*;
 
 public class TypeLSMTreeIndexTest extends TestHelper {
   private static final int    TOT       = 100000;
@@ -49,7 +48,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
 
       int total = 0;
 
-      final List<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      final Collection<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
 
       for (int i = 0; i < TOT; ++i) {
         final List<Integer> results = new ArrayList<>();
@@ -72,7 +71,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   public void testGetAsRange() {
     database.transaction(() -> {
 
-      final List<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      final Collection<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
       for (int i = 0; i < TOT; ++i) {
         int total = 0;
 
@@ -111,7 +110,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   public void testRangeFromHead() {
     database.transaction(() -> {
 
-      final List<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      final Collection<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
       for (int i = 0; i < TOT - 1; ++i) {
         int total = 0;
 
@@ -146,7 +145,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
   public void testRangeFromTail() {
     database.transaction(() -> {
 
-      final List<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      final Collection<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
       for (int i = TOT - 1; i > 0; --i) {
         int total = 0;
 
@@ -220,7 +219,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
 
       int total = 0;
 
-      final List<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      final Collection<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
       for (Index index : indexes) {
         Assertions.assertNotNull(index);
 
@@ -267,7 +266,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
 
       int total = 0;
 
-      final List<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      final Collection<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
       for (Index index : indexes) {
         Assertions.assertNotNull(index);
 
@@ -301,7 +300,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
 
       int total = 0;
 
-      final List<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      final Collection<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
       for (Index index : indexes) {
         Assertions.assertNotNull(index);
 
@@ -334,7 +333,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
 
       int total = 0;
 
-      final List<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      final Collection<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
       for (Index index : indexes) {
         Assertions.assertNotNull(index);
 
@@ -367,7 +366,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
 
       int total = 0;
 
-      final List<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      final Collection<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
       for (Index index : indexes) {
         Assertions.assertNotNull(index);
 
@@ -399,7 +398,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
 
       int total = 0;
 
-      final List<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      final Collection<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
       for (Index index : indexes) {
         Assertions.assertNotNull(index);
 
@@ -431,7 +430,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
 
       int total = 0;
 
-      final List<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      final Collection<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
       for (Index index : indexes) {
         Assertions.assertNotNull(index);
 
@@ -468,7 +467,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
 
       int total = 0;
 
-      final List<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      final Collection<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
       for (Index index : indexes) {
         Assertions.assertNotNull(index);
 
@@ -505,7 +504,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
 
       int total = 0;
 
-      final List<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      final Collection<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
       for (Index index : indexes) {
         Assertions.assertNotNull(index);
 
@@ -542,7 +541,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
 
       int total = 0;
 
-      final List<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      final Collection<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
       for (Index index : indexes) {
         Assertions.assertNotNull(index);
 
@@ -579,7 +578,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
 
       int total = 0;
 
-      final List<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      final Collection<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
       for (Index index : indexes) {
         Assertions.assertNotNull(index);
 
@@ -616,7 +615,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
 
       int total = 0;
 
-      final List<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
+      final Collection<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
       for (Index index : indexes) {
         Assertions.assertNotNull(index);
 
