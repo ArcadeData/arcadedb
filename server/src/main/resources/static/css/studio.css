@@ -1,5 +1,12 @@
+@font-face {
+  font-family: 'Poppins';
+  font-style: normal;
+  font-weight: normal;
+  src: local('Poppins'), url('https://fonts.gstatic.com/s/poppins/v19/pxiByp8kv8JHgFVrLEj6Z11lFd2JQEl8qw.woff2') format('woff2');
+}
+
 body {
-  font-family: Poppins;
+  font-family: Poppins, Verdana, sans-serif, Tahoma;
   background-color: white;
 }
 
