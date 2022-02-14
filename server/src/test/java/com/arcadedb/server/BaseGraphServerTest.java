@@ -93,10 +93,10 @@ public abstract class BaseGraphServerTest {
         databases[i].async().setParallelLevel(PARALLEL_LEVEL);
 
       }
+
+      populateDatabase();
     } else
       databases = new Database[0];
-
-    populateDatabase();
 
     // CLOSE ALL DATABASES BEFORE STARTING THE SERVERS
     LogManager.instance().log(this, Level.FINE, "TEST: Closing databases before starting");
