@@ -28,7 +28,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.io.File;
+import java.io.*;
 
 public class ServerRestoreDatabaseIT extends BaseGraphServerTest {
   public ServerRestoreDatabaseIT() {
@@ -48,11 +48,6 @@ public class ServerRestoreDatabaseIT extends BaseGraphServerTest {
 
   @Override
   protected boolean isCreateDatabases() {
-    return false;
-  }
-
-  @Override
-  protected boolean isPopulateDatabase() {
     return false;
   }
 

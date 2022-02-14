@@ -21,7 +21,11 @@ package com.arcadedb.server;
 import com.arcadedb.Constants;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.database.*;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseComparator;
+import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.log.LogManager;
@@ -34,14 +38,11 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 
 import java.io.*;
-import java.net.HttpURLConnection;
-import java.net.InetAddress;
-import java.net.URL;
-import java.net.UnknownHostException;
-import java.nio.charset.StandardCharsets;
+import java.net.*;
+import java.nio.charset.*;
 import java.util.*;
-import java.util.concurrent.Callable;
-import java.util.logging.Level;
+import java.util.concurrent.*;
+import java.util.logging.*;
 
 /**
  * This class has been copied under Console project to avoid complex dependencies.
@@ -95,63 +96,7 @@ public abstract class BaseGraphServerTest {
     } else
       databases = new Database[0];
 
-    if (isPopulateDatabase()) {
-      final Database database = databases[0];
-      database.transaction(() -> {
-        final Schema schema = database.getSchema();
-        Assertions.assertFalse(schema.existsType(VERTEX1_TYPE_NAME));
-
-        VertexType v = schema.createVertexType(VERTEX1_TYPE_NAME, 3);
-        v.createProperty("id", Long.class);
-
-        schema.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, VERTEX1_TYPE_NAME, "id");
-
-        Assertions.assertFalse(schema.existsType(VERTEX2_TYPE_NAME));
-        schema.createVertexType(VERTEX2_TYPE_NAME, 3);
-
-        schema.createEdgeType(EDGE1_TYPE_NAME);
-        schema.createEdgeType(EDGE2_TYPE_NAME);
-
-        schema.createDocumentType("Person");
-      });
-
-      final Database db = databases[0];
-      db.begin();
-
-      final MutableVertex v1 = db.newVertex(VERTEX1_TYPE_NAME);
-      v1.set("id", 0);
-      v1.set("name", VERTEX1_TYPE_NAME);
-      v1.save();
-
-      final MutableVertex v2 = db.newVertex(VERTEX2_TYPE_NAME);
-      v2.set("name", VERTEX2_TYPE_NAME);
-      v2.save();
-
-      // CREATION OF EDGE PASSING PARAMS AS VARARGS
-      MutableEdge e1 = v1.newEdge(EDGE1_TYPE_NAME, v2, true, "name", "E1");
-      Assertions.assertEquals(e1.getOut(), v1);
-      Assertions.assertEquals(e1.getIn(), v2);
-
-      final MutableVertex v3 = db.newVertex(VERTEX2_TYPE_NAME);
-      v3.set("name", "V3");
-      v3.save();
-
-      Map<String, Object> params = new HashMap<>();
-      params.put("name", "E2");
-
-      // CREATION OF EDGE PASSING PARAMS AS MAP
-      MutableEdge e2 = v2.newEdge(EDGE2_TYPE_NAME, v3, true, params);
-      Assertions.assertEquals(e2.getOut(), v2);
-      Assertions.assertEquals(e2.getIn(), v3);
-
-      MutableEdge e3 = v1.newEdge(EDGE2_TYPE_NAME, v3, true);
-      Assertions.assertEquals(e3.getOut(), v1);
-      Assertions.assertEquals(e3.getIn(), v3);
-
-      db.commit();
-
-      root = v1.getIdentity();
-    }
+    populateDatabase();
 
     // CLOSE ALL DATABASES BEFORE STARTING THE SERVERS
     LogManager.instance().log(this, Level.FINE, "TEST: Closing databases before starting");
@@ -161,6 +106,64 @@ public abstract class BaseGraphServerTest {
     }
 
     startServers();
+  }
+
+  protected void populateDatabase() {
+    final Database database = databases[0];
+    database.transaction(() -> {
+      final Schema schema = database.getSchema();
+      Assertions.assertFalse(schema.existsType(VERTEX1_TYPE_NAME));
+
+      VertexType v = schema.createVertexType(VERTEX1_TYPE_NAME, 3);
+      v.createProperty("id", Long.class);
+
+      schema.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, VERTEX1_TYPE_NAME, "id");
+
+      Assertions.assertFalse(schema.existsType(VERTEX2_TYPE_NAME));
+      schema.createVertexType(VERTEX2_TYPE_NAME, 3);
+
+      schema.createEdgeType(EDGE1_TYPE_NAME);
+      schema.createEdgeType(EDGE2_TYPE_NAME);
+
+      schema.createDocumentType("Person");
+    });
+
+    final Database db = databases[0];
+    db.begin();
+
+    final MutableVertex v1 = db.newVertex(VERTEX1_TYPE_NAME);
+    v1.set("id", 0);
+    v1.set("name", VERTEX1_TYPE_NAME);
+    v1.save();
+
+    final MutableVertex v2 = db.newVertex(VERTEX2_TYPE_NAME);
+    v2.set("name", VERTEX2_TYPE_NAME);
+    v2.save();
+
+    // CREATION OF EDGE PASSING PARAMS AS VARARGS
+    MutableEdge e1 = v1.newEdge(EDGE1_TYPE_NAME, v2, true, "name", "E1");
+    Assertions.assertEquals(e1.getOut(), v1);
+    Assertions.assertEquals(e1.getIn(), v2);
+
+    final MutableVertex v3 = db.newVertex(VERTEX2_TYPE_NAME);
+    v3.set("name", "V3");
+    v3.save();
+
+    Map<String, Object> params = new HashMap<>();
+    params.put("name", "E2");
+
+    // CREATION OF EDGE PASSING PARAMS AS MAP
+    MutableEdge e2 = v2.newEdge(EDGE2_TYPE_NAME, v3, true, params);
+    Assertions.assertEquals(e2.getOut(), v2);
+    Assertions.assertEquals(e2.getIn(), v3);
+
+    MutableEdge e3 = v1.newEdge(EDGE2_TYPE_NAME, v3, true);
+    Assertions.assertEquals(e3.getOut(), v1);
+    Assertions.assertEquals(e3.getIn(), v3);
+
+    db.commit();
+
+    root = v1.getIdentity();
   }
 
   @AfterEach
@@ -319,10 +322,6 @@ public abstract class BaseGraphServerTest {
     return true;
   }
 
-  protected boolean isPopulateDatabase() {
-    return true;
-  }
-
   protected ArcadeDBServer getServer(final int i) {
     return servers[i];
   }
@@ -444,8 +443,7 @@ public abstract class BaseGraphServerTest {
       final Database db1 = getServerDatabase(servers2Check[0], getDatabaseName());
       final Database db2 = getServerDatabase(servers2Check[i], getDatabaseName());
 
-      LogManager.instance()
-          .log(this, Level.FINE, "TEST: Comparing databases '%s' and '%s' are identical...", db1.getDatabasePath(), db2.getDatabasePath());
+      LogManager.instance().log(this, Level.FINE, "TEST: Comparing databases '%s' and '%s' are identical...", db1.getDatabasePath(), db2.getDatabasePath());
       try {
         new DatabaseComparator().compare(db1, db2);
         LogManager.instance().log(this, Level.FINE, "TEST: OK databases '%s' and '%s' are identical", db1.getDatabasePath(), db2.getDatabasePath());
@@ -459,7 +457,7 @@ public abstract class BaseGraphServerTest {
 
   protected void testLog(final String msg, final Object... args) {
     LogManager.instance().log(this, Level.FINE, "***********************************************************************************");
-    LogManager.instance().log(this, Level.FINE, "TEST: " + msg,  args);
+    LogManager.instance().log(this, Level.FINE, "TEST: " + msg, args);
     LogManager.instance().log(this, Level.FINE, "***********************************************************************************");
   }
 

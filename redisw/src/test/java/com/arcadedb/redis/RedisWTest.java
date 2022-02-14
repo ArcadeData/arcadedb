@@ -29,8 +29,7 @@ import org.junit.jupiter.api.Test;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.exceptions.JedisDataException;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
 
 public class RedisWTest extends BaseGraphServerTest {
 
@@ -241,8 +240,7 @@ public class RedisWTest extends BaseGraphServerTest {
   }
 
   @Override
-  protected boolean isPopulateDatabase() {
-    return false;
+  protected void populateDatabase() {
   }
 
   @Override

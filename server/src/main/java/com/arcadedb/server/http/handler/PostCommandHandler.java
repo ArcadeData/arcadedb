@@ -102,23 +102,24 @@ public class PostCommandHandler extends DatabaseAbstractHandler {
         while (qResult.hasNext()) {
           final Result row = qResult.next();
 
-          boolean justIncluded = true;
+          boolean recordIncluded = true;
           if (!row.getIdentity().isEmpty()) {
             final RID rid = row.getIdentity().get();
-            justIncluded = includedRecords.add(rid);
-            if (justIncluded)
+            recordIncluded = includedRecords.add(rid);
+            if (recordIncluded)
               records.put(serializerImpl.serializeResult(row));
-          }
+          } else
+            records.put(serializerImpl.serializeResult(row));
 
           if (row.isVertex()) {
-            if (justIncluded) {
+            if (recordIncluded) {
               final Vertex v = row.getVertex().get();
               includedVertices.add(v.getIdentity());
               vertices.put(serializerImpl.serializeGraphElement(v));
             }
           } else if (row.isEdge()) {
             final Edge e = row.getEdge().get();
-            if (justIncluded)
+            if (recordIncluded)
               edges.put(serializerImpl.serializeGraphElement(e));
             if (includedVertices.add(e.getIn())) {
               if (includedRecords.add(e.getIn()))
@@ -134,7 +135,6 @@ public class PostCommandHandler extends DatabaseAbstractHandler {
             }
           } else {
             analyzeResultContent(database, serializerImpl, includedVertices, vertices, edges, row);
-            records.put(serializerImpl.serializeResult(row));
           }
         }
 

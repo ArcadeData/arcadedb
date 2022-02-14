@@ -22,17 +22,12 @@ import com.arcadedb.database.Database;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.io.File;
+import java.io.*;
 
 public class ServerBackupDatabaseIT extends BaseGraphServerTest {
 
   @Override
   protected boolean isCreateDatabases() {
-    return true;
-  }
-
-  @Override
-  protected boolean isPopulateDatabase() {
     return true;
   }
 

@@ -26,7 +26,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.io.File;
+import java.io.*;
 
 public class ServerImportDatabaseIT extends BaseGraphServerTest {
   public ServerImportDatabaseIT() {
@@ -50,8 +50,7 @@ public class ServerImportDatabaseIT extends BaseGraphServerTest {
   }
 
   @Override
-  protected boolean isPopulateDatabase() {
-    return false;
+  protected void populateDatabase() {
   }
 
   protected void onServerConfiguration(final ContextConfiguration config) {

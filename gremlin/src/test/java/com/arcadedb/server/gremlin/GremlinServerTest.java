@@ -32,8 +32,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.io.File;
-import java.io.IOException;
+import java.io.*;
 
 public class GremlinServerTest extends BaseGraphServerTest {
 
@@ -42,11 +41,6 @@ public class GremlinServerTest extends BaseGraphServerTest {
     final GraphTraversalSource g = traversal();
     var vertices = g.V().limit(3).toList();
     Assertions.assertEquals(3, vertices.size());
-  }
-
-  @Override
-  protected boolean isPopulateDatabase() {
-    return true;
   }
 
   @Override
@@ -84,8 +78,8 @@ public class GremlinServerTest extends BaseGraphServerTest {
     final GraphBinaryMessageSerializerV1 serializer = new GraphBinaryMessageSerializerV1(
         new TypeSerializerRegistry.Builder().addRegistry(new ArcadeIoRegistry()));
 
-    return Cluster.build().enableSsl(false).addContactPoint("localhost").port(8182).credentials("root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).serializer(serializer)
-        .create();
+    return Cluster.build().enableSsl(false).addContactPoint("localhost").port(8182).credentials("root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)
+        .serializer(serializer).create();
   }
 
   private GraphTraversalSource traversal() {

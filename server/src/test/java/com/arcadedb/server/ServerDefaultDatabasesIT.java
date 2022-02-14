@@ -25,7 +25,7 @@ import com.arcadedb.server.security.ServerSecurityException;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
+import java.io.*;
 
 public class ServerDefaultDatabasesIT extends BaseGraphServerTest {
 
@@ -35,8 +35,7 @@ public class ServerDefaultDatabasesIT extends BaseGraphServerTest {
   }
 
   @Override
-  protected boolean isPopulateDatabase() {
-    return false;
+  protected void populateDatabase() {
   }
 
   protected void onServerConfiguration(final ContextConfiguration config) {

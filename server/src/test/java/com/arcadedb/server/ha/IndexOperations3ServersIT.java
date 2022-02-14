@@ -31,8 +31,8 @@ import org.json.JSONObject;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.UUID;
-import java.util.logging.Level;
+import java.util.*;
+import java.util.logging.*;
 
 public class IndexOperations3ServersIT extends BaseGraphServerTest {
 
@@ -45,8 +45,7 @@ public class IndexOperations3ServersIT extends BaseGraphServerTest {
   }
 
   @Override
-  protected boolean isPopulateDatabase() {
-    return false;
+  protected void populateDatabase() {
   }
 
   @Test
@@ -122,7 +121,8 @@ public class IndexOperations3ServersIT extends BaseGraphServerTest {
       database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Person", "uuid");
 
       // TRY CREATING A DUPLICATE
-      TestServerHelper.expectException(() -> database.newVertex("Person").set("id", 0, "uuid", UUID.randomUUID().toString()).save(), DuplicatedKeyException.class);
+      TestServerHelper.expectException(() -> database.newVertex("Person").set("id", 0, "uuid", UUID.randomUUID().toString()).save(),
+          DuplicatedKeyException.class);
 
       // TRY DROPPING A PROPERTY WITH AN INDEX
       TestServerHelper.expectException(() -> database.getSchema().getType("Person").dropProperty("id"), SchemaException.class);
