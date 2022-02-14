@@ -28,8 +28,8 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.Assertions;
 
-import java.util.UUID;
-import java.util.logging.Level;
+import java.util.*;
+import java.util.logging.*;
 
 public class ReplicationSpeedQuorumMajorityIT extends BasePerformanceTest {
   public static void main(final String[] args) {
@@ -69,32 +69,7 @@ public class ReplicationSpeedQuorumMajorityIT extends BasePerformanceTest {
 
     final Database database = getDatabase(0);
     database.transaction(() -> {
-      if (isPopulateDatabase()) {
-        Assertions.assertFalse(database.getSchema().existsType("Device"));
-
-        VertexType v = database.getSchema().createVertexType("Device", parallel);
-
-        v.createProperty("id", String.class);
-        v.createProperty("lastModifiedUserId", String.class);
-        v.createProperty("createdDate", String.class);
-        v.createProperty("assocJointClosureId", String.class);
-        v.createProperty("HolderSpec_Name", String.class);
-        v.createProperty("number", String.class);
-        v.createProperty("relativeName", String.class);
-        v.createProperty("Name", String.class);
-        v.createProperty("holderGroupName", String.class);
-        v.createProperty("slot2slottype", String.class);
-        v.createProperty("inventoryStatus", String.class);
-        v.createProperty("lastModifiedDate", String.class);
-        v.createProperty("createdUserId", String.class);
-        v.createProperty("orientation", String.class);
-        v.createProperty("operationalStatus", String.class);
-        v.createProperty("supplierName", String.class);
-
-        database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "id" }, 2 * 1024 * 1024);
-        database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "number" }, 2 * 1024 * 1024);
-        database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "relativeName" }, 2 * 1024 * 1024);
-      }
+      populateDatabase(parallel, database);
     });
 
     // CLOSE ALL DATABASES BEFORE TO START THE SERVERS
@@ -180,6 +155,33 @@ public class ReplicationSpeedQuorumMajorityIT extends BasePerformanceTest {
 
     //endTest();
     stopServers();
+  }
+
+  protected void populateDatabase(final int parallel, final Database database) {
+    Assertions.assertFalse(database.getSchema().existsType("Device"));
+
+    VertexType v = database.getSchema().createVertexType("Device", parallel);
+
+    v.createProperty("id", String.class);
+    v.createProperty("lastModifiedUserId", String.class);
+    v.createProperty("createdDate", String.class);
+    v.createProperty("assocJointClosureId", String.class);
+    v.createProperty("HolderSpec_Name", String.class);
+    v.createProperty("number", String.class);
+    v.createProperty("relativeName", String.class);
+    v.createProperty("Name", String.class);
+    v.createProperty("holderGroupName", String.class);
+    v.createProperty("slot2slottype", String.class);
+    v.createProperty("inventoryStatus", String.class);
+    v.createProperty("lastModifiedDate", String.class);
+    v.createProperty("createdUserId", String.class);
+    v.createProperty("orientation", String.class);
+    v.createProperty("operationalStatus", String.class);
+    v.createProperty("supplierName", String.class);
+
+    database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "id" }, 2 * 1024 * 1024);
+    database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "number" }, 2 * 1024 * 1024);
+    database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "Device", new String[] { "relativeName" }, 2 * 1024 * 1024);
   }
 
 }

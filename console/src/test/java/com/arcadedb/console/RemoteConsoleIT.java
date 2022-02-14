@@ -147,8 +147,7 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
   }
 
   @Override
-  protected boolean isPopulateDatabase() {
-    return false;
+  protected void populateDatabase() {
   }
 
   @Override

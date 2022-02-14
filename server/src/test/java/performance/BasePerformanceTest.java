@@ -18,8 +18,6 @@
  */
 package performance;
 
-import static com.arcadedb.server.BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
-
 import com.arcadedb.Constants;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
@@ -32,18 +30,12 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Assertions;
 
-import java.io.BufferedOutputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.File;
-import java.io.PrintWriter;
-import java.util.logging.Level;
+import java.io.*;
+import java.util.logging.*;
+
+import static com.arcadedb.server.BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
 
 public abstract class BasePerformanceTest {
-  protected static final String VERTEX1_TYPE_NAME = "V1";
-  protected static final String VERTEX2_TYPE_NAME = "V2";
-  protected static final String EDGE1_TYPE_NAME   = "E1";
-  protected static final String EDGE2_TYPE_NAME   = "E2";
-
   protected static RID              root;
   private          ArcadeDBServer[] servers;
   protected        Database[]       databases;
@@ -126,10 +118,6 @@ public abstract class BasePerformanceTest {
   }
 
   protected void onBeforeStarting(ArcadeDBServer server) {
-  }
-
-  protected boolean isPopulateDatabase() {
-    return true;
   }
 
   protected ArcadeDBServer getServer(final int i) {
