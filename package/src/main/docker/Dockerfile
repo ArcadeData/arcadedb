@@ -58,4 +58,5 @@ EXPOSE 27017
 EXPOSE 9999
 EXPOSE 9998
 
-CMD ["bin/server.sh"]
+WORKDIR "/home/arcadedb/bin"
+CMD ["./server.sh"]
