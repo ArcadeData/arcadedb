@@ -34,8 +34,6 @@ WORKDIR /home/arcadedb
 
 COPY arcadedb-${ARCADEDB_VERSION}.dir/arcadedb-${ARCADEDB_VERSION} ./
 
-ENV PATH ./bin:$PATH
-
 VOLUME [ "/home/arcadedb/databases"]
 
 # ArcadeDB HTTP API & STUDIO
@@ -60,4 +58,4 @@ EXPOSE 27017
 EXPOSE 9999
 EXPOSE 9998
 
-CMD ["server.sh"]
+CMD ["bin/server.sh"]
