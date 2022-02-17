@@ -529,14 +529,14 @@ public class Bucket extends PaginatedComponent {
 
     try {
       int newPosition = -1;
-      MutablePage lastPage = null;
       int recordCountInPage = -1;
       boolean createNewPage = false;
+      BasePage lastPage = null;
 
       final int txPageCounter = getTotalPages();
 
       if (txPageCounter > 0) {
-        lastPage = database.getTransaction().getPageToModify(new PageId(file.getFileId(), txPageCounter - 1), pageSize, false);
+        lastPage = database.getTransaction().getPage(new PageId(file.getFileId(), txPageCounter - 1), pageSize);
         recordCountInPage = lastPage.readShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET);
         if (recordCountInPage >= maxRecordsInPage)
           // MAX NUMBER OF RECORDS IN A PAGE REACHED, USE A NEW PAGE
@@ -576,22 +576,23 @@ public class Bucket extends PaginatedComponent {
       } else
         createNewPage = true;
 
+      final MutablePage selectedPage;
       if (createNewPage) {
-        lastPage = database.getTransaction().addPage(new PageId(file.getFileId(), txPageCounter), pageSize);
-        //lastPage.blank(0, CONTENT_HEADER_SIZE);
+        selectedPage = database.getTransaction().addPage(new PageId(file.getFileId(), txPageCounter), pageSize);
         newPosition = contentHeaderSize;
         recordCountInPage = 0;
-      }
+      } else
+        selectedPage = database.getTransaction().getPageToModify(lastPage.pageId, pageSize, false);
 
-      final RID rid = new RID(database, file.getFileId(), ((long) lastPage.getPageId().getPageNumber()) * maxRecordsInPage + recordCountInPage);
+      final RID rid = new RID(database, file.getFileId(), ((long) selectedPage.getPageId().getPageNumber()) * maxRecordsInPage + recordCountInPage);
 
-      final int byteWritten = lastPage.writeNumber(newPosition, isPlaceHolder ? (-1L * bufferSize) : bufferSize);
-      lastPage.writeByteArray(newPosition + byteWritten, buffer.getContent(), buffer.getContentBeginOffset(), bufferSize);
-      lastPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + recordCountInPage * INT_SERIALIZED_SIZE, newPosition);
-      lastPage.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) ++recordCountInPage);
+      final int byteWritten = selectedPage.writeNumber(newPosition, isPlaceHolder ? (-1L * bufferSize) : bufferSize);
+      selectedPage.writeByteArray(newPosition + byteWritten, buffer.getContent(), buffer.getContentBeginOffset(), bufferSize);
+      selectedPage.writeUnsignedInt(PAGE_RECORD_TABLE_OFFSET + recordCountInPage * INT_SERIALIZED_SIZE, newPosition);
+      selectedPage.writeShort(PAGE_RECORD_COUNT_IN_PAGE_OFFSET, (short) ++recordCountInPage);
 
       LogManager.instance()
-          .log(this, Level.FINE, "Created record %s (page=%s records=%d threadId=%d)", rid, lastPage, recordCountInPage, Thread.currentThread().getId());
+          .log(this, Level.FINE, "Created record %s (page=%s records=%d threadId=%d)", rid, selectedPage, recordCountInPage, Thread.currentThread().getId());
 
       if (!discardRecordAfter)
         ((RecordInternal) record).setBuffer(buffer.getNotReusable());
