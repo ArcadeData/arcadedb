@@ -21,22 +21,18 @@ package com.arcadedb.engine;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.ConfigurationException;
+import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.LockContext;
 
-import java.io.File;
-import java.io.FileNotFoundException;
-import java.io.IOException;
-import java.io.RandomAccessFile;
-import java.nio.ByteBuffer;
-import java.nio.channels.FileChannel;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.Callable;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.logging.Level;
+import java.io.*;
+import java.nio.*;
+import java.nio.channels.*;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+import java.util.logging.*;
 
 public class WALFile extends LockContext {
   public enum FLUSH_TYPE {
@@ -229,6 +225,12 @@ public class WALFile extends LockContext {
     for (MutablePage newPage : pages) {
       final int[] deltaRange = newPage.getModifiedRange();
       final int deltaSize = deltaRange[1] - deltaRange[0] + 1;
+
+      final long totalSizeCheck = 0L + TX_HEADER_SIZE + TX_FOOTER_SIZE + segmentSize + PAGE_HEADER_SIZE + deltaSize; // USE A LONG TO CHECK THE BOUNDARIES
+      if (totalSizeCheck > Integer.MAX_VALUE)
+        throw new TransactionException("Transaction buffer bigger than " + FileUtils.getSizeAsString(Integer.MAX_VALUE)
+            + ". Split the big transaction in smaller transactions. This transaction will be roll backed");
+
       segmentSize += PAGE_HEADER_SIZE + deltaSize;
     }
 
