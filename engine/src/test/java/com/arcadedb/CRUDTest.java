@@ -18,7 +18,9 @@
  */
 package com.arcadedb;
 
-import com.arcadedb.database.*;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.DatabaseChecker;
 import com.arcadedb.log.LogManager;
@@ -27,8 +29,8 @@ import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.logging.Level;
+import java.util.concurrent.atomic.*;
+import java.util.logging.*;
 
 public class CRUDTest extends TestHelper {
   private static final int TOT = Bucket.DEF_PAGE_SIZE * 2;
@@ -163,7 +165,8 @@ public class CRUDTest extends TestHelper {
         db.scanType("V", true, record -> {
           Assertions.assertEquals(true, record.get("update"));
 
-          Assertions.assertEquals("This is a large field to force the page overlap at some point", record.get("largeField" + counter));
+          Assertions.assertEquals("This is a large field to force the page overlap at some point", record.get("largeField" + counter),
+              "Unexpected content in record " + record.getIdentity());
 
           return true;
         });
