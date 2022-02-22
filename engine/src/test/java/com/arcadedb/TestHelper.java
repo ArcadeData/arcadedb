@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.PaginatedFile;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
@@ -32,10 +33,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 
-import java.io.File;
-import java.util.Collection;
-import java.util.Random;
-import java.util.UUID;
+import java.io.*;
+import java.util.*;
+import java.util.logging.*;
 
 public abstract class TestHelper {
   private static final int             PARALLEL_LEVEL = 4;
@@ -54,7 +54,7 @@ public abstract class TestHelper {
   protected TestHelper(final boolean cleanBeforeTest) {
     GlobalConfiguration.PROFILE.setValue(getPerformanceProfile());
 
-    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
+    checkActiveDatabases();
 
     if (cleanBeforeTest)
       FileUtils.deleteRecursively(new File(getDatabasePath()));
@@ -179,7 +179,7 @@ public abstract class TestHelper {
       database = null;
     }
 
-    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
+    checkActiveDatabases();
     FileUtils.deleteRecursively(new File(getDatabasePath()));
   }
 
@@ -219,5 +219,17 @@ public abstract class TestHelper {
       Assertions.assertEquals(0, (Long) row.getProperty("invalidLinks"));
       Assertions.assertEquals(0, ((Collection) row.getProperty("warnings")).size(), "Warnings" + row.getProperty("warnings"));
     }
+  }
+
+  public static void checkActiveDatabases() {
+    final Collection<Database> activeDatabases = DatabaseFactory.getActiveDatabaseInstances();
+
+    if (!activeDatabases.isEmpty())
+      LogManager.instance().log(TestHelper.class, Level.SEVERE, "Found active databases: " + activeDatabases + ". Forced closing...");
+
+    for (Database db : activeDatabases)
+      db.close();
+
+    Assertions.assertTrue(activeDatabases.isEmpty(), "Found active databases: " + activeDatabases);
   }
 }

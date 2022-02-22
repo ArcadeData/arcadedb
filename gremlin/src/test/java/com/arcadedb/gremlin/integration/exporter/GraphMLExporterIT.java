@@ -24,6 +24,7 @@ import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.integration.exporter.Exporter;
 import com.arcadedb.integration.importer.OrientDBImporter;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.FileUtils;
 import org.apache.tinkerpop.gremlin.arcadedb.structure.ArcadeGraph;
 import org.apache.tinkerpop.gremlin.structure.io.IoCore;
@@ -32,11 +33,9 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.IOException;
-import java.util.stream.Collectors;
-import java.util.zip.GZIPInputStream;
+import java.io.*;
+import java.util.stream.*;
+import java.util.zip.*;
 
 public class GraphMLExporterIT {
   private final static String DATABASE_PATH = "target/databases/performance";
@@ -85,7 +84,7 @@ public class GraphMLExporterIT {
   @BeforeEach
   @AfterEach
   public void clean() {
-    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
+    TestServerHelper.checkActiveDatabases();
     FileUtils.deleteRecursively(databaseDirectory);
     FileUtils.deleteRecursively(importedDatabaseDirectory);
     if (file.exists())

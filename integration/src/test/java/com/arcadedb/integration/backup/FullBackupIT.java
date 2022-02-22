@@ -26,6 +26,7 @@ import com.arcadedb.database.bucketselectionstrategy.ThreadBucketSelectionStrate
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.integration.TestHelper;
 import com.arcadedb.integration.importer.OrientDBImporter;
 import com.arcadedb.integration.importer.OrientDBImporterIT;
 import com.arcadedb.integration.restore.Restore;
@@ -38,10 +39,9 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.File;
-import java.io.IOException;
-import java.net.URL;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.io.*;
+import java.net.*;
+import java.util.concurrent.atomic.*;
 
 public class FullBackupIT {
   private final static String DATABASE_PATH     = "target/databases/performance";
@@ -67,7 +67,7 @@ public class FullBackupIT {
         new DatabaseComparator().compare(originalDatabase, restoredDatabase);
       }
     }
-    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
+    TestHelper.checkActiveDatabases();
   }
 
   @Test
@@ -86,7 +86,7 @@ public class FullBackupIT {
       }
     }
 
-    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
+    TestHelper.checkActiveDatabases();
   }
 
   /**
@@ -183,7 +183,8 @@ public class FullBackupIT {
     } finally {
       importedDatabase.close();
 
-      Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
+      TestHelper.checkActiveDatabases();
+      ;
 
       for (int i = 0; i < CONCURRENT_THREADS; i++) {
         new File(FILE + "_" + i).delete();

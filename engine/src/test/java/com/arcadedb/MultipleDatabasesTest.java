@@ -102,7 +102,7 @@ public class MultipleDatabasesTest extends TestHelper {
     database2.close();
     database3.close();
 
-    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
+    checkActiveDatabases();
   }
 
   @Test

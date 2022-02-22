@@ -23,18 +23,16 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.IndexCursor;
+import com.arcadedb.integration.TestHelper;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.io.File;
-import java.io.IOException;
-import java.net.URL;
-import java.text.SimpleDateFormat;
-import java.util.Arrays;
-import java.util.Iterator;
-import java.util.Map;
+import java.io.*;
+import java.net.*;
+import java.text.*;
+import java.util.*;
 
 public class Neo4jImporterIT {
   private final static String DATABASE_PATH = "target/databases/neo4j";
@@ -83,7 +81,7 @@ public class Neo4jImporterIT {
           Assertions.assertEquals("P5M1DT12H", e.get("bffSince"));
         }
       }
-      Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
+      TestHelper.checkActiveDatabases();
     } finally {
       FileUtils.deleteRecursively(databaseDirectory);
     }

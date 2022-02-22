@@ -44,6 +44,8 @@ import java.security.NoSuchAlgorithmException;
 import java.text.SimpleDateFormat;
 import java.util.*;
 
+import static com.arcadedb.TestHelper.checkActiveDatabases;
+
 public class SQLFunctionsTest {
   private final DatabaseFactory factory = new DatabaseFactory("./target/databases/SQLFunctionsTest");
   private Database        database;
@@ -493,7 +495,7 @@ public class SQLFunctionsTest {
 
   @BeforeEach
   public void beforeEach() {
-    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
+    checkActiveDatabases();
     FileUtils.deleteRecursively(new File("./target/databases/SQLFunctionsTest"));
     database = factory.create();
     database.getSchema().createDocumentType("V");
@@ -521,7 +523,7 @@ public class SQLFunctionsTest {
   public void afterEach() {
     if (database != null)
       database.drop();
-    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
+    checkActiveDatabases();
     FileUtils.deleteRecursively(new File("./target/databases/SQLFunctionsTest"));
   }
 }

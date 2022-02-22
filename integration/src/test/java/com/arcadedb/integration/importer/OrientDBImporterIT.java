@@ -20,6 +20,7 @@ package com.arcadedb.integration.importer;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.integration.TestHelper;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -28,9 +29,8 @@ import org.json.JSONObject;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.io.File;
-import java.io.IOException;
-import java.net.URL;
+import java.io.*;
+import java.net.*;
 
 public class OrientDBImporterIT {
   private final static String DATABASE_PATH = "target/databases/performance";
@@ -70,7 +70,7 @@ public class OrientDBImporterIT {
         }
       }
     } finally {
-      Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
+      TestHelper.checkActiveDatabases();
       FileUtils.deleteRecursively(databaseDirectory);
     }
   }

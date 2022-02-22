@@ -23,10 +23,10 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseComparator;
-import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Assertions;
 
@@ -181,7 +181,7 @@ public abstract class BasePerformanceTest {
         if (getServer(i).existsDatabase(getDatabaseName()))
           getServer(i).getDatabase(getDatabaseName()).drop();
 
-    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
+    TestServerHelper.checkActiveDatabases();
 
     for (int i = 0; i < getServerCount(); ++i)
       FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_DATABASE_DIRECTORY.getValueAsString() + i + "/"));

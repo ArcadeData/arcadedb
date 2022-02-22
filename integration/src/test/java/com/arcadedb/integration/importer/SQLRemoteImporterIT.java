@@ -20,11 +20,12 @@ package com.arcadedb.integration.importer;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.integration.TestHelper;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.io.File;
+import java.io.*;
 
 public class SQLRemoteImporterIT {
   @Test
@@ -42,7 +43,7 @@ public class SQLRemoteImporterIT {
       Assertions.assertEquals(501, database.countType("written_by", false));
     }
 
-    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
+    TestHelper.checkActiveDatabases();
     FileUtils.deleteRecursively(new File("./target/databases/importedFromOrientDB"));
   }
 }

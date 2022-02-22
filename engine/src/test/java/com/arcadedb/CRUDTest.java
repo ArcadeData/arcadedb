@@ -78,7 +78,7 @@ public class CRUDTest extends TestHelper {
     try {
       db.begin();
 
-      for (int i = 0; i < 10; ++i) {
+      for (int i = 0; i < 30; ++i) {
         updateAll("largeField" + i);
 
         Assertions.assertEquals(TOT, db.countType("V", true));
@@ -94,7 +94,7 @@ public class CRUDTest extends TestHelper {
       db.scanType("V", true, record -> {
         Assertions.assertEquals(true, record.get("update"));
 
-        for (int i = 0; i < 10; ++i)
+        for (int i = 0; i < 30; ++i)
           Assertions.assertEquals("This is a large field to force the page overlap at some point", record.get("largeField" + i));
 
         return true;
@@ -146,7 +146,7 @@ public class CRUDTest extends TestHelper {
     final Database db = database;
     try {
 
-      for (int i = 0; i < 10; ++i) {
+      for (int i = 0; i < 30; ++i) {
         final int counter = i;
 
         db.begin();

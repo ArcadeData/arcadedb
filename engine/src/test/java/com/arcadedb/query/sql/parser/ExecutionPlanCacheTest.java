@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.schema.DocumentType;
@@ -83,7 +84,7 @@ public class ExecutionPlanCacheTest {
 
     } finally {
       db.drop();
-      Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
+      TestHelper.checkActiveDatabases();
     }
   }
 }

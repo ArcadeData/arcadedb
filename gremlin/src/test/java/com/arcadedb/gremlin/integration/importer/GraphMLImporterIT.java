@@ -22,21 +22,18 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.integration.importer.Importer;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.net.URL;
-import java.util.Arrays;
-import java.util.HashSet;
-import java.util.stream.Collectors;
-import java.util.zip.GZIPInputStream;
+import java.io.*;
+import java.net.*;
+import java.util.*;
+import java.util.stream.*;
+import java.util.zip.*;
 
 public class GraphMLImporterIT {
   private final static String DATABASE_PATH     = "target/databases/performance";
@@ -120,7 +117,7 @@ public class GraphMLImporterIT {
   @BeforeEach
   @AfterEach
   public void clean() {
-    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
+    TestServerHelper.checkActiveDatabases();
     FileUtils.deleteRecursively(databaseDirectory);
     if (new File(UNCOMPRESSED_FILE).exists())
       new File(UNCOMPRESSED_FILE).delete();
