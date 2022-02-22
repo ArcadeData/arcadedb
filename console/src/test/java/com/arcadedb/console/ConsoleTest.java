@@ -18,8 +18,8 @@
  */
 package com.arcadedb.console;
 
-import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
@@ -42,7 +42,7 @@ public class ConsoleTest {
   @AfterEach
   public void drop() {
     console.close();
-    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
+    TestServerHelper.checkActiveDatabases();
     FileUtils.deleteRecursively(new File("target/databases"));
   }
 

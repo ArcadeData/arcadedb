@@ -126,7 +126,7 @@ public class MutablePage extends BasePage implements TrackableContent {
   @Override
   public void updateModifiedRange(final int start, final int end) {
     if (start < 0 || end >= getPhysicalSize())
-      throw new IllegalArgumentException("Update range (" + start + "-" + end + ") out of bound (0-" + getPhysicalSize() + ")");
+      throw new IllegalArgumentException("Update range (" + start + "-" + end + ") out of bound (0-" + (getPhysicalSize() - 1) + ")");
 
     if (start < modifiedRangeFrom)
       modifiedRangeFrom = start;

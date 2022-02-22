@@ -20,6 +20,7 @@ package com.arcadedb.integration.exporter;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.integration.TestHelper;
 import com.arcadedb.integration.importer.OrientDBImporter;
 import com.arcadedb.integration.importer.OrientDBImporterIT;
 import com.arcadedb.utility.FileUtils;
@@ -30,8 +31,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
-import java.net.URL;
-import java.util.zip.GZIPInputStream;
+import java.net.*;
+import java.util.zip.*;
 
 public class JsonlExporterIT {
   private final static String DATABASE_PATH = "target/databases/performance";
@@ -104,7 +105,7 @@ public class JsonlExporterIT {
   @BeforeEach
   @AfterEach
   public void beforeTests() {
-    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
+    TestHelper.checkActiveDatabases();
     FileUtils.deleteRecursively(new File(DATABASE_PATH));
   }
 }

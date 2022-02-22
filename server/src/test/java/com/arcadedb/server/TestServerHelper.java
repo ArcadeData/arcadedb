@@ -21,12 +21,16 @@ package com.arcadedb.server;
 import com.arcadedb.Constants;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.CallableNoReturn;
 import com.arcadedb.utility.CallableParameterNoReturn;
 import org.junit.jupiter.api.Assertions;
 
-import java.net.InetAddress;
-import java.net.UnknownHostException;
+import java.net.*;
+import java.util.*;
+import java.util.logging.*;
 
 /**
  * Executes all the tests while the server is up and running.
@@ -125,5 +129,17 @@ public abstract class TestServerHelper {
 
       throw new Exception(e);
     }
+  }
+
+  public static void checkActiveDatabases() {
+    final Collection<Database> activeDatabases = DatabaseFactory.getActiveDatabaseInstances();
+
+    if (!activeDatabases.isEmpty())
+      LogManager.instance().log(TestServerHelper.class, Level.SEVERE, "Found active databases: " + activeDatabases + ". Forced closing...");
+
+    for (Database db : activeDatabases)
+      db.close();
+
+    Assertions.assertTrue(activeDatabases.isEmpty(), "Found active databases: " + activeDatabases);
   }
 }

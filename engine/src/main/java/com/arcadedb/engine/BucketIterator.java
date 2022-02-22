@@ -89,7 +89,7 @@ public class BucketIterator implements Iterator<Record> {
               continue;
 
             final long[] recordSize = currentPage.readNumberAndSize(recordPositionInPage);
-            if (recordSize[0] > 0) {
+            if (recordSize[0] > 0 || recordSize[0] == Bucket.FIRST_CHUNK) {
               // NOT DELETED
               final RID rid = new RID(database, bucket.id, ((long) nextPageNumber) * bucket.getMaxRecordsInPage() + currentRecordInPage);
 
@@ -99,7 +99,7 @@ public class BucketIterator implements Iterator<Record> {
               next = rid.getRecord(false);
               return null;
 
-            } else if (recordSize[0] == -1) {
+            } else if (recordSize[0] == Bucket.RECORD_PLACEHOLDER_POINTER) {
               // PLACEHOLDER
               final RID rid = new RID(database, bucket.id, ((long) nextPageNumber) * bucket.getMaxRecordsInPage() + currentRecordInPage);
 
@@ -113,7 +113,6 @@ public class BucketIterator implements Iterator<Record> {
                   .newImmutableRecord(database, database.getSchema().getType(database.getSchema().getTypeNameByBucketId(rid.getBucketId())), rid, view, null);
               return null;
             }
-
           } catch (Exception e) {
             final String msg = String.format("Error on loading record #%d:%d (error: %s)", currentPage.pageId.getFileId(),
                 (nextPageNumber * bucket.getMaxRecordsInPage()) + currentRecordInPage, e.getMessage());

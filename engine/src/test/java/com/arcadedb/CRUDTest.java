@@ -18,7 +18,9 @@
  */
 package com.arcadedb;
 
-import com.arcadedb.database.*;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.DatabaseChecker;
 import com.arcadedb.log.LogManager;
@@ -27,8 +29,8 @@ import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.logging.Level;
+import java.util.concurrent.atomic.*;
+import java.util.logging.*;
 
 public class CRUDTest extends TestHelper {
   private static final int TOT = Bucket.DEF_PAGE_SIZE * 2;
@@ -76,7 +78,7 @@ public class CRUDTest extends TestHelper {
     try {
       db.begin();
 
-      for (int i = 0; i < 10; ++i) {
+      for (int i = 0; i < 30; ++i) {
         updateAll("largeField" + i);
 
         Assertions.assertEquals(TOT, db.countType("V", true));
@@ -92,7 +94,7 @@ public class CRUDTest extends TestHelper {
       db.scanType("V", true, record -> {
         Assertions.assertEquals(true, record.get("update"));
 
-        for (int i = 0; i < 10; ++i)
+        for (int i = 0; i < 30; ++i)
           Assertions.assertEquals("This is a large field to force the page overlap at some point", record.get("largeField" + i));
 
         return true;
@@ -144,7 +146,7 @@ public class CRUDTest extends TestHelper {
     final Database db = database;
     try {
 
-      for (int i = 0; i < 10; ++i) {
+      for (int i = 0; i < 30; ++i) {
         final int counter = i;
 
         db.begin();
@@ -163,7 +165,8 @@ public class CRUDTest extends TestHelper {
         db.scanType("V", true, record -> {
           Assertions.assertEquals(true, record.get("update"));
 
-          Assertions.assertEquals("This is a large field to force the page overlap at some point", record.get("largeField" + counter));
+          Assertions.assertEquals("This is a large field to force the page overlap at some point", record.get("largeField" + counter),
+              "Unexpected content in record " + record.getIdentity());
 
           return true;
         });

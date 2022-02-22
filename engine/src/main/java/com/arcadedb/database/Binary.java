@@ -140,7 +140,7 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
     final int contentSize = toCopy.size();
     if (contentSize > 0) {
       checkForAllocation(buffer.position(), contentSize);
-      buffer.put(toCopy.content, 0, contentSize);
+      buffer.put(toCopy.content, toCopy.getContentBeginOffset(), contentSize);
     }
   }
 
@@ -608,7 +608,8 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
         newSize = allocationChunkSize;
 
       final byte[] newContent = new byte[newSize];
-      System.arraycopy(content, 0, newContent, 0, content.length);
+      if (size > 0)
+        System.arraycopy(content, 0, newContent, 0, content.length);
       this.content = newContent;
 
       final int oldPosition = this.buffer.position();

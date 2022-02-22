@@ -22,13 +22,14 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.integration.TestHelper;
 import com.arcadedb.integration.importer.OrientDBImporterIT;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.io.File;
-import java.net.URL;
+import java.io.*;
+import java.net.*;
 
 public class SQLLocalExporterTest {
   @Test
@@ -53,7 +54,8 @@ public class SQLLocalExporterTest {
       exportFile.delete();
     }
 
-    Assertions.assertTrue(DatabaseFactory.getActiveDatabaseInstances().isEmpty(), "Found active databases: " + DatabaseFactory.getActiveDatabaseInstances());
+    TestHelper.checkActiveDatabases();
+
     FileUtils.deleteRecursively(new File("databases/importedFromOrientDB"));
   }
 }

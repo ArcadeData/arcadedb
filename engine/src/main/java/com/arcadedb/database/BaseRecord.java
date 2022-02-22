@@ -22,7 +22,7 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 
-import java.util.Objects;
+import java.util.*;
 
 public abstract class BaseRecord implements Record {
   protected final DatabaseInternal database;
@@ -113,45 +113,45 @@ public abstract class BaseRecord implements Record {
   @Override
   public Document asDocument(boolean loadContent) {
     if (this instanceof Edge)
-      throw new ClassCastException("Cannot cast an edge to a document");
+      throw new ClassCastException("Cannot cast the edge " + getIdentity() + " to a document");
     if (this instanceof Vertex)
-      throw new ClassCastException("Cannot cast a vertex to a document");
+      throw new ClassCastException("Cannot cast the vertex " + getIdentity() + " to a document");
     throw new ClassCastException("Current record is not a document");
   }
 
   @Override
   public Vertex asVertex() {
     if (this instanceof Edge)
-      throw new ClassCastException("Cannot cast an edge to a vertex");
+      throw new ClassCastException("Cannot cast the edge " + getIdentity() + " to a vertex");
     if (this instanceof Document)
-      throw new ClassCastException("Cannot cast a document to a vertex");
+      throw new ClassCastException("Cannot cast the document " + getIdentity() + " to a vertex");
     throw new ClassCastException("Current record is not a vertex");
   }
 
   @Override
   public Vertex asVertex(final boolean loadContent) {
     if (this instanceof Edge)
-      throw new ClassCastException("Cannot cast an edge to a vertex");
+      throw new ClassCastException("Cannot cast the edge " + getIdentity() + " to a vertex");
     if (this instanceof Document)
-      throw new ClassCastException("Cannot cast a document to a vertex");
+      throw new ClassCastException("Cannot cast the document " + getIdentity() + " to a vertex");
     throw new ClassCastException("Current record is not a vertex");
   }
 
   @Override
   public Edge asEdge() {
     if (this instanceof Vertex)
-      throw new ClassCastException("Cannot cast a vertex to an edge");
+      throw new ClassCastException("Cannot cast the vertex " + getIdentity() + " to an edge");
     if (this instanceof Document)
-      throw new ClassCastException("Cannot cast a document to an edge");
+      throw new ClassCastException("Cannot cast the document " + getIdentity() + " to an edge");
     throw new ClassCastException("Current record is not a edge");
   }
 
   @Override
   public Edge asEdge(boolean loadContent) {
     if (this instanceof Vertex)
-      throw new ClassCastException("Cannot cast a vertex to an edge");
+      throw new ClassCastException("Cannot cast the vertex " + getIdentity() + " to an edge");
     if (this instanceof Document)
-      throw new ClassCastException("Cannot cast a document to an edge");
+      throw new ClassCastException("Cannot cast the document " + getIdentity() + " to an edge");
     throw new ClassCastException("Current record is not a edge");
   }
 }
