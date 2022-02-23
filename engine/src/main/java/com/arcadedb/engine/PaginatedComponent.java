@@ -21,9 +21,8 @@ package com.arcadedb.engine;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.TransactionContext;
 
-import java.io.File;
-import java.io.IOException;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.io.*;
+import java.util.concurrent.atomic.*;
 
 /**
  * HEADER = [recordCount(int:4)] CONTENT-PAGES = [version(long:8),recordCountInPage(short:2),recordOffsetsInPage(512*ushort=2048)]
@@ -42,8 +41,20 @@ public abstract class PaginatedComponent {
     this(database, name, filePath, ext, database.getFileManager().newFileId(), mode, pageSize, version);
   }
 
+  private PaginatedComponent(final DatabaseInternal database, final String name, String filePath, final String ext, final int id, final PaginatedFile.MODE mode,
+      final int pageSize, final int version) throws IOException {
+    this(database, name, filePath + "." + id + "." + pageSize + ".v" + version + "." + ext, id, mode, pageSize, version);
+  }
+
   protected PaginatedComponent(final DatabaseInternal database, final String name, String filePath, final int id, final PaginatedFile.MODE mode,
       final int pageSize, final int version) throws IOException {
+    if (pageSize <= 0)
+      throw new IllegalArgumentException("Invalid page size " + pageSize);
+    if (id < 0)
+      throw new IllegalArgumentException("Invalid file id " + id);
+    if (name == null || name.isEmpty())
+      throw new IllegalArgumentException("Invalid file name " + name);
+
     this.database = database;
     this.name = name;
     this.id = id;
@@ -57,11 +68,6 @@ public abstract class PaginatedComponent {
       pageCount.set(0);
     else
       pageCount.set((int) (file.getSize() / getPageSize()));
-  }
-
-  private PaginatedComponent(final DatabaseInternal database, final String name, String filePath, final String ext, final int id, final PaginatedFile.MODE mode,
-      final int pageSize, final int version) throws IOException {
-    this(database, name, filePath + "." + id + "." + pageSize + ".v" + version + "." + ext, id, mode, pageSize, version);
   }
 
   public File getOSFile() {
