@@ -18,8 +18,6 @@
  */
 package com.arcadedb.query.sql;
 
-import static org.junit.jupiter.api.Assertions.fail;
-
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
@@ -33,9 +31,9 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.HashSet;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
+
+import static org.junit.jupiter.api.Assertions.fail;
 
 public class MatchStatementExecutioTest extends TestHelper {
   public MatchStatementExecutioTest() {
@@ -724,6 +722,31 @@ public class MatchStatementExecutioTest extends TestHelper {
     Assertions.assertEquals("c", getManagerArrows("p12").get("name"));
     Assertions.assertEquals("b", getManagerArrows("p6").get("name"));
     Assertions.assertEquals("b", getManagerArrows("p11").get("name"));
+  }
+
+  @Test
+  public void testExpanded() {
+    StringBuilder query = new StringBuilder();
+    query.append("select @type from ( ");
+    query.append(" select expand(manager) from (");
+    query.append("  match {type:Employee, where: (name = '" + "p10" + "')}");
+    query.append("  .out('WorksAt')");
+    query.append("  .out('ParentDepartment'){");
+    query.append("      while: (in('ManagerOf').size() == 0),");
+    query.append("      where: (in('ManagerOf').size() > 0)");
+    query.append("  }");
+    query.append("  .in('ManagerOf'){as: manager}");
+    query.append("  return manager");
+    query.append(" )");
+    query.append(")");
+
+    ResultSet qResult = database.query("sql", query.toString());
+    Assertions.assertTrue(qResult.hasNext());
+    Result item = qResult.next();
+    Assertions.assertFalse(qResult.hasNext());
+    qResult.close();
+
+    Assertions.assertEquals("Employee", item.getProperty("@type"));
   }
 
   private Document getManager(String personName) {

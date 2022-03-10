@@ -86,12 +86,9 @@ public class RecordAttribute extends SimpleNode {
   public Object evaluate(Result iCurrentRecord, CommandContext ctx) {
     if (name.equalsIgnoreCase("@rid")) {
       return iCurrentRecord.getIdentity().orElse(null);
-    } else if (name.equalsIgnoreCase("@class")) {
+    } else if (name.equalsIgnoreCase("@type")) {
       return iCurrentRecord.getElement().map(r -> r.getTypeName()).orElse(null);
     }
-//    else if (name.equalsIgnoreCase("@version")) {
-//      return iCurrentRecord.getRecord().map(r -> r.getVersion()).orElse(null);
-//    }
     return null;
   }
 }

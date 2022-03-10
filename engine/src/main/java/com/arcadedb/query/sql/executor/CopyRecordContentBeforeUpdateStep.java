@@ -61,7 +61,7 @@ public class CopyRecordContentBeforeUpdateStep extends AbstractExecutionStep {
             Record rec = result.getElement().get().getRecord();
             prevValue.setProperty("@rid", rec.getIdentity());
             if (rec instanceof Document) {
-              prevValue.setProperty("@class", ((Document) rec).getTypeName());
+              prevValue.setProperty("@type", ((Document) rec).getTypeName());
             }
             for (String propName : result.getPropertyNames()) {
               prevValue.setProperty(propName, result.getProperty(propName));
