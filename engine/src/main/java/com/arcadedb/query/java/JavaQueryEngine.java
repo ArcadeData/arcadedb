@@ -69,8 +69,6 @@ public class JavaQueryEngine implements QueryEngine {
 
   /**
    * Unregister a class to be not used by the Java Query engine.
-   *
-   * @param classFullName Full name of the class (with package). For inner classes, use $ as separator, example: `com.arcadedb.query.java.JavaFunctionsTest$Sum`.
    */
   @Override
   public QueryEngine unregisterFunctions() {
