@@ -38,7 +38,12 @@ jobs:
 
       - name: Test
         continue-on-error: ${{ matrix.continue-on-error }}
-        run: mvn verify -Pintegration -Pdocker --batch-mode  --errors --fail-at-end --show-version  --file pom.xml
+        run: mvn verify -Pintegration -Pcoverage -Pdocker --batch-mode  --errors --fail-at-end --show-version  -pl !e2e
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: E2E Test
+        run: mvn verify -pl e2e
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
