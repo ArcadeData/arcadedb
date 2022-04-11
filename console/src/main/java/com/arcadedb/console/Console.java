@@ -109,7 +109,7 @@ public class Console {
           return;
         }
 
-          try {
+        try {
           if (!parse(line, false))
             return;
         } catch (Exception e) {
