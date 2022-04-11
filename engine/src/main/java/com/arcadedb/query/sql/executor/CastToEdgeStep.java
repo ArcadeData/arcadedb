@@ -63,7 +63,7 @@ public class CastToEdgeStep extends AbstractExecutionStep {
               result = r;
             }
           } else {
-            throw new CommandExecutionException("Current element is not a vertex: " + result);
+            throw new CommandExecutionException("Current element is not an edge: " + result);
           }
           return result;
         } finally {

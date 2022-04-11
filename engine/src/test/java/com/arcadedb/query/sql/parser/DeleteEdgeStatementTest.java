@@ -18,12 +18,11 @@
  */
 package com.arcadedb.query.sql.parser;
 
-import static org.junit.jupiter.api.Assertions.fail;
-
 import org.junit.jupiter.api.Test;
 
-import java.io.ByteArrayInputStream;
-import java.io.InputStream;
+import java.io.*;
+
+import static org.junit.jupiter.api.Assertions.fail;
 
 public class DeleteEdgeStatementTest {
 
@@ -55,6 +54,7 @@ public class DeleteEdgeStatementTest {
   @Test
   public void testDeleteEdge() {
     checkRightSyntax("DELETE EDGE E");
+    checkRightSyntax("DELETE EDGE #12:0");
     checkRightSyntax("DELETE EDGE E from #12:0");
     checkRightSyntax("DELETE EDGE E to #12:0");
     checkRightSyntax("DELETE EDGE E from #12:0 to #12:1");
