@@ -25,10 +25,7 @@ import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 /**
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdb.com)
@@ -658,6 +655,56 @@ public class UpdateStatementExecutionTest extends TestHelper {
     Assertions.assertNotNull(item);
     Assertions.assertEquals("name1", item.getProperty("name"));
 
+    Assertions.assertFalse(result.hasNext());
+    result.close();
+  }
+
+  @Test
+  public void upsertVertices() {
+    database.getSchema().createVertexType("UpsertableVertex");
+
+    for (int i = 0; i < 10; i++) {
+      MutableDocument doc = database.newVertex("UpsertableVertex");
+      doc.set("name", "name" + i);
+      doc.set("surname", "surname" + i);
+      doc.set("number", 4L);
+
+      List<String> tagsList = new ArrayList<>();
+      tagsList.add("foo");
+      tagsList.add("bar");
+      tagsList.add("baz");
+      doc.set("tagsList", tagsList);
+
+      Map<String, String> tagsMap = new HashMap<>();
+      tagsMap.put("foo", "foo");
+      tagsMap.put("bar", "bar");
+      tagsMap.put("baz", "baz");
+      doc.set("tagsMap", tagsMap);
+
+      doc.save();
+    }
+
+    ResultSet result = database.command("sql", "update UpsertableVertex set foo = 'bar' upsert where name = 'name1'");
+    Assertions.assertTrue(result.hasNext());
+    Result item = result.next();
+    Assertions.assertNotNull(item);
+    Assertions.assertEquals((Object) 1L, item.getProperty("count"));
+    Assertions.assertFalse(result.hasNext());
+    result.close();
+
+    result = database.query("sql", "SElect from UpsertableVertex");
+    for (int i = 0; i < 10; i++) {
+      Assertions.assertTrue(result.hasNext());
+      item = result.next();
+      Assertions.assertNotNull(item);
+      String name = item.getProperty("name");
+      Assertions.assertNotNull(name);
+      if ("name1".equals(name)) {
+        Assertions.assertEquals("bar", item.getProperty("foo"));
+      } else {
+        Assertions.assertNull(item.getProperty("foo"));
+      }
+    }
     Assertions.assertFalse(result.hasNext());
     result.close();
   }
