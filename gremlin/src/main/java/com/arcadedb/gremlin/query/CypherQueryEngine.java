@@ -29,11 +29,16 @@ import java.util.*;
 import java.util.stream.*;
 
 public class CypherQueryEngine implements QueryEngine {
-  static final  String      ENGINE_NAME = "cypher-engine";
+  static final  String      ENGINE_NAME = "cypher";
   private final ArcadeGraph arcadeGraph;
 
   protected CypherQueryEngine(final ArcadeGraph arcadeGraph) {
     this.arcadeGraph = arcadeGraph;
+  }
+
+  @Override
+  public String getLanguage() {
+    return ENGINE_NAME;
   }
 
   @Override

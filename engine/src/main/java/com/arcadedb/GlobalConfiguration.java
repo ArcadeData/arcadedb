@@ -26,12 +26,9 @@ import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.SystemVariableResolver;
 import org.json.JSONObject;
 
-import java.io.PrintStream;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Timer;
-import java.util.TimerTask;
-import java.util.logging.Level;
+import java.io.*;
+import java.util.*;
+import java.util.logging.*;
 
 /**
  * Keeps all configuration settings. At startup assigns the configuration values by reading system properties.
@@ -162,6 +159,9 @@ public enum GlobalConfiguration {
 
   // COMMAND
   COMMAND_TIMEOUT("arcadedb.command.timeout", "Default timeout for commands (in ms)", Long.class, 0),
+
+  // USER CODE
+  POLYGLOT_COMMAND_TIMEOUT("arcadedb.polyglotCommand.timeout", "Default timeout for polyglot commands (in ms)", Long.class, 10_000),
 
   QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP("arcadedb.queryMaxHeapElementsAllowedPerOp",
       "Maximum number of elements (records) allowed in a single query for memory-intensive operations (eg. ORDER BY in heap). "

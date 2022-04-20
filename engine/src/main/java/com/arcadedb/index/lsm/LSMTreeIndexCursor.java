@@ -18,7 +18,11 @@
  */
 package com.arcadedb.index.lsm;
 
-import com.arcadedb.database.*;
+import com.arcadedb.database.Binary;
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
+import com.arcadedb.database.TransactionContext;
+import com.arcadedb.database.TransactionIndexContext;
 import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.index.IndexCursor;
@@ -27,7 +31,7 @@ import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.BinarySerializer;
 
-import java.io.IOException;
+import java.io.*;
 import java.util.*;
 
 /**
@@ -318,19 +322,17 @@ public class LSMTreeIndexCursor implements IndexCursor {
       for (int i = 0; i < minorKeyIndexes.size(); ++i) {
         final int minorKeyIndex = minorKeyIndexes.get(i);
 
-        LSMTreeIndexUnderlyingAbstractCursor currentCursor = pageCursors[minorKeyIndex];
+        final LSMTreeIndexUnderlyingAbstractCursor currentCursor = pageCursors[minorKeyIndex];
         currentKeys = currentCursor.getKeys();
 
         final RID[] tempCurrentValues = currentCursor.getValue();
 
         if (i == 0 || currentValues == null)
           currentValues = tempCurrentValues;
-        else {
+        else if (tempCurrentValues.length > 0) {
           // MERGE VALUES
           final RID[] newArray = Arrays.copyOf(currentValues, currentValues.length + tempCurrentValues.length);
-
-          for (int k = currentValues.length; k < newArray.length; ++k)
-            newArray[k] = tempCurrentValues[k - currentValues.length];
+          System.arraycopy(tempCurrentValues, currentValues.length, newArray, currentValues.length, newArray.length - currentValues.length);
           currentValues = newArray;
         }
 

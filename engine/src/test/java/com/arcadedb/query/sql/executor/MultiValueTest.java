@@ -18,57 +18,50 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
 import com.arcadedb.index.EmptyIndexCursor;
 import com.arcadedb.utility.MultiIterator;
 import org.junit.jupiter.api.Test;
 
-import java.util.Collection;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 class MultiValueTest {
+  @Test
+  void testMultivaluesClasses() {
+    assertThat(MultiValue.isMultiValue(Map.class)).isTrue();
+    assertThat(MultiValue.isMultiValue(List.class)).isTrue();
+    assertThat(MultiValue.isMultiValue(Set.class)).isTrue();
+    assertThat(MultiValue.isMultiValue(Collection.class)).isTrue();
+    assertThat(MultiValue.isMultiValue(Object[].class)).isTrue();
+    assertThat(MultiValue.isMultiValue(Iterable.class)).isTrue();
+    assertThat(MultiValue.isMultiValue(MultiIterator.class)).isTrue();
+    assertThat(MultiValue.isMultiValue(ResultSet.class)).isTrue();
+  }
 
+  @Test
+  void testMultivaluesObjects() {
+    assertThat(MultiValue.isMultiValue(Map.of())).isTrue();
+    assertThat(MultiValue.isMultiValue(List.of())).isTrue();
+    assertThat(MultiValue.isMultiValue(Set.of())).isTrue();
+    assertThat(MultiValue.isMultiValue(new Object[] {})).isTrue();
+    //iterable
+    assertThat(MultiValue.isMultiValue(new EmptyIndexCursor())).isTrue();
+    assertThat(MultiValue.isMultiValue(new MultiIterator())).isTrue();
+    assertThat(MultiValue.isMultiValue(new InternalResultSet())).isTrue();
+  }
 
-    @Test
-    void testMultivaluesClasses() {
-
-        assertThat(MultiValue.isMultiValue(Map.class)).isTrue();
-        assertThat(MultiValue.isMultiValue(List.class)).isTrue();
-        assertThat(MultiValue.isMultiValue(Set.class)).isTrue();
-        assertThat(MultiValue.isMultiValue(Collection.class)).isTrue();
-        assertThat(MultiValue.isMultiValue(new Object[]{}.getClass())).isTrue();
-        assertThat(MultiValue.isMultiValue(Iterable.class)).isTrue();
-        assertThat(MultiValue.isMultiValue(MultiIterator.class)).isTrue();
-        assertThat(MultiValue.isMultiValue(ResultSet.class)).isTrue();
-    }
-
-    @Test
-    void testMultivaluesObjects() {
-
-        assertThat(MultiValue.isMultiValue(Map.of())).isTrue();
-        assertThat(MultiValue.isMultiValue(List.of())).isTrue();
-        assertThat(MultiValue.isMultiValue(Set.of())).isTrue();
-        assertThat(MultiValue.isMultiValue(new Object[]{})).isTrue();
-        //iterable
-        assertThat(MultiValue.isMultiValue(new EmptyIndexCursor())).isTrue();
-        assertThat(MultiValue.isMultiValue(new MultiIterator())).isTrue();
-        assertThat(MultiValue.isMultiValue(new InternalResultSet())).isTrue();
-    }
-    @Test
-    void testMultivaluesSize() {
-
-        assertThat(MultiValue.getSize(null)).isEqualTo(0);
-        assertThat(MultiValue.getSize("sinlgle")).isEqualTo(0);
-        assertThat(MultiValue.getSize(Map.of("key","value"))).isEqualTo(1);
-        assertThat(MultiValue.getSize(List.of("one"))).isEqualTo(1);
-        assertThat(MultiValue.getSize(Set.of("one","two"))).isEqualTo(2);
-        assertThat(MultiValue.getSize(new Object[]{})).isEqualTo(0);
-        //iterable
-        assertThat(MultiValue.getSize(new EmptyIndexCursor())).isEqualTo(0);
-        assertThat(MultiValue.getSize(new MultiIterator())).isEqualTo(0);
-        assertThat(MultiValue.getSize(new InternalResultSet())).isEqualTo(0);
-    }
+  @Test
+  void testMultivaluesSize() {
+    assertThat(MultiValue.getSize(null)).isEqualTo(0);
+    assertThat(MultiValue.getSize("sinlgle")).isEqualTo(0);
+    assertThat(MultiValue.getSize(Map.of("key", "value"))).isEqualTo(1);
+    assertThat(MultiValue.getSize(List.of("one"))).isEqualTo(1);
+    assertThat(MultiValue.getSize(Set.of("one", "two"))).isEqualTo(2);
+    assertThat(MultiValue.getSize(new Object[] {})).isEqualTo(0);
+    //iterable
+    assertThat(MultiValue.getSize(new EmptyIndexCursor())).isEqualTo(0);
+    assertThat(MultiValue.getSize(new MultiIterator())).isEqualTo(0);
+    assertThat(MultiValue.getSize(new InternalResultSet())).isEqualTo(0);
+  }
 }

@@ -29,11 +29,11 @@ import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.QueryParsingException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ChannelBinaryServer;
+import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.query.sql.executor.SQLEngine;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.security.ServerSecurityException;
@@ -752,7 +752,8 @@ public class PostgresNetworkExecutor extends Thread {
 
         switch (language) {
         case "sql":
-          portal.sqlStatement = SQLEngine.parse(queryText, (DatabaseInternal) database);
+          final SQLQueryEngine sqlEngine = (SQLQueryEngine) database.getQueryEngine("sql");
+          portal.sqlStatement = sqlEngine.parse(queryText, (DatabaseInternal) database);
 
           if (portal.query.equalsIgnoreCase("BEGIN")) {
             explicitTransactionStarted = true;

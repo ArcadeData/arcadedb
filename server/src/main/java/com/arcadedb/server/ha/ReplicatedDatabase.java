@@ -498,6 +498,11 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
+  public QueryEngine getQueryEngine(final String language) {
+    return proxied.getQueryEngine(language);
+  }
+
+  @Override
   public Edge newEdgeByKeys(final String sourceVertexType, final String[] sourceVertexKeyNames, final Object[] sourceVertexKeyValues,
       final String destinationVertexType, final String[] destinationVertexKeyNames, final Object[] destinationVertexKeyValues,
       final boolean createVertexIfNotExist, final String edgeType, final boolean bidirectional, final Object... properties) {

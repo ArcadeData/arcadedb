@@ -18,13 +18,12 @@
  */
 package com.arcadedb.query.sql.parser;
 
-import static org.junit.jupiter.api.Assertions.fail;
-
 import org.junit.jupiter.api.Test;
 
-import java.io.ByteArrayInputStream;
-import java.io.InputStream;
-import java.util.List;
+import java.io.*;
+import java.util.*;
+
+import static org.junit.jupiter.api.Assertions.fail;
 
 public class BatchScriptTest {
 
@@ -115,7 +114,7 @@ public class BatchScriptTest {
 
   protected SqlParser getParserFor(String string) {
     InputStream is = new ByteArrayInputStream(string.getBytes());
-    SqlParser osql = new SqlParser(is);
+    SqlParser osql = new SqlParser(null, is);
     return osql;
   }
 }

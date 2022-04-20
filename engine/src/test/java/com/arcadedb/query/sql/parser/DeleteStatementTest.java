@@ -18,8 +18,6 @@
  */
 package com.arcadedb.query.sql.parser;
 
-import static org.junit.jupiter.api.Assertions.fail;
-
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
@@ -27,10 +25,10 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.io.ByteArrayInputStream;
-import java.io.InputStream;
-import java.util.ArrayList;
-import java.util.List;
+import java.io.*;
+import java.util.*;
+
+import static org.junit.jupiter.api.Assertions.fail;
 
 public class DeleteStatementTest extends TestHelper {
 
@@ -71,7 +69,7 @@ public class DeleteStatementTest extends TestHelper {
 
   protected SqlParser getParserFor(String string) {
     InputStream is = new ByteArrayInputStream(string.getBytes());
-    SqlParser osql = new SqlParser(is);
+    SqlParser osql = new SqlParser(null, is);
     return osql;
   }
 

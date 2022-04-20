@@ -23,13 +23,10 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.log.LogManager;
 
-import java.io.ByteArrayInputStream;
-import java.io.InputStream;
-import java.io.UnsupportedEncodingException;
-import java.nio.charset.StandardCharsets;
-import java.util.LinkedHashMap;
-import java.util.Map;
-import java.util.logging.Level;
+import java.io.*;
+import java.nio.charset.*;
+import java.util.*;
+import java.util.logging.*;
 
 /**
  * This class is an LRU cache for already parsed SQL statement executors. It stores itself in the storage as a resource. It also
@@ -89,25 +86,22 @@ public class StatementCache {
    */
   protected Statement parse(final String statement) throws CommandSQLParsingException {
     try {
-
-      InputStream is;
-
-      if (db == null) {
+      final InputStream is;
+      if (db == null)
         is = new ByteArrayInputStream(statement.getBytes(DatabaseFactory.getDefaultCharset()));
-      } else {
+      else
         is = new ByteArrayInputStream(statement.getBytes(StandardCharsets.UTF_8));
-      }
 
       SqlParser osql = null;
       if (db == null) {
-        osql = new SqlParser(is);
+        osql = new SqlParser(db, is);
       } else {
         try {
 //          osql = new SqlParser(is, db.getStorage().getConfiguration().getCharset());
-          osql = new SqlParser(is, "UTF-8");
+          osql = new SqlParser(db, is, "UTF-8");
         } catch (UnsupportedEncodingException e2) {
           LogManager.instance().log(this, Level.WARNING, "Unsupported charset for database " + db);
-          osql = new SqlParser(is);
+          osql = new SqlParser(db, is);
         }
       }
       Statement result = osql.parse();

@@ -76,7 +76,7 @@ public class ResultInternal implements Result {
     return temporaryContent == null ? Collections.emptySet() : temporaryContent.keySet();
   }
 
-  public void setProperty(final String name, Object value) {
+  public ResultInternal setProperty(final String name, Object value) {
     if (value instanceof Optional)
       value = ((Optional) value).orElse(null);
 
@@ -85,6 +85,8 @@ public class ResultInternal implements Result {
     } else {
       content.put(name, value);
     }
+
+    return this;
   }
 
   public void removeProperty(final String name) {

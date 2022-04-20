@@ -26,12 +26,9 @@ import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.math.BigDecimal;
-import java.text.SimpleDateFormat;
-import java.util.ArrayList;
-import java.util.Date;
-import java.util.Iterator;
-import java.util.Map;
+import java.math.*;
+import java.text.*;
+import java.util.*;
 
 public class InputParameter extends SimpleNode {
 
@@ -71,7 +68,7 @@ public class InputParameter extends SimpleNode {
     }
     if (value instanceof BigDecimal) {
       Expression result = new Expression(-1);
-      FunctionCall funct = new FunctionCall(-1);
+      FunctionCall funct = new FunctionCall(parser, -1);
       result.mathExpression = new BaseExpression(-1);
       ((BaseExpression) result.mathExpression).identifier = new BaseIdentifier(-1);
       ((BaseExpression) result.mathExpression).identifier.levelZero = new LevelZeroIdentifier(-1);
@@ -135,7 +132,7 @@ public class InputParameter extends SimpleNode {
       return rid;
     }
     if (value instanceof Date) {
-      FunctionCall function = new FunctionCall(-1);
+      FunctionCall function = new FunctionCall(parser, -1);
       function.name = new Identifier(-1);
       function.name.value = "date";
 

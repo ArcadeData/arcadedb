@@ -27,11 +27,16 @@ import org.apache.tinkerpop.gremlin.arcadedb.structure.ArcadeGremlin;
 import java.util.*;
 
 public class GremlinQueryEngine implements QueryEngine {
-  static final  String      ENGINE_NAME = "gremlin-engine";
+  static final  String      ENGINE_NAME = "gremlin";
   private final ArcadeGraph arcadeGraph;
 
   protected GremlinQueryEngine(final ArcadeGraph arcadeGraph) {
     this.arcadeGraph = arcadeGraph;
+  }
+
+  @Override
+  public String getLanguage() {
+    return ENGINE_NAME;
   }
 
   @Override
