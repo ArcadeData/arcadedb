@@ -23,7 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.util.Map;
+import java.util.*;
 
 /**
  * This class is used to represent all the indentifies in the SQL grammar, ie. class names, property names, index names, variables
@@ -41,18 +41,18 @@ public class Identifier extends SimpleNode {
    */
   protected boolean internalAlias = false;
 
-  public Identifier(Identifier copyFrom, boolean quoted) {
+  public Identifier(final Identifier copyFrom, final boolean quoted) {
     this(-1);
     this.value = copyFrom.value;
     this.quoted = quoted;
   }
 
-  public Identifier(String content) {
+  public Identifier(final String content) {
     this(-1);
     setStringValue(content);
   }
 
-  protected Identifier(int id) {
+  protected Identifier(final int id) {
     super(id);
   }
 
@@ -63,7 +63,7 @@ public class Identifier extends SimpleNode {
     return identifier;
   }
 
-  public Identifier(SqlParser p, int id) {
+  public Identifier(final SqlParser p, final int id) {
     super(p, id);
   }
 
@@ -82,12 +82,12 @@ public class Identifier extends SimpleNode {
    * @return
    */
   public String getStringValue() {
-    if (value == null) {
+    if (value == null)
       return null;
-    }
-    if (value.contains("`")) {
+
+    if (value.contains("`"))
       return value.replaceAll("\\\\`", "`");
-    }
+
     return value;
   }
 
@@ -97,22 +97,19 @@ public class Identifier extends SimpleNode {
    *
    * @param s
    */
-  private void setStringValue(String s) {
-    if (s == null) {
+  private void setStringValue(final String s) {
+    if (s == null)
       value = null;
-    } else if (s.contains("`")) {
+    else if (s.contains("`"))
       value = s.replaceAll("`", "\\\\`");
-    } else {
+    else
       value = s;
-    }
-
   }
 
   @Override
-  public String toString(String prefix) {
-    if (quoted) {
+  public String toString(final String prefix) {
+    if (quoted)
       return '`' + value + '`';
-    }
     return value;
   }
 
@@ -120,20 +117,15 @@ public class Identifier extends SimpleNode {
     return toString("");
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
-    if (quoted) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
+    if (quoted)
       builder.append('`' + value + '`');
-    } else {
+    else
       builder.append(value);
-    }
   }
 
   public Identifier copy() {
     return this;
-//    OIdentifier result = new OIdentifier(-1);
-//    result.value = value;
-//    result.quoted = quoted;
-//    return result;
   }
 
   @Override

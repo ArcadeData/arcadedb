@@ -28,13 +28,13 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.Map;
+import java.util.*;
 
 public class DropIndexStatement extends DDLStatement {
 
-  protected boolean   all      = false;
-  protected IndexName name;
-  protected boolean   ifExists = false;
+  protected boolean    all      = false;
+  protected Identifier name;
+  protected boolean    ifExists = false;
 
   public DropIndexStatement(int id) {
     super(id);

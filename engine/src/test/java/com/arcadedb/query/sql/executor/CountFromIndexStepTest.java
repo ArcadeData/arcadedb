@@ -20,15 +20,15 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.query.sql.parser.IndexIdentifier;
-import com.arcadedb.query.sql.parser.IndexName;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.Arrays;
+import java.util.*;
 
 public class CountFromIndexStepTest {
 
@@ -64,8 +64,7 @@ public class CountFromIndexStepTest {
       }
 
       className = TestHelper.createRandomType(db).getName();
-      IndexName name = new IndexName(-1);
-      name.setValue(indexName);
+      Identifier name = new Identifier(indexName);
       IndexIdentifier identifier = new IndexIdentifier(-1);
       identifier.setIndexName(name);
       identifier.setIndexNameString(name.getValue());

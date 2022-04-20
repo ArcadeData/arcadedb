@@ -166,8 +166,6 @@ public interface SqlParserVisitor {
 
   Object visit(SchemaIdentifier node, Object data);
 
-  Object visit(IndexName node, Object data);
-
   Object visit(IndexIdentifier node, Object data);
 
   Object visit(WhereClause node, Object data);

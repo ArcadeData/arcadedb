@@ -23,7 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.util.Map;
+import java.util.*;
 
 public class IndexIdentifier extends SimpleNode {
 
@@ -31,9 +31,9 @@ public class IndexIdentifier extends SimpleNode {
     INDEX, VALUES, VALUESASC, VALUESDESC
   }
 
-  protected Type      type;
-  protected String    indexNameString;
-  protected IndexName indexName;
+  protected Type       type;
+  protected String     indexNameString;
+  protected Identifier indexName;
 
   public IndexIdentifier(int id) {
     super(id);
@@ -125,7 +125,7 @@ public class IndexIdentifier extends SimpleNode {
     indexNameString = fromResult.getProperty("indexNameString");
 
     if (fromResult.getProperty("indexName") != null) {
-      indexName = new IndexName(-1);
+      indexName = new Identifier(-1);
       indexName.deserialize(fromResult.getProperty("indexName"));
     }
   }
@@ -138,7 +138,7 @@ public class IndexIdentifier extends SimpleNode {
     this.indexNameString = indexNameString;
   }
 
-  public void setIndexName(IndexName indexName) {
+  public void setIndexName(Identifier indexName) {
     this.indexName = indexName;
   }
 }

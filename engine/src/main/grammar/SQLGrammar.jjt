@@ -2349,31 +2349,6 @@ SchemaIdentifier SchemaIdentifier():
   { return jjtThis; }
 }
 
-IndexName IndexName():
-{
-  StringBuilder builder = new StringBuilder();
-  Token token;
-  Identifier lastIdentifier;
-}
-{
-  ( "__@recordmap@___" { builder.append("__@recordmap@___"); } )?
-
-  lastIdentifier = Identifier() { builder.append(lastIdentifier.getValue()); }
-  (
-  (
-    <DOT> { builder.append("."); }
-    |
-    <MINUS> { builder.append("-"); }
-  )
-  lastIdentifier = Identifier() { builder.append(lastIdentifier.getValue()); }
-  )*
-  {
-    jjtThis.value = builder.toString();
-    return jjtThis;
-  }
-}
-
-
 IndexIdentifier IndexIdentifier():
 {
   Token token;
@@ -2382,7 +2357,7 @@ IndexIdentifier IndexIdentifier():
   (
     (
       <INDEX_COLON>
-      jjtThis.indexName = IndexName() { jjtThis.type = IndexIdentifier.Type.INDEX; }
+      jjtThis.indexName = Identifier() { jjtThis.type = IndexIdentifier.Type.INDEX; }
     )
     |
     (
@@ -3844,36 +3819,12 @@ CreateIndexStatement CreateIndexStatement():
 }
 {
 	<CREATE> <INDEX>
-	jjtThis.name = IndexName()
-  (
+	(
     LOOKAHEAD(4)
-    [ <IF> <NOT> <EXISTS> {jjtThis.ifNotExists = true;} ]
-    <ON>
-    jjtThis.typeName = Identifier()
-    <LPAREN>
     (
-      lastIdentifier = Identifier() {
-        lastProperty = new CreateIndexStatement.Property();
-        lastProperty.name = lastIdentifier;
-        jjtThis.propertyList.add(lastProperty);
-      }
-      |
-      lastRecordAttr = RecordAttribute() {
-        lastProperty = new CreateIndexStatement.Property();
-        lastProperty.recordAttribute = lastRecordAttr;
-        jjtThis.propertyList.add(lastProperty);
-      }
-    )
-    [
-      <BY>
-      (
-        <KEY> { lastProperty.byKey = true; }
-        |
-        <VALUE> { lastProperty.byValue = true; }
-      )
-    ]
-    (
-      <COMMA>
+      <ON>
+      jjtThis.typeName = Identifier()
+      <LPAREN>
       (
         lastIdentifier = Identifier() {
           lastProperty = new CreateIndexStatement.Property();
@@ -3895,59 +3846,81 @@ CreateIndexStatement CreateIndexStatement():
           <VALUE> { lastProperty.byValue = true; }
         )
       ]
-    )*
-    <RPAREN>
+      (
+        <COMMA>
+        (
+          lastIdentifier = Identifier() {
+            lastProperty = new CreateIndexStatement.Property();
+            lastProperty.name = lastIdentifier;
+            jjtThis.propertyList.add(lastProperty);
+          }
+          |
+          lastRecordAttr = RecordAttribute() {
+            lastProperty = new CreateIndexStatement.Property();
+            lastProperty.recordAttribute = lastRecordAttr;
+            jjtThis.propertyList.add(lastProperty);
+          }
+        )
+        [
+          <BY>
+          (
+            <KEY> { lastProperty.byKey = true; }
+            |
+            <VALUE> { lastProperty.byValue = true; }
+          )
+        ]
+      )*
+      <RPAREN>
+    )
+    |
+    jjtThis.name = Identifier()
+
+    [ <IF> <NOT> <EXISTS> {jjtThis.ifNotExists = true;} ]
+
     jjtThis.type = Identifier()
-    |
-    (
-       LOOKAHEAD(3)
-       <IF> <NOT> <EXISTS> {jjtThis.ifNotExists = true;} jjtThis.type = Identifier()
-       |
-       jjtThis.type = Identifier()
-    )
-  )
 
-  (
-    LOOKAHEAD(2)
-    <ENGINE> jjtThis.engine = Identifier()
-    [
+    (
       LOOKAHEAD(2)
-      (
-         <SCHEMA> jjtThis.schema = Json()
-      )
-      |
-      (
-        lastIdentifier = Identifier() {jjtThis.keyTypes.add(lastIdentifier);}
+      <ENGINE> jjtThis.engine = Identifier()
+      [
+        LOOKAHEAD(2)
         (
-          <COMMA> lastIdentifier = Identifier() {jjtThis.keyTypes.add(lastIdentifier);}
-        )*
-        [ <SCHEMA> jjtThis.schema = Json() ]
+           <SCHEMA> jjtThis.schema = Json()
+        )
+        |
+        (
+          lastIdentifier = Identifier() {jjtThis.keyTypes.add(lastIdentifier);}
+          (
+            <COMMA> lastIdentifier = Identifier() {jjtThis.keyTypes.add(lastIdentifier);}
+          )*
+          [ <SCHEMA> jjtThis.schema = Json() ]
+        )
+      ]
+      |
+      [
+        LOOKAHEAD(2)
+        (
+           <SCHEMA> jjtThis.schema = Json()
+        )
+        |
+        (
+          lastIdentifier = Identifier() {jjtThis.keyTypes.add(lastIdentifier);}
+          (
+            <COMMA> lastIdentifier = Identifier() {jjtThis.keyTypes.add(lastIdentifier);}
+          )*
+          [ <SCHEMA> jjtThis.schema = Json() ]
+        )
+      ]
+    )
+
+    [ <NULL_STRATEGY>
+      (
+        <SKIP2> { jjtThis.nullStrategy = LSMTreeIndexAbstract.NULL_STRATEGY.SKIP; }
+        |
+        <ERROR2> { jjtThis.nullStrategy = LSMTreeIndexAbstract.NULL_STRATEGY.ERROR; }
       )
     ]
-    |
-    [
-      LOOKAHEAD(2)
-      (
-         <SCHEMA> jjtThis.schema = Json()
-      )
-      |
-      (
-        lastIdentifier = Identifier() {jjtThis.keyTypes.add(lastIdentifier);}
-        (
-          <COMMA> lastIdentifier = Identifier() {jjtThis.keyTypes.add(lastIdentifier);}
-        )*
-        [ <SCHEMA> jjtThis.schema = Json() ]
-      )
-    ]
   )
-  [ <NULL_STRATEGY>
-    (
-      <SKIP2> { jjtThis.nullStrategy = LSMTreeIndexAbstract.NULL_STRATEGY.SKIP; }
-      |
-      <ERROR2> { jjtThis.nullStrategy = LSMTreeIndexAbstract.NULL_STRATEGY.ERROR; }
-    )
-  ]
-
 	{ return jjtThis; }
 }
 
@@ -3956,7 +3929,7 @@ RebuildIndexStatement RebuildIndexStatement():
 {
   <REBUILD> <INDEX>
   (
-    jjtThis.name = IndexName()
+    jjtThis.name = Identifier()
     |
     <STAR> { jjtThis.all = true; }
   )
@@ -3968,7 +3941,7 @@ DropIndexStatement DropIndexStatement():
 {
   <DROP> <INDEX>
   (
-    jjtThis.name = IndexName()
+    jjtThis.name = Identifier()
     |
     <STAR> { jjtThis.all = true; }
   )
