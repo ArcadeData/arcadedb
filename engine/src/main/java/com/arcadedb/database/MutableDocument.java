@@ -351,7 +351,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
       if (!((EmbeddedDocument) value).getDatabase().getName().equals(database.getName())) {
         ((BaseDocument) value).buffer.rewind();
         final MutableDocument newRecord = (MutableDocument) database.getRecordFactory()
-            .newModifiableRecord(database, ((EmbeddedDocument) value).getType(), null, ((BaseDocument) value).buffer,
+            .newMutableRecord(database, ((EmbeddedDocument) value).getType(), null, ((BaseDocument) value).buffer,
                 new EmbeddedModifierProperty(this, propertyName));
         newRecord.buffer = null;
         newRecord.map = new LinkedHashMap<>();
@@ -366,7 +366,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
         if (v instanceof Document && !((Document) v).getDatabase().getName().equals(database.getName())) {
           ((BaseDocument) v).buffer.rewind();
           final MutableDocument newRecord = (MutableDocument) database.getRecordFactory()
-              .newModifiableRecord(database, ((EmbeddedDocument) v).getType(), null, ((BaseDocument) v).buffer,
+              .newMutableRecord(database, ((EmbeddedDocument) v).getType(), null, ((BaseDocument) v).buffer,
                   new EmbeddedModifierProperty(this, propertyName));
           newRecord.buffer = null;
           newRecord.map = new LinkedHashMap<>();
@@ -382,7 +382,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
         if (v instanceof Document && !((Document) v).getDatabase().getName().equals(database.getName())) {
           ((BaseDocument) v).buffer.rewind();
           final MutableDocument newRecord = (MutableDocument) database.getRecordFactory()
-              .newModifiableRecord(database, ((EmbeddedDocument) v).getType(), null, ((BaseDocument) v).buffer,
+              .newMutableRecord(database, ((EmbeddedDocument) v).getType(), null, ((BaseDocument) v).buffer,
                   new EmbeddedModifierProperty(this, propertyName));
           newRecord.buffer = null;
           newRecord.map = new LinkedHashMap<>();

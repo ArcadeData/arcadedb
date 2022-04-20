@@ -20,7 +20,12 @@ package com.arcadedb.database;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.DatabaseMetadataException;
-import com.arcadedb.graph.*;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.EdgeSegment;
+import com.arcadedb.graph.MutableEdge;
+import com.arcadedb.graph.MutableEdgeSegment;
+import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.VertexType;
@@ -127,7 +132,7 @@ class RecordFactoryTest extends TestHelper {
   }
 
   @Test
-  void newModifiableRecord() {
+  void newMutableRecord() {
     final RID EMPTY_RID = new RID(database, 0, 0);
 
     final Binary binary = new Binary();
@@ -135,7 +140,7 @@ class RecordFactoryTest extends TestHelper {
     binary.flip();
 
     final DocumentType documentType = database.getSchema().createDocumentType("Document");
-    Record document = ((DatabaseInternal) database).getRecordFactory().newModifiableRecord(database, documentType, EMPTY_RID, binary, null);
+    Record document = ((DatabaseInternal) database).getRecordFactory().newMutableRecord(database, documentType, EMPTY_RID, binary, null);
     Assertions.assertTrue(document instanceof MutableDocument);
 
     binary.clear();
@@ -147,7 +152,7 @@ class RecordFactoryTest extends TestHelper {
     binary.flip();
 
     final VertexType vertexType = database.getSchema().createVertexType("Vertex");
-    Record vertex = ((DatabaseInternal) database).getRecordFactory().newModifiableRecord(database, vertexType, EMPTY_RID, binary, null);
+    Record vertex = ((DatabaseInternal) database).getRecordFactory().newMutableRecord(database, vertexType, EMPTY_RID, binary, null);
     Assertions.assertTrue(vertex instanceof MutableVertex);
 
     binary.clear();
@@ -157,14 +162,14 @@ class RecordFactoryTest extends TestHelper {
     binary.flip();
 
     final EdgeType edgeType = database.getSchema().createEdgeType("Edge");
-    Record edge = ((DatabaseInternal) database).getRecordFactory().newModifiableRecord(database, edgeType, EMPTY_RID, binary, null);
+    Record edge = ((DatabaseInternal) database).getRecordFactory().newMutableRecord(database, edgeType, EMPTY_RID, binary, null);
     Assertions.assertTrue(edge instanceof MutableEdge);
 
     binary.clear();
     binary.putByte(EdgeSegment.RECORD_TYPE);
     binary.flip();
 
-    final Record edgeSegment = ((DatabaseInternal) database).getRecordFactory().newModifiableRecord(database, null, EMPTY_RID, binary, null);
+    final Record edgeSegment = ((DatabaseInternal) database).getRecordFactory().newMutableRecord(database, null, EMPTY_RID, binary, null);
     Assertions.assertTrue(edgeSegment instanceof MutableEdgeSegment);
 
     binary.clear();
@@ -172,7 +177,7 @@ class RecordFactoryTest extends TestHelper {
     binary.flip();
 
     final DocumentType embeddedDocumentType = database.getSchema().createDocumentType("EmbeddedDocument");
-    Record embeddedDocument = ((DatabaseInternal) database).getRecordFactory().newModifiableRecord(database, embeddedDocumentType, EMPTY_RID, binary, null);
+    Record embeddedDocument = ((DatabaseInternal) database).getRecordFactory().newMutableRecord(database, embeddedDocumentType, EMPTY_RID, binary, null);
     Assertions.assertTrue(embeddedDocument instanceof MutableEmbeddedDocument);
 
     binary.clear();
@@ -180,7 +185,7 @@ class RecordFactoryTest extends TestHelper {
     binary.flip();
 
     try {
-      ((DatabaseInternal) database).getRecordFactory().newModifiableRecord(database, embeddedDocumentType, EMPTY_RID, binary, null);
+      ((DatabaseInternal) database).getRecordFactory().newMutableRecord(database, embeddedDocumentType, EMPTY_RID, binary, null);
       Assertions.fail();
     } catch (DatabaseMetadataException e) {
       // EXPECTED

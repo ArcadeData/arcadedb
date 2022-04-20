@@ -19,8 +19,16 @@
 package com.arcadedb.database;
 
 import com.arcadedb.exception.DatabaseMetadataException;
-import com.arcadedb.graph.*;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.EdgeSegment;
+import com.arcadedb.graph.ImmutableEdge;
+import com.arcadedb.graph.ImmutableVertex;
+import com.arcadedb.graph.MutableEdge;
+import com.arcadedb.graph.MutableEdgeSegment;
+import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.VertexType;
 
 public class RecordFactory {
   public Record newImmutableRecord(final Database database, final DocumentType type, final RID rid, final byte recordType) {
@@ -57,7 +65,15 @@ public class RecordFactory {
     throw new DatabaseMetadataException("Cannot find record type '" + recordType + "'");
   }
 
-  public Record newModifiableRecord(final Database database, final DocumentType type, final RID rid, final Binary content, final EmbeddedModifier modifier) {
+  public Record newMutableRecord(final Database database, final DocumentType type) {
+    if (type instanceof VertexType)
+      return new MutableVertex(database, type, null);
+    if (type instanceof VertexType)
+      return new MutableEdge(database, type, null);
+    return new MutableDocument(database, type, null);
+  }
+
+  public Record newMutableRecord(final Database database, final DocumentType type, final RID rid, final Binary content, final EmbeddedModifier modifier) {
     final int pos = content.position();
     final byte recordType = content.getByte();
     content.position(pos);

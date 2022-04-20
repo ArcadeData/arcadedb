@@ -94,14 +94,14 @@ public class ResultInternal implements Result {
 
   public <T> T getProperty(final String name) {
     T result = null;
-    if (content != null && content.containsKey(name)) {
+    if (content != null && content.containsKey(name))
       result = (T) wrap(content.get(name));
-    } else if (element != null) {
+    else if (element != null)
       result = (T) wrap(element.get(name));
-    }
-    if (result instanceof Identifiable && ((Identifiable) result).getIdentity() != null) {
+
+    if (!(result instanceof Record) && result instanceof Identifiable && ((Identifiable) result).getIdentity() != null)
       result = (T) ((Identifiable) result).getIdentity();
-    }
+
     return result;
   }
 

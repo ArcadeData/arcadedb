@@ -237,7 +237,7 @@ public class MatchStatementExecutioTest extends TestHelper {
     for (int i = 0; i < 6; i++) {
       Result item = qResult.next();
       Assertions.assertEquals(1, item.getPropertyNames().size());
-      Document person = database.lookupByRID(item.getProperty("person"), true).asVertex();
+      Document person = item.getProperty("person");
 
       String name = person.getString("name");
       Assertions.assertTrue(name.startsWith("n"));
@@ -252,7 +252,7 @@ public class MatchStatementExecutioTest extends TestHelper {
     for (int i = 0; i < 2; i++) {
       Result item = qResult.next();
       Assertions.assertTrue(item.getPropertyNames().size() == 1);
-      Document personId = database.lookupByRID(item.getProperty("person"), false).asVertex();
+      Document personId = item.getProperty("person");
 
       MutableDocument person = personId.getRecord().asVertex().modify();
       String name = person.getString("name");
@@ -300,7 +300,7 @@ public class MatchStatementExecutioTest extends TestHelper {
 
       Result item = qResult.next();
       Assertions.assertEquals(1, item.getPropertyNames().size());
-      Document person = database.lookupByRID(item.getProperty("person"), true).asVertex();
+      Document person = item.getProperty("person");
 
       String name = person.getString("name");
       Assertions.assertTrue(name.equals("n1") || name.equals("n2"));
@@ -1077,9 +1077,9 @@ public class MatchStatementExecutioTest extends TestHelper {
     printExecutionPlan(result);
     Assertions.assertTrue(result.hasNext());
     Result doc = result.next();
-    Document friend1 = database.lookupByRID(doc.getProperty("friend1"), true).asVertex();
-    Document friend2 = database.lookupByRID(doc.getProperty("friend2"), true).asVertex();
-    Document friend3 = database.lookupByRID(doc.getProperty("friend3"), true).asVertex();
+    Document friend1 = doc.getProperty("friend1");
+    Document friend2 = doc.getProperty("friend2");
+    Document friend3 = doc.getProperty("friend3");
     Assertions.assertEquals(0, friend1.getInteger("uid"));
     Assertions.assertEquals(1, friend2.getInteger("uid"));
     Assertions.assertEquals(2, friend3.getInteger("uid"));
@@ -1101,9 +1101,9 @@ public class MatchStatementExecutioTest extends TestHelper {
     Assertions.assertTrue(result.hasNext());
     Result doc = result.next();
     Assertions.assertFalse(result.hasNext());
-    Document friend1 = database.lookupByRID(doc.getProperty("friend1"), true).asVertex();
-    Document friend2 = database.lookupByRID(doc.getProperty("friend2"), true).asVertex();
-    Document friend3 = database.lookupByRID(doc.getProperty("friend3"), true).asVertex();
+    Document friend1 = doc.getProperty("friend1");
+    Document friend2 = doc.getProperty("friend2");
+    Document friend3 = doc.getProperty("friend3");
     Assertions.assertEquals(0, friend1.getInteger("uid"));
     Assertions.assertEquals(1, friend2.getInteger("uid"));
     Assertions.assertEquals(2, friend3.getInteger("uid"));
@@ -1125,9 +1125,9 @@ public class MatchStatementExecutioTest extends TestHelper {
     Assertions.assertTrue(result.hasNext());
     Result doc = result.next();
     Assertions.assertFalse(result.hasNext());
-    Document friend1 = database.lookupByRID(doc.getProperty("friend1"), true).asVertex();
-    Document friend2 = database.lookupByRID(doc.getProperty("friend2"), true).asVertex();
-    Document friend3 = database.lookupByRID(doc.getProperty("friend3"), true).asVertex();
+    Document friend1 = doc.getProperty("friend1");
+    Document friend2 = doc.getProperty("friend2");
+    Document friend3 = doc.getProperty("friend3");
     Assertions.assertEquals(0, friend1.getInteger("uid"));
     Assertions.assertEquals(1, friend2.getInteger("uid"));
     Assertions.assertEquals(2, friend3.getInteger("uid"));
@@ -1221,7 +1221,7 @@ public class MatchStatementExecutioTest extends TestHelper {
     for (int i = 0; i < 2; i++) {
       Assertions.assertTrue(result.hasNext());
       Result doc = result.next();
-      Document friend1 = database.lookupByRID(doc.getProperty("friend1"), true).asVertex();
+      Vertex friend1 = doc.getProperty("friend1");
       Assertions.assertEquals(friend1.getInteger("uid"), 1);
     }
     Assertions.assertFalse(result.hasNext());
@@ -1260,7 +1260,7 @@ public class MatchStatementExecutioTest extends TestHelper {
 
     Assertions.assertTrue(result.hasNext());
     Result d = result.next();
-    Document friend1 = database.lookupByRID(d.getProperty("friend1"), true).asVertex();
+    Document friend1 = d.getProperty("friend1");
     Assertions.assertEquals(friend1.getInteger("uid"), 1);
     Assertions.assertFalse(result.hasNext());
     result.close();
@@ -1278,7 +1278,7 @@ public class MatchStatementExecutioTest extends TestHelper {
     Assertions.assertTrue(result.hasNext());
 
     Result doc = result.next();
-    Object foo = database.lookupByRID(doc.getProperty("foo"), true);
+    Object foo = doc.getProperty("foo");
     Assertions.assertNotNull(foo);
     Assertions.assertTrue(foo instanceof Vertex);
     result.close();
@@ -1598,7 +1598,7 @@ public class MatchStatementExecutioTest extends TestHelper {
       Assertions.assertTrue(qResult.hasNext());
       Result doc = qResult.next();
       Assertions.assertTrue(doc.getPropertyNames().size() == 2);
-      Document person = database.lookupByRID(doc.getProperty("person"), true).asVertex();
+      Vertex person = doc.getProperty("person");
 
       String name = person.getString("name");
       Assertions.assertTrue(name.startsWith("n"));
@@ -1613,7 +1613,7 @@ public class MatchStatementExecutioTest extends TestHelper {
       Assertions.assertTrue(qResult.hasNext());
       Result doc = qResult.next();
       Assertions.assertTrue(doc.getPropertyNames().size() == 2);
-      Document person = database.lookupByRID(doc.getProperty("person"), true).asVertex();
+      Vertex person = doc.getProperty("person");
 
       String name = person.getString("name");
       Assertions.assertTrue(name.startsWith("n"));

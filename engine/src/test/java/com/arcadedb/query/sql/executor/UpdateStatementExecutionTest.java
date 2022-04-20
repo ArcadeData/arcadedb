@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Assertions;
@@ -432,7 +433,6 @@ public class UpdateStatementExecutionTest extends TestHelper {
 
   @Test
   public void testUpsert1() {
-
     ResultSet result = database.command("sql", "update " + className + " set foo = 'bar' upsert where name = 'name1'");
     Assertions.assertTrue(result.hasNext());
     Result item = result.next();
@@ -458,9 +458,27 @@ public class UpdateStatementExecutionTest extends TestHelper {
     result.close();
   }
 
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/380
+   */
+  @Test
+  public void testUpsertVertices() {
+    database.command("sql", "CREATE vertex TYPE extra_node");
+    database.command("sql", "CREATE PROPERTY extra_node.extraitem STRING");
+    database.command("sql", "CREATE INDEX `ExtraNode[extraitem]` ON extra_node (extraitem) UNIQUE");
+    ResultSet result = database.command("sql", "update extra_node set extraitem = 'Hugo2' upsert return after $current where extraitem = 'Hugo'");
+
+    Assertions.assertTrue(result.hasNext());
+    Result item = result.next();
+    Assertions.assertNotNull(item);
+    Vertex current = item.getProperty("$current");
+    Assertions.assertEquals("Hugo2", current.getString("extraitem"));
+    Assertions.assertFalse(result.hasNext());
+    result.close();
+  }
+
   @Test
   public void testUpsertAndReturn() {
-
     ResultSet result = database.command("sql", "update " + className + " set foo = 'bar' upsert  return after  where name = 'name1' ");
 
     Assertions.assertTrue(result.hasNext());
