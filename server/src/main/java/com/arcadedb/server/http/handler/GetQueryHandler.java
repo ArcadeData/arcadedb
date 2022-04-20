@@ -24,51 +24,65 @@ import com.arcadedb.server.ServerMetrics;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
+import org.json.JSONObject;
 
-import java.io.UnsupportedEncodingException;
-import java.net.URLDecoder;
-import java.util.Deque;
+import java.io.*;
+import java.net.*;
+import java.util.*;
 
-public class GetQueryHandler extends DatabaseAbstractHandler {
+public class GetQueryHandler extends AbstractQueryHandler {
   public GetQueryHandler(final HttpServer httpServer) {
     super(httpServer);
   }
 
   @Override
   public void execute(final HttpServerExchange exchange, ServerSecurityUser user, final Database database) throws UnsupportedEncodingException {
-    final Deque<String> text = exchange.getQueryParameters().get("command");
-    if (text == null || text.isEmpty()) {
+    final Deque<String> textPar = exchange.getQueryParameters().get("command");
+    if (textPar == null || textPar.isEmpty()) {
       exchange.setStatusCode(400);
       exchange.getResponseSender().send("{ \"error\" : \"Command text is null\"}");
       return;
     }
+    final String text = textPar.getFirst();
 
-    final Deque<String> language = exchange.getQueryParameters().get("language");
-    if (language == null || language.isEmpty()) {
+    final Deque<String> languagePar = exchange.getQueryParameters().get("language");
+    if (languagePar == null || languagePar.isEmpty()) {
       exchange.setStatusCode(400);
       exchange.getResponseSender().send("{ \"error\" : \"Language is null\"}");
       return;
     }
+    final String language = languagePar.getFirst();
 
-    final StringBuilder result = new StringBuilder();
+    final String serializer;
+    Deque<String> serializerPar = exchange.getQueryParameters().get("serializer");
+    if (serializerPar == null || serializerPar.isEmpty())
+      serializer = "record";
+    else
+      serializer = serializerPar.getFirst();
+
+    final int limit;
+    final Deque<String> limitPar = exchange.getQueryParameters().get("limit");
+    if (limitPar == null || limitPar.isEmpty())
+      limit = DEFAULT_LIMIT;
+    else
+      limit = Integer.parseInt(limitPar.getFirst());
+
+    final JSONObject response = createResult(user);
 
     final ServerMetrics.MetricTimer timer = httpServer.getServer().getServerMetrics().timer("http.query");
     try {
 
-      final String command = URLDecoder.decode(text.getFirst(), exchange.getRequestCharset());
-      final ResultSet qResult = database.query(language.getFirst(), command);
-      while (qResult.hasNext()) {
-        if (result.length() > 0)
-          result.append(",");
-        result.append(httpServer.getJsonSerializer().serializeResult(qResult.next()).toString());
-      }
+      final String command = URLDecoder.decode(text, exchange.getRequestCharset());
+      final ResultSet qResult = database.query(language, command);
+
+      serializeResultSet(database, serializer, limit, response, qResult);
 
     } finally {
       timer.stop();
     }
 
     exchange.setStatusCode(200);
-    exchange.getResponseSender().send("{ \"result\" : [" + result + "] }");
+    exchange.getResponseSender().send(response.toString());
   }
 
   @Override
