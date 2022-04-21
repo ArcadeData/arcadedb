@@ -18,13 +18,13 @@
  */
 package com.arcadedb.query.sql;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
 import com.arcadedb.TestHelper;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.stream.IntStream;
+import java.util.stream.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class DDLTest extends TestHelper {
   @Override
@@ -43,8 +43,8 @@ public class DDLTest extends TestHelper {
     final int numOfElements = 10;
     //create schema: sript
     database.execute("sql", "BEGIN;" + "CREATE VERTEX TYPE Person EXTENDS V; " + "CREATE PROPERTY Person.name STRING;" + "CREATE PROPERTY Person.id INTEGER;"
-        + "CREATE INDEX Person.id ON Person (id) UNIQUE NULL_STRATEGY SKIP;" + "CREATE VERTEX TYPE Car EXTENDS V; " + "CREATE PROPERTY Car.id INTEGER;"
-        + "CREATE PROPERTY Car.model STRING;" + "CREATE INDEX Car.id ON Car (id) UNIQUE;" + "CREATE EDGE TYPE Drives EXTENDS E;" + "COMMIT;  " + "");
+        + "CREATE INDEX ON Person (id) UNIQUE NULL_STRATEGY SKIP;" + "CREATE VERTEX TYPE Car EXTENDS V; " + "CREATE PROPERTY Car.id INTEGER;"
+        + "CREATE PROPERTY Car.model STRING;" + "CREATE INDEX ON Car (id) UNIQUE;" + "CREATE EDGE TYPE Drives EXTENDS E;" + "COMMIT;  " + "");
 
     //vertices
     database.transaction(() -> IntStream.range(0, numOfElements).forEach(i -> {

@@ -85,7 +85,7 @@ public class MatchStatementExecutioTest extends TestHelper {
   private static void initEdgeIndexTest(Database database) {
     database.command("sql", "CREATE vertex type IndexedVertex");
     database.command("sql", "CREATE property IndexedVertex.uid INTEGER");
-    database.command("sql", "CREATE index IndexedVertex_uid on IndexedVertex (uid) NOTUNIQUE");
+    database.command("sql", "CREATE index on IndexedVertex (uid) NOTUNIQUE");
 
     int nodes = 1000;
     for (int i = 0; i < nodes; i++) {
@@ -205,7 +205,7 @@ public class MatchStatementExecutioTest extends TestHelper {
   private static void initTriangleTest(Database database) {
     database.command("sql", "CREATE vertex type TriangleV");
     database.command("sql", "CREATE property TriangleV.uid INTEGER");
-    database.command("sql", "CREATE index TriangleV_uid on TriangleV (uid) UNIQUE");
+    database.command("sql", "CREATE index on TriangleV (uid) UNIQUE");
     database.command("sql", "CREATE edge type TriangleE");
     for (int i = 0; i < 10; i++) {
       database.command("sql", "CREATE VERTEX TriangleV set uid = ?", i);

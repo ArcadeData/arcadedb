@@ -465,7 +465,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
   public void testUpsertVertices() {
     database.command("sql", "CREATE vertex TYPE extra_node");
     database.command("sql", "CREATE PROPERTY extra_node.extraitem STRING");
-    database.command("sql", "CREATE INDEX `ExtraNode[extraitem]` ON extra_node (extraitem) UNIQUE");
+    database.command("sql", "CREATE INDEX ON extra_node (extraitem) UNIQUE");
     ResultSet result = database.command("sql", "update extra_node set extraitem = 'Hugo2' upsert return after $current where extraitem = 'Hugo'");
 
     Assertions.assertTrue(result.hasNext());

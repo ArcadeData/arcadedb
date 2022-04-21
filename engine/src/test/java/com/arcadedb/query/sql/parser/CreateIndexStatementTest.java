@@ -24,18 +24,23 @@ public class CreateIndexStatementTest extends ParserTestAbstract {
 
   @Test
   public void testPlain() {
-    checkRightSyntax("CREATE INDEX Foo.bar_baz on Foo (bar, baz) UNIQUE");
-    checkRightSyntax("CREATE INDEX Foo.bar_baz on Foo (bar, @rid) UNIQUE");
-    checkRightSyntax("CREATE INDEX Foo.bar_baz on Foo (bar by key, baz by value) UNIQUE");
-    checkRightSyntax("CREATE INDEX Foo.bar on Foo (bar) UNIQUE");
-    checkRightSyntax("CREATE INDEX Foo.bar_baz on Foo (bar, baz) UNIQUE");
-    checkRightSyntax("CREATE INDEX Foo.bar_baz on Foo (bar by key, baz by value) UNIQUE");
-    checkRightSyntax("create index OUser.name UNIQUE ENGINE LSM");
-    checkRightSyntax("create index OUser.name UNIQUE engine LSM");
-    checkRightSyntax("CREATE INDEX Foo.bar IF NOT EXISTS on Foo (bar) UNIQUE");
+    checkRightSyntax("create index `OUser.name` UNIQUE ENGINE LSM");
+    checkRightSyntax("create index `OUser.name` UNIQUE engine LSM");
+    checkRightSyntax("create index `OUser.name` IF NOT EXISTS UNIQUE engine LSM");
 
+    checkRightSyntax("CREATE INDEX on Foo (bar, baz) UNIQUE");
+    checkRightSyntax("CREATE INDEX on Foo (bar, @rid) UNIQUE");
+    checkRightSyntax("CREATE INDEX on Foo (bar by key, baz by value) UNIQUE");
+    checkRightSyntax("CREATE INDEX on Foo (bar) UNIQUE");
+    checkRightSyntax("CREATE INDEX on Foo (bar, baz) UNIQUE");
+    checkRightSyntax("CREATE INDEX on Foo (bar, baz) UNIQUE");
+    checkRightSyntax("CREATE INDEX on Foo (bar by key, baz by value) UNIQUE");
+    checkRightSyntax("CREATE INDEX IF NOT EXISTS on Foo (bar) UNIQUE");
+
+    checkWrongSyntax("CREATE INDEX `OUser.name` on Foo (bar, baz) UNIQUE");
     checkWrongSyntax("CREATE INDEX Foo");
-    checkWrongSyntax("CREATE INDEX Foo.bar on Foo (bar) wUNIQUE");
-    checkWrongSyntax("CREATE INDEX Foo.bar IF EXISTS on Foo (bar) UNIQUE");
+    checkWrongSyntax("CREATE INDEX on Foo (bar) wUNIQUE");
+    checkWrongSyntax("CREATE INDEX IF EXISTS on Foo (bar) UNIQUE");
+    checkWrongSyntax("CREATE INDEX on Foo (bar) wUNIQUE");
   }
 }

@@ -37,7 +37,7 @@ import java.util.stream.*;
 
 public class CreateIndexStatement extends DDLStatement {
 
-  protected IndexName                          name;
+  protected Identifier                         name;
   protected Identifier                         typeName;
   protected List<Property>                     propertyList = new ArrayList<Property>();
   protected Identifier                         type;
@@ -85,11 +85,15 @@ public class CreateIndexStatement extends DDLStatement {
   Object execute(final CommandContext ctx) {
     final Database database = ctx.getDatabase();
 
+    if (name == null)
+      // GENERATE THE NAME AUTOMATICALLY
+      name = new Identifier(typeName.getStringValue() + propertyList.toString());
+
     if (database.getSchema().existsIndex(name.getValue())) {
       if (ifNotExists) {
         return null;
       } else {
-        throw new CommandExecutionException("Index " + name + " already exists");
+        throw new CommandExecutionException("Index '" + name + "' already exists");
       }
     }
 
@@ -125,11 +129,10 @@ public class CreateIndexStatement extends DDLStatement {
     return total.get();
   }
 
-  /***
-   * returns the list of property names to be indexed
+  /**
+   * Returns the list of property names to be indexed.
    *
-   * @param ctx
-   * @return
+   * @return Array of property names
    */
   private String[] calculateProperties(final CommandContext ctx) {
     if (propertyList == null) {
@@ -141,7 +144,10 @@ public class CreateIndexStatement extends DDLStatement {
   @Override
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("CREATE INDEX ");
-    name.toString(params, builder);
+
+    if (name != null)
+      name.toString(params, builder);
+
     if (typeName != null) {
       builder.append(" ON ");
       typeName.toString(params, builder);

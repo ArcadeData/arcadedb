@@ -32,17 +32,15 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.EmbeddedSchema;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.logging.Level;
+import java.util.*;
+import java.util.concurrent.atomic.*;
+import java.util.logging.*;
 
 public class RebuildIndexStatement extends DDLStatement {
 
-  protected            boolean   all      = false;
-  protected            IndexName name;
-  private static final int       pageSize = LSMTreeIndexAbstract.DEF_PAGE_SIZE;
+  protected            boolean    all      = false;
+  protected            Identifier name;
+  private static final int        pageSize = LSMTreeIndexAbstract.DEF_PAGE_SIZE;
 
   public RebuildIndexStatement(int id) {
     super(id);

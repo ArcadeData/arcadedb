@@ -317,10 +317,6 @@ public class SqlParserDefaultVisitor implements SqlParserVisitor {
     return defaultVisit(node, data);
   }
 
-  public Object visit(IndexName node, Object data) {
-    return defaultVisit(node, data);
-  }
-
   public Object visit(IndexIdentifier node, Object data) {
     return defaultVisit(node, data);
   }
