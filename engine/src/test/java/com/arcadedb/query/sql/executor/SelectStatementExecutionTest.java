@@ -2149,8 +2149,8 @@ public class SelectStatementExecutionTest extends TestHelper {
 
     parentClass.createProperty("name", Type.STRING);
 
-    database.command("sql", "create index " + child1 + ".name on " + child1 + "(name) NOTUNIQUE");
-    database.command("sql", "create index " + child2 + ".name on " + child2 + "(name) NOTUNIQUE");
+    database.command("sql", "create index on " + child1 + "(name) NOTUNIQUE");
+    database.command("sql", "create index on " + child2 + "(name) NOTUNIQUE");
 //        childClass1.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name");
 //        childClass2.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "name");
 
@@ -2451,7 +2451,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.begin();
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
-    database.command("sql", "create index " + className + ".name_surname on " + className + " (name, surname) NOTUNIQUE");
+    database.command("sql", "create index on " + className + " (name, surname) NOTUNIQUE");
 
     for (int i = 0; i < 10; i++) {
       MutableDocument doc = database.newDocument(className);
@@ -2492,7 +2492,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     clazz.createProperty("surname", Type.STRING);
     database.command("sql",
 
-        "create index " + className + ".name_surname on " + className + " (name, surname) NOTUNIQUE");
+        "create index on " + className + " (name, surname) NOTUNIQUE");
 
     for (int i = 0; i < 10; i++) {
       MutableDocument doc = database.newDocument(className);
@@ -2531,7 +2531,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.begin();
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
-    database.command("sql", "create index " + className + ".name_surname on " + className + " (name, surname) NOTUNIQUE");
+    database.command("sql", "create index on " + className + " (name, surname) NOTUNIQUE");
 
     for (int i = 0; i < 10; i++) {
       MutableDocument doc = database.newDocument(className);
@@ -2570,7 +2570,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.begin();
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
-    database.command("sql", "create index " + className + ".name_surname on " + className + " (name, surname) NOTUNIQUE");
+    database.command("sql", "create index on " + className + " (name, surname) NOTUNIQUE");
 
     for (int i = 0; i < 10; i++) {
       MutableDocument doc = database.newDocument(className);
@@ -2610,7 +2610,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
     clazz.createProperty("address", Type.STRING);
-    database.command("sql", "create index " + className + ".name_surname on " + className + " (name, surname, address) NOTUNIQUE");
+    database.command("sql", "create index on " + className + " (name, surname, address) NOTUNIQUE");
 
     for (int i = 0; i < 10; i++) {
       MutableDocument doc = database.newDocument(className);
@@ -2650,7 +2650,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
     clazz.createProperty("address", Type.STRING);
-    database.command("sql", "create index " + className + ".name_surname on " + className + " (name, surname, address) NOTUNIQUE");
+    database.command("sql", "create index on " + className + " (name, surname, address) NOTUNIQUE");
 
     for (int i = 0; i < 10; i++) {
       MutableDocument doc = database.newDocument(className);
@@ -2690,7 +2690,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
     clazz.createProperty("address", Type.STRING);
-    database.command("sql", "create index " + className + ".name_surname on " + className + " (name, surname, address) NOTUNIQUE");
+    database.command("sql", "create index on " + className + " (name, surname, address) NOTUNIQUE");
 
     for (int i = 0; i < 10; i++) {
       MutableDocument doc = database.newDocument(className);
@@ -2729,7 +2729,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.begin();
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
-    database.command("sql", "create index " + className + ".name_surname on " + className + " (name, surname) NOTUNIQUE");
+    database.command("sql", "create index on " + className + " (name, surname) NOTUNIQUE");
 
     for (int i = 0; i < 10; i++) {
       MutableDocument doc = database.newDocument(className);
@@ -2767,7 +2767,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.begin();
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
-    database.command("sql", "create index " + className + ".name_surname on " + className + " (name, surname) NOTUNIQUE");
+    database.command("sql", "create index on " + className + " (name, surname) NOTUNIQUE");
 
     for (int i = 0; i < 10; i++) {
       MutableDocument doc = database.newDocument(className);
@@ -2805,7 +2805,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     DocumentType clazz = database.getSchema().createDocumentType(className);
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
-    database.command("sql", "create index " + className + ".name_surname on " + className + " (name, surname) NOTUNIQUE");
+    database.command("sql", "create index on " + className + " (name, surname) NOTUNIQUE");
 
     for (int i = 0; i < 10; i++) {
       MutableDocument doc = database.newDocument(className);
@@ -2843,7 +2843,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     DocumentType clazz = database.getSchema().createDocumentType(className);
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
-    database.command("sql", "create index " + className + ".name_surname on " + className + " (name, surname) NOTUNIQUE");
+    database.command("sql", "create index on " + className + " (name, surname) NOTUNIQUE");
 
     for (int i = 0; i < 10; i++) {
       MutableDocument doc = database.newDocument(className);
@@ -2881,7 +2881,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     DocumentType clazz = database.getSchema().createDocumentType(className);
     clazz.createProperty("name", Type.STRING);
     clazz.createProperty("surname", Type.STRING);
-    database.command("sql", "create index " + className + ".name_surname on " + className + " (name, surname) NOTUNIQUE");
+    database.command("sql", "create index on " + className + " (name, surname) NOTUNIQUE");
 
     for (int i = 0; i < 10; i++) {
       MutableDocument doc = database.newDocument(className);
@@ -3295,7 +3295,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.command("sql", "create document type " + className).close();
     database.command("sql", "create property " + className + ".id LONG").close();
     database.command("sql", "create property " + className + ".name STRING").close();
-    database.command("sql", "create index " + className + ".id_name on " + className + "(id, name) UNIQUE").close();
+    database.command("sql", "create index on " + className + "(id, name) UNIQUE").close();
     database.command("sql", "insert into " + className + " set id = 1 , name = 'Bar'").close();
 
     database.commit();
@@ -3331,7 +3331,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.command("sql", "create document type " + className).close();
     database.begin();
     database.command("sql", "create property " + className + ".name STRING").close();
-    database.command("sql", "create index " + className + ".name ON " + className + " (name) NOTUNIQUE").close();
+    database.command("sql", "create index ON " + className + " (name) NOTUNIQUE").close();
     database.command("sql", "insert into " + className + " set name = 'Foo'").close();
     database.command("sql", "insert into " + className + " set name = 'Bar'").close();
     database.commit();
@@ -4013,7 +4013,7 @@ public class SelectStatementExecutionTest extends TestHelper {
     database.command("sql", "create Vertex Type " + classNamePrefix + "Ownership  abstract;").close();
     database.command("sql", "create vertex type " + classNamePrefix + "User ;").close();
     database.command("sql", "create property " + classNamePrefix + "User.id String;").close();
-    database.command("sql", "create index " + classNamePrefix + "User.id ON " + classNamePrefix + "User(id) unique;").close();
+    database.command("sql", "create index ON " + classNamePrefix + "User(id) unique;").close();
     database.command("sql", "create vertex type " + classNamePrefix + "Report extends " + classNamePrefix + "Ownership;").close();
     database.command("sql", "create property " + classNamePrefix + "Report.id String;").close();
     database.command("sql", "create property " + classNamePrefix + "Report.label String;").close();
@@ -4040,7 +4040,7 @@ public class SelectStatementExecutionTest extends TestHelper {
       Assertions.assertFalse(rs.hasNext());
     }
 
-    database.command("sql", "create index " + classNamePrefix + "Report.id ON " + classNamePrefix + "Report(id) unique;").close();
+    database.command("sql", "create index ON " + classNamePrefix + "Report(id) unique;").close();
 
     try (ResultSet rs = database.query("sql",
         "select from " + classNamePrefix + "Report where id in (select out('" + classNamePrefix + "hasOwnership').id from " + classNamePrefix

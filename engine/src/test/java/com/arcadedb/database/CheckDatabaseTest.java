@@ -302,7 +302,7 @@ public class CheckDatabaseTest extends TestHelper {
   protected void beginTest() {
     database.command("sql", "create vertex type Person");
     database.command("sql", "create property Person.id string");
-    database.command("sql", "create index `Person[id]` on Person (id) unique");
+    database.command("sql", "create index on Person (id) unique");
     database.command("sql", "create edge type Knows");
     database.transaction(() -> {
       root = database.newVertex("Person").set("name", "root", "id", 0).save();

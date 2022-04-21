@@ -3820,34 +3820,13 @@ CreateIndexStatement CreateIndexStatement():
 {
 	<CREATE> <INDEX>
 	(
-    LOOKAHEAD(4)
     (
-      <ON>
-      jjtThis.typeName = Identifier()
-      <LPAREN>
+      LOOKAHEAD(6)
       (
-        lastIdentifier = Identifier() {
-          lastProperty = new CreateIndexStatement.Property();
-          lastProperty.name = lastIdentifier;
-          jjtThis.propertyList.add(lastProperty);
-        }
-        |
-        lastRecordAttr = RecordAttribute() {
-          lastProperty = new CreateIndexStatement.Property();
-          lastProperty.recordAttribute = lastRecordAttr;
-          jjtThis.propertyList.add(lastProperty);
-        }
-      )
-      [
-        <BY>
-        (
-          <KEY> { lastProperty.byKey = true; }
-          |
-          <VALUE> { lastProperty.byValue = true; }
-        )
-      ]
-      (
-        <COMMA>
+        [<IF> <NOT> <EXISTS> {jjtThis.ifNotExists = true;}]
+        <ON>
+        jjtThis.typeName = Identifier()
+        <LPAREN>
         (
           lastIdentifier = Identifier() {
             lastProperty = new CreateIndexStatement.Property();
@@ -3869,16 +3848,46 @@ CreateIndexStatement CreateIndexStatement():
             <VALUE> { lastProperty.byValue = true; }
           )
         ]
-      )*
-      <RPAREN>
+        (
+          <COMMA>
+          (
+            lastIdentifier = Identifier() {
+              lastProperty = new CreateIndexStatement.Property();
+              lastProperty.name = lastIdentifier;
+              jjtThis.propertyList.add(lastProperty);
+            }
+            |
+            lastRecordAttr = RecordAttribute() {
+              lastProperty = new CreateIndexStatement.Property();
+              lastProperty.recordAttribute = lastRecordAttr;
+              jjtThis.propertyList.add(lastProperty);
+            }
+          )
+          [
+            <BY>
+            (
+              <KEY> { lastProperty.byKey = true; }
+              |
+              <VALUE> { lastProperty.byValue = true; }
+            )
+          ]
+        )*
+        <RPAREN>
+      )
+      |
+      (
+        jjtThis.name = Identifier()
+      )
     )
-    |
-    jjtThis.name = Identifier()
-
-    [ <IF> <NOT> <EXISTS> {jjtThis.ifNotExists = true;} ]
-
-    jjtThis.type = Identifier()
-
+    (
+        LOOKAHEAD(4)
+        (
+            <IF> <NOT> <EXISTS> {jjtThis.ifNotExists = true;}
+            jjtThis.type = Identifier()
+        )
+        |
+        jjtThis.type = Identifier()
+    )
     (
       LOOKAHEAD(2)
       <ENGINE> jjtThis.engine = Identifier()

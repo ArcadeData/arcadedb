@@ -145,7 +145,8 @@ public class CreateIndexStatement extends DDLStatement {
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("CREATE INDEX ");
 
-    name.toString(params, builder);
+    if (name != null)
+      name.toString(params, builder);
 
     if (typeName != null) {
       builder.append(" ON ");

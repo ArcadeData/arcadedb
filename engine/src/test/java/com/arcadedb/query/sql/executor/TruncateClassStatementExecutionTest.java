@@ -104,7 +104,7 @@ public class TruncateClassStatementExecutionTest extends TestHelper {
     database.begin();
     database.command("sql", "create document type TestTruncateVertexClassSuperclassWithIndex");
     database.command("sql", "create property TestTruncateVertexClassSuperclassWithIndex.name STRING");
-    database.command("sql", "create index TestTruncateVertexClassSuperclassWithIndex_index on TestTruncateVertexClassSuperclassWithIndex (name) NOTUNIQUE");
+    database.command("sql", "create index on TestTruncateVertexClassSuperclassWithIndex (name) NOTUNIQUE");
 
     database.command("sql", "create document type TestTruncateVertexClassSubclassWithIndex extends TestTruncateVertexClassSuperclassWithIndex");
 

@@ -126,9 +126,9 @@ public class RedisWTest extends BaseGraphServerTest {
 
     database.execute("sql", "CREATE DOCUMENT TYPE Account;" +//
         "CREATE PROPERTY Account.id LONG;" +//
-        "CREATE INDEX `Account[id]` ON Account (id) UNIQUE;" +//
+        "CREATE INDEX ON Account (id) UNIQUE;" +//
         "CREATE PROPERTY Account.email STRING;" +//
-        "CREATE INDEX `Account[email]` ON Account (email) UNIQUE;");
+        "CREATE INDEX ON Account (email) UNIQUE;");
 
     // HSET
     long beginTime = System.currentTimeMillis();

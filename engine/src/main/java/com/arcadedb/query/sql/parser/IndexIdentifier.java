@@ -35,15 +35,15 @@ public class IndexIdentifier extends SimpleNode {
   protected String     indexNameString;
   protected Identifier indexName;
 
-  public IndexIdentifier(int id) {
+  public IndexIdentifier(final int id) {
     super(id);
   }
 
-  public IndexIdentifier(SqlParser p, int id) {
+  public IndexIdentifier(final SqlParser p, final int id) {
     super(p, id);
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     switch (type) {
     case INDEX:
       builder.append("INDEX");
@@ -67,9 +67,9 @@ public class IndexIdentifier extends SimpleNode {
   }
 
   public String getIndexName() {
-    if (indexName != null) {
-      return indexName.toString();
-    }
+    if (indexName != null)
+      return indexName.getStringValue();
+
     return indexNameString;
   }
 
@@ -86,13 +86,13 @@ public class IndexIdentifier extends SimpleNode {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    IndexIdentifier that = (IndexIdentifier) o;
+    final IndexIdentifier that = (IndexIdentifier) o;
 
     if (type != that.type)
       return false;
@@ -110,13 +110,13 @@ public class IndexIdentifier extends SimpleNode {
   }
 
   public Result serialize() {
-    ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal();
     result.setProperty("type", type.toString());
     result.setProperty("indexNameString", indexNameString);
 
-    if (indexName != null) {
+    if (indexName != null)
       result.setProperty("indexName", indexName.serialize());
-    }
+
     return result;
   }
 
@@ -140,6 +140,11 @@ public class IndexIdentifier extends SimpleNode {
 
   public void setIndexName(Identifier indexName) {
     this.indexName = indexName;
+  }
+
+  @Override
+  public String toString() {
+    return getIndexName();
   }
 }
 /* JavaCC - OriginalChecksum=025f134fd4b27b84210738cdb6dd027c (do not edit this line) */
