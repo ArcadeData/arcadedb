@@ -28,6 +28,7 @@ import org.apache.commons.collections.IteratorUtils;
 import org.apache.tinkerpop.gremlin.arcadedb.structure.ArcadeGraph;
 import org.json.JSONObject;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -63,8 +64,7 @@ public class CypherQueryEngineTest {
         v1.newEdge("E", v2, true);
         v1.newEdge("E", v3, true);
         try (ResultSet query = database.query("cypher",
-          "match(parent:V)-[e:E]-(child:V) where id(parent) = $p return parent as parent, collect(child) as children", "p",
-          v1.getIdentity().toString())) {
+            "match(parent:V)-[e:E]-(child:V) where id(parent) = $p return parent as parent, collect(child) as children", "p", v1.getIdentity().toString())) {
 
           // Ensure that the result (set) has the desired format
           List<Result> results = IteratorUtils.toList(query, 1);
@@ -84,14 +84,38 @@ public class CypherQueryEngineTest {
 
           // Transform rid from result to string as in vertex
           List<Result> childrenAsResult = result.getProperty("children");
-          List<Map<String, Object>> children = childrenAsResult.stream()
-            .map(Result::toMap)
-            .collect(Collectors.toList());
+          List<Map<String, Object>> children = childrenAsResult.stream().map(Result::toMap).collect(Collectors.toList());
           children.forEach(c -> c.computeIfPresent("@rid", (k, v) -> Objects.toString(v)));
-          List<Map<String, Object>> childVertices = Stream.of(v2, v3)
-            .map(MutableVertex::toJSON)
-            .map(JSONObject::toMap).collect(Collectors.toList());
+          List<Map<String, Object>> childVertices = Stream.of(v2, v3).map(MutableVertex::toJSON).map(JSONObject::toMap).collect(Collectors.toList());
           assertThat(children, containsInAnyOrder(childVertices.toArray()));
+        }
+
+      });
+    } finally {
+      graph.drop();
+    }
+  }
+
+  /**
+   * Discussion https://github.com/ArcadeData/arcadedb/discussions/369#discussioncomment-2591395
+   */
+  @Test
+  public void returnPath() {
+    final ArcadeGraph graph = ArcadeGraph.open(DB_PATH);
+    try (Database database = graph.getDatabase()) {
+      database.transaction(() -> {
+        database.command("cypher", "CREATE (n:Transaction {id:'T1'}) RETURN n");
+        database.command("cypher", "CREATE (n:City {id:'C1'}) RETURN n");
+        database.command("cypher", "MATCH (t:Transaction), (c:City) WHERE t.id = 'T1' AND c.id = 'C1' CREATE path = (t)-[r:IS_IN]->(c) RETURN type(r)");
+
+        try (ResultSet query = database.query("cypher", "MATCH path = (t:City{id:'C1'})-[r]-(c:Transaction{id:'T1'}) RETURN path")) {
+          Assertions.assertTrue(query.hasNext());
+          Result r1 = query.next();
+          Assertions.assertTrue(query.hasNext());
+          Result r2 = query.next();
+          Assertions.assertTrue(query.hasNext());
+          Result r3 = query.next();
+          Assertions.assertFalse(query.hasNext());
         }
 
       });

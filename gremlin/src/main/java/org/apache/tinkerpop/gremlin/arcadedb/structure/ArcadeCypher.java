@@ -22,7 +22,6 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.gremlin.query.CypherQueryEngine;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.opencypher.gremlin.translation.TranslationFacade;
 
@@ -71,11 +70,9 @@ public class ArcadeCypher extends ArcadeGremlin {
         Map<String, Object> map = next.toMap();
         Object nextValue = map.values().iterator().next();
         if (map.size() == 1 && nextValue instanceof Map) {
-          Map<String, Object> transformed = CypherQueryEngine.transformMap((Map<?, ?>) nextValue);
-          result.add(new ResultInternal(transformed));
+          result.addAll(CypherQueryEngine.transformMap((Map<?, ?>) nextValue));
         } else {
-          Map<String, Object> transformed = CypherQueryEngine.transformMap(map);
-          result.add(new ResultInternal(transformed));
+          result.addAll(CypherQueryEngine.transformMap(map));
         }
       }
     }
@@ -128,7 +125,7 @@ public class ArcadeCypher extends ArcadeGremlin {
       final String mapKey = graph.getDatabase().getDatabasePath() + ":";
 
       // REMOVE ALL THE ENTRIES RELATIVE TO THE CLOSED DATABASE
-        STATEMENT_CACHE.entrySet().removeIf(stringCachedStatementEntry -> stringCachedStatementEntry.getKey().startsWith(mapKey));
+      STATEMENT_CACHE.entrySet().removeIf(stringCachedStatementEntry -> stringCachedStatementEntry.getKey().startsWith(mapKey));
     }
   }
 }

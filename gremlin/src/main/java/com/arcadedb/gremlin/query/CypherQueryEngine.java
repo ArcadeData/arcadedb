@@ -73,9 +73,12 @@ public class CypherQueryEngine implements QueryEngine {
     }
   }
 
-  public static Object transformValue(Object value) {
+  public static Object transformValue(final Object value) {
     if (value instanceof Map) {
-      return new ResultInternal(transformMap((Map<?, ?>) value));
+      final List<ResultInternal> list = transformMap((Map<?, ?>) value);
+      if (list.size() == 1)
+        return list.get(0);
+      return list;
     } else if (value instanceof List) {
       List<?> listValue = (List<?>) value;
       List<Object> transformed = listValue.stream().map(CypherQueryEngine::transformValue).collect(Collectors.toList());
@@ -84,17 +87,36 @@ public class CypherQueryEngine implements QueryEngine {
     return value;
   }
 
-  public static Map<String, Object> transformMap(Map<? extends Object, ? extends Object> map) {
+  public static List<ResultInternal> transformMap(Map<? extends Object, ? extends Object> map) {
+
+    final List<ResultInternal> result = new ArrayList<>();
 
     final Map<String, Object> mapStringObject = new HashMap<>(map.size());
-    Map<Object, Object> internal = new HashMap<>(map);
     if (map.containsKey("  cypher.element")) {
-      mapStringObject.put("@in", map.get("  cypher.inv"));
-      mapStringObject.put("@out", map.get("  cypher.outv"));
-      internal = (Map) map.get("  cypher.element");
-    }
+      final Object in = map.get("  cypher.inv");
+      if (in != null)
+        mapStringObject.put("@in", in);
 
-    for (Map.Entry<Object, Object> entry : internal.entrySet()) {
+      final Object out = map.get("  cypher.outv");
+      if (out != null)
+        mapStringObject.put("@out", out);
+
+      final Object element = map.get("  cypher.element");
+      if (element instanceof Map)
+        result.add(cypherObjectToResult(mapStringObject, (Map) element));
+      else if (element instanceof List) {
+        final List<Map> list = (List<Map>) element;
+        for (Map mapEntry : list)
+          result.add(cypherObjectToResult(new HashMap<>(), mapEntry));
+      }
+    } else
+      result.add(cypherObjectToResult(mapStringObject, new HashMap<>(map)));
+
+    return result;
+  }
+
+  private static ResultInternal cypherObjectToResult(final Map<String, Object> mapStringObject, final Map<Object, Object> internalMap) {
+    for (Map.Entry<Object, Object> entry : internalMap.entrySet()) {
       Object mapKey = entry.getKey();
       Object mapValue = entry.getValue();
 
@@ -113,7 +135,8 @@ public class CypherQueryEngine implements QueryEngine {
       }
       mapStringObject.put(mapKey.toString(), mapValue);
     }
-    return mapStringObject;
+
+    return new ResultInternal(mapStringObject);
   }
 
   @Override

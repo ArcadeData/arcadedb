@@ -68,6 +68,10 @@ public class InternalResultSet implements ResultSet {
     content.add(nextResult);
   }
 
+  public void addAll(final List<ResultInternal> list) {
+    content.addAll(list);
+  }
+
   public void reset() {
     this.next = 0;
   }
