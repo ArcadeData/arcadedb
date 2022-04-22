@@ -97,7 +97,7 @@ public class CypherQueryEngineTest {
   }
 
   /**
-   * Discussion https://github.com/ArcadeData/arcadedb/discussions/369#discussioncomment-2591395
+   * Issue https://github.com/ArcadeData/arcadedb/issues/383
    */
   @Test
   public void returnPath() {
@@ -116,6 +116,34 @@ public class CypherQueryEngineTest {
           Assertions.assertTrue(query.hasNext());
           Result r3 = query.next();
           Assertions.assertFalse(query.hasNext());
+        }
+
+      });
+    } finally {
+      graph.drop();
+    }
+  }
+
+  /**
+   * Test inheritance in Cypher (and therefore in Gremlin). Issue https://github.com/ArcadeData/arcadedb/issues/384.
+   */
+  @Test
+  public void inheritance() {
+    final ArcadeGraph graph = ArcadeGraph.open(DB_PATH);
+    try (Database database = graph.getDatabase()) {
+      database.transaction(() -> {
+        database.command("sql", "CREATE VERTEX TYPE Node");
+        database.command("sql", "CREATE VERTEX TYPE Transaction EXTENDS Node");
+        database.command("sql", "INSERT INTO Transaction set id = 'A'");
+
+        try (ResultSet query = database.query("cypher", "MATCH (n:Transaction) WHERE n.id = 'A' RETURN n")) {
+          Assertions.assertTrue(query.hasNext());
+          Result r1 = query.next();
+        }
+
+        try (ResultSet query = database.query("cypher", "MATCH (n:Node) WHERE n.id = 'A' RETURN n")) {
+          Assertions.assertTrue(query.hasNext());
+          Result r1 = query.next();
         }
 
       });

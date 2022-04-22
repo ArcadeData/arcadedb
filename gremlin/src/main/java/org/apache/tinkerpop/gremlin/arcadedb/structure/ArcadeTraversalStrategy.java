@@ -70,8 +70,10 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
               if (totalLabels > 1)
                 break;
 
-              if (c.getBiPredicate().equals(Compare.eq) && c.getValue() != null)
+              if (c.getBiPredicate().equals(Compare.eq) && c.getValue() != null) {
                 typeNameToMatch = c.getValue().toString();
+                ((HasStep<?>) step).removeHasContainer(c);
+              }
             }
           }
 
