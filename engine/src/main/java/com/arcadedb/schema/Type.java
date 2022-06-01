@@ -77,7 +77,7 @@ public enum Type {
   private static final Type[] TYPES = new Type[] { LIST, MAP, LINK, STRING, DATETIME };
 
   private static final Type[]              TYPES_BY_ID       = new Type[17];
-  // Values previosly stored in javaTypes
+  // Values previously stored in javaTypes
   private static final Map<Class<?>, Type> TYPES_BY_USERTYPE = new HashMap<Class<?>, Type>();
 
   static {
