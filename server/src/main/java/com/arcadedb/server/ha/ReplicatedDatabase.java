@@ -726,7 +726,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   /**
-   * Aligns the database against all the replicas. This fixes any replication problem occured by overwriting the database content of replicas. This process
+   * Aligns the database against all the replicas. This fixes any replication problem occurred by overwriting the database content of replicas. This process
    * first calculates the checksum of every files in the database. Then sends the checksums to the replicas, waiting for a response from each of them about
    * which files differ. In case one or more files differ, a page by page CRC is calculated and sent to the replica. The replica responds with the page id
    * of the page that differs, so the leader will send only the pages that differ to the replica to be overwritten.
