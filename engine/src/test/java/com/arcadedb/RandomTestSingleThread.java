@@ -81,7 +81,7 @@ public class RandomTestSingleThread extends TestHelper {
             Thread.sleep(rnd.nextInt(100));
             break;
           case 5:
-            LogManager.instance().log(this, Level.INFO, "Comitting...");
+            LogManager.instance().log(this, Level.INFO, "Committing...");
             database.commit();
             database.begin();
             break;
