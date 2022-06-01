@@ -49,7 +49,7 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
   protected String[]            paramVertexAxisNames        = new String[] {};
   protected Vertex              paramSourceVertex;
   protected Vertex              paramDestinationVertex;
-  protected SQLHeuristicFormula paramHeuristicFormula       = SQLHeuristicFormula.MANHATAN;
+  protected SQLHeuristicFormula paramHeuristicFormula       = SQLHeuristicFormula.MANHATTAN;
   protected Vertex.DIRECTION    paramDirection              = Vertex.DIRECTION.OUT;
   protected long                paramMaxDepth               = Long.MAX_VALUE;
   protected double              paramDFactor                = 1.0;
@@ -107,7 +107,7 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
   }
 
   // obtains from http://theory.stanford.edu/~amitp/GameProgramming/Heuristics.html
-  protected double getManhatanHeuristicCost(double x, double y, double gx, double gy, double dFactor) {
+  protected double getManhattanHeuristicCost(double x, double y, double gx, double gy, double dFactor) {
     double dx = Math.abs(x - gx);
     double dy = Math.abs(y - gy);
     return dFactor * (dx + dy);
@@ -164,7 +164,7 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
     return heuristic;
   }
 
-  protected double getManhatanHeuristicCost(final String[] axisNames, final Map<String, Double> slist, final Map<String, Double> clist,
+  protected double getManhattanHeuristicCost(final String[] axisNames, final Map<String, Double> slist, final Map<String, Double> clist,
       final Map<String, Double> plist, final Map<String, Double> glist, long depth, double dFactor) {
     double heuristic;
     double res = 0.0;

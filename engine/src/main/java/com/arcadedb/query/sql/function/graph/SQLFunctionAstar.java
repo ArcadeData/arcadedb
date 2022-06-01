@@ -246,7 +246,7 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
       if (mapParams.get(SQLFunctionAstar.PARAM_HEURISTIC_FORMULA) != null) {
         if (mapParams.get(SQLFunctionAstar.PARAM_HEURISTIC_FORMULA) instanceof String) {
           ctx.paramHeuristicFormula = SQLHeuristicFormula.valueOf(
-              stringOrDefault(mapParams.get(SQLFunctionAstar.PARAM_HEURISTIC_FORMULA), "MANHATAN").toUpperCase(Locale.ENGLISH));
+              stringOrDefault(mapParams.get(SQLFunctionAstar.PARAM_HEURISTIC_FORMULA), "MANHATTAN").toUpperCase(Locale.ENGLISH));
         } else {
           ctx.paramHeuristicFormula = (SQLHeuristicFormula) mapParams.get(SQLFunctionAstar.PARAM_HEURISTIC_FORMULA);
         }
@@ -329,8 +329,8 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
       double gy = doubleOrDefault(target.get(paramVertexAxisNames[1]), 0);
 
       switch (paramHeuristicFormula) {
-      case MANHATAN:
-        hresult = getManhatanHeuristicCost(nx, ny, gx, gy, paramDFactor);
+      case MANHATTAN:
+        hresult = getManhattanHeuristicCost(nx, ny, gx, gy, paramDFactor);
         break;
       case MAXAXIS:
         hresult = getMaxAxisHeuristicCost(nx, ny, gx, gy, paramDFactor);
@@ -370,8 +370,8 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
           pList.put(paramVertexAxisNames[i], p);
       }
       switch (paramHeuristicFormula) {
-      case MANHATAN:
-        hresult = getManhatanHeuristicCost(paramVertexAxisNames, sList, cList, pList, gList, currentDepth, paramDFactor);
+      case MANHATTAN:
+        hresult = getManhattanHeuristicCost(paramVertexAxisNames, sList, cList, pList, gList, currentDepth, paramDFactor);
         break;
       case MAXAXIS:
         hresult = getMaxAxisHeuristicCost(paramVertexAxisNames, sList, cList, pList, gList, currentDepth, paramDFactor);

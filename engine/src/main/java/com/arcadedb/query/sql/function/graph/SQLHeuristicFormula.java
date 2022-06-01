@@ -24,5 +24,5 @@ package com.arcadedb.query.sql.function.graph;
  * @author Saeed Tabrizi (saeed a_t  nowcando.com)
  */
 public enum SQLHeuristicFormula {
-  MANHATAN, MAXAXIS, DIAGONAL, EUCLIDEAN, EUCLIDEANNOSQR
+  MANHATTAN, MAXAXIS, DIAGONAL, EUCLIDEAN, EUCLIDEANNOSQR
 }
