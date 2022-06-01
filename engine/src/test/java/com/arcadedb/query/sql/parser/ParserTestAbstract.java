@@ -59,9 +59,9 @@ public abstract class ParserTestAbstract {
         //        System.out.println(query);
         //        if (result != null) {
         //          System.out.println("->");
-        //          StringBuilder builer = new StringBuilder();
-        //          result.toString(null, builer);
-        //          System.out.println(builer.toString());
+        //          StringBuilder builder = new StringBuilder();
+        //          result.toString(null, builder);
+        //          System.out.println(builder.toString());
         //          System.out.println("............");
         //        }
 
@@ -87,9 +87,9 @@ public abstract class ParserTestAbstract {
         //        System.out.println(query);
         //        if (result != null) {
         //          System.out.println("->");
-        //          StringBuilder builer = new StringBuilder();
-        //          result.toString(null, builer);
-        //          System.out.println(builer.toString());
+        //          StringBuilder builder = new StringBuilder();
+        //          result.toString(null, builder);
+        //          System.out.println(builder.toString());
         //          System.out.println("............");
         //        }
 
