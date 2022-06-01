@@ -41,9 +41,9 @@ public class FetchFromIndexValuesStep extends FetchFromIndexStep {
   @Override
   public String prettyPrint(int depth, int indent) {
     if (isOrderAsc()) {
-      return ExecutionStepInternal.getIndent(depth, indent) + "+ FETCH FROM INDEX VAUES ASC " + index.getName();
+      return ExecutionStepInternal.getIndent(depth, indent) + "+ FETCH FROM INDEX VALUES ASC " + index.getName();
     } else {
-      return ExecutionStepInternal.getIndent(depth, indent) + "+ FETCH FROM INDEX VAUES DESC " + index.getName();
+      return ExecutionStepInternal.getIndent(depth, indent) + "+ FETCH FROM INDEX VALUES DESC " + index.getName();
     }
   }
 
