@@ -82,8 +82,8 @@ public class CheckClassTypeStep extends AbstractExecutionStep {
       if (parentClazz.equals(targetClazz)) {
         found = true;
       } else {
-        for (DocumentType sublcass : parentClazz.getSubTypes()) {
-          if (sublcass.equals(targetClazz)) {
+        for (DocumentType subclass : parentClazz.getSubTypes()) {
+          if (subclass.equals(targetClazz)) {
             this.found = true;
             break;
           }
