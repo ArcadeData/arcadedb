@@ -404,12 +404,12 @@ public interface Database extends AutoCloseable {
   ResultSet execute(String language, String script, Map<String, Object> args);
 
   /**
-   * Executes an operaton in database read (shared) lock.
+   * Executes an operation in database read (shared) lock.
    */
   <RET extends Object> RET executeInReadLock(Callable<RET> callable);
 
   /**
-   * Executes an operaton in database write (exclusive) lock.
+   * Executes an operation in database write (exclusive) lock.
    */
   <RET extends Object> RET executeInWriteLock(Callable<RET> callable);
 
