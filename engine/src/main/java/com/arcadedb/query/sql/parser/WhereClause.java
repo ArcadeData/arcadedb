@@ -184,7 +184,7 @@ public class WhereClause extends SimpleNode {
     if (flattened == null) {
       flattened = this.baseExpression.flatten();
     }
-    // TODO remove false conditions (contraddictions)
+    // TODO remove false conditions (contradictions)
     return flattened;
 
   }
