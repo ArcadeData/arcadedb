@@ -649,7 +649,7 @@ public class SelectExecutionPlanner {
     if (info.whereClause != null) {
       info.flattenedWhereClause = info.whereClause.flatten();
       //this helps index optimization
-      info.flattenedWhereClause = moveFlattededEqualitiesLeft(info.flattenedWhereClause);
+      info.flattenedWhereClause = moveFlattenedEqualitiesLeft(info.flattenedWhereClause);
     }
 
     splitProjectionsForGroupBy(info);
@@ -682,7 +682,7 @@ public class SelectExecutionPlanner {
    *
    * @return
    */
-  private static List<AndBlock> moveFlattededEqualitiesLeft(List<AndBlock> flattenedWhereClause) {
+  private static List<AndBlock> moveFlattenedEqualitiesLeft(List<AndBlock> flattenedWhereClause) {
     if (flattenedWhereClause == null) {
       return null;
     }
