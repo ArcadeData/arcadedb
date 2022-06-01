@@ -340,7 +340,7 @@ public enum Type {
         else if (iValue instanceof String)
           return ((String) iValue).isEmpty() ? 0d : Double.parseDouble((String) iValue);
         else if (iValue instanceof Float)
-          // THIS IS NECESSARY DUE TO A BUG/STRANGE BEHAVIOR OF JAVA BY LOSSING PRECISION
+          // THIS IS NECESSARY DUE TO A BUG/STRANGE BEHAVIOR OF JAVA BY LOSING PRECISION
           return Double.parseDouble(iValue.toString());
         else
           return ((Number) iValue).doubleValue();
