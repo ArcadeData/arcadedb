@@ -151,7 +151,7 @@ public class TraverseExecutionPlanner {
       List<Rid> rids = new ArrayList<>();
       for (Object x : (Iterable) paramValue) {
         if (!(x instanceof Identifiable)) {
-          throw new CommandExecutionException("Cannot use colleciton as target: " + paramValue);
+          throw new CommandExecutionException("Cannot use collection as target: " + paramValue);
         }
         RID orid = ((Identifiable) x).getIdentity();
 
