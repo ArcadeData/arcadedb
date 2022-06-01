@@ -3857,12 +3857,12 @@ public class SelectStatementExecutionTest extends TestHelper {
 //    @Test
 //    public void testTimeout() {
 //        String className = "testTimeout";
-//        final String funcitonName = getClass().getSimpleName() + "_sleep";
+//        final String functionName = getClass().getSimpleName() + "_sleep";
 //        database.getSchema().createDocumentType(className);
 //
 //        SQLEngine.getInstance()
 //                .registerFunction(
-//                        funcitonName,
+//                        functionName,
 //                        new SQLFunction() {
 //
 //                            @Override
@@ -3894,7 +3894,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 //
 //                            @Override
 //                            public String getName() {
-//                                return funcitonName;
+//                                return functionName;
 //                            }
 //
 //                            @Override
@@ -3937,7 +3937,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 //            doc.save();
 //        }
 //        try (ResultSet result =
-//                     database.query("sql", "select " + funcitonName + "(), * from " + className + " timeout 1")) {
+//                     database.query("sql", "select " + functionName + "(), * from " + className + " timeout 1")) {
 //            while (result.hasNext()) {
 //                result.next();
 //            }
@@ -3947,7 +3947,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 //        }
 //
 //        try (ResultSet result =
-//                     database.query("sql", "select " + funcitonName + "(), * from " + className + " timeout 100")) {
+//                     database.query("sql", "select " + functionName + "(), * from " + className + " timeout 100")) {
 //            while (result.hasNext()) {
 //                result.next();
 //            }
