@@ -24,7 +24,7 @@ import com.arcadedb.exception.TimeoutException;
  * Created by luigidellaquila on 22/07/16.
  */
 public class SubQueryStep extends AbstractExecutionStep {
-  private final InternalExecutionPlan subExecuitonPlan;
+  private final InternalExecutionPlan subExecutionPlan;
 
   /**
    * executes a sub-query
@@ -36,13 +36,13 @@ public class SubQueryStep extends AbstractExecutionStep {
   public SubQueryStep(InternalExecutionPlan subExecutionPlan, CommandContext ctx, CommandContext subCtx,
       boolean profilingEnabled) {
     super(ctx, profilingEnabled);
-    this.subExecuitonPlan = subExecutionPlan;
+    this.subExecutionPlan = subExecutionPlan;
   }
 
   @Override
   public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
     getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
-    return subExecuitonPlan.fetchNext(nRecords);
+    return subExecutionPlan.fetchNext(nRecords);
   }
 
   @Override
@@ -51,7 +51,7 @@ public class SubQueryStep extends AbstractExecutionStep {
     String ind = ExecutionStepInternal.getIndent(depth, indent);
     builder.append(ind);
     builder.append("+ FETCH FROM SUBQUERY \n");
-    builder.append(subExecuitonPlan.prettyPrint(depth + 1, indent));
+    builder.append(subExecutionPlan.prettyPrint(depth + 1, indent));
     return builder.toString();
   }
 }

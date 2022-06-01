@@ -35,8 +35,8 @@ import java.util.*;
 
 import static org.junit.jupiter.api.Assertions.fail;
 
-public class MatchStatementExecutioTest extends TestHelper {
-  public MatchStatementExecutioTest() {
+public class MatchStatementExecutionTest extends TestHelper {
+  public MatchStatementExecutionTest() {
     autoStartTx = true;
   }
 

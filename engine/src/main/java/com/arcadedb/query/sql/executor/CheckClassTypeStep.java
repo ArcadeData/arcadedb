@@ -47,7 +47,7 @@ public class CheckClassTypeStep extends AbstractExecutionStep {
   /**
    * @param targetClass      a class to be checked
    * @param parentClass      a class that is supposed to be the same or a parent class of the target class
-   * @param ctx              execuiton context
+   * @param ctx              execution context
    * @param profilingEnabled true to collect execution stats
    */
   public CheckClassTypeStep(String targetClass, String parentClass, CommandContext ctx, boolean profilingEnabled) {

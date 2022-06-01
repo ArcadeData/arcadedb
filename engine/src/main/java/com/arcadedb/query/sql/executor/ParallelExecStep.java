@@ -34,9 +34,9 @@ public class ParallelExecStep extends AbstractExecutionStep {
   int current = 0;
   private ResultSet currentResultSet = null;
 
-  public ParallelExecStep(List<InternalExecutionPlan> subExecuitonPlans, CommandContext ctx, boolean profilingEnabled) {
+  public ParallelExecStep(List<InternalExecutionPlan> subExecutionPlans, CommandContext ctx, boolean profilingEnabled) {
     super(ctx, profilingEnabled);
-    this.subExecutionPlans = subExecuitonPlans;
+    this.subExecutionPlans = subExecutionPlans;
   }
 
   @Override

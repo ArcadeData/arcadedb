@@ -82,7 +82,7 @@ public class UpdateExecutionPlanner {
    * add a step that transforms a normal OResult in a specific object that under setProperty() updates the actual PIdentifiable
    *
    * @param plan the execution plan
-   * @param ctx  the executino context
+   * @param ctx  the execution context
    */
   private void convertToModifiableResult(UpdateExecutionPlan plan, CommandContext ctx, boolean profilingEnabled) {
     plan.chain(new ConvertToUpdatableResultStep(ctx, profilingEnabled));
