@@ -80,9 +80,9 @@ public class ArrayConcatExpression extends SimpleNode {
     }
 
     if (MultiValue.isMultiValue(right)) {
-      Iterator<Object> rigthIter = MultiValue.getMultiValueIterator(right);
-      while (rigthIter.hasNext()) {
-        result.add(rigthIter.next());
+      Iterator<Object> rightIter = MultiValue.getMultiValueIterator(right);
+      while (rightIter.hasNext()) {
+        result.add(rightIter.next());
       }
     } else {
       result.add(right);
