@@ -332,7 +332,7 @@ public interface DatabaseAsyncExecutor {
 
   /**
    * Sets the amount of operations contained in a batch to be automatically committed when the batch is full. The default value is defined in
-   * {@link com.arcadedb.GlobalConfiguration#ASYNC_TX_BATCH_SIZE}. If tje size of the batch of operations is 0, then no automatic commit is performed.
+   * {@link com.arcadedb.GlobalConfiguration#ASYNC_TX_BATCH_SIZE}. If the size of the batch of operations is 0, then no automatic commit is performed.
    *
    * @param commitEvery Number of operations in a batch
    *
