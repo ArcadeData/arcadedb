@@ -174,7 +174,7 @@ public class FunctionCall extends SimpleNode {
    * @param operator   operator at the right of the function
    * @param rightValue value to compare to funciton result
    *
-   * @return the approximate number of items returned by the condition execution, -1 if the extimation cannot be executed
+   * @return the approximate number of items returned by the condition execution, -1 if the estimation cannot be executed
    */
   public long estimateIndexedFunction(FromClause target, CommandContext ctx, BinaryCompareOperator operator, Object rightValue) {
     SQLFunction function = SQLEngine.getInstance().getFunction(name.getStringValue());
