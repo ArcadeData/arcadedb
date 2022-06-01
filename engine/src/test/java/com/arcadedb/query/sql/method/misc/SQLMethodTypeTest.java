@@ -41,7 +41,7 @@ class SQLMethodTypeTest {
     }
 
     @Test
-    void testUnknonwTypesReturnedAsNull() {
+    void testUnknownTypesReturnedAsNull() {
         Object result = method.execute(null, null, null, new SQLMethodType(), null);
         assertThat(result).isNull();
     }
