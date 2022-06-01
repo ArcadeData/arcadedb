@@ -104,14 +104,14 @@ public class MutableEdge extends MutableDocument implements Edge {
   @Override
   public  synchronized MutableEdge set(final Object... properties) {
     super.set(properties);
-    checkForUpgradeLightWeigth();
+    checkForUpgradeLightWeight();
     return this;
   }
 
   @Override
   public synchronized  MutableEdge set(final String name, final Object value) {
     super.set(name, value);
-    checkForUpgradeLightWeigth();
+    checkForUpgradeLightWeight();
     return this;
   }
 
@@ -180,7 +180,7 @@ public class MutableEdge extends MutableDocument implements Edge {
     }
   }
 
-  private void checkForUpgradeLightWeigth() {
+  private void checkForUpgradeLightWeight() {
     if (rid != null && rid.getPosition() < 0) {
       // REMOVE THE TEMPORARY RID SO IT WILL BE CREATED AT SAVE TIME
       rid = null;
