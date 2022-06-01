@@ -62,12 +62,12 @@ public interface SQLMethod extends Comparable<SQLMethod> {
     String getSyntax();
 
     /**
-     * @return minimum number of arguments requiered by this method
+     * @return minimum number of arguments required by this method
      */
     int getMinParams();
 
     /**
-     * @return maximum number of arguments requiered by this method
+     * @return maximum number of arguments required by this method
      */
     int getMaxParams();
 
