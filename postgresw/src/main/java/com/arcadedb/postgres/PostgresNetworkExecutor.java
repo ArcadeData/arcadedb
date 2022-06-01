@@ -859,7 +859,7 @@ public class PostgresNetworkExecutor extends Thread {
             LogManager.instance().log(this, Level.INFO, "Canceling session " + pid);
             session.getSecond().close();
           } else
-            LogManager.instance().log(this, Level.INFO, "Blocked unhautorized canceling session " + pid);
+            LogManager.instance().log(this, Level.INFO, "Blocked unauthorized canceling session " + pid);
         } else
           LogManager.instance().log(this, Level.INFO, "Session " + pid + " not found");
 
