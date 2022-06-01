@@ -48,11 +48,11 @@ public class GroupByExecutionTest extends TestHelper {
       }
     }
 
-    final ResultSet result = database.query("sql", "select address, count(*) as occurrencies from InputTx where address is not null group by address limit 10");
+    final ResultSet result = database.query("sql", "select address, count(*) as occurrences from InputTx where address is not null group by address limit 10");
     while (result.hasNext()) {
       final Result row = result.next();
       Assertions.assertNotNull(row.getProperty("address"));
-      Assertions.assertNotNull(row.getProperty("occurrencies"));
+      Assertions.assertNotNull(row.getProperty("occurrences"));
     }
     result.close();
   }
