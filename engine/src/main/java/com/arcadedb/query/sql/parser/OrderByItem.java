@@ -133,7 +133,7 @@ public class OrderByItem {
       try {
         result = BinaryComparator.compareTo(aVal, bVal);
       } catch (Exception e) {
-        LogManager.instance().log(this, Level.SEVERE, "Error during comparision", e);
+        LogManager.instance().log(this, Level.SEVERE, "Error during comparison", e);
         result = 0;
       }
     }
