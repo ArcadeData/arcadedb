@@ -617,8 +617,8 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testAggretateMixedWithNonAggregate() {
-    String className = "testAggretateMixedWithNonAggregate";
+  public void testAggregateMixedWithNonAggregate() {
+    String className = "testAggregateMixedWithNonAggregate";
     database.getSchema().createDocumentType(className);
 
     try {
@@ -632,8 +632,8 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testAggretateMixedWithNonAggregateInCollection() {
-    String className = "testAggretateMixedWithNonAggregateInCollection";
+  public void testAggregateMixedWithNonAggregateInCollection() {
+    String className = "testAggregateMixedWithNonAggregateInCollection";
     database.getSchema().createDocumentType(className);
 
     try {
@@ -647,8 +647,8 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testAggretateInCollection() {
-    String className = "testAggretateInCollection";
+  public void testAggregateInCollection() {
+    String className = "testAggregateInCollection";
     database.getSchema().createDocumentType(className);
 
     try {
@@ -662,8 +662,8 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testAggretateMixedWithNonAggregateConstants() {
-    String className = "testAggretateMixedWithNonAggregateConstants";
+  public void testAggregateMixedWithNonAggregateConstants() {
+    String className = "testAggregateMixedWithNonAggregateConstants";
     database.getSchema().createDocumentType(className);
 
     try {
