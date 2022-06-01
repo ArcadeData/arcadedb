@@ -61,7 +61,7 @@ class MultiValueTest {
     void testMultivaluesSize() {
 
         assertThat(MultiValue.getSize(null)).isEqualTo(0);
-        assertThat(MultiValue.getSize("sinlgle")).isEqualTo(0);
+        assertThat(MultiValue.getSize("single")).isEqualTo(0);
         assertThat(MultiValue.getSize(Map.of("key","value"))).isEqualTo(1);
         assertThat(MultiValue.getSize(List.of("one"))).isEqualTo(1);
         assertThat(MultiValue.getSize(Set.of("one","two"))).isEqualTo(2);
