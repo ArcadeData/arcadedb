@@ -258,8 +258,8 @@ public class SelectExecutionPlanner {
       return;
     }
 
-//    Set<String> serversWithAllTheClusers = getServersThatHasAllClusters(clusterMap, queryClusters);
-//    if (serversWithAllTheClusers.isEmpty()) {
+//    Set<String> serversWithAllTheClusters = getServersThatHasAllClusters(clusterMap, queryClusters);
+//    if (serversWithAllTheClusters.isEmpty()) {
     // sharded query
     Map<String, Set<String>> minimalSetOfNodes = getMinimalSetOfNodesForShardedQuery(LOCAL_NODE_NAME, clusterMap, queryClusters);
     if (minimalSetOfNodes == null) {
@@ -271,9 +271,9 @@ public class SelectExecutionPlanner {
     }
 //    } else {
 //      // all on a node
-//      String targetNode = serversWithAllTheClusers.contains(db.getLocalNodeName()) ?
+//      String targetNode = serversWithAllTheClusters.contains(db.getLocalNodeName()) ?
 //          db.getLocalNodeName() :
-//          serversWithAllTheClusers.iterator().next();
+//          serversWithAllTheClusters.iterator().next();
 //      info.serverToClusters = new HashMap<>();
 //      info.serverToClusters.put(targetNode, queryClusters);
 //    }
