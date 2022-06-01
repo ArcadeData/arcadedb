@@ -115,7 +115,7 @@ public interface GraphQLParserConstants {
   /** RegularExpression Id. */
   int LETTER = 46;
   /** RegularExpression Id. */
-  int EXPONENT_IDENFITIER = 47;
+  int EXPONENT_IDENTIFIER = 47;
   /** RegularExpression Id. */
   int INTEGER_PART = 48;
   /** RegularExpression Id. */
@@ -183,7 +183,7 @@ public interface GraphQLParserConstants {
     "<LINE_TERMINATOR>",
     "<WHITESPACE>",
     "<LETTER>",
-    "<EXPONENT_IDENFITIER>",
+    "<EXPONENT_IDENTIFIER>",
     "<INTEGER_PART>",
     "<FRACTIONAL_PART>",
     "<EXPONENT_PART>",

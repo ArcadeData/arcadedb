@@ -121,10 +121,10 @@ TOKEN: {
       < #LINE_TERMINATOR        : ( ["\n", "\r", "\u2028", "\u2029"] ) >
     | < #WHITESPACE             : ["\t", "\u000b", "\f", "\u0020", "\u00a0"] >
     | < #LETTER                 : ["\t", "\r", "\n", "\u0020"-"\uffff"] >
-    | < #EXPONENT_IDENFITIER    : "e" | "E" >
+    | < #EXPONENT_IDENTIFIER    : "e" | "E" >
     | < #INTEGER_PART           : "0" | <NON_ZERO_DIGIT> (<DIGIT>)* >
     | < #FRACTIONAL_PART        : "." (<DIGIT>)* >
-    | < #EXPONENT_PART          : <EXPONENT_IDENFITIER> (<SIGN>)? (<DIGIT>)+ >
+    | < #EXPONENT_PART          : <EXPONENT_IDENTIFIER> (<SIGN>)? (<DIGIT>)+ >
     | < INTEGER_LITERAL         : (<MINUS>)? <INTEGER_PART> >
     | < FLOAT_LITERAL           : (<MINUS>)?
                                   (
