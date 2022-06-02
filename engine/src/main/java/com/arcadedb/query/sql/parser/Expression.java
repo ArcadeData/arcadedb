@@ -314,7 +314,7 @@ public class Expression extends SimpleNode {
    * @param operator
    * @param right
    *
-   * @return true if current expression is an indexed funciton AND that function can also be executed without using the index, false
+   * @return true if current expression is an indexed function AND that function can also be executed without using the index, false
    * otherwise
    */
   public boolean canExecuteIndexedFunctionWithoutIndex(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {

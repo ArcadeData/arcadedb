@@ -258,8 +258,8 @@ public class SelectExecutionPlanner {
       return;
     }
 
-//    Set<String> serversWithAllTheClusers = getServersThatHasAllClusters(clusterMap, queryClusters);
-//    if (serversWithAllTheClusers.isEmpty()) {
+//    Set<String> serversWithAllTheClusters = getServersThatHasAllClusters(clusterMap, queryClusters);
+//    if (serversWithAllTheClusters.isEmpty()) {
     // sharded query
     Map<String, Set<String>> minimalSetOfNodes = getMinimalSetOfNodesForShardedQuery(LOCAL_NODE_NAME, clusterMap, queryClusters);
     if (minimalSetOfNodes == null) {
@@ -271,9 +271,9 @@ public class SelectExecutionPlanner {
     }
 //    } else {
 //      // all on a node
-//      String targetNode = serversWithAllTheClusers.contains(db.getLocalNodeName()) ?
+//      String targetNode = serversWithAllTheClusters.contains(db.getLocalNodeName()) ?
 //          db.getLocalNodeName() :
-//          serversWithAllTheClusers.iterator().next();
+//          serversWithAllTheClusters.iterator().next();
 //      info.serverToClusters = new HashMap<>();
 //      info.serverToClusters.put(targetNode, queryClusters);
 //    }
@@ -649,7 +649,7 @@ public class SelectExecutionPlanner {
     if (info.whereClause != null) {
       info.flattenedWhereClause = info.whereClause.flatten();
       //this helps index optimization
-      info.flattenedWhereClause = moveFlattededEqualitiesLeft(info.flattenedWhereClause);
+      info.flattenedWhereClause = moveFlattenedEqualitiesLeft(info.flattenedWhereClause);
     }
 
     splitProjectionsForGroupBy(info);
@@ -682,7 +682,7 @@ public class SelectExecutionPlanner {
    *
    * @return
    */
-  private static List<AndBlock> moveFlattededEqualitiesLeft(List<AndBlock> flattenedWhereClause) {
+  private static List<AndBlock> moveFlattenedEqualitiesLeft(List<AndBlock> flattenedWhereClause) {
     if (flattenedWhereClause == null) {
       return null;
     }
@@ -1180,7 +1180,7 @@ public class SelectExecutionPlanner {
       List<Rid> rids = new ArrayList<>();
       for (Object x : (Iterable) paramValue) {
         if (!(x instanceof Identifiable)) {
-          throw new CommandExecutionException("Cannot use colleciton as target: " + paramValue);
+          throw new CommandExecutionException("Cannot use collection as target: " + paramValue);
         }
         RID orid = ((Identifiable) x).getIdentity();
 

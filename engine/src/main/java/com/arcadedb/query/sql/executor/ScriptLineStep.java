@@ -26,7 +26,7 @@ import com.arcadedb.query.sql.parser.Statement;
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  * <p>
- * This step represents the execution plan of an instruciton instide a batch script
+ * This step represents the execution plan of an instruction instide a batch script
  */
 public class ScriptLineStep extends AbstractExecutionStep {
   protected final InternalExecutionPlan plan;

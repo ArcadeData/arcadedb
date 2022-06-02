@@ -30,7 +30,7 @@ import java.util.Optional;
  * <p>
  * The result set returned by syncPull() throws an PCommandExecutionException as soon as it finds a record
  * that cannot be safely deleted (eg. a vertex or an edge)</p>
- * <p>This step is used used in DELETE statement to make sure that you are not deleting vertices or edges without passing for an
+ * <p>This step is used in DELETE statement to make sure that you are not deleting vertices or edges without passing for an
  * explicit DELETE VERTEX/EDGE</p>
  *
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)

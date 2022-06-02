@@ -26,7 +26,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import java.util.*;
 
 /**
- * This class is used to represent all the indentifies in the SQL grammar, ie. class names, property names, index names, variables
+ * This class is used to represent all the identifies in the SQL grammar, ie. class names, property names, index names, variables
  * and so on so forth.
  * <p>
  * Instances of this class are immutable and can be recycled multiple times in the same or in different queries.

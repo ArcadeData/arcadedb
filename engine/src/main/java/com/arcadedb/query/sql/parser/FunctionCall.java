@@ -141,7 +141,7 @@ public class FunctionCall extends SimpleNode {
         throw new CommandExecutionException("Invalid value for $current: " + record);
       }
     } else {
-      throw new CommandExecutionException("Funciton not found: " + name);
+      throw new CommandExecutionException("Function not found: " + name);
     }
   }
 
@@ -172,9 +172,9 @@ public class FunctionCall extends SimpleNode {
    * @param target     query target
    * @param ctx        execution context
    * @param operator   operator at the right of the function
-   * @param rightValue value to compare to funciton result
+   * @param rightValue value to compare to function result
    *
-   * @return the approximate number of items returned by the condition execution, -1 if the extimation cannot be executed
+   * @return the approximate number of items returned by the condition execution, -1 if the estimation cannot be executed
    */
   public long estimateIndexedFunction(FromClause target, CommandContext ctx, BinaryCompareOperator operator, Object rightValue) {
     SQLFunction function = SQLEngine.getInstance().getFunction(name.getStringValue());
@@ -192,7 +192,7 @@ public class FunctionCall extends SimpleNode {
    * @param operator
    * @param right
    *
-   * @return true if current function is an indexed funciton AND that function can also be executed without using the index, false
+   * @return true if current function is an indexed function AND that function can also be executed without using the index, false
    * otherwise
    */
   public boolean canExecuteIndexedFunctionWithoutIndex(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {

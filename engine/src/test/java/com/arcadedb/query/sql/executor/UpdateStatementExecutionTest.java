@@ -596,7 +596,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
 
   @Test
   public void testRemove3() {
-    String className = "overriden" + this.className;
+    String className = "overridden" + this.className;
     DocumentType clazz = database.getSchema().createDocumentType(className);
     clazz.createProperty("theProperty", Type.EMBEDDED);
 

@@ -56,9 +56,9 @@ public class SelectStatementTest {
         //        System.out.println(query);
         //        if(result!= null ) {
         //          System.out.println("->");
-        //          StringBuilder builer = new StringBuilder();
-        //          result.toString(null, builer);
-        //          System.out.println(builer.toString());
+        //          StringBuilder builder = new StringBuilder();
+        //          result.toString(null, builder);
+        //          System.out.println(builder.toString());
         //          System.out.println("............");
         //        }
         fail();
@@ -545,11 +545,11 @@ public class SelectStatementTest {
   @Test
   public void testFlatten() {
     SelectStatement stm = (SelectStatement) checkRightSyntax("select from ouser where name = 'foo'");
-    List<AndBlock> flattended = stm.whereClause.flatten();
-    assertTrue(((BinaryCondition) flattended.get(0).subBlocks.get(0)).left.isBaseIdentifier());
-    assertFalse(((BinaryCondition) flattended.get(0).subBlocks.get(0)).right.isBaseIdentifier());
-    assertFalse(((BinaryCondition) flattended.get(0).subBlocks.get(0)).left.isEarlyCalculated());
-    assertTrue(((BinaryCondition) flattended.get(0).subBlocks.get(0)).right.isEarlyCalculated());
+    List<AndBlock> flattened = stm.whereClause.flatten();
+    assertTrue(((BinaryCondition) flattened.get(0).subBlocks.get(0)).left.isBaseIdentifier());
+    assertFalse(((BinaryCondition) flattened.get(0).subBlocks.get(0)).right.isBaseIdentifier());
+    assertFalse(((BinaryCondition) flattened.get(0).subBlocks.get(0)).left.isEarlyCalculated());
+    assertTrue(((BinaryCondition) flattened.get(0).subBlocks.get(0)).right.isEarlyCalculated());
   }
 
   @Test

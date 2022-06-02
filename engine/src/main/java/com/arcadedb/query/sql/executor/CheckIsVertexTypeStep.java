@@ -40,7 +40,7 @@ public class CheckIsVertexTypeStep extends AbstractExecutionStep {
 
   /**
    * @param targetClass      a type to be checked
-   * @param ctx              execuiton context
+   * @param ctx              execution context
    * @param profilingEnabled true to collect execution stats
    */
   public CheckIsVertexTypeStep(String targetClass, CommandContext ctx, boolean profilingEnabled) {

@@ -77,7 +77,7 @@ public enum Type {
   private static final Type[] TYPES = new Type[] { LIST, MAP, LINK, STRING, DATETIME };
 
   private static final Type[]              TYPES_BY_ID       = new Type[17];
-  // Values previosly stored in javaTypes
+  // Values previously stored in javaTypes
   private static final Map<Class<?>, Type> TYPES_BY_USERTYPE = new HashMap<Class<?>, Type>();
 
   static {
@@ -340,7 +340,7 @@ public enum Type {
         else if (iValue instanceof String)
           return ((String) iValue).isEmpty() ? 0d : Double.parseDouble((String) iValue);
         else if (iValue instanceof Float)
-          // THIS IS NECESSARY DUE TO A BUG/STRANGE BEHAVIOR OF JAVA BY LOSSING PRECISION
+          // THIS IS NECESSARY DUE TO A BUG/STRANGE BEHAVIOR OF JAVA BY LOSING PRECISION
           return Double.parseDouble(iValue.toString());
         else
           return ((Number) iValue).doubleValue();

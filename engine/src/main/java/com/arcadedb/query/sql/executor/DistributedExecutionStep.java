@@ -28,7 +28,7 @@ import java.util.Optional;
  */
 public class DistributedExecutionStep extends AbstractExecutionStep {
 
-  private final SelectExecutionPlan subExecuitonPlan;
+  private final SelectExecutionPlan subExecutionPlan;
   private final String              nodeName;
 
   private boolean inited;
@@ -38,7 +38,7 @@ public class DistributedExecutionStep extends AbstractExecutionStep {
   public DistributedExecutionStep(SelectExecutionPlan subExecutionPlan, String nodeName, CommandContext ctx,
       boolean profilingEnabled) {
     super(ctx, profilingEnabled);
-    this.subExecuitonPlan = subExecutionPlan;
+    this.subExecutionPlan = subExecutionPlan;
     this.nodeName = nodeName;
   }
 
@@ -77,7 +77,7 @@ public class DistributedExecutionStep extends AbstractExecutionStep {
   public void init(CommandContext ctx) {
     if (!inited) {
       inited = true;
-      this.remoteResultSet = sendSerializedExecutionPlan(nodeName, subExecuitonPlan, ctx);
+      this.remoteResultSet = sendSerializedExecutionPlan(nodeName, subExecutionPlan, ctx);
     }
   }
 
@@ -101,7 +101,7 @@ public class DistributedExecutionStep extends AbstractExecutionStep {
     String ind = ExecutionStepInternal.getIndent(depth, indent);
     builder.append(ind);
     builder.append("+ EXECUTE ON NODE ").append(nodeName).append("----------- \n");
-    builder.append(subExecuitonPlan.prettyPrint(depth + 1, indent));
+    builder.append(subExecutionPlan.prettyPrint(depth + 1, indent));
     builder.append("  ------------------------------------------- \n");
     builder.append("   |\n");
     builder.append("   V\n");

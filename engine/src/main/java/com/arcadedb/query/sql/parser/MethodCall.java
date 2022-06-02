@@ -97,7 +97,7 @@ public class MethodCall extends SimpleNode {
       } else if (targetObjects instanceof Result) {
         paramValues.add(expr.execute((Result) targetObjects, ctx));
       } else {
-        throw new CommandExecutionException("Invalild value for $current: " + val);
+        throw new CommandExecutionException("Invalid value for $current: " + val);
       }
     }
     if (isGraphFunction()) {

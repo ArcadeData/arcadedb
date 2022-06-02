@@ -45,7 +45,7 @@ import java.util.stream.*;
 import java.util.zip.*;
 
 /**
- * Importer of a Neo4j dataabase exported in JSONL format. To export a Neo4j database follow the instructions in https://neo4j.com/labs/apoc/4.3/export/json/.
+ * Importer of a Neo4j database exported in JSONL format. To export a Neo4j database follow the instructions in https://neo4j.com/labs/apoc/4.3/export/json/.
  * The resulting file contains one json per line.
  * <br>
  * Neo4j is a registered mark of Neo4j, Inc.

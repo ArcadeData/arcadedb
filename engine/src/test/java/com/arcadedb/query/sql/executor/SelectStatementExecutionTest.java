@@ -71,11 +71,11 @@ public class SelectStatementExecutionTest extends TestHelper {
     }
 
     database.commit();
-    final ResultSet result = database.query("sql", "select address, count(*) as occurrencies from InputTx where address is not null group by address limit 10");
+    final ResultSet result = database.query("sql", "select address, count(*) as occurrences from InputTx where address is not null group by address limit 10");
     while (result.hasNext()) {
       final Result row = result.next();
       Assertions.assertNotNull(row.getProperty("address")); // <== FALSE!
-      Assertions.assertNotNull(row.getProperty("occurrencies"));
+      Assertions.assertNotNull(row.getProperty("occurrences"));
     }
     result.close();
   }
@@ -617,8 +617,8 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testAggretateMixedWithNonAggregate() {
-    String className = "testAggretateMixedWithNonAggregate";
+  public void testAggregateMixedWithNonAggregate() {
+    String className = "testAggregateMixedWithNonAggregate";
     database.getSchema().createDocumentType(className);
 
     try {
@@ -632,8 +632,8 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testAggretateMixedWithNonAggregateInCollection() {
-    String className = "testAggretateMixedWithNonAggregateInCollection";
+  public void testAggregateMixedWithNonAggregateInCollection() {
+    String className = "testAggregateMixedWithNonAggregateInCollection";
     database.getSchema().createDocumentType(className);
 
     try {
@@ -647,8 +647,8 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testAggretateInCollection() {
-    String className = "testAggretateInCollection";
+  public void testAggregateInCollection() {
+    String className = "testAggregateInCollection";
     database.getSchema().createDocumentType(className);
 
     try {
@@ -662,8 +662,8 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
-  public void testAggretateMixedWithNonAggregateConstants() {
-    String className = "testAggretateMixedWithNonAggregateConstants";
+  public void testAggregateMixedWithNonAggregateConstants() {
+    String className = "testAggregateMixedWithNonAggregateConstants";
     database.getSchema().createDocumentType(className);
 
     try {
@@ -3857,12 +3857,12 @@ public class SelectStatementExecutionTest extends TestHelper {
 //    @Test
 //    public void testTimeout() {
 //        String className = "testTimeout";
-//        final String funcitonName = getClass().getSimpleName() + "_sleep";
+//        final String functionName = getClass().getSimpleName() + "_sleep";
 //        database.getSchema().createDocumentType(className);
 //
 //        SQLEngine.getInstance()
 //                .registerFunction(
-//                        funcitonName,
+//                        functionName,
 //                        new SQLFunction() {
 //
 //                            @Override
@@ -3894,7 +3894,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 //
 //                            @Override
 //                            public String getName() {
-//                                return funcitonName;
+//                                return functionName;
 //                            }
 //
 //                            @Override
@@ -3937,7 +3937,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 //            doc.save();
 //        }
 //        try (ResultSet result =
-//                     database.query("sql", "select " + funcitonName + "(), * from " + className + " timeout 1")) {
+//                     database.query("sql", "select " + functionName + "(), * from " + className + " timeout 1")) {
 //            while (result.hasNext()) {
 //                result.next();
 //            }
@@ -3947,7 +3947,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 //        }
 //
 //        try (ResultSet result =
-//                     database.query("sql", "select " + funcitonName + "(), * from " + className + " timeout 100")) {
+//                     database.query("sql", "select " + functionName + "(), * from " + className + " timeout 100")) {
 //            while (result.hasNext()) {
 //                result.next();
 //            }
