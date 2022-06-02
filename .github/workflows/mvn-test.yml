@@ -15,7 +15,7 @@ jobs:
         continue-on-error: [ false ]
         include:
           - os: windows-latest
-            continue-on-error: [ true ]
+            continue-on-error: true
 
     runs-on: ${{ matrix.os }}
 
