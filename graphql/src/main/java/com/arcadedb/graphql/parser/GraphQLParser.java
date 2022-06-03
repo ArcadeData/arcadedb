@@ -1100,7 +1100,7 @@ if (jjtc000) {
       switch (jj_ntk == -1 ? jj_ntk_f() : jj_ntk) {
       case INTEGER_LITERAL:{
         //TODO class hierarchy here instead?
-        
+
                 jjtn000.intValue = IntValue();
         break;
         }
