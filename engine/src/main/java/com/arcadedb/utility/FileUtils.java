@@ -155,7 +155,7 @@ public class FileUtils {
   }
 
   public static void checkValidName(final String iFileName) throws IOException {
-    if (iFileName.contains("..") || iFileName.contains("/") || iFileName.contains("\\"))
+    if (iFileName.contains("..") || iFileName.contains(File.pathSeparator))
       throw new IOException("Invalid file name '" + iFileName + "'");
   }
 
@@ -240,7 +240,7 @@ public class FileUtils {
       destination.mkdirs();
 
     for (File f : source.listFiles()) {
-      final File target = new File(destination.getAbsolutePath() + "/" + f.getName());
+      final File target = new File(destination.getAbsolutePath() + File.pathSeparator + f.getName());
       if (f.isFile())
         copyFile(f, target);
       else

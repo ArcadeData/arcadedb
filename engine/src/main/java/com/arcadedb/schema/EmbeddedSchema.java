@@ -100,7 +100,7 @@ public class EmbeddedSchema implements Schema {
 
     indexFactory.register(INDEX_TYPE.LSM_TREE.name(), new LSMTreeIndex.IndexFactoryHandler());
     indexFactory.register(INDEX_TYPE.FULL_TEXT.name(), new LSMTreeFullTextIndex.IndexFactoryHandler());
-    configurationFile = new File(databasePath + "/" + SCHEMA_FILE_NAME);
+    configurationFile = new File(databasePath + File.pathSeparator + SCHEMA_FILE_NAME);
   }
 
   @Override
@@ -268,7 +268,7 @@ public class EmbeddedSchema implements Schema {
 
     return recordFileChanges(() -> {
       try {
-        final Bucket bucket = new Bucket(database, bucketName, databasePath + "/" + bucketName, PaginatedFile.MODE.READ_WRITE, pageSize,
+        final Bucket bucket = new Bucket(database, bucketName, databasePath + File.pathSeparator + bucketName, PaginatedFile.MODE.READ_WRITE, pageSize,
             Bucket.CURRENT_VERSION);
         registerFile(bucket);
         bucketMap.put(bucketName, bucket);
@@ -605,7 +605,7 @@ public class EmbeddedSchema implements Schema {
     if (indexMap.containsKey(indexName))
       throw new DatabaseMetadataException("Cannot create index '" + indexName + "' on type '" + typeName + "' because it already exists");
 
-    final IndexInternal index = indexFactory.createIndex(indexType.name(), database, indexName, unique, databasePath + "/" + indexName,
+    final IndexInternal index = indexFactory.createIndex(indexType.name(), database, indexName, unique, databasePath + File.pathSeparator + indexName,
         PaginatedFile.MODE.READ_WRITE, keyTypes, pageSize, nullStrategy, callback);
 
     try {
@@ -636,7 +636,7 @@ public class EmbeddedSchema implements Schema {
       database.transaction(() -> {
 
         final IndexInternal index = indexFactory.createIndex(indexType.name(), database, FileUtils.encode(indexName, ENCODING), unique,
-            databasePath + "/" + indexName, PaginatedFile.MODE.READ_WRITE, keyTypes, pageSize, nullStrategy, null);
+            databasePath + File.pathSeparator + indexName, PaginatedFile.MODE.READ_WRITE, keyTypes, pageSize, nullStrategy, null);
 
         result.set(index);
 
@@ -1073,9 +1073,9 @@ public class EmbeddedSchema implements Schema {
 
     boolean saveConfiguration = false;
     try {
-      File file = new File(databasePath + "/" + SCHEMA_FILE_NAME);
+      File file = new File(databasePath + File.pathSeparator + SCHEMA_FILE_NAME);
       if (!file.exists() || file.length() == 0) {
-        file = new File(databasePath + "/" + SCHEMA_PREV_FILE_NAME);
+        file = new File(databasePath + File.pathSeparator + SCHEMA_PREV_FILE_NAME);
         if (!file.exists())
           return;
 
@@ -1298,7 +1298,7 @@ public class EmbeddedSchema implements Schema {
       dirtyConfiguration = false;
 
     } catch (IOException e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error on saving schema configuration to file: %s", e, databasePath + "/" + SCHEMA_FILE_NAME);
+      LogManager.instance().log(this, Level.SEVERE, "Error on saving schema configuration to file: %s", e, databasePath + File.pathSeparator + SCHEMA_FILE_NAME);
     }
   }
 
@@ -1393,7 +1393,7 @@ public class EmbeddedSchema implements Schema {
     final String latestSchema = newSchema.toString();
 
     if (configurationFile.exists()) {
-      final File copy = new File(databasePath + "/" + SCHEMA_PREV_FILE_NAME);
+      final File copy = new File(databasePath + File.pathSeparator + SCHEMA_PREV_FILE_NAME);
       if (copy.exists())
         if (!copy.delete())
           LogManager.instance().log(this, Level.WARNING, "Error on deleting previous schema file '%s'", null, copy);
@@ -1402,7 +1402,7 @@ public class EmbeddedSchema implements Schema {
         LogManager.instance().log(this, Level.WARNING, "Error on renaming previous schema file '%s'", null, copy);
     }
 
-    try (FileWriter file = new FileWriter(databasePath + "/" + SCHEMA_FILE_NAME)) {
+    try (FileWriter file = new FileWriter(databasePath + File.pathSeparator + SCHEMA_FILE_NAME)) {
       file.write(latestSchema);
     }
 

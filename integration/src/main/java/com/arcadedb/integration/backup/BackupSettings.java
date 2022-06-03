@@ -18,6 +18,7 @@
  */
 package com.arcadedb.integration.backup;
 
+import java.io.File;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
 import java.util.HashMap;
@@ -50,7 +51,7 @@ public class BackupSettings {
 
     if (directory != null && file != null) {
       final String f = file.startsWith("file://") ? file.substring("file://".length()) : file;
-      if (f.contains("..") || f.contains("/"))
+      if (f.contains("..") || f.contains(File.pathSeparator))
         throw new IllegalArgumentException("Backup file cannot contain path change because the directory is specified");
     }
 
@@ -70,7 +71,7 @@ public class BackupSettings {
         format = value.toLowerCase();
     } else if ("dir".equals(name)) {
       if (value != null)
-        directory = value.endsWith("/") ? value : value + "/";
+        directory = value.endsWith(File.pathSeparator) ? value : value + File.pathSeparator;
     } else if ("f".equals(name)) {
       if (value != null)
         file = value;

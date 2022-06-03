@@ -35,8 +35,8 @@ public class SecurityUserFileRepository {
   private              long   fileLastModified = -1;
 
   public SecurityUserFileRepository(String securityConfPath) {
-    if (!securityConfPath.endsWith("/") && !securityConfPath.endsWith("\\"))
-      securityConfPath += "/";
+    if (!securityConfPath.endsWith(File.pathSeparator) )
+      securityConfPath += File.pathSeparator;
     this.securityConfPath = securityConfPath;
   }
 

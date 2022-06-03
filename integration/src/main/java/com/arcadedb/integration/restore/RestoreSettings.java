@@ -18,6 +18,7 @@
  */
 package com.arcadedb.integration.restore;
 
+import java.io.File;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -69,7 +70,7 @@ public class RestoreSettings {
     if (databaseDirectory == null)
       throw new IllegalArgumentException("Missing database url. Use -d <database-directory>");
 
-    if (inputFileURL.contains("..") || inputFileURL.startsWith("/"))
+    if (inputFileURL.contains("..") || inputFileURL.startsWith(File.pathSeparator))
       throw new IllegalArgumentException("Invalid backup file: cannot contain '..' or start with '/'");
   }
 }

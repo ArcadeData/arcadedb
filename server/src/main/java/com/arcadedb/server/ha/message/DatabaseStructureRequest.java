@@ -47,7 +47,7 @@ public class DatabaseStructureRequest extends HAAbstractCommand {
   public HACommand execute(final HAServer server, final String remoteServerName, final long messageNumber) {
     final DatabaseInternal db = (DatabaseInternal) server.getServer().getDatabase(databaseName);
 
-    final File file = new File(db.getDatabasePath() + "/" + EmbeddedSchema.SCHEMA_FILE_NAME);
+    final File file = new File(db.getDatabasePath() + File.pathSeparator + EmbeddedSchema.SCHEMA_FILE_NAME);
     try {
       final String schemaJson;
       if (file.exists()) {

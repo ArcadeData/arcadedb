@@ -282,7 +282,7 @@ public class ArcadeDBServer {
       throw new IllegalArgumentException("Database '" + databaseName + "' already exists");
 
     final DatabaseFactory factory = new DatabaseFactory(
-        configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + "/" + databaseName).setAutoTransaction(true);
+        configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + File.pathSeparator + databaseName).setAutoTransaction(true);
 
     if (factory.exists())
       throw new IllegalArgumentException("Database '" + databaseName + "' already exists");
@@ -347,7 +347,7 @@ public class ArcadeDBServer {
       if (!allowLoad)
         throw new DatabaseIsClosedException("Database '" + databaseName + "' is not available");
 
-      final String path = configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + "/" + databaseName;
+      final String path = configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + File.pathSeparator + databaseName;
 
       final DatabaseFactory factory = new DatabaseFactory(path).setAutoTransaction(true);
 
@@ -422,7 +422,7 @@ public class ArcadeDBServer {
                 ((DatabaseInternal) database).getEmbedded().drop();
                 databases.remove(dbName);
               }
-              String dbPath = configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + "/" + dbName;
+              String dbPath = configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + File.pathSeparator + dbName;
 //              new Restore(commandParams, dbPath).restoreDatabase();
 
               try {
@@ -508,7 +508,7 @@ public class ArcadeDBServer {
   }
 
   private void loadConfiguration() {
-    final File file = new File(getRootPath() + "/" + CONFIG_SERVER_CONFIGURATION_FILENAME);
+    final File file = new File(getRootPath() + File.pathSeparator + CONFIG_SERVER_CONFIGURATION_FILENAME);
     if (file.exists()) {
       try {
         final String content = FileUtils.readFileAsString(file, "UTF8");

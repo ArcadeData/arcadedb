@@ -45,8 +45,8 @@ public class SecurityGroupFileRepository {
   private              Callable<Void, JSONObject> reloadCallback          = null;
 
   public SecurityGroupFileRepository(String securityConfPath) {
-    if (!securityConfPath.endsWith("/") && !securityConfPath.endsWith("\\"))
-      securityConfPath += "/";
+    if (!securityConfPath.endsWith(File.pathSeparator))
+      securityConfPath += File.pathSeparator;
     this.securityConfPath = securityConfPath;
     file = new File(securityConfPath, FILE_NAME);
   }

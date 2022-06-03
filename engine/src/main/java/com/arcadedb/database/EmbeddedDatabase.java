@@ -97,9 +97,12 @@ import java.util.stream.*;
 public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal {
   public static final  int                                       EDGE_LIST_INITIAL_CHUNK_SIZE         = 64;
   public static final  int                                       MAX_RECOMMENDED_EDGE_LIST_CHUNK_SIZE = 8192;
-  private static final Set<String>                               SUPPORTED_FILE_EXT                   = Collections.unmodifiableSet(new HashSet<>(
-      Arrays.asList(Dictionary.DICT_EXT, Bucket.BUCKET_EXT, LSMTreeIndexMutable.NOTUNIQUE_INDEX_EXT, LSMTreeIndexMutable.UNIQUE_INDEX_EXT,
-          LSMTreeIndexCompacted.NOTUNIQUE_INDEX_EXT, LSMTreeIndexCompacted.UNIQUE_INDEX_EXT)));
+  private static final Set<String>                               SUPPORTED_FILE_EXT                   = Set.of(Dictionary.DICT_EXT,
+          Bucket.BUCKET_EXT,
+          LSMTreeIndexMutable.NOTUNIQUE_INDEX_EXT,
+          LSMTreeIndexMutable.UNIQUE_INDEX_EXT,
+          LSMTreeIndexCompacted.NOTUNIQUE_INDEX_EXT,
+          LSMTreeIndexCompacted.UNIQUE_INDEX_EXT);
   public final         AtomicLong                                indexCompactions                     = new AtomicLong();
   protected final      String                                    name;
   protected final      PaginatedFile.MODE                        mode;
@@ -146,12 +149,12 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
       this.statementCache = new StatementCache(this, configuration.getValueAsInteger(GlobalConfiguration.SQL_STATEMENT_CACHE));
       this.executionPlanCache = new ExecutionPlanCache(this, configuration.getValueAsInteger(GlobalConfiguration.SQL_STATEMENT_CACHE));
 
-      if (path.endsWith("/") || path.endsWith("\\"))
+      if (path.endsWith(File.pathSeparator))
         databasePath = path.substring(0, path.length() - 1);
       else
         databasePath = path;
 
-      configurationFile = new File(databasePath + "/configuration.json");
+      configurationFile = new File(databasePath + File.pathSeparator + "configuration.json");
 
       final int lastSeparatorPos = path.lastIndexOf(File.separator);
       if (lastSeparatorPos > -1)

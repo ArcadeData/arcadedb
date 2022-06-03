@@ -44,7 +44,7 @@ public class DatabaseFactory implements AutoCloseable {
     if (path == null || path.isEmpty())
       throw new IllegalArgumentException("Missing path");
 
-    if (path.endsWith("/") || path.endsWith("\\"))
+    if (path.endsWith(File.pathSeparator))
       databasePath = path.substring(0, path.length() - 1);
     else
       databasePath = path;
@@ -56,9 +56,9 @@ public class DatabaseFactory implements AutoCloseable {
   }
 
   public boolean exists() {
-    boolean exists = new File(databasePath + "/" + EmbeddedSchema.SCHEMA_FILE_NAME).exists();
+    boolean exists = new File(databasePath + File.pathSeparator + EmbeddedSchema.SCHEMA_FILE_NAME).exists();
     if (!exists)
-      exists = new File(databasePath + "/" + EmbeddedSchema.SCHEMA_PREV_FILE_NAME).exists();
+      exists = new File(databasePath + File.pathSeparator + EmbeddedSchema.SCHEMA_PREV_FILE_NAME).exists();
     return exists;
   }
 
