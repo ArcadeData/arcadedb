@@ -359,7 +359,7 @@ public abstract class BaseGraphServerTest {
   }
 
   protected String getDatabasePath(final int serverId) {
-    return GlobalConfiguration.SERVER_DATABASE_DIRECTORY.getValueAsString() + serverId + "/" + getDatabaseName();
+    return GlobalConfiguration.SERVER_DATABASE_DIRECTORY.getValueAsString() + serverId + File.separator + getDatabaseName();
   }
 
   protected String readResponse(final HttpURLConnection connection) throws IOException {
@@ -432,8 +432,8 @@ public abstract class BaseGraphServerTest {
     TestServerHelper.checkActiveDatabases();
 
     for (int i = 0; i < getServerCount(); ++i)
-      FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_DATABASE_DIRECTORY.getValueAsString() + i + "/"));
-    FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_ROOT_PATH.getValueAsString() + "/replication"));
+      FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_DATABASE_DIRECTORY.getValueAsString() + i + File.separator));
+    FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_ROOT_PATH.getValueAsString() + File.separator+ "replication"));
   }
 
   protected void checkDatabasesAreIdentical() {

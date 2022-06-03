@@ -52,7 +52,7 @@ public class FullBackupFormat extends AbstractBackupFormat {
       fileName = settings.file;
 
     if (settings.directory != null)
-      fileName = settings.directory + "/" + fileName;
+      fileName = settings.directory + File.separator + fileName;
 
     final File backupFile = new File(fileName);
 

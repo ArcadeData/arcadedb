@@ -150,13 +150,13 @@ public class Console {
 
     if (this.rootDirectory == null || this.rootDirectory.isEmpty())
       this.rootDirectory = ".";
-    else if (this.rootDirectory.endsWith("/"))
+    else if (this.rootDirectory.endsWith(File.separator))
       this.rootDirectory = this.rootDirectory.substring(0, this.rootDirectory.length() - 1);
 
-    if (!new File(this.rootDirectory + "/config").exists() && new File(this.rootDirectory + "/../config").exists()) {
-      databaseDirectory = new File(this.rootDirectory).getAbsoluteFile().getParentFile().getPath() + "/databases/";
+    if (!new File(this.rootDirectory + File.separator+ "config").exists() && new File(this.rootDirectory + File.separator + ".." +File.separator + "config").exists()) {
+      databaseDirectory = new File(this.rootDirectory).getAbsoluteFile().getParentFile().getPath() + File.separator+ "databases"+ File.separator;
     } else
-      databaseDirectory = this.rootDirectory + "/databases/";
+      databaseDirectory = this.rootDirectory + File.separator+ "databases"+ File.separator;
 
     return this;
   }

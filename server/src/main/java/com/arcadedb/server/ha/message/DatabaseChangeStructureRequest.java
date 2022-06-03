@@ -27,6 +27,7 @@ import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.ha.ReplicationException;
 import org.json.JSONObject;
 
+import java.io.File;
 import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
@@ -133,7 +134,7 @@ public class DatabaseChangeStructureRequest extends HAAbstractCommand {
 
     // ADD FILES
     for (Map.Entry<Integer, String> entry : filesToAdd.entrySet())
-      db.getFileManager().getOrCreateFile(entry.getKey(), databasePath + "/" + entry.getValue());
+      db.getFileManager().getOrCreateFile(entry.getKey(), databasePath + File.separator + entry.getValue());
 
     // REMOVE FILES
     for (Map.Entry<Integer, String> entry : filesToRemove.entrySet()) {

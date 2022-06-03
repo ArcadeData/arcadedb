@@ -30,6 +30,7 @@ import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.ha.ReplicationException;
 import com.arcadedb.utility.FileUtils;
 
+import java.io.File;
 import java.io.IOException;
 import java.util.logging.Level;
 
@@ -76,7 +77,7 @@ public class FileContentResponse extends HAAbstractCommand {
     final PageManager pageManager = database.getPageManager();
 
     try {
-      final PaginatedFile file = database.getFileManager().getOrCreateFile(fileId, database.getDatabasePath() + "/" + fileName);
+      final PaginatedFile file = database.getFileManager().getOrCreateFile(fileId, database.getDatabasePath() + File.separator + fileName);
 
       if (totalPages == 0)
         return null;
