@@ -70,7 +70,7 @@ public class RestoreSettings {
     if (databaseDirectory == null)
       throw new IllegalArgumentException("Missing database url. Use -d <database-directory>");
 
-    if (inputFileURL.contains("..") || inputFileURL.startsWith(File.pathSeparator))
+    if (inputFileURL.contains("..") || inputFileURL.startsWith(File.separator))
       throw new IllegalArgumentException("Invalid backup file: cannot contain '..' or start with '/'");
   }
 }

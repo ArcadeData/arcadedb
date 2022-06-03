@@ -464,7 +464,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
         final String newName = mutable.getName().substring(0, last_) + "_" + System.nanoTime();
 
         final LSMTreeIndexMutable newMutableIndex = new LSMTreeIndexMutable(this, database, newName, mutable.isUnique(),
-            database.getDatabasePath() + File.pathSeparator + newName, mutable.getKeyTypes(), pageSize, LSMTreeIndexMutable.CURRENT_VERSION, compactedIndex);
+            database.getDatabasePath() + File.separator + newName, mutable.getKeyTypes(), pageSize, LSMTreeIndexMutable.CURRENT_VERSION, compactedIndex);
         database.getSchema().getEmbedded().registerFile(newMutableIndex);
 
         final List<MutablePage> modifiedPages = new ArrayList<>(2 + mutable.getTotalPages() - startingFromPage);

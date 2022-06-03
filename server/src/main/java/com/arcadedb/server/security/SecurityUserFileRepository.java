@@ -35,8 +35,8 @@ public class SecurityUserFileRepository {
   private              long   fileLastModified = -1;
 
   public SecurityUserFileRepository(String securityConfPath) {
-    if (!securityConfPath.endsWith(File.pathSeparator) )
-      securityConfPath += File.pathSeparator;
+    if (!securityConfPath.endsWith(File.separator) )
+      securityConfPath += File.separator;
     this.securityConfPath = securityConfPath;
   }
 

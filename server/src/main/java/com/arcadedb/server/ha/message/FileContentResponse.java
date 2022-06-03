@@ -77,7 +77,7 @@ public class FileContentResponse extends HAAbstractCommand {
     final PageManager pageManager = database.getPageManager();
 
     try {
-      final PaginatedFile file = database.getFileManager().getOrCreateFile(fileId, database.getDatabasePath() + File.pathSeparator + fileName);
+      final PaginatedFile file = database.getFileManager().getOrCreateFile(fileId, database.getDatabasePath() + File.separator + fileName);
 
       if (totalPages == 0)
         return null;

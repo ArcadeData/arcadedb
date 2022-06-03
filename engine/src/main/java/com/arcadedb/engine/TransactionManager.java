@@ -189,7 +189,7 @@ public class TransactionManager {
       activeWALFilePool = new WALFile[walFiles.length];
       for (int i = 0; i < walFiles.length; ++i) {
         try {
-          activeWALFilePool[i] = new WALFile(database.getDatabasePath() + File.pathSeparator + walFiles[i].getName());
+          activeWALFilePool[i] = new WALFile(database.getDatabasePath() + File.separator + walFiles[i].getName());
         } catch (FileNotFoundException e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on WAL file management for file '%s'", e, database.getDatabasePath() + walFiles[i].getName());
         }

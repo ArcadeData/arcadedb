@@ -134,7 +134,7 @@ public class DatabaseChangeStructureRequest extends HAAbstractCommand {
 
     // ADD FILES
     for (Map.Entry<Integer, String> entry : filesToAdd.entrySet())
-      db.getFileManager().getOrCreateFile(entry.getKey(), databasePath + File.pathSeparator + entry.getValue());
+      db.getFileManager().getOrCreateFile(entry.getKey(), databasePath + File.separator + entry.getValue());
 
     // REMOVE FILES
     for (Map.Entry<Integer, String> entry : filesToRemove.entrySet()) {

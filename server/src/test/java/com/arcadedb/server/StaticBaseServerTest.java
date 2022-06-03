@@ -288,7 +288,7 @@ public abstract class StaticBaseServerTest {
   }
 
   protected static String getDatabasePath(final int serverId) {
-    return GlobalConfiguration.SERVER_DATABASE_DIRECTORY.getValueAsString() + serverId + File.pathSeparator + getDatabaseName();
+    return GlobalConfiguration.SERVER_DATABASE_DIRECTORY.getValueAsString() + serverId + File.separator + getDatabaseName();
   }
 
   protected String readResponse(final HttpURLConnection connection) throws IOException {
@@ -366,8 +366,8 @@ public abstract class StaticBaseServerTest {
     TestServerHelper.checkActiveDatabases();
 
     for (int i = 0; i < getServerCount(); ++i)
-      FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_DATABASE_DIRECTORY.getValueAsString() + i + File.pathSeparator));
-    FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_ROOT_PATH.getValueAsString() + File.pathSeparator + "replication"));
+      FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_DATABASE_DIRECTORY.getValueAsString() + i + File.separator));
+    FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_ROOT_PATH.getValueAsString() + File.separator + "replication"));
   }
 
   protected static void checkDatabasesAreIdentical() {

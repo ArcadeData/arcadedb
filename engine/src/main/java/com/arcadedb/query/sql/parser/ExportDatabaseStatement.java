@@ -54,10 +54,10 @@ public class ExportDatabaseStatement extends SimpleExecStatement {
     result.setProperty("toUrl", targetUrl);
 
     String fileName = targetUrl.startsWith("file://") ? targetUrl.substring("file://".length()) : targetUrl;
-    if (fileName.contains("..") || fileName.contains(File.pathSeparator) )
+    if (fileName.contains("..") || fileName.contains(File.separator) )
       throw new IllegalArgumentException("Export file cannot contain path change because the directory is specified");
 
-    fileName = "exports" + File.pathSeparator + fileName;
+    fileName = "exports" + File.separator + fileName;
 
     try {
       final Class<?> clazz = Class.forName("com.arcadedb.integration.exporter.Exporter");

@@ -51,7 +51,7 @@ public class BackupSettings {
 
     if (directory != null && file != null) {
       final String f = file.startsWith("file://") ? file.substring("file://".length()) : file;
-      if (f.contains("..") || f.contains(File.pathSeparator))
+      if (f.contains("..") || f.contains(File.separator))
         throw new IllegalArgumentException("Backup file cannot contain path change because the directory is specified");
     }
 
@@ -71,7 +71,7 @@ public class BackupSettings {
         format = value.toLowerCase();
     } else if ("dir".equals(name)) {
       if (value != null)
-        directory = value.endsWith(File.pathSeparator) ? value : value + File.pathSeparator;
+        directory = value.endsWith(File.separator) ? value : value + File.separator;
     } else if ("f".equals(name)) {
       if (value != null)
         file = value;
