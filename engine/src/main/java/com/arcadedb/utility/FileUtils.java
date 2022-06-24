@@ -23,15 +23,13 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.log.LogManager;
 
 import java.io.*;
-import java.lang.management.ManagementFactory;
-import java.lang.management.ThreadInfo;
-import java.lang.management.ThreadMXBean;
-import java.nio.channels.FileChannel;
+import java.lang.management.*;
+import java.nio.channels.*;
 import java.nio.file.FileSystem;
 import java.nio.file.*;
-import java.util.Locale;
-import java.util.logging.Level;
-import java.util.zip.GZIPOutputStream;
+import java.util.*;
+import java.util.logging.*;
+import java.util.zip.*;
 
 public class FileUtils {
   public static final int    KILOBYTE = 1024;
@@ -345,8 +343,13 @@ public class FileUtils {
   }
 
   public static void writeContentToStream(final OutputStream output, final String iContent) throws IOException {
-    try (final OutputStreamWriter os = new OutputStreamWriter(output, DatabaseFactory.getDefaultCharset());
-        final BufferedWriter writer = new BufferedWriter(os)) {
+    try (final OutputStreamWriter os = new OutputStreamWriter(output, DatabaseFactory.getDefaultCharset())) {
+      writeContentToStream(os, iContent);
+    }
+  }
+
+  public static void writeContentToStream(final OutputStreamWriter os, final String iContent) throws IOException {
+    try (final BufferedWriter writer = new BufferedWriter(os)) {
       writer.write(iContent);
     }
   }
