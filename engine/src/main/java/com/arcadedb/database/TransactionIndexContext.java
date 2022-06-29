@@ -32,7 +32,7 @@ import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.utility.CollectionUtils;
 
 import java.util.*;
-import java.util.logging.Level;
+import java.util.logging.*;
 
 public class TransactionIndexContext {
   private final DatabaseInternal                                             database;
@@ -309,10 +309,7 @@ public class TransactionIndexContext {
   /**
    * Called at commit time in the middle of the lock to avoid concurrent insertion of the same key.
    */
-  private void checkUniqueIndexKeys(final Index index, final IndexKey key) {
-    if (!key.addOperation)
-      return;
-
+  private void checkUniqueIndexKeys(final Index index, final IndexKey key, final RID deleted) {
     final DocumentType type = database.getSchema().getType(index.getTypeName());
 
     // CHECK UNIQUENESS ACROSS ALL THE INDEXES FOR ALL THE BUCKETS
@@ -322,6 +319,10 @@ public class TransactionIndexContext {
       if (found.hasNext()) {
         final Identifiable firstEntry = found.next();
         if (found.size() > 1 || (found.size() == 1 && !firstEntry.equals(key.rid))) {
+          if (firstEntry.equals(deleted))
+            // DELETED IN TX
+            return;
+
           try {
 //            database.lookupByRID(firstEntry.getIdentity(), true);
             // NO EXCEPTION = FOUND
@@ -349,8 +350,17 @@ public class TransactionIndexContext {
         for (Map.Entry<ComparableKey, Map<IndexKey, IndexKey>> txEntriesPerKey : txEntriesPerIndex.entrySet()) {
           final Map<IndexKey, IndexKey> valuesPerKey = txEntriesPerKey.getValue();
 
-          for (IndexKey entry : valuesPerKey.values())
-            checkUniqueIndexKeys(index, entry);
+          // GET ANY DELETED OPERATION FIRST
+          RID deleted = null;
+          for (IndexKey entry : valuesPerKey.values()) {
+            if (!entry.addOperation)
+              deleted = entry.rid;
+          }
+
+          for (IndexKey entry : valuesPerKey.values()) {
+            if (entry.addOperation)
+              checkUniqueIndexKeys(index, entry, deleted);
+          }
         }
       }
     }
