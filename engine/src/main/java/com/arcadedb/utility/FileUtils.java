@@ -349,9 +349,9 @@ public class FileUtils {
   }
 
   public static void writeContentToStream(final OutputStreamWriter os, final String iContent) throws IOException {
-    try (final BufferedWriter writer = new BufferedWriter(os)) {
-      writer.write(iContent);
-    }
+    final BufferedWriter writer = new BufferedWriter(os);
+    writer.write(iContent);
+    writer.flush();
   }
 
   public static String encode(final String value, final String encoding) {
