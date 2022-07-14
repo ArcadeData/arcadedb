@@ -26,7 +26,7 @@ jobs:
           run: clean, cancel
           verbose: false
       - uses: actions/checkout@v2.4.0
-      - uses: actions/setup-python@v2
+      - uses: actions/setup-python@v4
       - uses: pre-commit/action@v2.0.3
 
       - name: Set up JDK 11
