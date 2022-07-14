@@ -211,7 +211,14 @@ public class ArcadeGraph implements Graph, Closeable {
       return resultset.stream().map(result -> (Vertex) new ArcadeVertex(this, (com.arcadedb.graph.Vertex) (result.toElement()))).iterator();
     }
 
-    ElementHelper.validateMixedElementIds(Vertex.class, vertexIds);
+//    ElementHelper.validateMixedElementIds(Vertex.class, vertexIds);
+    if (vertexIds.length > 1) {
+      final boolean element = Vertex.class.isAssignableFrom(vertexIds[0].getClass());
+      for (int i = 1; i < vertexIds.length; i++) {
+        if (Vertex.class.isAssignableFrom(vertexIds[i].getClass()) != element)
+          throw new IllegalArgumentException("id arguments must be either ids or Elements");
+      }
+    }
 
     final List<Vertex> resultSet = new ArrayList<>(vertexIds.length);
 
@@ -275,7 +282,15 @@ public class ArcadeGraph implements Graph, Closeable {
 
     }
 
-    ElementHelper.validateMixedElementIds(Vertex.class, edgeIds);
+//    ElementHelper.validateMixedElementIds(Vertex.class, edgeIds);
+    if (edgeIds.length > 1) {
+      final boolean element = Vertex.class.isAssignableFrom(edgeIds[0].getClass());
+      for (int i = 1; i < edgeIds.length; i++) {
+        if (Vertex.class.isAssignableFrom(edgeIds[i].getClass()) != element)
+          throw new IllegalArgumentException("id arguments must be either ids or Elements");
+      }
+    }
+
 
     final List<Edge> resultSet = new ArrayList<>(edgeIds.length);
 
