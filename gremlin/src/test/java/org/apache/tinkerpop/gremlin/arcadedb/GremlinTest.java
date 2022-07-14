@@ -252,7 +252,7 @@ public class GremlinTest {
       alice.addEdge("FriendOf", steve);
       steve.addEdge("FriendOf", bob);
 
-      final ArcadeGremlin gremlinReadOnly = graph.gremlin("g.E().order().by('name', asc)");
+      final ArcadeGremlin gremlinReadOnly = graph.gremlin("g.V().order().by('name', asc)");
       final ResultSet result = gremlinReadOnly.execute();
 
       Assertions.assertTrue(result.hasNext());
