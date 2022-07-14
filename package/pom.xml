@@ -26,6 +26,10 @@
     <artifactId>arcadedb-package</artifactId>
     <packaging>pom</packaging>
 
+    <properties>
+        <kubernetes-maven-plugin.version>1.8.0</kubernetes-maven-plugin.version>
+    </properties>
+
     <parent>
         <groupId>com.arcadedb</groupId>
         <artifactId>arcadedb-parent</artifactId>
@@ -143,73 +147,42 @@
             <build>
                 <plugins>
                     <plugin>
-                        <groupId>org.apache.maven.plugins</groupId>
-                        <artifactId>maven-resources-plugin</artifactId>
-                        <version>${maven-resources-plugin.version}</version>
+                        <groupId>org.eclipse.jkube</groupId>
+                        <artifactId>kubernetes-maven-plugin</artifactId>
+                        <version>${kubernetes-maven-plugin.version}</version>
                         <executions>
                             <execution>
-                                <id>docker-resources</id>
-                                <phase>validate</phase>
+                                <id>default</id>
+                                <phase>package</phase>
                                 <goals>
-                                    <goal>copy-resources</goal>
+                                    <goal>build</goal>
                                 </goals>
-                                <configuration>
-                                    <outputDirectory>${project.build.directory}</outputDirectory>
-                                    <resources>
-                                        <resource>
-                                            <directory>src/main/docker/</directory>
-                                            <filtering>false</filtering>
-                                            <excludes>
-                                                <exclude>**/*.yml</exclude>
-                                            </excludes>
-                                        </resource>
-                                    </resources>
-                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>deploy</id>
+                                <phase>deploy</phase>
+                                <goals>
+                                    <goal>push</goal>
+                                </goals>
                             </execution>
                         </executions>
-                    </plugin>
-
-                    <plugin>
-                            <groupId>com.spotify</groupId>
-                            <artifactId>dockerfile-maven-plugin</artifactId>
-                            <version>${dockerfile-maven-version}</version>
-                            <executions>
-                                <execution>
-                                    <id>default</id>
-                                    <phase>package</phase>
-                                    <goals>
-                                        <goal>build</goal>
-                                        <goal>tag</goal>
-                                    </goals>
-                                    <configuration>
-                                        <tag>latest</tag>
-                                    </configuration>
-                                </execution>
-                                <execution>
-                                    <id>tag-version</id>
-                                    <phase>package</phase>
-                                    <goals>
-                                        <goal>tag</goal>
-                                    </goals>
-                                    <configuration>
-                                        <tag>${project.version}</tag>
-                                    </configuration>
-                                </execution>
-                                <execution>
-                                    <id>deploy</id>
-                                    <phase>deploy</phase>
-                                    <goals>
-                                        <goal>push</goal>
-                                    </goals>
-                                </execution>
-                            </executions>
-                            <configuration>
-                                <buildArgs>
-                                    <ARCADEDB_VERSION>${project.version}</ARCADEDB_VERSION>
-                                </buildArgs>
-                                <repository>arcadedata/arcadedb</repository>
-                                <contextDirectory>${project.build.directory}</contextDirectory>
-                            </configuration>
+                        <configuration>
+                            <verbose>true</verbose>
+                            <images>
+                                <image>
+                                    <name>arcadedata/arcadedb</name>
+                                    <build>
+                                        <dockerFile>${project.basedir}/src/main/docker/Dockerfile</dockerFile>
+                                        <contextDir>${project.build.directory}/arcadedb-${project.version}.dir
+                                        </contextDir>
+                                        <tags>
+                                            <tag>latest</tag>
+                                            <tag>${project.version}</tag>
+                                        </tags>
+                                    </build>
+                                </image>
+                            </images>
+                        </configuration>
                     </plugin>
                 </plugins>
             </build>
