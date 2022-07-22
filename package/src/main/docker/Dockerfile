@@ -14,13 +14,11 @@
 # limitations under the License.
 #
 
-#FROM eclipse-temurin:11-jdk-alpine
-FROM azul/zulu-openjdk:11.0.15
-ARG ARCADEDB_VERSIONel
+FROM azul/zulu-openjdk-alpine:11.0.16
 
 LABEL maintainer="Arcade Data LTD (info@arcadedb.com)"
 
-ENV JAVA_OPTS=" -XX:+UnlockExperimentalVMOptions "
+ENV JAVA_OPTS=" "
 
 ENV JAVA_OPTS_SCRIPT="-Djna.nosys=true -XX:+HeapDumpOnOutOfMemoryError -Djava.awt.headless=true -Dfile.encoding=UTF8"
 
@@ -28,9 +26,7 @@ ENV ARCADEDB_OPTS_MEMORY="-Xms2G -Xmx2G"
 
 ENV ARCADEDB_JMX="-Dcom.sun.management.jmxremote=true -Dcom.sun.management.jmxremote.local.only=false -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.ssl=false -Dcom.sun.management.jmxremote.port=9999 -Dcom.sun.management.jmxremote.rmi.port=9998"
 
-RUN adduser arcadedb
-
-USER arcadedb
+RUN adduser -D -s /bin/sh arcadedb
 
 WORKDIR /home/arcadedb
 
@@ -61,4 +57,5 @@ EXPOSE 27017
 EXPOSE 9999
 EXPOSE 9998
 
-CMD ["./bin/server.sh"]
+WORKDIR "/home/arcadedb/bin"
+CMD ["./server.sh"]
