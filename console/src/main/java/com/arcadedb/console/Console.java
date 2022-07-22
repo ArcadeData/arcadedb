@@ -71,8 +71,9 @@ public class Console {
   private              String           databaseDirectory;
   private              int              verboseLevel         = 1;
 
-  private String getPrompt() {
-    return String.format(PROMPT, localDatabase != null ? "{" + localDatabase.getName() + "}" : "");
+  public Console(final DatabaseInternal database) throws IOException {
+    this(false);
+    this.localDatabase = database;
   }
 
   public Console(final boolean interactive) throws IOException {
@@ -153,10 +154,11 @@ public class Console {
     else if (this.rootDirectory.endsWith(File.separator))
       this.rootDirectory = this.rootDirectory.substring(0, this.rootDirectory.length() - 1);
 
-    if (!new File(this.rootDirectory + File.separator+ "config").exists() && new File(this.rootDirectory + File.separator + ".." +File.separator + "config").exists()) {
-      databaseDirectory = new File(this.rootDirectory).getAbsoluteFile().getParentFile().getPath() + File.separator+ "databases"+ File.separator;
+    if (!new File(this.rootDirectory + File.separator + "config").exists() && new File(
+        this.rootDirectory + File.separator + ".." + File.separator + "config").exists()) {
+      databaseDirectory = new File(this.rootDirectory).getAbsoluteFile().getParentFile().getPath() + File.separator + "databases" + File.separator;
     } else
-      databaseDirectory = this.rootDirectory + File.separator+ "databases"+ File.separator;
+      databaseDirectory = this.rootDirectory + File.separator + "databases" + File.separator;
 
     return this;
   }
@@ -505,7 +507,7 @@ public class Console {
   }
 
   private void outputLine(final String text, final Object... args) {
-    output("" + text, args);
+    output("\n" + text, args);
   }
 
   private void output(final String text, final Object... args) {
@@ -622,5 +624,9 @@ public class Console {
       }
     } else
       output("\nERROR: " + e.getMessage() + "\n");
+  }
+
+  private String getPrompt() {
+    return String.format(PROMPT, localDatabase != null ? "{" + localDatabase.getName() + "}" : "");
   }
 }
