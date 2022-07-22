@@ -208,16 +208,9 @@ public class ArcadeGraph implements Graph, Closeable {
       query.append("]");
 
       final ResultSet resultset = this.database.query("sql", query.toString());
-      return resultset.stream().map(result -> (Vertex) new ArcadeVertex(this, (com.arcadedb.graph.Vertex) (result.toElement()))).iterator();
-    }
-
-//    ElementHelper.validateMixedElementIds(Vertex.class, vertexIds);
-    if (vertexIds.length > 1) {
-      final boolean element = Vertex.class.isAssignableFrom(vertexIds[0].getClass());
-      for (int i = 1; i < vertexIds.length; i++) {
-        if (Vertex.class.isAssignableFrom(vertexIds[i].getClass()) != element)
-          throw new IllegalArgumentException("id arguments must be either ids or Elements");
-      }
+      return resultset.stream()
+              .map(result -> (Vertex) new ArcadeVertex(this, (com.arcadedb.graph.Vertex) (result.toElement())))
+              .iterator();
     }
 
     final List<Vertex> resultSet = new ArrayList<>(vertexIds.length);
@@ -278,19 +271,11 @@ public class ArcadeGraph implements Graph, Closeable {
       query.append("]");
 
       final ResultSet resultSet = this.database.query("sql", query.toString());
-      return resultSet.stream().map(result -> (Edge) new ArcadeEdge(this, (com.arcadedb.graph.Edge) result.toElement())).iterator();
+      return resultSet.stream()
+              .map(result -> (Edge) new ArcadeEdge(this, (com.arcadedb.graph.Edge) result.toElement()))
+              .iterator();
 
     }
-
-//    ElementHelper.validateMixedElementIds(Vertex.class, edgeIds);
-    if (edgeIds.length > 1) {
-      final boolean element = Vertex.class.isAssignableFrom(edgeIds[0].getClass());
-      for (int i = 1; i < edgeIds.length; i++) {
-        if (Vertex.class.isAssignableFrom(edgeIds[i].getClass()) != element)
-          throw new IllegalArgumentException("id arguments must be either ids or Elements");
-      }
-    }
-
 
     final List<Edge> resultSet = new ArrayList<>(edgeIds.length);
 
