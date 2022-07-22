@@ -97,12 +97,9 @@ import java.util.stream.*;
 public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal {
   public static final  int                                       EDGE_LIST_INITIAL_CHUNK_SIZE         = 64;
   public static final  int                                       MAX_RECOMMENDED_EDGE_LIST_CHUNK_SIZE = 8192;
-  private static final Set<String>                               SUPPORTED_FILE_EXT                   = Set.of(Dictionary.DICT_EXT,
-          Bucket.BUCKET_EXT,
-          LSMTreeIndexMutable.NOTUNIQUE_INDEX_EXT,
-          LSMTreeIndexMutable.UNIQUE_INDEX_EXT,
-          LSMTreeIndexCompacted.NOTUNIQUE_INDEX_EXT,
-          LSMTreeIndexCompacted.UNIQUE_INDEX_EXT);
+  private static final Set<String>                               SUPPORTED_FILE_EXT                   = Set.of(Dictionary.DICT_EXT, Bucket.BUCKET_EXT,
+      LSMTreeIndexMutable.NOTUNIQUE_INDEX_EXT, LSMTreeIndexMutable.UNIQUE_INDEX_EXT, LSMTreeIndexCompacted.NOTUNIQUE_INDEX_EXT,
+      LSMTreeIndexCompacted.UNIQUE_INDEX_EXT);
   public final         AtomicLong                                indexCompactions                     = new AtomicLong();
   protected final      String                                    name;
   protected final      PaginatedFile.MODE                        mode;
@@ -1003,6 +1000,8 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
       } catch (NeedRetryException | DuplicatedKeyException e) {
         // RETRY
         lastException = e;
+        if (wrappedDatabaseInstance.isTransactionActive())
+          wrappedDatabaseInstance.rollback();
       } catch (Exception e) {
         final TransactionContext tx = getTransaction();
         if (tx != null && tx.isActive())

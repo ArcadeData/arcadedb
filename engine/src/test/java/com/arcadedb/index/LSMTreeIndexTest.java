@@ -19,7 +19,10 @@
 package com.arcadedb.index;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.database.*;
+import com.arcadedb.database.Document;
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.log.LogManager;
@@ -31,8 +34,8 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.logging.Level;
+import java.util.concurrent.atomic.*;
+import java.util.logging.*;
 
 public class LSMTreeIndexTest extends TestHelper {
   private static final int    TOT       = 100000;
@@ -440,6 +443,42 @@ public class LSMTreeIndexTest extends TestHelper {
 
           Assertions.assertTrue(index.get(new Object[] { i }).hasNext(), "Cannot find item with key " + i);
         }
+      }
+    });
+  }
+
+  @Test
+  public void testChangePrimaryKeySameTx() {
+    database.transaction(() -> {
+      for (int i = 0; i < 1000; ++i) {
+        final IndexCursor cursor = database.lookupByKey(TYPE_NAME, "id", i);
+        Assertions.assertTrue(cursor.hasNext(), "Key " + i + " not found");
+
+        final Document doc = cursor.next().asDocument();
+        doc.modify().set("id", i + TOT).save();
+      }
+    });
+  }
+
+  @Test
+  public void testDeleteCreateSameKeySameTx() {
+    database.transaction(() -> {
+      for (int i = 0; i < 1000; ++i) {
+        final IndexCursor cursor = database.lookupByKey(TYPE_NAME, "id", i);
+        Assertions.assertTrue(cursor.hasNext(), "Key " + i + " not found");
+
+        final Document doc = cursor.next().asDocument();
+        doc.delete();
+
+        database.newDocument(TYPE_NAME).fromMap(doc.toMap()).set("version", 2).save();
+      }
+    }, true, 0);
+
+    database.transaction(() -> {
+      for (int i = 0; i < 1000; ++i) {
+        final IndexCursor cursor = database.lookupByKey(TYPE_NAME, "id", i);
+        Assertions.assertTrue(cursor.hasNext(), "Key " + i + " not found");
+        Assertions.assertEquals(2, cursor.next().asDocument().getInteger("version"));
       }
     });
   }

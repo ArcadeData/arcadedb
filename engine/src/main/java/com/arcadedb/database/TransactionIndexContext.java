@@ -342,27 +342,59 @@ public class TransactionIndexContext {
 
   }
 
+  /**
+   * Checks unique indexes integrity. Since a type index is composed by multiple bucket indexes, the deleted keys are first collected across all the indexes.
+   */
   private void checkUniqueIndexKeys() {
+    final Map<TypeIndex, Map<ComparableKey, RID>> deletedKeys = getTxDeletedEntries();
+
     for (Map.Entry<String, TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> indexEntries : indexEntries.entrySet()) {
-      final Index index = database.getSchema().getIndexByName(indexEntries.getKey());
+      final IndexInternal index = (IndexInternal) database.getSchema().getIndexByName(indexEntries.getKey());
+      if (index.isUnique()) {
+        final TypeIndex typeIndex = index.getTypeIndex();
+
+        final Map<ComparableKey, Map<IndexKey, IndexKey>> txEntriesPerIndex = indexEntries.getValue();
+        for (Map.Entry<ComparableKey, Map<IndexKey, IndexKey>> txEntriesPerKey : txEntriesPerIndex.entrySet()) {
+          final Map<IndexKey, IndexKey> valuesPerKey = txEntriesPerKey.getValue();
+
+          for (IndexKey entry : valuesPerKey.values()) {
+            if (entry.addOperation) {
+              final Map<ComparableKey, RID> entries = deletedKeys.get(typeIndex);
+              final RID deleted = entries != null ? entries.get(new ComparableKey(entry.keyValues)) : null;
+              checkUniqueIndexKeys(index, entry, deleted);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  private Map<TypeIndex, Map<ComparableKey, RID>> getTxDeletedEntries() {
+    // GET ANY DELETED OPERATION FIRST
+    final Map<TypeIndex, Map<ComparableKey, RID>> deletedKeys = new HashMap<>();
+
+    for (Map.Entry<String, TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> indexEntries : indexEntries.entrySet()) {
+      final IndexInternal index = (IndexInternal) database.getSchema().getIndexByName(indexEntries.getKey());
       if (index.isUnique()) {
         final Map<ComparableKey, Map<IndexKey, IndexKey>> txEntriesPerIndex = indexEntries.getValue();
         for (Map.Entry<ComparableKey, Map<IndexKey, IndexKey>> txEntriesPerKey : txEntriesPerIndex.entrySet()) {
           final Map<IndexKey, IndexKey> valuesPerKey = txEntriesPerKey.getValue();
 
-          // GET ANY DELETED OPERATION FIRST
-          RID deleted = null;
           for (IndexKey entry : valuesPerKey.values()) {
-            if (!entry.addOperation)
-              deleted = entry.rid;
-          }
+            if (!entry.addOperation) {
+              final TypeIndex typeIndex = index.getTypeIndex();
+              Map<ComparableKey, RID> entries = deletedKeys.get(typeIndex);
+              if (entries == null) {
+                entries = new HashMap<>();
+                deletedKeys.put(typeIndex, entries);
+              }
 
-          for (IndexKey entry : valuesPerKey.values()) {
-            if (entry.addOperation)
-              checkUniqueIndexKeys(index, entry, deleted);
+              entries.put(new ComparableKey(entry.keyValues), entry.rid);
+            }
           }
         }
       }
     }
+    return deletedKeys;
   }
 }
