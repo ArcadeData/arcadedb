@@ -362,7 +362,7 @@ public enum Type {
         // we will add all of the items in the collection to a set.  Otherwise
         // we will create a singleton set with only the value in it.
         if (iValue instanceof Collection<?>) {
-            final Set<Object> set = new HashSet<Object>((Collection<? extends Object>) iValue);
+          final Set<Object> set = new HashSet<Object>((Collection<? extends Object>) iValue);
           return set;
         } else {
           return Collections.singleton(iValue);
@@ -373,7 +373,7 @@ public enum Type {
         // we will add all of the items in the collection to a List.  Otherwise
         // we will create a singleton List with only the value in it.
         if (iValue instanceof Collection<?>) {
-            final List<Object> list = new ArrayList<Object>((Collection<? extends Object>) iValue);
+          final List<Object> list = new ArrayList<Object>((Collection<? extends Object>) iValue);
           return list;
         } else {
           return Collections.singletonList(iValue);
@@ -384,7 +384,7 @@ public enum Type {
         // we will return a list if the value is a collection or
         // a singleton set if the value is not a collection.
         if (iValue instanceof Collection<?>) {
-            final List<Object> set = new ArrayList<Object>((Collection<? extends Object>) iValue);
+          final List<Object> set = new ArrayList<Object>((Collection<? extends Object>) iValue);
           return set;
         } else {
           return Collections.singleton(iValue);
@@ -396,14 +396,24 @@ public enum Type {
         if (iValue instanceof Calendar)
           return ((Calendar) iValue).getTime();
         if (iValue instanceof String) {
-          if (FileUtils.isLong(iValue.toString()))
+          final String valueAsString = (String) iValue;
+          if (FileUtils.isLong(valueAsString))
             return new Date(Long.parseLong(iValue.toString()));
           if (database != null)
             try {
-              return new SimpleDateFormat(database.getSchema().getDateTimeFormat()).parse((String) iValue);
+              return new SimpleDateFormat(database.getSchema().getDateTimeFormat()).parse(valueAsString);
             } catch (ParseException ignore) {
-              return new SimpleDateFormat(database.getSchema().getDateFormat()).parse((String) iValue);
+              return new SimpleDateFormat(database.getSchema().getDateFormat()).parse(valueAsString);
             }
+          else {
+            // GUESS FORMAT BY STRING LENGTH
+            if (valueAsString.length() == "yyyy-MM-dd".length())
+              return new SimpleDateFormat("yyyy-MM-dd").parse(valueAsString);
+            else if (valueAsString.length() == "yyyy-MM-dd HH:mm:ss".length())
+              return new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").parse(valueAsString);
+            else if (valueAsString.length() == "yyyy-MM-dd HH:mm:ss.SSS".length())
+              return new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS").parse(valueAsString);
+          }
         }
       } else if (iTargetClass.equals(Identifiable.class)) {
         if (MultiValue.isMultiValue(iValue)) {
