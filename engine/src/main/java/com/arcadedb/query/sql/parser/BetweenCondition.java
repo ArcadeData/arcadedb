@@ -23,6 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.schema.Type;
 
 import java.util.*;
 
@@ -42,7 +43,7 @@ public class BetweenCondition extends BooleanExpression {
 
   @Override
   public boolean evaluate(Identifiable currentRecord, CommandContext ctx) {
-    Object firstValue = first.execute(currentRecord, ctx);
+    final Object firstValue = first.execute(currentRecord, ctx);
     if (firstValue == null) {
       return false;
     }
@@ -52,13 +53,14 @@ public class BetweenCondition extends BooleanExpression {
       return false;
     }
 
-//    secondValue = OType.convert(secondValue, firstValue.getClass());
+    secondValue = Type.convert(ctx.getDatabase(), secondValue, firstValue.getClass());
 
     Object thirdValue = third.execute(currentRecord, ctx);
     if (thirdValue == null) {
       return false;
     }
-//    thirdValue = OType.convert(thirdValue, firstValue.getClass());
+
+    thirdValue = Type.convert(ctx.getDatabase(), thirdValue, firstValue.getClass());
 
     final int leftResult = ((Comparable<Object>) firstValue).compareTo(secondValue);
     final int rightResult = ((Comparable<Object>) firstValue).compareTo(thirdValue);
@@ -68,7 +70,7 @@ public class BetweenCondition extends BooleanExpression {
 
   @Override
   public boolean evaluate(Result currentRecord, CommandContext ctx) {
-    Object firstValue = first.execute(currentRecord, ctx);
+    final Object firstValue = first.execute(currentRecord, ctx);
     if (firstValue == null) {
       return false;
     }
@@ -78,13 +80,13 @@ public class BetweenCondition extends BooleanExpression {
       return false;
     }
 
-//    secondValue = OType.convert(secondValue, firstValue.getClass());
+    secondValue = Type.convert(ctx.getDatabase(), secondValue, firstValue.getClass());
 
     Object thirdValue = third.execute(currentRecord, ctx);
     if (thirdValue == null) {
       return false;
     }
-//    thirdValue = OType.convert(thirdValue, firstValue.getClass());
+    thirdValue = Type.convert(ctx.getDatabase(), thirdValue, firstValue.getClass());
 
     final int leftResult = ((Comparable<Object>) firstValue).compareTo(secondValue);
     final int rightResult = ((Comparable<Object>) firstValue).compareTo(thirdValue);
@@ -172,13 +174,13 @@ public class BetweenCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    BetweenCondition that = (BetweenCondition) o;
+    final BetweenCondition that = (BetweenCondition) o;
 
     if (first != null ? !first.equals(that.first) : that.first != null)
       return false;
@@ -197,7 +199,7 @@ public class BetweenCondition extends BooleanExpression {
 
   @Override
   public List<String> getMatchPatternInvolvedAliases() {
-    List<String> result = new ArrayList<>();
+    final List<String> result = new ArrayList<>();
     List<String> x = first.getMatchPatternInvolvedAliases();
     if (x != null) {
       result.addAll(x);
