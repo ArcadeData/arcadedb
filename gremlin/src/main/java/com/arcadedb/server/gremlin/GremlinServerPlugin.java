@@ -31,6 +31,7 @@ import org.apache.tinkerpop.gremlin.server.Settings;
 import java.io.File;
 import java.io.FileInputStream;
 import java.lang.reflect.Field;
+import java.util.*;
 import java.util.logging.Level;
 
 public class GremlinServerPlugin implements ServerPlugin {
@@ -63,6 +64,12 @@ public class GremlinServerPlugin implements ServerPlugin {
     if (settings == null)
       // DEFAULT CONFIGURATION
       settings = new Settings();
+
+    // OVEWRITE AUTHENTICATION USING THE SERVER SECURITY
+    settings.authentication = new Settings.AuthenticationSettings();
+    settings.authentication.authenticator = GremlinServerAuthenticator.class.getName();
+    settings.authentication.config = new HashMap<>(1);
+    settings.authentication.config.put("server", server);
 
     for (String key : configuration.getContextKeys()) {
       if (key.startsWith("gremlin.")) {
