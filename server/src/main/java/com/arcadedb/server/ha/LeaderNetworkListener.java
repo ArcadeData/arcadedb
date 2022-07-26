@@ -71,7 +71,7 @@ public class LeaderNetworkListener extends Thread {
 
         } catch (Exception e) {
           if (active)
-            LogManager.instance().log(this, Level.WARNING, "Error on connection from another server (error=%s)", e, e.getMessage());
+            LogManager.instance().log(this, Level.WARNING, "Error on connection from another server (error=%s)", e.getMessage());
         }
       }
     } finally {
@@ -145,7 +145,8 @@ public class LeaderNetworkListener extends Thread {
       }
     }
 
-    LogManager.instance().log(this, Level.SEVERE, "Unable to listen for connections using the configured ports '%s' on host '%s'", null, hostPortRange, hostName);
+    LogManager.instance()
+        .log(this, Level.SEVERE, "Unable to listen for connections using the configured ports '%s' on host '%s'", null, hostPortRange, hostName);
 
     throw new ServerException("Unable to listen for connections using the configured ports '" + hostPortRange + "' on host '" + hostName + "'");
   }
@@ -229,8 +230,9 @@ public class LeaderNetworkListener extends Thread {
         ha.startElection();
 
     } else if (ha.lastElectionVote == null || ha.lastElectionVote.getFirst() < voteTurn) {
-      LogManager.instance().log(this, Level.INFO, "Server '%s' asked for election (lastReplicationMessage=%d my=%d) on turn %d, giving my vote", remoteServerName,
-          lastReplicationMessage, localServerLastMessageNumber, voteTurn);
+      LogManager.instance()
+          .log(this, Level.INFO, "Server '%s' asked for election (lastReplicationMessage=%d my=%d) on turn %d, giving my vote", remoteServerName,
+              lastReplicationMessage, localServerLastMessageNumber, voteTurn);
       channel.writeByte((byte) 0);
       ha.lastElectionVote = new Pair<>(voteTurn, remoteServerName);
       ha.setElectionStatus(HAServer.ELECTION_STATUS.VOTING_FOR_OTHERS);
