@@ -18,7 +18,13 @@
  */
 package com.arcadedb.console;
 
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.Vertex;
+import com.arcadedb.index.IndexCursor;
+import com.arcadedb.schema.DocumentType;
 import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
@@ -27,6 +33,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
+import java.text.*;
+import java.util.*;
 
 public class ConsoleTest {
   private static final String  DB_NAME = "console";
@@ -139,4 +147,43 @@ public class ConsoleTest {
     Assertions.assertTrue(buffer.toString().contains("Elon"));
   }
 
+  @Test
+  public void testImportNeo4jConsoleOK() throws IOException {
+    final String DATABASE_PATH = "testNeo4j";
+
+    FileUtils.deleteRecursively(new File("databases/" + DATABASE_PATH));
+
+    Console.main(new String[] { "create database " + DATABASE_PATH + ";import database file://src/test/resources/neo4j-export-mini.jsonl" });
+
+    try (final DatabaseFactory factory = new DatabaseFactory("databases/" + DATABASE_PATH)) {
+      try (Database database = factory.open()) {
+        DocumentType personType = database.getSchema().getType("User");
+        Assertions.assertNotNull(personType);
+        Assertions.assertEquals(3, database.countType("User", true));
+
+        IndexCursor cursor = database.lookupByKey("User", "id", "0");
+        Assertions.assertTrue(cursor.hasNext());
+        Vertex v = cursor.next().asVertex();
+        Assertions.assertEquals("Adam", v.get("name"));
+        Assertions.assertEquals("2015-07-04T19:32:24", new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss").format(v.getLong("born")));
+
+        Map<String, Object> place = (Map<String, Object>) v.get("place");
+        Assertions.assertEquals(33.46789, ((Number) place.get("latitude")).doubleValue());
+        Assertions.assertNull(place.get("height"));
+
+        Assertions.assertEquals(Arrays.asList("Sam", "Anna", "Grace"), v.get("kids"));
+
+        DocumentType friendType = database.getSchema().getType("KNOWS");
+        Assertions.assertNotNull(friendType);
+        Assertions.assertEquals(1, database.countType("KNOWS", true));
+
+        Iterator<Edge> relationships = v.getEdges(Vertex.DIRECTION.OUT, "KNOWS").iterator();
+        Assertions.assertTrue(relationships.hasNext());
+        Edge e = relationships.next();
+
+        Assertions.assertEquals(1993, e.get("since"));
+        Assertions.assertEquals("P5M1DT12H", e.get("bffSince"));
+      }
+    }
+  }
 }

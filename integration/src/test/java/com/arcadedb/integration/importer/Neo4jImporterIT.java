@@ -38,7 +38,7 @@ public class Neo4jImporterIT {
   private final static String DATABASE_PATH = "target/databases/neo4j";
 
   @Test
-  public void testImportOK() throws IOException {
+  public void testImportNeo4jDirectOK() throws IOException {
     final File databaseDirectory = new File(DATABASE_PATH);
 
     try {
