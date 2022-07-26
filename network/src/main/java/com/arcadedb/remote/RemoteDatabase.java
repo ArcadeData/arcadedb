@@ -291,8 +291,11 @@ public class RemoteDatabase extends RWLockContext {
 
     Pair<String, Integer> connectToServer = leaderIsPreferable ? leaderServer : new Pair<>(currentServer, currentPort);
 
+    String server = null;
+
     for (int retry = 0; retry < maxRetry && connectToServer != null; ++retry) {
-      String url = protocol + "://" + connectToServer.getFirst() + ":" + connectToServer.getSecond() + "/api/v" + apiVersion + "/" + operation;
+      server = connectToServer.getFirst() + ":" + connectToServer.getSecond();
+      String url = protocol + "://" + server + "/api/v" + apiVersion + "/" + operation;
 
       if (extendedURL != null)
         url += "/" + extendedURL;
@@ -429,7 +432,7 @@ public class RemoteDatabase extends RWLockContext {
     if (lastException instanceof RuntimeException)
       throw (RuntimeException) lastException;
 
-    throw new RemoteException("Error on executing remote operation " + operation + " (retry=" + maxRetry + ")", lastException);
+    throw new RemoteException("Error on executing remote operation '" + operation + "' (server=" + server + " retry=" + maxRetry + ")", lastException);
   }
 
   public int getApiVersion() {

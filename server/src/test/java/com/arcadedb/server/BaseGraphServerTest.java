@@ -254,9 +254,10 @@ public abstract class BaseGraphServerTest {
       config.setValue(GlobalConfiguration.SERVER_NAME, Constants.PRODUCT + "_" + i);
       config.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, "./target/databases" + i);
       config.setValue(GlobalConfiguration.HA_SERVER_LIST, serverURLs);
-      config.setValue(GlobalConfiguration.HA_REPLICATION_INCOMING_HOST, "0.0.0.0");
+      config.setValue(GlobalConfiguration.HA_REPLICATION_INCOMING_HOST, "localhost");
+      config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_HOST, "localhost");
       config.setValue(GlobalConfiguration.HA_ENABLED, getServerCount() > 1);
-      config.setValue(GlobalConfiguration.NETWORK_SOCKET_TIMEOUT, 2000);
+      //config.setValue(GlobalConfiguration.NETWORK_SOCKET_TIMEOUT, 2000);
 
       onServerConfiguration(config);
 
