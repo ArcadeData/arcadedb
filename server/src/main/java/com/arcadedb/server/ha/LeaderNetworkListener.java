@@ -71,7 +71,7 @@ public class LeaderNetworkListener extends Thread {
 
         } catch (Exception e) {
           if (active)
-            LogManager.instance().log(this, Level.WARNING, "Error on connection from another server (error=%s)", e);
+            LogManager.instance().log(this, Level.WARNING, "Error on connection from another server (error=%s)", e, e.getMessage());
         }
       }
     } finally {

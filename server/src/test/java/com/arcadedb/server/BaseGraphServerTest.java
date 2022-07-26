@@ -246,11 +246,7 @@ public abstract class BaseGraphServerTest {
       if (i > 0)
         serverURLs += ",";
 
-      try {
-        serverURLs += (InetAddress.getLocalHost().getHostName()) + ":" + (port++);
-      } catch (UnknownHostException e) {
-        e.printStackTrace();
-      }
+      serverURLs += "localhost:" + (port++);
     }
 
     for (int i = 0; i < totalServers; ++i) {
@@ -260,6 +256,7 @@ public abstract class BaseGraphServerTest {
       config.setValue(GlobalConfiguration.HA_SERVER_LIST, serverURLs);
       config.setValue(GlobalConfiguration.HA_REPLICATION_INCOMING_HOST, "0.0.0.0");
       config.setValue(GlobalConfiguration.HA_ENABLED, getServerCount() > 1);
+      config.setValue(GlobalConfiguration.NETWORK_SOCKET_TIMEOUT, 2000);
 
       onServerConfiguration(config);
 
@@ -433,7 +430,7 @@ public abstract class BaseGraphServerTest {
 
     for (int i = 0; i < getServerCount(); ++i)
       FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_DATABASE_DIRECTORY.getValueAsString() + i + File.separator));
-    FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_ROOT_PATH.getValueAsString() + File.separator+ "replication"));
+    FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_ROOT_PATH.getValueAsString() + File.separator + "replication"));
   }
 
   protected void checkDatabasesAreIdentical() {

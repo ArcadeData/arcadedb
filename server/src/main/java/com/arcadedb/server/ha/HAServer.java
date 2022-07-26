@@ -167,11 +167,11 @@ public class HAServer implements ServerPlugin {
 
     serverAddress = listener.getHost();
     if (serverAddress.equals("0.0.0.0")) {
-      try {
-        serverAddress = InetAddress.getLocalHost().getHostAddress();
-      } catch (UnknownHostException e) {
-        // IGNORE IT
-      }
+//      try {
+        serverAddress = "localhost";//InetAddress.getLocalHost().getHostAddress();
+//      } catch (UnknownHostException e) {
+//        // IGNORE IT
+//      }
     }
 
     if (GlobalConfiguration.HA_K8S.getValueAsBoolean()) {

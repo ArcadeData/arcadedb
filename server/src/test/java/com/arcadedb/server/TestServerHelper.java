@@ -28,7 +28,6 @@ import com.arcadedb.utility.CallableNoReturn;
 import com.arcadedb.utility.CallableParameterNoReturn;
 import org.junit.jupiter.api.Assertions;
 
-import java.net.*;
 import java.util.*;
 import java.util.logging.*;
 
@@ -47,11 +46,7 @@ public abstract class TestServerHelper {
       if (i > 0)
         serverURLs += ",";
 
-      try {
-        serverURLs += (InetAddress.getLocalHost().getHostName()) + ":" + (port++);
-      } catch (UnknownHostException e) {
-        e.printStackTrace();
-      }
+      serverURLs += "localhost:" + (port++);
     }
 
     for (int i = 0; i < totalServers; ++i) {
@@ -61,6 +56,7 @@ public abstract class TestServerHelper {
       config.setValue(GlobalConfiguration.HA_SERVER_LIST, serverURLs);
       config.setValue(GlobalConfiguration.HA_REPLICATION_INCOMING_HOST, "0.0.0.0");
       config.setValue(GlobalConfiguration.HA_ENABLED, totalServers > 1);
+      config.setValue(GlobalConfiguration.NETWORK_SOCKET_TIMEOUT, 2000);
 
       if (onServerConfigurationCallback != null)
         onServerConfigurationCallback.call(config);
