@@ -18,24 +18,24 @@
  */
 package com.arcadedb.integration.importer;
 
-import com.arcadedb.integration.importer.format.*;
+import com.arcadedb.integration.importer.format.CSVImporterFormat;
+import com.arcadedb.integration.importer.format.FormatImporter;
+import com.arcadedb.integration.importer.format.JSONImporterFormat;
+import com.arcadedb.integration.importer.format.Neo4jImporterFormat;
+import com.arcadedb.integration.importer.format.OrientDBImporterFormat;
+import com.arcadedb.integration.importer.format.RDFImporterFormat;
+import com.arcadedb.integration.importer.format.XMLImporterFormat;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.FileUtils;
 
-import java.io.BufferedInputStream;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.IOException;
-import java.lang.reflect.InvocationTargetException;
-import java.net.HttpURLConnection;
-import java.net.URL;
+import java.io.*;
+import java.lang.reflect.*;
+import java.net.*;
 import java.util.*;
-import java.util.concurrent.Callable;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.logging.Level;
-import java.util.zip.GZIPInputStream;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipInputStream;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+import java.util.logging.*;
+import java.util.zip.*;
 
 public class SourceDiscovery {
   private static final String RESOURCE_SEPARATOR = ":::";
@@ -99,30 +99,29 @@ public class SourceDiscovery {
 
     connection.connect();
 
-    return getSourceFromContent(new BufferedInputStream(connection.getInputStream()), connection.getContentLengthLong(), resource,
-            source -> {
-                try {
-                    connection.disconnect();
+    return getSourceFromContent(new BufferedInputStream(connection.getInputStream()), connection.getContentLengthLong(), resource, source -> {
+      try {
+        connection.disconnect();
 
-                    final HttpURLConnection connection1 = (HttpURLConnection) new URL(urlPath).openConnection();
-                    connection1.setRequestMethod("GET");
-                    connection1.setDoOutput(true);
-                    connection1.connect();
+        final HttpURLConnection connection1 = (HttpURLConnection) new URL(urlPath).openConnection();
+        connection1.setRequestMethod("GET");
+        connection1.setDoOutput(true);
+        connection1.connect();
 
-                    if (source.inputStream instanceof GZIPInputStream)
-                        source.inputStream = new GZIPInputStream(connection1.getInputStream(), 2048);
-                    else if (source.inputStream instanceof ZipInputStream)
-                        source.inputStream = new ZipInputStream(connection1.getInputStream());
-                    else
-                        source.inputStream = new BufferedInputStream(connection1.getInputStream());
-                } catch (Exception e) {
-                    throw new ImportException("Error on reset remote resource", e);
-                }
-                return null;
-            }, () -> {
-                connection.disconnect();
-                return null;
-            });
+        if (source.inputStream instanceof GZIPInputStream)
+          source.inputStream = new GZIPInputStream(connection1.getInputStream(), 2048);
+        else if (source.inputStream instanceof ZipInputStream)
+          source.inputStream = new ZipInputStream(connection1.getInputStream());
+        else
+          source.inputStream = new BufferedInputStream(connection1.getInputStream());
+      } catch (Exception e) {
+        throw new ImportException("Error on reset remote resource", e);
+      }
+      return null;
+    }, () -> {
+      connection.disconnect();
+      return null;
+    });
   }
 
   private Source getSourceFromFile(final String path) throws IOException {
@@ -138,24 +137,32 @@ public class SourceDiscovery {
     }
 
     final File file = new File(filePath);
-    final BufferedInputStream fis = new BufferedInputStream(new FileInputStream(file));
+
+    final InputStream fis;
+    if (file.exists())
+      fis = new BufferedInputStream(new FileInputStream(file));
+    else {
+      fis = getClass().getClassLoader().getResourceAsStream(filePath);
+      if (fis == null)
+        throw new FileNotFoundException(filePath);
+    }
 
     return getSourceFromContent(fis, file.length(), resource, source -> {
-        try {
-            source.inputStream.close();
-            if (source.inputStream instanceof GZIPInputStream)
-                source.inputStream = new GZIPInputStream(new FileInputStream(file), 2048);
-            else if (source.inputStream instanceof ZipInputStream)
-                source.inputStream = new ZipInputStream(new FileInputStream(file));
-            else
-                source.inputStream = new BufferedInputStream(new FileInputStream(file));
-        } catch (IOException e) {
-            throw new ImportException("Error on reset local resource", e);
-        }
-        return null;
+      try {
+        source.inputStream.close();
+        if (source.inputStream instanceof GZIPInputStream)
+          source.inputStream = new GZIPInputStream(new FileInputStream(file), 2048);
+        else if (source.inputStream instanceof ZipInputStream)
+          source.inputStream = new ZipInputStream(new FileInputStream(file));
+        else
+          source.inputStream = new BufferedInputStream(new FileInputStream(file));
+      } catch (IOException e) {
+        throw new ImportException("Error on reset local resource", e);
+      }
+      return null;
     }, () -> {
-        fis.close();
-        return null;
+      fis.close();
+      return null;
     });
   }
 
@@ -223,7 +230,7 @@ public class SourceDiscovery {
         return new JSONImporterFormat();
       } else if (knownFileType.equalsIgnoreCase("xml")) {
         return new XMLImporterFormat();
-      } else if (knownFileType.equalsIgnoreCase("graphml")){
+      } else if (knownFileType.equalsIgnoreCase("graphml")) {
 
         try {
           final Class<FormatImporter> clazz = (Class<FormatImporter>) Class.forName("com.arcadedb.gremlin.integration.importer.format.GraphMLImporterFormat");
@@ -232,7 +239,7 @@ public class SourceDiscovery {
           LogManager.instance().log(this, Level.SEVERE, "Impossible to find importer for 'graphml' ", e);
         }
 
-      } else if (knownFileType.equalsIgnoreCase("graphson")){
+      } else if (knownFileType.equalsIgnoreCase("graphson")) {
 
         try {
           final Class<FormatImporter> clazz = (Class<FormatImporter>) Class.forName("com.arcadedb.gremlin.integration.importer.format.GraphSONImporterFormat");
@@ -293,9 +300,9 @@ public class SourceDiscovery {
 
       final ArrayList<Map.Entry<Character, AtomicInteger>> list = new ArrayList(candidateSeparators.entrySet());
       list.sort((o1, o2) -> {
-          if (o1.getValue().get() == o2.getValue().get())
-              return 0;
-          return o1.getValue().get() < o2.getValue().get() ? 1 : -1;
+        if (o1.getValue().get() == o2.getValue().get())
+          return 0;
+        return o1.getValue().get() < o2.getValue().get() ? 1 : -1;
       });
 
       final Map.Entry<Character, AtomicInteger> bestSeparator = list.get(0);
@@ -373,6 +380,8 @@ public class SourceDiscovery {
 
       if (buffer.toString().startsWith("\"info\":{\"name\":\""))
         return new OrientDBImporterFormat();
+      else if (buffer.toString().startsWith("\"type\":\"node\",\"id\":\""))
+        return new Neo4jImporterFormat();
 
       return new JSONImporterFormat();
     }
@@ -399,7 +408,7 @@ public class SourceDiscovery {
       throw new IllegalArgumentException("Invalid setting '" + name + "'");
   }
 
-  private Source getSourceFromContent(final BufferedInputStream in, final long totalSize, final String resource,
+  private Source getSourceFromContent(final InputStream in, final long totalSize, final String resource,
       final com.arcadedb.utility.Callable<Void, Source> resetCallback, final Callable<Void> closeCallback) throws IOException {
     in.mark(0);
 

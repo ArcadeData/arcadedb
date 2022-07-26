@@ -69,6 +69,8 @@ public class Parser {
   public boolean isAvailable() throws IOException {
     if (limit > 0)
       return position.get() < limit && is.available() > 0;
+    if( reader.ready() )
+      return true;
     return is.available() > 0;
   }
 

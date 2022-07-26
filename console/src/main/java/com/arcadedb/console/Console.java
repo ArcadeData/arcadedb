@@ -123,7 +123,11 @@ public class Console {
   }
 
   public static void main(String[] args) throws IOException {
-    new Console(true);
+    if (args.length > 0) {
+      final Console console = new Console(false);
+      console.parse(args[0], false);
+    } else
+      new Console(true);
   }
 
   public void close() {

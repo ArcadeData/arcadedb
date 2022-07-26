@@ -57,9 +57,9 @@ public class Neo4jImporter {
   private              String                         inputFile;
   private              boolean                        overwriteDatabase     = false;
   private              Type                           typeForDecimals       = Type.DECIMAL;
-  private  final       Map<String, Long>              totalVerticesByType   = new HashMap<>();
+  private final        Map<String, Long>              totalVerticesByType   = new HashMap<>();
   private              long                           totalVerticesParsed   = 0L;
-  private  final       Map<String, Long>              totalEdgesByType      = new HashMap<>();
+  private final        Map<String, Long>              totalEdgesByType      = new HashMap<>();
   private              long                           totalEdgesParsed      = 0L;
   private              long                           totalAttributesParsed = 0L;
   private              long                           errors                = 0L;
@@ -115,17 +115,15 @@ public class Neo4jImporter {
       syntaxError("Missing input file. Use -f <file-path>");
   }
 
+  public Neo4jImporter(final Database database) {
+    this.database = database;
+  }
+
   public static void main(final String[] args) throws IOException {
     new Neo4jImporter(args).run();
   }
 
   public void run() throws IOException {
-    file = new File(inputFile);
-    if (!file.exists()) {
-      error = true;
-      throw new IllegalArgumentException("File '" + inputFile + "' not found");
-    }
-
     if (databasePath == null)
       log("Checking Neo4j database from file '%s'...", inputFile);
     else {
@@ -241,9 +239,9 @@ public class Neo4jImporter {
 
   private void inferPropertyType(final JSONObject json, final String label) {
     // TRY TO INFER PROPERTY TYPES
-      Map<String, Type> typeProperties = schemaProperties.computeIfAbsent(label, k -> new HashMap<>());
+    Map<String, Type> typeProperties = schemaProperties.computeIfAbsent(label, k -> new HashMap<>());
 
-      final JSONObject properties = json.getJSONObject("properties");
+    final JSONObject properties = json.getJSONObject("properties");
     for (String propName : properties.keySet()) {
       ++totalAttributesParsed;
 
@@ -441,13 +439,25 @@ public class Neo4jImporter {
     return result;
   }
 
+  public InputStream openInputStream() throws IOException {
+    file = new File(inputFile);
+    if (!file.exists()) {
+      error = true;
+      throw new IllegalArgumentException("File '" + inputFile + "' not found");
+    }
+
+    return file.getName().endsWith("gz") ? new GZIPInputStream(new FileInputStream(file)) : new FileInputStream(file);
+  }
+
   private void readFile(Callable<Void, JSONObject> callback) throws IOException {
-    inputStream = file.getName().endsWith("gz") ? new GZIPInputStream(new FileInputStream(file)) : new FileInputStream(file);
+    inputStream = openInputStream();
     try {
       final BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, DatabaseFactory.getDefaultCharset()));
       try {
-        for (long lineNumber = 0; reader.ready(); ++lineNumber) {
+        for (long lineNumber = 0; ; ++lineNumber) {
           final String line = reader.readLine();
+          if (line == null)
+            break;
 
           try {
             final JSONObject json = new JSONObject(line);
