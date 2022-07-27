@@ -34,7 +34,7 @@
     <packaging>jar</packaging>
 
     <properties>
-        <gremlin.version>3.6.0</gremlin.version>
+        <gremlin.version>3.6.1</gremlin.version>
         <translation.version>1.0.4</translation.version>
     </properties>
 
@@ -120,7 +120,7 @@
                     <minimizeJar>false</minimizeJar>
                     <promoteTransitiveDependencies>true</promoteTransitiveDependencies>
                     <transformers>
-                        <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer" />
+                        <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
                         <transformer implementation="org.apache.maven.plugins.shade.resource.ApacheLicenseResourceTransformer"/>
                         <transformer implementation="org.apache.maven.plugins.shade.resource.ApacheNoticeResourceTransformer">
                             <addHeader>false</addHeader>
