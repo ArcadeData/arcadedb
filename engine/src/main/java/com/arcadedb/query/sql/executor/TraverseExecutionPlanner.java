@@ -60,7 +60,7 @@ public class TraverseExecutionPlanner {
   public InternalExecutionPlan createExecutionPlan(CommandContext ctx, boolean enableProfiling) {
     SelectExecutionPlan result = new SelectExecutionPlan(ctx);
 
-    handleFetchFromTarger(result, ctx, enableProfiling);
+    handleFetchFromTarget(result, ctx, enableProfiling);
 
     handleTraversal(result, ctx, enableProfiling);
 
@@ -86,7 +86,7 @@ public class TraverseExecutionPlanner {
     //TODO
   }
 
-  private void handleFetchFromTarger(SelectExecutionPlan result, CommandContext ctx, boolean profilingEnabled) {
+  private void handleFetchFromTarget(SelectExecutionPlan result, CommandContext ctx, boolean profilingEnabled) {
 
     FromItem target = this.target == null ? null : this.target.getItem();
     if (target == null) {

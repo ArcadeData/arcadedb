@@ -19,12 +19,11 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Document;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
-import com.arcadedb.database.Record;
 import com.arcadedb.schema.Type;
 
-import java.util.Arrays;
-import java.util.Set;
+import java.util.*;
 
 public class QueryOperatorEquals {
   public static boolean equals(Object iLeft, Object iRight) {
@@ -52,13 +51,12 @@ public class QueryOperatorEquals {
     }
 
     // RECORD & ORID
-    if (iLeft instanceof Record)
-      return comparesValues(iRight, (Record) iLeft, true);
-    else if (iRight instanceof Record)
-      return comparesValues(iLeft, (Record) iRight, true);
-    else if (iRight instanceof Result) {
+    if (iLeft instanceof Identifiable)
+      return comparesValues(iRight, (Identifiable) iLeft, true);
+    else if (iRight instanceof Identifiable)
+      return comparesValues(iLeft, (Identifiable) iRight, true);
+    else if (iRight instanceof Result)
       return comparesValues(iLeft, (Result) iRight, true);
-    }
 
     // NUMBERS
     if (iLeft instanceof Number && iRight instanceof Number) {
@@ -81,29 +79,33 @@ public class QueryOperatorEquals {
     }
   }
 
-  protected static boolean comparesValues(final Object iValue, final Record iRecord, final boolean iConsiderIn) {
+  protected static boolean comparesValues(Object value, final Identifiable record, final boolean iConsiderIn) {
     // ORID && RECORD
-    final RID other = iRecord.getIdentity();
+    final RID other = record.getIdentity();
 
-    if (iRecord instanceof Document && iRecord.getIdentity() == null) {
-      // ODOCUMENT AS RESULT OF SUB-QUERY: GET THE FIRST FIELD IF ANY
-      final Set<String> firstFieldName = ((Document) iRecord).getPropertyNames();
+    if (record instanceof Document && record.getIdentity() == null) {
+      // DOCUMENT AS RESULT OF SUB-QUERY: GET THE FIRST FIELD IF ANY
+      final Set<String> firstFieldName = ((Document) record).getPropertyNames();
       if (!firstFieldName.isEmpty()) {
-        Object fieldValue = ((Document) iRecord).get(firstFieldName.iterator().next());
+        Object fieldValue = ((Document) record).get(firstFieldName.iterator().next());
         if (fieldValue != null) {
           if (iConsiderIn && MultiValue.isMultiValue(fieldValue)) {
             for (Object o : MultiValue.getMultiValueIterable(fieldValue, false)) {
-              if (o != null && o.equals(iValue))
+              if (o != null && o.equals(value))
                 return true;
             }
           }
 
-          return fieldValue.equals(iValue);
+          return fieldValue.equals(value);
         }
       }
       return false;
     }
-    return other.equals(iValue);
+
+    if (value instanceof String && RID.is(value))
+      value = new RID(other.getDatabase(), (String) value);
+
+    return other.equals(value);
   }
 
   protected static boolean comparesValues(final Object iValue, final Result iRecord, final boolean iConsiderIn) {
