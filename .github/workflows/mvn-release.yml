@@ -36,7 +36,7 @@ jobs:
         run: mvn versions:set "-DnewVersion=${{ github.event.inputs.releaseversion }}" --no-transfer-progress
 
       - name: Publish package
-        run: mvn -Pdeploy,deploy-central -Pdocker  --batch-mode  --errors --fail-at-end --show-version  --file pom.xml -DskipTests=true deploy
+        run: mvn -Pdeploy,deploy-central -Pdocker  --batch-mode  --errors --fail-at-end --show-version  --file pom.xml -DskipTests=true -pl !e2e deploy
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MAVEN_USERNAME: ${{ secrets.OSSRH_USERNAME }}
