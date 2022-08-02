@@ -14,13 +14,11 @@
 # limitations under the License.
 #
 
-FROM eclipse-temurin:11.0.13_8-jdk-alpine
-
-ARG ARCADEDB_VERSION
+FROM azul/zulu-openjdk-alpine:11.0.16
 
 LABEL maintainer="Arcade Data LTD (info@arcadedb.com)"
 
-ENV JAVA_OPTS=" -XX:+UnlockExperimentalVMOptions -XX:+UseZGC "
+ENV JAVA_OPTS=" "
 
 ENV JAVA_OPTS_SCRIPT="-Djna.nosys=true -XX:+HeapDumpOnOutOfMemoryError -Djava.awt.headless=true -Dfile.encoding=UTF8"
 
@@ -32,7 +30,8 @@ RUN adduser -D -s /bin/sh arcadedb
 
 WORKDIR /home/arcadedb
 
-COPY arcadedb-${ARCADEDB_VERSION}.dir/arcadedb-${ARCADEDB_VERSION} ./
+COPY --chown=arcadedb:arcadedb ./maven/arcadedb-* ./
+RUN chmod +x ./bin/*.sh
 
 VOLUME [ "/home/arcadedb/databases"]
 
