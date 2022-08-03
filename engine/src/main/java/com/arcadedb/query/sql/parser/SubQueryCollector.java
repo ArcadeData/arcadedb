@@ -18,8 +18,7 @@
  */
 package com.arcadedb.query.sql.parser;
 
-import java.util.HashMap;
-import java.util.Map;
+import java.util.*;
 
 /**
  * This class is used by the query planner to extract subqueries and move them to LET clause
@@ -47,7 +46,7 @@ public class SubQueryCollector {
   protected static final String GENERATED_ALIAS_PREFIX = "_$$$SUBQUERY$$_";
   protected              int    nextAliasId            = 0;
 
-  protected Map<Identifier, Statement> subQueries = new HashMap<>();
+  protected final Map<Identifier, Statement> subQueries = new LinkedHashMap<>();
 
   protected Identifier getNextAlias() {
     Identifier result = new Identifier(GENERATED_ALIAS_PREFIX + (nextAliasId++));
@@ -62,12 +61,12 @@ public class SubQueryCollector {
     this.subQueries.clear();
   }
 
-  public Identifier addStatement(Identifier alias, Statement stm) {
+  public Identifier addStatement(final Identifier alias, final Statement stm) {
     subQueries.put(alias, stm);
     return alias;
   }
 
-  public Identifier addStatement(Statement stm) {
+  public Identifier addStatement(final Statement stm) {
     Identifier alias = getNextAlias();
     return addStatement(alias, stm);
   }

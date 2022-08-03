@@ -43,4 +43,13 @@ public class CodeUtils {
       // IGNORE IT
     }
   }
+
+  /**
+   * Compares two objects managing the case objects are NULL.
+   */
+  public static boolean compare(final Object first, final Object second) {
+    if (first == null)
+      return second == null;
+    return first.equals(second);
+  }
 }

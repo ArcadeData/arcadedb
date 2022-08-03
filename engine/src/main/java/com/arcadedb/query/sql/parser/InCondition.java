@@ -22,11 +22,9 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.*;
+import com.arcadedb.utility.CodeUtils;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.stream.Collectors;
 
 public class InCondition extends BooleanExpression {
@@ -140,7 +138,8 @@ public class InCondition extends BooleanExpression {
         }
       }
     }
-    return false;
+
+    return CodeUtils.compare(iLeft, iRight);
   }
 
   public void toString(Map<String, Object> params, StringBuilder builder) {

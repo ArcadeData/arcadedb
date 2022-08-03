@@ -32,15 +32,15 @@ public class LetClause extends SimpleNode {
 
   protected List<LetItem> items = new ArrayList<LetItem>();
 
-  public LetClause(int id) {
+  public LetClause(final int id) {
     super(id);
   }
 
-  public LetClause(SqlParser p, int id) {
+  public LetClause(final SqlParser p, final int id) {
     super(p, id);
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("LET ");
     boolean first = true;
     for (LetItem item : items) {
@@ -52,12 +52,12 @@ public class LetClause extends SimpleNode {
     }
   }
 
-  public void addItem(LetItem item) {
+  public void addItem(final LetItem item) {
     this.items.add(item);
   }
 
   public LetClause copy() {
-    LetClause result = new LetClause(-1);
+    final LetClause result = new LetClause(-1);
     result.items = items.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;
   }
@@ -67,13 +67,13 @@ public class LetClause extends SimpleNode {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    LetClause that = (LetClause) o;
+    final LetClause that = (LetClause) o;
 
     return items != null ? items.equals(that.items) : that.items == null;
   }
@@ -92,7 +92,7 @@ public class LetClause extends SimpleNode {
     return false;
   }
 
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
     for (LetItem item : items) {
       item.extractSubQueries(collector);
     }
@@ -106,10 +106,9 @@ public class LetClause extends SimpleNode {
     return result;
   }
 
-  public void deserialize(Result fromResult) {
-
+  public void deserialize(final Result fromResult) {
     if (fromResult.getProperty("items") != null) {
-      List<Result> ser = fromResult.getProperty("items");
+      final List<Result> ser = fromResult.getProperty("items");
       items = new ArrayList<>();
       for (Result r : ser) {
         LetItem exp = new LetItem(-1);

@@ -194,7 +194,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
-      formatPost(connection, "sql", "SELECT FROM "+VERTEX1_TYPE_NAME+" where @rid = :rid", null, Collections.singletonMap("rid", "#1:0"));
+      formatPost(connection, "sql", "SELECT FROM " + VERTEX1_TYPE_NAME + " where @rid = :rid", null, Collections.singletonMap("rid", "#1:0"));
       connection.connect();
 
       try {
@@ -203,6 +203,60 @@ public class HTTPGraphIT extends BaseGraphServerTest {
         Assertions.assertEquals(200, connection.getResponseCode());
         Assertions.assertEquals("OK", connection.getResponseMessage());
         Assertions.assertTrue(response.contains("V1"));
+      } finally {
+        connection.disconnect();
+      }
+    });
+  }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/discussions/468
+   */
+  @Test
+  public void checkCommandLoadByRIDIn() throws Exception {
+    testEachServer((serverIndex) -> {
+      HttpURLConnection connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").openConnection();
+
+      connection.setRequestMethod("POST");
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      formatPost(connection, "sql", "SELECT FROM " + VERTEX1_TYPE_NAME + " where @rid in (#1:0)", null, Collections.emptyMap());
+      connection.connect();
+
+      try {
+        final String response = readResponse(connection);
+        LogManager.instance().log(this, Level.FINE, "Response: ", null, response);
+        Assertions.assertEquals(200, connection.getResponseCode());
+        Assertions.assertEquals("OK", connection.getResponseMessage());
+        Assertions.assertTrue(response.contains("V1"));
+      } finally {
+        connection.disconnect();
+      }
+    });
+  }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/discussions/468
+   */
+  @Test
+  public void checkCommandLet() throws Exception {
+    testEachServer((serverIndex) -> {
+      HttpURLConnection connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").openConnection();
+
+      connection.setRequestMethod("POST");
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      formatPost(connection, "sql",
+          "SELECT $p from " + VERTEX1_TYPE_NAME + " let pid = @rid, p = (select from " + VERTEX1_TYPE_NAME + " where @rid = $parent.pid)", null,
+          Collections.emptyMap());
+      connection.connect();
+
+      try {
+        final String response = readResponse(connection);
+        LogManager.instance().log(this, Level.FINE, "Response: ", null, response);
+        Assertions.assertEquals(200, connection.getResponseCode());
+        Assertions.assertEquals("OK", connection.getResponseMessage());
+        Assertions.assertTrue(response.contains("#1:0"));
       } finally {
         connection.disconnect();
       }

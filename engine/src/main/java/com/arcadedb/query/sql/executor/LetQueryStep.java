@@ -37,14 +37,14 @@ public class LetQueryStep extends AbstractExecutionStep {
   private final Identifier varName;
   private final Statement  query;
 
-  public LetQueryStep(Identifier varName, Statement query, CommandContext ctx, boolean profilingEnabled) {
+  public LetQueryStep(final Identifier varName, final Statement query, final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
     this.varName = varName;
     this.query = query;
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
     if (getPrev().isEmpty()) {
       throw new CommandExecutionException("Cannot execute a local LET on a query without a target");
     }
@@ -65,16 +65,18 @@ public class LetQueryStep extends AbstractExecutionStep {
         return result;
       }
 
-      private void calculate(ResultInternal result, CommandContext ctx) {
-        BasicCommandContext subCtx = new BasicCommandContext();
+      private void calculate(final ResultInternal result, final CommandContext ctx) {
+        final BasicCommandContext subCtx = new BasicCommandContext();
         subCtx.setDatabase(ctx.getDatabase());
         subCtx.setParentWithoutOverridingChild(ctx);
-        InternalExecutionPlan subExecutionPlan = query.createExecutionPlan(subCtx, profilingEnabled);
-        result.setMetadata(varName.getStringValue(), toList(new LocalResultSet(subExecutionPlan)));
+        final InternalExecutionPlan subExecutionPlan = query.createExecutionPlan(subCtx, profilingEnabled);
+        final List<Result> value = toList(new LocalResultSet(subExecutionPlan));
+        result.setMetadata(varName.getStringValue(), value);
+        ctx.setVariable(varName.getStringValue(), value);
       }
 
-      private List<Result> toList(LocalResultSet oLocalResultSet) {
-        List<Result> result = new ArrayList<>();
+      private List<Result> toList(final LocalResultSet oLocalResultSet) {
+        final List<Result> result = new ArrayList<>();
         while (oLocalResultSet.hasNext()) {
           result.add(oLocalResultSet.next());
         }
@@ -101,7 +103,7 @@ public class LetQueryStep extends AbstractExecutionStep {
 
   @Override
   public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     return spaces + "+ LET (for each record)\n" + spaces + "  " + varName + " = (" + query + ")";
   }
 }

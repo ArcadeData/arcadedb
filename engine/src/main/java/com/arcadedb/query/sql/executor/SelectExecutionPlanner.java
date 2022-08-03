@@ -83,7 +83,7 @@ public class SelectExecutionPlanner {
   QueryPlanningInfo info;
   final SelectStatement statement;
 
-  public SelectExecutionPlanner(SelectStatement oSelectStatement) {
+  public SelectExecutionPlanner(final SelectStatement oSelectStatement) {
     this.statement = oSelectStatement;
   }
 
@@ -112,29 +112,26 @@ public class SelectExecutionPlanner {
     }
   }
 
-  public InternalExecutionPlan createExecutionPlan(CommandContext ctx, boolean enableProfiling) {
-    DatabaseInternal db = ctx.getDatabase();
+  public InternalExecutionPlan createExecutionPlan(final CommandContext ctx, final boolean enableProfiling) {
+    final DatabaseInternal db = ctx.getDatabase();
     if (!enableProfiling && statement.executionPlanCanBeCached()) {
-      ExecutionPlan plan = db.getExecutionPlanCache().get(statement.getOriginalStatement(), ctx);
-      if (plan != null) {
+      final ExecutionPlan plan = db.getExecutionPlanCache().get(statement.getOriginalStatement(), ctx);
+      if (plan != null)
         return (InternalExecutionPlan) plan;
-      }
     }
 
-    long planningStart = System.currentTimeMillis();
+    final long planningStart = System.currentTimeMillis();
 
     init(ctx);
     SelectExecutionPlan result = new SelectExecutionPlan(ctx);
 
-    if (info.expand && info.distinct) {
+    if (info.expand && info.distinct)
       throw new CommandExecutionException("Cannot execute a statement with DISTINCT expand(), please use a subquery");
-    }
 
     optimizeQuery(info);
 
-    if (handleHardwiredOptimizations(result, ctx, enableProfiling)) {
+    if (handleHardwiredOptimizations(result, ctx, enableProfiling))
       return result;
-    }
 
     handleGlobalLet(result, info, ctx, enableProfiling);
 
@@ -142,10 +139,9 @@ public class SelectExecutionPlanner {
 
     handleFetchFromTarger(result, info, ctx, enableProfiling);
 
-    if (info.globalLetPresent) {
+    if (info.globalLetPresent)
       // do the raw fetch remotely, then do the rest on the coordinator
       buildDistributedExecutionPlan(result, info, ctx, enableProfiling);
-    }
 
     handleLet(result, info, ctx, enableProfiling);
 
@@ -156,49 +152,47 @@ public class SelectExecutionPlanner {
 
     handleProjectionsBlock(result, info, ctx, enableProfiling);
 
-    if (info.timeout != null) {
+    if (info.timeout != null)
       result.chain(new AccumulatingTimeoutStep(info.timeout, ctx, enableProfiling));
-    }
 
-    if (!enableProfiling && statement.executionPlanCanBeCached() && result.canBeCached() && db.getExecutionPlanCache().getLastInvalidation() < planningStart) {
+    if (!enableProfiling && statement.executionPlanCanBeCached() && result.canBeCached() && db.getExecutionPlanCache().getLastInvalidation() < planningStart)
       db.getExecutionPlanCache().put(statement.getOriginalStatement(), result);
-    }
+
     return result;
   }
 
-  public static void handleProjectionsBlock(SelectExecutionPlan result, QueryPlanningInfo info, CommandContext ctx, boolean enableProfiling) {
+  public static void handleProjectionsBlock(final SelectExecutionPlan result, final QueryPlanningInfo info, final CommandContext ctx,
+      final boolean enableProfiling) {
     handleProjectionsBeforeOrderBy(result, info, ctx, enableProfiling);
 
     if (info.expand || info.unwind != null || info.groupBy != null) {
-
       handleProjections(result, info, ctx, enableProfiling);
       handleExpand(result, info, ctx, enableProfiling);
       handleUnwind(result, info, ctx, enableProfiling);
       handleOrderBy(result, info, ctx, enableProfiling);
-      if (info.skip != null) {
+      if (info.skip != null)
         result.chain(new SkipExecutionStep(info.skip, ctx, enableProfiling));
-      }
-      if (info.limit != null) {
+
+      if (info.limit != null)
         result.chain(new LimitExecutionStep(info.limit, ctx, enableProfiling));
-      }
+
     } else {
       handleOrderBy(result, info, ctx, enableProfiling);
       if (info.distinct || info.groupBy != null || info.aggregateProjection != null) {
         handleProjections(result, info, ctx, enableProfiling);
         handleDistinct(result, info, ctx, enableProfiling);
-        if (info.skip != null) {
+        if (info.skip != null)
           result.chain(new SkipExecutionStep(info.skip, ctx, enableProfiling));
-        }
-        if (info.limit != null) {
+
+        if (info.limit != null)
           result.chain(new LimitExecutionStep(info.limit, ctx, enableProfiling));
-        }
       } else {
-        if (info.skip != null) {
+        if (info.skip != null)
           result.chain(new SkipExecutionStep(info.skip, ctx, enableProfiling));
-        }
-        if (info.limit != null) {
+
+        if (info.limit != null)
           result.chain(new LimitExecutionStep(info.limit, ctx, enableProfiling));
-        }
+
         handleProjections(result, info, ctx, enableProfiling);
       }
     }
@@ -209,7 +203,7 @@ public class SelectExecutionPlanner {
       return;
     }
 //    String currentNode =  ctx.getDatabase().getLocalNodeName();
-    String currentNode = LOCAL_NODE_NAME;
+    final String currentNode = LOCAL_NODE_NAME;
     if (info.distributedFetchExecutionPlans.size() == 1) {
       if (info.distributedFetchExecutionPlans.get(currentNode) != null) {
         //everything is executed on local server
@@ -219,9 +213,9 @@ public class SelectExecutionPlanner {
         }
       } else {
         //everything is executed on a single remote node
-        String node = info.distributedFetchExecutionPlans.keySet().iterator().next();
-        SelectExecutionPlan subPlan = info.distributedFetchExecutionPlans.get(node);
-        DistributedExecutionStep step = new DistributedExecutionStep(subPlan, node, ctx, enableProfiling);
+        final String node = info.distributedFetchExecutionPlans.keySet().iterator().next();
+        final SelectExecutionPlan subPlan = info.distributedFetchExecutionPlans.get(node);
+        final DistributedExecutionStep step = new DistributedExecutionStep(subPlan, node, ctx, enableProfiling);
         result.chain(step);
       }
       info.distributedFetchExecutionPlans = null;
@@ -239,17 +233,17 @@ public class SelectExecutionPlanner {
    * @param info
    * @param ctx
    */
-  private void calculateShardingStrategy(QueryPlanningInfo info, CommandContext ctx) {
+  private void calculateShardingStrategy(final QueryPlanningInfo info, final CommandContext ctx) {
     info.distributedFetchExecutionPlans = new LinkedHashMap<>();
 
     //TODO remove all this
 //    Database db = ctx.getDatabase();
 //    Map<String, Set<String>> clusterMap = db.getActiveClusterMap();
-    Map<String, Set<String>> clusterMap = new HashMap<>();
+    final Map<String, Set<String>> clusterMap = new HashMap<>();
     clusterMap.put(LOCAL_NODE_NAME, new HashSet<>());
     clusterMap.get(LOCAL_NODE_NAME).add("*");
 
-    Set<String> queryClusters = calculateTargetClusters(info, ctx);
+    final Set<String> queryClusters = calculateTargetClusters(info, ctx);
     if (queryClusters == null || queryClusters.isEmpty()) {//no target
       String localNode = LOCAL_NODE_NAME;
       info.serverToClusters = new LinkedHashMap<>();
@@ -261,15 +255,15 @@ public class SelectExecutionPlanner {
 //    Set<String> serversWithAllTheClusters = getServersThatHasAllClusters(clusterMap, queryClusters);
 //    if (serversWithAllTheClusters.isEmpty()) {
     // sharded query
-    Map<String, Set<String>> minimalSetOfNodes = getMinimalSetOfNodesForShardedQuery(LOCAL_NODE_NAME, clusterMap, queryClusters);
+    final Map<String, Set<String>> minimalSetOfNodes = getMinimalSetOfNodesForShardedQuery(LOCAL_NODE_NAME, clusterMap, queryClusters);
     if (minimalSetOfNodes == null) {
       throw new CommandExecutionException("Cannot execute sharded query");
     }
     info.serverToClusters = minimalSetOfNodes;
-    for (String node : info.serverToClusters.keySet()) {
+    for (String node : info.serverToClusters.keySet())
       info.distributedFetchExecutionPlans.put(node, new SelectExecutionPlan(ctx));
-    }
-//    } else {
+
+//    else {
 //      // all on a node
 //      String targetNode = serversWithAllTheClusters.contains(db.getLocalNodeName()) ?
 //          db.getLocalNodeName() :
@@ -288,8 +282,9 @@ public class SelectExecutionPlanner {
    *
    * @return a map that has node names as a key and clusters (data files) for each node as a value
    */
-  private Map<String, Set<String>> getMinimalSetOfNodesForShardedQuery(String localNode, Map<String, Set<String>> clusterMap, Set<String> queryClusters) {
-    HashMap<String, Set<String>> result = new HashMap<>();
+  private Map<String, Set<String>> getMinimalSetOfNodesForShardedQuery(final String localNode, final Map<String, Set<String>> clusterMap,
+      final Set<String> queryClusters) {
+    final HashMap<String, Set<String>> result = new HashMap<>();
     result.put(LOCAL_NODE_NAME, queryClusters);
     return result;
 
@@ -910,7 +905,7 @@ public class SelectExecutionPlanner {
       Identifier alias = entry.getKey();
       Statement query = entry.getValue();
       if (query.refersToParent()) {
-        addRecordLevelLet(info, alias, query, j++);
+        addRecordLevelLet(info, alias, query);
       } else {
         addGlobalLet(info, alias, query, i++);
       }
@@ -971,29 +966,29 @@ public class SelectExecutionPlanner {
     info.globalLetClause.getItems().add(pos, item);
   }
 
-  private static void addRecordLevelLet(QueryPlanningInfo info, Identifier alias, Statement stm) {
+  private static void addRecordLevelLet(final QueryPlanningInfo info, final Identifier alias, final Statement stm) {
     if (info.perRecordLetClause == null) {
       info.perRecordLetClause = new LetClause(-1);
     }
-    LetItem item = new LetItem(-1);
+    final LetItem item = new LetItem(-1);
     item.setVarName(alias);
     item.setQuery(stm);
     info.perRecordLetClause.addItem(item);
   }
 
-  private static void addRecordLevelLet(QueryPlanningInfo info, Identifier alias, Statement stm, int pos) {
+  private static void addRecordLevelLet(final QueryPlanningInfo info, final Identifier alias, final Statement stm, final int pos) {
     if (info.perRecordLetClause == null) {
       info.perRecordLetClause = new LetClause(-1);
     }
-    LetItem item = new LetItem(-1);
+    final LetItem item = new LetItem(-1);
     item.setVarName(alias);
     item.setQuery(stm);
     info.perRecordLetClause.getItems().add(pos, item);
   }
 
-  private void handleFetchFromTarger(SelectExecutionPlan result, QueryPlanningInfo info, CommandContext ctx, boolean profilingEnabled) {
+  private void handleFetchFromTarger(final SelectExecutionPlan result, final QueryPlanningInfo info, final CommandContext ctx, final boolean profilingEnabled) {
 
-    FromItem target = info.target == null ? null : info.target.getItem();
+    final FromItem target = info.target == null ? null : info.target.getItem();
     for (Map.Entry<String, SelectExecutionPlan> shardedPlan : info.distributedFetchExecutionPlans.entrySet()) {
       if (target == null) {
         handleNoTarget(shardedPlan.getValue(), ctx, profilingEnabled);
@@ -1064,21 +1059,20 @@ public class SelectExecutionPlanner {
     }
   }
 
-  private boolean clusterMatchesRidRange(String bucketName, AndBlock ridRangeConditions, Database database, CommandContext ctx) {
-    int thisClusterId = database.getSchema().getBucketByName(bucketName).getId();
+  private boolean clusterMatchesRidRange(final String bucketName, final AndBlock ridRangeConditions, final Database database, final CommandContext ctx) {
+    final int thisClusterId = database.getSchema().getBucketByName(bucketName).getId();
     for (BooleanExpression ridRangeCondition : ridRangeConditions.getSubBlocks()) {
       if (ridRangeCondition instanceof BinaryCondition) {
         BinaryCompareOperator operator = ((BinaryCondition) ridRangeCondition).getOperator();
-        RID conditionRid;
 
-        Object obj;
+        final Object obj;
         if (((BinaryCondition) ridRangeCondition).getRight().getRid() != null) {
           obj = ((BinaryCondition) ridRangeCondition).getRight().getRid().toRecordId((Result) null, ctx);
         } else {
           obj = ((BinaryCondition) ridRangeCondition).getRight().execute((Result) null, ctx);
         }
 
-        conditionRid = ((Identifiable) obj).getIdentity();
+        final RID conditionRid = ((Identifiable) obj).getIdentity();
 
         if (conditionRid != null) {
           int conditionClusterId = conditionRid.getBucketId();
@@ -1097,8 +1091,8 @@ public class SelectExecutionPlanner {
     return true;
   }
 
-  private AndBlock extractRidRanges(List<AndBlock> flattenedWhereClause, CommandContext ctx) {
-    AndBlock result = new AndBlock(-1);
+  private AndBlock extractRidRanges(final List<AndBlock> flattenedWhereClause, final CommandContext ctx) {
+    final AndBlock result = new AndBlock(-1);
 
     if (flattenedWhereClause == null || flattenedWhereClause.size() != 1) {
       return result;
@@ -1114,12 +1108,12 @@ public class SelectExecutionPlanner {
     return result;
   }
 
-  private boolean isRidRange(BooleanExpression booleanExpression, CommandContext ctx) {
+  private boolean isRidRange(final BooleanExpression booleanExpression, final CommandContext ctx) {
     if (booleanExpression instanceof BinaryCondition) {
-      BinaryCondition cond = ((BinaryCondition) booleanExpression);
-      BinaryCompareOperator operator = cond.getOperator();
+      final BinaryCondition cond = ((BinaryCondition) booleanExpression);
+      final BinaryCompareOperator operator = cond.getOperator();
       if (isRangeOperator(operator) && cond.getLeft().toString().equalsIgnoreCase("@rid")) {
-        Object obj;
+        final Object obj;
         if (cond.getRight().getRid() != null) {
           obj = cond.getRight().getRid().toRecordId((Result) null, ctx);
         } else {
@@ -1131,12 +1125,12 @@ public class SelectExecutionPlanner {
     return false;
   }
 
-  private boolean isRangeOperator(BinaryCompareOperator operator) {
+  private boolean isRangeOperator(final BinaryCompareOperator operator) {
     return operator instanceof LtOperator || operator instanceof LeOperator || operator instanceof GtOperator || operator instanceof GeOperator;
   }
 
-  private void handleInputParamAsTarget(SelectExecutionPlan result, Set<String> filterClusters, QueryPlanningInfo info, InputParameter inputParam,
-      CommandContext ctx, boolean profilingEnabled) {
+  private void handleInputParamAsTarget(final SelectExecutionPlan result, final Set<String> filterClusters, final QueryPlanningInfo info,
+      final InputParameter inputParam, final CommandContext ctx, final boolean profilingEnabled) {
     Object paramValue = inputParam.getValue(ctx.getInputParameters());
 
     if (paramValue instanceof String && RID.is(paramValue))
@@ -1158,12 +1152,12 @@ public class SelectExecutionPlanner {
       item.setIdentifier(new Identifier((String) paramValue));
       handleClassAsTarget(result, filterClusters, from, info, ctx, profilingEnabled);
     } else if (paramValue instanceof Identifiable) {
-      RID orid = ((Identifiable) paramValue).getIdentity();
+      final RID orid = ((Identifiable) paramValue).getIdentity();
 
-      Rid rid = new Rid(-1);
-      PInteger bucket = new PInteger(-1);
+      final Rid rid = new Rid(-1);
+      final PInteger bucket = new PInteger(-1);
       bucket.setValue(orid.getBucketId());
-      PInteger position = new PInteger(-1);
+      final PInteger position = new PInteger(-1);
       position.setValue(orid.getPosition());
       rid.setLegacy(true);
       rid.setBucket(bucket);
@@ -1177,17 +1171,16 @@ public class SelectExecutionPlanner {
 
     } else if (paramValue instanceof Iterable) {
       //try list of RIDs
-      List<Rid> rids = new ArrayList<>();
+      final List<Rid> rids = new ArrayList<>();
       for (Object x : (Iterable) paramValue) {
         if (!(x instanceof Identifiable)) {
           throw new CommandExecutionException("Cannot use collection as target: " + paramValue);
         }
-        RID orid = ((Identifiable) x).getIdentity();
-
-        Rid rid = new Rid(-1);
-        PInteger bucket = new PInteger(-1);
+        final RID orid = ((Identifiable) x).getIdentity();
+        final Rid rid = new Rid(-1);
+        final PInteger bucket = new PInteger(-1);
         bucket.setValue(orid.getBucketId());
-        PInteger position = new PInteger(-1);
+        final PInteger position = new PInteger(-1);
         position.setValue(orid.getPosition());
         rid.setBucket(bucket);
         rid.setPosition(position);
@@ -1214,22 +1207,22 @@ public class SelectExecutionPlanner {
    *
    * @return
    */
-  private boolean isFromClusters(Rid rid, Set<String> filterClusters, Database database) {
+  private boolean isFromClusters(final Rid rid, Set<String> filterClusters, final Database database) {
     if (filterClusters == null) {
       throw new IllegalArgumentException();
     }
-    String bucketName = database.getSchema().getBucketById(rid.getBucket().getValue().intValue()).getName();
+    final String bucketName = database.getSchema().getBucketById(rid.getBucket().getValue().intValue()).getName();
     return filterClusters.contains("*") || filterClusters.contains(bucketName);
   }
 
-  private void handleNoTarget(SelectExecutionPlan result, CommandContext ctx, boolean profilingEnabled) {
+  private void handleNoTarget(final SelectExecutionPlan result, final CommandContext ctx, final boolean profilingEnabled) {
     result.chain(new EmptyDataGeneratorStep(1, ctx, profilingEnabled));
   }
 
-  private void handleIndexAsTarget(SelectExecutionPlan result, QueryPlanningInfo info, IndexIdentifier indexIdentifier, Set<String> filterClusters,
-      CommandContext ctx, boolean profilingEnabled) {
-    String indexName = indexIdentifier.getIndexName();
-    RangeIndex index = (RangeIndex) ctx.getDatabase().getSchema().getIndexByName(indexName);
+  private void handleIndexAsTarget(final SelectExecutionPlan result, final QueryPlanningInfo info, final IndexIdentifier indexIdentifier,
+      final Set<String> filterClusters, final CommandContext ctx, final boolean profilingEnabled) {
+    final String indexName = indexIdentifier.getIndexName();
+    final RangeIndex index = (RangeIndex) ctx.getDatabase().getSchema().getIndexByName(indexName);
     if (index == null) {
       throw new CommandExecutionException("Index not found: " + indexName);
     }
@@ -1250,7 +1243,7 @@ public class SelectExecutionPlanner {
       } else if (info.flattenedWhereClause.size() > 1) {
         throw new CommandExecutionException("Index queries with this kind of condition are not supported yet: " + info.whereClause);
       } else {
-        AndBlock andBlock = info.flattenedWhereClause.get(0);
+        final AndBlock andBlock = info.flattenedWhereClause.get(0);
         if (andBlock.getSubBlocks().size() == 1) {
 
           info.whereClause = null;//The WHERE clause won't be used anymore, the index does all the filtering
@@ -1273,7 +1266,7 @@ public class SelectExecutionPlanner {
       }
       result.chain(new FetchFromIndexStep(index, keyCondition, null, ctx, profilingEnabled));
       if (ridCondition != null) {
-        WhereClause where = new WhereClause(-1);
+        final WhereClause where = new WhereClause(-1);
         where.setBaseExpression(ridCondition);
         result.chain(new FilterStep(where, ctx, profilingEnabled));
       }
@@ -1296,9 +1289,9 @@ public class SelectExecutionPlanner {
     }
   }
 
-  private BooleanExpression getKeyCondition(AndBlock andBlock) {
+  private BooleanExpression getKeyCondition(final AndBlock andBlock) {
     for (BooleanExpression exp : andBlock.getSubBlocks()) {
-      String str = exp.toString();
+      final String str = exp.toString();
       if (str.length() < 5) {
         continue;
       }
@@ -1309,9 +1302,9 @@ public class SelectExecutionPlanner {
     return null;
   }
 
-  private BooleanExpression getRidCondition(AndBlock andBlock) {
+  private BooleanExpression getRidCondition(final AndBlock andBlock) {
     for (BooleanExpression exp : andBlock.getSubBlocks()) {
-      String str = exp.toString();
+      final String str = exp.toString();
       if (str.length() < 5) {
         continue;
       }
@@ -1362,9 +1355,9 @@ public class SelectExecutionPlanner {
     }
   }
 
-  private void handleLet(SelectExecutionPlan plan, QueryPlanningInfo info, CommandContext ctx, boolean profilingEnabled) {
+  private void handleLet(final SelectExecutionPlan plan, final QueryPlanningInfo info, final CommandContext ctx, final boolean profilingEnabled) {
     if (info.perRecordLetClause != null) {
-      List<LetItem> items = info.perRecordLetClause.getItems();
+      final List<LetItem> items = info.perRecordLetClause.getItems();
       if (info.distributedPlanCreated) {
         for (LetItem item : items) {
           if (item.getExpression() != null) {
@@ -1375,11 +1368,21 @@ public class SelectExecutionPlanner {
         }
       } else {
         for (SelectExecutionPlan shardedPlan : info.distributedFetchExecutionPlans.values()) {
+          boolean containsSubQuery = false;
           for (LetItem item : items) {
             if (item.getExpression() != null) {
               shardedPlan.chain(new LetExpressionStep(item.getVarName().copy(), item.getExpression().copy(), ctx, profilingEnabled));
             } else {
               shardedPlan.chain(new LetQueryStep(item.getVarName().copy(), item.getQuery().copy(), ctx, profilingEnabled));
+              containsSubQuery = true;
+            }
+          }
+
+          if (containsSubQuery) {
+            // RE-EXECUTE THE EXPRESSION IF THERE IS ANY SUB-QUERY. THIS IS A MUST BECAUSE THERE IS NO CONCEPT OF DEPENDENCY BETWEEN LETS
+            for (LetItem item : items) {
+              if (item.getExpression() != null)
+                shardedPlan.chain(new LetExpressionStep(item.getVarName().copy(), item.getExpression().copy(), ctx, profilingEnabled));
             }
           }
         }
@@ -1387,7 +1390,7 @@ public class SelectExecutionPlanner {
     }
   }
 
-  private void handleWhere(SelectExecutionPlan plan, QueryPlanningInfo info, CommandContext ctx, boolean profilingEnabled) {
+  private void handleWhere(final SelectExecutionPlan plan, final QueryPlanningInfo info, final CommandContext ctx, final boolean profilingEnabled) {
     if (info.whereClause != null) {
       if (info.distributedPlanCreated) {
         plan.chain(new FilterStep(info.whereClause, ctx, profilingEnabled));
@@ -1399,12 +1402,12 @@ public class SelectExecutionPlanner {
     }
   }
 
-  public static void handleOrderBy(SelectExecutionPlan plan, QueryPlanningInfo info, CommandContext ctx, boolean profilingEnabled) {
+  public static void handleOrderBy(final SelectExecutionPlan plan, final QueryPlanningInfo info, final CommandContext ctx, final boolean profilingEnabled) {
     int skipSize = info.skip == null ? 0 : info.skip.getValue(ctx);
     if (skipSize < 0) {
       throw new CommandExecutionException("Cannot execute a query with a negative SKIP");
     }
-    int limitSize = info.limit == null ? -1 : info.limit.getValue(ctx);
+    final int limitSize = info.limit == null ? -1 : info.limit.getValue(ctx);
     java.lang.Integer maxResults = null;
     if (limitSize >= 0) {
       maxResults = skipSize + limitSize;
@@ -1431,9 +1434,9 @@ public class SelectExecutionPlanner {
     handleClassAsTarget(plan, filterClusters, info.target, info, ctx, profilingEnabled);
   }
 
-  private void handleClassAsTarget(SelectExecutionPlan plan, Set<String> filterClusters, FromClause from, QueryPlanningInfo info, CommandContext ctx,
-      boolean profilingEnabled) {
-    Identifier identifier = from.getItem().getIdentifier();
+  private void handleClassAsTarget(final SelectExecutionPlan plan, final Set<String> filterClusters, final FromClause from, final QueryPlanningInfo info,
+      final CommandContext ctx, final boolean profilingEnabled) {
+    final Identifier identifier = from.getItem().getIdentifier();
     if (handleClassAsTargetWithIndexedFunction(plan, filterClusters, identifier, info, ctx, profilingEnabled)) {
       plan.chain(new FilterByClassStep(identifier, ctx, profilingEnabled));
       return;
@@ -1464,12 +1467,12 @@ public class SelectExecutionPlanner {
     plan.chain(fetcher);
   }
 
-  private boolean handleClassAsTargetWithIndexedFunction(SelectExecutionPlan plan, Set<String> filterClusters, Identifier queryTarget, QueryPlanningInfo info,
-      CommandContext ctx, boolean profilingEnabled) {
+  private boolean handleClassAsTargetWithIndexedFunction(final SelectExecutionPlan plan, final Set<String> filterClusters, final Identifier queryTarget,
+      final QueryPlanningInfo info, final CommandContext ctx, final boolean profilingEnabled) {
     if (queryTarget == null) {
       return false;
     }
-    DocumentType typez = ctx.getDatabase().getSchema().getType(queryTarget.getStringValue());
+    final DocumentType typez = ctx.getDatabase().getSchema().getType(queryTarget.getStringValue());
     if (typez == null) {
       throw new CommandExecutionException("Type not found: " + queryTarget);
     }
@@ -1477,7 +1480,7 @@ public class SelectExecutionPlanner {
       return false;
     }
 
-    List<InternalExecutionPlan> resultSubPlans = new ArrayList<>();
+    final List<InternalExecutionPlan> resultSubPlans = new ArrayList<>();
 
     boolean indexedFunctionsFound = false;
 
@@ -1494,7 +1497,7 @@ public class SelectExecutionPlanner {
             final FetchFromIndexStep step = new FetchFromIndexStep(bestIndex.idx, bestIndex.keyCondition, bestIndex.additionalRangeCondition, true, ctx,
                 profilingEnabled);
 
-            SelectExecutionPlan subPlan = new SelectExecutionPlan(ctx);
+            final SelectExecutionPlan subPlan = new SelectExecutionPlan(ctx);
             subPlan.chain(step);
             int[] filterClusterIds = null;
             if (filterClusters != null) {
@@ -1511,8 +1514,8 @@ public class SelectExecutionPlanner {
           }
 
         } else {
-          FetchFromClassExecutionStep step = new FetchFromClassExecutionStep(typez.getName(), filterClusters, ctx, true, profilingEnabled);
-          SelectExecutionPlan subPlan = new SelectExecutionPlan(ctx);
+          final FetchFromClassExecutionStep step = new FetchFromClassExecutionStep(typez.getName(), filterClusters, ctx, true, profilingEnabled);
+          final SelectExecutionPlan subPlan = new SelectExecutionPlan(ctx);
           subPlan.chain(step);
           if (!block.getSubBlocks().isEmpty()) {
             subPlan.chain(new FilterStep(createWhereFrom(block), ctx, profilingEnabled));
@@ -1588,11 +1591,12 @@ public class SelectExecutionPlanner {
     }
   }
 
-  private List<BinaryCondition> filterIndexedFunctionsWithoutIndex(List<BinaryCondition> indexedFunctionConditions, FromClause fromClause, CommandContext ctx) {
+  private List<BinaryCondition> filterIndexedFunctionsWithoutIndex(final List<BinaryCondition> indexedFunctionConditions, final FromClause fromClause,
+      final CommandContext ctx) {
     if (indexedFunctionConditions == null) {
       return null;
     }
-    List<BinaryCondition> result = new ArrayList<>();
+    final List<BinaryCondition> result = new ArrayList<>();
     for (BinaryCondition cond : indexedFunctionConditions) {
       if (cond.allowsIndexedFunctionExecutionOnTarget(fromClause, ctx)) {
         result.add(cond);
@@ -1613,24 +1617,24 @@ public class SelectExecutionPlanner {
    * @return true if it succeeded to use an index to sort, false otherwise.
    */
 
-  private boolean handleClassWithIndexForSortOnly(SelectExecutionPlan plan, Identifier queryTarget, Set<String> filterClusters, QueryPlanningInfo info,
-      CommandContext ctx, boolean profilingEnabled) {
+  private boolean handleClassWithIndexForSortOnly(final SelectExecutionPlan plan, final Identifier queryTarget, final Set<String> filterClusters,
+      final QueryPlanningInfo info, final CommandContext ctx, final boolean profilingEnabled) {
 
-    DocumentType typez = ctx.getDatabase().getSchema().getType(queryTarget.getStringValue());
+    final DocumentType typez = ctx.getDatabase().getSchema().getType(queryTarget.getStringValue());
     if (typez == null) {
       throw new CommandExecutionException("Type not found: " + queryTarget.getStringValue());
     }
 
     for (Index idx : typez.getAllIndexes(true).stream().filter(i -> i.supportsOrderedIterations()).collect(Collectors.toList())) {
-      List<String> indexFields = idx.getPropertyNames();
+      final List<String> indexFields = idx.getPropertyNames();
       if (indexFields.size() < info.orderBy.getItems().size()) {
         continue;
       }
       boolean indexFound = true;
       String orderType = null;
       for (int i = 0; i < info.orderBy.getItems().size(); i++) {
-        OrderByItem orderItem = info.orderBy.getItems().get(i);
-        String indexField = indexFields.get(i);
+        final OrderByItem orderItem = info.orderBy.getItems().get(i);
+        final String indexField = indexFields.get(i);
         if (i == 0) {
           orderType = orderItem.getType();
         } else {
@@ -2309,22 +2313,21 @@ public class SelectExecutionPlanner {
     return null;
   }
 
-  private boolean createsRangeWith(BinaryCondition left, BooleanExpression next) {
-    if (!(next instanceof BinaryCondition)) {
+  private boolean createsRangeWith(final BinaryCondition left, final BooleanExpression next) {
+    if (!(next instanceof BinaryCondition))
       return false;
-    }
-    BinaryCondition right = (BinaryCondition) next;
-    if (!left.getLeft().equals(right.getLeft())) {
+
+    final BinaryCondition right = (BinaryCondition) next;
+    if (!left.getLeft().equals(right.getLeft()))
       return false;
-    }
-    BinaryCompareOperator leftOperator = left.getOperator();
-    BinaryCompareOperator rightOperator = right.getOperator();
-    if (leftOperator instanceof GeOperator || leftOperator instanceof GtOperator) {
+
+    final BinaryCompareOperator leftOperator = left.getOperator();
+    final BinaryCompareOperator rightOperator = right.getOperator();
+    if (leftOperator instanceof GeOperator || leftOperator instanceof GtOperator)
       return rightOperator instanceof LeOperator || rightOperator instanceof LtOperator;
-    }
-    if (leftOperator instanceof LeOperator || leftOperator instanceof LtOperator) {
+
+    if (leftOperator instanceof LeOperator || leftOperator instanceof LtOperator)
       return rightOperator instanceof GeOperator || rightOperator instanceof GtOperator;
-    }
     return false;
   }
 
@@ -2339,12 +2342,12 @@ public class SelectExecutionPlanner {
    *
    * @return
    */
-  private List<IndexSearchDescriptor> commonFactor(List<IndexSearchDescriptor> indexSearchDescriptors) {
+  private List<IndexSearchDescriptor> commonFactor(final List<IndexSearchDescriptor> indexSearchDescriptors) {
     //index, key condition, additional filter (to aggregate in OR)
-    Map<RangeIndex, Map<IndexCondPair, OrBlock>> aggregation = new HashMap<>();
+    final Map<RangeIndex, Map<IndexCondPair, OrBlock>> aggregation = new HashMap<>();
     for (IndexSearchDescriptor item : indexSearchDescriptors) {
-      Map<IndexCondPair, OrBlock> filtersForIndex = aggregation.computeIfAbsent(item.idx, k -> new HashMap<>());
-      IndexCondPair extendedCond = new IndexCondPair(item.keyCondition, item.additionalRangeCondition);
+      final Map<IndexCondPair, OrBlock> filtersForIndex = aggregation.computeIfAbsent(item.idx, k -> new HashMap<>());
+      final IndexCondPair extendedCond = new IndexCondPair(item.keyCondition, item.additionalRangeCondition);
 
       OrBlock existingAdditionalConditions = filtersForIndex.get(extendedCond);
       if (existingAdditionalConditions == null) {
@@ -2353,7 +2356,7 @@ public class SelectExecutionPlanner {
       }
       existingAdditionalConditions.getSubBlocks().add(item.remainingCondition);
     }
-    List<IndexSearchDescriptor> result = new ArrayList<>();
+    final List<IndexSearchDescriptor> result = new ArrayList<>();
     for (Map.Entry<RangeIndex, Map<IndexCondPair, OrBlock>> item : aggregation.entrySet()) {
       for (Map.Entry<IndexCondPair, OrBlock> filters : item.getValue().entrySet()) {
         result.add(new IndexSearchDescriptor(item.getKey(), filters.getKey().mainCondition, filters.getKey().additionalRange, filters.getValue()));
@@ -2362,9 +2365,9 @@ public class SelectExecutionPlanner {
     return result;
   }
 
-  private void handleClustersAsTarget(SelectExecutionPlan plan, QueryPlanningInfo info, List<Bucket> buckets, CommandContext ctx, boolean profilingEnabled) {
-
-    Database db = ctx.getDatabase();
+  private void handleClustersAsTarget(final SelectExecutionPlan plan, final QueryPlanningInfo info, final List<Bucket> buckets, final CommandContext ctx,
+      final boolean profilingEnabled) {
+    final Database db = ctx.getDatabase();
 
     DocumentType candidateClass = null;
     boolean tryByIndex = true;
@@ -2404,30 +2407,25 @@ public class SelectExecutionPlanner {
     }
 
     if (tryByIndex && candidateClass != null) {
-      Identifier typez = new Identifier(candidateClass.getName());
-      if (handleClassAsTargetWithIndexedFunction(plan, bucketNames, typez, info, ctx, profilingEnabled)) {
+      final Identifier typez = new Identifier(candidateClass.getName());
+      if (handleClassAsTargetWithIndexedFunction(plan, bucketNames, typez, info, ctx, profilingEnabled))
         return;
-      }
 
-      if (handleClassAsTargetWithIndex(plan, typez, bucketNames, info, ctx, profilingEnabled)) {
+      if (handleClassAsTargetWithIndex(plan, typez, bucketNames, info, ctx, profilingEnabled))
         return;
-      }
 
-      if (info.orderBy != null && handleClassWithIndexForSortOnly(plan, typez, bucketNames, info, ctx, profilingEnabled)) {
+      if (info.orderBy != null && handleClassWithIndexForSortOnly(plan, typez, bucketNames, info, ctx, profilingEnabled))
         return;
-      }
     }
 
     Boolean orderByRidAsc = null;//null: no order. true: asc, false:desc
-    if (isOrderByRidAsc(info)) {
+    if (isOrderByRidAsc(info))
       orderByRidAsc = true;
-    }
-//    else if (isOrderByRidDesc(info)) {
+//    else if (isOrderByRidDesc(info))
 //      orderByRidAsc = false;
-//    }
-    if (orderByRidAsc != null && info.serverToClusters.size() == 1) {
+    if (orderByRidAsc != null && info.serverToClusters.size() == 1)
       info.orderApplied = true;
-    }
+
     if (buckets.size() == 1) {
       Bucket parserBucket = buckets.get(0);
 
@@ -2438,20 +2436,19 @@ public class SelectExecutionPlanner {
           bucketId = bucket.getId();
       }
 
-      if (bucketId == null) {
+      if (bucketId == null)
         throw new CommandExecutionException("Bucket '" + parserBucket + "' does not exist");
-      }
-      FetchFromClusterExecutionStep step = new FetchFromClusterExecutionStep(bucketId, ctx, profilingEnabled);
-      if (Boolean.TRUE.equals(orderByRidAsc)) {
+
+      final FetchFromClusterExecutionStep step = new FetchFromClusterExecutionStep(bucketId, ctx, profilingEnabled);
+      if (Boolean.TRUE.equals(orderByRidAsc))
         step.setOrder(FetchFromClusterExecutionStep.ORDER_ASC);
-      } else if (Boolean.FALSE.equals(orderByRidAsc)) {
+      else if (Boolean.FALSE.equals(orderByRidAsc))
         step.setOrder(FetchFromClusterExecutionStep.ORDER_DESC);
-      }
       plan.chain(step);
     } else {
-      int[] bucketIds = new int[buckets.size()];
+      final int[] bucketIds = new int[buckets.size()];
       for (int i = 0; i < buckets.size(); i++) {
-        Bucket parserBucket = buckets.get(i);
+        final Bucket parserBucket = buckets.get(i);
 
         Integer bucketId = parserBucket.getBucketNumber();
         if (bucketId == null) {
@@ -2465,20 +2462,20 @@ public class SelectExecutionPlanner {
         }
         bucketIds[i] = bucketId;
       }
-      FetchFromClustersExecutionStep step = new FetchFromClustersExecutionStep(bucketIds, ctx, orderByRidAsc, profilingEnabled);
+      final FetchFromClustersExecutionStep step = new FetchFromClustersExecutionStep(bucketIds, ctx, orderByRidAsc, profilingEnabled);
       plan.chain(step);
     }
   }
 
-  private void handleSubqueryAsTarget(SelectExecutionPlan plan, Statement subQuery, CommandContext ctx, boolean profilingEnabled) {
-    BasicCommandContext subCtx = new BasicCommandContext();
+  private void handleSubqueryAsTarget(final SelectExecutionPlan plan, final Statement subQuery, final CommandContext ctx, final boolean profilingEnabled) {
+    final BasicCommandContext subCtx = new BasicCommandContext();
     subCtx.setDatabase(ctx.getDatabase());
     subCtx.setParent(ctx);
-    InternalExecutionPlan subExecutionPlan = subQuery.createExecutionPlan(subCtx, profilingEnabled);
+    final InternalExecutionPlan subExecutionPlan = subQuery.createExecutionPlan(subCtx, profilingEnabled);
     plan.chain(new SubQueryStep(subExecutionPlan, ctx, subCtx, profilingEnabled));
   }
 
-  private boolean isOrderByRidDesc(QueryPlanningInfo info) {
+  private boolean isOrderByRidDesc(final QueryPlanningInfo info) {
     return false;
     //TODO buckets do not support reverse iteration, so order by rid desc cannot be optimised!
 //    if (!hasTargetWithSortedRids(info)) {
@@ -2496,35 +2493,33 @@ public class SelectExecutionPlanner {
 //    return false;
   }
 
-  private boolean isOrderByRidAsc(QueryPlanningInfo info) {
-    if (!hasTargetWithSortedRids(info)) {
+  private boolean isOrderByRidAsc(final QueryPlanningInfo info) {
+    if (!hasTargetWithSortedRids(info))
       return false;
-    }
 
-    if (info.orderBy == null) {
+    if (info.orderBy == null)
       return false;
-    }
+
     if (info.orderBy.getItems().size() == 1) {
-      OrderByItem item = info.orderBy.getItems().get(0);
+      final OrderByItem item = info.orderBy.getItems().get(0);
       String recordAttr = item.getRecordAttr();
       return recordAttr != null && recordAttr.equalsIgnoreCase("@rid") && (item.getType() == null || OrderByItem.ASC.equals(item.getType()));
     }
     return false;
   }
 
-  private boolean hasTargetWithSortedRids(QueryPlanningInfo info) {
-    if (info.target == null) {
+  private boolean hasTargetWithSortedRids(final QueryPlanningInfo info) {
+    if (info.target == null)
       return false;
-    }
-    if (info.target.getItem() == null) {
+
+    if (info.target.getItem() == null)
       return false;
-    }
-    if (info.target.getItem().getIdentifier() != null) {
+
+    if (info.target.getItem().getIdentifier() != null)
       return true;
-    } else if (info.target.getItem().getBucket() != null) {
+    else if (info.target.getItem().getBucket() != null)
       return true;
-    } else
+    else
       return info.target.getItem().getBucketList() != null;
   }
-
 }

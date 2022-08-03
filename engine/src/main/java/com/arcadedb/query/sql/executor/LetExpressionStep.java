@@ -57,6 +57,7 @@ public class LetExpressionStep extends AbstractExecutionStep {
         ResultInternal result = (ResultInternal) source.next();
         Object value = expression.execute(result, ctx);
         result.setMetadata(varname.getStringValue(), value);
+        ctx.setVariable(varname.getStringValue(), value);
         return result;
       }
 
