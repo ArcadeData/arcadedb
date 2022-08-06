@@ -3685,6 +3685,51 @@ public class SelectStatementExecutionTest extends TestHelper {
     }
   }
 
+  @Test
+  public void testInWithoutIndex() {
+    String className = "testInWithoutIndex";
+    database.begin();
+    DocumentType clazz = database.getSchema().getOrCreateDocumentType(className);
+    Property prop = clazz.createProperty("tag", Type.STRING);
+
+    database.command("sql", "insert into " + className + "  set tag = 'foo'");
+    database.command("sql", "insert into " + className + "  set tag = 'bar'");
+    database.commit();
+
+    try (ResultSet result = database.query("sql", "select from " + className + " where tag in ['foo','baz']")) {
+      Assertions.assertTrue(result.hasNext());
+      result.next();
+      Assertions.assertFalse(result.hasNext());
+      Assertions.assertFalse(result.getExecutionPlan().get().getSteps().stream().anyMatch(x -> x instanceof FetchFromIndexStep));
+    }
+
+    try (ResultSet result = database.query("sql", "select from " + className + " where tag in ['foo','bar']")) {
+      Assertions.assertTrue(result.hasNext());
+      result.next();
+      Assertions.assertTrue(result.hasNext());
+      result.next();
+      Assertions.assertFalse(result.hasNext());
+      Assertions.assertFalse(result.getExecutionPlan().get().getSteps().stream().anyMatch(x -> x instanceof FetchFromIndexStep));
+    }
+
+    try (ResultSet result = database.query("sql", "select from " + className + " where tag in []")) {
+      Assertions.assertFalse(result.hasNext());
+      Assertions.assertFalse(result.getExecutionPlan().get().getSteps().stream().anyMatch(x -> x instanceof FetchFromIndexStep));
+    }
+
+    List<String> params = new ArrayList<>();
+    params.add("foo");
+    params.add("bar");
+    try (ResultSet result = database.query("sql", "select from " + className + " where tag in (?)", params)) {
+      Assertions.assertTrue(result.hasNext());
+      result.next();
+      Assertions.assertTrue(result.hasNext());
+      result.next();
+      Assertions.assertFalse(result.hasNext());
+      Assertions.assertFalse(result.getExecutionPlan().get().getSteps().stream().anyMatch(x -> x instanceof FetchFromIndexStep));
+    }
+  }
+
   //    @Test
   public void testListOfMapsContains() {
     String className = "testListOfMapsContains";
@@ -4088,21 +4133,13 @@ public class SelectStatementExecutionTest extends TestHelper {
     doc.set("name", "baaa");
     doc.save();
 
-    try (ResultSet result =
-        database.query("sql",
-            "select from "
-                + className
-                + " LET $order = name.substring(1) ORDER BY $order ASC LIMIT 1")) {
+    try (ResultSet result = database.query("sql", "select from " + className + " LET $order = name.substring(1) ORDER BY $order ASC LIMIT 1")) {
       Assertions.assertTrue(result.hasNext());
       Result item = result.next();
       Assertions.assertNotNull(item);
       Assertions.assertEquals("baaa", item.getProperty("name"));
     }
-    try (ResultSet result =
-        database.query("sql",
-            "select from "
-                + className
-                + " LET $order = name.substring(1) ORDER BY $order DESC LIMIT 1")) {
+    try (ResultSet result = database.query("sql", "select from " + className + " LET $order = name.substring(1) ORDER BY $order DESC LIMIT 1")) {
       Assertions.assertTrue(result.hasNext());
       Result item = result.next();
       Assertions.assertNotNull(item);
