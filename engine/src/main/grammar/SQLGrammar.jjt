@@ -3757,7 +3757,6 @@ CreatePropertyStatement CreatePropertyStatement():
     (<COMMA> lastAttribute = CreatePropertyAttributeStatement() { jjtThis.attributes.add(lastAttribute); })*
     <RPAREN>
   ]
-  [ <UNSAFE> { jjtThis.unsafe = true; } ]
 	{ return jjtThis; }
 }
 

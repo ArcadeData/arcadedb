@@ -41,7 +41,6 @@ public class CreatePropertyStatement extends DDLStatement {
   public Identifier                             propertyName;
   public Identifier                             propertyType;
   public Identifier                             linkedType;
-  public boolean                                unsafe     = false;
   public List<CreatePropertyAttributeStatement> attributes = new ArrayList<CreatePropertyAttributeStatement>();
   boolean ifNotExists = false;
 
@@ -127,10 +126,6 @@ public class CreatePropertyStatement extends DDLStatement {
       }
       builder.append(")");
     }
-
-    if (unsafe) {
-      builder.append(" UNSAFE");
-    }
   }
 
   @Override
@@ -140,7 +135,6 @@ public class CreatePropertyStatement extends DDLStatement {
     result.propertyName = propertyName == null ? null : propertyName.copy();
     result.propertyType = propertyType == null ? null : propertyType.copy();
     result.linkedType = linkedType == null ? null : linkedType.copy();
-    result.unsafe = unsafe;
     result.ifNotExists = ifNotExists;
     result.attributes = attributes == null ? null : attributes.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;
@@ -155,8 +149,6 @@ public class CreatePropertyStatement extends DDLStatement {
 
     CreatePropertyStatement that = (CreatePropertyStatement) o;
 
-    if (unsafe != that.unsafe)
-      return false;
     if (typeName != null ? !typeName.equals(that.typeName) : that.typeName != null)
       return false;
     if (propertyName != null ? !propertyName.equals(that.propertyName) : that.propertyName != null)
@@ -176,7 +168,6 @@ public class CreatePropertyStatement extends DDLStatement {
     result = 31 * result + (propertyName != null ? propertyName.hashCode() : 0);
     result = 31 * result + (propertyType != null ? propertyType.hashCode() : 0);
     result = 31 * result + (linkedType != null ? linkedType.hashCode() : 0);
-    result = 31 * result + (unsafe ? 1 : 0);
     result = 31 * result + (attributes != null ? attributes.hashCode() : 0);
     return result;
   }
