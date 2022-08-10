@@ -18,6 +18,7 @@
  */
 package com.arcadedb.database;
 
+import com.arcadedb.exception.ValidationException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
@@ -94,6 +95,19 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     if (getIdentity() != null)
       result.put("@rid", getIdentity().toString());
     return result;
+  }
+
+  /**
+   * Validates the document following the declared constraints defined in schema such as mandatory,
+   * notNull, min, max, regexp, etc. If the schema is not defined for the current class or there are
+   * not constraints then the validation is ignored.
+   *
+   * @throws ValidationException if the document breaks some validation constraints defined in the
+   *                             schema
+   * @see Property
+   */
+  public void validate() throws ValidationException {
+    DocumentValidator.validate(this);
   }
 
   @Override
@@ -366,8 +380,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
         if (v instanceof Document && !((Document) v).getDatabase().getName().equals(database.getName())) {
           ((BaseDocument) v).buffer.rewind();
           final MutableDocument newRecord = (MutableDocument) database.getRecordFactory()
-              .newMutableRecord(database, ((EmbeddedDocument) v).getType(), null, ((BaseDocument) v).buffer,
-                  new EmbeddedModifierProperty(this, propertyName));
+              .newMutableRecord(database, ((EmbeddedDocument) v).getType(), null, ((BaseDocument) v).buffer, new EmbeddedModifierProperty(this, propertyName));
           newRecord.buffer = null;
           newRecord.map = new LinkedHashMap<>();
           newRecord.dirty = true;
@@ -382,8 +395,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
         if (v instanceof Document && !((Document) v).getDatabase().getName().equals(database.getName())) {
           ((BaseDocument) v).buffer.rewind();
           final MutableDocument newRecord = (MutableDocument) database.getRecordFactory()
-              .newMutableRecord(database, ((EmbeddedDocument) v).getType(), null, ((BaseDocument) v).buffer,
-                  new EmbeddedModifierProperty(this, propertyName));
+              .newMutableRecord(database, ((EmbeddedDocument) v).getType(), null, ((BaseDocument) v).buffer, new EmbeddedModifierProperty(this, propertyName));
           newRecord.buffer = null;
           newRecord.map = new LinkedHashMap<>();
           newRecord.dirty = true;

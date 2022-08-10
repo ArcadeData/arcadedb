@@ -20,10 +20,12 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.schema.Property;
 
-import java.util.Map;
+import java.util.*;
 
 public class CreatePropertyAttributeStatement extends SimpleNode {
   public Identifier settingName;
@@ -38,7 +40,7 @@ public class CreatePropertyAttributeStatement extends SimpleNode {
   }
 
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     settingName.toString(params, builder);
     if (settingValue != null) {
       builder.append(" ");
@@ -47,20 +49,20 @@ public class CreatePropertyAttributeStatement extends SimpleNode {
   }
 
   public CreatePropertyAttributeStatement copy() {
-    CreatePropertyAttributeStatement result = new CreatePropertyAttributeStatement(-1);
+    final CreatePropertyAttributeStatement result = new CreatePropertyAttributeStatement(-1);
     result.settingName = settingName == null ? null : settingName.copy();
     result.settingValue = settingValue == null ? null : settingValue.copy();
     return result;
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    CreatePropertyAttributeStatement that = (CreatePropertyAttributeStatement) o;
+    final CreatePropertyAttributeStatement that = (CreatePropertyAttributeStatement) o;
 
     if (settingName != null ? !settingName.equals(that.settingName) : that.settingName != null)
       return false;
@@ -74,37 +76,34 @@ public class CreatePropertyAttributeStatement extends SimpleNode {
     return result;
   }
 
-  public Object setOnProperty(Property internalProp, CommandContext ctx) {
-    throw new UnsupportedOperationException();
-//    String attrName = settingName.getStringValue();
-//    Object attrValue = this.settingValue == null ? true : this.settingValue.execute((Identifiable) null, ctx);
-//    try {
-//      if (attrName.equalsIgnoreCase("readonly")) {
-//        internalProp.setReadonly((boolean) attrValue);
-//      } else if (attrName.equalsIgnoreCase("mandatory")) {
-//        internalProp.setMandatory((boolean) attrValue);
-//      } else if (attrName.equalsIgnoreCase("notnull")) {
-//        internalProp.setNotNull((boolean) attrValue);
-//      } else if (attrName.equalsIgnoreCase("max")) {
-//        internalProp.setMax("" + attrValue);
-//      } else if (attrName.equalsIgnoreCase("min")) {
-//        internalProp.setMin("" + attrValue);
-//      } else if (attrName.equalsIgnoreCase("default")) {
-//        if(this.settingValue==null){
-//          throw new PCommandExecutionException("");
-//        }
-//        internalProp.setDefaultValue("" + attrValue);
-//      } else if (attrName.equalsIgnoreCase("collate")) {
-//        internalProp.setCollate("" + attrValue);
-//      } else if (attrName.equalsIgnoreCase("regexp")) {
-//        internalProp.setRegexp("" + attrName);
-//      } else {
-//        throw new PCommandExecutionException("Invalid attribute definition: '" + attrName + "'");
-//      }
-//    } catch (Exception e) {
-//      throw new PCommandExecutionException("Cannot set attribute on property " + settingName.getStringValue() + " " + attrValue, e);
-//    }
-//    return attrValue;
+  public Object setOnProperty(final Property internalProp, final CommandContext ctx) {
+    String attrName = settingName.getStringValue();
+    Object attrValue = this.settingValue == null ? true : this.settingValue.execute((Identifiable) null, ctx);
+    try {
+      if (attrName.equalsIgnoreCase("readonly")) {
+        internalProp.setReadonly((boolean) attrValue);
+      } else if (attrName.equalsIgnoreCase("mandatory")) {
+        internalProp.setMandatory((boolean) attrValue);
+      } else if (attrName.equalsIgnoreCase("notnull")) {
+        internalProp.setNotNull((boolean) attrValue);
+      } else if (attrName.equalsIgnoreCase("max")) {
+        internalProp.setMax("" + attrValue);
+      } else if (attrName.equalsIgnoreCase("min")) {
+        internalProp.setMin("" + attrValue);
+      } else if (attrName.equalsIgnoreCase("default")) {
+        if (this.settingValue == null)
+          throw new CommandExecutionException("Default value not set");
+
+        internalProp.setDefaultValue("" + attrValue);
+      } else if (attrName.equalsIgnoreCase("regexp")) {
+        internalProp.setRegexp("" + attrName);
+      } else {
+        throw new CommandExecutionException("Invalid attribute definition: '" + attrName + "'");
+      }
+    } catch (Exception e) {
+      throw new CommandExecutionException("Cannot set attribute on property " + settingName.getStringValue() + " " + attrValue, e);
+    }
+    return attrValue;
   }
 }
 /* JavaCC - OriginalChecksum=6a7964c2b9dad541ca962eecea00651b (do not edit this line) */

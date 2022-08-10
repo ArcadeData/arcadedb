@@ -282,6 +282,32 @@ public class DocumentType {
     return createProperty(propertyName, Type.getTypeByClass(propertyType));
   }
 
+  public Property createProperty(String propName, JSONObject prop) {
+    final Property p = createProperty(propName, (String) prop.get("type"));
+
+    if (prop.has("default"))
+      p.setDefaultValue(prop.get("default"));
+
+    if (prop.has("readonly"))
+      p.setReadonly(prop.getBoolean("readonly"));
+    if (prop.has("mandatory"))
+      p.setMandatory(prop.getBoolean("mandatory"));
+    if (prop.has("notNull"))
+      p.setNotNull(prop.getBoolean("notNull"));
+    if (prop.has("max"))
+      p.setMax(prop.getString("max"));
+    if (prop.has("min"))
+      p.setMin(prop.getString("min"));
+    if (prop.has("regexp"))
+      p.setRegexp(prop.getString("regexp"));
+
+    p.custom.clear();
+    if (prop.has("custom"))
+      p.custom.putAll(prop.getJSONObject("custom").toMap());
+
+    return p;
+  }
+
   /**
    * Creates a new property with type `propertyType`.
    *
@@ -848,32 +874,15 @@ public class DocumentType {
     final JSONObject properties = new JSONObject();
     type.put("properties", properties);
 
-    for (String propName : getPropertyNames()) {
-      final JSONObject prop = new JSONObject();
-      properties.put(propName, prop);
-
-      final Property p = getProperty(propName);
-      prop.put("type", p.getType());
-
-      final Object defValue = p.getDefaultValue();
-      if (defValue != null)
-        prop.put("default", defValue);
-
-      prop.put("custom", new JSONObject(p.custom));
-    }
+    for (String propName : getPropertyNames())
+      properties.put(propName, getProperty(propName).toJSON());
 
     final JSONObject indexes = new JSONObject();
     type.put("indexes", indexes);
 
     for (TypeIndex i : getAllIndexes(false)) {
-      for (Index entry : i.getIndexesOnBuckets()) {
-        final JSONObject index = new JSONObject();
-        indexes.put(entry.getName(), index);
-
-        index.put("bucket", schema.getBucketById(entry.getAssociatedBucketId()).getName());
-        index.put("properties", entry.getPropertyNames());
-        index.put("nullStrategy", entry.getNullStrategy());
-      }
+      for (Index entry : i.getIndexesOnBuckets())
+        indexes.put(entry.getName(), entry.toJSON());
     }
 
     type.put("custom", new JSONObject(custom));

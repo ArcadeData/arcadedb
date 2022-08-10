@@ -19,6 +19,7 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.index.Index;
+import org.json.JSONObject;
 
 import java.util.*;
 
@@ -27,8 +28,14 @@ public class Property {
   private final   String              name;
   private final   Type                type;
   private final   int                 id;
-  protected final Map<String, Object> custom = new HashMap<>();
+  protected final Map<String, Object> custom    = new HashMap<>();
   private         Object              defaultValue;
+  private         boolean             readonly  = false;
+  private         boolean             mandatory = false;
+  private         boolean             notNull   = false;
+  private         String              max       = null;
+  private         String              min       = null;
+  private         String              regexp    = null;
 
   public Property(final DocumentType owner, final String name, final Type type) {
     this.owner = owner;
@@ -77,7 +84,7 @@ public class Property {
     return defaultValue;
   }
 
-  public void setDefaultValue(final Object defaultValue) {
+  public Property setDefaultValue(final Object defaultValue) {
     if (!Objects.equals(this.defaultValue, defaultValue)) {
       this.defaultValue = defaultValue;
 
@@ -91,6 +98,91 @@ public class Property {
 
       owner.getSchema().getEmbedded().saveConfiguration();
     }
+    return this;
+  }
+
+  public Property setReadonly(final boolean readonly) {
+    final boolean changed = !Objects.equals(this.readonly, readonly);
+    if (changed) {
+      this.readonly = readonly;
+      owner.getSchema().getEmbedded().saveConfiguration();
+    }
+    return this;
+  }
+
+  public boolean isReadonly() {
+    return readonly;
+  }
+
+  public Property setMandatory(final boolean mandatory) {
+    final boolean changed = !Objects.equals(this.mandatory, mandatory);
+    if (changed) {
+      this.mandatory = mandatory;
+      owner.getSchema().getEmbedded().saveConfiguration();
+    }
+    return this;
+  }
+
+  public boolean isMandatory() {
+    return mandatory;
+  }
+
+  /**
+   * Sets the constraint `not null` for the current property. If true, the property cannot be null.
+   */
+  public Property setNotNull(final boolean notNull) {
+    final boolean changed = !Objects.equals(this.notNull, notNull);
+    if (changed) {
+      this.notNull = notNull;
+      owner.getSchema().getEmbedded().saveConfiguration();
+    }
+    return this;
+  }
+
+  /**
+   * Returns true if the current property has set the constraint `not null`. If true, the property cannot be null.
+   */
+  public boolean isNotNull() {
+    return notNull;
+  }
+
+  public Property setMax(final String max) {
+    final boolean changed = !Objects.equals(this.max, max);
+    if (changed) {
+      this.max = max;
+      owner.getSchema().getEmbedded().saveConfiguration();
+    }
+    return this;
+  }
+
+  public String getMax() {
+    return max;
+  }
+
+  public Property setMin(final String min) {
+    final boolean changed = !Objects.equals(this.min, min);
+    if (changed) {
+      this.min = min;
+      owner.getSchema().getEmbedded().saveConfiguration();
+    }
+    return this;
+  }
+
+  public String getMin() {
+    return min;
+  }
+
+  public Property setRegexp(final String regexp) {
+    final boolean changed = !Objects.equals(this.regexp, regexp);
+    if (changed) {
+      this.regexp = regexp;
+      owner.getSchema().getEmbedded().saveConfiguration();
+    }
+    return this;
+  }
+
+  public String getRegexp() {
+    return regexp;
   }
 
   public Set<String> getCustomKeys() {
@@ -127,5 +219,32 @@ public class Property {
   @Override
   public int hashCode() {
     return id;
+  }
+
+  public JSONObject toJSON() {
+    final JSONObject json = new JSONObject();
+
+    json.put("type", type);
+
+    final Object defValue = getDefaultValue();
+    if (defValue != null)
+      json.put("default", defValue);
+
+    if (readonly)
+      json.put("readonly", readonly);
+    if (mandatory)
+      json.put("mandatory", mandatory);
+    if (notNull)
+      json.put("notNull", notNull);
+    if (max != null)
+      json.put("max", max);
+    if (min != null)
+      json.put("min", min);
+    if (regexp != null)
+      json.put("regexp", regexp);
+
+    json.put("custom", new JSONObject(custom));
+
+    return json;
   }
 }

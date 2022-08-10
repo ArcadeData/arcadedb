@@ -32,6 +32,7 @@ import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.analysis.TokenStream;
 import org.apache.lucene.analysis.standard.StandardAnalyzer;
 import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
+import org.json.JSONObject;
 
 import java.io.IOException;
 import java.util.*;
@@ -133,9 +134,9 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
 
     if (list.size() > 1)
       list.sort((o1, o2) -> {
-          if (o1.score == o2.score)
-              return 0;
-          return o1.score < o2.score ? -1 : 1;
+        if (o1.score == o2.score)
+          return 0;
+        return o1.score < o2.score ? -1 : 1;
       });
 
     return new TempIndexCursor(list);
@@ -160,6 +161,15 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     final List<String> keywords = analyzeText(analyzer, keys);
     for (String k : keywords)
       underlyingIndex.remove(new String[] { k }, rid);
+  }
+
+  @Override
+  public JSONObject toJSON() {
+    final JSONObject json = new JSONObject();
+    json.put("bucket", underlyingIndex.mutable.getDatabase().getSchema().getBucketById(getAssociatedBucketId()).getName());
+    json.put("properties", getPropertyNames());
+    json.put("nullStrategy", getNullStrategy());
+    return json;
   }
 
   @Override

@@ -28,6 +28,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
+import org.json.JSONObject;
 
 import java.io.IOException;
 import java.util.*;
@@ -205,6 +206,11 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     checkIsValid();
     for (IndexInternal index : indexesOnBuckets)
       index.close();
+  }
+
+  @Override
+  public JSONObject toJSON() {
+    return indexesOnBuckets.get(0).toJSON();
   }
 
   @Override

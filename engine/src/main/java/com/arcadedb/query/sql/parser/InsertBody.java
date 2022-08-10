@@ -20,8 +20,7 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.stream.Collectors;
 
 public class InsertBody extends SimpleNode {
@@ -29,19 +28,18 @@ public class InsertBody extends SimpleNode {
   protected List<Identifier>          identifierList;
   protected List<List<Expression>>    valueExpressions;
   protected List<InsertSetExpression> setExpressions;
+  protected Json                      content;
+  protected InputParameter            contentInputParam;
 
-  protected Json           content;
-  protected InputParameter contentInputParam;
-
-  public InsertBody(int id) {
+  public InsertBody(final int id) {
     super(id);
   }
 
-  public InsertBody(SqlParser p, int id) {
+  public InsertBody(final SqlParser p, int id) {
     super(p, id);
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
 
     if (identifierList != null) {
       builder.append("(");
@@ -100,7 +98,7 @@ public class InsertBody extends SimpleNode {
   }
 
   public InsertBody copy() {
-    InsertBody result = new InsertBody(-1);
+    final InsertBody result = new InsertBody(-1);
     result.identifierList = identifierList == null ? null : identifierList.stream().map(x -> x.copy()).collect(Collectors.toList());
     result.valueExpressions = valueExpressions == null ?
         null :
@@ -118,17 +116,17 @@ public class InsertBody extends SimpleNode {
     if (o == null || getClass() != o.getClass())
       return false;
 
-    InsertBody that = (InsertBody) o;
+    final InsertBody that = (InsertBody) o;
 
-    if (identifierList != null ? !identifierList.equals(that.identifierList) : that.identifierList != null)
+    if (!Objects.equals(identifierList, that.identifierList))
       return false;
-    if (valueExpressions != null ? !valueExpressions.equals(that.valueExpressions) : that.valueExpressions != null)
+    if (!Objects.equals(valueExpressions, that.valueExpressions))
       return false;
-    if (setExpressions != null ? !setExpressions.equals(that.setExpressions) : that.setExpressions != null)
+    if (!Objects.equals(setExpressions, that.setExpressions))
       return false;
-    if (content != null ? !content.equals(that.content) : that.content != null)
+    if (!Objects.equals(content, that.content))
       return false;
-    return contentInputParam != null ? contentInputParam.equals(that.contentInputParam) : that.contentInputParam == null;
+    return Objects.equals(contentInputParam, that.contentInputParam);
   }
 
   @Override

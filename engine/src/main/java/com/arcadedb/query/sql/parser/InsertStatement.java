@@ -46,7 +46,7 @@ public class InsertStatement extends Statement {
     super(p, id);
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("INSERT INTO ");
     if (targetType != null) {
       targetType.toString(params, builder);

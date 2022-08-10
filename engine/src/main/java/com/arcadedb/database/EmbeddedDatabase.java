@@ -754,6 +754,9 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
     setDefaultValues(record);
 
+    if (record instanceof MutableDocument)
+      ((MutableDocument) record).validate();
+
     // INVOKE EVENT CALLBACKS
     if (!events.onBeforeCreate(record))
       return;
@@ -807,6 +810,9 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     if (mode == PaginatedFile.MODE.READ_ONLY)
       throw new DatabaseIsReadOnlyException("Cannot update a record");
 
+    if (record instanceof MutableDocument)
+      ((MutableDocument) record).validate();
+
     // INVOKE EVENT CALLBACKS
     if (!events.onBeforeUpdate(record))
       return;
@@ -827,12 +833,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
             final List<Index> indexes = indexer.getInvolvedIndexes((Document) record);
             if (!indexes.isEmpty()) {
               // UPDATE THE INDEXES TOO
-              final Binary originalBuffer = ((RecordInternal) record).getBuffer();
-              if (originalBuffer == null)
-                throw new IllegalStateException("Cannot read original buffer for indexing");
-              originalBuffer.rewind();
-              final Document originalRecord = (Document) recordFactory.newImmutableRecord(this, ((Document) record).getType(), record.getIdentity(),
-                  originalBuffer, null);
+              final Document originalRecord = getOriginalDocument(record);
               indexer.updateDocument(originalRecord, (Document) record, indexes);
             }
           }
@@ -851,6 +852,16 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     });
   }
 
+  public Document getOriginalDocument(final Record record) {
+    final Binary originalBuffer = ((RecordInternal) record).getBuffer();
+    if (originalBuffer == null)
+      throw new IllegalStateException("Cannot read original buffer");
+    originalBuffer.rewind();
+    final Document originalRecord = (Document) recordFactory.newImmutableRecord(this, ((Document) record).getType(), record.getIdentity(), originalBuffer,
+        null);
+    return originalRecord;
+  }
+
   @Override
   public void updateRecordNoLock(final Record record, final boolean discardRecordAfter) {
     boolean success = false;
@@ -861,12 +872,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
       if (!indexes.isEmpty()) {
         // UPDATE THE INDEXES TOO
-        final Binary originalBuffer = ((RecordInternal) record).getBuffer();
-        if (originalBuffer == null)
-          throw new IllegalStateException("Cannot read original buffer for indexing");
-        originalBuffer.rewind();
-        final Document originalRecord = (Document) recordFactory.newImmutableRecord(this, ((Document) record).getType(), record.getIdentity(), originalBuffer,
-            null);
+        final Document originalRecord = getOriginalDocument(record);
 
         schema.getBucketById(record.getIdentity().getBucketId()).updateRecord(record, discardRecordAfter);
 

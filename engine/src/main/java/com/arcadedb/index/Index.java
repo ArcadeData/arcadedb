@@ -23,6 +23,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.schema.EmbeddedSchema;
+import org.json.JSONObject;
 
 import java.util.List;
 
@@ -31,6 +32,7 @@ import java.util.List;
  */
 public interface Index {
   interface BuildIndexCallback {
+
     void onDocumentIndexed(Document document, long totalIndexed);
   }
 
@@ -91,4 +93,6 @@ public interface Index {
   boolean isAutomatic();
 
   int getPageSize();
+
+  JSONObject toJSON();
 }

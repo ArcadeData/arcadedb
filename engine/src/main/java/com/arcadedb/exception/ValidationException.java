@@ -16,36 +16,23 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.query.sql.parser;
-
-import java.util.Map;
+package com.arcadedb.exception;
 
 /**
- * Created by luigidellaquila on 19/02/15.
+ * Exception thrown when a constrain is violated.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class InsertSetExpression {
-
-  protected Identifier left;
-  protected Expression right;
-
-  public void toString(final Map<String, Object> params, final StringBuilder builder) {
-    left.toString(params, builder);
-    builder.append(" = ");
-    right.toString(params, builder);
+public class ValidationException extends ArcadeDBException {
+  public ValidationException(String message) {
+    super(message);
   }
 
-  public InsertSetExpression copy() {
-    final InsertSetExpression result = new InsertSetExpression();
-    result.left = left == null ? null : left.copy();
-    result.right = right == null ? null : right.copy();
-    return result;
+  public ValidationException(String message, Throwable cause) {
+    super(message, cause);
   }
 
-  public Identifier getLeft() {
-    return left;
-  }
-
-  public Expression getRight() {
-    return right;
+  public ValidationException(Throwable cause) {
+    super(cause);
   }
 }

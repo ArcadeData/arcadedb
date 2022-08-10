@@ -23,29 +23,26 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.stream.Collectors;
 
 public class GroupBy extends SimpleNode {
-
   protected List<Expression> items = new ArrayList<Expression>();
 
-  public GroupBy(int id) {
+  public GroupBy(final int id) {
     super(id);
   }
 
-  public GroupBy(SqlParser p, int id) {
+  public GroupBy(final SqlParser p, final int id) {
     super(p, id);
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("GROUP BY ");
     for (int i = 0; i < items.size(); i++) {
-      if (i > 0) {
+      if (i > 0)
         builder.append(", ");
-      }
+
       items.get(i).toString(params, builder);
     }
   }
@@ -55,7 +52,7 @@ public class GroupBy extends SimpleNode {
   }
 
   public GroupBy copy() {
-    GroupBy result = new GroupBy(-1);
+    final GroupBy result = new GroupBy(-1);
     result.items = items.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;
   }
@@ -67,9 +64,9 @@ public class GroupBy extends SimpleNode {
     if (o == null || getClass() != o.getClass())
       return false;
 
-    GroupBy oGroupBy = (GroupBy) o;
+    final GroupBy oGroupBy = (GroupBy) o;
 
-    return items != null ? items.equals(oGroupBy.items) : oGroupBy.items == null;
+    return Objects.equals(items, oGroupBy.items);
   }
 
   @Override
@@ -77,36 +74,33 @@ public class GroupBy extends SimpleNode {
     return items != null ? items.hashCode() : 0;
   }
 
-  public void extractSubQueries(SubQueryCollector collector) {
-    for (Expression item : items) {
+  public void extractSubQueries(final SubQueryCollector collector) {
+    for (Expression item : items)
       item.extractSubQueries(collector);
-    }
   }
 
   public boolean refersToParent() {
     for (Expression item : items) {
-      if (item.refersToParent()) {
+      if (item.refersToParent())
         return true;
-      }
     }
     return false;
   }
 
   public Result serialize() {
-    ResultInternal result = new ResultInternal();
-    if (items != null) {
+    final ResultInternal result = new ResultInternal();
+    if (items != null)
       result.setProperty("items", items.stream().map(x -> x.serialize()).collect(Collectors.toList()));
-    }
+
     return result;
   }
 
-  public void deserialize(Result fromResult) {
-
+  public void deserialize(final Result fromResult) {
     if (fromResult.getProperty("items") != null) {
       List<Result> ser = fromResult.getProperty("items");
       items = new ArrayList<>();
       for (Result r : ser) {
-        Expression exp = new Expression(-1);
+        final Expression exp = new Expression(-1);
         exp.deserialize(r);
         items.add(exp);
       }

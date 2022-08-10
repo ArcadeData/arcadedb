@@ -34,23 +34,22 @@ public class LtOperator extends SimpleNode implements BinaryCompareOperator {
   }
 
   @Override
-  public boolean execute(final DatabaseInternal database, Object iLeft, Object iRight) {
-    if (iLeft == null || iRight == null) {
+  public boolean execute(final DatabaseInternal database, Object left, Object right) {
+    if (left == null || right == null)
       return false;
-    }
 
-    if (iLeft instanceof Number && iRight instanceof Number && iLeft.getClass() != iRight.getClass()) {
-      Number[] couple = Type.castComparableNumber((Number) iLeft, (Number) iRight);
-      iLeft = couple[0];
-      iRight = couple[1];
+    if (left instanceof Number && right instanceof Number && left.getClass() != right.getClass()) {
+      final Number[] couple = Type.castComparableNumber((Number) left, (Number) right);
+      left = couple[0];
+      right = couple[1];
     } else {
-      iRight = Type.convert(database, iRight, iLeft.getClass());
+      right = Type.convert(database, right, left.getClass());
     }
 
-    if (iRight == null)
+    if (right == null)
       return false;
 
-    return BinaryComparator.compareTo(iLeft, iRight) < 0;
+    return BinaryComparator.compareTo(left, right) < 0;
   }
 
   @Override
@@ -74,7 +73,7 @@ public class LtOperator extends SimpleNode implements BinaryCompareOperator {
   }
 
   @Override
-  public boolean equals(Object obj) {
+  public boolean equals(final Object obj) {
     return obj != null && obj.getClass().equals(this.getClass());
   }
 

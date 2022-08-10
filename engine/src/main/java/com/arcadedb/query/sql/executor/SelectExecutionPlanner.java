@@ -936,40 +936,40 @@ public class SelectExecutionPlanner {
     }
   }
 
-  private static void addGlobalLet(QueryPlanningInfo info, Identifier alias, Expression exp) {
-    if (info.globalLetClause == null) {
+  private static void addGlobalLet(final QueryPlanningInfo info, final Identifier alias, final Expression exp) {
+    if (info.globalLetClause == null)
       info.globalLetClause = new LetClause(-1);
-    }
-    LetItem item = new LetItem(-1);
+
+    final LetItem item = new LetItem(-1);
     item.setVarName(alias);
     item.setExpression(exp);
     info.globalLetClause.addItem(item);
   }
 
-  private static void addGlobalLet(QueryPlanningInfo info, Identifier alias, Statement stm) {
-    if (info.globalLetClause == null) {
+  private static void addGlobalLet(final QueryPlanningInfo info, final Identifier alias, final Statement stm) {
+    if (info.globalLetClause == null)
       info.globalLetClause = new LetClause(-1);
-    }
-    LetItem item = new LetItem(-1);
+
+    final LetItem item = new LetItem(-1);
     item.setVarName(alias);
     item.setQuery(stm);
     info.globalLetClause.addItem(item);
   }
 
-  private static void addGlobalLet(QueryPlanningInfo info, Identifier alias, Statement stm, int pos) {
-    if (info.globalLetClause == null) {
+  private static void addGlobalLet(final QueryPlanningInfo info, final Identifier alias, final Statement stm, final int pos) {
+    if (info.globalLetClause == null)
       info.globalLetClause = new LetClause(-1);
-    }
-    LetItem item = new LetItem(-1);
+
+    final LetItem item = new LetItem(-1);
     item.setVarName(alias);
     item.setQuery(stm);
     info.globalLetClause.getItems().add(pos, item);
   }
 
   private static void addRecordLevelLet(final QueryPlanningInfo info, final Identifier alias, final Statement stm) {
-    if (info.perRecordLetClause == null) {
+    if (info.perRecordLetClause == null)
       info.perRecordLetClause = new LetClause(-1);
-    }
+
     final LetItem item = new LetItem(-1);
     item.setVarName(alias);
     item.setQuery(stm);
@@ -977,9 +977,9 @@ public class SelectExecutionPlanner {
   }
 
   private static void addRecordLevelLet(final QueryPlanningInfo info, final Identifier alias, final Statement stm, final int pos) {
-    if (info.perRecordLetClause == null) {
+    if (info.perRecordLetClause == null)
       info.perRecordLetClause = new LetClause(-1);
-    }
+
     final LetItem item = new LetItem(-1);
     item.setVarName(alias);
     item.setQuery(stm);
@@ -987,7 +987,6 @@ public class SelectExecutionPlanner {
   }
 
   private void handleFetchFromTarger(final SelectExecutionPlan result, final QueryPlanningInfo info, final CommandContext ctx, final boolean profilingEnabled) {
-
     final FromItem target = info.target == null ? null : info.target.getItem();
     for (Map.Entry<String, SelectExecutionPlan> shardedPlan : info.distributedFetchExecutionPlans.entrySet()) {
       if (target == null) {
@@ -1066,11 +1065,10 @@ public class SelectExecutionPlanner {
         BinaryCompareOperator operator = ((BinaryCondition) ridRangeCondition).getOperator();
 
         final Object obj;
-        if (((BinaryCondition) ridRangeCondition).getRight().getRid() != null) {
+        if (((BinaryCondition) ridRangeCondition).getRight().getRid() != null)
           obj = ((BinaryCondition) ridRangeCondition).getRight().getRid().toRecordId((Result) null, ctx);
-        } else {
+        else
           obj = ((BinaryCondition) ridRangeCondition).getRight().execute((Result) null, ctx);
-        }
 
         final RID conditionRid = ((Identifiable) obj).getIdentity();
 
@@ -1094,9 +1092,9 @@ public class SelectExecutionPlanner {
   private AndBlock extractRidRanges(final List<AndBlock> flattenedWhereClause, final CommandContext ctx) {
     final AndBlock result = new AndBlock(-1);
 
-    if (flattenedWhereClause == null || flattenedWhereClause.size() != 1) {
+    if (flattenedWhereClause == null || flattenedWhereClause.size() != 1)
       return result;
-    }
+
     //TODO optimization: merge multiple conditions
 
     for (BooleanExpression booleanExpression : flattenedWhereClause.get(0).getSubBlocks()) {
@@ -1104,7 +1102,6 @@ public class SelectExecutionPlanner {
         result.getSubBlocks().add(booleanExpression.copy());
       }
     }
-
     return result;
   }
 

@@ -26,35 +26,33 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
 
 public class GeOperator extends SimpleNode implements BinaryCompareOperator {
-  public GeOperator(int id) {
+  public GeOperator(final int id) {
     super(id);
   }
 
-  public GeOperator(SqlParser p, int id) {
+  public GeOperator(final SqlParser p, final int id) {
     super(p, id);
   }
 
   @Override
-  public boolean execute(final DatabaseInternal database, Object iLeft, Object iRight) {
-    if (iLeft == iRight) {
+  public boolean execute(final DatabaseInternal database, Object left, Object right) {
+    if (left == right)
       return true;
-    }
-    if (iLeft == null || iRight == null) {
-      return false;
-    }
 
-    if (iLeft.getClass() != iRight.getClass() && iLeft instanceof Number && iRight instanceof Number) {
-      Number[] couple = Type.castComparableNumber((Number) iLeft, (Number) iRight);
-      iLeft = couple[0];
-      iRight = couple[1];
-    } else {
-      iRight = Type.convert(database, iRight, iLeft.getClass());
-    }
-
-    if (iRight == null)
+    if (left == null || right == null)
       return false;
 
-    return BinaryComparator.compareTo(iLeft, iRight) >= 0;
+    if (left.getClass() != right.getClass() && left instanceof Number && right instanceof Number) {
+      final Number[] couple = Type.castComparableNumber((Number) left, (Number) right);
+      left = couple[0];
+      right = couple[1];
+    } else
+      right = Type.convert(database, right, left.getClass());
+
+    if (right == null)
+      return false;
+
+    return BinaryComparator.compareTo(left, right) >= 0;
   }
 
   @Override
@@ -78,7 +76,7 @@ public class GeOperator extends SimpleNode implements BinaryCompareOperator {
   }
 
   @Override
-  public boolean equals(Object obj) {
+  public boolean equals(final Object obj) {
     return obj != null && obj.getClass().equals(this.getClass());
   }
 

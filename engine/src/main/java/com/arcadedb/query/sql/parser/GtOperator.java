@@ -26,36 +26,35 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
 
 public class GtOperator extends SimpleNode implements BinaryCompareOperator {
-  public GtOperator(int id) {
+  public GtOperator(final int id) {
     super(id);
   }
 
-  public GtOperator(SqlParser p, int id) {
+  public GtOperator(final SqlParser p, final int id) {
     super(p, id);
   }
 
   @Override
-  public boolean execute(final DatabaseInternal database, Object iLeft, Object iRight) {
-    if (iLeft == null || iRight == null) {
+  public boolean execute(final DatabaseInternal database, Object left, Object right) {
+    if (left == null || right == null)
       return false;
-    }
 
-    if (iLeft.getClass() != iRight.getClass() && iLeft instanceof Number && iRight instanceof Number) {
-      Number[] couple = Type.castComparableNumber((Number) iLeft, (Number) iRight);
-      iLeft = couple[0];
-      iRight = couple[1];
-    } else {
-      iRight = Type.convert(database, iRight, iLeft.getClass());
-    }
-    if (iRight == null)
+    if (left.getClass() != right.getClass() && left instanceof Number && right instanceof Number) {
+      final Number[] couple = Type.castComparableNumber((Number) left, (Number) right);
+      left = couple[0];
+      right = couple[1];
+    } else
+      right = Type.convert(database, right, left.getClass());
+
+    if (right == null)
       return false;
-    if (iLeft instanceof Identifiable && !(iRight instanceof Identifiable)) {
+    if (left instanceof Identifiable && !(right instanceof Identifiable))
       return false;
-    }
-    if (!(iLeft instanceof Comparable)) {
+
+    if (!(left instanceof Comparable))
       return false;
-    }
-    return BinaryComparator.compareTo(iLeft, iRight) > 0;
+
+    return BinaryComparator.compareTo(left, right) > 0;
   }
 
   @Override
@@ -79,7 +78,7 @@ public class GtOperator extends SimpleNode implements BinaryCompareOperator {
   }
 
   @Override
-  public boolean equals(Object obj) {
+  public boolean equals(final Object obj) {
     return obj != null && obj.getClass().equals(this.getClass());
   }
 

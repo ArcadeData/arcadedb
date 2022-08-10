@@ -83,7 +83,7 @@ public class EmbeddedSchema implements Schema {
   private              boolean                    dirtyConfiguration      = false;
   private              boolean                    loadInRamCompleted      = false;
   private              boolean                    multipleUpdate          = false;
-  private final       AtomicLong                 versionSerial           = new AtomicLong();
+  private final        AtomicLong                 versionSerial           = new AtomicLong();
 
   public EmbeddedSchema(final DatabaseInternal database, final String databasePath, final SecurityManager security) {
     this.database = database;
@@ -1156,14 +1156,7 @@ public class EmbeddedSchema implements Schema {
           if (schemaProperties != null) {
             for (String propName : schemaProperties.keySet()) {
               final JSONObject prop = schemaProperties.getJSONObject(propName);
-              final Property p = type.createProperty(propName, (String) prop.get("type"));
-
-              if (prop.has("default"))
-                p.setDefaultValue(prop.get("default"));
-
-              p.custom.clear();
-              if (prop.has("custom"))
-                p.custom.putAll(prop.getJSONObject("custom").toMap());
+              final Property p = type.createProperty(propName, prop);
             }
           }
         }
