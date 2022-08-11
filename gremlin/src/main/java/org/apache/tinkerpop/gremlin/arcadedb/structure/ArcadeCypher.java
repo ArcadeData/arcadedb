@@ -23,7 +23,10 @@ import com.arcadedb.gremlin.query.CypherQueryEngine;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import org.opencypher.gremlin.translation.CypherAst;
 import org.opencypher.gremlin.translation.TranslationFacade;
+import org.opencypher.gremlin.translation.groovy.GroovyPredicate;
+import org.opencypher.gremlin.translation.translator.Translator;
 
 import java.util.*;
 import java.util.concurrent.*;
@@ -97,9 +100,9 @@ public class ArcadeCypher extends ArcadeGremlin {
       }
 
       // TRANSLATE TO GREMLIN AND CACHE THE STATEMENT FOR FURTHER USAGE
-      final String gremlin = parameters == null ?//
-          new TranslationFacade().toGremlinGroovy(cypher) ://
-          new TranslationFacade().toGremlinGroovy(cypher, parameters);
+      final CypherAst ast = parameters == null ? CypherAst.parse(cypher) : CypherAst.parse(cypher, parameters);
+      Translator<String, GroovyPredicate> translator = Translator.builder().gremlinGroovy().enableCypherExtensions().build();
+      final String gremlin = ast.buildTranslation(translator);
 
       while (totalCachedStatements.get() >= CACHE_SIZE) {
         int leastUsedValue = 0;
