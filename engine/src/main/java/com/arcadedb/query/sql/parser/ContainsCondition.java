@@ -25,6 +25,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.QueryOperatorEquals;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.*;
 
@@ -56,12 +57,11 @@ public class ContainsCondition extends BooleanExpression {
           if (((Collection) left).contains(item)) {
             return true;
           }
-          if (item instanceof Result) {
+          if (item instanceof Result)
             item = ((Result) item).getElement().orElse(null);
-          }
-          if (item instanceof Identifiable && ((Collection) left).contains(item)) {
+
+          if (item instanceof Identifiable && ((Collection) left).contains(item))
             return true;
-          }
         }
 
         return MultiValue.contains(left, right);
@@ -148,11 +148,12 @@ public class ContainsCondition extends BooleanExpression {
       Iterator<Object> iter = MultiValue.getMultiValueIterator(leftValue);
       while (iter.hasNext()) {
         Object item = iter.next();
-        if (item instanceof Identifiable && condition.evaluate((Identifiable) item, ctx)) {
+        if (item instanceof Identifiable && condition.evaluate((Identifiable) item, ctx))
           return true;
-        } else if (item instanceof Result && condition.evaluate((Result) item, ctx)) {
+        else if (item instanceof Result && condition.evaluate((Result) item, ctx))
           return true;
-        }
+        else if (item instanceof Map && condition.evaluate(new ResultInternal((Map) item), ctx))
+          return true;
       }
       return false;
     }
@@ -171,11 +172,12 @@ public class ContainsCondition extends BooleanExpression {
       Iterator<Object> iter = MultiValue.getMultiValueIterator(leftValue);
       while (iter.hasNext()) {
         Object item = iter.next();
-        if (item instanceof Identifiable && condition.evaluate((Identifiable) item, ctx)) {
+        if (item instanceof Identifiable && condition.evaluate((Identifiable) item, ctx))
           return true;
-        } else if (item instanceof Result && condition.evaluate((Result) item, ctx)) {
+        else if (item instanceof Result && condition.evaluate((Result) item, ctx))
           return true;
-        }
+        else if (item instanceof Map && condition.evaluate(new ResultInternal((Map) item), ctx))
+          return true;
       }
       return false;
     }

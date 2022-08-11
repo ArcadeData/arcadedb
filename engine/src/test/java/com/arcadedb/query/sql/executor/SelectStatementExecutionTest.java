@@ -3326,7 +3326,6 @@ public class SelectStatementExecutionTest extends TestHelper {
     Assertions.assertEquals(3, totalFound);
   }
 
-
   @Test
   public void testContainsStrings() {
     String className = "testContains";
@@ -3342,7 +3341,7 @@ public class SelectStatementExecutionTest extends TestHelper {
         document.set("list", new ArrayList<>());
 
         for (int j = i; j < i + 3; j++)
-          document.newEmbeddedDocument("embeddedList", "list").set("value", ""+j);
+          document.newEmbeddedDocument("embeddedList", "list").set("value", "" + j);
 
         document.save();
       }
@@ -3356,6 +3355,46 @@ public class SelectStatementExecutionTest extends TestHelper {
       List<String> valueMatches = new ArrayList<>();
       for (EmbeddedDocument d : embeddedList)
         valueMatches.add(d.getString("value"));
+
+      Assertions.assertTrue(valueMatches.contains("3"));
+
+      ++totalFound;
+    }
+
+    Assertions.assertEquals(3, totalFound);
+  }
+
+  @Test
+  public void testContainsStringsInMap() {
+    String className = "testContains";
+
+    DocumentType clazz1 = database.getSchema().createDocumentType(className);
+    clazz1.createProperty("list", Type.LIST);
+
+    database.getSchema().createDocumentType("embeddedList");
+
+    database.transaction(() -> {
+      for (int i = 0; i < 100; i++) {
+        MutableDocument document = database.newDocument(className);
+
+        List<Map> list = new ArrayList<>();
+        document.set("list", list);
+
+        for (int j = i; j < i + 3; j++)
+          list.add(Map.of("value", "" + j));
+
+        document.save();
+      }
+    });
+
+    int totalFound = 0;
+    for (ResultSet result = database.query("sql", "select from " + className + " where list contains ( value = '3' )"); result.hasNext(); ) {
+      Result item = result.next();
+      List<Map> embeddedList = item.getProperty("list");
+
+      List<String> valueMatches = new ArrayList<>();
+      for (Map d : embeddedList)
+        valueMatches.add((String) d.get("value"));
 
       Assertions.assertTrue(valueMatches.contains("3"));
 
