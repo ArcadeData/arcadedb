@@ -62,7 +62,7 @@ public class CreatePropertyStatementExecutionTest extends TestHelper {
   @Test
   public void testCreateUnsafePropertyWithEmbeddedType() throws Exception {
     database.command("sql", "create document type testCreateUnsafePropertyWithEmbeddedType").close();
-    database.command("sql", "CREATE Property testCreateUnsafePropertyWithEmbeddedType.officers LIST UNSAFE").close();
+    database.command("sql", "CREATE Property testCreateUnsafePropertyWithEmbeddedType.officers LIST").close();
 
     DocumentType companyClass = database.getSchema().getType("testCreateUnsafePropertyWithEmbeddedType");
     Property nameProperty = companyClass.getProperty(PROP_OFFICERS);
@@ -97,7 +97,7 @@ public class CreatePropertyStatementExecutionTest extends TestHelper {
   public void testMandatoryAsLinkedName() throws Exception {
     database.command("sql", "create document type testMandatoryAsLinkedName").close();
     database.command("sql", "create document type testMandatoryAsLinkedName_2").close();
-    database.command("sql", "CREATE PROPERTY testMandatoryAsLinkedName.id LIST UNSAFE").close();
+    database.command("sql", "CREATE PROPERTY testMandatoryAsLinkedName.id LIST").close();
 
     DocumentType companyClass = database.getSchema().getType("testMandatoryAsLinkedName");
     DocumentType mandatoryClass = database.getSchema().getType("testMandatoryAsLinkedName_2");
