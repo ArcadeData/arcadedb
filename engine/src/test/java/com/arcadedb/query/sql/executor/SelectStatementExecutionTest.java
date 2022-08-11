@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
@@ -34,7 +35,7 @@ import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.lang.reflect.Array;
+import java.lang.reflect.*;
 import java.util.*;
 
 public class SelectStatementExecutionTest extends TestHelper {
@@ -3285,6 +3286,83 @@ public class SelectStatementExecutionTest extends TestHelper {
     result = database.query("sql", "select from " + className + " where coll contains 12L");
     Assertions.assertFalse(result.hasNext());
     result.close();
+  }
+
+  @Test
+  public void testContainsIntegers() {
+    String className = "testContains";
+
+    DocumentType clazz1 = database.getSchema().createDocumentType(className);
+    clazz1.createProperty("list", Type.LIST);
+
+    database.getSchema().createDocumentType("embeddedList");
+
+    database.transaction(() -> {
+      for (int i = 0; i < 100; i++) {
+        MutableDocument document = database.newDocument(className);
+        document.set("list", new ArrayList<>());
+
+        for (int j = i; j < i + 3; j++)
+          document.newEmbeddedDocument("embeddedList", "list").set("value", j);
+
+        document.save();
+      }
+    });
+
+    int totalFound = 0;
+    for (ResultSet result = database.query("sql", "select from " + className + " where list contains ( value = 3 )"); result.hasNext(); ) {
+      Result item = result.next();
+      List<EmbeddedDocument> embeddedList = item.getProperty("list");
+
+      List<Integer> valueMatches = new ArrayList<>();
+      for (EmbeddedDocument d : embeddedList)
+        valueMatches.add(d.getInteger("value"));
+
+      Assertions.assertTrue(valueMatches.contains(3));
+
+      ++totalFound;
+    }
+
+    Assertions.assertEquals(3, totalFound);
+  }
+
+
+  @Test
+  public void testContainsStrings() {
+    String className = "testContains";
+
+    DocumentType clazz1 = database.getSchema().createDocumentType(className);
+    clazz1.createProperty("list", Type.LIST);
+
+    database.getSchema().createDocumentType("embeddedList");
+
+    database.transaction(() -> {
+      for (int i = 0; i < 100; i++) {
+        MutableDocument document = database.newDocument(className);
+        document.set("list", new ArrayList<>());
+
+        for (int j = i; j < i + 3; j++)
+          document.newEmbeddedDocument("embeddedList", "list").set("value", ""+j);
+
+        document.save();
+      }
+    });
+
+    int totalFound = 0;
+    for (ResultSet result = database.query("sql", "select from " + className + " where list contains ( value = '3' )"); result.hasNext(); ) {
+      Result item = result.next();
+      List<EmbeddedDocument> embeddedList = item.getProperty("list");
+
+      List<String> valueMatches = new ArrayList<>();
+      for (EmbeddedDocument d : embeddedList)
+        valueMatches.add(d.getString("value"));
+
+      Assertions.assertTrue(valueMatches.contains("3"));
+
+      ++totalFound;
+    }
+
+    Assertions.assertEquals(3, totalFound);
   }
 
   @Test
