@@ -29,9 +29,6 @@ public class RestoreSettings {
   public       int                 verboseLevel         = 2;
   public final Map<String, String> options              = new HashMap<>();
 
-  public RestoreSettings() {
-  }
-
   protected void parseParameters(final String[] args) {
     if (args != null)
       for (int i = 0; i < args.length; )

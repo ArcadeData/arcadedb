@@ -95,7 +95,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       if (!settings.documentPropertiesInclude.equalsIgnoreCase("*")) {
         final String[] includes = settings.documentPropertiesInclude.split(",");
 
-          final Set<String> propertiesSet = new HashSet<>(Arrays.asList(includes));
+        final Set<String> propertiesSet = new HashSet<>(Arrays.asList(includes));
 
         for (AnalyzedProperty p : entity.getProperties()) {
           if (propertiesSet.contains(p.getName())) {
@@ -104,7 +104,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         }
       } else {
         // INCLUDE ALL THE PROPERTIES
-          properties.addAll(entity.getProperties());
+        properties.addAll(entity.getProperties());
       }
 
       LogManager.instance().log(this, Level.INFO, "Importing the following document properties: %s", null, properties);
@@ -208,7 +208,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       if (!settings.vertexPropertiesInclude.isEmpty() && !settings.vertexPropertiesInclude.equalsIgnoreCase("*")) {
         final String[] includes = settings.vertexPropertiesInclude.split(",");
 
-          final Set<String> propertiesSet = new HashSet<>(Arrays.asList(includes));
+        final Set<String> propertiesSet = new HashSet<>(Arrays.asList(includes));
 
         for (AnalyzedProperty p : entity.getProperties()) {
           if (propertiesSet.contains(p.getName())) {
@@ -217,7 +217,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         }
       } else {
         // INCLUDE ALL THE PROPERTIES
-          properties.addAll(entity.getProperties());
+        properties.addAll(entity.getProperties());
       }
 
       LogManager.instance().log(this, Level.INFO, "Importing the following vertex properties: %s", null, properties);
@@ -325,7 +325,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       if (!settings.edgePropertiesInclude.isEmpty() && !settings.edgePropertiesInclude.equalsIgnoreCase("*")) {
         final String[] includes = settings.edgePropertiesInclude.split(",");
 
-          final Set<String> propertiesSet = new HashSet<>(Arrays.asList(includes));
+        final Set<String> propertiesSet = new HashSet<>(Arrays.asList(includes));
 
         for (AnalyzedProperty p : entity.getProperties()) {
           if (propertiesSet.contains(p.getName())) {
@@ -334,7 +334,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         }
       } else {
         // INCLUDE ALL THE PROPERTIES
-          properties.addAll(entity.getProperties());
+        properties.addAll(entity.getProperties());
       }
 
       LogManager.instance().log(this, Level.INFO, "Importing the following edge properties: %s", null, properties);
@@ -446,6 +446,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
     long skipEntries = 0;
     final String header;
+
     switch (entityType) {
     case VERTEX:
       header = settings.verticesHeader;
@@ -480,7 +481,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
         fieldNames.add(header);
       else {
         final String[] headerColumns = header.split(",");
-          fieldNames.addAll(Arrays.asList(headerColumns));
+        fieldNames.addAll(Arrays.asList(headerColumns));
       }
       LogManager.instance().log(this, Level.INFO, "Parsing with custom header: %s", null, fieldNames);
     }
@@ -501,7 +502,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
 
         if (line == 0 && header == null) {
           // READ THE HEADER FROM FILE
-            fieldNames.addAll(Arrays.asList(row));
+          fieldNames.addAll(Arrays.asList(row));
           LogManager.instance().log(this, Level.INFO, "Reading header from 1st line in data file: %s", null, Arrays.toString(row));
         } else {
           // DATA LINE

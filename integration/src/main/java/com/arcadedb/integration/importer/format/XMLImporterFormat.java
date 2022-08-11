@@ -40,17 +40,14 @@ import java.util.logging.*;
 
 public class XMLImporterFormat implements FormatImporter {
   @Override
-  public void load(SourceSchema sourceSchema, AnalyzedEntity.ENTITY_TYPE entityType, final Parser parser, final DatabaseInternal database,
+  public void load(final SourceSchema sourceSchema, AnalyzedEntity.ENTITY_TYPE entityType, final Parser parser, final DatabaseInternal database,
       final ImporterContext context, final ImporterSettings settings) throws IOException {
     try {
       int objectNestLevel = 1;
-      long maxValueSampling = 300;
 
       for (Map.Entry<String, String> entry : settings.options.entrySet()) {
         if ("objectNestLevel".equals(entry.getKey()))
           objectNestLevel = Integer.parseInt(entry.getValue());
-        else if ("maxValueSampling".equals(entry.getKey()))
-          maxValueSampling = Integer.parseInt(entry.getValue());
       }
 
       final XMLInputFactory xmlFactory = XMLInputFactory.newInstance();
@@ -146,14 +143,10 @@ public class XMLImporterFormat implements FormatImporter {
   public SourceSchema analyze(final AnalyzedEntity.ENTITY_TYPE entityType, final Parser parser, final ImporterSettings settings,
       final AnalyzedSchema analyzedSchema) {
     int objectNestLevel = 1;
-    long analyzingLimitBytes = 0;
     long analyzingLimitEntries = 0;
-    long maxValueSampling = 300;
 
     for (Map.Entry<String, String> entry : settings.options.entrySet()) {
-      if ("analyzingLimitBytes".equals(entry.getKey()))
-        analyzingLimitBytes = FileUtils.getSizeAsNumber(entry.getValue());
-      else if ("analyzingLimitEntries".equals(entry.getKey()))
+      if ("analyzingLimitEntries".equals(entry.getKey()))
         analyzingLimitEntries = Long.parseLong(entry.getValue());
       else if ("objectNestLevel".equals(entry.getKey()))
         objectNestLevel = Integer.parseInt(entry.getValue());

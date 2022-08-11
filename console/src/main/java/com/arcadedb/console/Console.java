@@ -67,7 +67,6 @@ public class Console {
   private              int              maxWidth             = TableFormatter.DEFAULT_MAX_WIDTH;
   private              Boolean          expandResultSet;
   private              ResultSet        resultSet;
-  private              String           rootDirectory;
   private              String           databaseDirectory;
   private              int              verboseLevel         = 1;
 
@@ -151,18 +150,17 @@ public class Console {
   }
 
   public Console setRootPath(final String rootDirectory) {
-    this.rootDirectory = rootDirectory;
+    String root = rootDirectory;
+    if (root == null || root.isEmpty())
+      root = ".";
+    else if (root.endsWith(File.separator))
+      root = root.substring(0, root.length() - 1);
 
-    if (this.rootDirectory == null || this.rootDirectory.isEmpty())
-      this.rootDirectory = ".";
-    else if (this.rootDirectory.endsWith(File.separator))
-      this.rootDirectory = this.rootDirectory.substring(0, this.rootDirectory.length() - 1);
-
-    if (!new File(this.rootDirectory + File.separator + "config").exists() && new File(
-        this.rootDirectory + File.separator + ".." + File.separator + "config").exists()) {
-      databaseDirectory = new File(this.rootDirectory).getAbsoluteFile().getParentFile().getPath() + File.separator + "databases" + File.separator;
+    if (!new File(root + File.separator + "config").exists() && new File(
+        root + File.separator + ".." + File.separator + "config").exists()) {
+      databaseDirectory = new File(root).getAbsoluteFile().getParentFile().getPath() + File.separator + "databases" + File.separator;
     } else
-      databaseDirectory = this.rootDirectory + File.separator + "databases" + File.separator;
+      databaseDirectory = root + File.separator + "databases" + File.separator;
 
     return this;
   }

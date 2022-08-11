@@ -32,9 +32,6 @@ public class BackupSettings {
   public final Map<String, String> options       = new HashMap<>();
   public       String              databaseName;
 
-  public BackupSettings() {
-  }
-
   protected void parseParameters(final String[] args) {
     if (args != null)
       for (int i = 0; i < args.length; )

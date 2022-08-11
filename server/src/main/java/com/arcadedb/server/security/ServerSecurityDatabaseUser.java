@@ -67,6 +67,10 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
     return readTimeout;
   }
 
+  public String getDatabaseName() {
+    return databaseName;
+  }
+
   @Override
   public boolean requestAccessOnDatabase(final DATABASE_ACCESS access) {
     return databaseAccessMap[access.ordinal()];
