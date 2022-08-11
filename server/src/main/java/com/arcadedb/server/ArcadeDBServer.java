@@ -375,9 +375,11 @@ public class ArcadeDBServer {
       if (!databaseDir.isDirectory())
         throw new ConfigurationException("Configured database directory '" + databaseDir + "' is not a directory on file system");
 
-      final File[] databaseDirectories = databaseDir.listFiles(File::isDirectory);
-      for (File f : databaseDirectories)
-        getDatabase(f.getName());
+      if (configuration.getValueAsBoolean(GlobalConfiguration.SERVER_DATABASE_LOADATSTARTUP)) {
+        final File[] databaseDirectories = databaseDir.listFiles(File::isDirectory);
+        for (File f : databaseDirectories)
+          getDatabase(f.getName());
+      }
     }
   }
 
@@ -436,8 +438,6 @@ public class ArcadeDBServer {
               } catch (InvocationTargetException e) {
                 throw new CommandExecutionException("Error on restoring database", e.getTargetException());
               }
-
-
 
               getDatabase(dbName);
               break;

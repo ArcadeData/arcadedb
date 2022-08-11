@@ -205,6 +205,8 @@ public enum GlobalConfiguration {
 
   SERVER_DATABASE_DIRECTORY("arcadedb.server.databaseDirectory", "Directory containing the database", String.class, "${arcadedb.server.rootPath}/databases"),
 
+  SERVER_DATABASE_LOADATSTARTUP("arcadedb.server.databaseLoadAtStartup", "Open all the available databases at server startup", Boolean.class, true),
+
   SERVER_PLUGINS("arcadedb.server.plugins", "List of server plugins to install. The format to load a plugin is: `<pluginName>:<pluginFullClass>`", String.class,
       ""),
 
