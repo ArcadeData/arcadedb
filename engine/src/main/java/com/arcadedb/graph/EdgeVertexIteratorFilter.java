@@ -22,7 +22,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.utility.Pair;
 
-import java.util.NoSuchElementException;
+import java.util.*;
 
 public class EdgeVertexIteratorFilter extends IteratorFilterBase<Pair<RID, RID>> {
   public EdgeVertexIteratorFilter(final DatabaseInternal database, final EdgeSegment current, final String[] edgeTypes) {

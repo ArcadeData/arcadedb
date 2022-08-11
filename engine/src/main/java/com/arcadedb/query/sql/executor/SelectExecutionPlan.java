@@ -20,9 +20,8 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.CommandExecutionException;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.stream.Collectors;
+import java.util.*;
+import java.util.stream.*;
 
 /**
  * Created by luigidellaquila on 06/07/16.

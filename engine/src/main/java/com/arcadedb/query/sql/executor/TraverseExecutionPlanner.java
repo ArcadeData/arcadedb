@@ -23,13 +23,25 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.index.RangeIndex;
-import com.arcadedb.query.sql.parser.*;
+import com.arcadedb.query.sql.parser.Bucket;
+import com.arcadedb.query.sql.parser.FromClause;
+import com.arcadedb.query.sql.parser.FromItem;
+import com.arcadedb.query.sql.parser.Identifier;
+import com.arcadedb.query.sql.parser.IndexIdentifier;
+import com.arcadedb.query.sql.parser.InputParameter;
+import com.arcadedb.query.sql.parser.Limit;
+import com.arcadedb.query.sql.parser.PInteger;
+import com.arcadedb.query.sql.parser.Rid;
+import com.arcadedb.query.sql.parser.SchemaIdentifier;
+import com.arcadedb.query.sql.parser.Skip;
+import com.arcadedb.query.sql.parser.Statement;
+import com.arcadedb.query.sql.parser.TraverseProjectionItem;
+import com.arcadedb.query.sql.parser.TraverseStatement;
+import com.arcadedb.query.sql.parser.WhereClause;
 import com.arcadedb.schema.DocumentType;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import java.util.stream.Collectors;
+import java.util.*;
+import java.util.stream.*;
 
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)

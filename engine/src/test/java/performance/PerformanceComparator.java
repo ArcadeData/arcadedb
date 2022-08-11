@@ -21,8 +21,7 @@ package performance;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.UnsignedBytesComparator;
 
-import java.util.Comparator;
-import java.util.UUID;
+import java.util.*;
 
 public class PerformanceComparator {
   private static final int REPEAT_TEST  = 3;

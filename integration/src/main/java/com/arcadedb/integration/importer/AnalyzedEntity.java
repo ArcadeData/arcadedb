@@ -20,10 +20,7 @@ package com.arcadedb.integration.importer;
 
 import com.arcadedb.schema.Type;
 
-import java.util.Collection;
-import java.util.LinkedHashMap;
-import java.util.Map;
-import java.util.Objects;
+import java.util.*;
 
 public class AnalyzedEntity {
   public enum ENTITY_TYPE {DATABASE, DOCUMENT, VERTEX, EDGE}

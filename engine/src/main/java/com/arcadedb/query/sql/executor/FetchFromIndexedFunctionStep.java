@@ -25,9 +25,7 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.BinaryCondition;
 import com.arcadedb.query.sql.parser.FromClause;
 
-import java.util.Iterator;
-import java.util.Map;
-import java.util.Optional;
+import java.util.*;
 
 /**
  * Created by luigidellaquila on 06/08/16.

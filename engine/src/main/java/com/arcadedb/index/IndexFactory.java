@@ -23,8 +23,7 @@ import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.schema.Type;
 
-import java.util.HashMap;
-import java.util.Map;
+import java.util.*;
 
 public class IndexFactory {
   private final Map<String, IndexFactoryHandler> map = new HashMap<>();

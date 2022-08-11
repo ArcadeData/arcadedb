@@ -27,7 +27,15 @@ import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
-import com.arcadedb.query.sql.function.graph.*;
+import com.arcadedb.query.sql.function.graph.SQLFunctionBoth;
+import com.arcadedb.query.sql.function.graph.SQLFunctionBothE;
+import com.arcadedb.query.sql.function.graph.SQLFunctionBothV;
+import com.arcadedb.query.sql.function.graph.SQLFunctionIn;
+import com.arcadedb.query.sql.function.graph.SQLFunctionInE;
+import com.arcadedb.query.sql.function.graph.SQLFunctionInV;
+import com.arcadedb.query.sql.function.graph.SQLFunctionOut;
+import com.arcadedb.query.sql.function.graph.SQLFunctionOutE;
+import com.arcadedb.query.sql.function.graph.SQLFunctionOutV;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 

@@ -22,7 +22,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 
-import java.text.SimpleDateFormat;
+import java.text.*;
 import java.util.*;
 
 /**

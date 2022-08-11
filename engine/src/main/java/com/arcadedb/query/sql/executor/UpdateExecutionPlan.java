@@ -24,8 +24,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.CommandExecutionException;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
 
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)

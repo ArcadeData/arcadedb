@@ -22,8 +22,7 @@ import com.arcadedb.TestHelper;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.Random;
-import java.util.UUID;
+import java.util.*;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)

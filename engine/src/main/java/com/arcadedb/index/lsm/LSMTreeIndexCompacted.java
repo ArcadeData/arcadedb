@@ -18,9 +18,6 @@
  */
 package com.arcadedb.index.lsm;
 
-import static com.arcadedb.database.Binary.BYTE_SERIALIZED_SIZE;
-import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
-
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
@@ -33,9 +30,12 @@ import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.log.LogManager;
 
-import java.io.IOException;
+import java.io.*;
 import java.util.*;
-import java.util.logging.Level;
+import java.util.logging.*;
+
+import static com.arcadedb.database.Binary.BYTE_SERIALIZED_SIZE;
+import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
 
 /**
  * The first page (main page) contains the total pages under the fields "compactedPageNumberOfSeries". This is to avoid concurrent read/write while compaction.

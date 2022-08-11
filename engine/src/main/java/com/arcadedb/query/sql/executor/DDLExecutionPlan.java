@@ -21,8 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.parser.DDLStatement;
 
-import java.util.Collections;
-import java.util.List;
+import java.util.*;
 
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)

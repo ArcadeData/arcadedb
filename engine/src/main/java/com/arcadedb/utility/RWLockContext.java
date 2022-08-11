@@ -21,7 +21,7 @@ package com.arcadedb.utility;
 import com.arcadedb.exception.ArcadeDBException;
 
 import java.util.concurrent.Callable;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.concurrent.locks.*;
 
 public class RWLockContext {
   private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();

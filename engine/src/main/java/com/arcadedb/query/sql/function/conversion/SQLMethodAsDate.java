@@ -23,10 +23,9 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.misc.AbstractSQLMethod;
 
-import java.text.ParseException;
-import java.text.SimpleDateFormat;
-import java.util.Date;
-import java.util.logging.Level;
+import java.text.*;
+import java.util.*;
+import java.util.logging.*;
 
 /**
  * Transforms a value to date. If the conversion is not possible, null is returned.

@@ -23,8 +23,8 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.JavaBinarySerializer;
 
 import java.io.*;
-import java.math.BigDecimal;
-import java.util.Date;
+import java.math.*;
+import java.util.*;
 
 public abstract class BaseDocument extends BaseRecord implements Document, Serializable, Externalizable {
   protected final DocumentType type;

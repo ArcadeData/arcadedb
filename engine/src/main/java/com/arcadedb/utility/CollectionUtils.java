@@ -20,7 +20,7 @@ package com.arcadedb.utility;
 
 import com.arcadedb.serializer.BinaryComparator;
 
-import java.util.List;
+import java.util.*;
 
 public class CollectionUtils {
 

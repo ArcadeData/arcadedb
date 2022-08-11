@@ -37,9 +37,8 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.logging.Level;
+import java.util.*;
+import java.util.logging.*;
 
 /**
  * Asynchronous Task that creates the relationship between the sourceVertex and the destinationVertex as outgoing.

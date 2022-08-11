@@ -24,7 +24,7 @@ import com.arcadedb.log.Logger;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.logging.Level;
+import java.util.logging.*;
 
 public class LoggerTest extends TestHelper {
   private boolean logged  = false;

@@ -18,8 +18,6 @@
  */
 package com.arcadedb.mongo;
 
-import static de.bwaldvogel.mongo.backend.Utils.markOkay;
-
 import com.arcadedb.database.Database;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
@@ -30,7 +28,11 @@ import com.arcadedb.schema.DocumentType;
 import de.bwaldvogel.mongo.MongoBackend;
 import de.bwaldvogel.mongo.MongoCollection;
 import de.bwaldvogel.mongo.MongoDatabase;
-import de.bwaldvogel.mongo.backend.*;
+import de.bwaldvogel.mongo.backend.CollectionOptions;
+import de.bwaldvogel.mongo.backend.Cursor;
+import de.bwaldvogel.mongo.backend.CursorRegistry;
+import de.bwaldvogel.mongo.backend.QueryResult;
+import de.bwaldvogel.mongo.backend.Utils;
 import de.bwaldvogel.mongo.backend.aggregation.Aggregation;
 import de.bwaldvogel.mongo.bson.Document;
 import de.bwaldvogel.mongo.exception.MongoServerError;
@@ -44,12 +46,11 @@ import io.netty.channel.Channel;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.logging.Level;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.logging.*;
+
+import static de.bwaldvogel.mongo.backend.Utils.markOkay;
 
 public class MongoDBDatabaseWrapper implements MongoDatabase {
   protected final Database                           database;

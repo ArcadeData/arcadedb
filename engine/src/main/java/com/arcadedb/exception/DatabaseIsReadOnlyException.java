@@ -18,7 +18,7 @@
  */
 package com.arcadedb.exception;
 
-import java.io.IOException;
+import java.io.*;
 
 public class DatabaseIsReadOnlyException extends ArcadeDBException {
   public DatabaseIsReadOnlyException(final String s) {

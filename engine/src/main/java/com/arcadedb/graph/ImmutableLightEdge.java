@@ -24,9 +24,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.schema.DocumentType;
 import org.json.JSONObject;
 
-import java.util.Collections;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 
 public class ImmutableLightEdge extends ImmutableDocument implements LightEdge {
   private final RID out;

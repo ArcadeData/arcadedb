@@ -27,7 +27,7 @@ import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 
-import java.io.File;
+import java.io.*;
 
 public class AbstractGraphQLTest {
     protected static final String DB_PATH = "./target/testgraphql";

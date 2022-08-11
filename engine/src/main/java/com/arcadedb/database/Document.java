@@ -21,10 +21,8 @@ package com.arcadedb.database;
 import com.arcadedb.schema.DocumentType;
 import org.json.JSONObject;
 
-import java.math.BigDecimal;
-import java.util.Date;
-import java.util.Map;
-import java.util.Set;
+import java.math.*;
+import java.util.*;
 
 public interface Document extends Record {
   byte RECORD_TYPE = 0;

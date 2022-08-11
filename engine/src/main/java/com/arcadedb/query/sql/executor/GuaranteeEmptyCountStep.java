@@ -21,8 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.ProjectionItem;
 
-import java.util.Map;
-import java.util.Optional;
+import java.util.*;
 
 public class GuaranteeEmptyCountStep extends AbstractExecutionStep {
 

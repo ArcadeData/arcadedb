@@ -38,10 +38,9 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.File;
-import java.io.UnsupportedEncodingException;
-import java.security.NoSuchAlgorithmException;
-import java.text.SimpleDateFormat;
+import java.io.*;
+import java.security.*;
+import java.text.*;
 import java.util.*;
 
 import static com.arcadedb.TestHelper.checkActiveDatabases;

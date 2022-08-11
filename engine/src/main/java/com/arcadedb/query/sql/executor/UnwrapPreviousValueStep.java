@@ -21,8 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 
-import java.util.Map;
-import java.util.Optional;
+import java.util.*;
 
 /**
  * for UPDATE, unwraps the current result set to return the previous value

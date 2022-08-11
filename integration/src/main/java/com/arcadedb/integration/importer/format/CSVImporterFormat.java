@@ -23,8 +23,14 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.index.CompressedAny2RIDIndex;
-import com.arcadedb.integration.importer.*;
-import com.arcadedb.integration.importer.graph.EdgeLinkedCallback;
+import com.arcadedb.integration.importer.AnalyzedEntity;
+import com.arcadedb.integration.importer.AnalyzedProperty;
+import com.arcadedb.integration.importer.AnalyzedSchema;
+import com.arcadedb.integration.importer.ImportException;
+import com.arcadedb.integration.importer.ImporterContext;
+import com.arcadedb.integration.importer.ImporterSettings;
+import com.arcadedb.integration.importer.Parser;
+import com.arcadedb.integration.importer.SourceSchema;
 import com.arcadedb.integration.importer.graph.GraphImporter;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Type;
@@ -35,11 +41,9 @@ import com.univocity.parsers.csv.CsvParserSettings;
 import com.univocity.parsers.tsv.TsvParser;
 import com.univocity.parsers.tsv.TsvParserSettings;
 
-import java.io.EOFException;
-import java.io.IOException;
-import java.io.InputStreamReader;
+import java.io.*;
 import java.util.*;
-import java.util.logging.Level;
+import java.util.logging.*;
 
 public class CSVImporterFormat extends AbstractImporterFormat {
   private static final Object[] NO_PARAMS = new Object[] {};

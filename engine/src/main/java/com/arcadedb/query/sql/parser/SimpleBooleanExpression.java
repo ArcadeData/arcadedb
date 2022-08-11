@@ -18,7 +18,7 @@
  */
 package com.arcadedb.query.sql.parser;
 
-import java.util.List;
+import java.util.*;
 
 /**
  * Created by luigidellaquila on 21/11/16.

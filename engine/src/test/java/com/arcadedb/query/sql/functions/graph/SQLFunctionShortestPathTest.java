@@ -18,9 +18,6 @@
  */
 package com.arcadedb.query.sql.functions.graph;
 
-import static java.util.Arrays.asList;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
@@ -29,9 +26,10 @@ import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.function.graph.SQLFunctionShortestPath;
 import org.junit.jupiter.api.Test;
 
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
+
+import static java.util.Arrays.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 public class SQLFunctionShortestPathTest {
 

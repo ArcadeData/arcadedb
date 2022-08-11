@@ -21,9 +21,8 @@ package com.arcadedb.graph;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
 
-import java.util.Iterator;
-import java.util.NoSuchElementException;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.*;
+import java.util.concurrent.atomic.*;
 
 public class VertexIterator implements Iterator<Vertex>, Iterable<Vertex> {
   private       EdgeSegment   currentContainer;

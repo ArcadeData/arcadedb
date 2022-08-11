@@ -21,9 +21,13 @@ package com.arcadedb.console;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.remote.RemoteException;
 import com.arcadedb.server.BaseGraphServerTest;
-import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
+import java.io.*;
 
 public class RemoteConsoleIT extends BaseGraphServerTest {
   private static final String  URL               = "remote:localhost:2480/console root " + DEFAULT_PASSWORD_FOR_TESTS;

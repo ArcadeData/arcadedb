@@ -26,9 +26,7 @@ import com.arcadedb.security.SecurityManager;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.util.HashSet;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
 
 public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
   private final String      databaseName;

@@ -19,7 +19,7 @@
 package com.arcadedb.query.sql;
 
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.query .QueryEngine;
+import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.SQLEngine;
 import com.arcadedb.query.sql.parser.Limit;

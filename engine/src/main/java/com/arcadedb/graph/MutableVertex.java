@@ -18,11 +18,16 @@
  */
 package com.arcadedb.graph;
 
-import com.arcadedb.database.*;
+import com.arcadedb.database.Binary;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
+import com.arcadedb.database.Transaction;
 import com.arcadedb.schema.DocumentType;
 import org.json.JSONObject;
 
-import java.util.Map;
+import java.util.*;
 
 /**
  * Mutable vertex that supports updates. After any changes, call the method {@link #save()} to mark the record as dirty in the current transaction, so the

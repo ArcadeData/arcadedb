@@ -20,8 +20,7 @@ package com.arcadedb.index;
 
 import com.arcadedb.database.Identifiable;
 
-import java.util.Arrays;
-import java.util.Objects;
+import java.util.*;
 
 public class IndexCursorEntry {
   public final Object[]     keys;

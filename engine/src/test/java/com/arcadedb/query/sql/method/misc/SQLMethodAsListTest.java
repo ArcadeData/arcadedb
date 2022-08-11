@@ -18,17 +18,15 @@
  */
 package com.arcadedb.query.sql.method.misc;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.query.sql.executor.SQLMethod;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
-import java.util.ArrayList;
-import java.util.LinkedHashSet;
-import java.util.Set;
+import java.util.*;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * Tests the "asList()" method implemented by the OSQLMethodAsList class. Note that the only input

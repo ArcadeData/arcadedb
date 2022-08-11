@@ -18,7 +18,7 @@
  */
 package com.arcadedb.database;
 
-import java.nio.ByteBuffer;
+import java.nio.*;
 
 public interface BinaryStructure {
   void append(Binary toCopy);

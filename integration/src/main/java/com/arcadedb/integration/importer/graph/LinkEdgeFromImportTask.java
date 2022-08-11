@@ -28,7 +28,7 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.utility.Pair;
 
-import java.util.List;
+import java.util.*;
 
 /**
  * Asynchronous Task that links the destination vertex back to the edges/vertices.

@@ -20,7 +20,7 @@ package com.arcadedb.query.sql.function.math;
 
 import com.arcadedb.query.sql.function.SQLFunctionConfigurableAbstract;
 
-import java.math.BigDecimal;
+import java.math.*;
 
 /**
  * Abstract class for math function.

@@ -19,9 +19,14 @@
 package com.arcadedb.integration.importer.format;
 
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.integration.importer.*;
+import com.arcadedb.integration.importer.AnalyzedEntity;
+import com.arcadedb.integration.importer.AnalyzedSchema;
+import com.arcadedb.integration.importer.ImporterContext;
+import com.arcadedb.integration.importer.ImporterSettings;
+import com.arcadedb.integration.importer.Parser;
+import com.arcadedb.integration.importer.SourceSchema;
 
-import java.io.IOException;
+import java.io.*;
 
 public class JSONImporterFormat implements FormatImporter {
   @Override

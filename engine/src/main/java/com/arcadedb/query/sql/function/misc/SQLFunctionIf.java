@@ -23,7 +23,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.function.SQLFunctionAbstract;
 
-import java.util.logging.Level;
+import java.util.logging.*;
 
 /**
  * Returns different values based on the condition. If it's true the first value is returned, otherwise the second one.

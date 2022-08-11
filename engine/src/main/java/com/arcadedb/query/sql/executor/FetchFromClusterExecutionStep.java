@@ -24,11 +24,16 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
-import com.arcadedb.query.sql.parser.*;
+import com.arcadedb.query.sql.parser.BinaryCompareOperator;
+import com.arcadedb.query.sql.parser.BinaryCondition;
+import com.arcadedb.query.sql.parser.BooleanExpression;
+import com.arcadedb.query.sql.parser.GeOperator;
+import com.arcadedb.query.sql.parser.GtOperator;
+import com.arcadedb.query.sql.parser.LeOperator;
+import com.arcadedb.query.sql.parser.LtOperator;
+import com.arcadedb.query.sql.parser.Rid;
 
-import java.util.Iterator;
-import java.util.Map;
-import java.util.Optional;
+import java.util.*;
 
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)

@@ -24,10 +24,8 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.utility.CollectionUtils;
 
-import java.math.BigDecimal;
-import java.util.Calendar;
-import java.util.Date;
-import java.util.List;
+import java.math.*;
+import java.util.*;
 
 public class BinaryComparator {
 

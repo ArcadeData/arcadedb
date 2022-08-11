@@ -20,8 +20,7 @@ package com.arcadedb.network.binary;
 
 import com.arcadedb.database.RID;
 
-import java.io.IOException;
-import java.io.OutputStream;
+import java.io.*;
 
 public interface ChannelDataOutput {
 

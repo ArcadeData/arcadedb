@@ -20,8 +20,7 @@ package com.arcadedb.integration.importer;
 
 import com.arcadedb.schema.Type;
 
-import java.util.HashSet;
-import java.util.Set;
+import java.util.*;
 
 public class AnalyzedProperty {
   private final String      name;

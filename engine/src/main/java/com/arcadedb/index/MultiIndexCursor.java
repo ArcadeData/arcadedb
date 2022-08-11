@@ -22,10 +22,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.index.lsm.LSMTreeIndexMutable;
 import com.arcadedb.serializer.BinaryComparator;
 
-import java.util.ArrayList;
-import java.util.Iterator;
-import java.util.List;
-import java.util.NoSuchElementException;
+import java.util.*;
 
 public class MultiIndexCursor implements IndexCursor {
   private final List<IndexCursor>  cursors;

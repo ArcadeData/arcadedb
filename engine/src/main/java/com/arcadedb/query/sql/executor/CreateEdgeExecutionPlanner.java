@@ -19,11 +19,15 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.query.sql.parser.*;
+import com.arcadedb.query.sql.parser.CreateEdgeStatement;
+import com.arcadedb.query.sql.parser.Expression;
+import com.arcadedb.query.sql.parser.Identifier;
+import com.arcadedb.query.sql.parser.InsertBody;
+import com.arcadedb.query.sql.parser.InsertSetExpression;
+import com.arcadedb.query.sql.parser.UpdateItem;
 import com.arcadedb.schema.DocumentType;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
 
 /**
  * Created by luigidellaquila on 08/08/16.

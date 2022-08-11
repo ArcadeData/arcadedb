@@ -20,9 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.query.sql.parser.WhereClause;
 
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.List;
+import java.util.*;
 
 /**
  * Created by luigidellaquila on 13/10/16.

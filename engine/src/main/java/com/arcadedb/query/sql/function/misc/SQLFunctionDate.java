@@ -23,10 +23,8 @@ import com.arcadedb.exception.QueryParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.function.SQLFunctionAbstract;
 
-import java.text.ParseException;
-import java.text.SimpleDateFormat;
-import java.util.Date;
-import java.util.TimeZone;
+import java.text.*;
+import java.util.*;
 
 /**
  * Builds a date object from the format passed. If no arguments are passed, than the system date is built (like sysdate() function)

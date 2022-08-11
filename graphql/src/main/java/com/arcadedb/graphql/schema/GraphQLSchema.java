@@ -40,11 +40,7 @@ import com.arcadedb.graphql.parser.TypeSystemDefinition;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 
 public class GraphQLSchema {
   private final Database                          database;

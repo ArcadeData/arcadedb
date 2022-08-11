@@ -22,8 +22,8 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 
-import java.util.Set;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.*;
+import java.util.concurrent.atomic.*;
 
 public interface EdgeSegment extends Record {
   byte RECORD_TYPE = 3;

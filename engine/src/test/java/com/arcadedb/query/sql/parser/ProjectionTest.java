@@ -22,8 +22,7 @@ import com.arcadedb.exception.CommandSQLParsingException;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.io.ByteArrayInputStream;
-import java.io.InputStream;
+import java.io.*;
 
 /**
  * Created by luigidellaquila on 02/07/15.

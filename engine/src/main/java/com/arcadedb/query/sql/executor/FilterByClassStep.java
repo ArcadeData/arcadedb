@@ -23,8 +23,7 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.schema.DocumentType;
 
-import java.util.Map;
-import java.util.Optional;
+import java.util.*;
 
 /**
  * Created by luigidellaquila on 01/03/17.

@@ -20,10 +20,8 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.TimeoutException;
 
-import java.lang.reflect.InvocationTargetException;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
+import java.lang.reflect.*;
+import java.util.*;
 
 /**
  * <p>Execution Steps are the building blocks of a query execution plan</p> <p>Typically an execution plan is made of a chain of

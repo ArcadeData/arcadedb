@@ -18,10 +18,6 @@
  */
 package com.arcadedb.query.sql.functions.math;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.function.math.SQLFunctionAbsoluteValue;
@@ -29,8 +25,11 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.math.BigDecimal;
-import java.math.BigInteger;
+import java.math.*;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Tests the absolute value function. The key is that the mathematical abs function is correctly

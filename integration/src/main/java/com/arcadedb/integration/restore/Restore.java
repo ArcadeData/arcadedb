@@ -23,7 +23,7 @@ import com.arcadedb.integration.importer.ConsoleLogger;
 import com.arcadedb.integration.restore.format.AbstractRestoreFormat;
 import com.arcadedb.integration.restore.format.FullRestoreFormat;
 
-import java.util.Timer;
+import java.util.*;
 
 public class Restore {
   protected RestoreSettings       settings = new RestoreSettings();

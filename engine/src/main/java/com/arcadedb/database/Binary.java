@@ -33,18 +33,13 @@ import java.util.logging.*;
  * @author Luca Garulli
  */
 public class Binary implements BinaryStructure, Comparable<Binary> {
-  public static final int BYTE_SERIALIZED_SIZE   = 1;
-  public static final int SHORT_SERIALIZED_SIZE  = 2;
-  public static final int INT_SERIALIZED_SIZE    = 4;
-  public static final int LONG_SERIALIZED_SIZE   = 8;
-  public static final int FLOAT_SERIALIZED_SIZE  = 4;
-  public static final int DOUBLE_SERIALIZED_SIZE = 8;
-
+  public static final  int BYTE_SERIALIZED_SIZE     = 1;
+  public static final  int SHORT_SERIALIZED_SIZE    = 2;
+  public static final  int INT_SERIALIZED_SIZE      = 4;
+  public static final  int LONG_SERIALIZED_SIZE     = 8;
+  public static final  int FLOAT_SERIALIZED_SIZE    = 4;
+  public static final  int DOUBLE_SERIALIZED_SIZE   = 8;
   private final static int DEFAULT_ALLOCATION_CHUNK = 512;
-
-  public interface FetchCallback {
-    void fetch(Binary newBuffer) throws IOException;
-  }
 
   protected       boolean       autoResizable       = true;
   protected       byte[]        content;
@@ -53,6 +48,10 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
   protected       int           allocationChunkSize = DEFAULT_ALLOCATION_CHUNK;
   protected       FetchCallback fetchCallback;
   protected final boolean       reusable;
+
+  public interface FetchCallback {
+    void fetch(Binary newBuffer) throws IOException;
+  }
 
   public Binary() {
     this.content = new byte[allocationChunkSize];

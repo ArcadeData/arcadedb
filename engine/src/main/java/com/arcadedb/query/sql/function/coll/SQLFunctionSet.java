@@ -23,8 +23,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 
-import java.util.HashSet;
-import java.util.Set;
+import java.util.*;
 
 /**
  * This operator add an item in a set. The set doesn't accept duplicates, so adding multiple times the same value has no effect: the

@@ -30,10 +30,8 @@ import com.arcadedb.query.sql.parser.Statement;
 import com.arcadedb.utility.Callable;
 import com.arcadedb.utility.MultiIterator;
 
-import java.io.ByteArrayInputStream;
-import java.io.InputStream;
-import java.util.Iterator;
-import java.util.List;
+import java.io.*;
+import java.util.*;
 
 public class SQLEngine {
   private static final SQLEngine                 INSTANCE = new SQLEngine();

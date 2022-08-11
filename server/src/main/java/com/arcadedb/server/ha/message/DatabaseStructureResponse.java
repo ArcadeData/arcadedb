@@ -22,8 +22,7 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.HAServer;
 
-import java.util.HashMap;
-import java.util.Map;
+import java.util.*;
 
 public class DatabaseStructureResponse extends HAAbstractCommand {
   private String               schemaJson;

@@ -22,7 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 
 import java.io.*;
-import java.net.Socket;
+import java.net.*;
 
 public class ChannelBinaryServer extends ChannelBinary {
 

@@ -23,8 +23,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.parser.FieldMatchPathItem;
 import com.arcadedb.query.sql.parser.MatchPathItem;
 
-import java.util.Collections;
-import java.util.Iterator;
+import java.util.*;
 
 public class MatchFieldTraverser extends MatchEdgeTraverser {
   public MatchFieldTraverser(Result lastUpstreamRecord, EdgeTraversal edge) {

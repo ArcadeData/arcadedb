@@ -25,9 +25,9 @@ import com.arcadedb.server.TestCallback;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 
-import java.io.File;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.logging.Level;
+import java.io.*;
+import java.util.concurrent.atomic.*;
+import java.util.logging.*;
 
 public class ReplicationServerReplicaRestartForceDbInstallIT extends ReplicationServerIT {
   private final    AtomicLong totalMessages           = new AtomicLong();

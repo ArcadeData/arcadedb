@@ -23,7 +23,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.PatternConst;
 
-import java.text.Normalizer;
+import java.text.*;
 
 /**
  * @author Johann Sorel (Geomatys)

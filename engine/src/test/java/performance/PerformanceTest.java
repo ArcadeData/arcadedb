@@ -23,7 +23,7 @@ import com.arcadedb.NullLogger;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.FileUtils;
 
-import java.io.File;
+import java.io.*;
 
 public abstract class PerformanceTest {
   public final static String DATABASE_PATH = "target/databases/performance";

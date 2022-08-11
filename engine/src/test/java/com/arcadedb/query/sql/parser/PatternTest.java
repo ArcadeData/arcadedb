@@ -21,9 +21,7 @@ package com.arcadedb.query.sql.parser;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.HashSet;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
 
 /** Created by luigidellaquila on 11/10/16. */
 public class PatternTest extends ParserTestAbstract {

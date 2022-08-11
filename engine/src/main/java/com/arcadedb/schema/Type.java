@@ -18,19 +18,24 @@
  */
 package com.arcadedb.schema;
 
-import com.arcadedb.database.*;
+import com.arcadedb.database.Binary;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.Document;
+import com.arcadedb.database.EmbeddedDocument;
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.ImmutableEmbeddedDocument;
+import com.arcadedb.database.MutableEmbeddedDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.MultiIterator;
 
-import java.math.BigDecimal;
-import java.math.BigInteger;
-import java.text.ParseException;
-import java.text.SimpleDateFormat;
+import java.math.*;
+import java.text.*;
 import java.util.*;
-import java.util.logging.Level;
+import java.util.logging.*;
 
 /**
  * Generic representation of a type.<br>

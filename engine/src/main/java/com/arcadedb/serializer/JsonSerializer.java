@@ -25,10 +25,7 @@ import com.arcadedb.query.sql.executor.Result;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 public class JsonSerializer {
   private boolean useCollectionSize  = false;

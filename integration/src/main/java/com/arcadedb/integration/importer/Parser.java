@@ -21,7 +21,7 @@ package com.arcadedb.integration.importer;
 import com.arcadedb.database.DatabaseFactory;
 
 import java.io.*;
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.*;
 
 public class Parser {
   private final Source            source;

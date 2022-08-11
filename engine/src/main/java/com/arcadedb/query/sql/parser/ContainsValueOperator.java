@@ -22,7 +22,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.DatabaseInternal;
 
-import java.util.Map;
+import java.util.*;
 
 public class ContainsValueOperator extends SimpleNode implements BinaryCompareOperator {
   public ContainsValueOperator(final int id) {

@@ -19,7 +19,12 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.CommandExecutionException;
-import com.arcadedb.query.sql.parser.*;
+import com.arcadedb.query.sql.parser.DeleteVertexStatement;
+import com.arcadedb.query.sql.parser.FromClause;
+import com.arcadedb.query.sql.parser.IndexIdentifier;
+import com.arcadedb.query.sql.parser.Limit;
+import com.arcadedb.query.sql.parser.SelectStatement;
+import com.arcadedb.query.sql.parser.WhereClause;
 
 /**
  * Created by luigidellaquila on 08/08/16.

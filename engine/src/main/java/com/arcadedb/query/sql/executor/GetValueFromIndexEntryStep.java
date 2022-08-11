@@ -25,11 +25,9 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.log.LogManager;
 
-import java.util.Arrays;
-import java.util.Map;
-import java.util.Optional;
-import java.util.logging.Level;
-import java.util.stream.Collectors;
+import java.util.*;
+import java.util.logging.*;
+import java.util.stream.*;
 
 /**
  * Created by luigidellaquila on 16/03/17.

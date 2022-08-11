@@ -18,8 +18,7 @@
  */
 package com.arcadedb.utility;
 
-import java.util.LinkedHashMap;
-import java.util.Map;
+import java.util.*;
 
 /**
  * The most simpler LRU cache implementation in Java.

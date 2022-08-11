@@ -21,7 +21,7 @@ package com.arcadedb.query.sql.method.misc;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.util.Date;
+import java.util.*;
 
 /**
  * @author Johann Sorel (Geomatys)

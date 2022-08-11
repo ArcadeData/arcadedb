@@ -29,8 +29,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 
-import java.util.Collection;
-import java.util.Map;
+import java.util.*;
 
 public class TruncateTypeStatement extends DDLStatement {
 

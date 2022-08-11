@@ -18,10 +18,8 @@
  */
 package com.arcadedb.integration.exporter;
 
-import java.text.DateFormat;
-import java.text.SimpleDateFormat;
-import java.util.HashMap;
-import java.util.Map;
+import java.text.*;
+import java.util.*;
 
 public class ExporterSettings {
   public       String              format;

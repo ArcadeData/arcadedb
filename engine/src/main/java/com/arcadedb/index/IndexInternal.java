@@ -21,9 +21,8 @@ package com.arcadedb.index;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.schema.Type;
 
-import java.io.IOException;
-import java.util.List;
-import java.util.Map;
+import java.io.*;
+import java.util.*;
 
 /**
  * Internal Index interface.

@@ -22,10 +22,7 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.HAServer;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.List;
+import java.util.*;
 
 /**
  * Response for a request. This is needed to check the quorum by the leader.

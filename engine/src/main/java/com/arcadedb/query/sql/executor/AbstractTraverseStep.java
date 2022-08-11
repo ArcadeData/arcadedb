@@ -24,7 +24,7 @@ import com.arcadedb.query.sql.parser.TraverseProjectionItem;
 import com.arcadedb.query.sql.parser.WhereClause;
 
 import java.util.*;
-import java.util.stream.Collectors;
+import java.util.stream.*;
 
 /**
  * Created by luigidellaquila on 26/10/16.

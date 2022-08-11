@@ -30,10 +30,7 @@ import de.bwaldvogel.mongo.bson.Document;
 import de.bwaldvogel.mongo.bson.ObjectId;
 import de.bwaldvogel.mongo.oplog.Oplog;
 
-import java.util.ArrayList;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 public class MongoDBCollectionWrapper implements MongoCollection<Long> {
   private final Database database;

@@ -22,7 +22,7 @@ import com.arcadedb.query.sql.executor.Result;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.math.BigDecimal;
+import java.math.*;
 
 /**
  * Created by luigidellaquila on 02/07/15.

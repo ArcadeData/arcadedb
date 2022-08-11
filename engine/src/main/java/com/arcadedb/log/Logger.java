@@ -18,7 +18,7 @@
  */
 package com.arcadedb.log;
 
-import java.util.logging.Level;
+import java.util.logging.*;
 
 /**
  * Logger interface that avoids using varargs to remove garbage on the GC

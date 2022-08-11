@@ -18,16 +18,13 @@
  */
 package com.arcadedb.query.sql.functions.coll;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.function.coll.SQLFunctionDifference;
 import org.junit.jupiter.api.Test;
 
-import java.util.Arrays;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 
 /**

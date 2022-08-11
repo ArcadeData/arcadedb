@@ -25,7 +25,7 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.schema.EmbeddedSchema;
 import org.json.JSONObject;
 
-import java.util.List;
+import java.util.*;
 
 /**
  * Basic Index interface.

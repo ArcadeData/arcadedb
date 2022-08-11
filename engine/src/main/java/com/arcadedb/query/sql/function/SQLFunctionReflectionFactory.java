@@ -21,14 +21,10 @@ package com.arcadedb.query.sql.function;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.function.misc.SQLStaticReflectiveFunction;
 
-import java.lang.reflect.Method;
-import java.lang.reflect.Modifier;
-import java.util.Arrays;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.logging.Level;
-import java.util.stream.Collectors;
+import java.lang.reflect.*;
+import java.util.*;
+import java.util.logging.*;
+import java.util.stream.*;
 
 /**
  * Factory for custom SQL functions.

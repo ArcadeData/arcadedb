@@ -31,8 +31,8 @@ import com.arcadedb.schema.VertexType;
 import org.json.JSONObject;
 
 import java.util.*;
-import java.util.logging.Level;
-import java.util.stream.Collectors;
+import java.util.logging.*;
+import java.util.stream.*;
 
 public class DatabaseChecker {
   private final DatabaseInternal    database;

@@ -20,7 +20,7 @@ package org.apache.tinkerpop.gremlin.arcadedb.structure.io.graphson;
 
 import org.apache.tinkerpop.gremlin.structure.io.graphson.TinkerPopJacksonModule;
 
-import java.util.Map;
+import java.util.*;
 
 /**
  * Created by Enrico Risa on 06/09/2017.

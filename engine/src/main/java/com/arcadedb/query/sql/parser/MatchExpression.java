@@ -21,7 +21,7 @@
 package com.arcadedb.query.sql.parser;
 
 import java.util.*;
-import java.util.stream.Collectors;
+import java.util.stream.*;
 
 public class MatchExpression extends SimpleNode {
   protected MatchFilter         origin;

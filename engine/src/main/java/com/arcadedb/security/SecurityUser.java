@@ -18,7 +18,7 @@
  */
 package com.arcadedb.security;
 
-import java.util.Set;
+import java.util.*;
 
 /**
  * Security user at global level. The user can have access to multiple databases.

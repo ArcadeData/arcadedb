@@ -24,14 +24,11 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.function.SQLFunctionAbstract;
 
-import java.lang.reflect.Method;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.function.BiFunction;
-import java.util.function.Supplier;
-import java.util.logging.Level;
-import java.util.stream.Collectors;
+import java.lang.reflect.*;
+import java.util.*;
+import java.util.function.*;
+import java.util.logging.*;
+import java.util.stream.*;
 
 /**
  * This is able to invoke a static method using reflection. If contains more than one {@link Method} it tries

@@ -23,9 +23,7 @@ import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.query.sql.parser.LocalResultSet;
 import com.arcadedb.query.sql.parser.Statement;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
+import java.util.*;
 
 /**
  * Created by luigidellaquila on 03/08/16.

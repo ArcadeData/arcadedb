@@ -22,8 +22,7 @@ package com.arcadedb.query.sql.executor;
  * Created by luigidellaquila on 08/08/16.
  */
 
-import java.util.Collections;
-import java.util.List;
+import java.util.*;
 
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)

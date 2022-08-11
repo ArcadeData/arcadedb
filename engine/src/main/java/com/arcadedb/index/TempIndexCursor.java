@@ -21,8 +21,7 @@ package com.arcadedb.index;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.serializer.BinaryComparator;
 
-import java.util.Collection;
-import java.util.Iterator;
+import java.util.*;
 
 public class TempIndexCursor implements IndexCursor {
   private final Iterator<IndexCursorEntry> iterator;

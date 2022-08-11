@@ -23,7 +23,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.VertexInternal;
 
-import java.util.List;
+import java.util.*;
 
 /**
  * Asynchronous Task that creates the relationship between the sourceVertex and the destinationVertex as outgoing.

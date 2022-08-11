@@ -21,9 +21,13 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.query.sql.executor.*;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.DeleteExecutionPlan;
+import com.arcadedb.query.sql.executor.DeleteVertexExecutionPlanner;
+import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.Map;
+import java.util.*;
 
 public class DeleteVertexStatement extends Statement {
 

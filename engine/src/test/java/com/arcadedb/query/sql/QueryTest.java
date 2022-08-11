@@ -28,12 +28,9 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.logging.Level;
+import java.util.*;
+import java.util.concurrent.atomic.*;
+import java.util.logging.*;
 
 public class QueryTest extends TestHelper {
   private static final int TOT = 10000;

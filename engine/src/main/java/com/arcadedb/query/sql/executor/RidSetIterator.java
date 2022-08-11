@@ -20,7 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.RID;
 
-import java.util.Iterator;
+import java.util.*;
 
 /**
  * Created by luigidellaquila on 25/10/16.

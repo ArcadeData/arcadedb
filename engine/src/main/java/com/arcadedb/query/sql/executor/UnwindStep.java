@@ -24,7 +24,7 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.Unwind;
 
 import java.util.*;
-import java.util.stream.Collectors;
+import java.util.stream.*;
 
 /**
  * unwinds a result-set.

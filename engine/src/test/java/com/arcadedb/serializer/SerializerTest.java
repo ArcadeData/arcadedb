@@ -19,15 +19,20 @@
 package com.arcadedb.serializer;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.database.*;
+import com.arcadedb.database.Binary;
+import com.arcadedb.database.Document;
+import com.arcadedb.database.EmbeddedDocument;
+import com.arcadedb.database.EmbeddedModifierProperty;
+import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.math.BigDecimal;
-import java.nio.ByteBuffer;
+import java.math.*;
+import java.nio.*;
 import java.util.*;
 
 public class SerializerTest extends TestHelper {

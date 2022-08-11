@@ -19,14 +19,13 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.database.Database;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.SchemaException;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.List;
+import java.util.*;
 
 public class DropTypeTest extends TestHelper {
   private static final int    TOT        = 10;

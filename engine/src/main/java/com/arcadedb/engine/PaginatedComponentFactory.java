@@ -20,9 +20,8 @@ package com.arcadedb.engine;
 
 import com.arcadedb.database.DatabaseInternal;
 
-import java.io.IOException;
-import java.util.HashMap;
-import java.util.Map;
+import java.io.*;
+import java.util.*;
 
 public class PaginatedComponentFactory {
   private final Map<String, PaginatedComponentFactoryHandler> map = new HashMap<>();

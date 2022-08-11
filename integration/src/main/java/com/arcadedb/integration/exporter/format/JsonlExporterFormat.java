@@ -33,14 +33,9 @@ import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.JsonGraphSerializer;
 import org.json.JSONObject;
 
-import java.io.File;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.io.OutputStreamWriter;
-import java.util.ArrayList;
-import java.util.Iterator;
-import java.util.List;
-import java.util.zip.GZIPOutputStream;
+import java.io.*;
+import java.util.*;
+import java.util.zip.*;
 
 public class JsonlExporterFormat extends AbstractExporterFormat {
   public static final  String             NAME       = "jsonl";

@@ -18,14 +18,12 @@
  */
 package com.arcadedb.utility;
 
-import static java.util.logging.Level.SEVERE;
-
 import com.arcadedb.log.LogFormatter;
 
-import java.util.Date;
-import java.util.IllegalFormatException;
-import java.util.logging.Level;
-import java.util.logging.LogRecord;
+import java.util.*;
+import java.util.logging.*;
+
+import static java.util.logging.Level.*;
 
 /**
  * Log formatter that uses ANSI code if they are available and enabled.

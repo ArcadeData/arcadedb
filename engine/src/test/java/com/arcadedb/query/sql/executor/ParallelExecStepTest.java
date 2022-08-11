@@ -22,9 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
 import org.junit.jupiter.api.Test;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
+import java.util.*;
 
 /**
  * Created by luigidellaquila on 26/07/16.

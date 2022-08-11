@@ -18,8 +18,6 @@
  */
 package org.apache.tinkerpop.gremlin.arcadedb;
 
-import static org.apache.tinkerpop.gremlin.util.iterator.IteratorUtils.asList;
-
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.RID;
 import org.apache.commons.configuration2.Configuration;
@@ -43,13 +41,10 @@ import org.apache.tinkerpop.gremlin.structure.VertexTest;
 import org.apache.tinkerpop.gremlin.structure.io.IoGraphTest;
 import org.junit.AssumptionViolatedException;
 
-import java.io.File;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.io.*;
+import java.util.*;
+
+import static org.apache.tinkerpop.gremlin.util.iterator.IteratorUtils.asList;
 
 /**
  * Created by Enrico Risa on 30/07/2018.

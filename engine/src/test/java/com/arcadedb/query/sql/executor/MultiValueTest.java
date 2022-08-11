@@ -18,16 +18,13 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
 import com.arcadedb.index.EmptyIndexCursor;
 import com.arcadedb.utility.MultiIterator;
 import org.junit.jupiter.api.Test;
 
-import java.util.Collection;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 class MultiValueTest {
 

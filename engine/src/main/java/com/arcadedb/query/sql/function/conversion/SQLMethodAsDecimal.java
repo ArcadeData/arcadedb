@@ -22,8 +22,8 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.misc.AbstractSQLMethod;
 
-import java.math.BigDecimal;
-import java.util.Date;
+import java.math.*;
+import java.util.*;
 
 /**
  * Transforms a value to decimal. If the conversion is not possible, null is returned.

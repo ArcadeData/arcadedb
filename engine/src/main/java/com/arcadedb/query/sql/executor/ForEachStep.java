@@ -19,10 +19,14 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.TimeoutException;
-import com.arcadedb.query.sql.parser.*;
+import com.arcadedb.query.sql.parser.Expression;
+import com.arcadedb.query.sql.parser.ForEachBlock;
+import com.arcadedb.query.sql.parser.Identifier;
+import com.arcadedb.query.sql.parser.IfStatement;
+import com.arcadedb.query.sql.parser.ReturnStatement;
+import com.arcadedb.query.sql.parser.Statement;
 
-import java.util.Iterator;
-import java.util.List;
+import java.util.*;
 
 /**
  * Created by luigidellaquila on 19/09/16.

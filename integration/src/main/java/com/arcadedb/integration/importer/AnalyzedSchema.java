@@ -18,9 +18,7 @@
  */
 package com.arcadedb.integration.importer;
 
-import java.util.Collection;
-import java.util.LinkedHashMap;
-import java.util.Map;
+import java.util.*;
 
 public class AnalyzedSchema {
   private final Map<String, AnalyzedEntity> entities = new LinkedHashMap<>();

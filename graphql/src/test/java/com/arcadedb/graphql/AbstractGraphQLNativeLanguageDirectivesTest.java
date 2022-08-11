@@ -23,7 +23,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.Collection;
+import java.util.*;
 
 public abstract class AbstractGraphQLNativeLanguageDirectivesTest extends AbstractGraphQLTest {
   @Test

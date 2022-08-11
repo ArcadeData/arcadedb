@@ -22,7 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.graph.Vertex;
 
-import java.util.Collections;
+import java.util.*;
 
 /**
  * Created by luigidellaquila on 03/01/17.

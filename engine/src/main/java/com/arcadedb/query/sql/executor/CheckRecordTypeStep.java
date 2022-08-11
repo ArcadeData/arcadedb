@@ -22,8 +22,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 
-import java.util.Map;
-import java.util.Optional;
+import java.util.*;
 
 /**
  * Checks that all the records from the upstream are of a particular type (or subTypes). Throws PCommandExecutionException in case

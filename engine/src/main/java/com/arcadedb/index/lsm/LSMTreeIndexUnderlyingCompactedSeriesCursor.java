@@ -23,7 +23,7 @@ import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.index.IndexException;
 
-import java.io.IOException;
+import java.io.*;
 
 public class LSMTreeIndexUnderlyingCompactedSeriesCursor extends LSMTreeIndexUnderlyingAbstractCursor {
   private final int                              lastPageNumber;

@@ -18,7 +18,7 @@
  */
 package com.arcadedb.database;
 
-import java.util.Iterator;
+import java.util.*;
 
 /**
  * Cursor to browse a result set.

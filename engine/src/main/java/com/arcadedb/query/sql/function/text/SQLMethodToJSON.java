@@ -25,7 +25,7 @@ import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.method.misc.AbstractSQLMethod;
 import org.json.JSONObject;
 
-import java.util.Map;
+import java.util.*;
 
 /**
  * Converts a document in JSON string.

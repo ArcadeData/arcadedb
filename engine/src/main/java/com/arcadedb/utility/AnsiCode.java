@@ -18,7 +18,7 @@
  */
 package com.arcadedb.utility;
 
-import java.util.Locale;
+import java.util.*;
 
 /**
  * Console ANSI utility class that supports most of the ANSI amenities.

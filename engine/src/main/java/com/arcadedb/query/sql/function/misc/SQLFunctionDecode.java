@@ -23,7 +23,7 @@ import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.function.SQLFunctionAbstract;
 
-import java.util.Base64;
+import java.util.*;
 
 /**
  * Encode a string in various format (only base64 for now)

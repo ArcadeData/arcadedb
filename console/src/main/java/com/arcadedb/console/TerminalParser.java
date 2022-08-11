@@ -21,8 +21,7 @@ package com.arcadedb.console;
 import org.jline.reader.ParsedLine;
 import org.jline.reader.impl.DefaultParser;
 
-import java.util.LinkedList;
-import java.util.List;
+import java.util.*;
 
 public class TerminalParser extends DefaultParser {
 

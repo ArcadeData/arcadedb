@@ -22,10 +22,8 @@ import com.arcadedb.database.Document;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.EdgeType;
 
-import java.util.Map;
-import java.util.Optional;
-import java.util.Set;
-import java.util.stream.Collectors;
+import java.util.*;
+import java.util.stream.*;
 
 /**
  * <p>This is intended for INSERT FROM SELECT. This step removes existing edge pointers so that the resulting graph is still

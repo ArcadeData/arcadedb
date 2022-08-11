@@ -21,9 +21,7 @@ package com.arcadedb.utility;
 import com.arcadedb.database.Document;
 import com.arcadedb.query.sql.executor.Result;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
 
 public class RecordTableFormatter extends TableFormatter {
 

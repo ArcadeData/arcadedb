@@ -22,13 +22,9 @@ import com.arcadedb.database.Record;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 
-import java.util.Iterator;
-import java.util.Map;
-import java.util.Optional;
-import java.util.Spliterator;
-import java.util.function.Consumer;
-import java.util.stream.Stream;
-import java.util.stream.StreamSupport;
+import java.util.*;
+import java.util.function.*;
+import java.util.stream.*;
 
 /**
  * Result set returned from queries. This class implements can be used as an Iterator of Result.

@@ -37,10 +37,9 @@ import org.apache.lucene.store.FSDirectory;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.util.stream.IntStream;
+import java.io.*;
+import java.nio.file.*;
+import java.util.stream.*;
 
 public class PlainLuceneFullTextIndexTest {
 

@@ -25,7 +25,7 @@ import org.apache.tinkerpop.gremlin.structure.Property;
 import org.apache.tinkerpop.gremlin.structure.util.ElementHelper;
 import org.apache.tinkerpop.gremlin.structure.util.StringFactory;
 
-import java.util.NoSuchElementException;
+import java.util.*;
 
 /**
  * Created by Enrico Risa on 30/07/2018.

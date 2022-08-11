@@ -23,10 +23,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.function.SQLFunctionAbstract;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 /**
  * Compute the mode (or multimodal) value for a field. The scores in the field's distribution that occurs more frequently. Nulls are

@@ -25,9 +25,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.util.Collections;
-import java.util.Map;
-import java.util.Objects;
+import java.util.*;
 
 public class FieldMatchPathItem extends MatchPathItem {
 

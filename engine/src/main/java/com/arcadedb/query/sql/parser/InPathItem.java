@@ -22,7 +22,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.query.sql.executor.Result;
 
-import java.util.Map;
+import java.util.*;
 
 public class InPathItem extends MatchPathItem {
   public InPathItem(int id) {

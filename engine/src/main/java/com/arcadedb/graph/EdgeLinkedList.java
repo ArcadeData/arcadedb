@@ -28,10 +28,7 @@ import com.arcadedb.utility.Pair;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
 
 public class EdgeLinkedList {
   private final Vertex           vertex;

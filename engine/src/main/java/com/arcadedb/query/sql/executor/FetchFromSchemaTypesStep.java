@@ -28,7 +28,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 
 import java.util.*;
-import java.util.stream.Collectors;
+import java.util.stream.*;
 
 /**
  * Returns an OResult containing metadata regarding the schema types.

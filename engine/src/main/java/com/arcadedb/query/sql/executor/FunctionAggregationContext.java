@@ -20,8 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.query.sql.parser.Expression;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
 
 /**
  * Delegates to an aggregate function for aggregation calculation

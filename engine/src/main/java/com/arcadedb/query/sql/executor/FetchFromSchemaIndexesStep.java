@@ -25,7 +25,7 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
 
-import java.io.IOException;
+import java.io.*;
 import java.util.*;
 
 /**

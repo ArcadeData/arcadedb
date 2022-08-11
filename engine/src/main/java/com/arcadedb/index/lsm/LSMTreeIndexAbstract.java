@@ -18,9 +18,6 @@
  */
 package com.arcadedb.index.lsm;
 
-import static com.arcadedb.database.Binary.BYTE_SERIALIZED_SIZE;
-import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
-
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
@@ -37,10 +34,12 @@ import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.serializer.BinaryTypes;
 
-import java.io.File;
-import java.io.IOException;
+import java.io.*;
 import java.util.*;
-import java.util.logging.Level;
+import java.util.logging.*;
+
+import static com.arcadedb.database.Binary.BYTE_SERIALIZED_SIZE;
+import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
 
 /**
  * Abstract class for LSM-based indexes. The first page contains 2 bytes to store key and value types. The pages are populated from the head of the page

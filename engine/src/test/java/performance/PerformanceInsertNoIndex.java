@@ -26,7 +26,7 @@ import com.arcadedb.engine.WALFile;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 
-import java.util.logging.Level;
+import java.util.logging.*;
 
 public class PerformanceInsertNoIndex extends TestHelper {
   private static final int    TOT       = 10_000_000;

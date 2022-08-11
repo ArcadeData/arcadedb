@@ -21,8 +21,7 @@ package com.arcadedb.query.sql.function.math;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.math.BigDecimal;
-import java.math.BigInteger;
+import java.math.*;
 
 /**
  * Evaluates the absolute value for numeric types.  The argument must be a

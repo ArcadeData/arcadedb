@@ -20,8 +20,7 @@ package com.arcadedb.integration.importer;
 
 import com.arcadedb.utility.FileUtils;
 
-import java.util.HashMap;
-import java.util.Map;
+import java.util.*;
 
 public class ImporterSettings {
   public String  database      = "./databases/imported";

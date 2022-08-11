@@ -23,7 +23,7 @@ import com.arcadedb.graph.MutableVertex;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.*;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)

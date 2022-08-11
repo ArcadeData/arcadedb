@@ -19,7 +19,11 @@
 package com.arcadedb.server.ha.message;
 
 import com.arcadedb.compression.CompressionFactory;
-import com.arcadedb.database.*;
+import com.arcadedb.database.Binary;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.RID;
+import com.arcadedb.database.TransactionContext;
+import com.arcadedb.database.TransactionIndexContext;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TransactionException;
@@ -30,10 +34,8 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.ha.ReplicationException;
 
-import java.util.HashMap;
-import java.util.Map;
-import java.util.TreeMap;
-import java.util.logging.Level;
+import java.util.*;
+import java.util.logging.*;
 
 /**
  * Forward a transaction to the Leader server to be executed. Apart from the TX content (like with TxRequest), unique keys list is

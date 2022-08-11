@@ -24,16 +24,11 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ha.network.ServerSocketFactory;
 
-import java.io.IOException;
+import java.io.*;
 import java.net.*;
-import java.util.logging.Level;
+import java.util.logging.*;
 
 public class RedisNetworkListener extends Thread {
-
-  public interface ClientConnected {
-    void connected();
-  }
-
   private final        ArcadeDBServer      server;
   private final        ServerSocketFactory socketFactory;
   private              ServerSocket        serverSocket;
@@ -43,6 +38,10 @@ public class RedisNetworkListener extends Thread {
   private final        String              hostName;
   private              int                 port;
   private              ClientConnected     callback;
+
+  public interface ClientConnected {
+    void connected();
+  }
 
   public RedisNetworkListener(final ArcadeDBServer server, final ServerSocketFactory iSocketFactory, final String iHostName, final String iHostPortRange) {
     super(server.getServerName() + " RedisW listening at " + iHostName + ":" + iHostPortRange);
@@ -129,8 +128,8 @@ public class RedisNetworkListener extends Thread {
 
         if (serverSocket.isBound()) {
           LogManager.instance().log(this, Level.INFO,
-              "Listening for incoming connections on $ANSI{green " + inboundAddr.getAddress().getHostAddress() + ":" + inboundAddr.getPort()
-                  + "} (protocol v." + protocolVersion + ")");
+              "Listening for incoming connections on $ANSI{green " + inboundAddr.getAddress().getHostAddress() + ":" + inboundAddr.getPort() + "} (protocol v."
+                  + protocolVersion + ")");
 
           port = tryPort;
           return;

@@ -23,7 +23,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.HAServer;
 
-import java.util.logging.Level;
+import java.util.logging.*;
 
 public class ReplicaConnectRequest extends HAAbstractCommand {
   private long lastReplicationMessageNumber = -1;

@@ -20,11 +20,15 @@ package com.arcadedb.integration.importer.format;
 
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.integration.importer.*;
+import com.arcadedb.integration.importer.AnalyzedEntity;
+import com.arcadedb.integration.importer.ImportException;
+import com.arcadedb.integration.importer.ImporterContext;
+import com.arcadedb.integration.importer.ImporterSettings;
+import com.arcadedb.integration.importer.Parser;
+import com.arcadedb.integration.importer.SourceSchema;
 import com.univocity.parsers.common.AbstractParser;
 
-import java.io.IOException;
-import java.io.InputStreamReader;
+import java.io.*;
 
 public class RDFImporterFormat extends CSVImporterFormat {
   private static final char[] STRING_CONTENT_SKIP = new char[] { '\'', '\'', '"', '"', '<', '>' };

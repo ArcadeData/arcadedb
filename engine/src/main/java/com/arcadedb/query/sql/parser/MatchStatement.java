@@ -20,20 +20,25 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import static com.arcadedb.query.sql.parser.SqlParserTreeConstants.JJTLIMIT;
-import static com.arcadedb.query.sql.parser.SqlParserTreeConstants.JJTTIMEOUT;
-
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
-import com.arcadedb.query.sql.executor.*;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
+import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.InternalExecutionPlan;
+import com.arcadedb.query.sql.executor.MatchExecutionPlanner;
+import com.arcadedb.query.sql.executor.PatternEdge;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 
 import java.util.*;
-import java.util.stream.Collectors;
+import java.util.stream.*;
+
+import static com.arcadedb.query.sql.parser.SqlParserTreeConstants.JJTLIMIT;
+import static com.arcadedb.query.sql.parser.SqlParserTreeConstants.JJTTIMEOUT;
 
 public class MatchStatement extends Statement {
 

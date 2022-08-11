@@ -24,9 +24,7 @@ import com.arcadedb.query.sql.parser.MatchPathItem;
 import com.arcadedb.query.sql.parser.Rid;
 import com.arcadedb.query.sql.parser.WhereClause;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
+import java.util.*;
 
 /**
  * Created by luigidellaquila on 15/10/16.

@@ -24,7 +24,6 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.SQLEngine;
 import com.arcadedb.query.sql.executor.SQLFunctionFiltered;
-import com.arcadedb.utility.Callable;
 import com.arcadedb.utility.FileUtils;
 
 /**

@@ -18,15 +18,14 @@
  */
 package com.arcadedb.server;
 
-import static com.arcadedb.GlobalConfiguration.TX_WAL;
-
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.io.File;
-import java.io.IOException;
+import java.io.*;
+
+import static com.arcadedb.GlobalConfiguration.TX_WAL;
 
 public class ServerConfigurationIT extends BaseGraphServerTest {
   @Test

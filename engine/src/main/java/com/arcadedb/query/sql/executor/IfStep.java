@@ -22,7 +22,7 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.BooleanExpression;
 import com.arcadedb.query.sql.parser.Statement;
 
-import java.util.List;
+import java.util.*;
 
 /**
  * Created by luigidellaquila on 19/09/16.

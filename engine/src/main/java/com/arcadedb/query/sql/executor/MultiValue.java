@@ -25,9 +25,9 @@ import com.arcadedb.utility.IterableObject;
 import com.arcadedb.utility.IterableObjectArray;
 import com.arcadedb.utility.MultiIterator;
 
-import java.lang.reflect.Array;
+import java.lang.reflect.*;
 import java.util.*;
-import java.util.logging.Level;
+import java.util.logging.*;
 
 /**
  * Handles Multi-value types such as Arrays, Collections and Maps. It recognizes special Arcade collections.

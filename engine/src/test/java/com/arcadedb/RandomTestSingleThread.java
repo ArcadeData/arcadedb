@@ -30,13 +30,10 @@ import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.Test;
 import performance.PerformanceTest;
 
-import java.math.BigDecimal;
-import java.util.Date;
-import java.util.Iterator;
-import java.util.Random;
-import java.util.UUID;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.logging.Level;
+import java.math.*;
+import java.util.*;
+import java.util.concurrent.atomic.*;
+import java.util.logging.*;
 
 public class RandomTestSingleThread extends TestHelper {
   private static final int CYCLES           = 1500;

@@ -18,8 +18,7 @@
  */
 package com.arcadedb.database.async;
 
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 
 public abstract class DatabaseAsyncAbstractCallbackTask implements DatabaseAsyncTask {
   private final CountDownLatch semaphore = new CountDownLatch(1);

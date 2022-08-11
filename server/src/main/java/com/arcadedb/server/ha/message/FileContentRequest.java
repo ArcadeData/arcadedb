@@ -27,7 +27,7 @@ import com.arcadedb.network.binary.NetworkProtocolException;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.HAServer;
 
-import java.io.IOException;
+import java.io.*;
 
 public class FileContentRequest extends HAAbstractCommand {
   private              String databaseName;

@@ -25,11 +25,15 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.DatabaseOperationException;
-import com.arcadedb.query.sql.executor.*;
+import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.InternalResultSet;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.security.SecurityDatabaseUser;
 
-import java.io.IOException;
-import java.util.Map;
+import java.io.*;
+import java.util.*;
 
 public class AlterDatabaseStatement extends DDLStatement {
 

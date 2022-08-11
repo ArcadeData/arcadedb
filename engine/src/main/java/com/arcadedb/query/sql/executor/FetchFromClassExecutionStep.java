@@ -25,10 +25,10 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.FileUtils;
 
-import java.io.IOException;
+import java.io.*;
 import java.util.*;
-import java.util.logging.Level;
-import java.util.stream.Collectors;
+import java.util.logging.*;
+import java.util.stream.*;
 
 /**
  * Created by luigidellaquila on 08/07/16.

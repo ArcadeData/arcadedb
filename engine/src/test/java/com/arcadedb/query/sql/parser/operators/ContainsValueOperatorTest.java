@@ -22,8 +22,7 @@ import com.arcadedb.query.sql.parser.ContainsValueOperator;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.HashMap;
-import java.util.Map;
+import java.util.*;
 
 /** @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com) */
 public class ContainsValueOperatorTest {

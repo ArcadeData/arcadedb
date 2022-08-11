@@ -109,7 +109,7 @@ public class HttpServer implements ServerPlugin {
       }
     }
 
-    com.arcadedb.log.LogManager.instance().log(this, Level.INFO, "- Starting HTTP Server (host=%s port=%s)...", host, configuredPort.toString());
+    LogManager.instance().log(this, Level.INFO, "- Starting HTTP Server (host=%s port=%s)...", host, configuredPort.toString());
 
     final PathHandler routes = new PathHandler();
 

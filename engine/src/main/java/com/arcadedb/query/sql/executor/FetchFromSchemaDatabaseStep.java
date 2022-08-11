@@ -21,8 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.TimeoutException;
 
-import java.util.Map;
-import java.util.Optional;
+import java.util.*;
 
 /**
  * Returns an OResult containing metadata regarding the database

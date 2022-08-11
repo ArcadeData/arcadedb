@@ -27,13 +27,11 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.LockContext;
 
-import java.io.IOException;
+import java.io.*;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.logging.Level;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+import java.util.logging.*;
 
 /**
  * Manages pages from disk to RAM. Each page can have different size.

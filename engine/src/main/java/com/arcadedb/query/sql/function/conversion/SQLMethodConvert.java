@@ -24,8 +24,8 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.misc.AbstractSQLMethod;
 import com.arcadedb.schema.Type;
 
-import java.util.Locale;
-import java.util.logging.Level;
+import java.util.*;
+import java.util.logging.*;
 
 /**
  * Converts a value to another type in Java or ArcadeDB's supported types.

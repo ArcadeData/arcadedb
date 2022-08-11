@@ -18,11 +18,11 @@
  */
 package com.arcadedb.query.sql.function.text;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * Tests the "asList()" method implemented by the OSQLMethodAsList class. Note that the only input

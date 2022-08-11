@@ -18,8 +18,8 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import java.util.List;
-import java.util.stream.Collectors;
+import java.util.*;
+import java.util.stream.*;
 
 /**
  * Created by luigidellaquila on 20/07/16.

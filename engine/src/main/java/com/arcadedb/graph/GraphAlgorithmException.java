@@ -20,7 +20,7 @@ package com.arcadedb.graph;
 
 import com.arcadedb.exception.ArcadeDBException;
 
-import java.io.IOException;
+import java.io.*;
 
 public class GraphAlgorithmException extends ArcadeDBException {
   public GraphAlgorithmException(final String s) {

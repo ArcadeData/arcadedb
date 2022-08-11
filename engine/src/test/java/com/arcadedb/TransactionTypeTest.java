@@ -18,9 +18,7 @@
  */
 package com.arcadedb;
 
-import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
-import com.arcadedb.database.DocumentCallback;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.DatabaseIsReadOnlyException;

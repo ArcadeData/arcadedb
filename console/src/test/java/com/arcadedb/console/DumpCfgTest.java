@@ -20,10 +20,8 @@ package com.arcadedb.console;
 
 import com.arcadedb.GlobalConfiguration;
 
-import java.util.Arrays;
-import java.util.Comparator;
-import java.util.List;
-import java.util.stream.Collectors;
+import java.util.*;
+import java.util.stream.*;
 
 public class DumpCfgTest {
   public static void main(String[] args) {

@@ -20,12 +20,9 @@ package com.arcadedb.utility;
 
 import com.arcadedb.log.LogManager;
 
-import java.util.Iterator;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
-import java.util.logging.Level;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.logging.*;
 
 /**
  * Lock manager implementation.

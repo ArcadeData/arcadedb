@@ -20,7 +20,7 @@ package com.arcadedb.utility;
 
 import com.arcadedb.log.LogManager;
 
-import java.util.logging.Level;
+import java.util.logging.*;
 
 /**
  * Resolve entity class and descriptors using the paths configured.

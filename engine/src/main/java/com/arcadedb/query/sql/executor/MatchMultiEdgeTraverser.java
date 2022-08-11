@@ -21,7 +21,11 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
-import com.arcadedb.query.sql.parser.*;
+import com.arcadedb.query.sql.parser.MatchPathItem;
+import com.arcadedb.query.sql.parser.MatchPathItemFirst;
+import com.arcadedb.query.sql.parser.MethodCall;
+import com.arcadedb.query.sql.parser.MultiMatchPathItem;
+import com.arcadedb.query.sql.parser.WhereClause;
 
 import java.util.*;
 

@@ -20,7 +20,7 @@ package com.arcadedb.integration.importer;
 
 import com.arcadedb.integration.importer.graph.GraphImporter;
 
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.*;
 
 public class ImporterContext {
   public final AtomicLong    parsed           = new AtomicLong();

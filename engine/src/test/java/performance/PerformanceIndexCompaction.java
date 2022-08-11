@@ -29,8 +29,8 @@ import com.arcadedb.index.RangeIndex;
 import com.arcadedb.log.LogManager;
 import org.junit.jupiter.api.Assertions;
 
-import java.io.IOException;
-import java.util.logging.Level;
+import java.io.*;
+import java.util.logging.*;
 
 public class PerformanceIndexCompaction {
   public static void main(String[] args) throws Exception {

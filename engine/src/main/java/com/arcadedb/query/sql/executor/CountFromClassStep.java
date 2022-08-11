@@ -23,8 +23,7 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.schema.DocumentType;
 
-import java.util.Map;
-import java.util.Optional;
+import java.util.*;
 
 /**
  * Returns the number of records contained in a class (including subTypes) Executes a count(*) on a class and returns a single

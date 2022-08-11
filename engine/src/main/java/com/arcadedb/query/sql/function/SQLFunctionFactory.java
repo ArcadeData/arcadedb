@@ -21,7 +21,7 @@ package com.arcadedb.query.sql.function;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.SQLFunction;
 
-import java.util.Set;
+import java.util.*;
 
 /**
  * @author Johann Sorel (Geomatys)

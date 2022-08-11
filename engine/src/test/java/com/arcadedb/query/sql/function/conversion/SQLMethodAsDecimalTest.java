@@ -18,13 +18,13 @@
  */
 package com.arcadedb.query.sql.function.conversion;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
 import com.arcadedb.query.sql.executor.SQLMethod;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.math.BigDecimal;
+import java.math.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 class SQLMethodAsDecimalTest {
 

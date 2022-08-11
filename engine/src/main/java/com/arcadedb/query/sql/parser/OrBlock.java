@@ -27,7 +27,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.DocumentType;
 
 import java.util.*;
-import java.util.stream.Collectors;
+import java.util.stream.*;
 
 public class OrBlock extends BooleanExpression {
   List<BooleanExpression> subBlocks = new ArrayList<BooleanExpression>();

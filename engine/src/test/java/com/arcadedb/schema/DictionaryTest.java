@@ -28,7 +28,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.Iterator;
+import java.util.*;
 
 public class DictionaryTest extends TestHelper {
   @Test

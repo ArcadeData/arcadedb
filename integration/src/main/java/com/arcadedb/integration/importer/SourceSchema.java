@@ -20,8 +20,7 @@ package com.arcadedb.integration.importer;
 
 import com.arcadedb.integration.importer.format.FormatImporter;
 
-import java.util.HashMap;
-import java.util.Map;
+import java.util.*;
 
 public class SourceSchema {
   private final FormatImporter formatImporter;

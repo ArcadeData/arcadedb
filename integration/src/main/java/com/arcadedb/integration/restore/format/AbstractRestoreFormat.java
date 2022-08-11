@@ -22,8 +22,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.integration.importer.ConsoleLogger;
 import com.arcadedb.integration.restore.RestoreSettings;
 
-import java.text.DateFormat;
-import java.text.SimpleDateFormat;
+import java.text.*;
 
 public abstract class AbstractRestoreFormat {
   protected final        RestoreSettings  settings;

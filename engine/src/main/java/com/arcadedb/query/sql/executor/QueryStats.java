@@ -20,8 +20,8 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Database;
 
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.*;
+import java.util.concurrent.*;
 
 /**
  * This class contains statistics about graph structure and query execution.

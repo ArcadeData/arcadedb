@@ -18,9 +18,8 @@
  */
 package com.arcadedb.utility;
 
-import java.lang.reflect.Array;
-import java.util.Iterator;
-import java.util.NoSuchElementException;
+import java.lang.reflect.*;
+import java.util.*;
 
 /**
  * Allow to iterate over the array casted to Object.

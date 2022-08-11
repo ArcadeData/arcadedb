@@ -21,9 +21,9 @@ package com.arcadedb;
 import com.arcadedb.utility.SystemVariableResolver;
 import org.json.JSONObject;
 
-import java.io.Serializable;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
+import java.io.*;
+import java.util.*;
+import java.util.concurrent.*;
 
 /**
  * Represents a context configuration where custom setting could be defined for the context only. If not defined, globals will be

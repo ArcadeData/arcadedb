@@ -22,9 +22,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.util.HashMap;
-import java.util.LinkedList;
-import java.util.Map;
+import java.util.*;
 
 /**
  * Dijkstra's algorithm describes how to find the cheapest path from one node to another node in a directed weighted graph.

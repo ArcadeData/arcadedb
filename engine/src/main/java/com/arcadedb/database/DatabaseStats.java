@@ -18,9 +18,8 @@
  */
 package com.arcadedb.database;
 
-import java.util.HashMap;
-import java.util.Map;
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.*;
+import java.util.concurrent.atomic.*;
 
 public class DatabaseStats {
   protected final AtomicLong txCommits     = new AtomicLong();

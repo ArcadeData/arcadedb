@@ -20,8 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.query.sql.parser.MatchPathItem;
 
-import java.util.LinkedHashSet;
-import java.util.Set;
+import java.util.*;
 
 /**
  * Created by luigidellaquila on 28/07/15.

@@ -18,8 +18,6 @@
  */
 package com.arcadedb.mongo;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
@@ -30,7 +28,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.File;
+import java.io.*;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 public class MongoDBQueryTest {
 

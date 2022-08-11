@@ -20,7 +20,7 @@ package com.arcadedb.utility;
 
 import com.arcadedb.log.LogManager;
 
-import java.util.logging.Level;
+import java.util.logging.*;
 
 public abstract class SoftThread extends Thread {
   private volatile boolean shutdownFlag;

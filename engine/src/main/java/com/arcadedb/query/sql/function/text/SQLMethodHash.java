@@ -23,10 +23,9 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.misc.AbstractSQLMethod;
 
-import java.io.UnsupportedEncodingException;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
+import java.io.*;
+import java.nio.charset.*;
+import java.security.*;
 
 /**
  * Hash a string supporting multiple algorithm, all those supported by JVM

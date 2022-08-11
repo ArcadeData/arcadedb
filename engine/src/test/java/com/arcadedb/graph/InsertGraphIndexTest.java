@@ -30,7 +30,7 @@ import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.logging.Level;
+import java.util.logging.*;
 
 public class InsertGraphIndexTest extends TestHelper {
   private static final int    VERTICES         = 1_000;

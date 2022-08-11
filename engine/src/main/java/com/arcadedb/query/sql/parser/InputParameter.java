@@ -26,12 +26,9 @@ import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.math.BigDecimal;
-import java.text.SimpleDateFormat;
-import java.util.ArrayList;
-import java.util.Date;
-import java.util.Iterator;
-import java.util.Map;
+import java.math.*;
+import java.text.*;
+import java.util.*;
 
 public class InputParameter extends SimpleNode {
 

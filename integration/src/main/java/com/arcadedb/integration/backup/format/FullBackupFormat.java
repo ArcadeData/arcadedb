@@ -28,13 +28,9 @@ import com.arcadedb.integration.importer.ConsoleLogger;
 import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.utility.FileUtils;
 
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.util.Collection;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipOutputStream;
+import java.io.*;
+import java.util.*;
+import java.util.zip.*;
 
 public class FullBackupFormat extends AbstractBackupFormat {
   public FullBackupFormat(final DatabaseInternal database, final BackupSettings settings, final ConsoleLogger logger) {

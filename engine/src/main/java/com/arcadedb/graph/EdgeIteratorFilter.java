@@ -26,8 +26,8 @@ import com.arcadedb.exception.SchemaException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 
-import java.util.NoSuchElementException;
-import java.util.logging.Level;
+import java.util.*;
+import java.util.logging.*;
 
 public class EdgeIteratorFilter extends IteratorFilterBase<Edge> {
   private final Vertex           vertex;

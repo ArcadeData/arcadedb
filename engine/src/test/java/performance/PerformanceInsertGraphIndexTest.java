@@ -35,8 +35,8 @@ import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Assertions;
 
-import java.io.File;
-import java.util.logging.Level;
+import java.io.*;
+import java.util.logging.*;
 
 /**
  * Inserts a graph. Configurations:

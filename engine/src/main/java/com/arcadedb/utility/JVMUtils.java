@@ -22,10 +22,8 @@ import com.arcadedb.exception.ArcadeDBException;
 import com.sun.management.HotSpotDiagnosticMXBean;
 
 import javax.management.MBeanServer;
-import java.io.File;
-import java.lang.management.ManagementFactory;
-import java.lang.management.ThreadInfo;
-import java.lang.management.ThreadMXBean;
+import java.io.*;
+import java.lang.management.*;
 
 public class JVMUtils {
   // This is the name of the HotSpot Diagnostic MBean

@@ -20,15 +20,11 @@ package com.arcadedb.log;
 
 import com.arcadedb.utility.AnsiCode;
 
-import java.io.PrintWriter;
-import java.io.StringWriter;
-import java.text.DateFormat;
-import java.text.SimpleDateFormat;
-import java.util.Date;
-import java.util.IllegalFormatException;
+import java.io.*;
+import java.text.*;
+import java.util.*;
 import java.util.logging.Formatter;
-import java.util.logging.Level;
-import java.util.logging.LogRecord;
+import java.util.logging.*;
 
 /**
  * Basic Log formatter.

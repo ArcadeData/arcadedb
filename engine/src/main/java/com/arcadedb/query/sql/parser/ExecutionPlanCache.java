@@ -23,8 +23,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.InternalExecutionPlan;
 
-import java.util.LinkedHashMap;
-import java.util.Map;
+import java.util.*;
 
 /**
  * This class is an LRU cache for already prepared SQL execution plans. It stores itself in the storage as a resource. It also acts

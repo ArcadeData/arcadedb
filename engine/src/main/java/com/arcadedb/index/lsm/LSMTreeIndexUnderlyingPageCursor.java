@@ -18,12 +18,12 @@
  */
 package com.arcadedb.index.lsm;
 
-import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
-
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.PageId;
+
+import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
 
 public class LSMTreeIndexUnderlyingPageCursor extends LSMTreeIndexUnderlyingAbstractCursor {
   protected final PageId pageId;

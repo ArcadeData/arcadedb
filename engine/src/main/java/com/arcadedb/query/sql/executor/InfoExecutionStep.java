@@ -18,8 +18,7 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
 
 /**
  * Created by luigidellaquila on 19/12/16.

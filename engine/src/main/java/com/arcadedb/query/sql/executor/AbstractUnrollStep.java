@@ -20,10 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.CommandExecutionException;
 
-import java.util.Collection;
-import java.util.Iterator;
-import java.util.Map;
-import java.util.Optional;
+import java.util.*;
 
 /**
  * unwinds a result-set.

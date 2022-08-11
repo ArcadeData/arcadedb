@@ -34,10 +34,9 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.Assertions;
 
-import java.io.IOException;
-import java.util.Timer;
-import java.util.TimerTask;
-import java.util.logging.Level;
+import java.io.*;
+import java.util.*;
+import java.util.logging.*;
 
 public class PerformanceVertexIndexTest {
   private static final int    TOT               = 10_000_000;
