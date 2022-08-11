@@ -126,7 +126,7 @@ public class IndexIdentifier extends SimpleNode {
 
     if (fromResult.getProperty("indexName") != null) {
       indexName = new Identifier(-1);
-      indexName.deserialize(fromResult.getProperty("indexName"));
+      Identifier.deserialize(fromResult.getProperty("indexName"));
     }
   }
 

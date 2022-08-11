@@ -28,7 +28,7 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.Map;
+import java.util.*;
 import java.util.logging.Level;
 
 public class ConsoleStatement extends SimpleExecStatement {
@@ -97,9 +97,9 @@ public class ConsoleStatement extends SimpleExecStatement {
 
     ConsoleStatement that = (ConsoleStatement) o;
 
-    if (logLevel != null ? !logLevel.equals(that.logLevel) : that.logLevel != null)
+    if (!Objects.equals(logLevel, that.logLevel))
       return false;
-    return message != null ? message.equals(that.message) : that.message == null;
+    return Objects.equals(message, that.message);
   }
 
   @Override

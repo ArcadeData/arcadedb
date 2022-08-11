@@ -24,10 +24,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 
 public class MatchesCondition extends BooleanExpression {
   protected Expression     expression;
@@ -187,21 +184,21 @@ public class MatchesCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals( final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    MatchesCondition that = (MatchesCondition) o;
+    final MatchesCondition that = (MatchesCondition) o;
 
-    if (expression != null ? !expression.equals(that.expression) : that.expression != null)
+    if (!Objects.equals(expression, that.expression))
       return false;
-    if (right != null ? !right.equals(that.right) : that.right != null)
+    if (!Objects.equals(right, that.right))
       return false;
-    if (rightExpression != null ? !rightExpression.equals(that.rightExpression) : that.rightExpression != null)
+    if (!Objects.equals(rightExpression, that.rightExpression))
       return false;
-    return rightParam != null ? rightParam.equals(that.rightParam) : that.rightParam == null;
+    return Objects.equals(rightParam, that.rightParam);
   }
 
   @Override

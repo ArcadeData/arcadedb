@@ -24,10 +24,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
-import java.util.Collections;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 
 public class IsNullCondition extends BooleanExpression {
 
@@ -108,15 +105,15 @@ public class IsNullCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals( final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    IsNullCondition that = (IsNullCondition) o;
+    final  IsNullCondition that = (IsNullCondition) o;
 
-    return expression != null ? expression.equals(that.expression) : that.expression == null;
+    return Objects.equals(expression, that.expression);
   }
 
   @Override

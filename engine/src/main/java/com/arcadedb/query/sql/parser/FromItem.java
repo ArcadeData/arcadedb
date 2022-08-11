@@ -23,9 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.stream.Collectors;
 
 public class FromItem extends SimpleNode {
@@ -182,35 +180,35 @@ public class FromItem extends SimpleNode {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals( final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    FromItem oFromItem = (FromItem) o;
+    final    FromItem oFromItem = (FromItem) o;
 
-    if (rids != null ? !rids.equals(oFromItem.rids) : oFromItem.rids != null)
+    if (!Objects.equals(rids, oFromItem.rids))
       return false;
-    if (inputParams != null ? !inputParams.equals(oFromItem.inputParams) : oFromItem.inputParams != null)
+    if (!Objects.equals(inputParams, oFromItem.inputParams))
       return false;
-    if (bucket != null ? !bucket.equals(oFromItem.bucket) : oFromItem.bucket != null)
+    if (!Objects.equals(bucket, oFromItem.bucket))
       return false;
-    if (bucketList != null ? !bucketList.equals(oFromItem.bucketList) : oFromItem.bucketList != null)
+    if (!Objects.equals(bucketList, oFromItem.bucketList))
       return false;
-    if (index != null ? !index.equals(oFromItem.index) : oFromItem.index != null)
+    if (!Objects.equals(index, oFromItem.index))
       return false;
-    if (schema != null ? !schema.equals(oFromItem.schema) : oFromItem.schema != null)
+    if (!Objects.equals(schema, oFromItem.schema))
       return false;
-    if (statement != null ? !statement.equals(oFromItem.statement) : oFromItem.statement != null)
+    if (!Objects.equals(statement, oFromItem.statement))
       return false;
-    if (inputParam != null ? !inputParam.equals(oFromItem.inputParam) : oFromItem.inputParam != null)
+    if (!Objects.equals(inputParam, oFromItem.inputParam))
       return false;
-    if (identifier != null ? !identifier.equals(oFromItem.identifier) : oFromItem.identifier != null)
+    if (!Objects.equals(identifier, oFromItem.identifier))
       return false;
-    if (functionCall != null ? !functionCall.equals(oFromItem.functionCall) : oFromItem.functionCall != null)
+    if (!Objects.equals(functionCall, oFromItem.functionCall))
       return false;
-    return modifier != null ? modifier.equals(oFromItem.modifier) : oFromItem.modifier == null;
+    return Objects.equals(modifier, oFromItem.modifier);
   }
 
   @Override

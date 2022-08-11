@@ -27,8 +27,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 
 public class BaseIdentifier extends SimpleNode {
 
@@ -52,53 +51,51 @@ public class BaseIdentifier extends SimpleNode {
     this.suffix = new SuffixIdentifier(attr);
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
-    if (levelZero != null) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
+    if (levelZero != null)
       levelZero.toString(params, builder);
-    } else if (suffix != null) {
+    else if (suffix != null)
       suffix.toString(params, builder);
-    }
   }
 
-  public Object execute(Record iCurrentRecord, CommandContext ctx) {
-    if (levelZero != null) {
+  public Object execute(final Record iCurrentRecord, final CommandContext ctx) {
+    if (levelZero != null)
       return levelZero.execute(iCurrentRecord, ctx);
-    }
-    if (suffix != null) {
+
+    if (suffix != null)
       return suffix.execute(iCurrentRecord, ctx);
-    }
+
     return null;
   }
 
-  public Object execute(Result iCurrentRecord, CommandContext ctx) {
-    if (levelZero != null) {
+  public Object execute(final Result iCurrentRecord, final CommandContext ctx) {
+    if (levelZero != null)
       return levelZero.execute(iCurrentRecord, ctx);
-    }
-    if (suffix != null) {
+
+    if (suffix != null)
       return suffix.execute(iCurrentRecord, ctx);
-    }
+
     return null;
   }
 
   public boolean isIndexedFunctionCall() {
-    if (levelZero != null) {
+    if (levelZero != null)
       return levelZero.isIndexedFunctionCall();
-    }
+
     return false;
   }
 
-  public long estimateIndexedFunction(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {
-    if (levelZero != null) {
+  public long estimateIndexedFunction(final FromClause target, final CommandContext context, final BinaryCompareOperator operator, final Object right) {
+    if (levelZero != null)
       return levelZero.estimateIndexedFunction(target, context, operator, right);
-    }
 
     return -1;
   }
 
-  public Iterable<Record> executeIndexedFunction(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {
-    if (levelZero != null) {
+  public Iterable<Record> executeIndexedFunction(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
+      final Object right) {
+    if (levelZero != null)
       return levelZero.executeIndexedFunction(target, context, operator, right);
-    }
 
     return null;
   }
@@ -114,10 +111,11 @@ public class BaseIdentifier extends SimpleNode {
    * @return true if current expression is an indexed function AND that function can also be executed without using the index, false
    * otherwise
    */
-  public boolean canExecuteIndexedFunctionWithoutIndex(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {
-    if (this.levelZero == null) {
+  public boolean canExecuteIndexedFunctionWithoutIndex(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
+      final Object right) {
+    if (this.levelZero == null)
       return false;
-    }
+
     return levelZero.canExecuteIndexedFunctionWithoutIndex(target, context, operator, right);
   }
 
@@ -131,10 +129,11 @@ public class BaseIdentifier extends SimpleNode {
    *
    * @return true if current expression involves an indexed function AND that function can be used on this target, false otherwise
    */
-  public boolean allowsIndexedFunctionExecutionOnTarget(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {
-    if (this.levelZero == null) {
+  public boolean allowsIndexedFunctionExecutionOnTarget(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
+      final Object right) {
+    if (this.levelZero == null)
       return false;
-    }
+
     return levelZero.allowsIndexedFunctionExecutionOnTarget(target, context, operator, right);
   }
 
@@ -148,10 +147,11 @@ public class BaseIdentifier extends SimpleNode {
    *
    * @return true if current expression is an indexed function AND the function has also to be executed after the index search.
    */
-  public boolean executeIndexedFunctionAfterIndexSearch(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {
-    if (this.levelZero == null) {
+  public boolean executeIndexedFunctionAfterIndexSearch(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
+      final Object right) {
+    if (this.levelZero == null)
       return false;
-    }
+
     return levelZero.executeIndexedFunctionAfterIndexSearch(target, context, operator, right);
   }
 
@@ -170,37 +170,37 @@ public class BaseIdentifier extends SimpleNode {
     return levelZero.getExpandContent();
   }
 
-  public boolean needsAliases(Set<String> aliases) {
-    if (levelZero != null && levelZero.needsAliases(aliases)) {
+  public boolean needsAliases(final Set<String> aliases) {
+    if (levelZero != null && levelZero.needsAliases(aliases))
       return true;
-    }
+
     return suffix != null && suffix.needsAliases(aliases);
   }
 
   public boolean isAggregate() {
-    if (levelZero != null && levelZero.isAggregate()) {
+    if (levelZero != null && levelZero.isAggregate())
       return true;
-    }
+
     return suffix != null && suffix.isAggregate();
   }
 
   public boolean isCount() {
-    if (levelZero != null && levelZero.isCount()) {
+    if (levelZero != null && levelZero.isCount())
       return true;
-    }
+
     return suffix != null && suffix.isCount();
   }
 
   public boolean isEarlyCalculated() {
-    if (levelZero != null && levelZero.isEarlyCalculated()) {
+    if (levelZero != null && levelZero.isEarlyCalculated())
       return true;
-    }
+
     return suffix != null && suffix.isEarlyCalculated();
   }
 
-  public SimpleNode splitForAggregation(AggregateProjectionSplit aggregateProj) {
+  public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateProj) {
     if (isAggregate()) {
-      BaseIdentifier result = new BaseIdentifier(-1);
+      final BaseIdentifier result = new BaseIdentifier(-1);
       if (levelZero != null) {
         SimpleNode splitResult = levelZero.splitForAggregation(aggregateProj);
         if (splitResult instanceof LevelZeroIdentifier) {
@@ -219,44 +219,42 @@ public class BaseIdentifier extends SimpleNode {
     }
   }
 
-  public AggregationContext getAggregationContext(CommandContext ctx) {
+  public AggregationContext getAggregationContext(final CommandContext ctx) {
     if (isAggregate()) {
-
-      if (levelZero != null) {
+      if (levelZero != null)
         return levelZero.getAggregationContext(ctx);
-      } else if (suffix != null) {
+      else if (suffix != null)
         return suffix.getAggregationContext(ctx);
-      } else {
+      else
         throw new CommandExecutionException("cannot aggregate on " + this);
-      }
     } else {
       throw new CommandExecutionException("cannot aggregate on " + this);
     }
   }
 
-  public void setLevelZero(LevelZeroIdentifier levelZero) {
+  public void setLevelZero(final LevelZeroIdentifier levelZero) {
     this.levelZero = levelZero;
   }
 
   public BaseIdentifier copy() {
-    BaseIdentifier result = new BaseIdentifier(-1);
+    final BaseIdentifier result = new BaseIdentifier(-1);
     result.levelZero = levelZero == null ? null : levelZero.copy();
     result.suffix = suffix == null ? null : suffix.copy();
     return result;
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    BaseIdentifier that = (BaseIdentifier) o;
+    final BaseIdentifier that = (BaseIdentifier) o;
 
-    if (levelZero != null ? !levelZero.equals(that.levelZero) : that.levelZero != null)
+    if (!Objects.equals(levelZero, that.levelZero))
       return false;
-    return suffix != null ? suffix.equals(that.suffix) : that.suffix == null;
+    return Objects.equals(suffix, that.suffix);
   }
 
   @Override
@@ -267,9 +265,9 @@ public class BaseIdentifier extends SimpleNode {
   }
 
   public boolean refersToParent() {
-    if (levelZero != null && levelZero.refersToParent()) {
+    if (levelZero != null && levelZero.refersToParent())
       return true;
-    }
+
     return suffix != null && suffix.refersToParent();
   }
 
@@ -282,22 +280,21 @@ public class BaseIdentifier extends SimpleNode {
     return levelZero;
   }
 
-  public void applyRemove(ResultInternal result, CommandContext ctx) {
-    if (suffix != null) {
+  public void applyRemove(final ResultInternal result, final CommandContext ctx) {
+    if (suffix != null)
       suffix.applyRemove(result, ctx);
-    } else {
+    else
       throw new CommandExecutionException("cannot apply REMOVE " + this);
-    }
   }
 
   public Result serialize() {
-    ResultInternal result = new ResultInternal();
-    if (levelZero != null) {
+    final ResultInternal result = new ResultInternal();
+    if (levelZero != null)
       result.setProperty("levelZero", levelZero.serialize());
-    }
-    if (suffix != null) {
+
+    if (suffix != null)
       result.setProperty("suffix", suffix.serialize());
-    }
+
     return result;
   }
 
@@ -312,40 +309,36 @@ public class BaseIdentifier extends SimpleNode {
     }
   }
 
-  public boolean isDefinedFor(Result currentRecord) {
-    if (suffix != null) {
+  public boolean isDefinedFor(final Result currentRecord) {
+    if (suffix != null)
       return suffix.isDefinedFor(currentRecord);
-    }
+
     return true;
   }
 
-  public boolean isDefinedFor(Record currentRecord) {
-    if (suffix != null) {
+  public boolean isDefinedFor(final Record currentRecord) {
+    if (suffix != null)
       return suffix.isDefinedFor(currentRecord);
-    }
+
     return true;
   }
 
-  public void extractSubQueries(Identifier letAlias, SubQueryCollector collector) {
-    if (this.levelZero != null) {
+  public void extractSubQueries(final Identifier letAlias, final SubQueryCollector collector) {
+    if (this.levelZero != null)
       this.levelZero.extractSubQueries(letAlias, collector);
-    }
   }
 
-  public void extractSubQueries(SubQueryCollector collector) {
-    if (this.levelZero != null) {
+  public void extractSubQueries(final SubQueryCollector collector) {
+    if (this.levelZero != null)
       this.levelZero.extractSubQueries(collector);
-    }
   }
 
   public boolean isCacheable() {
-    if (levelZero != null) {
+    if (levelZero != null)
       return levelZero.isCacheable();
-    }
 
-    if (suffix != null) {
+    if (suffix != null)
       return suffix.isCacheable();
-    }
 
     return true;
   }

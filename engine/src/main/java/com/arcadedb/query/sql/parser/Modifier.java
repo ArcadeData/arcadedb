@@ -188,29 +188,29 @@ public class Modifier extends SimpleNode {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals( final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    Modifier oModifier = (Modifier) o;
+    final Modifier oModifier = (Modifier) o;
 
     if (squareBrackets != oModifier.squareBrackets)
       return false;
-    if (arrayRange != null ? !arrayRange.equals(oModifier.arrayRange) : oModifier.arrayRange != null)
+    if (!Objects.equals(arrayRange, oModifier.arrayRange))
       return false;
-    if (condition != null ? !condition.equals(oModifier.condition) : oModifier.condition != null)
+    if (!Objects.equals(condition, oModifier.condition))
       return false;
-    if (arraySingleValues != null ? !arraySingleValues.equals(oModifier.arraySingleValues) : oModifier.arraySingleValues != null)
+    if (!Objects.equals(arraySingleValues, oModifier.arraySingleValues))
       return false;
-    if (rightBinaryCondition != null ? !rightBinaryCondition.equals(oModifier.rightBinaryCondition) : oModifier.rightBinaryCondition != null)
+    if (!Objects.equals(rightBinaryCondition, oModifier.rightBinaryCondition))
       return false;
-    if (methodCall != null ? !methodCall.equals(oModifier.methodCall) : oModifier.methodCall != null)
+    if (!Objects.equals(methodCall, oModifier.methodCall))
       return false;
-    if (suffix != null ? !suffix.equals(oModifier.suffix) : oModifier.suffix != null)
+    if (!Objects.equals(suffix, oModifier.suffix))
       return false;
-    return next != null ? next.equals(oModifier.next) : oModifier.next == null;
+    return Objects.equals(next, oModifier.next);
   }
 
   @Override

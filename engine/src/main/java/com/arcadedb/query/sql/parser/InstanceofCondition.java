@@ -26,10 +26,7 @@ import com.arcadedb.database.Record;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
-import java.util.Collections;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 
 public class InstanceofCondition extends BooleanExpression {
 
@@ -161,19 +158,19 @@ public class InstanceofCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals( final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    InstanceofCondition that = (InstanceofCondition) o;
+    final  InstanceofCondition that = (InstanceofCondition) o;
 
-    if (left != null ? !left.equals(that.left) : that.left != null)
+    if (!Objects.equals(left, that.left))
       return false;
-    if (right != null ? !right.equals(that.right) : that.right != null)
+    if (!Objects.equals(right, that.right))
       return false;
-    return rightString != null ? rightString.equals(that.rightString) : that.rightString == null;
+    return Objects.equals(rightString, that.rightString);
   }
 
   @Override

@@ -24,10 +24,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.stream.Collectors;
 
 public class IndexMatchCondition extends BooleanExpression {
@@ -175,21 +172,21 @@ public class IndexMatchCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals( final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    IndexMatchCondition that = (IndexMatchCondition) o;
+    final   IndexMatchCondition that = (IndexMatchCondition) o;
 
-    if (operator != null ? !operator.equals(that.operator) : that.operator != null)
+    if (!Objects.equals(operator, that.operator))
       return false;
-    if (between != null ? !between.equals(that.between) : that.between != null)
+    if (!Objects.equals(between, that.between))
       return false;
-    if (leftExpressions != null ? !leftExpressions.equals(that.leftExpressions) : that.leftExpressions != null)
+    if (!Objects.equals(leftExpressions, that.leftExpressions))
       return false;
-    return rightExpressions != null ? rightExpressions.equals(that.rightExpressions) : that.rightExpressions == null;
+    return Objects.equals(rightExpressions, that.rightExpressions);
   }
 
   @Override

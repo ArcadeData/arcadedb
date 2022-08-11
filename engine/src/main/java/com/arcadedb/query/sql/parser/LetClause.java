@@ -23,9 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.stream.Collectors;
 
 public class LetClause extends SimpleNode {
@@ -75,7 +73,7 @@ public class LetClause extends SimpleNode {
 
     final LetClause that = (LetClause) o;
 
-    return items != null ? items.equals(that.items) : that.items == null;
+    return Objects.equals(items, that.items);
   }
 
   @Override

@@ -213,21 +213,21 @@ public class NestedProjection extends SimpleNode {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals( final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    NestedProjection that = (NestedProjection) o;
+    final    NestedProjection that = (NestedProjection) o;
 
-    if (includeItems != null ? !includeItems.equals(that.includeItems) : that.includeItems != null)
+    if (!Objects.equals(includeItems, that.includeItems))
       return false;
-    if (excludeItems != null ? !excludeItems.equals(that.excludeItems) : that.excludeItems != null)
+    if (!Objects.equals(excludeItems, that.excludeItems))
       return false;
-    if (starItem != null ? !starItem.equals(that.starItem) : that.starItem != null)
+    if (!Objects.equals(starItem, that.starItem))
       return false;
-    return recursion != null ? recursion.equals(that.recursion) : that.recursion == null;
+    return Objects.equals(recursion, that.recursion);
   }
 
   @Override

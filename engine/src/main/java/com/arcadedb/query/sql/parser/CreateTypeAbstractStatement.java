@@ -164,13 +164,13 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
 
     final CreateTypeAbstractStatement that = (CreateTypeAbstractStatement) o;
 
-    if (name != null ? !name.equals(that.name) : that.name != null)
+    if (!Objects.equals(name, that.name))
       return false;
-    if (supertypes != null ? !supertypes.equals(that.supertypes) : that.supertypes != null)
+    if (!Objects.equals(supertypes, that.supertypes))
       return false;
-    if (buckets != null ? !buckets.equals(that.buckets) : that.buckets != null)
+    if (!Objects.equals(buckets, that.buckets))
       return false;
-    if (totalBucketNo != null ? !totalBucketNo.equals(that.totalBucketNo) : that.totalBucketNo != null)
+    if (!Objects.equals(totalBucketNo, that.totalBucketNo))
       return false;
     return ifNotExists == that.ifNotExists;
   }

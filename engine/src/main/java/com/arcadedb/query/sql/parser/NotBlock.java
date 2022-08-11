@@ -26,9 +26,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.DocumentType;
 
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 
 public class NotBlock extends BooleanExpression {
   protected BooleanExpression sub;
@@ -147,17 +145,17 @@ public class NotBlock extends BooleanExpression {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals( final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    NotBlock oNotBlock = (NotBlock) o;
+    final NotBlock oNotBlock = (NotBlock) o;
 
     if (negate != oNotBlock.negate)
       return false;
-    return sub != null ? sub.equals(oNotBlock.sub) : oNotBlock.sub == null;
+    return Objects.equals(sub, oNotBlock.sub);
   }
 
   @Override

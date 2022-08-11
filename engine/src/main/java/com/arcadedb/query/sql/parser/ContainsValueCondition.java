@@ -32,16 +32,16 @@ public class ContainsValueCondition extends BooleanExpression {
   protected OrBlock               condition;
   protected Expression            expression;
 
-  public ContainsValueCondition(int id) {
+  public ContainsValueCondition(final int id) {
     super(id);
   }
 
-  public ContainsValueCondition(SqlParser p, int id) {
+  public ContainsValueCondition(final SqlParser p, final int id) {
     super(p, id);
   }
 
   @Override
-  public boolean evaluate(Identifiable currentRecord, CommandContext ctx) {
+  public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
     Object leftValue = left.execute(currentRecord, ctx);
     if (leftValue instanceof Map) {
       Map map = (Map) leftValue;
@@ -62,8 +62,8 @@ public class ContainsValueCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(Result currentRecord, CommandContext ctx) {
-    Object leftValue = left.execute(currentRecord, ctx);
+  public boolean evaluate(final Result currentRecord, final CommandContext ctx) {
+    final Object leftValue = left.execute(currentRecord, ctx);
     if (leftValue instanceof Map) {
       Map map = (Map) leftValue;
       if (condition != null) {
@@ -74,7 +74,7 @@ public class ContainsValueCondition extends BooleanExpression {
         }
         return false;
       } else {
-        Object rightValue = expression.execute(currentRecord, ctx);
+        final Object rightValue = expression.execute(currentRecord, ctx);
         return map.containsValue(rightValue);//TODO type conversions...?
       }
 
@@ -82,8 +82,7 @@ public class ContainsValueCondition extends BooleanExpression {
     return false;
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
-
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     left.toString(params, builder);
     builder.append(" CONTAINSVALUE ");
     if (condition != null) {
@@ -93,7 +92,6 @@ public class ContainsValueCondition extends BooleanExpression {
     } else {
       expression.toString(params, builder);
     }
-
   }
 
   @Override
@@ -103,35 +101,34 @@ public class ContainsValueCondition extends BooleanExpression {
 
   @Override
   protected int getNumberOfExternalCalculations() {
-    if (condition == null) {
+    if (condition == null)
       return 0;
-    }
+
     return condition.getNumberOfExternalCalculations();
   }
 
   @Override
   protected List<Object> getExternalCalculationConditions() {
-    if (condition == null) {
+    if (condition == null)
       return Collections.EMPTY_LIST;
-    }
+
     return condition.getExternalCalculationConditions();
   }
 
   @Override
-  public boolean needsAliases(Set<String> aliases) {
-    if (left != null && left.needsAliases(aliases)) {
+  public boolean needsAliases(final Set<String> aliases) {
+    if (left != null && left.needsAliases(aliases))
       return true;
-    }
-    if (condition != null && condition.needsAliases(aliases)) {
-      return true;
-    }
-    return expression != null && expression.needsAliases(aliases);
 
+    if (condition != null && condition.needsAliases(aliases))
+      return true;
+
+    return expression != null && expression.needsAliases(aliases);
   }
 
   @Override
   public ContainsValueCondition copy() {
-    ContainsValueCondition result = new ContainsValueCondition(-1);
+    final ContainsValueCondition result = new ContainsValueCondition(-1);
     result.left = left.copy();
     result.operator = operator;
     result.condition = condition == null ? null : condition.copy();
@@ -140,43 +137,42 @@ public class ContainsValueCondition extends BooleanExpression {
   }
 
   @Override
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
     left.extractSubQueries(collector);
-    if (condition != null) {
+    if (condition != null)
       condition.extractSubQueries(collector);
-    }
-    if (expression != null) {
+
+    if (expression != null)
       expression.extractSubQueries(collector);
-    }
   }
 
   @Override
   public boolean refersToParent() {
-    if (left != null && left.refersToParent()) {
+    if (left != null && left.refersToParent())
       return true;
-    }
-    if (condition != null && condition.refersToParent()) {
+
+    if (condition != null && condition.refersToParent())
       return true;
-    }
+
     return expression != null && condition.refersToParent();
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    ContainsValueCondition that = (ContainsValueCondition) o;
+    final ContainsValueCondition that = (ContainsValueCondition) o;
 
-    if (left != null ? !left.equals(that.left) : that.left != null)
+    if (!Objects.equals(left, that.left))
       return false;
-    if (operator != null ? !operator.equals(that.operator) : that.operator != null)
+    if (!Objects.equals(operator, that.operator))
       return false;
-    if (condition != null ? !condition.equals(that.condition) : that.condition != null)
+    if (!Objects.equals(condition, that.condition))
       return false;
-    return expression != null ? expression.equals(that.expression) : that.expression == null;
+    return Objects.equals(expression, that.expression);
   }
 
   @Override
@@ -190,32 +186,31 @@ public class ContainsValueCondition extends BooleanExpression {
 
   @Override
   public List<String> getMatchPatternInvolvedAliases() {
-    List<String> leftX = left == null ? null : left.getMatchPatternInvolvedAliases();
-    List<String> expressionX = expression == null ? null : expression.getMatchPatternInvolvedAliases();
-    List<String> conditionX = condition == null ? null : condition.getMatchPatternInvolvedAliases();
+    final List<String> leftX = left == null ? null : left.getMatchPatternInvolvedAliases();
+    final List<String> expressionX = expression == null ? null : expression.getMatchPatternInvolvedAliases();
+    final List<String> conditionX = condition == null ? null : condition.getMatchPatternInvolvedAliases();
 
-    List<String> result = new ArrayList<String>();
-    if (leftX != null) {
+    final List<String> result = new ArrayList<String>();
+    if (leftX != null)
       result.addAll(leftX);
-    }
-    if (expressionX != null) {
+
+    if (expressionX != null)
       result.addAll(expressionX);
-    }
-    if (conditionX != null) {
+
+    if (conditionX != null)
       result.addAll(conditionX);
-    }
 
     return result.isEmpty() ? null : result;
   }
 
   @Override
   public boolean isCacheable() {
-    if (left != null && !left.isCacheable()) {
+    if (left != null && !left.isCacheable())
       return false;
-    }
-    if (condition != null && !condition.isCacheable()) {
+
+    if (condition != null && !condition.isCacheable())
       return false;
-    }
+
     return expression == null || expression.isCacheable();
   }
 }

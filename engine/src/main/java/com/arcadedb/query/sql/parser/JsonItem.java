@@ -21,8 +21,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 
 /**
  * Created by luigidellaquila on 18/02/15.
@@ -97,19 +96,19 @@ public class JsonItem {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals( final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    JsonItem oJsonItem = (JsonItem) o;
+    final  JsonItem oJsonItem = (JsonItem) o;
 
-    if (leftIdentifier != null ? !leftIdentifier.equals(oJsonItem.leftIdentifier) : oJsonItem.leftIdentifier != null)
+    if (!Objects.equals(leftIdentifier, oJsonItem.leftIdentifier))
       return false;
-    if (leftString != null ? !leftString.equals(oJsonItem.leftString) : oJsonItem.leftString != null)
+    if (!Objects.equals(leftString, oJsonItem.leftString))
       return false;
-    return right != null ? right.equals(oJsonItem.right) : oJsonItem.right == null;
+    return Objects.equals(right, oJsonItem.right);
   }
 
   @Override

@@ -23,7 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.util.Map;
+import java.util.*;
 
 public class FromClause extends SimpleNode {
 
@@ -58,15 +58,15 @@ public class FromClause extends SimpleNode {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals( final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    FromClause that = (FromClause) o;
+    final    FromClause that = (FromClause) o;
 
-    return item != null ? item.equals(that.item) : that.item == null;
+    return Objects.equals(item, that.item);
   }
 
   @Override

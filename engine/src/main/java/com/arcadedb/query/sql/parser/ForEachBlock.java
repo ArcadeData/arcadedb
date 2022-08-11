@@ -23,9 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Database;
 import com.arcadedb.query.sql.executor.*;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
@@ -94,19 +92,19 @@ public class ForEachBlock extends Statement {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals( final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    ForEachBlock that = (ForEachBlock) o;
+    final  ForEachBlock that = (ForEachBlock) o;
 
-    if (loopVariable != null ? !loopVariable.equals(that.loopVariable) : that.loopVariable != null)
+    if (!Objects.equals(loopVariable, that.loopVariable))
       return false;
-    if (loopValues != null ? !loopValues.equals(that.loopValues) : that.loopValues != null)
+    if (!Objects.equals(loopValues, that.loopValues))
       return false;
-    return statements != null ? statements.equals(that.statements) : that.statements == null;
+    return Objects.equals(statements, that.statements);
 
   }
 

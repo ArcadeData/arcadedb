@@ -24,7 +24,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.query.sql.executor.*;
 
-import java.util.Map;
+import java.util.*;
 
 public class CreateVertexStatement extends Statement {
 
@@ -124,15 +124,15 @@ public class CreateVertexStatement extends Statement {
 
     CreateVertexStatement that = (CreateVertexStatement) o;
 
-    if (targetType != null ? !targetType.equals(that.targetType) : that.targetType != null)
+    if (!Objects.equals(targetType, that.targetType))
       return false;
-    if (targetBucketName != null ? !targetBucketName.equals(that.targetBucketName) : that.targetBucketName != null)
+    if (!Objects.equals(targetBucketName, that.targetBucketName))
       return false;
-    if (targetBucket != null ? !targetBucket.equals(that.targetBucket) : that.targetBucket != null)
+    if (!Objects.equals(targetBucket, that.targetBucket))
       return false;
-    if (returnStatement != null ? !returnStatement.equals(that.returnStatement) : that.returnStatement != null)
+    if (!Objects.equals(returnStatement, that.returnStatement))
       return false;
-    return insertBody != null ? insertBody.equals(that.insertBody) : that.insertBody == null;
+    return Objects.equals(insertBody, that.insertBody);
   }
 
   @Override

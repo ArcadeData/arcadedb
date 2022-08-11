@@ -31,7 +31,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 
-import java.util.Map;
+import java.util.*;
 
 public class AlterPropertyStatement extends DDLStatement {
 
@@ -111,7 +111,7 @@ public class AlterPropertyStatement extends DDLStatement {
   }
 
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString( final Map<String, Object> params, final StringBuilder builder) {
     builder.append("ALTER PROPERTY ");
     typeName.toString(params, builder);
     builder.append(".");
@@ -131,7 +131,7 @@ public class AlterPropertyStatement extends DDLStatement {
 
   @Override
   public AlterPropertyStatement copy() {
-    AlterPropertyStatement result = new AlterPropertyStatement(-1);
+    final AlterPropertyStatement result = new AlterPropertyStatement(-1);
     result.typeName = typeName == null ? null : typeName.copy();
     result.propertyName = propertyName == null ? null : propertyName.copy();
     result.customPropertyName = customPropertyName == null ? null : customPropertyName.copy();
@@ -142,7 +142,7 @@ public class AlterPropertyStatement extends DDLStatement {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals( final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
@@ -150,17 +150,17 @@ public class AlterPropertyStatement extends DDLStatement {
 
     final AlterPropertyStatement that = (AlterPropertyStatement) o;
 
-    if (typeName != null ? !typeName.equals(that.typeName) : that.typeName != null)
+    if (!Objects.equals(typeName, that.typeName))
       return false;
-    if (propertyName != null ? !propertyName.equals(that.propertyName) : that.propertyName != null)
+    if (!Objects.equals(propertyName, that.propertyName))
       return false;
-    if (customPropertyName != null ? !customPropertyName.equals(that.customPropertyName) : that.customPropertyName != null)
+    if (!Objects.equals(customPropertyName, that.customPropertyName))
       return false;
-    if (customPropertyValue != null ? !customPropertyValue.equals(that.customPropertyValue) : that.customPropertyValue != null)
+    if (!Objects.equals(customPropertyValue, that.customPropertyValue))
       return false;
-    if (settingName != null ? !settingName.equals(that.settingName) : that.settingName != null)
+    if (!Objects.equals(settingName, that.settingName))
       return false;
-    return settingValue != null ? settingValue.equals(that.settingValue) : that.settingValue == null;
+    return Objects.equals(settingValue, that.settingValue);
   }
 
   @Override

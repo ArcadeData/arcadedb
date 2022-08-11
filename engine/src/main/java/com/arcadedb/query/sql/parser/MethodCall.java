@@ -167,9 +167,9 @@ public class MethodCall extends SimpleNode {
 
     final MethodCall that = (MethodCall) o;
 
-    if (methodName != null ? !methodName.equals(that.methodName) : that.methodName != null)
+    if (!Objects.equals(methodName, that.methodName))
       return false;
-    return params != null ? params.equals(that.params) : that.params == null;
+    return Objects.equals(params, that.params);
   }
 
   @Override

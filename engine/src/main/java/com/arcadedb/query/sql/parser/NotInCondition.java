@@ -24,10 +24,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 
 public class NotInCondition extends BooleanExpression {
 
@@ -196,27 +193,28 @@ public class NotInCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    NotInCondition that = (NotInCondition) o;
+    final NotInCondition that = (NotInCondition) o;
 
-    if (left != null ? !left.equals(that.left) : that.left != null)
+    if (!Objects.equals(left, that.left))
       return false;
-    if (operator != null ? !operator.equals(that.operator) : that.operator != null)
+    if (!Objects.equals(operator, that.operator))
       return false;
-    if (rightStatement != null ? !rightStatement.equals(that.rightStatement) : that.rightStatement != null)
+    if (!Objects.equals(rightStatement, that.rightStatement))
       return false;
-    if (right != null ? !right.equals(that.right) : that.right != null)
+    if (!Objects.equals(right, that.right))
       return false;
-    if (rightParam != null ? !rightParam.equals(that.rightParam) : that.rightParam != null)
+    if (!Objects.equals(rightParam, that.rightParam))
       return false;
-    if (rightMathExpression != null ? !rightMathExpression.equals(that.rightMathExpression) : that.rightMathExpression != null)
+    if (!Objects.equals(rightMathExpression, that.rightMathExpression))
       return false;
-    return inputFinalValue != null ? inputFinalValue.equals(that.inputFinalValue) : that.inputFinalValue == null;
+    final boolean b = inputFinalValue != null ? inputFinalValue.equals(that.inputFinalValue) : that.inputFinalValue == null;
+    return b;
   }
 
   @Override
@@ -233,10 +231,10 @@ public class NotInCondition extends BooleanExpression {
 
   @Override
   public List<String> getMatchPatternInvolvedAliases() {
-    List<String> leftX = left == null ? null : left.getMatchPatternInvolvedAliases();
-    List<String> rightX = rightMathExpression == null ? null : rightMathExpression.getMatchPatternInvolvedAliases();
+    final List<String> leftX = left == null ? null : left.getMatchPatternInvolvedAliases();
+    final List<String> rightX = rightMathExpression == null ? null : rightMathExpression.getMatchPatternInvolvedAliases();
 
-    List<String> result = new ArrayList<String>();
+    final List<String> result = new ArrayList<String>();
     if (leftX != null) {
       result.addAll(leftX);
     }

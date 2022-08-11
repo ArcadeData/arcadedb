@@ -20,9 +20,7 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.stream.Collectors;
 
 public class MatchExpression extends SimpleNode {
@@ -53,17 +51,17 @@ public class MatchExpression extends SimpleNode {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals( final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    MatchExpression that = (MatchExpression) o;
+    final  MatchExpression that = (MatchExpression) o;
 
-    if (origin != null ? !origin.equals(that.origin) : that.origin != null)
+    if (!Objects.equals(origin, that.origin))
       return false;
-    return items != null ? items.equals(that.items) : that.items == null;
+    return Objects.equals(items, that.items);
   }
 
   @Override

@@ -64,9 +64,9 @@ public class CreatePropertyAttributeStatement extends SimpleNode {
 
     final CreatePropertyAttributeStatement that = (CreatePropertyAttributeStatement) o;
 
-    if (settingName != null ? !settingName.equals(that.settingName) : that.settingName != null)
+    if (!Objects.equals(settingName, that.settingName))
       return false;
-    return settingValue != null ? settingValue.equals(that.settingValue) : that.settingValue == null;
+    return Objects.equals(settingValue, that.settingValue);
   }
 
   @Override
@@ -77,7 +77,7 @@ public class CreatePropertyAttributeStatement extends SimpleNode {
   }
 
   public Object setOnProperty(final Property internalProp, final CommandContext ctx) {
-    String attrName = settingName.getStringValue();
+    final String attrName = settingName.getStringValue();
     Object attrValue = this.settingValue == null ? true : this.settingValue.execute((Identifiable) null, ctx);
     try {
       if (attrName.equalsIgnoreCase("readonly")) {

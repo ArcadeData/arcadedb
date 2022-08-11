@@ -97,17 +97,17 @@ public class DropIndexStatement extends DDLStatement {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals( final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    DropIndexStatement that = (DropIndexStatement) o;
+    final DropIndexStatement that = (DropIndexStatement) o;
 
     if (all != that.all)
       return false;
-    return name != null ? name.equals(that.name) : that.name == null;
+    return Objects.equals(name, that.name);
   }
 
   @Override

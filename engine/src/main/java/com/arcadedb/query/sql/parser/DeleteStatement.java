@@ -23,7 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Database;
 import com.arcadedb.query.sql.executor.*;
 
-import java.util.Map;
+import java.util.*;
 
 public class DeleteStatement extends Statement {
 
@@ -70,23 +70,23 @@ public class DeleteStatement extends Statement {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals( final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    DeleteStatement that = (DeleteStatement) o;
+    final DeleteStatement that = (DeleteStatement) o;
 
     if (returnBefore != that.returnBefore)
       return false;
     if (unsafe != that.unsafe)
       return false;
-    if (fromClause != null ? !fromClause.equals(that.fromClause) : that.fromClause != null)
+    if (!Objects.equals(fromClause, that.fromClause))
       return false;
-    if (whereClause != null ? !whereClause.equals(that.whereClause) : that.whereClause != null)
+    if (!Objects.equals(whereClause, that.whereClause))
       return false;
-    return limit != null ? limit.equals(that.limit) : that.limit == null;
+    return Objects.equals(limit, that.limit);
   }
 
   @Override

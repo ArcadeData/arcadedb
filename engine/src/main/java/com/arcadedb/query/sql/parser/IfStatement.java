@@ -23,9 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Database;
 import com.arcadedb.query.sql.executor.*;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.stream.Collectors;
 
 public class IfStatement extends Statement {
@@ -163,19 +161,19 @@ public class IfStatement extends Statement {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals( final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    IfStatement that = (IfStatement) o;
+    final  IfStatement that = (IfStatement) o;
 
-    if (expression != null ? !expression.equals(that.expression) : that.expression != null)
+    if (!Objects.equals(expression, that.expression))
       return false;
-    if (statements != null ? !statements.equals(that.statements) : that.statements != null)
+    if (!Objects.equals(statements, that.statements))
       return false;
-    return elseStatements != null ? elseStatements.equals(that.elseStatements) : that.elseStatements == null;
+    return Objects.equals(elseStatements, that.elseStatements);
   }
 
   @Override

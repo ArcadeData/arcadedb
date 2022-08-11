@@ -30,8 +30,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 public class DropPropertyStatement extends DDLStatement {
 
@@ -126,22 +125,22 @@ public class DropPropertyStatement extends DDLStatement {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals( final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    DropPropertyStatement that = (DropPropertyStatement) o;
+    final DropPropertyStatement that = (DropPropertyStatement) o;
 
     if (force != that.force)
       return false;
     if (ifExists != that.ifExists) {
       return false;
     }
-    if (typeName != null ? !typeName.equals(that.typeName) : that.typeName != null)
+    if (!Objects.equals(typeName, that.typeName))
       return false;
-    return propertyName != null ? propertyName.equals(that.propertyName) : that.propertyName == null;
+    return Objects.equals(propertyName, that.propertyName);
   }
 
   @Override

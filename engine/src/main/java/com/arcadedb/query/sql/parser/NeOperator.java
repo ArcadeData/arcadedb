@@ -53,7 +53,7 @@ public class NeOperator extends SimpleNode implements BinaryCompareOperator {
   }
 
   @Override
-  public boolean equals(Object obj) {
+  public boolean equals( final Object obj) {
     return obj != null && obj.getClass().equals(this.getClass());
   }
 

@@ -221,7 +221,7 @@ public class ContainsAllCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean needsAliases(Set<String> aliases) {
+  public boolean needsAliases(final Set<String> aliases) {
     if (left.needsAliases(aliases)) {
       return true;
     }
@@ -264,19 +264,19 @@ public class ContainsAllCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    ContainsAllCondition that = (ContainsAllCondition) o;
+    final ContainsAllCondition that = (ContainsAllCondition) o;
 
-    if (left != null ? !left.equals(that.left) : that.left != null)
+    if (!Objects.equals(left, that.left))
       return false;
-    if (right != null ? !right.equals(that.right) : that.right != null)
+    if (!Objects.equals(right, that.right))
       return false;
-    return rightBlock != null ? rightBlock.equals(that.rightBlock) : that.rightBlock == null;
+    return Objects.equals(rightBlock, that.rightBlock);
   }
 
   @Override
@@ -289,9 +289,9 @@ public class ContainsAllCondition extends BooleanExpression {
 
   @Override
   public List<String> getMatchPatternInvolvedAliases() {
-    List<String> leftX = left == null ? null : left.getMatchPatternInvolvedAliases();
-    List<String> rightX = right == null ? null : right.getMatchPatternInvolvedAliases();
-    List<String> rightBlockX = rightBlock == null ? null : rightBlock.getMatchPatternInvolvedAliases();
+    final List<String> leftX = left == null ? null : left.getMatchPatternInvolvedAliases();
+    final List<String> rightX = right == null ? null : right.getMatchPatternInvolvedAliases();
+    final List<String> rightBlockX = rightBlock == null ? null : rightBlock.getMatchPatternInvolvedAliases();
 
     List<String> result = new ArrayList<String>();
     if (leftX != null) {

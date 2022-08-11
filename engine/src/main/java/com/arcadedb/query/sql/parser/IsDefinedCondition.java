@@ -24,10 +24,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
-import java.util.Collections;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 
 public class IsDefinedCondition extends BooleanExpression implements SimpleBooleanExpression {
 
@@ -102,7 +99,7 @@ public class IsDefinedCondition extends BooleanExpression implements SimpleBoole
 
     final IsDefinedCondition that = (IsDefinedCondition) o;
 
-    return expression != null ? expression.equals(that.expression) : that.expression == null;
+    return Objects.equals(expression, that.expression);
   }
 
   @Override

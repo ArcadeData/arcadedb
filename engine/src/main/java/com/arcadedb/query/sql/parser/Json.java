@@ -157,21 +157,21 @@ public class Json extends SimpleNode {
   }
 
   public Json copy() {
-    Json result = new Json(-1);
+    final Json result = new Json(-1);
     result.items = items.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals( final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    Json oJson = (Json) o;
+    final Json oJson = (Json) o;
 
-    return items != null ? items.equals(oJson.items) : oJson.items == null;
+    return Objects.equals(items, oJson.items);
   }
 
   @Override
@@ -179,7 +179,7 @@ public class Json extends SimpleNode {
     return items != null ? items.hashCode() : 0;
   }
 
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries( final SubQueryCollector collector) {
     for (JsonItem item : items) {
       item.extractSubQueries(collector);
     }

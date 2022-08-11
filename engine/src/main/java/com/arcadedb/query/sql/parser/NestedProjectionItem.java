@@ -24,7 +24,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.util.Map;
+import java.util.*;
 
 public class NestedProjectionItem extends SimpleNode {
 
@@ -108,13 +108,13 @@ public class NestedProjectionItem extends SimpleNode {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals( final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    NestedProjectionItem that = (NestedProjectionItem) o;
+    final  NestedProjectionItem that = (NestedProjectionItem) o;
 
     if (exclude != that.exclude)
       return false;
@@ -122,11 +122,11 @@ public class NestedProjectionItem extends SimpleNode {
       return false;
     if (rightWildcard != that.rightWildcard)
       return false;
-    if (expression != null ? !expression.equals(that.expression) : that.expression != null)
+    if (!Objects.equals(expression, that.expression))
       return false;
-    if (expansion != null ? !expansion.equals(that.expansion) : that.expansion != null)
+    if (!Objects.equals(expansion, that.expansion))
       return false;
-    return alias != null ? alias.equals(that.alias) : that.alias == null;
+    return Objects.equals(alias, that.alias);
   }
 
   @Override

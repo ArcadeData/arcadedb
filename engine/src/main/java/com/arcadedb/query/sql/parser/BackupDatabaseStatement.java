@@ -34,18 +34,18 @@ import java.util.Objects;
 public class BackupDatabaseStatement extends SimpleExecStatement {
   protected Url url;
 
-  public BackupDatabaseStatement(int id) {
+  public BackupDatabaseStatement( final int id) {
     super(id);
   }
 
-  public BackupDatabaseStatement(SqlParser p, int id) {
+  public BackupDatabaseStatement( final SqlParser p,  final int id) {
     super(p, id);
   }
 
   @Override
-  public ResultSet executeSimple(CommandContext ctx) {
-    String targetUrl = this.url != null ? this.url.getUrlString() : null;
-    ResultInternal result = new ResultInternal();
+  public ResultSet executeSimple( final CommandContext ctx) {
+    final String targetUrl = this.url != null ? this.url.getUrlString() : null;
+    final  ResultInternal result = new ResultInternal();
     result.setProperty("operation", "backup database");
     if (targetUrl != null)
       result.setProperty("target", targetUrl);
@@ -86,12 +86,12 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals( final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
-    BackupDatabaseStatement that = (BackupDatabaseStatement) o;
+    final BackupDatabaseStatement that = (BackupDatabaseStatement) o;
     return Objects.equals(url, that.url);
   }
 
@@ -102,7 +102,7 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
 
   @Override
   public Statement copy() {
-    BackupDatabaseStatement result = new BackupDatabaseStatement(-1);
+    final BackupDatabaseStatement result = new BackupDatabaseStatement(-1);
     result.url = this.url;
     return result;
   }

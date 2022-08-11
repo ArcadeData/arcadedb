@@ -27,7 +27,7 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 
-import java.util.Map;
+import java.util.*;
 
 public class DropBucketStatement extends DDLStatement {
   protected Identifier name;
@@ -118,19 +118,19 @@ public class DropBucketStatement extends DDLStatement {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals( final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    DropBucketStatement that = (DropBucketStatement) o;
+    final DropBucketStatement that = (DropBucketStatement) o;
 
     if (ifExists != that.ifExists)
       return false;
-    if (name != null ? !name.equals(that.name) : that.name != null)
+    if (!Objects.equals(name, that.name))
       return false;
-    return id != null ? id.equals(that.id) : that.id == null;
+    return Objects.equals(id, that.id);
   }
 
   @Override

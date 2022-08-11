@@ -225,21 +225,21 @@ public class CreateIndexStatement extends DDLStatement {
 
     final CreateIndexStatement that = (CreateIndexStatement) o;
 
-    if (name != null ? !name.equals(that.name) : that.name != null)
+    if (!Objects.equals(name, that.name))
       return false;
-    if (typeName != null ? !typeName.equals(that.typeName) : that.typeName != null)
+    if (!Objects.equals(typeName, that.typeName))
       return false;
-    if (propertyList != null ? !propertyList.equals(that.propertyList) : that.propertyList != null)
+    if (!Objects.equals(propertyList, that.propertyList))
       return false;
-    if (type != null ? !type.equals(that.type) : that.type != null)
+    if (!Objects.equals(type, that.type))
       return false;
-    if (engine != null ? !engine.equals(that.engine) : that.engine != null)
+    if (!Objects.equals(engine, that.engine))
       return false;
-    if (nullStrategy != null ? !nullStrategy.equals(that.nullStrategy) : that.nullStrategy != null)
+    if (!Objects.equals(nullStrategy, that.nullStrategy))
       return false;
-    if (keyTypes != null ? !keyTypes.equals(that.keyTypes) : that.keyTypes != null)
+    if (!Objects.equals(keyTypes, that.keyTypes))
       return false;
-    return schema != null ? schema.equals(that.schema) : that.schema == null;
+    return Objects.equals(schema, that.schema);
   }
 
   @Override

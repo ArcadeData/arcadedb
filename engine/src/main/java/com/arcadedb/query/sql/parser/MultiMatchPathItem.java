@@ -80,7 +80,7 @@ public class MultiMatchPathItem extends MatchPathItem {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals( final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
@@ -88,9 +88,9 @@ public class MultiMatchPathItem extends MatchPathItem {
     if (!super.equals(o))
       return false;
 
-    MultiMatchPathItem that = (MultiMatchPathItem) o;
+    final MultiMatchPathItem that = (MultiMatchPathItem) o;
 
-    return items != null ? items.equals(that.items) : that.items == null;
+    return Objects.equals(items, that.items);
   }
 
   @Override

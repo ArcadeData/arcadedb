@@ -27,10 +27,7 @@ import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.schema.DocumentType;
 
-import java.util.Collections;
-import java.util.HashSet;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 
 public class MatchPathItem extends SimpleNode {
   protected MethodCall  method;
@@ -154,22 +151,22 @@ public class MatchPathItem extends SimpleNode {
       }
     }
 
-    Object qR = this.method.execute(startingPoint, possibleResults, iCommandContext);
+    final Object qR = this.method.execute(startingPoint, possibleResults, iCommandContext);
     return (qR instanceof Iterable && !(qR instanceof Record)) ? (Iterable) qR : Collections.singleton((Identifiable) qR);
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals( final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    MatchPathItem that = (MatchPathItem) o;
+    final MatchPathItem that = (MatchPathItem) o;
 
-    if (method != null ? !method.equals(that.method) : that.method != null)
+    if (!Objects.equals(method, that.method))
       return false;
-    return filter != null ? filter.equals(that.filter) : that.filter == null;
+    return Objects.equals(filter, that.filter);
   }
 
   @Override

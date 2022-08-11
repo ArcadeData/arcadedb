@@ -23,7 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.util.Map;
+import java.util.*;
 
 public class NamedParameter extends InputParameter {
 
@@ -93,17 +93,17 @@ public class NamedParameter extends InputParameter {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals( final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    NamedParameter that = (NamedParameter) o;
+    final  NamedParameter that = (NamedParameter) o;
 
     if (paramNumber != that.paramNumber)
       return false;
-    return paramName != null ? paramName.equals(that.paramName) : that.paramName == null;
+    return Objects.equals(paramName, that.paramName);
   }
 
   @Override

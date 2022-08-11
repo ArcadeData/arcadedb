@@ -32,11 +32,11 @@ public class ContainsTextCondition extends BooleanExpression {
   protected Expression left;
   protected Expression right;
 
-  public ContainsTextCondition(int id) {
+  public ContainsTextCondition( final int id) {
     super(id);
   }
 
-  public ContainsTextCondition(SqlParser p, int id) {
+  public ContainsTextCondition( final SqlParser p, int id) {
     super(p, id);
   }
 

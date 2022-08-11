@@ -25,22 +25,21 @@ import com.arcadedb.database.DatabaseInternal;
 import java.util.Map;
 
 public class ContainsValueOperator extends SimpleNode implements BinaryCompareOperator {
-  public ContainsValueOperator(int id) {
+  public ContainsValueOperator(final int id) {
     super(id);
   }
 
-  public ContainsValueOperator(SqlParser p, int id) {
+  public ContainsValueOperator(final SqlParser p, final int id) {
     super(p, id);
   }
 
   @Override
-  public boolean execute(DatabaseInternal database, Object iLeft, Object iRight) {
+  public boolean execute(final DatabaseInternal database, final Object iLeft, final Object iRight) {
     if (iLeft instanceof Map<?, ?>) {
       final Map<String, ?> map = (Map<String, ?>) iLeft;
       return map.containsValue(iRight);
     }
     return false;
-
   }
 
   @Override
@@ -59,7 +58,7 @@ public class ContainsValueOperator extends SimpleNode implements BinaryCompareOp
   }
 
   @Override
-  public boolean equals(Object obj) {
+  public boolean equals(final Object obj) {
     return obj != null && obj.getClass().equals(this.getClass());
   }
 

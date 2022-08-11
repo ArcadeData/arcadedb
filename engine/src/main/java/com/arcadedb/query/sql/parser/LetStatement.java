@@ -25,7 +25,7 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.Map;
+import java.util.*;
 
 public class LetStatement extends SimpleExecStatement {
   protected Identifier name;
@@ -91,19 +91,19 @@ public class LetStatement extends SimpleExecStatement {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals( final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    LetStatement that = (LetStatement) o;
+    final LetStatement that = (LetStatement) o;
 
-    if (name != null ? !name.equals(that.name) : that.name != null)
+    if (!Objects.equals(name, that.name))
       return false;
-    if (statement != null ? !statement.equals(that.statement) : that.statement != null)
+    if (!Objects.equals(statement, that.statement))
       return false;
-    return expression != null ? expression.equals(that.expression) : that.expression == null;
+    return Objects.equals(expression, that.expression);
   }
 
   @Override

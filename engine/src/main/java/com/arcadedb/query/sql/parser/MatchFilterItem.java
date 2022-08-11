@@ -20,7 +20,7 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import java.util.Map;
+import java.util.*;
 
 public class MatchFilterItem extends SimpleNode {
   protected Expression         typeName;
@@ -138,39 +138,39 @@ public class MatchFilterItem extends SimpleNode {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals( final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    MatchFilterItem that = (MatchFilterItem) o;
+    final MatchFilterItem that = (MatchFilterItem) o;
 
-    if (typeName != null ? !typeName.equals(that.typeName) : that.typeName != null)
+    if (!Objects.equals(typeName, that.typeName))
       return false;
-    if (typeNames != null ? !typeNames.equals(that.typeNames) : that.typeNames != null)
+    if (!Objects.equals(typeNames, that.typeNames))
       return false;
-    if (bucketName != null ? !bucketName.equals(that.bucketName) : that.bucketName != null)
+    if (!Objects.equals(bucketName, that.bucketName))
       return false;
-    if (bucketId != null ? !bucketId.equals(that.bucketId) : that.bucketId != null)
+    if (!Objects.equals(bucketId, that.bucketId))
       return false;
-    if (rid != null ? !rid.equals(that.rid) : that.rid != null)
+    if (!Objects.equals(rid, that.rid))
       return false;
-    if (alias != null ? !alias.equals(that.alias) : that.alias != null)
+    if (!Objects.equals(alias, that.alias))
       return false;
-    if (filter != null ? !filter.equals(that.filter) : that.filter != null)
+    if (!Objects.equals(filter, that.filter))
       return false;
-    if (whileCondition != null ? !whileCondition.equals(that.whileCondition) : that.whileCondition != null)
+    if (!Objects.equals(whileCondition, that.whileCondition))
       return false;
-    if (depth != null ? !depth.equals(that.depth) : that.depth != null)
+    if (!Objects.equals(depth, that.depth))
       return false;
-    if (maxDepth != null ? !maxDepth.equals(that.maxDepth) : that.maxDepth != null)
+    if (!Objects.equals(maxDepth, that.maxDepth))
       return false;
-    if (optional != null ? !optional.equals(that.optional) : that.optional != null)
+    if (!Objects.equals(optional, that.optional))
       return false;
-    if (depthAlias != null ? !depthAlias.equals(that.depthAlias) : that.depthAlias != null)
+    if (!Objects.equals(depthAlias, that.depthAlias))
       return false;
-    return pathAlias != null ? pathAlias.equals(that.pathAlias) : that.pathAlias == null;
+    return Objects.equals(pathAlias, that.pathAlias);
   }
 
   @Override

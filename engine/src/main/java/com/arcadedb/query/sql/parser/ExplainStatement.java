@@ -23,7 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Database;
 import com.arcadedb.query.sql.executor.*;
 
-import java.util.Map;
+import java.util.*;
 
 public class ExplainStatement extends Statement {
 
@@ -86,15 +86,15 @@ public class ExplainStatement extends Statement {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals( final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    ExplainStatement that = (ExplainStatement) o;
+    final ExplainStatement that = (ExplainStatement) o;
 
-    return statement != null ? statement.equals(that.statement) : that.statement == null;
+    return Objects.equals(statement, that.statement);
   }
 
   @Override

@@ -26,10 +26,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.DocumentType;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.stream.Collectors;
 
 public class OrBlock extends BooleanExpression {
@@ -183,15 +180,15 @@ public class OrBlock extends BooleanExpression {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    OrBlock oOrBlock = (OrBlock) o;
+    final OrBlock oOrBlock = (OrBlock) o;
 
-    return subBlocks != null ? subBlocks.equals(oOrBlock.subBlocks) : oOrBlock.subBlocks == null;
+    return Objects.equals(subBlocks, oOrBlock.subBlocks);
   }
 
   @Override

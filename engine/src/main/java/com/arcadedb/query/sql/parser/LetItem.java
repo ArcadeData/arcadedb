@@ -23,7 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.util.Map;
+import java.util.*;
 
 public class LetItem extends SimpleNode {
 
@@ -72,19 +72,19 @@ public class LetItem extends SimpleNode {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals( final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    LetItem oLetItem = (LetItem) o;
+    final  LetItem oLetItem = (LetItem) o;
 
-    if (varName != null ? !varName.equals(oLetItem.varName) : oLetItem.varName != null)
+    if (!Objects.equals(varName, oLetItem.varName))
       return false;
-    if (expression != null ? !expression.equals(oLetItem.expression) : oLetItem.expression != null)
+    if (!Objects.equals(expression, oLetItem.expression))
       return false;
-    return query != null ? query.equals(oLetItem.query) : oLetItem.query == null;
+    return Objects.equals(query, oLetItem.query);
   }
 
   @Override
