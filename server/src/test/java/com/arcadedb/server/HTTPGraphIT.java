@@ -508,4 +508,81 @@ public class HTTPGraphIT extends BaseGraphServerTest {
       }
     });
   }
+
+  @Test
+  public void closeAndReopenDatabase() throws Exception {
+    testEachServer((serverIndex) -> {
+      // CREATE THE DATABASE 'JUSTFORFUN'
+      HttpURLConnection connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/create/closeAndReopen").openConnection();
+      connection.setRequestMethod("POST");
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      connection.connect();
+
+      try {
+        final String response = readResponse(connection);
+        LogManager.instance().log(this, Level.FINE, "Response: ", null, response);
+        Assertions.assertEquals(200, connection.getResponseCode());
+        Assertions.assertEquals("OK", connection.getResponseMessage());
+        Assertions.assertEquals("ok", new JSONObject(response).getString("result"));
+
+      } finally {
+        connection.disconnect();
+      }
+
+      // CLOSE DATABASE
+      connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/close/closeAndReopen").openConnection();
+      connection.setRequestMethod("POST");
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      connection.connect();
+
+      try {
+        final String response = readResponse(connection);
+        LogManager.instance().log(this, Level.FINE, "Response: ", null, response);
+        Assertions.assertEquals(200, connection.getResponseCode());
+        Assertions.assertEquals("OK", connection.getResponseMessage());
+        Assertions.assertEquals("ok", new JSONObject(response).getString("result"));
+
+      } finally {
+        connection.disconnect();
+      }
+
+      // RE-OPEN DATABASE
+      connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/open/closeAndReopen").openConnection();
+      connection.setRequestMethod("POST");
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      connection.connect();
+
+      try {
+        final String response = readResponse(connection);
+        LogManager.instance().log(this, Level.FINE, "Response: ", null, response);
+        Assertions.assertEquals(200, connection.getResponseCode());
+        Assertions.assertEquals("OK", connection.getResponseMessage());
+        Assertions.assertEquals("ok", new JSONObject(response).getString("result"));
+
+      } finally {
+        connection.disconnect();
+      }
+
+      // CHECK EXISTENCE
+      connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/exists/closeAndReopen").openConnection();
+      connection.setRequestMethod("GET");
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      connection.connect();
+
+      try {
+        final String response = readResponse(connection);
+        LogManager.instance().log(this, Level.FINE, "Response: ", null, response);
+        Assertions.assertEquals(200, connection.getResponseCode());
+        Assertions.assertEquals("OK", connection.getResponseMessage());
+        Assertions.assertTrue(new JSONObject(response).getBoolean("result"));
+
+      } finally {
+        connection.disconnect();
+      }
+    });
+  }
 }
