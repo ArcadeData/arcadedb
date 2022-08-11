@@ -33,19 +33,21 @@ import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.TestCallback;
-import com.arcadedb.server.ha.message.*;
+import com.arcadedb.server.ha.message.DatabaseStructureRequest;
+import com.arcadedb.server.ha.message.DatabaseStructureResponse;
+import com.arcadedb.server.ha.message.FileContentRequest;
+import com.arcadedb.server.ha.message.FileContentResponse;
+import com.arcadedb.server.ha.message.HACommand;
+import com.arcadedb.server.ha.message.ReplicaConnectFullResyncResponse;
+import com.arcadedb.server.ha.message.ReplicaConnectRequest;
+import com.arcadedb.server.ha.message.ReplicaReadyRequest;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.Pair;
 
-import java.io.File;
-import java.io.FileWriter;
-import java.io.IOException;
-import java.net.SocketTimeoutException;
-import java.util.Arrays;
-import java.util.HashSet;
-import java.util.Map;
-import java.util.Set;
-import java.util.logging.Level;
+import java.io.*;
+import java.net.*;
+import java.util.*;
+import java.util.logging.*;
 
 public class Replica2LeaderNetworkExecutor extends Thread {
   private final    HAServer            server;

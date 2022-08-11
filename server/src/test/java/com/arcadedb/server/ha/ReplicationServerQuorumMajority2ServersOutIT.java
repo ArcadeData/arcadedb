@@ -27,8 +27,8 @@ import com.arcadedb.server.TestCallback;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.logging.Level;
+import java.util.concurrent.atomic.*;
+import java.util.logging.*;
 
 public class ReplicationServerQuorumMajority2ServersOutIT extends ReplicationServerIT {
   private final AtomicInteger messages = new AtomicInteger();

@@ -21,7 +21,11 @@ package com.arcadedb.server.http.handler;
 import com.arcadedb.Constants;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.exception.*;
+import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.security.SecurityUser;
@@ -35,9 +39,9 @@ import io.undertow.util.HeaderValues;
 import io.undertow.util.Headers;
 import org.json.JSONObject;
 
-import java.io.IOException;
-import java.util.Base64;
-import java.util.logging.Level;
+import java.io.*;
+import java.util.*;
+import java.util.logging.*;
 
 public abstract class AbstractHandler implements HttpHandler {
   private              boolean    requireAuthentication = true;

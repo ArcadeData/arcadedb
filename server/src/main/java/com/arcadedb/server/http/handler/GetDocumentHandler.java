@@ -25,7 +25,7 @@ import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
-import java.util.Deque;
+import java.util.*;
 
 public class GetDocumentHandler extends DatabaseAbstractHandler {
   public GetDocumentHandler(final HttpServer httpServer) {

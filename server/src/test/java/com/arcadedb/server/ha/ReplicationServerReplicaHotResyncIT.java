@@ -24,8 +24,8 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.TestCallback;
 import org.junit.jupiter.api.Assertions;
 
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.logging.Level;
+import java.util.concurrent.atomic.*;
+import java.util.logging.*;
 
 public class ReplicationServerReplicaHotResyncIT extends ReplicationServerIT {
   private final    AtomicLong totalMessages = new AtomicLong();

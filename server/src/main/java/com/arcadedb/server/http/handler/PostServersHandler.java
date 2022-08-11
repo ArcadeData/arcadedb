@@ -24,7 +24,7 @@ import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
-import java.util.logging.Level;
+import java.util.logging.*;
 
 public class PostServersHandler extends AbstractHandler {
   public PostServersHandler(final HttpServer httpServer) {

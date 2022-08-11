@@ -32,11 +32,8 @@ import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.Random;
-import java.util.Set;
-import java.util.Timer;
-import java.util.TimerTask;
-import java.util.logging.Level;
+import java.util.*;
+import java.util.logging.*;
 
 public class HARandomCrashIT extends ReplicationServerIT {
   private          int  restarts = 0;

@@ -25,7 +25,7 @@ import io.undertow.server.HttpServerExchange;
 import io.undertow.websockets.WebSocketConnectionCallback;
 import io.undertow.websockets.WebSocketProtocolHandshakeHandler;
 
-import java.util.UUID;
+import java.util.*;
 
 public class WebSocketConnectionHandler extends AbstractHandler {
   private final WebSocketEventBus webSocketEventBus;

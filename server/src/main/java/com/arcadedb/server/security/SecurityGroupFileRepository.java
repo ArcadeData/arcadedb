@@ -26,13 +26,9 @@ import com.arcadedb.utility.FileUtils;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileWriter;
-import java.io.IOException;
-import java.util.Timer;
-import java.util.TimerTask;
-import java.util.logging.Level;
+import java.io.*;
+import java.util.*;
+import java.util.logging.*;
 
 public class SecurityGroupFileRepository {
   public static final  String                     FILE_NAME               = "server-groups.json";

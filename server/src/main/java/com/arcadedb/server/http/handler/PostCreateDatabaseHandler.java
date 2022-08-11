@@ -23,7 +23,7 @@ import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
-import java.util.Deque;
+import java.util.*;
 
 public class PostCreateDatabaseHandler extends DatabaseAbstractHandler {
   public PostCreateDatabaseHandler(final HttpServer httpServer) {

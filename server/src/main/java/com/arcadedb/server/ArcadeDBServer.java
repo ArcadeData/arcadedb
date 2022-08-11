@@ -28,7 +28,6 @@ import com.arcadedb.database.EmbeddedDatabase;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.DatabaseIsClosedException;
-//import com.arcadedb.integration.restore.Restore;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngineManager;
 import com.arcadedb.server.ha.HAServer;
@@ -42,13 +41,11 @@ import com.arcadedb.utility.FileUtils;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.File;
-import java.io.IOException;
-import java.lang.reflect.InvocationTargetException;
+import java.io.*;
+import java.lang.reflect.*;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
-import java.util.logging.Level;
+import java.util.concurrent.*;
+import java.util.logging.*;
 
 public class ArcadeDBServer {
   public enum STATUS {OFFLINE, STARTING, ONLINE, SHUTTING_DOWN}

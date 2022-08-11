@@ -22,8 +22,7 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.HAServer;
 
-import java.util.HashSet;
-import java.util.Set;
+import java.util.*;
 
 public class ReplicaConnectFullResyncResponse extends HAAbstractCommand {
   private long        lastMessageNumber;

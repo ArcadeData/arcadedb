@@ -30,10 +30,9 @@ import com.arcadedb.server.TestCallback;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.Set;
-import java.util.concurrent.Callable;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.logging.Level;
+import java.util.*;
+import java.util.concurrent.atomic.*;
+import java.util.logging.*;
 
 public class ReplicationServerLeaderDownNoTransactionsToForwardIT extends ReplicationServerIT {
   private final AtomicInteger messages = new AtomicInteger();

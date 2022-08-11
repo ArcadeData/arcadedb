@@ -22,14 +22,18 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.http.HttpServer;
-import io.undertow.websockets.core.*;
+import io.undertow.websockets.core.AbstractReceiveListener;
+import io.undertow.websockets.core.BufferedTextMessage;
+import io.undertow.websockets.core.StreamSourceFrameChannel;
+import io.undertow.websockets.core.WebSocketChannel;
+import io.undertow.websockets.core.WebSockets;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-import java.io.IOException;
-import java.util.UUID;
-import java.util.logging.Level;
-import java.util.stream.Collectors;
+import java.io.*;
+import java.util.*;
+import java.util.logging.*;
+import java.util.stream.*;
 
 public class WebSocketReceiveListener extends AbstractReceiveListener {
   private final HttpServer        httpServer;

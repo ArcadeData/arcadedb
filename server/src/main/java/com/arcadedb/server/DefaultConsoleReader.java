@@ -21,9 +21,7 @@ package com.arcadedb.server;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.utility.SoftThread;
 
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStreamReader;
+import java.io.*;
 
 /**
  * Console reader implementation that uses the Java System.in.

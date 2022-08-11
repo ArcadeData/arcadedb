@@ -24,7 +24,7 @@ import com.arcadedb.server.http.HttpSessionManager;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
-import java.io.IOException;
+import java.io.*;
 
 public class PostCommitHandler extends DatabaseAbstractHandler {
 

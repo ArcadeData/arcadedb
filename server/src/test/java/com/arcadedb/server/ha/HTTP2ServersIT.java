@@ -24,10 +24,9 @@ import org.json.JSONObject;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.util.Base64;
-import java.util.logging.Level;
+import java.net.*;
+import java.util.*;
+import java.util.logging.*;
 
 public class HTTP2ServersIT extends BaseGraphServerTest {
   @Override

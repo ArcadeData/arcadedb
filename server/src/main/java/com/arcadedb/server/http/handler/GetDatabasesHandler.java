@@ -24,8 +24,7 @@ import io.undertow.server.HttpServerExchange;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.util.HashSet;
-import java.util.Set;
+import java.util.*;
 
 public class GetDatabasesHandler extends AbstractHandler {
   public GetDatabasesHandler(final HttpServer httpServer) {

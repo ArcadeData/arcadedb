@@ -31,8 +31,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.io.File;
-import java.util.List;
+import java.io.*;
+import java.util.*;
 
 public class ServerDatabaseAlignIT extends BaseGraphServerTest {
   @Override

@@ -18,8 +18,6 @@
  */
 package com.arcadedb.server.ws;
 
-import static org.apache.lucene.store.BufferedIndexInput.BUFFER_SIZE;
-
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.utility.CodeUtils;
@@ -28,20 +26,25 @@ import io.undertow.server.DefaultByteBufferPool;
 import io.undertow.util.StringWriteChannelListener;
 import io.undertow.websockets.client.WebSocketClient;
 import io.undertow.websockets.client.WebSocketClientNegotiation;
-import io.undertow.websockets.core.*;
+import io.undertow.websockets.core.AbstractReceiveListener;
+import io.undertow.websockets.core.BufferedTextMessage;
+import io.undertow.websockets.core.CloseMessage;
+import io.undertow.websockets.core.WebSocketChannel;
+import io.undertow.websockets.core.WebSocketFrameType;
+import io.undertow.websockets.core.WebSockets;
 import org.junit.jupiter.api.Assertions;
 import org.xnio.OptionMap;
 import org.xnio.Options;
 import org.xnio.Xnio;
 import org.xnio.XnioWorker;
 
-import java.io.IOException;
-import java.net.URI;
-import java.net.URISyntaxException;
+import java.io.*;
+import java.net.*;
 import java.util.*;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.TimeUnit;
-import java.util.logging.Level;
+import java.util.concurrent.*;
+import java.util.logging.*;
+
+import static org.apache.lucene.store.BufferedIndexInput.BUFFER_SIZE;
 
 public class WebSocketClientHelper implements AutoCloseable {
   private final XnioWorker                 worker;

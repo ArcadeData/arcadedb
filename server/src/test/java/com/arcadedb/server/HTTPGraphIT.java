@@ -24,13 +24,10 @@ import org.json.JSONObject;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
-import java.io.OutputStreamWriter;
-import java.io.PrintWriter;
-import java.net.HttpURLConnection;
-import java.net.URL;
+import java.io.*;
+import java.net.*;
 import java.util.*;
-import java.util.logging.Level;
+import java.util.logging.*;
 
 public class HTTPGraphIT extends BaseGraphServerTest {
   @Test

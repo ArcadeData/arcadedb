@@ -28,7 +28,7 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.xnio.http.UpgradeFailedException;
 
-import java.util.logging.Level;
+import java.util.logging.*;
 
 public class WebSocketEventBusIT extends StaticBaseServerTest {
   private static final int DELAY_MS = 1000;
