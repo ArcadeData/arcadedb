@@ -28,7 +28,7 @@ import java.util.logging.*;
 public class LogManager {
   private static final LogManager instance = new LogManager();
   private              boolean    debug    = false;
-  private              Logger     logger   = new DefaultLogger();
+  private              Logger     logger;
 
   static class LogContext extends ThreadLocal<String> {
   }
@@ -36,6 +36,7 @@ public class LogManager {
   public static final LogContext CONTEXT_INSTANCE = new LogContext();
 
   protected LogManager() {
+    logger   = new DefaultLogger();
   }
 
   public static LogManager instance() {

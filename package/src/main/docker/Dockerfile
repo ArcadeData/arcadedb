@@ -14,7 +14,7 @@
 # limitations under the License.
 #
 
-FROM azul/zulu-openjdk-alpine:17.0.4
+FROM eclipse-temurin:11
 
 LABEL maintainer="Arcade Data LTD (info@arcadedb.com)"
 
@@ -26,14 +26,17 @@ ENV ARCADEDB_OPTS_MEMORY="-Xms2G -Xmx2G"
 
 ENV ARCADEDB_JMX="-Dcom.sun.management.jmxremote=true -Dcom.sun.management.jmxremote.local.only=false -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.ssl=false -Dcom.sun.management.jmxremote.port=9999 -Dcom.sun.management.jmxremote.rmi.port=9998"
 
-RUN adduser -D -s /bin/sh arcadedb
+RUN useradd -ms /bin/bash arcadedb
 
 WORKDIR /home/arcadedb
 
 COPY --chown=arcadedb:arcadedb ./maven/arcadedb-* ./
 RUN chmod +x ./bin/*.sh
 
+
 VOLUME [ "/home/arcadedb/databases"]
+
+VOLUME [ "/home/arcadedb/log"]
 
 # ArcadeDB HTTP API & STUDIO
 EXPOSE 2480
@@ -57,5 +60,5 @@ EXPOSE 27017
 EXPOSE 9999
 EXPOSE 9998
 
-WORKDIR "/home/arcadedb/bin"
-CMD ["./server.sh"]
+#WORKDIR "/home/arcadedb/bin"
+CMD ["./bin/server.sh"]
