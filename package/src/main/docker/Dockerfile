@@ -14,7 +14,7 @@
 # limitations under the License.
 #
 
-FROM azul/zulu-openjdk-alpine:11.0.16
+FROM azul/zulu-openjdk-alpine:17.0.4
 
 LABEL maintainer="Arcade Data LTD (info@arcadedb.com)"
 
