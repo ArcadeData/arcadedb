@@ -33,10 +33,12 @@ WORKDIR /home/arcadedb
 COPY --chown=arcadedb:arcadedb ./maven/arcadedb-* ./
 RUN chmod +x ./bin/*.sh
 
-
+# Volumes available
 VOLUME [ "/home/arcadedb/databases"]
 
 VOLUME [ "/home/arcadedb/log"]
+
+VOLUME [ "/home/arcadedb/config"]
 
 # ArcadeDB HTTP API & STUDIO
 EXPOSE 2480
@@ -60,5 +62,4 @@ EXPOSE 27017
 EXPOSE 9999
 EXPOSE 9998
 
-#WORKDIR "/home/arcadedb/bin"
 CMD ["./bin/server.sh"]
