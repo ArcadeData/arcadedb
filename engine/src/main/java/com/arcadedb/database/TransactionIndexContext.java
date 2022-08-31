@@ -288,7 +288,7 @@ public class TransactionIndexContext {
             if (otherIndexValues != null)
               for (IndexKey e : otherIndexValues.values()) {
                 if (e.addOperation)
-                  throw new DuplicatedKeyException(indexName, Arrays.toString(keysValues), null);
+                  throw new DuplicatedKeyException(indexName, Arrays.toString(keysValues), e.rid);
               }
           }
         }

@@ -222,33 +222,13 @@ public class RemoteDatabase extends RWLockContext {
   public ResultSet command(final String language, final String command, final Object... args) {
     Map<String, Object> params = mapArgs(args);
 
-    return (ResultSet) databaseCommand("command", language, command, params, true, (connection, response) -> {
-      final ResultSet resultSet = new InternalResultSet();
-
-      final JSONArray resultArray = response.getJSONArray("result");
-      for (int i = 0; i < resultArray.length(); ++i) {
-        final JSONObject result = resultArray.getJSONObject(i);
-        ((InternalResultSet) resultSet).add(new ResultInternal(result.toMap()));
-      }
-
-      return resultSet;
-    });
+    return (ResultSet) databaseCommand("command", language, command, params, true, (connection, response) -> createResultSet(response));
   }
 
   public ResultSet query(final String language, final String command, final Object... args) {
     Map<String, Object> params = mapArgs(args);
 
-    return (ResultSet) databaseCommand("query", language, command, params, false, (connection, response) -> {
-      final ResultSet resultSet = new InternalResultSet();
-
-      final JSONArray resultArray = response.getJSONArray("result");
-      for (int i = 0; i < resultArray.length(); ++i) {
-        final JSONObject result = resultArray.getJSONObject(i);
-        ((InternalResultSet) resultSet).add(new ResultInternal(result.toMap()));
-      }
-
-      return resultSet;
-    });
+    return (ResultSet) databaseCommand("query", language, command, params, false, (connection, response) -> createResultSet(response));
   }
 
   public CONNECTION_STRATEGY getConnectionStrategy() {
@@ -373,7 +353,7 @@ public class RemoteDatabase extends RWLockContext {
                 throw new SchemaException(detail);
               } else
                 // ELSE
-                throw new RemoteException("Error on executing remote operation " + operation + " (cause:" + exception + ")");
+                throw new RemoteException("Error on executing remote operation " + operation + " (cause:" + exception + " detail:" + detail + ")");
             }
 
             final String httpErrorDescription = connection.getResponseMessage();
@@ -568,5 +548,42 @@ public class RemoteDatabase extends RWLockContext {
 
   private String getUrl(final String command, final String databaseName) {
     return protocol + "://" + currentServer + ":" + currentPort + "/api/v" + apiVersion + "/" + command + "/" + databaseName;
+  }
+
+  private ResultSet createResultSet(final JSONObject response) {
+    final ResultSet resultSet = new InternalResultSet();
+
+    final JSONArray resultArray = response.getJSONArray("result");
+    for (int i = 0; i < resultArray.length(); ++i) {
+      final JSONObject result = resultArray.getJSONObject(i);
+
+      final Map<String, Object> map = result.toMap();
+
+      if (result.has("@cat")) {
+        final String rid = result.has("@rid") ? result.getString("@rid") : null;
+        final String cat = result.getString("@cat");
+        switch (cat) {
+        case "d": {
+          final RemoteImmutableDocument record = new RemoteImmutableDocument(this, map);
+          ((InternalResultSet) resultSet).add(new ResultInternal(record));
+          break;
+        }
+        case "v": {
+          final RemoteImmutableVertex record = new RemoteImmutableVertex(this, map);
+          ((InternalResultSet) resultSet).add(new ResultInternal(record));
+          break;
+        }
+        case "e": {
+          final RemoteImmutableEdge record = new RemoteImmutableEdge(this, map);
+          ((InternalResultSet) resultSet).add(new ResultInternal(record));
+          break;
+        }
+        default:
+          ((InternalResultSet) resultSet).add(new ResultInternal(map));
+        }
+      } else
+        ((InternalResultSet) resultSet).add(new ResultInternal(map));
+    }
+    return resultSet;
   }
 }
