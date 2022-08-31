@@ -20,39 +20,22 @@ package com.arcadedb.remote;
 
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
-import com.arcadedb.database.ImmutableDocument;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.JSONSerializer;
 import com.arcadedb.database.MutableDocument;
-import com.arcadedb.database.RID;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import org.json.JSONObject;
 
-import java.util.*;
+public class RemoteMutableDocument extends MutableDocument {
+  protected final RemoteDatabase remoteDatabase;
+  protected final String         typeName;
 
-public class RemoteImmutableDocument extends ImmutableDocument {
-  protected final RemoteDatabase      remoteDatabase;
-  protected final String              typeName;
-  protected final Map<String, Object> map;
-
-  protected RemoteImmutableDocument(final RemoteDatabase remoteDatabase, final Map<String, Object> attributes) {
-    super(null, null, null, null);
-    this.remoteDatabase = remoteDatabase;
-    this.map = new HashMap<>(attributes);
-
-    final String ridAsString = (String) map.remove("@rid");
-    if (ridAsString != null)
-      this.rid = new RID(null, ridAsString);
-    else
-      this.rid = null;
-
-    this.typeName = (String) map.remove("@type");
-  }
-
-  protected RemoteImmutableDocument(final RemoteDatabase remoteDatabase, final Map<String, Object> attributes, final String typeName, final RID rid) {
-    super(null, null, rid, null);
-    this.remoteDatabase = remoteDatabase;
-    this.map = new HashMap<>(attributes);
-    this.typeName = typeName;
+  protected RemoteMutableDocument(final RemoteImmutableDocument source) {
+    super(null, null, source.getIdentity());
+    this.remoteDatabase = source.remoteDatabase;
+    this.typeName = source.typeName;
+    this.map.putAll(source.map);
   }
 
   @Override
@@ -61,22 +44,39 @@ public class RemoteImmutableDocument extends ImmutableDocument {
   }
 
   @Override
-  public synchronized Set<String> getPropertyNames() {
-    return Collections.unmodifiableSet(map.keySet());
+  public synchronized MutableDocument save() {
+    dirty = true;
+    if (rid != null)
+      remoteDatabase.command("sql", "update " + rid + " content " + toJSON());
+    else
+      remoteDatabase.command("sql", "insert into " + typeName + " content " + toJSON());
+    return this;
   }
 
   @Override
-  public synchronized boolean has(final String propertyName) {
-    return map.containsKey(propertyName);
-  }
-
-  public synchronized Object get(final String propertyName) {
-    return map.get(propertyName);
+  public synchronized MutableDocument save(final String bucketName) {
+    dirty = true;
+    if (rid != null)
+      throw new IllegalStateException("Cannot update a record in a custom bucket");
+    remoteDatabase.command("sql", "insert into " + typeName + " bucket " + bucketName + " content " + toJSON());
+    return this;
   }
 
   @Override
-  public synchronized MutableDocument modify() {
-    return new RemoteMutableDocument(this);
+  public void delete() {
+    remoteDatabase.command("sql", "delete from " + rid);
+  }
+
+  @Override
+  public synchronized void reload() {
+    final ResultSet resultSet = remoteDatabase.query("sql", "select from " + rid);
+    if (resultSet.hasNext()) {
+      final Document document = resultSet.next().toElement();
+
+      map.clear();
+      map.putAll(document.toMap());
+      dirty = false;
+    }
   }
 
   @Override
@@ -104,12 +104,16 @@ public class RemoteImmutableDocument extends ImmutableDocument {
   }
 
   @Override
-  public void reload() {
-    throw new UnsupportedOperationException("Unable to reload an immutable document");
+  public synchronized void setBuffer(Binary buffer) {
+    throw new UnsupportedOperationException("Raw buffer API not supported in remote database");
   }
 
   @Override
-  protected boolean checkForLazyLoading() {
-    return false;
+  protected void checkForLazyLoadingProperties() {
+  }
+
+  @Override
+  protected Object convertValueToSchemaType(final String name, final Object value, final DocumentType type) {
+    return value;
   }
 }

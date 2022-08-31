@@ -181,45 +181,44 @@ public class SuffixIdentifier extends SimpleNode {
     return result;
   }
 
-  public Object execute(CommandContext iCurrentRecord) {
-    if (star) {
+  public Object execute(final CommandContext iCurrentRecord) {
+    if (star)
       return null;
-    }
+
     if (identifier != null) {
       String varName = identifier.getStringValue();
-      if (iCurrentRecord != null) {
+      if (iCurrentRecord != null)
         return iCurrentRecord.getVariable(varName);
-      }
+
       return null;
     }
-    if (recordAttribute != null && iCurrentRecord != null) {
+    if (recordAttribute != null && iCurrentRecord != null)
       return iCurrentRecord.getVariable(recordAttribute.name);
-    }
+
     return null;
   }
 
-  public Object execute(Object currentValue, CommandContext ctx) {
-    if (currentValue instanceof Result) {
+  public Object execute(final Object currentValue, final CommandContext ctx) {
+    if (currentValue instanceof Result)
       return execute((Result) currentValue, ctx);
-    }
-    if (currentValue instanceof Identifiable) {
+
+    if (currentValue instanceof Identifiable)
       return execute((Identifiable) currentValue, ctx);
-    }
-    if (currentValue instanceof Map) {
+
+    if (currentValue instanceof Map)
       return execute((Map) currentValue, ctx);
-    }
-    if (currentValue instanceof CommandContext) {
+
+    if (currentValue instanceof CommandContext)
       return execute((CommandContext) currentValue);
-    }
-    if (currentValue instanceof Iterable) {
+
+    if (currentValue instanceof Iterable)
       return execute((Iterable) currentValue, ctx);
-    }
-    if (currentValue instanceof Iterator) {
+
+    if (currentValue instanceof Iterator)
       return execute((Iterator) currentValue, ctx);
-    }
-    if (currentValue == null) {
+
+    if (currentValue == null)
       return execute((Result) null, ctx);
-    }
 
     return null;
     // TODO other cases?
@@ -229,10 +228,10 @@ public class SuffixIdentifier extends SimpleNode {
     return identifier != null;
   }
 
-  public boolean needsAliases(Set<String> aliases) {
-    if (identifier != null) {
+  public boolean needsAliases(final Set<String> aliases) {
+    if (identifier != null)
       return aliases.contains(identifier.getStringValue());
-    }
+
     if (recordAttribute != null) {
       for (String s : aliases) {
         if (s.equalsIgnoreCase(recordAttribute.name)) {
@@ -251,7 +250,7 @@ public class SuffixIdentifier extends SimpleNode {
     return false;
   }
 
-  public SuffixIdentifier splitForAggregation(AggregateProjectionSplit aggregateProj) {
+  public SuffixIdentifier splitForAggregation(final AggregateProjectionSplit aggregateProj) {
     return this;
   }
 
@@ -259,16 +258,16 @@ public class SuffixIdentifier extends SimpleNode {
     return identifier != null && identifier.internalAlias;
   }
 
-  public void aggregate(Object value, CommandContext ctx) {
+  public void aggregate(final Object value, final CommandContext ctx) {
     throw new UnsupportedOperationException("this operation does not support plain aggregation: " + this);
   }
 
-  public AggregationContext getAggregationContext(CommandContext ctx) {
+  public AggregationContext getAggregationContext(final CommandContext ctx) {
     throw new UnsupportedOperationException("this operation does not support plain aggregation: " + this);
   }
 
   public SuffixIdentifier copy() {
-    SuffixIdentifier result = new SuffixIdentifier(-1);
+    final SuffixIdentifier result = new SuffixIdentifier(-1);
     result.identifier = identifier == null ? null : identifier.copy();
     result.recordAttribute = recordAttribute == null ? null : recordAttribute.copy();
     result.star = star;
@@ -276,19 +275,19 @@ public class SuffixIdentifier extends SimpleNode {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    SuffixIdentifier that = (SuffixIdentifier) o;
+    final SuffixIdentifier that = (SuffixIdentifier) o;
 
     if (star != that.star)
       return false;
-    if (identifier != null ? !identifier.equals(that.identifier) : that.identifier != null)
+    if (!Objects.equals(identifier, that.identifier))
       return false;
-    return recordAttribute != null ? recordAttribute.equals(that.recordAttribute) : that.recordAttribute == null;
+    return Objects.equals(recordAttribute, that.recordAttribute);
   }
 
   @Override
@@ -299,72 +298,68 @@ public class SuffixIdentifier extends SimpleNode {
     return result;
   }
 
-  public void extractSubQueries(SubQueryCollector collector) {
-
+  public void extractSubQueries(final SubQueryCollector collector) {
   }
 
   public boolean refersToParent() {
     return identifier != null && identifier.getStringValue().equalsIgnoreCase("$parent");
   }
 
-  public void setValue(Object target, Object value, CommandContext ctx) {
-    if (target instanceof Result) {
+  public void setValue(final Object target, final Object value, final CommandContext ctx) {
+    if (target instanceof Result)
       setValue((Result) target, value, ctx);
-    } else if (target instanceof Identifiable) {
+    else if (target instanceof Identifiable)
       setValue((Identifiable) target, value, ctx);
-    } else if (target instanceof Map) {
+    else if (target instanceof Map)
       setValue((Map) target, value, ctx);
-    }
   }
 
-  public void setValue(Identifiable target, Object value, CommandContext ctx) {
-    if (target == null) {
+  public void setValue(final Identifiable target, final Object value, final CommandContext ctx) {
+    if (target == null)
       return;
-    }
+
     MutableDocument doc = null;
-    if (target instanceof MutableDocument) {
+    if (target instanceof MutableDocument)
       doc = (MutableDocument) target;
-    } else {
+    else
       doc = target.getRecord().asDocument().modify();
-    }
-    if (doc != null) {
+
+    if (doc != null)
       doc.set(identifier.getStringValue(), value);
-    } else {
+    else
       throw new CommandExecutionException("Cannot set record attribute " + recordAttribute + " on existing document");
-    }
   }
 
-  public void setValue(Map target, Object value, CommandContext ctx) {
-    if (target == null) {
+  public void setValue(final Map target, final Object value, final CommandContext ctx) {
+    if (target == null)
       return;
-    }
-    if (identifier != null) {
+
+    if (identifier != null)
       target.put(identifier.getStringValue(), value);
-    } else if (recordAttribute != null) {
+    else if (recordAttribute != null)
       target.put(recordAttribute.getName(), value);
-    }
   }
 
-  public void setValue(Result target, Object value, CommandContext ctx) {
-    if (target == null) {
+  public void setValue(final Result target, final Object value, final CommandContext ctx) {
+    if (target == null)
       return;
-    }
+
     if (target instanceof ResultInternal) {
-      ResultInternal intTarget = (ResultInternal) target;
-      if (identifier != null) {
+      final ResultInternal intTarget = (ResultInternal) target;
+      if (identifier != null)
         intTarget.setProperty(identifier.getStringValue(), value);
-      } else if (recordAttribute != null) {
+      else if (recordAttribute != null)
         intTarget.setProperty(recordAttribute.getName(), value);
-      }
+
     } else {
       throw new CommandExecutionException("Cannot set property on unmodifiable target: " + target);
     }
   }
 
-  public void applyRemove(Object currentValue, CommandContext ctx) {
-    if (currentValue == null) {
+  public void applyRemove(final Object currentValue, final CommandContext ctx) {
+    if (currentValue == null)
       return;
-    }
+
     if (identifier != null) {
       if (currentValue instanceof ResultInternal) {
         ((ResultInternal) currentValue).removeProperty(identifier.getStringValue());
@@ -378,18 +373,18 @@ public class SuffixIdentifier extends SimpleNode {
   }
 
   public Result serialize() {
-    ResultInternal result = new ResultInternal();
-    if (identifier != null) {
+    final ResultInternal result = new ResultInternal();
+    if (identifier != null)
       result.setProperty("identifier", identifier.serialize());
-    }
-    if (recordAttribute != null) {
+
+    if (recordAttribute != null)
       result.setProperty("recordAttribute", recordAttribute.serialize());
-    }
+
     result.setProperty("star", star);
     return result;
   }
 
-  public void deserialize(Result fromResult) {
+  public void deserialize(final Result fromResult) {
     if (fromResult.getProperty("identifier") != null) {
       identifier = new Identifier(-1);
       Identifier.deserialize(fromResult.getProperty("identifier"));
@@ -401,17 +396,17 @@ public class SuffixIdentifier extends SimpleNode {
     star = fromResult.getProperty("star");
   }
 
-  public boolean isDefinedFor(Result currentRecord) {
-    if (identifier != null) {
+  public boolean isDefinedFor(final Result currentRecord) {
+    if (identifier != null)
       return currentRecord.hasProperty(identifier.getStringValue());
-    }
+
     return true;
   }
 
-  public boolean isDefinedFor(Record currentRecord) {
-    if (identifier != null) {
+  public boolean isDefinedFor(final Record currentRecord) {
+    if (identifier != null)
       return ((Document) currentRecord.getRecord()).getPropertyNames().contains(identifier.getStringValue());
-    }
+
     return true;
   }
 

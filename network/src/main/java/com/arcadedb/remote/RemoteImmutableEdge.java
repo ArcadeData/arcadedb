@@ -66,7 +66,12 @@ public class RemoteImmutableEdge extends RemoteImmutableDocument implements Edge
 
   @Override
   public synchronized MutableEdge modify() {
-    throw new UnsupportedOperationException("Modifying an edge is not supported from remote database");
+    return new RemoteMutableEdge(this);
+  }
+
+  @Override
+  public void delete() {
+    remoteDatabase.command("sql", "delete from " + rid);
   }
 
   private Vertex loadVertex(final RID rid) {

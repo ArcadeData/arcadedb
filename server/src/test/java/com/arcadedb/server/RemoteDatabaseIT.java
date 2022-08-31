@@ -18,7 +18,12 @@
  */
 package com.arcadedb.server;
 
+import com.arcadedb.database.Document;
+import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -44,7 +49,7 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
         Assertions.assertTrue(result.hasNext());
         Result rec = result.next();
         Assertions.assertTrue(rec.toJSON().contains("Elon"));
-        String rid = rec.getProperty("@rid");
+        RID rid = rec.toElement().getIdentity();
 
         // RETRIEVE DOCUMENT WITH QUERY
         result = database.query("SQL", "select from Person where name = 'Elon'");
@@ -55,7 +60,7 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
         Assertions.assertTrue(result.hasNext());
         Assertions.assertEquals(1, new JSONObject(result.next().toJSON()).getInt("count"));
 
-        JSONObject record = database.lookupByRID(rid);
+        Document record = (Document) database.lookupByRID(rid);
         Assertions.assertNotNull(result);
         Assertions.assertEquals("Musk", record.getString("lastName"));
       });
@@ -85,7 +90,7 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
         Assertions.assertTrue(result.hasNext());
         Result rec = result.next();
         Assertions.assertTrue(rec.toJSON().contains("Elon"));
-        final String rid1 = rec.getProperty("@rid");
+        final RID rid1 = rec.getIdentity().get();
 
         // CREATE VERTEX 2
         result = database.command("SQL", "insert into Character set name = 'Kimbal'");
@@ -93,7 +98,7 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
         Assertions.assertTrue(result.hasNext());
         rec = result.next();
         Assertions.assertTrue(rec.toJSON().contains("Kimbal"));
-        final String rid2 = rec.getProperty("@rid");
+        final RID rid2 = rec.getIdentity().get();
 
         // RETRIEVE VERTEX WITH QUERY
         result = database.query("SQL", "select from Character where name = 'Elon'");
@@ -111,18 +116,22 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
         Edge edge = result.next().getEdge().get();
 
         Assertions.assertEquals(EDGE1_TYPE_NAME, edge.getTypeName());
-        Assertions.assertEquals(rid1, edge.getOut().toString());
-        Assertions.assertEquals(rid2, edge.getIn().toString());
+        Assertions.assertEquals(rid1, edge.getOut());
+        Assertions.assertEquals(rid2, edge.getIn());
 
-        JSONObject record = database.lookupByRID(rid1);
+        Document record = (Document) database.lookupByRID(rid1);
         Assertions.assertNotNull(record);
         Assertions.assertEquals("Elon", record.getString("name"));
         Assertions.assertEquals("Musk", record.getString("lastName"));
 
-        record = database.lookupByRID(rid2);
+        record = (Document) database.lookupByRID(rid2);
         Assertions.assertNotNull(record);
         Assertions.assertEquals("Kimbal", record.getString("name"));
         Assertions.assertEquals("Musk", record.getString("lastName"));
+
+        final MutableDocument mutable = record.modify();
+        mutable.set("extra", 100);
+        mutable.save();
       });
 
       // RETRIEVE VERTEX WITH QUERY AFTER COMMIT
@@ -133,6 +142,7 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
 
       Vertex kimbal = record.getVertex().get();
       Assertions.assertEquals("Musk", kimbal.getString("lastName"));
+      Assertions.assertEquals(100, kimbal.getInteger("extra"));
 
       final Iterator<Vertex> connected = kimbal.getVertices(Vertex.DIRECTION.IN).iterator();
       Assertions.assertTrue(connected.hasNext());
@@ -161,13 +171,34 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
       Assertions.assertTrue(elon.isConnectedTo(kimbal.getIdentity(), Vertex.DIRECTION.OUT));
       Assertions.assertFalse(elon.isConnectedTo(kimbal.getIdentity(), Vertex.DIRECTION.IN));
 
-      elon.newEdge(EDGE2_TYPE_NAME, kimbal, true, "since", "today");
+      final MutableEdge newEdge = elon.newEdge(EDGE2_TYPE_NAME, kimbal, true, "since", "today");
+      Assertions.assertEquals(newEdge.getOut(), elon.getIdentity());
+      Assertions.assertEquals(newEdge.getOutVertex(), elon);
+      Assertions.assertEquals(newEdge.getIn(), kimbal.getIdentity());
+      Assertions.assertEquals(newEdge.getInVertex(), kimbal);
+
+      newEdge.set("updated", true);
+      newEdge.save();
 
       final Edge edge = elon.getEdges(Vertex.DIRECTION.OUT, EDGE2_TYPE_NAME).iterator().next();
       Assertions.assertEquals(edge.getOut(), elon.getIdentity());
       Assertions.assertEquals(edge.getOutVertex(), elon);
       Assertions.assertEquals(edge.getIn(), kimbal.getIdentity());
       Assertions.assertEquals(edge.getInVertex(), kimbal);
+      Assertions.assertTrue(edge.getBoolean("updated"));
+
+      // DELETE THE EDGE
+      edge.delete();
+      Assertions.assertFalse(elon.getEdges(Vertex.DIRECTION.OUT, EDGE2_TYPE_NAME).iterator().hasNext());
+
+      // DELETE ONE VERTEX
+      elon.delete();
+      try {
+        database.lookupByRID(elon.getIdentity());
+        Assertions.fail();
+      } catch (RecordNotFoundException e) {
+        // EXPECTED
+      }
     });
   }
 }

@@ -126,9 +126,7 @@ public class RemoteImmutableVertex extends RemoteImmutableDocument implements Ve
     }
     final ResultSet resultSet = remoteDatabase.command("sql", query);
 
-    // TEMPORARY RETURN NULL BECAUSE MUTABLE EDGE CLASS IS NOT SUPPORTED YET FROM REMOTE DATABASE
-    // resultSet.next().getEdge().get();
-    return null;
+    return new RemoteMutableEdge((RemoteImmutableEdge) resultSet.next().getEdge().get());
   }
 
   /**
@@ -141,7 +139,11 @@ public class RemoteImmutableVertex extends RemoteImmutableDocument implements Ve
 
   @Override
   public synchronized MutableVertex modify() {
-    throw new UnsupportedOperationException("Modifying a vertex is not supported from remote database");
+    return new RemoteMutableVertex(this);
+  }
+  @Override
+  public void delete() {
+    remoteDatabase.command("sql", "delete from " + rid);
   }
 
   private ResultSet fetch(final String suffix, final DIRECTION direction, final String[] types) {

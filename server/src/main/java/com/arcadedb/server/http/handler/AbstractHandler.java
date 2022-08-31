@@ -25,6 +25,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
@@ -137,6 +138,11 @@ public abstract class AbstractHandler implements HttpHandler {
         exchange.setStatusCode(503);
       exchange.getResponseSender()
           .send(error2json("Found duplicate key in index", e.getMessage(), e, e.getIndexName() + "|" + e.getKeys() + "|" + e.getCurrentIndexedRID(), null));
+    } catch (RecordNotFoundException e) {
+      LogManager.instance().log(this, getErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
+      if (!exchange.isResponseStarted())
+        exchange.setStatusCode(404);
+      exchange.getResponseSender().send(error2json("Record not found", e.getMessage(), e, null, null));
     } catch (CommandExecutionException | CommandSQLParsingException e) {
       Throwable realException = e;
       if (e.getCause() != null)

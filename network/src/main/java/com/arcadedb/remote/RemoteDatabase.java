@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
 import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DatabaseOperationException;
@@ -37,6 +38,7 @@ import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.network.http.HttpUtils;
 import com.arcadedb.query.sql.executor.InternalResultSet;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
@@ -147,7 +149,11 @@ public class RemoteDatabase extends RWLockContext {
         // RETRY
         lastException = e;
       } catch (Exception e) {
-        rollback();
+        try {
+          rollback();
+        } catch (Throwable t) {
+          // IGNORE IT
+        }
         throw e;
       }
     }
@@ -199,21 +205,23 @@ public class RemoteDatabase extends RWLockContext {
     }
   }
 
-  public JSONObject lookupByRID(final String rid) {
+  public Record lookupByRID(final RID rid) {
     if (rid == null)
       throw new IllegalArgumentException("Record is null");
 
     try {
-      final HttpURLConnection connection = createConnection("GET", getUrl("document", databaseName + "/" + rid.substring(1)));
+      final HttpURLConnection connection = createConnection("GET", getUrl("document", databaseName + "/" + rid.getBucketId() + ":" + rid.getPosition()));
       connection.connect();
       if (connection.getResponseCode() == 404)
-        throw new RecordNotFoundException("Record " + rid + " not found", new RID(null, rid));
+        throw new RecordNotFoundException("Record " + rid + " not found", rid);
 
       final JSONObject response = new JSONObject(FileUtils.readStreamAsString(connection.getInputStream(), charset));
       if (response.has("result"))
-        return response.getJSONObject("result");
+        return json2Record(response.getJSONObject("result"));
       return null;
 
+    } catch (RecordNotFoundException e) {
+      throw e;
     } catch (Exception e) {
       throw new DatabaseOperationException("Error on loading record " + rid, e);
     }
@@ -550,40 +558,41 @@ public class RemoteDatabase extends RWLockContext {
     return protocol + "://" + currentServer + ":" + currentPort + "/api/v" + apiVersion + "/" + command + "/" + databaseName;
   }
 
-  private ResultSet createResultSet(final JSONObject response) {
+  protected ResultSet createResultSet(final JSONObject response) {
     final ResultSet resultSet = new InternalResultSet();
 
     final JSONArray resultArray = response.getJSONArray("result");
     for (int i = 0; i < resultArray.length(); ++i) {
       final JSONObject result = resultArray.getJSONObject(i);
-
-      final Map<String, Object> map = result.toMap();
-
-      if (result.has("@cat")) {
-        final String rid = result.has("@rid") ? result.getString("@rid") : null;
-        final String cat = result.getString("@cat");
-        switch (cat) {
-        case "d": {
-          final RemoteImmutableDocument record = new RemoteImmutableDocument(this, map);
-          ((InternalResultSet) resultSet).add(new ResultInternal(record));
-          break;
-        }
-        case "v": {
-          final RemoteImmutableVertex record = new RemoteImmutableVertex(this, map);
-          ((InternalResultSet) resultSet).add(new ResultInternal(record));
-          break;
-        }
-        case "e": {
-          final RemoteImmutableEdge record = new RemoteImmutableEdge(this, map);
-          ((InternalResultSet) resultSet).add(new ResultInternal(record));
-          break;
-        }
-        default:
-          ((InternalResultSet) resultSet).add(new ResultInternal(map));
-        }
-      } else
-        ((InternalResultSet) resultSet).add(new ResultInternal(map));
+      ((InternalResultSet) resultSet).add(json2Result(result));
     }
     return resultSet;
+  }
+
+  protected Result json2Result(final JSONObject result) {
+    final Record record = json2Record(result);
+    if (record == null)
+      return new ResultInternal(result.toMap());
+
+    return new ResultInternal(record);
+  }
+
+  protected Record json2Record(final JSONObject result) {
+    final Map<String, Object> map = result.toMap();
+
+    if (map.containsKey("@cat")) {
+      final String cat = result.getString("@cat");
+      switch (cat) {
+      case "d":
+        return new RemoteImmutableDocument(this, map);
+
+      case "v":
+        return new RemoteImmutableVertex(this, map);
+
+      case "e":
+        return new RemoteImmutableEdge(this, map);
+      }
+    }
+    return null;
   }
 }

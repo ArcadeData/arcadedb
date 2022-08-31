@@ -33,7 +33,7 @@ import java.util.*;
  * @author Luca Garulli
  */
 public class MutableDocument extends BaseDocument implements RecordInternal {
-  private   Map<String, Object> map;
+  protected Map<String, Object> map;
   protected boolean             dirty = false;
 
   protected MutableDocument(final Database database, final DocumentType type, final RID rid) {
@@ -70,8 +70,13 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
 
   public synchronized MutableDocument fromMap(final Map<String, Object> map) {
     this.map = new LinkedHashMap<>(map.size());
-    for (Map.Entry<String, Object> entry : map.entrySet())
-      this.map.put(entry.getKey(), convertValueToSchemaType(entry.getKey(), entry.getValue(), type));
+    for (Map.Entry<String, Object> entry : map.entrySet()) {
+      final String key = entry.getKey();
+      if (key.startsWith("@"))
+        // SKIP METADATA
+        continue;
+      this.map.put(key, convertValueToSchemaType(key, entry.getValue(), type));
+    }
 
     dirty = true;
     return this;
@@ -343,7 +348,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     }
   }
 
-  private Object convertValueToSchemaType(final String name, final Object value, final DocumentType type) {
+  protected Object convertValueToSchemaType(final String name, final Object value, final DocumentType type) {
     if (value == null || value == JSONObject.NULL)
       return null;
 

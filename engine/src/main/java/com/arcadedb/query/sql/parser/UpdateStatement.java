@@ -140,7 +140,7 @@ public class UpdateStatement extends Statement {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
@@ -154,17 +154,17 @@ public class UpdateStatement extends Statement {
       return false;
     if (returnAfter != that.returnAfter)
       return false;
-    if (target != null ? !target.equals(that.target) : that.target != null)
+    if (!Objects.equals(target, that.target))
       return false;
-    if (operations != null ? !operations.equals(that.operations) : that.operations != null)
+    if (!Objects.equals(operations, that.operations))
       return false;
-    if (returnProjection != null ? !returnProjection.equals(that.returnProjection) : that.returnProjection != null)
+    if (!Objects.equals(returnProjection, that.returnProjection))
       return false;
-    if (whereClause != null ? !whereClause.equals(that.whereClause) : that.whereClause != null)
+    if (!Objects.equals(whereClause, that.whereClause))
       return false;
-    if (limit != null ? !limit.equals(that.limit) : that.limit != null)
+    if (!Objects.equals(limit, that.limit))
       return false;
-    return timeout != null ? timeout.equals(that.timeout) : that.timeout == null;
+    return Objects.equals(timeout, that.timeout);
   }
 
   @Override

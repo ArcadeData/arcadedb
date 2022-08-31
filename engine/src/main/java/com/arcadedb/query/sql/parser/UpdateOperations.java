@@ -32,27 +32,22 @@ public class UpdateOperations extends SimpleNode {
   public static final int TYPE_ADD       = 5;
   public static final int TYPE_REMOVE    = 6;
 
-  protected int type;
-
-  protected List<UpdateItem> updateItems = new ArrayList<UpdateItem>();
-
-  protected List<UpdatePutItem> updatePutItems = new ArrayList<UpdatePutItem>();
-
-  protected Json json;
-
+  protected int                       type;
+  protected List<UpdateItem>          updateItems          = new ArrayList<UpdateItem>();
+  protected List<UpdatePutItem>       updatePutItems       = new ArrayList<UpdatePutItem>();
+  protected Json                      json;
   protected List<UpdateIncrementItem> updateIncrementItems = new ArrayList<UpdateIncrementItem>();
+  protected List<UpdateRemoveItem>    updateRemoveItems    = new ArrayList<UpdateRemoveItem>();
 
-  protected List<UpdateRemoveItem> updateRemoveItems = new ArrayList<UpdateRemoveItem>();
-
-  public UpdateOperations(int id) {
+  public UpdateOperations(final int id) {
     super(id);
   }
 
-  public UpdateOperations(SqlParser p, int id) {
+  public UpdateOperations(final SqlParser p, final int id) {
     super(p, id);
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     boolean first = true;
     switch (type) {
     case TYPE_SET:
@@ -118,8 +113,7 @@ public class UpdateOperations extends SimpleNode {
   }
 
   public UpdateOperations copy() {
-
-    UpdateOperations result = new UpdateOperations(-1);
+    final UpdateOperations result = new UpdateOperations(-1);
     result.type = type;
     result.updateItems = updateItems == null ? null : updateItems.stream().map(x -> x.copy()).collect(Collectors.toList());
     result.updatePutItems = updatePutItems == null ? null : updatePutItems.stream().map(x -> x.copy()).collect(Collectors.toList());
@@ -130,25 +124,25 @@ public class UpdateOperations extends SimpleNode {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    UpdateOperations that = (UpdateOperations) o;
+    final UpdateOperations that = (UpdateOperations) o;
 
     if (type != that.type)
       return false;
-    if (updateItems != null ? !updateItems.equals(that.updateItems) : that.updateItems != null)
+    if (!Objects.equals(updateItems, that.updateItems))
       return false;
-    if (updatePutItems != null ? !updatePutItems.equals(that.updatePutItems) : that.updatePutItems != null)
+    if (!Objects.equals(updatePutItems, that.updatePutItems))
       return false;
-    if (json != null ? !json.equals(that.json) : that.json != null)
+    if (!Objects.equals(json, that.json))
       return false;
-    if (updateIncrementItems != null ? !updateIncrementItems.equals(that.updateIncrementItems) : that.updateIncrementItems != null)
+    if (!Objects.equals(updateIncrementItems, that.updateIncrementItems))
       return false;
-    return updateRemoveItems != null ? updateRemoveItems.equals(that.updateRemoveItems) : that.updateRemoveItems == null;
+    return Objects.equals(updateRemoveItems, that.updateRemoveItems);
   }
 
   @Override

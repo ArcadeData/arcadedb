@@ -37,8 +37,8 @@ import java.util.*;
  * @see ImmutableEdge
  */
 public class MutableEdge extends MutableDocument implements Edge {
-  private RID out;
-  private RID in;
+  protected RID out;
+  protected RID in;
 
   public MutableEdge(final Database graph, final DocumentType type, final RID out, RID in) {
     super(graph, type, null);
@@ -184,7 +184,7 @@ public class MutableEdge extends MutableDocument implements Edge {
     }
   }
 
-  private void checkForUpgradeLightWeight() {
+  protected void checkForUpgradeLightWeight() {
     if (rid != null && rid.getPosition() < 0) {
       // REMOVE THE TEMPORARY RID SO IT WILL BE CREATED AT SAVE TIME
       rid = null;

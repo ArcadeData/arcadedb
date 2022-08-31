@@ -34,19 +34,19 @@ public class UpdateContentStep extends AbstractExecutionStep {
   private Json           json;
   private InputParameter inputParameter;
 
-  public UpdateContentStep(Json json, CommandContext ctx, boolean profilingEnabled) {
+  public UpdateContentStep(final Json json, final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
     this.json = json;
   }
 
-  public UpdateContentStep(InputParameter inputParameter, CommandContext ctx, boolean profilingEnabled) {
+  public UpdateContentStep(final InputParameter inputParameter, final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
     this.inputParameter = inputParameter;
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    ResultSet upstream = getPrev().get().syncPull(ctx, nRecords);
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
+    final ResultSet upstream = getPrev().get().syncPull(ctx, nRecords);
     return new ResultSet() {
       @Override
       public boolean hasNext() {
@@ -55,14 +55,14 @@ public class UpdateContentStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        Result result = upstream.next();
+        final Result result = upstream.next();
         if (result instanceof ResultInternal) {
-          if (!(result.getElement().get() instanceof Document)) {
+          if (!(result.getElement().get() instanceof Document))
             ((ResultInternal) result).setElement((Document) result.getElement().get().getRecord());
-          }
-          if (!(result.getElement().get() instanceof Document)) {
+
+          if (!(result.getElement().get() instanceof Document))
             return result;
-          }
+
           handleContent(result.getElement().get(), ctx);
         }
         return result;
@@ -85,7 +85,7 @@ public class UpdateContentStep extends AbstractExecutionStep {
     };
   }
 
-  private boolean handleContent(Document record, CommandContext ctx) {
+  private boolean handleContent(final Document record, final CommandContext ctx) {
     // REPLACE ALL THE CONTENT
     final MutableDocument doc = record.modify();
 
@@ -106,9 +106,9 @@ public class UpdateContentStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    StringBuilder result = new StringBuilder();
+  public String prettyPrint(final int depth,final  int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
+    final StringBuilder result = new StringBuilder();
     result.append(spaces);
     result.append("+ UPDATE CONTENT\n");
     result.append(spaces);
