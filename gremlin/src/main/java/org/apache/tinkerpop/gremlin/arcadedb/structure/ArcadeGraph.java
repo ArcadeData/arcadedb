@@ -158,11 +158,13 @@ public class ArcadeGraph implements Graph, Closeable {
       throw Vertex.Exceptions.userSuppliedIdsNotSupported();
     this.tx().readWrite();
 
-    String label = ElementHelper.getLabelValue(keyValues).orElse(Vertex.DEFAULT_LABEL);
+    final String label = ElementHelper.getLabelValue(keyValues).orElse(Vertex.DEFAULT_LABEL);
 
-    if (!this.database.getSchema().existsType(label)) {
+    if (!this.database.getSchema().existsType(label))
       this.database.getSchema().createVertexType(label);
-    }
+    else if (!(this.database.getSchema().getType(label) instanceof VertexType))
+      throw new IllegalArgumentException("Type '" + label + "' is not a vertex");
+
     final MutableVertex modifiableVertex = this.database.newVertex(label);
     final ArcadeVertex vertex = new ArcadeVertex(this, modifiableVertex);
     ElementHelper.attachProperties(vertex, keyValues);
@@ -171,7 +173,7 @@ public class ArcadeGraph implements Graph, Closeable {
   }
 
   @Override
-  public <C extends GraphComputer> C compute(Class<C> graphComputerClass) throws IllegalArgumentException {
+  public <C extends GraphComputer> C compute(final Class<C> graphComputerClass) throws IllegalArgumentException {
     throw Graph.Exceptions.graphComputerNotSupported();
   }
 
@@ -208,9 +210,7 @@ public class ArcadeGraph implements Graph, Closeable {
       query.append("]");
 
       final ResultSet resultset = this.database.query("sql", query.toString());
-      return resultset.stream()
-              .map(result -> (Vertex) new ArcadeVertex(this, (com.arcadedb.graph.Vertex) (result.toElement())))
-              .iterator();
+      return resultset.stream().map(result -> (Vertex) new ArcadeVertex(this, (com.arcadedb.graph.Vertex) (result.toElement()))).iterator();
     }
 
     final List<Vertex> resultSet = new ArrayList<>(vertexIds.length);
@@ -271,9 +271,7 @@ public class ArcadeGraph implements Graph, Closeable {
       query.append("]");
 
       final ResultSet resultSet = this.database.query("sql", query.toString());
-      return resultSet.stream()
-              .map(result -> (Edge) new ArcadeEdge(this, (com.arcadedb.graph.Edge) result.toElement()))
-              .iterator();
+      return resultSet.stream().map(result -> (Edge) new ArcadeEdge(this, (com.arcadedb.graph.Edge) result.toElement())).iterator();
 
     }
 

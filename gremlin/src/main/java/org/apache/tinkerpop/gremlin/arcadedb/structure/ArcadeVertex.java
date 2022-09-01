@@ -20,6 +20,7 @@ package org.apache.tinkerpop.gremlin.arcadedb.structure;
 
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.schema.EdgeType;
 import org.apache.tinkerpop.gremlin.structure.Direction;
 import org.apache.tinkerpop.gremlin.structure.Edge;
 import org.apache.tinkerpop.gremlin.structure.Graph;
@@ -54,9 +55,10 @@ public class ArcadeVertex extends ArcadeElement<com.arcadedb.graph.Vertex> imple
 
     //ElementHelper.getLabelValue(keyValues).orElse(Vertex.DEFAULT_LABEL);
 
-    if (!this.graph.getDatabase().getSchema().existsType(label)) {
+    if (!this.graph.getDatabase().getSchema().existsType(label))
       this.graph.getDatabase().getSchema().createEdgeType(label);
-    }
+    else if (!(this.graph.getDatabase().getSchema().getType(label) instanceof EdgeType))
+      throw new IllegalArgumentException("Type '" + label + "' is not a edge");
 
     com.arcadedb.graph.Vertex baseElement = getBaseElement();
 
