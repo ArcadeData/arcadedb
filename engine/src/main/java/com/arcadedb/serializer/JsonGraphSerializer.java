@@ -19,6 +19,7 @@
 package com.arcadedb.serializer;
 
 import com.arcadedb.database.Document;
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import org.json.JSONArray;
@@ -50,7 +51,9 @@ public class JsonGraphSerializer extends JsonSerializer {
     object.clear();
     object.put("p", properties);
 
-    object.put("r", document.getIdentity().toString());
+    final RID rid = document.getIdentity();
+    if (rid != null)
+      object.put("r", rid.toString());
     object.put("t", document.getTypeName());
 
     for (String p : document.getPropertyNames()) {
