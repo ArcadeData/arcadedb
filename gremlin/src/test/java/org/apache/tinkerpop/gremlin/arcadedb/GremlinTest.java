@@ -85,6 +85,33 @@ public class GremlinTest {
     }
   }
 
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/500
+   */
+  @Test
+  public void testGremlinIssue500() throws ExecutionException, InterruptedException {
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testgremlin");
+    try {
+
+      graph.addVertex("vl1").property("vp1", 1);
+      graph.addVertex("vl2").property("vp1", 1);
+      graph.addVertex("vl3").property("vp1", 1);
+
+      ResultSet result = graph.gremlin("g.V().has('vl1','vp1',lt(2)).count()").execute();
+      Assertions.assertTrue(result.hasNext());
+      Result row = result.next();
+      Assertions.assertEquals(1L, (Long) row.getProperty("result"));
+
+      result = graph.gremlin("g.V().has('vl1','vp1',lt(2)).hasLabel('vl1','vl2','vl3').count()").execute();
+      Assertions.assertTrue(result.hasNext());
+      row = result.next();
+      Assertions.assertEquals(1L, (Long) row.getProperty("result"));
+
+    } finally {
+      graph.drop();
+    }
+  }
+
   @Test
   public void testGremlinFromDatabase() {
     final Database database = new DatabaseFactory("./target/testgremlin").create();

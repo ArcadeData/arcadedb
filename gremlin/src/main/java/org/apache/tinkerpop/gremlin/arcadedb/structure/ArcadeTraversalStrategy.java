@@ -61,21 +61,29 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
 
           String typeNameToMatch = null;
 
+          final Set<HasContainer> containersToRemove = new HashSet<>();
+
           int totalLabels = 0;
           for (HasContainer c : hasContainers) {
             final String key = c.getKey();
             if (BinaryComparator.equalsString(key, LABEL_KEY)) {
               ++totalLabels;
 
-              if (totalLabels > 1)
+              if (totalLabels > 1) {
+                typeNameToMatch = null;
+                containersToRemove.clear();
                 break;
+              }
 
               if (c.getBiPredicate().equals(Compare.eq) && c.getValue() != null) {
                 typeNameToMatch = c.getValue().toString();
-                ((HasStep<?>) step).removeHasContainer(c);
+                containersToRemove.add(c);
               }
             }
           }
+
+          for (HasContainer c : containersToRemove)
+            ((HasStep<?>) step).removeHasContainer(c);
 
           if (totalLabels == 1 && typeNameToMatch != null) {
 

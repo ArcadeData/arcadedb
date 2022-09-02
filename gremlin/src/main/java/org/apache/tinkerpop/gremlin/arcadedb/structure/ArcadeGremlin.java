@@ -67,8 +67,7 @@ public class ArcadeGremlin extends ArcadeQuery {
           return new ResultInternal(((ArcadeElement) next).getBaseElement());
         else if (next instanceof Map)
           return new ResultInternal((Map<String, Object>) next);
-
-        throw new IllegalArgumentException("Result of type '" + next.getClass() + "' is not supported");
+        return new ResultInternal(Map.of("result", next));
       }
     });
   }
