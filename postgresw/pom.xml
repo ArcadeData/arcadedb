@@ -33,7 +33,7 @@
     <packaging>jar</packaging>
 
     <properties>
-        <postgres.version>42.4.1</postgres.version>
+        <postgres.version>42.5.0</postgres.version>
     </properties>
 
     <dependencies>
