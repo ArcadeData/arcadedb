@@ -30,7 +30,7 @@ public abstract class ArcadeContainerTemplate {
         ARCADE = new GenericContainer("arcadedata/arcadedb:latest").withExposedPorts(2480, 6379, 5432, 8182)//
                 .withStartupTimeout(Duration.ofSeconds(90))
                 .withEnv("JAVA_OPTS", "-Darcadedb.server.rootPassword=playwithdata " +
-                        "-Darcadedb.server.defaultDatabases=OpenBeer[root]{import:https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz} " +
+                        "-Darcadedb.server.defaultDatabases=beer[root]{import:https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz} " +
                         "-Darcadedb.server.plugins=Redis:com.arcadedb.redis.RedisProtocolPlugin,MongoDB:com.arcadedb.mongo.MongoDBProtocolPlugin,Postgres:com.arcadedb.postgres.PostgresProtocolPlugin,GremlinServer:com.arcadedb.server.gremlin.GremlinServerPlugin")
                 .waitingFor(Wait.forListeningPort());
         ARCADE.start();
