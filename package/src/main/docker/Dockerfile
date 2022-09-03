@@ -14,13 +14,11 @@
 # limitations under the License.
 #
 
-FROM eclipse-temurin:11.0.13_8-jdk-alpine
-
-ARG ARCADEDB_VERSION
+FROM eclipse-temurin:11
 
 LABEL maintainer="Arcade Data LTD (info@arcadedb.com)"
 
-ENV JAVA_OPTS=" -XX:+UnlockExperimentalVMOptions -XX:+UseZGC "
+ENV JAVA_OPTS=" "
 
 ENV JAVA_OPTS_SCRIPT="-Djna.nosys=true -XX:+HeapDumpOnOutOfMemoryError -Djava.awt.headless=true -Dfile.encoding=UTF8"
 
@@ -28,13 +26,19 @@ ENV ARCADEDB_OPTS_MEMORY="-Xms2G -Xmx2G"
 
 ENV ARCADEDB_JMX="-Dcom.sun.management.jmxremote=true -Dcom.sun.management.jmxremote.local.only=false -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.ssl=false -Dcom.sun.management.jmxremote.port=9999 -Dcom.sun.management.jmxremote.rmi.port=9998"
 
-RUN adduser -D -s /bin/sh arcadedb
+RUN useradd -ms /bin/bash arcadedb
 
 WORKDIR /home/arcadedb
 
-COPY arcadedb-${ARCADEDB_VERSION}.dir/arcadedb-${ARCADEDB_VERSION} ./
+COPY --chown=arcadedb:arcadedb ./maven/arcadedb-* ./
+RUN chmod +x ./bin/*.sh
 
+# Volumes available
 VOLUME [ "/home/arcadedb/databases"]
+
+VOLUME [ "/home/arcadedb/log"]
+
+VOLUME [ "/home/arcadedb/config"]
 
 # ArcadeDB HTTP API & STUDIO
 EXPOSE 2480
@@ -58,5 +62,4 @@ EXPOSE 27017
 EXPOSE 9999
 EXPOSE 9998
 
-WORKDIR "/home/arcadedb/bin"
-CMD ["./server.sh"]
+CMD ["./bin/server.sh"]

@@ -70,11 +70,11 @@
     <files>
         <file>
             <source>${basedir}/../README.md</source>
-            <fileMode>444</fileMode>
+            <fileMode>666</fileMode>
         </file>
         <file>
             <source>${basedir}/../LICENSE</source>
-            <fileMode>444</fileMode>
+            <fileMode>666</fileMode>
         </file>
     </files>
     <!--
