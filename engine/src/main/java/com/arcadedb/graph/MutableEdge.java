@@ -61,18 +61,18 @@ public class MutableEdge extends MutableDocument implements Edge {
     init();
   }
 
-  public synchronized  MutableEdge modify() {
+  public synchronized MutableEdge modify() {
     return this;
   }
 
   @Override
-  public synchronized  void reload() {
+  public synchronized void reload() {
     super.reload();
     init();
   }
 
   @Override
-  public  synchronized void setBuffer(final Binary buffer) {
+  public synchronized void setBuffer(final Binary buffer) {
     super.setBuffer(buffer);
     init();
   }
@@ -106,14 +106,14 @@ public class MutableEdge extends MutableDocument implements Edge {
   }
 
   @Override
-  public  synchronized MutableEdge set(final Object... properties) {
+  public synchronized MutableEdge set(final Object... properties) {
     super.set(properties);
     checkForUpgradeLightWeight();
     return this;
   }
 
   @Override
-  public synchronized  MutableEdge set(final String name, final Object value) {
+  public synchronized MutableEdge set(final String name, final Object value) {
     super.set(name, value);
     checkForUpgradeLightWeight();
     return this;
@@ -140,7 +140,7 @@ public class MutableEdge extends MutableDocument implements Edge {
   }
 
   @Override
-  public  synchronized MutableEdge save() {
+  public synchronized MutableEdge save() {
     if (getIdentity() != null && getIdentity().getPosition() < 0)
       // LIGHTWEIGHT
       return this;
@@ -149,7 +149,7 @@ public class MutableEdge extends MutableDocument implements Edge {
   }
 
   @Override
-  public synchronized  MutableEdge save(final String bucketName) {
+  public synchronized MutableEdge save(final String bucketName) {
     if (getIdentity() != null && getIdentity().getPosition() < 0)
       // LIGHTWEIGHT
       return this;
@@ -173,6 +173,10 @@ public class MutableEdge extends MutableDocument implements Edge {
 
   public void setIn(final RID in) {
     this.in = in;
+  }
+
+  public synchronized JSONObject toJSON() {
+    return super.toJSON().put("@cat", "e").put("@in", in).put("@out", out);
   }
 
   private void init() {

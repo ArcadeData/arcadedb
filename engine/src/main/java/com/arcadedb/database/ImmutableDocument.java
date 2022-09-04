@@ -76,6 +76,7 @@ public class ImmutableDocument extends BaseDocument {
     final Map<String, Object> map = database.getSerializer().deserializeProperties(database, buffer, new EmbeddedModifierObject(this));
 
     final JSONObject result = new JSONSerializer(database).map2json(map);
+    result.put("@cat", "d");
     result.put("@type", type.getName());
     if (getIdentity() != null)
       result.put("@rid", getIdentity().toString());

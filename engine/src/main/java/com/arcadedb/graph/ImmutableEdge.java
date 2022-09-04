@@ -25,6 +25,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.serializer.BinaryTypes;
+import org.json.JSONObject;
 
 /**
  * Immutable read-only edge. It is returned from database on read operations such as queries or lookups and graph traversal. To modify an edge use {@link #modify()}
@@ -115,15 +116,8 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
   }
 
   @Override
-  protected boolean checkForLazyLoading() {
-    if (rid != null && super.checkForLazyLoading()) {
-      buffer.position(1); // SKIP RECORD TYPE
-      out = (RID) database.getSerializer().deserializeValue(database, buffer, BinaryTypes.TYPE_COMPRESSED_RID, null);
-      in = (RID) database.getSerializer().deserializeValue(database, buffer, BinaryTypes.TYPE_COMPRESSED_RID, null);
-      propertiesStartingPosition = buffer.position();
-      return true;
-    }
-    return false;
+  public synchronized JSONObject toJSON() {
+    return super.toJSON().put("@cat", "e").put("@in", in).put("@out", out);
   }
 
   @Override
@@ -133,5 +127,17 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
     buffer.append("<->");
     buffer.append(in.toString());
     return buffer.toString();
+  }
+
+  @Override
+  protected boolean checkForLazyLoading() {
+    if (rid != null && super.checkForLazyLoading()) {
+      buffer.position(1); // SKIP RECORD TYPE
+      out = (RID) database.getSerializer().deserializeValue(database, buffer, BinaryTypes.TYPE_COMPRESSED_RID, null);
+      in = (RID) database.getSerializer().deserializeValue(database, buffer, BinaryTypes.TYPE_COMPRESSED_RID, null);
+      propertiesStartingPosition = buffer.position();
+      return true;
+    }
+    return false;
   }
 }

@@ -71,6 +71,7 @@ public class DetachedDocument extends ImmutableDocument {
   @Override
   public synchronized JSONObject toJSON() {
     final JSONObject result = new JSONSerializer(database).map2json(map);
+    result.put("@cat", "d");
     result.put("@type", type.getName());
     if (getIdentity() != null)
       result.put("@rid", getIdentity().toString());

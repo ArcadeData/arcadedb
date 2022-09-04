@@ -66,7 +66,7 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
   }
 
   @Override
-  public synchronized  void reload() {
+  public synchronized void reload() {
     super.reload();
     init();
   }
@@ -91,13 +91,13 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
   }
 
   @Override
-  public  synchronized void setBuffer(final Binary buffer) {
+  public synchronized void setBuffer(final Binary buffer) {
     super.setBuffer(buffer);
     init();
   }
 
   @Override
-  public synchronized  MutableVertex modify() {
+  public synchronized MutableVertex modify() {
     return this;
   }
 
@@ -175,6 +175,11 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
   @Override
   public Vertex asVertex(final boolean loadContent) {
     return this;
+  }
+
+  @Override
+  public synchronized JSONObject toJSON() {
+    return super.toJSON().put("@cat", "v");
   }
 
   private void init() {

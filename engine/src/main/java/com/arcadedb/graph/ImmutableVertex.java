@@ -26,6 +26,7 @@ import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.schema.DocumentType;
+import org.json.JSONObject;
 
 import java.util.*;
 
@@ -154,6 +155,11 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
   @Override
   public Vertex asVertex(boolean loadContent) {
     return this;
+  }
+
+  @Override
+  public synchronized JSONObject toJSON() {
+    return super.toJSON().put("@cat", "v");
   }
 
   @Override

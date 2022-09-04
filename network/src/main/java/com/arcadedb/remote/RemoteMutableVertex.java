@@ -84,6 +84,7 @@ public class RemoteMutableVertex extends MutableVertex {
   @Override
   public synchronized JSONObject toJSON() {
     final JSONObject result = new JSONSerializer(database).map2json(map);
+    result.put("@cat", "v");
     result.put("@type", typeName);
     if (getIdentity() != null)
       result.put("@rid", getIdentity().toString());

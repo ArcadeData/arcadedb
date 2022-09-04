@@ -41,8 +41,7 @@ public class JSONSerializer {
       final Object value = convertToJSONType(entry.getValue());
 
       if (value instanceof Number && !Float.isFinite(((Number) value).floatValue())) {
-        LogManager.instance()
-            .log(this, Level.SEVERE, "Found non finite number in map with key '%s', ignore this entry in the conversion", entry.getKey());
+        LogManager.instance().log(this, Level.SEVERE, "Found non finite number in map with key '%s', ignore this entry in the conversion", entry.getKey());
         continue;
       }
 
@@ -64,9 +63,7 @@ public class JSONSerializer {
 
   private Object convertToJSONType(Object value) {
     if (value instanceof Document) {
-      final JSONObject json = ((Document) value).toJSON();
-      json.put("@type", ((Document) value).getTypeName());
-      value = json;
+      value = ((Document) value).toJSON();
     } else if (value instanceof Collection) {
       final Collection c = (Collection) value;
       final JSONArray array = new JSONArray();

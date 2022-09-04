@@ -110,7 +110,7 @@ public class ImmutableLightEdge extends ImmutableDocument implements LightEdge {
 
   @Override
   public synchronized JSONObject toJSON() {
-    return new JSONObject();
+    return new JSONObject().put("@cat", "e");
   }
 
   @Override
