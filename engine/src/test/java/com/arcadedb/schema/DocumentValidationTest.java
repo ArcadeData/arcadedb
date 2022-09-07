@@ -89,7 +89,7 @@ public class DocumentValidationTest extends TestHelper {
   }
 
   @Test
-  public void testRequiredValidation() {
+  public void testRequiredValidationAPI() {
     DocumentType embeddedClazz = database.getSchema().createDocumentType("EmbeddedValidation");
     embeddedClazz.createProperty("int", Type.INTEGER).setMandatory(true);
 
@@ -161,6 +161,22 @@ public class DocumentValidationTest extends TestHelper {
     checkRequireField(d, "embedded");
     checkRequireField(d, "embeddedList");
     checkRequireField(d, "embeddedMap");
+  }
+
+  @Test
+  public void testRequiredValidationSQL() {
+    DocumentType clazz = database.getSchema().createDocumentType("Validation");
+
+    database.command("sql", "create property Validation.int INTEGER (mandatory true)");
+
+    Assertions.assertTrue(clazz.getProperty("int").isMandatory());
+
+    MutableDocument d = database.newDocument("Validation");
+    d.set("int", 10);
+
+    d.validate();
+
+    checkRequireField(d, "int");
   }
 
   @Test
