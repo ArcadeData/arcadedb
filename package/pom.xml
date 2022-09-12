@@ -27,7 +27,7 @@
     <packaging>pom</packaging>
 
     <properties>
-        <kubernetes-maven-plugin.version>1.8.0</kubernetes-maven-plugin.version>
+        <kubernetes-maven-plugin.version>1.9.0</kubernetes-maven-plugin.version>
     </properties>
 
     <parent>
