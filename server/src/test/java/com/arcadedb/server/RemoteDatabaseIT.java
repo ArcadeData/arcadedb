@@ -115,6 +115,9 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
         Assertions.assertTrue(result.hasNext());
         Edge edge = result.next().getEdge().get();
 
+        edge.toMap();
+        edge.toJSON();
+
         Assertions.assertEquals(EDGE1_TYPE_NAME, edge.getTypeName());
         Assertions.assertEquals(rid1, edge.getOut());
         Assertions.assertEquals(rid2, edge.getIn());
@@ -123,6 +126,9 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
         Assertions.assertNotNull(record);
         Assertions.assertEquals("Elon", record.getString("name"));
         Assertions.assertEquals("Musk", record.getString("lastName"));
+
+        record.toMap();
+        record.toJSON();
 
         record = (Document) database.lookupByRID(rid2);
         Assertions.assertNotNull(record);
@@ -143,6 +149,13 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
       Vertex kimbal = record.getVertex().get();
       Assertions.assertEquals("Musk", kimbal.getString("lastName"));
       Assertions.assertEquals(100, kimbal.getInteger("extra"));
+
+      Assertions.assertFalse(kimbal.toMap().containsKey("@cat"));
+      Assertions.assertFalse(kimbal.toMap().containsKey("@type"));
+      Assertions.assertFalse(kimbal.toMap().containsKey("@out"));
+      Assertions.assertFalse(kimbal.toMap().containsKey("@in"));
+
+      kimbal.toJSON();
 
       final Iterator<Vertex> connected = kimbal.getVertices(Vertex.DIRECTION.IN).iterator();
       Assertions.assertTrue(connected.hasNext());

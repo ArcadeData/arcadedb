@@ -34,6 +34,9 @@ public class RemoteImmutableEdge extends RemoteImmutableDocument implements Edge
     super(database, properties);
     this.out = new RID(null, (String) properties.get("@out"));
     this.in = new RID(null, (String) properties.get("@in"));
+
+    map.remove("@cat");
+    map.remove("@type");
   }
 
   @Override

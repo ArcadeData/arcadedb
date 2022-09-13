@@ -36,6 +36,8 @@ public class RemoteMutableDocument extends MutableDocument {
     this.remoteDatabase = source.remoteDatabase;
     this.typeName = source.typeName;
     this.map.putAll(source.map);
+    map.remove("@cat");
+    map.remove("@type");
   }
 
   @Override
