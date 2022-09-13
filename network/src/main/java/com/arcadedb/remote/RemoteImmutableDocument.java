@@ -80,6 +80,11 @@ public class RemoteImmutableDocument extends ImmutableDocument {
   }
 
   @Override
+  public synchronized Map<String, Object> toMap() {
+    return Collections.unmodifiableMap(map);
+  }
+
+  @Override
   public synchronized JSONObject toJSON() {
     final JSONObject result = new JSONSerializer(database).map2json(map);
     result.put("@cat", "d");
