@@ -50,13 +50,8 @@ public class SQLFunctionSysdate extends SQLFunctionAbstract {
       return now;
 
     if (format == null) {
-      if (iParams.length > 0)
-        format = new SimpleDateFormat((String) iParams[0]);
-      else
-        format = new SimpleDateFormat(iContext.getDatabase().getSchema().getDateFormat());
-
+      format = new SimpleDateFormat((String) iParams[0]);
       final TimeZone tz = iParams.length > 1 ? TimeZone.getTimeZone(iParams[1].toString()) : iContext.getDatabase().getSchema().getTimeZone();
-
       format.setTimeZone(tz);
     }
 
