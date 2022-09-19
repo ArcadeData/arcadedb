@@ -47,7 +47,7 @@ import static com.arcadedb.TestHelper.checkActiveDatabases;
 
 public class SQLFunctionsTest {
   private final DatabaseFactory factory = new DatabaseFactory("./target/databases/SQLFunctionsTest");
-  private Database        database;
+  private       Database        database;
 
   @Test
   public void queryMax() {
@@ -320,7 +320,47 @@ public class SQLFunctionsTest {
     Object lastDate = null;
     for (ResultSet it = result; it.hasNext(); ) {
       Result d = it.next();
-      Assertions.assertNotNull(d.getProperty("date"));
+
+      final String date = d.getProperty("date");
+
+      Assertions.assertNotNull(date);
+      Assertions.assertEquals(10, date.length());
+
+      if (lastDate != null)
+        d.getProperty("date").equals(lastDate);
+
+      lastDate = d.getProperty("date");
+    }
+
+    result = database.command("sql", "select sysdate('yyyy-MM-dd HH:mm:ss') as date");
+
+    Assertions.assertTrue(result.hasNext());
+    lastDate = null;
+    for (ResultSet it = result; it.hasNext(); ) {
+      Result d = it.next();
+
+      final String date = d.getProperty("date");
+
+      Assertions.assertNotNull(date);
+      Assertions.assertEquals(19, date.length());
+
+      if (lastDate != null)
+        d.getProperty("date").equals(lastDate);
+
+      lastDate = d.getProperty("date");
+    }
+
+    result = database.command("sql", "select sysdate('yyyy-MM-dd HH:mm:ss', 'GMT-5') as date");
+
+    Assertions.assertTrue(result.hasNext());
+    lastDate = null;
+    for (ResultSet it = result; it.hasNext(); ) {
+      Result d = it.next();
+
+      final String date = d.getProperty("date");
+
+      Assertions.assertNotNull(date);
+      Assertions.assertEquals(19, date.length());
 
       if (lastDate != null)
         d.getProperty("date").equals(lastDate);

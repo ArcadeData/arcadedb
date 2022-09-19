@@ -27,7 +27,7 @@ import java.text.*;
 import java.util.*;
 
 /**
- * Builds a date object from the format passed. If no arguments are passed, than the system date is built (like sysdate() function)
+ * Builds a date object from the format passed. If no arguments are passed, then the system date is built (like sysdate() function)
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  * @see SQLFunctionSysdate

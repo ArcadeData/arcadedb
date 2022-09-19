@@ -45,19 +45,17 @@ public class SQLFunctionSysdate extends SQLFunctionAbstract {
     now = new Date();
   }
 
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, Object iCurrentResult, final Object[] iParams,
-      CommandContext iContext) {
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, Object iCurrentResult, final Object[] iParams, CommandContext iContext) {
     if (iParams.length == 0)
       return now;
 
     if (format == null) {
-      final TimeZone tz =
-          iParams.length > 0 ? TimeZone.getTimeZone(iParams[0].toString()) : iContext.getDatabase().getSchema().getTimeZone();
-
-      if (iParams.length > 1)
-        format = new SimpleDateFormat((String) iParams[1]);
+      if (iParams.length > 0)
+        format = new SimpleDateFormat((String) iParams[0]);
       else
         format = new SimpleDateFormat(iContext.getDatabase().getSchema().getDateFormat());
+
+      final TimeZone tz = iParams.length > 1 ? TimeZone.getTimeZone(iParams[1].toString()) : iContext.getDatabase().getSchema().getTimeZone();
 
       format.setTimeZone(tz);
     }
