@@ -94,6 +94,10 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
 
     final File uncompressedFile = new File(databaseDirectory, fileName);
 
+    if (!uncompressedFile.toPath().normalize().startsWith(databaseDirectory.toPath().normalize())) {
+      throw new IOException("Bad zip entry");
+    }
+
     try (final FileOutputStream fileOut = new FileOutputStream(uncompressedFile)) {
       int len;
       while ((len = inputFile.read(BUFFER)) > 0) {
