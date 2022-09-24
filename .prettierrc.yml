@@ -7,4 +7,4 @@ overrides:
       tabWidth: 4
       useTabs: false
       trailingComma: none
-      requirePragma: true
+      requirePragma: false
