@@ -84,9 +84,21 @@ public class ImmutableDocument extends BaseDocument {
   }
 
   @Override
+  public Map<String, Object> propertiesAsMap() {
+    if (database == null || buffer == null)
+      return Collections.emptyMap();
+    return database.getSerializer().deserializeProperties(database, buffer, new EmbeddedModifierObject(this));
+  }
+
+  @Override
   public synchronized Map<String, Object> toMap() {
     checkForLazyLoading();
-    return database.getSerializer().deserializeProperties(database, buffer, new EmbeddedModifierObject(this));
+    final Map<String, Object> result = database.getSerializer().deserializeProperties(database, buffer, new EmbeddedModifierObject(this));
+    result.put("@cat", "d");
+    result.put("@type", type.getName());
+    if (getIdentity() != null)
+      result.put("@rid", getIdentity().toString());
+    return result;
   }
 
   @Override

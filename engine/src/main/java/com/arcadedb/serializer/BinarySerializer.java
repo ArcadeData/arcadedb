@@ -513,7 +513,7 @@ public class BinarySerializer {
     final int headerSizePosition = header.position();
     header.putInt(0); // TEMPORARY PLACEHOLDER FOR HEADER SIZE
 
-    final Map<String, Object> properties = record.toMap();
+    final Map<String, Object> properties = record.propertiesAsMap();
     header.putUnsignedNumber(properties.size());
 
     final Dictionary dictionary = database.getSchema().getDictionary();

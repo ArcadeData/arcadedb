@@ -148,7 +148,7 @@ public class DocumentTest extends TestHelper {
       Assertions.assertTrue(props.contains("embeddedMap"));
 
       final Map<String, Object> map = detached.toMap();
-      Assertions.assertEquals(4, map.size());
+      Assertions.assertEquals(6, map.size());
 
       Assertions.assertEquals("Tim", map.get("name"));
       Assertions.assertEquals(embeddedObj, map.get("embeddedObj"));

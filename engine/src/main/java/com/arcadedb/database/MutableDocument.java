@@ -83,9 +83,20 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   }
 
   @Override
-  public synchronized Map<String, Object> toMap() {
+  public Map<String, Object> propertiesAsMap() {
     checkForLazyLoadingProperties();
     return Collections.unmodifiableMap(map);
+  }
+
+  @Override
+  public synchronized Map<String, Object> toMap() {
+    checkForLazyLoadingProperties();
+    final Map<String, Object> result = new HashMap<>(map);
+    result.put("@cat", "d");
+    result.put("@type", type.getName());
+    if (getIdentity() != null)
+      result.put("@rid", getIdentity().toString());
+    return result;
   }
 
   public synchronized MutableDocument fromJSON(final JSONObject json) {
@@ -250,6 +261,10 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
 
     for (Map.Entry<String, Object> entry : properties.entrySet()) {
       final String propertyName = entry.getKey();
+      if (propertyName.startsWith("@"))
+        // SKIP METADATA
+        continue;
+
       final Object value = setTransformValue(entry.getValue(), propertyName);
       map.put(propertyName, convertValueToSchemaType(propertyName, value, type));
     }
@@ -376,7 +391,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
         newRecord.buffer = null;
         newRecord.map = new LinkedHashMap<>();
         newRecord.dirty = true;
-        newRecord.set(((BaseDocument) value).toMap());
+        newRecord.set(((BaseDocument) value).propertiesAsMap());
         return newRecord;
       }
     } else if (value instanceof List) {

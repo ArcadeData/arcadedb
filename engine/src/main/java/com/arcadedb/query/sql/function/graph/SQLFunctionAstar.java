@@ -225,7 +225,7 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
     if (additionalParams instanceof Map) {
       mapParams = (Map) additionalParams;
     } else if (additionalParams instanceof Identifiable) {
-      mapParams = ((Document) ((Identifiable) additionalParams).getRecord()).toMap();
+      mapParams = ((Document) ((Identifiable) additionalParams).getRecord()).propertiesAsMap();
     }
     if (mapParams != null) {
       ctx.paramEdgeTypeNames = stringArray(mapParams.get(SQLFunctionAstar.PARAM_EDGE_TYPE_NAMES));

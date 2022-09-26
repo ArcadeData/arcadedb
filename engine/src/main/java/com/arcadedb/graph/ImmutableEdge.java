@@ -27,6 +27,8 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.serializer.BinaryTypes;
 import org.json.JSONObject;
 
+import java.util.*;
+
 /**
  * Immutable read-only edge. It is returned from database on read operations such as queries or lookups and graph traversal. To modify an edge use {@link #modify()}
  * to have the MutableEdge instance created form the current record.
@@ -113,6 +115,15 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
   @Override
   public Edge asEdge(final boolean loadContent) {
     return this;
+  }
+
+  @Override
+  public synchronized Map<String, Object> toMap() {
+    final Map<String, Object> map = super.toMap();
+    map.put("@cat", "e");
+    map.put("@in", in);
+    map.put("@out", out);
+    return map;
   }
 
   @Override

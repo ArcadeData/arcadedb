@@ -161,6 +161,7 @@ public class RedisWTest extends BaseGraphServerTest {
       Assertions.assertEquals("Account", doc.getString("@type"));
       doc.remove("@type");
       doc.remove("@rid");
+      doc.remove("@cat");
 
       Assertions.assertEquals(expectedJson.toMap(), doc.toMap());
 
@@ -170,6 +171,7 @@ public class RedisWTest extends BaseGraphServerTest {
       Assertions.assertEquals("Account", doc.getString("@type"));
       doc.remove("@type");
       doc.remove("@rid");
+      doc.remove("@cat");
 
       Assertions.assertEquals(expectedJson.toMap(), doc.toMap());
 
@@ -178,6 +180,7 @@ public class RedisWTest extends BaseGraphServerTest {
       Assertions.assertNotNull(doc.getString("@rid"));
       Assertions.assertEquals("Account", doc.getString("@type"));
       doc.remove("@type");
+      doc.remove("@cat");
 
       // SAVE THE RID TO BE RETRIEVED IN THE MGET
       final Object rid = doc.remove("@rid");
@@ -191,6 +194,7 @@ public class RedisWTest extends BaseGraphServerTest {
       Assertions.assertEquals("Account", doc.getString("@type"));
       doc.remove("@rid");
       doc.remove("@type");
+      doc.remove("@cat");
 
       Assertions.assertEquals(expectedJson.toMap(), doc.toMap());
     }

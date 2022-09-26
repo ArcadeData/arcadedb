@@ -327,7 +327,7 @@ public class EmbeddedSchema implements Schema {
           else
             newRecord = database.newDocument(newTypeName);
 
-          newRecord.fromMap(record.toMap());
+          newRecord.fromMap(record.propertiesAsMap());
           newRecord.save();
 
           ++copied;

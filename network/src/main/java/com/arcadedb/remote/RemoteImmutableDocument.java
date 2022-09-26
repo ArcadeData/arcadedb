@@ -85,7 +85,12 @@ public class RemoteImmutableDocument extends ImmutableDocument {
 
   @Override
   public synchronized Map<String, Object> toMap() {
-    return Collections.unmodifiableMap(map);
+    final HashMap<String, Object> result = new HashMap<>(map);
+    result.put("@cat", "d");
+    result.put("@type", type.getName());
+    if (getIdentity() != null)
+      result.put("@rid", getIdentity().toString());
+    return result;
   }
 
   @Override

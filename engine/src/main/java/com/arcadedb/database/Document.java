@@ -67,6 +67,8 @@ public interface Document extends Record {
 
   Map<String, Object> toMap();
 
+  Map<String, Object> propertiesAsMap();
+
   @Override
   default Document asDocument() {
     return this;

@@ -76,7 +76,7 @@ public class RemoteMutableVertex extends MutableVertex {
       final Document document = resultSet.next().toElement();
 
       map.clear();
-      map.putAll(document.toMap());
+      map.putAll(document.propertiesAsMap());
       dirty = false;
     }
   }

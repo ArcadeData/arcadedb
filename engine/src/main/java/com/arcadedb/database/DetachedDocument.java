@@ -32,7 +32,7 @@ public class DetachedDocument extends ImmutableDocument {
 
   private void init(final Document sourceDocument) {
     this.map = new LinkedHashMap<>();
-    final Map<String, Object> sourceMap = sourceDocument.toMap();
+    final Map<String, Object> sourceMap = sourceDocument.propertiesAsMap();
     for (Map.Entry<String, Object> entry : sourceMap.entrySet()) {
       Object value = entry.getValue();
 
@@ -65,7 +65,12 @@ public class DetachedDocument extends ImmutableDocument {
 
   @Override
   public synchronized Map<String, Object> toMap() {
-    return new HashMap<>(map);
+    final Map<String, Object> result = new HashMap<>(map);
+    result.put("@cat", "d");
+    result.put("@type", type.getName());
+    if (getIdentity() != null)
+      result.put("@rid", getIdentity().toString());
+    return result;
   }
 
   @Override

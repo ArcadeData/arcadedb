@@ -178,6 +178,13 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
   }
 
   @Override
+  public synchronized Map<String, Object> toMap() {
+    final Map<String, Object> map = super.toMap();
+    map.put("@cat", "v");
+    return map;
+  }
+
+  @Override
   public synchronized JSONObject toJSON() {
     return super.toJSON().put("@cat", "v");
   }
