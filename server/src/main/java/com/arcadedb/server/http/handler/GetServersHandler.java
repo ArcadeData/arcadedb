@@ -26,13 +26,13 @@ import io.undertow.server.HttpServerExchange;
 
 import java.util.logging.*;
 
-public class PostServersHandler extends AbstractHandler {
-  public PostServersHandler(final HttpServer httpServer) {
+public class GetServersHandler extends AbstractHandler {
+  public GetServersHandler(final HttpServer httpServer) {
     super(httpServer);
   }
 
   @Override
-  public void execute(final HttpServerExchange exchange, ServerSecurityUser user) {
+  public void execute(final HttpServerExchange exchange, final ServerSecurityUser user) {
     exchange.setStatusCode(200);
 
     final HAServer ha = httpServer.getServer().getHA();

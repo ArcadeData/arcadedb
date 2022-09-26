@@ -40,7 +40,7 @@ import com.arcadedb.server.http.handler.PostDropDatabaseHandler;
 import com.arcadedb.server.http.handler.PostOpenDatabaseHandler;
 import com.arcadedb.server.http.handler.PostQueryHandler;
 import com.arcadedb.server.http.handler.PostRollbackHandler;
-import com.arcadedb.server.http.handler.PostServersHandler;
+import com.arcadedb.server.http.handler.GetServersHandler;
 import com.arcadedb.server.http.ws.WebSocketConnectionHandler;
 import com.arcadedb.server.http.ws.WebSocketEventBus;
 import io.undertow.Handlers;
@@ -133,7 +133,7 @@ public class HttpServer implements ServerPlugin {
             .get("/query/{database}/{language}/{command}", new GetQueryHandler(this))//
             .post("/query/{database}", new PostQueryHandler(this))//
             .post("/rollback/{database}", new PostRollbackHandler(this))//
-            .post("/server", new PostServersHandler(this))//
+            .get("/server", new GetServersHandler(this))//
     );
 
     if (!"production".equals(GlobalConfiguration.SERVER_MODE.getValueAsString())) {
