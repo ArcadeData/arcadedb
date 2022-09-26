@@ -39,18 +39,23 @@ public class HTTPDocumentIT extends BaseGraphServerTest {
     return DATABASE_NAME;
   }
 
-  @Override
-  protected void populateDatabase() {
-    final Database database = getDatabase(0);
-    database.transaction(() -> {
-      final Schema schema = database.getSchema();
-      Assertions.assertFalse(schema.existsType("Person"));
-      DocumentType v = schema.createDocumentType("Person", 3);
-      v.createProperty("id", Long.class);
-      schema.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Person", "id");
+  @Test
+  public void testServerInfo() throws Exception {
+    testEachServer((serverIndex) -> {
+      HttpURLConnection connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/server").openConnection();
 
-      for (int i = 0; i < 100; i++)
-        database.newDocument("Person").set("id", i).set("name", "Elon" + i).save();
+      connection.setRequestMethod("GET");
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      try {
+        connection.connect();
+        final String response = readResponse(connection);
+        LogManager.instance().log(this, Level.FINE, "Response: ", null, response);
+        Assertions.assertEquals(200, connection.getResponseCode());
+        Assertions.assertEquals("OK", connection.getResponseMessage());
+      } finally {
+        connection.disconnect();
+      }
     });
   }
 
@@ -234,4 +239,18 @@ public class HTTPDocumentIT extends BaseGraphServerTest {
     });
   }
 
+  @Override
+  protected void populateDatabase() {
+    final Database database = getDatabase(0);
+    database.transaction(() -> {
+      final Schema schema = database.getSchema();
+      Assertions.assertFalse(schema.existsType("Person"));
+      DocumentType v = schema.createDocumentType("Person", 3);
+      v.createProperty("id", Long.class);
+      schema.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Person", "id");
+
+      for (int i = 0; i < 100; i++)
+        database.newDocument("Person").set("id", i).set("name", "Elon" + i).save();
+    });
+  }
 }
