@@ -79,6 +79,7 @@ public class CypherQueryEngineTest {
           Result parentAsResult = result.getProperty("parent");
           Map<String, Object> parent = parentAsResult.toMap();
           parent.computeIfPresent("@rid", (k, v) -> Objects.toString(v));
+          parent.put("@cat", "v");
           Map<String, Object> vertexMap = v1.toJSON().toMap();
           assertThat(parent, equalTo(vertexMap));
 
@@ -86,6 +87,7 @@ public class CypherQueryEngineTest {
           List<Result> childrenAsResult = result.getProperty("children");
           List<Map<String, Object>> children = childrenAsResult.stream().map(Result::toMap).collect(Collectors.toList());
           children.forEach(c -> c.computeIfPresent("@rid", (k, v) -> Objects.toString(v)));
+          children.forEach(c -> c.put("@cat", "v"));
           List<Map<String, Object>> childVertices = Stream.of(v2, v3).map(MutableVertex::toJSON).map(JSONObject::toMap).collect(Collectors.toList());
           assertThat(children, containsInAnyOrder(childVertices.toArray()));
         }
