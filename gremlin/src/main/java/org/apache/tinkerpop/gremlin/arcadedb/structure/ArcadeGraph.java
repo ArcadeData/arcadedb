@@ -26,6 +26,7 @@ import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.QueryParsingException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
@@ -50,6 +51,7 @@ import org.opencypher.v9_0.util.SyntaxException;
 
 import java.io.*;
 import java.util.*;
+import java.util.logging.*;
 
 /**
  * Created by Enrico Risa on 30/07/2018.
@@ -316,6 +318,15 @@ public class ArcadeGraph implements Graph, Closeable {
 
   @Override
   public void close() {
+    if (gremlinExecutor != null) {
+      try {
+        gremlinExecutor.close();
+        gremlinExecutor = null;
+      } catch (Exception e) {
+        LogManager.instance().log(this, Level.INFO, "Error on closing gremlin executor", e);
+      }
+    }
+
     if (this.database != null) {
       if (this.database.isTransactionActive())
         this.database.commit();
@@ -327,6 +338,15 @@ public class ArcadeGraph implements Graph, Closeable {
   }
 
   public void drop() {
+    if (gremlinExecutor != null) {
+      try {
+        gremlinExecutor.close();
+        gremlinExecutor = null;
+      } catch (Exception e) {
+        LogManager.instance().log(this, Level.INFO, "Error on closing gremlin executor", e);
+      }
+    }
+
     if (this.database != null) {
       if (!this.database.isOpen())
         FileUtils.deleteRecursively(new File(this.database.getDatabasePath()));
