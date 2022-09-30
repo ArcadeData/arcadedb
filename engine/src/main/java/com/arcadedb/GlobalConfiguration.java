@@ -204,13 +204,18 @@ public enum GlobalConfiguration {
 
   SERVER_DATABASE_LOADATSTARTUP("arcadedb.server.databaseLoadAtStartup", "Open all the available databases at server startup", Boolean.class, true),
 
-  SERVER_PLUGINS("arcadedb.server.plugins", "List of server plugins to install. The format to load a plugin is: `<pluginName>:<pluginFullClass>`", String.class,
-      ""),
-
   SERVER_DEFAULT_DATABASES("arcadedb.server.defaultDatabases",
       "The default databases created when the server starts. The format is `(<database-name>[(<user-name>:<user-passwd>[:<user-group>])[,]*])[{import|restore:<URL>}][;]*'. Pay attention on using `;`"
           + " to separate databases and `,` to separate credentials. The supported actions are `import` and `restore`. Example: `Universe[elon:musk:admin];Amiga[Jay:Miner,Jack:Tramiel]{import:/tmp/movies.tgz}`",
       String.class, ""),
+
+  SERVER_DEFAULT_DATABASE_MODE("arcadedb.server.defaultDatabaseMode",
+      "The default mode to load pre-existing databases. The value must match a com.arcadedb.engine.PaginatedFile.MODE enum value: {READ_ONLY, READ_WRITE}"
+      + "Databases which are newly created will always be opened READ_WRITE.",
+      String.class, "READ_WRITE"),
+
+  SERVER_PLUGINS("arcadedb.server.plugins", "List of server plugins to install. The format to load a plugin is: `<pluginName>:<pluginFullClass>`", String.class,
+      ""),
 
   // SERVER HTTP
   SERVER_HTTP_INCOMING_HOST("arcadedb.server.httpIncomingHost", "TCP/IP host name used for incoming HTTP connections", String.class, "0.0.0.0"),

@@ -18,6 +18,8 @@
  */
 package com.arcadedb.server;
 
+import static com.arcadedb.engine.PaginatedFile.MODE.READ_WRITE;
+
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
@@ -76,6 +78,9 @@ public class ServerDefaultDatabasesIT extends BaseGraphServerTest {
 
     Assertions.assertTrue(getServer(0).existsDatabase("Universe"));
     Assertions.assertTrue(getServer(0).existsDatabase("Amiga"));
+
+    Assertions.assertTrue(READ_WRITE.equals(getServer(0).getDatabase("Universe").getMode()));
+    Assertions.assertTrue(READ_WRITE.equals(getServer(0).getDatabase("Amiga").getMode()));
 
     ((DatabaseInternal) getServer(0).getDatabase("Universe")).getEmbedded().drop();
     ((DatabaseInternal) getServer(0).getDatabase("Amiga")).getEmbedded().drop();
