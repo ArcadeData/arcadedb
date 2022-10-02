@@ -18,6 +18,8 @@
  */
 package com.arcadedb.server;
 
+import static com.arcadedb.engine.PaginatedFile.MODE.READ_WRITE;
+
 import com.arcadedb.Constants;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
@@ -25,6 +27,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.EmbeddedDatabase;
+import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.DatabaseIsClosedException;
@@ -350,10 +353,14 @@ public class ArcadeDBServer {
 
       factory.setSecurity(getSecurity());
 
+      final PaginatedFile.MODE defaultDbMode = Optional.ofNullable(
+          GlobalConfiguration.SERVER_DEFAULT_DATABASE_MODE.getValueAsEnum(PaginatedFile.MODE.class))
+          .orElse(READ_WRITE);
+
       if (createIfNotExists)
-        db = (DatabaseInternal) (factory.exists() ? factory.open() : factory.create());
+        db = (DatabaseInternal) (factory.exists() ? factory.open(defaultDbMode) : factory.create());
       else
-        db = (DatabaseInternal) factory.open();
+        db = (DatabaseInternal) factory.open(defaultDbMode);
 
       if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
         db = new ReplicatedDatabase(this, (EmbeddedDatabase) db);
