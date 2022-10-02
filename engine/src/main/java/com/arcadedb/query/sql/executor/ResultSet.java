@@ -59,6 +59,10 @@ public interface ResultSet extends Spliterator<Result>, Iterator<Result>, AutoCl
     return false;
   }
 
+  /**
+   * Returns the count of the remaining uniterated results in the {@link ResultSet}. Note, that the
+   * default implementation will consume the iterator.
+   */
   default long countEntries() {
     long tot = 0;
 
