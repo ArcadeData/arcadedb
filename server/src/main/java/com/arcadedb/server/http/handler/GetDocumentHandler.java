@@ -27,6 +27,12 @@ import io.undertow.server.HttpServerExchange;
 
 import java.util.*;
 
+/**
+ * Deprecated. Use the query language instead. To retrieve a document by record id, use SQL `SELECT FROM <RID>` statement. Example: `SELECT FROM #10:33`.
+ *
+ * @Deprecated
+ */
+@Deprecated
 public class GetDocumentHandler extends DatabaseAbstractHandler {
   public GetDocumentHandler(final HttpServer httpServer) {
     super(httpServer);

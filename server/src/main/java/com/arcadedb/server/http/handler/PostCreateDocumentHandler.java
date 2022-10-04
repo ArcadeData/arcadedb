@@ -31,6 +31,12 @@ import org.json.JSONObject;
 
 import java.io.*;
 
+/**
+ * Deprecated. Use the query language instead. To create a new document you can use the SQL INSERT statement. Example: `INSERT INTO Account SET name = 'Elon'`.
+ *
+ * @Deprecated
+ */
+@Deprecated
 public class PostCreateDocumentHandler extends DatabaseAbstractHandler {
   public PostCreateDocumentHandler(final HttpServer httpServer) {
     super(httpServer);
