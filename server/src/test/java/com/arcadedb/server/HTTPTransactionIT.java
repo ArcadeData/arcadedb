@@ -129,7 +129,7 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
       connection.setRequestProperty(ARCADEDB_SESSION_ID, sessionId);
       connection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
-      formatPost(connection, "sql", "select from Person limit 1", null, new HashMap<>());
+      formatPayload(connection, "sql", "select from Person limit 1", null, new HashMap<>());
       connection.connect();
 
       try {

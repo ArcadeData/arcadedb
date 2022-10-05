@@ -122,7 +122,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
-      formatPost(connection, "sql", "select from V1 limit 1", null, new HashMap<>());
+      formatPayload(connection, "sql", "select from V1 limit 1", null, new HashMap<>());
       connection.connect();
 
       try {
@@ -145,7 +145,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
-      formatPost(connection, "sql", "select from V1 limit 1", null, new HashMap<>());
+      formatPayload(connection, "sql", "select from V1 limit 1", null, new HashMap<>());
       connection.connect();
 
       try {
@@ -168,7 +168,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
-      formatPost(connection, "sql", "SELECT FROM :rid", null, Collections.singletonMap("rid", "#1:0"));
+      formatPayload(connection, "sql", "SELECT FROM :rid", null, Collections.singletonMap("rid", "#1:0"));
       connection.connect();
 
       try {
@@ -191,7 +191,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
-      formatPost(connection, "sql", "SELECT FROM " + VERTEX1_TYPE_NAME + " where @rid = :rid", null, Collections.singletonMap("rid", "#1:0"));
+      formatPayload(connection, "sql", "SELECT FROM " + VERTEX1_TYPE_NAME + " where @rid = :rid", null, Collections.singletonMap("rid", "#1:0"));
       connection.connect();
 
       try {
@@ -217,7 +217,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
-      formatPost(connection, "sql", "SELECT FROM " + VERTEX1_TYPE_NAME + " where @rid in (#1:0)", null, Collections.emptyMap());
+      formatPayload(connection, "sql", "SELECT FROM " + VERTEX1_TYPE_NAME + " where @rid in (#1:0)", null, Collections.emptyMap());
       connection.connect();
 
       try {
@@ -243,7 +243,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
-      formatPost(connection, "sql",
+      formatPayload(connection, "sql",
           "SELECT $p from " + VERTEX1_TYPE_NAME + " let pid = @rid, p = (select from " + VERTEX1_TYPE_NAME + " where @rid = $parent.pid)", null,
           Collections.emptyMap());
       connection.connect();
@@ -268,7 +268,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
-      formatPost(connection, "sql", "SELECT FROM E1", "graph", Collections.emptyMap());
+      formatPayload(connection, "sql", "SELECT FROM E1", "graph", Collections.emptyMap());
       connection.connect();
 
       try {
