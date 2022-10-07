@@ -1012,6 +1012,7 @@ public class SelectStatementExecutionTest extends TestHelper {
       Result item = result.next();
       Assertions.assertNotNull(item.getProperty("name"));
       Assertions.assertEquals("STRING", ((List<String>) item.getProperty("keyTypes")).get(0));
+      Assertions.assertFalse((Boolean) item.getProperty("unique"));
     }
     Assertions.assertFalse(result.hasNext());
     result.close();
