@@ -380,7 +380,7 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
           }
 
           if (!rootPassword.equals(rootConfirmPassword)) {
-            System.out.println(AnsiCode.format("$ANSI{red ERROR: Passwords don't match, please reinsert both of them, or press ENTER to auto generate it}"));
+            System.out.println(AnsiCode.format("$ANSI{red ERROR: Passwords do not match, please reinsert both of them, or press ENTER to auto generate it}"));
             try {
               Thread.sleep(500);
             } catch (InterruptedException e) {
