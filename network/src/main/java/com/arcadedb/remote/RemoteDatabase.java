@@ -314,24 +314,27 @@ public class RemoteDatabase extends RWLockContext {
           connection.connect();
 
           if (connection.getResponseCode() != 200) {
-            String detail;
-            String reason;
-            String exception;
-            String exceptionArgs;
+            String detail = null;
+            String reason = null;
+            String exception = null;
+            String exceptionArgs = null;
             String responsePayload = null;
-            try {
-              responsePayload = FileUtils.readStreamAsString(connection.getErrorStream(), charset);
-              final JSONObject response = new JSONObject(responsePayload);
-              reason = response.getString("error");
-              detail = response.has("detail") ? response.getString("detail") : null;
-              exception = response.has("exception") ? response.getString("exception") : null;
-              exceptionArgs = response.has("exceptionArgs") ? response.getString("exceptionArgs") : null;
-            } catch (Exception e) {
-              lastException = e;
-              // TODO CHECK IF THE COMMAND NEEDS TO BE RE-EXECUTED OR NOT
-              LogManager.instance()
-                  .log(this, Level.WARNING, "Error on executing command, retrying... (payload=%s, error=%s)", null, responsePayload, e.toString());
-              continue;
+
+            if (connection.getErrorStream() != null) {
+              try {
+                responsePayload = FileUtils.readStreamAsString(connection.getErrorStream(), charset);
+                final JSONObject response = new JSONObject(responsePayload);
+                reason = response.getString("error");
+                detail = response.has("detail") ? response.getString("detail") : null;
+                exception = response.has("exception") ? response.getString("exception") : null;
+                exceptionArgs = response.has("exceptionArgs") ? response.getString("exceptionArgs") : null;
+              } catch (Exception e) {
+                lastException = e;
+                // TODO CHECK IF THE COMMAND NEEDS TO BE RE-EXECUTED OR NOT
+                LogManager.instance()
+                    .log(this, Level.WARNING, "Error on executing command, retrying... (payload=%s, error=%s)", null, responsePayload, e.toString());
+                continue;
+              }
             }
 
             String cmd = payloadCommand;
