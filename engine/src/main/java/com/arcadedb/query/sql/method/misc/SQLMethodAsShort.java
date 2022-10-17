@@ -22,25 +22,24 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
- * Returns a number as an integer (signed 16 bit representation).
+ * Returns a number as a short (signed 16 bit representation).
  *
- * @author Johann Sorel (Geomatys)
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLMethodAsInteger extends AbstractSQLMethod {
+public class SQLMethodAsShort extends AbstractSQLMethod {
 
-  public static final String NAME = "asinteger";
+  public static final String NAME = "asshort";
 
-  public SQLMethodAsInteger() {
+  public SQLMethodAsShort() {
     super(NAME);
   }
 
   @Override
-  public Object execute( Object iThis, Identifiable iCurrentRecord, CommandContext iContext, Object ioResult, Object[] iParams) {
+  public Object execute(Object iThis, Identifiable iCurrentRecord, CommandContext iContext, Object ioResult, Object[] iParams) {
     if (ioResult instanceof Number) {
-      ioResult = ((Number) ioResult).intValue();
+      ioResult = ((Number) ioResult).shortValue();
     } else {
-      ioResult = ioResult != null ? Integer.valueOf(ioResult.toString().trim()) : null;
+      ioResult = ioResult != null ? Short.valueOf(ioResult.toString().trim()) : null;
     }
     return ioResult;
   }

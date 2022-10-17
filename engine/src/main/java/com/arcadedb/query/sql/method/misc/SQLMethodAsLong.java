@@ -24,6 +24,8 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import java.util.*;
 
 /**
+ * Returns a number as a long (signed 32 bit representation).
+ *
  * @author Johann Sorel (Geomatys)
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */

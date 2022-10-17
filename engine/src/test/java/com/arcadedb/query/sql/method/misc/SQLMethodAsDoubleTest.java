@@ -22,16 +22,15 @@ import com.arcadedb.query.sql.executor.SQLMethod;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
-
 import static org.assertj.core.api.Assertions.assertThat;
 
-class SQLMethodAsLongTest {
+class SQLMethodAsDoubleTest {
+
   private SQLMethod method;
 
   @BeforeEach
   void setUp() {
-    method = new SQLMethodAsLong();
+    method = new SQLMethodAsDouble();
   }
 
   @Test
@@ -41,32 +40,31 @@ class SQLMethodAsLongTest {
   }
 
   @Test
-  void testStringToLong() {
-    Object result = method.execute(null, null, null, "10", null);
-    assertThat(result).isInstanceOf(Long.class);
-    assertThat(result).isEqualTo(10l);
+  void testStringToDouble() {
+    Object result = method.execute(null, null, null, "10.0", null);
+    assertThat(result).isInstanceOf(Double.class);
+    assertThat(result).isEqualTo(10.0D);
   }
 
   @Test
-  void testLongToLong() {
+  void testLongToDouble() {
     Object result = method.execute(null, null, null, 10l, null);
-    assertThat(result).isInstanceOf(Long.class);
-    assertThat(result).isEqualTo(10l);
+    assertThat(result).isInstanceOf(Double.class);
+    assertThat(result).isEqualTo(10.0D);
   }
 
   @Test
-  void testIntegerToLong() {
+  void testDoubleToDouble() {
+    Object result = method.execute(null, null, null, 10.0D, null);
+    assertThat(result).isInstanceOf(Double.class);
+    assertThat(result).isEqualTo(10.0D);
+  }
+
+  @Test
+  void testIntegerToDouble() {
     Object result = method.execute(null, null, null, 10, null);
-    assertThat(result).isInstanceOf(Long.class);
-    assertThat(result).isEqualTo(10l);
-  }
-
-  @Test
-  void testDateToLong() {
-    Date now = new Date();
-    Object result = method.execute(null, null, null, now, null);
-    assertThat(result).isInstanceOf(Long.class);
-    assertThat(result).isEqualTo(now.getTime());
+    assertThat(result).isInstanceOf(Double.class);
+    assertThat(result).isEqualTo(10.0D);
   }
 
 }

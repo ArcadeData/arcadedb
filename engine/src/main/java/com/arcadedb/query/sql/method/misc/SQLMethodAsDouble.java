@@ -22,26 +22,25 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
- * Returns a number as an integer (signed 16 bit representation).
+ * Returns a number as a double (signed 32 bit representation).
  *
- * @author Johann Sorel (Geomatys)
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
-public class SQLMethodAsInteger extends AbstractSQLMethod {
+public class SQLMethodAsDouble extends AbstractSQLMethod {
 
-  public static final String NAME = "asinteger";
+  public static final String NAME = "asdouble";
 
-  public SQLMethodAsInteger() {
+  public SQLMethodAsDouble() {
     super(NAME);
   }
 
   @Override
-  public Object execute( Object iThis, Identifiable iCurrentRecord, CommandContext iContext, Object ioResult, Object[] iParams) {
-    if (ioResult instanceof Number) {
-      ioResult = ((Number) ioResult).intValue();
-    } else {
-      ioResult = ioResult != null ? Integer.valueOf(ioResult.toString().trim()) : null;
-    }
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, Object ioResult, final Object[] iParams) {
+    if (ioResult instanceof Number)
+      ioResult = ((Number) ioResult).doubleValue();
+    else
+      ioResult = ioResult != null ? Double.valueOf(ioResult.toString().trim()) : null;
+
     return ioResult;
   }
 }
