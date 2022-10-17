@@ -27,13 +27,13 @@ import java.util.*;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-public class SQLMethodKeysTest {
+public class SQLMethodValuesTest {
 
   private SQLMethod function;
 
   @BeforeEach
   public void setup() {
-    function = new SQLMethodKeys();
+    function = new SQLMethodValues();
   }
 
   @Test
@@ -44,6 +44,6 @@ public class SQLMethodKeysTest {
     resultInternal.setProperty("surname", "Bar");
 
     Object result = function.execute(null, null, null, resultInternal, null);
-    assertEquals(new LinkedHashSet(Arrays.asList("name", "surname")), result);
+    assertEquals(Arrays.asList("Foo", "Bar"), new ArrayList<>((Collection<String>) result));
   }
 }

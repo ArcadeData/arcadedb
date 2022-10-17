@@ -57,6 +57,7 @@ import com.arcadedb.query.sql.method.misc.SQLMethodToLowerCase;
 import com.arcadedb.query.sql.method.misc.SQLMethodToUpperCase;
 import com.arcadedb.query.sql.method.misc.SQLMethodTrim;
 import com.arcadedb.query.sql.method.misc.SQLMethodType;
+import com.arcadedb.query.sql.method.misc.SQLMethodValues;
 
 import java.util.*;
 
@@ -106,6 +107,7 @@ public class DefaultSQLMethodFactory implements SQLMethodFactory {
     register(SQLMethodType.NAME, new SQLMethodType());
     register(SQLMethodSubString.NAME, new SQLMethodSubString());
     register(SQLMethodToJSON.NAME, new SQLMethodToJSON());
+    register(SQLMethodValues.NAME, new SQLMethodValues());
   }
 
   public void register(final String iName, final Object iImplementation) {
