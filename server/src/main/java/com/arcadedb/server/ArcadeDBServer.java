@@ -18,8 +18,6 @@
  */
 package com.arcadedb.server;
 
-import static com.arcadedb.engine.PaginatedFile.MODE.READ_WRITE;
-
 import com.arcadedb.Constants;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
@@ -49,6 +47,9 @@ import java.lang.reflect.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.logging.*;
+
+import static com.arcadedb.engine.PaginatedFile.MODE.READ_ONLY;
+import static com.arcadedb.engine.PaginatedFile.MODE.READ_WRITE;
 
 public class ArcadeDBServer {
   public enum STATUS {OFFLINE, STARTING, ONLINE, SHUTTING_DOWN}
@@ -276,7 +277,7 @@ public class ArcadeDBServer {
     return databases.containsKey(databaseName);
   }
 
-  public synchronized DatabaseInternal createDatabase(final String databaseName) {
+  public synchronized DatabaseInternal createDatabase(final String databaseName, final PaginatedFile.MODE mode) {
     DatabaseInternal db = databases.get(databaseName);
     if (db != null)
       throw new IllegalArgumentException("Database '" + databaseName + "' already exists");
@@ -288,6 +289,11 @@ public class ArcadeDBServer {
       throw new IllegalArgumentException("Database '" + databaseName + "' already exists");
 
     db = (DatabaseInternal) factory.create();
+
+    if (mode == READ_ONLY) {
+      db.close();
+      db = (DatabaseInternal) factory.open(mode);
+    }
 
     if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
       db = new ReplicatedDatabase(this, (EmbeddedDatabase) db);
@@ -353,9 +359,9 @@ public class ArcadeDBServer {
 
       factory.setSecurity(getSecurity());
 
-      final PaginatedFile.MODE defaultDbMode = Optional.ofNullable(
-          GlobalConfiguration.SERVER_DEFAULT_DATABASE_MODE.getValueAsEnum(PaginatedFile.MODE.class))
-          .orElse(READ_WRITE);
+      PaginatedFile.MODE defaultDbMode = configuration.getValueAsEnum(GlobalConfiguration.SERVER_DEFAULT_DATABASE_MODE, PaginatedFile.MODE.class);
+      if (defaultDbMode == null)
+        defaultDbMode = READ_WRITE;
 
       if (createIfNotExists)
         db = (DatabaseInternal) (factory.exists() ? factory.open(defaultDbMode) : factory.create());
@@ -390,6 +396,10 @@ public class ArcadeDBServer {
   private void loadDefaultDatabases() {
     final String defaultDatabases = configuration.getValueAsString(GlobalConfiguration.SERVER_DEFAULT_DATABASES);
     if (defaultDatabases != null && !defaultDatabases.isEmpty()) {
+      PaginatedFile.MODE defaultDbMode = configuration.getValueAsEnum(GlobalConfiguration.SERVER_DEFAULT_DATABASE_MODE, PaginatedFile.MODE.class);
+      if (defaultDbMode == null)
+        defaultDbMode = READ_WRITE;
+
       // CREATE DEFAULT DATABASES
       final String[] dbs = defaultDatabases.split(";");
       for (String db : dbs) {
@@ -450,7 +460,7 @@ public class ArcadeDBServer {
               if (database == null) {
                 // CREATE THE DATABASE
                 LogManager.instance().log(this, Level.INFO, "Creating default database '%s'...", null, dbName);
-                database = createDatabase(dbName);
+                database = createDatabase(dbName, defaultDbMode);
               }
               database.command("sql", "import database " + commandParams);
               break;
@@ -463,7 +473,7 @@ public class ArcadeDBServer {
           if (database == null) {
             // CREATE THE DATABASE
             LogManager.instance().log(this, Level.INFO, "Creating default database '%s'...", null, dbName);
-            createDatabase(dbName);
+            createDatabase(dbName, defaultDbMode);
           }
         }
       }

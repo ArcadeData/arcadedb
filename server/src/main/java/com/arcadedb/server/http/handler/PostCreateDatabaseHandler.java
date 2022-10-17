@@ -19,6 +19,7 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
@@ -46,7 +47,7 @@ public class PostCreateDatabaseHandler extends DatabaseAbstractHandler {
 
     httpServer.getServer().getServerMetrics().meter("http.create-database").mark();
 
-    httpServer.getServer().createDatabase(databaseName.getFirst());
+    httpServer.getServer().createDatabase(databaseName.getFirst(), PaginatedFile.MODE.READ_WRITE);
 
     exchange.setStatusCode(200);
     exchange.getResponseSender().send("{ \"result\" : \"ok\"}");

@@ -18,14 +18,14 @@
  */
 package com.arcadedb.server;
 
-import static com.arcadedb.engine.PaginatedFile.MODE.READ_ONLY;
-
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
+
+import static com.arcadedb.engine.PaginatedFile.MODE.READ_ONLY;
 
 public class ServerReadOnlyDatabasesIT extends BaseGraphServerTest {
 
@@ -39,8 +39,8 @@ public class ServerReadOnlyDatabasesIT extends BaseGraphServerTest {
   }
 
   protected void onServerConfiguration(final ContextConfiguration config) {
-    config.setValue(GlobalConfiguration.SERVER_DEFAULT_DATABASES, "Universe[elon:musk:admin];Amiga[Jay:Miner:admin,Jack:Tramiel:admin,root]");
     config.setValue(GlobalConfiguration.SERVER_DEFAULT_DATABASE_MODE, "READ_ONLY");
+    config.setValue(GlobalConfiguration.SERVER_DEFAULT_DATABASES, "Universe[elon:musk:admin];Amiga[Jay:Miner:admin,Jack:Tramiel:admin,root]");
   }
 
   @Test
