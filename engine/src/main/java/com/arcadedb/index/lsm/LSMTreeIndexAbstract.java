@@ -214,6 +214,20 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   }
 
   /**
+   * Checks if all the key values are NULL.
+   */
+  public static boolean isKeyNull(final Object[] keys) {
+    if (keys == null)
+      return true;
+
+    for (int i = 0; i < keys.length; ++i)
+      if (keys[i] != null)
+        return false;
+
+    return true;
+  }
+
+  /**
    * Lookups for an entry in the index by using dichotomy search.
    *
    * @param purpose 0 = exists, 1 = retrieve, 2 = ascending iterator, 3 = descending iterator
@@ -479,27 +493,15 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     currentPage.writeByte(INT_SERIALIZED_SIZE + INT_SERIALIZED_SIZE, (byte) (mutable ? 1 : 0));
   }
 
-  public static boolean isKeyNull(final Object[] keys) {
-    if (keys == null)
-      return true;
-
-    for (int i = 0; i < keys.length; ++i)
-      if (keys[i] == null)
-        return true;
-
-    return false;
-  }
-
-  protected Object[] checkForNulls(final Object[] keys) {
+  protected void checkForNulls(final Object[] keys) {
     if (nullStrategy != NULL_STRATEGY.ERROR)
-      return keys;
+      return;
 
     if (keys != null)
       for (int i = 0; i < keys.length; ++i)
         if (keys[i] == null)
           throw new IllegalArgumentException(
               "Indexed key " + mainIndex.getTypeName() + mainIndex.propertyNames + " cannot be NULL (" + Arrays.toString(keys) + ")");
-    return keys;
   }
 
   protected boolean lookupInPageAndAddInResultset(final BasePage currentPage, final Binary currentPageBuffer, final int count, final Object[] originalKeys,

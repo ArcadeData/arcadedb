@@ -25,6 +25,7 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
@@ -241,6 +242,10 @@ public class TransactionIndexContext {
   }
 
   public void addIndexKeyLock(final IndexInternal index, final boolean addOperation, final Object[] keysValues, final RID rid) {
+    if (index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.SKIP && LSMTreeIndexAbstract.isKeyNull(keysValues))
+      // NULL VALUES AND SKIP NUL VALUES
+      return;
+
     final String indexName = index.getName();
 
     TreeMap<ComparableKey, Map<IndexKey, IndexKey>> keys = indexEntries.get(indexName);

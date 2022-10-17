@@ -21,9 +21,11 @@ package com.arcadedb.index;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -127,4 +129,51 @@ public class NullValuesIndexTest extends TestHelper {
     database.transaction(() -> Assertions.assertEquals(database.countType(TYPE_NAME, true), TOT + TOT));
   }
 
+  @Test
+  public void testNullStrategySkipUnique() {
+    Assertions.assertFalse(database.getSchema().existsType(TYPE_NAME));
+
+    final VertexType type = database.getSchema().createVertexType(TYPE_NAME, 3);
+    type.createProperty("id", Integer.class);
+    type.createProperty("absent", String.class);
+    database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
+    database.getSchema()
+        .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "absent" }, PAGE_SIZE, LSMTreeIndexAbstract.NULL_STRATEGY.SKIP, null);
+
+    database.transaction(() -> {
+      for (int i = 0; i < TOT; ++i) {
+        final MutableVertex v = database.newVertex(TYPE_NAME);
+        v.set("id", i);
+        v.set("name", "Jay");
+        v.set("surname", "Miner");
+        v.save();
+      }
+
+      database.commit();
+      database.begin();
+    });
+
+    database.transaction(() -> Assertions.assertEquals(database.countType(TYPE_NAME, true), TOT));
+
+    database.close();
+    database = factory.open();
+
+    // TRY AGAIN WITH A RE-OPEN DATABASE
+    database.transaction(() -> {
+      Assertions.assertTrue(database.getSchema().existsType(TYPE_NAME));
+
+      for (int i = TOT; i < TOT + TOT; ++i) {
+        final MutableVertex v = database.newVertex(TYPE_NAME);
+        v.set("id", i);
+        v.set("name", "Jay" + i);
+        v.set("surname", "Miner");
+        v.save();
+      }
+
+      database.commit();
+      database.begin();
+    });
+
+    database.transaction(() -> Assertions.assertEquals(database.countType(TYPE_NAME, true), TOT + TOT));
+  }
 }
