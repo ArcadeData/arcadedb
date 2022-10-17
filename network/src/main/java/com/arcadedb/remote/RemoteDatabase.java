@@ -260,17 +260,17 @@ public class RemoteDatabase extends RWLockContext {
     return databaseName;
   }
 
-  private Object serverCommand(final String operation, final String language, final String payloadCommand, final Map<String, Object> params,
-      final boolean leaderIsPreferable, final boolean autoReconnect, final Callback callback) {
-    return httpCommand(null, operation, language, payloadCommand, params, leaderIsPreferable, autoReconnect, callback);
+  private Object serverCommand(final String method, final String operation, final String language, final String payloadCommand,
+      final Map<String, Object> params, final boolean leaderIsPreferable, final boolean autoReconnect, final Callback callback) {
+    return httpCommand(method, null, operation, language, payloadCommand, params, leaderIsPreferable, autoReconnect, callback);
   }
 
   private Object databaseCommand(final String operation, final String language, final String payloadCommand, final Map<String, Object> params,
       final boolean requiresLeader, final Callback callback) {
-    return httpCommand(databaseName, operation, language, payloadCommand, params, requiresLeader, true, callback);
+    return httpCommand("POST", databaseName, operation, language, payloadCommand, params, requiresLeader, true, callback);
   }
 
-  private Object httpCommand(final String extendedURL, final String operation, final String language, final String payloadCommand,
+  private Object httpCommand(final String method, final String extendedURL, final String operation, final String language, final String payloadCommand,
       final Map<String, Object> params, final boolean leaderIsPreferable, final boolean autoReconnect, final Callback callback) {
 
     Exception lastException = null;
@@ -289,7 +289,7 @@ public class RemoteDatabase extends RWLockContext {
         url += "/" + extendedURL;
 
       try {
-        final HttpURLConnection connection = createConnection("POST", url);
+        final HttpURLConnection connection = createConnection(method, url);
         connection.setDoOutput(true);
         try {
 
@@ -456,7 +456,7 @@ public class RemoteDatabase extends RWLockContext {
   }
 
   private void requestClusterConfiguration() {
-    serverCommand("server", "SQL", null, null, false, false, new Callback() {
+    serverCommand("GET", "server", "SQL", null, null, false, false, new Callback() {
       @Override
       public Object call(final HttpURLConnection connection, final JSONObject response) {
         LogManager.instance().log(this, Level.FINE, "Configuring remote database: %s", null, response);

@@ -87,7 +87,7 @@ public class RemoteImmutableDocument extends ImmutableDocument {
   public synchronized Map<String, Object> toMap() {
     final HashMap<String, Object> result = new HashMap<>(map);
     result.put("@cat", "d");
-    result.put("@type", type.getName());
+    result.put("@type", typeName);
     if (getIdentity() != null)
       result.put("@rid", getIdentity().toString());
     return result;

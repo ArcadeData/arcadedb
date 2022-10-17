@@ -27,6 +27,8 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import org.json.JSONObject;
 
+import java.util.*;
+
 public class RemoteMutableDocument extends MutableDocument {
   protected final RemoteDatabase remoteDatabase;
   protected final String         typeName;
@@ -84,6 +86,16 @@ public class RemoteMutableDocument extends MutableDocument {
   @Override
   public synchronized JSONObject toJSON() {
     final JSONObject result = new JSONSerializer(database).map2json(map);
+    result.put("@cat", "d");
+    result.put("@type", typeName);
+    if (getIdentity() != null)
+      result.put("@rid", getIdentity().toString());
+    return result;
+  }
+
+  @Override
+  public synchronized Map<String, Object> toMap() {
+    final Map<String, Object> result = new HashMap<>(map);
     result.put("@cat", "d");
     result.put("@type", typeName);
     if (getIdentity() != null)

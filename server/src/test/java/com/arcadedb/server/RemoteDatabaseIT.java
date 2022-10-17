@@ -93,7 +93,7 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
         final RID rid1 = rec.getIdentity().get();
 
         // CREATE VERTEX 2
-        result = database.command("SQL", "insert into Character set name = 'Kimbal'");
+        result = database.command("SQL", "create vertex Character set name = 'Kimbal'");
         Assertions.assertNotNull(result);
         Assertions.assertTrue(result.hasNext());
         rec = result.next();
@@ -150,8 +150,8 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
       Assertions.assertEquals("Musk", kimbal.getString("lastName"));
       Assertions.assertEquals(100, kimbal.getInteger("extra"));
 
-      Assertions.assertFalse(kimbal.toMap().containsKey("@cat"));
-      Assertions.assertFalse(kimbal.toMap().containsKey("@type"));
+      Assertions.assertTrue(kimbal.toMap().containsKey("@cat"));
+      Assertions.assertTrue(kimbal.toMap().containsKey("@type"));
       Assertions.assertFalse(kimbal.toMap().containsKey("@out"));
       Assertions.assertFalse(kimbal.toMap().containsKey("@in"));
 
