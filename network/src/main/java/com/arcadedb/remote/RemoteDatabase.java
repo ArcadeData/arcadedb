@@ -339,7 +339,7 @@ public class RemoteDatabase extends RWLockContext {
 
             String cmd = payloadCommand;
             if (cmd == null)
-              cmd = "-";
+              cmd = operation;
 
             if (exception != null) {
               if (detail == null)
