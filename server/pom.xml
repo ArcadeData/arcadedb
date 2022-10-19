@@ -34,7 +34,7 @@
 
     <properties>
         <metrics.version>4.2.12</metrics.version>
-        <slf4j-simple.version>2.0.3</slf4j-simple.version>
+        <slf4j.version>2.0.3</slf4j.version>
         <undertow-core.version>2.3.0.Final</undertow-core.version>
     </properties>
 
@@ -87,6 +87,18 @@
             <version>${undertow-core.version}</version>
         </dependency>
         <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+            <version>${slf4j.version}</version>
+            <scope>compile</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-jdk14</artifactId>
+            <version>${slf4j.version}</version>
+        </dependency>
+
+        <dependency>
             <groupId>io.dropwizard.metrics</groupId>
             <artifactId>metrics-core</artifactId>
             <version>${metrics.version}</version>
@@ -95,12 +107,6 @@
             <groupId>io.dropwizard.metrics</groupId>
             <artifactId>metrics-jmx</artifactId>
             <version>${metrics.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>org.slf4j</groupId>
-            <artifactId>slf4j-simple</artifactId>
-            <version>${slf4j-simple.version}</version>
-            <scope>compile</scope>
         </dependency>
     </dependencies>
 
