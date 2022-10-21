@@ -27,6 +27,7 @@ import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.Pair;
@@ -116,7 +117,9 @@ public class GraphEngine {
 
     final DatabaseInternal database = (DatabaseInternal) fromVertex.getDatabase();
 
-    final MutableEdge edge = new MutableEdge(database, database.getSchema().getType(edgeTypeName), fromVertexRID, toVertex.getIdentity());
+    final EdgeType type = (EdgeType) database.getSchema().getType(edgeTypeName);
+
+    final MutableEdge edge = new MutableEdge(database, type, fromVertexRID, toVertex.getIdentity());
     if (edgeProperties != null && edgeProperties.length > 0)
       setProperties(edge, edgeProperties);
 
@@ -178,7 +181,9 @@ public class GraphEngine {
 
       final Identifiable destinationVertex = connection.destinationVertex;
 
-      edge = new MutableEdge(database, database.getSchema().getType(connection.edgeTypeName), sourceVertexRID, destinationVertex.getIdentity());
+      final EdgeType edgeType = (EdgeType) database.getSchema().getType(connection.edgeTypeName);
+
+      edge = new MutableEdge(database, edgeType, sourceVertexRID, destinationVertex.getIdentity());
 
       if (connection.edgeProperties != null && connection.edgeProperties.length > 0)
         setProperties(edge, connection.edgeProperties);

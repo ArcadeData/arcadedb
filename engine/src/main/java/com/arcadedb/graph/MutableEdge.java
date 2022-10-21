@@ -23,7 +23,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Transaction;
-import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
 import com.arcadedb.serializer.BinaryTypes;
 import org.json.JSONObject;
 
@@ -40,23 +40,23 @@ public class MutableEdge extends MutableDocument implements Edge {
   protected RID out;
   protected RID in;
 
-  public MutableEdge(final Database graph, final DocumentType type, final RID out, RID in) {
+  public MutableEdge(final Database graph, final EdgeType type, final RID out, RID in) {
     super(graph, type, null);
     this.out = out;
     this.in = in;
   }
 
-  public MutableEdge(final Database graph, final DocumentType type, final RID edgeRID, final RID out, RID in) {
+  public MutableEdge(final Database graph, final EdgeType type, final RID edgeRID, final RID out, RID in) {
     super(graph, type, edgeRID);
     this.out = out;
     this.in = in;
   }
 
-  public MutableEdge(final Database graph, final DocumentType type, final RID rid) {
+  public MutableEdge(final Database graph, final EdgeType type, final RID rid) {
     super(graph, type, rid);
   }
 
-  public MutableEdge(final Database graph, final DocumentType type, final RID rid, final Binary buffer) {
+  public MutableEdge(final Database graph, final EdgeType type, final RID rid, final Binary buffer) {
     super(graph, type, rid, buffer);
     init();
   }

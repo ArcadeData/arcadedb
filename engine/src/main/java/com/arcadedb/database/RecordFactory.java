@@ -28,6 +28,7 @@ import com.arcadedb.graph.MutableEdgeSegment;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.VertexType;
 
 public class RecordFactory {
@@ -67,9 +68,9 @@ public class RecordFactory {
 
   public Record newMutableRecord(final Database database, final DocumentType type) {
     if (type instanceof VertexType)
-      return new MutableVertex(database, type, null);
+      return new MutableVertex(database, (VertexType) type, null);
     if (type instanceof VertexType)
-      return new MutableEdge(database, type, null);
+      return new MutableEdge(database, (EdgeType) type, null);
     return new MutableDocument(database, type, null);
   }
 
@@ -82,9 +83,9 @@ public class RecordFactory {
     case Document.RECORD_TYPE:
       return new MutableDocument(database, type, rid, content);
     case Vertex.RECORD_TYPE:
-      return new MutableVertex(database, type, rid);
+      return new MutableVertex(database, (VertexType) type, rid);
     case Edge.RECORD_TYPE:
-      return new MutableEdge(database, type, rid);
+      return new MutableEdge(database, (EdgeType) type, rid);
     case EdgeSegment.RECORD_TYPE:
       return new MutableEdgeSegment(database, rid);
     case EmbeddedDocument.RECORD_TYPE:

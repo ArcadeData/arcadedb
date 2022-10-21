@@ -669,4 +669,22 @@ public class BasicGraphTest extends BaseGraphTest {
 
     database.transaction(() -> database.command("sql", "create edge OnlyOneBetweenVertices from ? to ? IF NOT EXISTS", v1[0], v2[0]));
   }
+
+  // https://github.com/ArcadeData/arcadedb/issues/577
+  @Test
+  public void testEdgeTypeNotFromVertex() {
+    var vType = database.getSchema().createVertexType("a-vertex");
+    var eType = database.getSchema().createEdgeType("a-edge");
+
+    database.begin();
+    var v1 = database.newVertex("a-vertex").save();
+    var v2 = database.newVertex("a-vertex").save();
+
+    try {
+      Edge e1 = v1.newEdge("a-vertex", v2, /*= bidirectional */ true); // <-- expect IllegalArgumentException
+      Assertions.fail("Created an edge of vertex type");
+    } catch (ClassCastException e) {
+      // EXPECTED
+    }
+  }
 }

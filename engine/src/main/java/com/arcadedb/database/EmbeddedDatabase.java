@@ -1085,7 +1085,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
     stats.createRecord.incrementAndGet();
 
-    return new MutableVertex(wrappedDatabaseInstance, type, null);
+    return new MutableVertex(wrappedDatabaseInstance, (VertexType) type, null);
   }
 
   public Edge newEdgeByKeys(final String sourceVertexType, final String[] sourceVertexKeyNames, final Object[] sourceVertexKeyValues,

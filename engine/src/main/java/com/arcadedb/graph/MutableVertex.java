@@ -24,7 +24,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Transaction;
-import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.VertexType;
 import org.json.JSONObject;
 
 import java.util.*;
@@ -43,14 +43,14 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
   /**
    * Creation constructor.
    */
-  public MutableVertex(final Database graph, final DocumentType type, final RID rid) {
+  public MutableVertex(final Database graph, final VertexType type, final RID rid) {
     super(graph, type, rid);
   }
 
   /**
    * Copy constructor from ImmutableVertex.modify().
    */
-  public MutableVertex(final Database graph, final DocumentType type, final RID rid, final Binary buffer) {
+  public MutableVertex(final Database graph, final VertexType type, final RID rid, final Binary buffer) {
     super(graph, type, rid, buffer);
     init();
   }

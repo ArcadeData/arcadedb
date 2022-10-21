@@ -26,6 +26,7 @@ import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.VertexType;
 import org.json.JSONObject;
 
 import java.util.*;
@@ -68,7 +69,7 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
 
     checkForLazyLoading();
     buffer.rewind();
-    return new MutableVertex(database, type, rid, buffer.copy());
+    return new MutableVertex(database, (VertexType) type, rid, buffer.copy());
   }
 
   @Override

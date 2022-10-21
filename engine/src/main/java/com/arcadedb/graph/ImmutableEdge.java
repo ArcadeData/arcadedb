@@ -24,6 +24,7 @@ import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
 import com.arcadedb.serializer.BinaryTypes;
 import org.json.JSONObject;
 
@@ -64,9 +65,9 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
     checkForLazyLoading();
     if (buffer != null) {
       buffer.rewind();
-      return new MutableEdge(database, type, rid, buffer.copy());
+      return new MutableEdge(database, (EdgeType) type, rid, buffer.copy());
     }
-    return new MutableEdge(database, type, rid, getOut(), getIn());
+    return new MutableEdge(database, (EdgeType) type, rid, getOut(), getIn());
   }
 
   @Override
