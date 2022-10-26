@@ -53,6 +53,8 @@ public interface Document extends Record {
 
   BigDecimal getDecimal(String propertyName);
 
+  byte[] getBinary(String propertyName);
+
   Date getDate(String propertyName);
 
   EmbeddedDocument getEmbedded(String propertyName);

@@ -100,6 +100,11 @@ public abstract class BaseDocument extends BaseRecord implements Document, Seria
   }
 
   @Override
+  public byte[] getBinary(final String propertyName) {
+    return (byte[]) Type.convert(database, get(propertyName), byte[].class);
+  }
+
+  @Override
   public EmbeddedDocument getEmbedded(final String propertyName) {
     return (EmbeddedDocument) Type.convert(database, get(propertyName), EmbeddedDocument.class);
   }
