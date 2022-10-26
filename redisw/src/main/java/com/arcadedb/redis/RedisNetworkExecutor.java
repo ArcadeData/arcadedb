@@ -326,7 +326,7 @@ public class RedisNetworkExecutor extends Thread {
         if (type instanceof VertexType)
           document = database.newVertex(typeName);
         else if (type instanceof EdgeType)
-          document = new MutableEdge(database, type, null);
+          document = new MutableEdge(database, (EdgeType) type, null);
         else
           document = database.newDocument(typeName);
 
