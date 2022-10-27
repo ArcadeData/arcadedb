@@ -76,15 +76,16 @@ public class ResultInternal implements Result {
     return temporaryContent == null ? Collections.emptySet() : temporaryContent.keySet();
   }
 
-  public void setProperty(final String name, Object value) {
+  public ResultInternal setProperty(final String name, Object value) {
     if (value instanceof Optional)
       value = ((Optional) value).orElse(null);
 
-    if (value instanceof Result && ((Result) value).isElement()) {
+    if (value instanceof Result && ((Result) value).isElement())
       content.put(name, ((Result) value).getElement().get());
-    } else {
+    else
       content.put(name, value);
-    }
+
+    return this;
   }
 
   public void removeProperty(final String name) {
@@ -301,8 +302,9 @@ public class ResultInternal implements Result {
     return metadata == null ? Collections.emptySet() : metadata.keySet();
   }
 
-  public void setElement(final Document element) {
+  public ResultInternal setElement(final Document element) {
     this.element = element;
+    return this;
   }
 
   @Override
@@ -346,7 +348,8 @@ public class ResultInternal implements Result {
     return content.hashCode();
   }
 
-  public void setPropertiesFromMap(final Map<String, Object> stats) {
+  public ResultInternal setPropertiesFromMap(final Map<String, Object> stats) {
     content.putAll(stats);
+    return this;
   }
 }

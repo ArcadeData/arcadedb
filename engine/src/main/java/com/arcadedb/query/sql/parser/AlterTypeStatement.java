@@ -115,13 +115,13 @@ public class AlterTypeStatement extends DDLStatement {
       return false;
     if (!identifierListAddRemove.equals(that.identifierListAddRemove))
       return false;
-    if (numberValue != null ? !numberValue.equals(that.numberValue) : that.numberValue != null)
+    if (!Objects.equals(numberValue, that.numberValue))
       return false;
-    if (booleanValue != null ? !booleanValue.equals(that.booleanValue) : that.booleanValue != null)
+    if (!Objects.equals(booleanValue, that.booleanValue))
       return false;
-    if (customKey != null ? !customKey.equals(that.customKey) : that.customKey != null)
+    if (!Objects.equals(customKey, that.customKey))
       return false;
-    return customValue != null ? customValue.equals(that.customValue) : that.customValue == null;
+    return Objects.equals(customValue, that.customValue);
   }
 
   @Override

@@ -24,14 +24,16 @@ package com.arcadedb.query.sql.executor;
 public class TraverseResult extends ResultInternal {
   protected Integer depth;
 
-  @Override public <T> T getProperty(String name) {
-    if ("$depth".equalsIgnoreCase(name)) {
+  @Override
+  public <T> T getProperty(final String name) {
+    if ("$depth".equalsIgnoreCase(name))
       return (T) depth;
-    }
+
     return super.getProperty(name);
   }
 
-  @Override public void setProperty(String name, Object value) {
+  @Override
+  public ResultInternal setProperty(final String name, final Object value) {
     if ("$depth".equalsIgnoreCase(name)) {
       if (value instanceof Number) {
         depth = ((Number) value).intValue();
@@ -39,5 +41,6 @@ public class TraverseResult extends ResultInternal {
     } else {
       super.setProperty(name, value);
     }
+    return this;
   }
 }

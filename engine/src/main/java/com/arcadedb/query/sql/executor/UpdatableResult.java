@@ -64,8 +64,9 @@ public class UpdatableResult extends ResultInternal {
   }
 
   @Override
-  public void setProperty(final String name, final Object value) {
+  public ResultInternal setProperty(final String name, final Object value) {
     element.set(name, value);
+    return this;
   }
 
   public void removeProperty(final String name) {

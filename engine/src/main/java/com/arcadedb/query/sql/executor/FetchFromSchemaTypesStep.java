@@ -23,7 +23,6 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.Index;
-import com.arcadedb.index.IndexInternal;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 
@@ -84,22 +83,33 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
                 propRes.setProperty("id", property.getId());
                 propRes.setProperty("name", property.getName());
                 propRes.setProperty("type", property.getType());
+
+                final List<ResultInternal> customs = new ArrayList<>();
+                for (Object customKey : property.getCustomKeys().stream().sorted(String::compareToIgnoreCase).toArray())
+                  customs.add(new ResultInternal().setProperty((String) customKey, property.getCustomValue((String) customKey)));
+                propRes.setProperty("custom", customs);
+
                 return propRes;
               }).collect(Collectors.toList());
           r.setProperty("properties", propertiesTypes);
 
           final List<ResultInternal> indexes = type.getAllIndexes(false).stream().sorted(Comparator.comparing(Index::getName)).map(typeIndex -> {
-            final IndexInternal typeIndexInternal = (IndexInternal) typeIndex;
             final ResultInternal propRes = new ResultInternal();
-            propRes.setProperty("name", typeIndexInternal.getName());
-            propRes.setProperty("typeName", typeIndexInternal.getTypeName());
-            propRes.setProperty("type", typeIndexInternal.getType());
-            propRes.setProperty("properties", typeIndexInternal.getPropertyNames());
-            propRes.setProperty("automatic", typeIndexInternal.isAutomatic());
-            propRes.setProperty("unique", typeIndexInternal.isUnique());
+            propRes.setProperty("name", typeIndex.getName());
+            propRes.setProperty("typeName", typeIndex.getTypeName());
+            propRes.setProperty("type", typeIndex.getType());
+            propRes.setProperty("properties", typeIndex.getPropertyNames());
+            propRes.setProperty("automatic", typeIndex.isAutomatic());
+            propRes.setProperty("unique", typeIndex.isUnique());
             return propRes;
           }).collect(Collectors.toList());
           r.setProperty("indexes", indexes);
+
+          final List<ResultInternal> customs = new ArrayList<>();
+          for (Object customKey : type.getCustomKeys().stream().sorted(String::compareToIgnoreCase).toArray())
+            customs.add(new ResultInternal().setProperty((String) customKey, type.getCustomValue((String) customKey)));
+          r.setProperty("custom", customs);
+
         }
       } finally {
         if (profilingEnabled) {

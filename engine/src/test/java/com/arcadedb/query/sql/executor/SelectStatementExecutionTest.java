@@ -985,7 +985,8 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testQuerySchema() {
-    database.getSchema().createDocumentType("testQuerySchema");
+    DocumentType type = database.getSchema().createDocumentType("testQuerySchema");
+    type.setCustomValue("description", "this is just a test");
 
     ResultSet result = database.query("sql", "select from schema:types");
     printExecutionPlan(result);
@@ -993,6 +994,12 @@ public class SelectStatementExecutionTest extends TestHelper {
     Assertions.assertTrue(result.hasNext());
     Result item = result.next();
     Assertions.assertEquals("testQuerySchema", item.getProperty("name"));
+
+    List<Result> customType = item.getProperty("custom");
+    Assertions.assertNotNull(customType);
+    Assertions.assertEquals(1, customType.size());
+
+    Assertions.assertEquals("this is just a test", customType.get(0).getProperty("description"));
 
     Assertions.assertFalse(result.hasNext());
     result.close();
