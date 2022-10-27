@@ -38,8 +38,12 @@ public class PostCreateDatabaseHandler extends DatabaseAbstractHandler {
 
   @Override
   public void execute(final HttpServerExchange exchange, ServerSecurityUser user, final Database database) {
-    final Deque<String> databaseName = exchange.getQueryParameters().get("database");
-    if (databaseName.isEmpty()) {
+    final Deque<String> databaseNamePar = exchange.getQueryParameters().get("database");
+    String databaseName = databaseNamePar.isEmpty() ? null : databaseNamePar.getFirst().trim();
+    if (databaseName.isEmpty())
+      databaseName = null;
+
+    if (databaseName == null) {
       exchange.setStatusCode(400);
       exchange.getResponseSender().send("{ \"error\" : \"Database parameter is null\"}");
       return;
@@ -47,7 +51,7 @@ public class PostCreateDatabaseHandler extends DatabaseAbstractHandler {
 
     httpServer.getServer().getServerMetrics().meter("http.create-database").mark();
 
-    httpServer.getServer().createDatabase(databaseName.getFirst(), PaginatedFile.MODE.READ_WRITE);
+    httpServer.getServer().createDatabase(databaseName, PaginatedFile.MODE.READ_WRITE);
 
     exchange.setStatusCode(200);
     exchange.getResponseSender().send("{ \"result\" : \"ok\"}");

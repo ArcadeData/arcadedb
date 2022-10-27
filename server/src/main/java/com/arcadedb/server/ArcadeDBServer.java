@@ -347,6 +347,9 @@ public class ArcadeDBServer {
   }
 
   public synchronized Database getDatabase(final String databaseName, final boolean createIfNotExists, final boolean allowLoad) {
+    if (databaseName == null || databaseName.trim().isEmpty())
+      throw new IllegalArgumentException("Invalid database name " + databaseName);
+
     DatabaseInternal db = databases.get(databaseName);
 
     if (db == null || !db.isOpen()) {

@@ -582,4 +582,26 @@ public class HTTPGraphIT extends BaseGraphServerTest {
       }
     });
   }
+
+  @Test
+  public void testEmptyDatabaseName() throws Exception {
+    testEachServer((serverIndex) -> {
+      // CREATE THE DATABASE ''
+      HttpURLConnection connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/create/").openConnection();
+      connection.setRequestMethod("POST");
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      connection.connect();
+
+      try {
+        readResponse(connection);
+        Assertions.fail("Empty database should be an error");
+      } catch (Exception e) {
+        Assertions.assertEquals(400, connection.getResponseCode());
+
+      } finally {
+        connection.disconnect();
+      }
+    });
+  }
 }
