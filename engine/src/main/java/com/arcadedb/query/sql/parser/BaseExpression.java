@@ -546,13 +546,15 @@ public class BaseExpression extends MathExpression {
 
       if (escaped) {
         escaped = false;
-        if (c == 'n') {
+        if (c == 'n')
           buffer.append('\n');
-        } else if (c == 't') {
+        else if (c == 't')
           buffer.append('\t');
-        } else if (c == 'r') {
+        else if (c == 'r')
           buffer.append('\r');
-        } else
+        else if (c == '%')
+          buffer.append("\\%");
+        else
           buffer.append(c);
         continue;
       } else if (c == '\\') {

@@ -81,7 +81,7 @@ public class Console {
     GlobalConfiguration.PROFILE.setValue("low-cpu");
 
     terminal = TerminalBuilder.builder().system(system).streams(System.in, System.out).jansi(true).build();
-    Completer completer = new StringsCompleter("begin", "rollback", "commit", "check database", "close", "connect", "create database", "drop database",
+    Completer completer = new StringsCompleter("align database", "begin", "rollback", "commit", "check database", "close", "connect", "create database", "drop database",
         "export", "import", "help", "info types", "load", "exit", "quit", "set", "match", "select", "insert into", "update", "delete", "pwd");
 
     lineReader = LineReaderBuilder.builder().terminal(terminal).parser(parser).variable("history-file", ".history").history(new DefaultHistory())

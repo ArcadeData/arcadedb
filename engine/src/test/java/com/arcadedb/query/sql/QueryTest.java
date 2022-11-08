@@ -65,7 +65,7 @@ public class QueryTest extends TestHelper {
         Assertions.assertNotNull(record);
 
         Set<String> prop = new HashSet<>();
-          prop.addAll(record.getPropertyNames());
+        prop.addAll(record.getPropertyNames());
 
         Assertions.assertEquals(3, record.getPropertyNames().size(), 9);
         Assertions.assertTrue(prop.contains("id"));
@@ -401,6 +401,32 @@ public class QueryTest extends TestHelper {
       Assertions.assertFalse(rs.hasNext());
       rs.close();
 
+    });
+  }
+
+  // Issue https://github.com/ArcadeData/arcadedb/issues/603
+  @Test
+  public void testLikeEncoding() {
+    database.transaction(() -> {
+      database.command("SQL", "insert into V set age = '10%'");
+      database.command("SQL", "insert into V set age = '100%'");
+
+      ResultSet rs = database.command("SQL", "SELECT FROM V WHERE age LIKE '10\\%'");
+      Assertions.assertTrue(rs.hasNext());
+      Result result = rs.next();
+      Assertions.assertEquals("10%", result.getProperty("age"));
+      Assertions.assertFalse(rs.hasNext());
+      rs.close();
+
+      rs = database.command("SQL", "SELECT FROM V WHERE age LIKE \"10%\" ORDER BY age");
+      Assertions.assertTrue(rs.hasNext());
+      result = rs.next();
+      Assertions.assertEquals("10%", result.getProperty("age"));
+      Assertions.assertTrue(rs.hasNext());
+      result = rs.next();
+      Assertions.assertEquals("100%", result.getProperty("age"));
+      Assertions.assertFalse(rs.hasNext());
+      rs.close();
     });
   }
 

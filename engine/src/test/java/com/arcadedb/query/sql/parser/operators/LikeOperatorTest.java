@@ -36,6 +36,8 @@ public class LikeOperatorTest {
     Assertions.assertFalse(op.execute(null, "foobar", "%oo"));
     Assertions.assertFalse(op.execute(null, "foobar", "%fff%"));
     Assertions.assertTrue(op.execute(null, "foobar", "foobar"));
+    Assertions.assertTrue(op.execute(null, "100%", "100\\%"));
+    Assertions.assertTrue(op.execute(null, "100%", "100%"));
   }
 
   @Test

@@ -228,14 +228,12 @@ public class RemoteDatabase extends RWLockContext {
   }
 
   public ResultSet command(final String language, final String command, final Object... args) {
-    Map<String, Object> params = mapArgs(args);
-
+    final Map<String, Object> params = mapArgs(args);
     return (ResultSet) databaseCommand("command", language, command, params, true, (connection, response) -> createResultSet(response));
   }
 
   public ResultSet query(final String language, final String command, final Object... args) {
-    Map<String, Object> params = mapArgs(args);
-
+    final Map<String, Object> params = mapArgs(args);
     return (ResultSet) databaseCommand("query", language, command, params, false, (connection, response) -> createResultSet(response));
   }
 

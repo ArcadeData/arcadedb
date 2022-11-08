@@ -45,7 +45,14 @@ public class QueryHelper {
       String replaceWith;
       switch (c) {
       case '\\':
-        replaceWith = "\\\\";
+        if (i + 1 < value.length()) {
+          char next = value.charAt(i + 1);
+          if (next == '%')
+            replaceWith = "" + next;
+          else
+            replaceWith = "\\\\";
+        } else
+          replaceWith = "\\\\";
         break;
       case '[':
         replaceWith = "\\[";
