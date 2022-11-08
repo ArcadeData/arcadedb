@@ -38,12 +38,12 @@ public class SQLMethodAsDateTime extends AbstractSQLMethod {
   public static final String NAME = "asdatetime";
 
   public SQLMethodAsDateTime() {
-    super(NAME, 0, 0);
+    super(NAME, 0, 1);
   }
 
   @Override
   public String getSyntax() {
-    return "asDatetime()";
+    return "asDatetime([<format>])";
   }
 
   @Override
@@ -55,9 +55,10 @@ public class SQLMethodAsDateTime extends AbstractSQLMethod {
         return new Date(((Number) iThis).longValue());
       } else {
         try {
-          return new SimpleDateFormat(iContext.getDatabase().getSchema().getDateTimeFormat()).parse(iThis.toString());
+          final String format = iParams.length > 0 ? iParams[0].toString() : iContext.getDatabase().getSchema().getDateTimeFormat();
+          return new SimpleDateFormat(format).parse(iThis.toString());
         } catch (ParseException e) {
-          LogManager.instance().log(this, Level.SEVERE, "Error during %s execution", e, NAME);
+          LogManager.instance().log(this, Level.SEVERE, "Error during %s method execution", e, NAME);
           // IGNORE IT: RETURN NULL
         }
       }

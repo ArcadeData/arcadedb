@@ -38,12 +38,12 @@ public class SQLMethodAsDate extends AbstractSQLMethod {
   public static final String NAME = "asdate";
 
   public SQLMethodAsDate() {
-    super(NAME, 0, 0);
+    super(NAME, 0, 1);
   }
 
   @Override
   public String getSyntax() {
-    return "asDate()";
+    return "asDate([<format>])";
   }
 
   @Override
@@ -55,10 +55,11 @@ public class SQLMethodAsDate extends AbstractSQLMethod {
         return new Date(((Number) iThis).longValue());
       } else {
         try {
-          return new SimpleDateFormat(iContext.getDatabase().getSchema().getDateFormat()).parse(iThis.toString());
+          final String format = iParams.length > 0 ? iParams[0].toString() : iContext.getDatabase().getSchema().getDateFormat();
+          return new SimpleDateFormat(format).parse(iThis.toString());
 
         } catch (ParseException e) {
-          LogManager.instance().log(this, Level.SEVERE, "Error during %s execution", e, NAME);
+          LogManager.instance().log(this, Level.SEVERE, "Error during %s method execution", e, NAME);
         }
       }
     }
