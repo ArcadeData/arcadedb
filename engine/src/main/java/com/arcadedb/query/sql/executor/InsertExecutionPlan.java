@@ -30,27 +30,25 @@ import java.util.*;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class InsertExecutionPlan extends SelectExecutionPlan {
-
   final List<Result> result = new ArrayList<>();
-  int          next   = 0;
+  int next = 0;
 
-  public InsertExecutionPlan(CommandContext ctx) {
+  public InsertExecutionPlan(final CommandContext ctx) {
     super(ctx);
   }
 
   @Override
   public ResultSet fetchNext(int n) {
-    if (next >= result.size()) {
+    if (next >= result.size())
       return new InternalResultSet();//empty
-    }
 
-    IteratorResultSet nextBlock = new IteratorResultSet(result.subList(next, Math.min(next + n, result.size())).iterator());
+    final IteratorResultSet nextBlock = new IteratorResultSet(result.subList(next, Math.min(next + n, result.size())).iterator());
     next += n;
     return nextBlock;
   }
 
   @Override
-  public void reset(CommandContext ctx) {
+  public void reset(final CommandContext ctx) {
     result.clear();
     next = 0;
     super.reset(ctx);
@@ -59,10 +57,10 @@ public class InsertExecutionPlan extends SelectExecutionPlan {
 
   public void executeInternal() throws CommandExecutionException {
     while (true) {
-      ResultSet nextBlock = super.fetchNext(100);
-      if (!nextBlock.hasNext()) {
+      final ResultSet nextBlock = super.fetchNext(100);
+      if (!nextBlock.hasNext())
         return;
-      }
+
       while (nextBlock.hasNext()) {
         result.add(nextBlock.next());
       }
@@ -71,7 +69,7 @@ public class InsertExecutionPlan extends SelectExecutionPlan {
 
   @Override
   public Result toResult() {
-    ResultInternal res = (ResultInternal) super.toResult();
+    final ResultInternal res = (ResultInternal) super.toResult();
     res.setProperty("type", "InsertExecutionPlan");
     return res;
   }

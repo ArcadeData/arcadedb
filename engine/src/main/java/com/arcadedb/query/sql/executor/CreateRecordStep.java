@@ -43,7 +43,7 @@ public class CreateRecordStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
     getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
     return new ResultSet() {
       int locallyCreated = 0;
@@ -102,9 +102,9 @@ public class CreateRecordStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    StringBuilder result = new StringBuilder();
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
+    final StringBuilder result = new StringBuilder();
     result.append(spaces);
     result.append("+ CREATE EMPTY RECORDS");
     if (profilingEnabled) {

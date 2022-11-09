@@ -45,10 +45,9 @@ public class InsertExecutionPlanner {
   protected SelectStatement selectStatement;
 
   public InsertExecutionPlanner() {
-
   }
 
-  public InsertExecutionPlanner(InsertStatement statement) {
+  public InsertExecutionPlanner(final InsertStatement statement) {
     this.targetType = statement.getTargetType() == null ? null : statement.getTargetType().copy();
     this.targetBucketName = statement.getTargetBucketName() == null ? null : statement.getTargetBucketName().copy();
     this.targetBucket = statement.getTargetBucket() == null ? null : statement.getTargetBucket().copy();
@@ -58,8 +57,8 @@ public class InsertExecutionPlanner {
     this.selectStatement = statement.getSelectStatement() == null ? null : statement.getSelectStatement().copy();
   }
 
-  public InsertExecutionPlan createExecutionPlan(CommandContext ctx, boolean enableProfiling) {
-    InsertExecutionPlan result = new InsertExecutionPlan(ctx);
+  public InsertExecutionPlan createExecutionPlan(final CommandContext ctx, final boolean enableProfiling) {
+    final InsertExecutionPlan result = new InsertExecutionPlan(ctx);
 
     if (targetIndex != null) {
       result.chain(new InsertIntoIndexStep(targetIndex, insertBody, ctx, enableProfiling));
@@ -85,20 +84,19 @@ public class InsertExecutionPlanner {
     return result;
   }
 
-  private void handleSave(InsertExecutionPlan result, Identifier targetClusterName, CommandContext ctx, boolean profilingEnabled) {
+  private void handleSave(final InsertExecutionPlan result, final Identifier targetClusterName, final CommandContext ctx, final boolean profilingEnabled) {
     result.chain(new SaveElementStep(ctx, targetClusterName, profilingEnabled));
   }
 
-  private void handleReturn(InsertExecutionPlan result, Projection returnStatement, CommandContext ctx, boolean profilingEnabled) {
-    if (returnStatement != null) {
+  private void handleReturn(final InsertExecutionPlan result, final Projection returnStatement, final CommandContext ctx, final boolean profilingEnabled) {
+    if (returnStatement != null)
       result.chain(new ProjectionCalculationStep(returnStatement, ctx, profilingEnabled));
-    }
   }
 
-  private void handleSetFields(InsertExecutionPlan result, InsertBody insertBody, CommandContext ctx, boolean profilingEnabled) {
-    if (insertBody == null) {
+  private void handleSetFields(final InsertExecutionPlan result, final InsertBody insertBody, final CommandContext ctx, final boolean profilingEnabled) {
+    if (insertBody == null)
       return;
-    }
+
     if (insertBody.getIdentifierList() != null) {
       result.chain(new InsertValuesStep(insertBody.getIdentifierList(), insertBody.getValueExpressions(), ctx, profilingEnabled));
     } else if (insertBody.getContent() != null) {
@@ -118,13 +116,12 @@ public class InsertExecutionPlanner {
     }
   }
 
-  private void handleTargetClass(InsertExecutionPlan result, Identifier targetClass, CommandContext ctx, boolean profilingEnabled) {
-    if (targetClass != null) {
+  private void handleTargetClass(final InsertExecutionPlan result, final Identifier targetClass, final CommandContext ctx, final boolean profilingEnabled) {
+    if (targetClass != null)
       result.chain(new SetDocumentClassStep(targetClass, ctx, profilingEnabled));
-    }
   }
 
-  private void handleCreateRecord(InsertExecutionPlan result, InsertBody body, CommandContext ctx, boolean profilingEnabled) {
+  private void handleCreateRecord(final InsertExecutionPlan result, final InsertBody body, final CommandContext ctx, final boolean profilingEnabled) {
     int tot = 1;
     if (body != null && body.getValueExpressions() != null && body.getValueExpressions().size() > 0)
       tot = body.getValueExpressions().size();
@@ -145,12 +142,13 @@ public class InsertExecutionPlanner {
     result.chain(new CreateRecordStep(targetType.getStringValue(), ctx, tot, profilingEnabled));
   }
 
-  private void handleInsertSelect(InsertExecutionPlan result, SelectStatement selectStatement, CommandContext ctx, boolean profilingEnabled) {
-    InternalExecutionPlan subPlan = selectStatement.createExecutionPlan(ctx, profilingEnabled);
+  private void handleInsertSelect(final InsertExecutionPlan result, final SelectStatement selectStatement, final CommandContext ctx,
+      final boolean profilingEnabled) {
+    final InternalExecutionPlan subPlan = selectStatement.createExecutionPlan(ctx, profilingEnabled);
     result.chain(new SubQueryStep(subPlan, ctx, ctx, profilingEnabled));
-    if (targetType != null) {
+    if (targetType != null)
       result.chain(new CopyDocumentStep(ctx, targetType.getStringValue(), profilingEnabled));
-    }
+
     result.chain(new RemoveEdgePointersStep(ctx, profilingEnabled));
   }
 }
