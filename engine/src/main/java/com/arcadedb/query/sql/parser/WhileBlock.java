@@ -44,34 +44,33 @@ public class WhileBlock extends Statement {
   }
 
   @Override
-  public ResultSet execute(Database db, Object[] args, CommandContext parentCtx, boolean usePlanCache) {
-    BasicCommandContext ctx = new BasicCommandContext();
-    if (parentCtx != null) {
+  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentCtx,final  boolean usePlanCache) {
+    final BasicCommandContext ctx = new BasicCommandContext();
+    if (parentCtx != null)
       ctx.setParentWithoutOverridingChild(parentCtx);
-    }
+
     ctx.setDatabase(db);
     ctx.setInputParameters(args);
-    UpdateExecutionPlan executionPlan;
-    if (usePlanCache) {
+    final UpdateExecutionPlan executionPlan;
+    if (usePlanCache)
       executionPlan = createExecutionPlan(ctx, false);
-    } else {
+     else
       executionPlan = (UpdateExecutionPlan) createExecutionPlanNoCache(ctx, false);
-    }
 
     executionPlan.executeInternal();
     return new LocalResultSet(executionPlan);
   }
 
   @Override
-  public ResultSet execute(Database db, Map params, CommandContext parentCtx, boolean usePlanCache) {
-    BasicCommandContext ctx = new BasicCommandContext();
+  public ResultSet execute(final Database db, Map params, final CommandContext parentCtx, final boolean usePlanCache) {
+    final BasicCommandContext ctx = new BasicCommandContext();
     if (parentCtx != null) {
       ctx.setParentWithoutOverridingChild(parentCtx);
     }
     ctx.setDatabase(db);
     ctx.setInputParameters(params);
 
-    UpdateExecutionPlan executionPlan;
+    final UpdateExecutionPlan executionPlan;
     if (usePlanCache) {
       executionPlan = createExecutionPlan(ctx, false);
     } else {
@@ -82,15 +81,15 @@ public class WhileBlock extends Statement {
     return new LocalResultSet(executionPlan);
   }
 
-  public UpdateExecutionPlan createExecutionPlan(CommandContext ctx, boolean enableProfiling) {
-    ForEachExecutionPlan plan = new ForEachExecutionPlan(ctx);
+  public UpdateExecutionPlan createExecutionPlan(final CommandContext ctx,final  boolean enableProfiling) {
+    final ForEachExecutionPlan plan = new ForEachExecutionPlan(ctx);
     plan.chain(new WhileStep(condition, statements, ctx, enableProfiling));
     return plan;
   }
 
   @Override
   public Statement copy() {
-    WhileBlock result = new WhileBlock(-1);
+    final WhileBlock result = new WhileBlock(-1);
     result.condition = condition.copy();
     result.statements = statements.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;
@@ -115,17 +114,17 @@ public class WhileBlock extends Statement {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    WhileBlock that = (WhileBlock) o;
+    final WhileBlock that = (WhileBlock) o;
 
-    if (condition != null ? !condition.equals(that.condition) : that.condition != null)
+    if (!Objects.equals(condition, that.condition))
       return false;
-    return statements != null ? statements.equals(that.statements) : that.statements == null;
+    return Objects.equals(statements, that.statements);
   }
 
   @Override
@@ -135,7 +134,7 @@ public class WhileBlock extends Statement {
     return result;
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params,final  StringBuilder builder) {
     builder.append("WHILE (");
     condition.toString(params, builder);
     builder.append(") {\n");

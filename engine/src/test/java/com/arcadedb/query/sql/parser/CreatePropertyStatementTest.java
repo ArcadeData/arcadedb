@@ -27,15 +27,15 @@ public class CreatePropertyStatementTest extends ParserTestAbstract {
     checkRightSyntax("CREATE PROPERTY Foo.bar STRING");
     checkRightSyntax("create property Foo.bar STRING");
 
-    checkRightSyntax("CREATE PROPERTY Foo.bar LINK Bar");
+    checkRightSyntax("CREATE PROPERTY Foo.bar LINK");
 
-    checkRightSyntax("CREATE PROPERTY `Foo bar`.`bar baz` LINK Bar");
+    checkRightSyntax("CREATE PROPERTY `Foo bar`.`bar baz` LINK");
 
     checkRightSyntax("CREATE PROPERTY Foo.bar Integer (MANDATORY, READONLY, NOTNULL, MAX 5, MIN 3, DEFAULT 7)");
 
-    checkRightSyntax("CREATE PROPERTY Foo.bar LINK Bar (MANDATORY, READONLY, NOTNULL, MAX 5, MIN 3, DEFAULT 7)");
+    checkRightSyntax("CREATE PROPERTY Foo.bar LINK (MANDATORY, READONLY, NOTNULL, MAX 5, MIN 3, DEFAULT 7)");
 
-    checkRightSyntax("CREATE PROPERTY Foo.bar LINK Bar (MANDATORY true, READONLY false, NOTNULL true, MAX 5, MIN 3, DEFAULT 7)");
+    checkRightSyntax("CREATE PROPERTY Foo.bar LINK (MANDATORY true, READONLY false, NOTNULL true, MAX 5, MIN 3, DEFAULT 7)");
   }
 
   @Test

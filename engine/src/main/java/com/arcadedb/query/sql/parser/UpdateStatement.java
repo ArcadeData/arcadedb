@@ -40,15 +40,15 @@ public class UpdateStatement extends Statement {
   protected Projection             returnProjection;
   protected WhereClause            whereClause;
 
-  public UpdateStatement(int id) {
+  public UpdateStatement(final int id) {
     super(id);
   }
 
-  public UpdateStatement(SqlParser p, int id) {
+  public UpdateStatement(final SqlParser p, final int id) {
     super(p, id);
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params,final  StringBuilder builder) {
     builder.append(getStatementType());
     if (target != null) {
       target.toString(params, builder);

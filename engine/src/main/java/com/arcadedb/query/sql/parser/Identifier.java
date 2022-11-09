@@ -141,7 +141,7 @@ public class Identifier extends SimpleNode {
       return false;
     if (internalAlias != that.internalAlias)
       return false;
-    return value != null ? value.equals(that.value) : that.value == null;
+    return Objects.equals(value, that.value);
   }
 
   @Override

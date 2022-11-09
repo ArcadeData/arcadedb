@@ -60,7 +60,7 @@ public class SchemaIdentifier extends SimpleNode {
 
     final SchemaIdentifier that = (SchemaIdentifier) o;
 
-    return name != null ? name.equals(that.name) : that.name == null;
+    return Objects.equals(name, that.name);
   }
 
   @Override

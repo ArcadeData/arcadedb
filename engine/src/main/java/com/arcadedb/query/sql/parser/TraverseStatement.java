@@ -163,17 +163,17 @@ public class TraverseStatement extends Statement {
 
     TraverseStatement that = (TraverseStatement) o;
 
-    if (projections != null ? !projections.equals(that.projections) : that.projections != null)
+    if (!Objects.equals(projections, that.projections))
       return false;
-    if (target != null ? !target.equals(that.target) : that.target != null)
+    if (!Objects.equals(target, that.target))
       return false;
-    if (whileClause != null ? !whileClause.equals(that.whileClause) : that.whileClause != null)
+    if (!Objects.equals(whileClause, that.whileClause))
       return false;
-    if (limit != null ? !limit.equals(that.limit) : that.limit != null)
+    if (!Objects.equals(limit, that.limit))
       return false;
     if (strategy != that.strategy)
       return false;
-    return maxDepth != null ? maxDepth.equals(that.maxDepth) : that.maxDepth == null;
+    return Objects.equals(maxDepth, that.maxDepth);
   }
 
   @Override

@@ -57,7 +57,7 @@ public class RecordAttribute extends SimpleNode {
 
     RecordAttribute that = (RecordAttribute) o;
 
-    return name != null ? name.equals(that.name) : that.name == null;
+    return Objects.equals(name, that.name);
   }
 
   @Override

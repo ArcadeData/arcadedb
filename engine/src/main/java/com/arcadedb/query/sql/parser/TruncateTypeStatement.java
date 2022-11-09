@@ -128,7 +128,7 @@ public class TruncateTypeStatement extends DDLStatement {
       return false;
     if (unsafe != that.unsafe)
       return false;
-    return typeName != null ? typeName.equals(that.typeName) : that.typeName == null;
+    return Objects.equals(typeName, that.typeName);
   }
 
   @Override

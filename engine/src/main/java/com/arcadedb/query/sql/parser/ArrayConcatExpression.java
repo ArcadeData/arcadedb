@@ -212,7 +212,7 @@ public class ArrayConcatExpression extends SimpleNode {
 
     ArrayConcatExpression that = (ArrayConcatExpression) o;
 
-    return childExpressions != null ? childExpressions.equals(that.childExpressions) : that.childExpressions == null;
+    return Objects.equals(childExpressions, that.childExpressions);
   }
 
   @Override

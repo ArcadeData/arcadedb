@@ -35,12 +35,12 @@ public abstract class BooleanExpression extends SimpleNode {
 
   public static final BooleanExpression TRUE = new BooleanExpression(0) {
     @Override
-    public boolean evaluate(Identifiable currentRecord, CommandContext ctx) {
+    public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
       return true;
     }
 
     @Override
-    public boolean evaluate(Result currentRecord, CommandContext ctx) {
+    public boolean evaluate(final Result currentRecord, final CommandContext ctx) {
       return true;
     }
 
@@ -60,14 +60,13 @@ public abstract class BooleanExpression extends SimpleNode {
     }
 
     @Override
-    public boolean needsAliases(Set<String> aliases) {
+    public boolean needsAliases(final Set<String> aliases) {
       return false;
     }
 
     @Override
     public BooleanExpression copy() {
       return TRUE;
-
     }
 
     @Override
@@ -85,7 +84,7 @@ public abstract class BooleanExpression extends SimpleNode {
       return "true";
     }
 
-    public void toString(Map<String, Object> params, StringBuilder builder) {
+    public void toString(final Map<String, Object> params, final StringBuilder builder) {
       builder.append("true");
     }
 
@@ -95,7 +94,7 @@ public abstract class BooleanExpression extends SimpleNode {
     }
 
     @Override
-    public void extractSubQueries(SubQueryCollector collector) {
+    public void extractSubQueries(final SubQueryCollector collector) {
     }
 
     @Override
@@ -106,12 +105,12 @@ public abstract class BooleanExpression extends SimpleNode {
 
   public static final BooleanExpression FALSE = new BooleanExpression(0) {
     @Override
-    public boolean evaluate(Identifiable currentRecord, CommandContext ctx) {
+    public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
       return false;
     }
 
     @Override
-    public boolean evaluate(Result currentRecord, CommandContext ctx) {
+    public boolean evaluate(final Result currentRecord, final CommandContext ctx) {
       return false;
     }
 
@@ -155,7 +154,7 @@ public abstract class BooleanExpression extends SimpleNode {
       return "false";
     }
 
-    public void toString(Map<String, Object> params, StringBuilder builder) {
+    public void toString(final Map<String, Object> params, final StringBuilder builder) {
       builder.append("false");
     }
 
@@ -175,17 +174,17 @@ public abstract class BooleanExpression extends SimpleNode {
     }
   };
 
-  public BooleanExpression(int id) {
+  public BooleanExpression(final int id) {
     super(id);
   }
 
-  public BooleanExpression(SqlParser p, int id) {
+  public BooleanExpression(final SqlParser p, final int id) {
     super(p, id);
   }
 
-  public abstract boolean evaluate(Identifiable currentRecord, CommandContext ctx);
+  public abstract boolean evaluate(final Identifiable currentRecord, final CommandContext ctx);
 
-  public abstract boolean evaluate(Result currentRecord, CommandContext ctx);
+  public abstract boolean evaluate(final Result currentRecord, final CommandContext ctx);
 
   /**
    * @return true if this expression can be calculated in plain Java, false otherwise
@@ -207,20 +206,19 @@ public abstract class BooleanExpression extends SimpleNode {
   }
 
   public List<AndBlock> flatten() {
-
     return Collections.singletonList(encapsulateInAndBlock(this));
   }
 
-  protected AndBlock encapsulateInAndBlock(BooleanExpression item) {
-    if (item instanceof AndBlock) {
+  protected AndBlock encapsulateInAndBlock(final BooleanExpression item) {
+    if (item instanceof AndBlock)
       return (AndBlock) item;
-    }
-    AndBlock result = new AndBlock(-1);
+
+    final AndBlock result = new AndBlock(-1);
     result.subBlocks.add(item);
     return result;
   }
 
-  public abstract boolean needsAliases(Set<String> aliases);
+  public abstract boolean needsAliases(final Set<String> aliases);
 
   public abstract BooleanExpression copy();
 
@@ -228,7 +226,7 @@ public abstract class BooleanExpression extends SimpleNode {
     return false;
   }
 
-  public abstract void extractSubQueries(SubQueryCollector collector);
+  public abstract void extractSubQueries(final SubQueryCollector collector);
 
   public abstract boolean refersToParent();
 
@@ -246,9 +244,9 @@ public abstract class BooleanExpression extends SimpleNode {
 
   public abstract List<String> getMatchPatternInvolvedAliases();
 
-  public static BooleanExpression deserializeFromOResult(Result doc) {
+  public static BooleanExpression deserializeFromOResult(final Result doc) {
     try {
-      BooleanExpression result = (BooleanExpression) Class.forName(doc.getProperty("__class")).getConstructor(Integer.class).newInstance(-1);
+      final BooleanExpression result = (BooleanExpression) Class.forName(doc.getProperty("__class")).getConstructor(Integer.class).newInstance(-1);
       result.deserialize(doc);
     } catch (Exception e) {
       throw new CommandExecutionException("", e);
@@ -257,12 +255,12 @@ public abstract class BooleanExpression extends SimpleNode {
   }
 
   public Result serialize() {
-    ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal();
     result.setProperty("__class", getClass().getName());
     return result;
   }
 
-  public void deserialize(Result fromResult) {
+  public void deserialize(final Result fromResult) {
     throw new UnsupportedOperationException();
   }
 

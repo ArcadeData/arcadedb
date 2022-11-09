@@ -87,7 +87,7 @@ public class OrderBy extends SimpleNode {
 
     OrderBy oOrderBy = (OrderBy) o;
 
-    return items != null ? items.equals(oOrderBy.items) : oOrderBy.items == null;
+    return Objects.equals(items, oOrderBy.items);
   }
 
   @Override

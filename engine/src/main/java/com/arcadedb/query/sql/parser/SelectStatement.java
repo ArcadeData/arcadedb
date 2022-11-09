@@ -249,25 +249,25 @@ public class SelectStatement extends Statement {
 
     SelectStatement that = (SelectStatement) o;
 
-    if (target != null ? !target.equals(that.target) : that.target != null)
+    if (!Objects.equals(target, that.target))
       return false;
-    if (projection != null ? !projection.equals(that.projection) : that.projection != null)
+    if (!Objects.equals(projection, that.projection))
       return false;
-    if (whereClause != null ? !whereClause.equals(that.whereClause) : that.whereClause != null)
+    if (!Objects.equals(whereClause, that.whereClause))
       return false;
-    if (groupBy != null ? !groupBy.equals(that.groupBy) : that.groupBy != null)
+    if (!Objects.equals(groupBy, that.groupBy))
       return false;
-    if (orderBy != null ? !orderBy.equals(that.orderBy) : that.orderBy != null)
+    if (!Objects.equals(orderBy, that.orderBy))
       return false;
-    if (unwind != null ? !unwind.equals(that.unwind) : that.unwind != null)
+    if (!Objects.equals(unwind, that.unwind))
       return false;
-    if (skip != null ? !skip.equals(that.skip) : that.skip != null)
+    if (!Objects.equals(skip, that.skip))
       return false;
-    if (limit != null ? !limit.equals(that.limit) : that.limit != null)
+    if (!Objects.equals(limit, that.limit))
       return false;
-    if (letClause != null ? !letClause.equals(that.letClause) : that.letClause != null)
+    if (!Objects.equals(letClause, that.letClause))
       return false;
-    return timeout != null ? timeout.equals(that.timeout) : that.timeout == null;
+    return Objects.equals(timeout, that.timeout);
   }
 
   @Override

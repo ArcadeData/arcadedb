@@ -106,9 +106,9 @@ public class TruncateRecordStatement extends SimpleExecStatement {
 
     TruncateRecordStatement that = (TruncateRecordStatement) o;
 
-    if (record != null ? !record.equals(that.record) : that.record != null)
+    if (!Objects.equals(record, that.record))
       return false;
-    return records != null ? records.equals(that.records) : that.records == null;
+    return Objects.equals(records, that.records);
   }
 
   @Override

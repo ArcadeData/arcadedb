@@ -99,7 +99,7 @@ public class ReturnStatement extends SimpleExecStatement {
 
     ReturnStatement that = (ReturnStatement) o;
 
-    return expression != null ? expression.equals(that.expression) : that.expression == null;
+    return Objects.equals(expression, that.expression);
   }
 
   @Override

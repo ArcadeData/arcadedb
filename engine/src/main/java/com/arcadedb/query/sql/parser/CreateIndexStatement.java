@@ -285,11 +285,11 @@ public class CreateIndexStatement extends DDLStatement {
         return false;
       if (byValue != property.byValue)
         return false;
-      if (name != null ? !name.equals(property.name) : property.name != null)
+      if (!Objects.equals(name, property.name))
         return false;
-      if (recordAttribute != null ? !recordAttribute.equals(property.recordAttribute) : property.recordAttribute != null)
+      if (!Objects.equals(recordAttribute, property.recordAttribute))
         return false;
-      return collate != null ? collate.equals(property.collate) : property.collate == null;
+      return Objects.equals(collate, property.collate);
     }
 
     @Override

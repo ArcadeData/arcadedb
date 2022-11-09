@@ -160,7 +160,7 @@ public class ArraySingleValuesSelector extends SimpleNode {
 
     ArraySingleValuesSelector that = (ArraySingleValuesSelector) o;
 
-    return items != null ? items.equals(that.items) : that.items == null;
+    return Objects.equals(items, that.items);
   }
 
   @Override

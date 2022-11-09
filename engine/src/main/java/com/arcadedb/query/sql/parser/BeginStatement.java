@@ -73,7 +73,7 @@ public class BeginStatement extends SimpleExecStatement {
 
     BeginStatement that = (BeginStatement) o;
 
-    return isolation != null ? isolation.equals(that.isolation) : that.isolation == null;
+    return Objects.equals(isolation, that.isolation);
   }
 
   @Override

@@ -61,11 +61,11 @@ public class UpdateIncrementItem extends SimpleNode {
 
     UpdateIncrementItem that = (UpdateIncrementItem) o;
 
-    if (left != null ? !left.equals(that.left) : that.left != null)
+    if (!Objects.equals(left, that.left))
       return false;
-    if (leftModifier != null ? !leftModifier.equals(that.leftModifier) : that.leftModifier != null)
+    if (!Objects.equals(leftModifier, that.leftModifier))
       return false;
-    return right != null ? right.equals(that.right) : that.right == null;
+    return Objects.equals(right, that.right);
   }
 
   @Override

@@ -113,7 +113,6 @@ public class MatchFilterItem extends SimpleNode {
     if (pathAlias != null) {
       builder.append("pathAlias: ");
       pathAlias.toString(params, builder);
-      return;
     }
 
   }

@@ -82,7 +82,7 @@ public class SleepStatement extends SimpleExecStatement {
 
     SleepStatement that = (SleepStatement) o;
 
-    return millis != null ? millis.equals(that.millis) : that.millis == null;
+    return Objects.equals(millis, that.millis);
   }
 
   @Override

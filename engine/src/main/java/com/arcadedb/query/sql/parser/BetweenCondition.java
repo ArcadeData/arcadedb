@@ -182,11 +182,11 @@ public class BetweenCondition extends BooleanExpression {
 
     final BetweenCondition that = (BetweenCondition) o;
 
-    if (first != null ? !first.equals(that.first) : that.first != null)
+    if (!Objects.equals(first, that.first))
       return false;
-    if (second != null ? !second.equals(that.second) : that.second != null)
+    if (!Objects.equals(second, that.second))
       return false;
-    return third != null ? third.equals(that.third) : that.third == null;
+    return Objects.equals(third, that.third);
   }
 
   @Override

@@ -20,7 +20,6 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
@@ -178,51 +177,43 @@ public class WhereClause extends SimpleNode {
   }
 
   public List<AndBlock> flatten() {
-    if (this.baseExpression == null) {
+    if (this.baseExpression == null)
       return Collections.EMPTY_LIST;
-    }
-    if (flattened == null) {
+
+    if (flattened == null)
       flattened = this.baseExpression.flatten();
-    }
+
     // TODO remove false conditions (contradictions)
     return flattened;
-
   }
 
-  public List<BinaryCondition> getIndexedFunctionConditions(DocumentType iSchemaClass, Database database) {
-    if (baseExpression == null) {
-      return null;
-    }
-    return this.baseExpression.getIndexedFunctionConditions(iSchemaClass, database);
-  }
-
-  public boolean needsAliases(Set<String> aliases) {
+  public boolean needsAliases(final Set<String> aliases) {
     return this.baseExpression.needsAliases(aliases);
   }
 
-  public void setBaseExpression(BooleanExpression baseExpression) {
+  public void setBaseExpression(final BooleanExpression baseExpression) {
     this.baseExpression = baseExpression;
   }
 
   public WhereClause copy() {
-    WhereClause result = new WhereClause(-1);
+    final WhereClause result = new WhereClause(-1);
     result.baseExpression = baseExpression.copy();
     result.flattened = flattened == null ? null : flattened.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    WhereClause that = (WhereClause) o;
+    final WhereClause that = (WhereClause) o;
 
-    if (baseExpression != null ? !baseExpression.equals(that.baseExpression) : that.baseExpression != null)
+    if (!Objects.equals(baseExpression, that.baseExpression))
       return false;
-    return flattened != null ? flattened.equals(that.flattened) : that.flattened == null;
+    return Objects.equals(flattened, that.flattened);
   }
 
   @Override
@@ -232,10 +223,10 @@ public class WhereClause extends SimpleNode {
     return result;
   }
 
-  public void extractSubQueries(SubQueryCollector collector) {
-    if (baseExpression != null) {
+  public void extractSubQueries(final SubQueryCollector collector) {
+    if (baseExpression != null)
       baseExpression.extractSubQueries(collector);
-    }
+
     flattened = null;
   }
 
@@ -245,14 +236,6 @@ public class WhereClause extends SimpleNode {
 
   public BooleanExpression getBaseExpression() {
     return baseExpression;
-  }
-
-  public List<AndBlock> getFlattened() {
-    return flattened;
-  }
-
-  public void setFlattened(List<AndBlock> flattened) {
-    this.flattened = flattened;
   }
 
   public Result serialize() {

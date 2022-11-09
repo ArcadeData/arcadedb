@@ -191,9 +191,9 @@ public class ParenthesisExpression extends MathExpression {
 
     ParenthesisExpression that = (ParenthesisExpression) o;
 
-    if (expression != null ? !expression.equals(that.expression) : that.expression != null)
+    if (!Objects.equals(expression, that.expression))
       return false;
-    return statement != null ? statement.equals(that.statement) : that.statement == null;
+    return Objects.equals(statement, that.statement);
   }
 
   @Override

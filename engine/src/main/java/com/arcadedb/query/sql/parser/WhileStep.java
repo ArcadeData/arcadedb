@@ -37,14 +37,14 @@ public class WhileStep extends AbstractExecutionStep {
 
   private ExecutionStepInternal finalResult = null;
 
-  public WhileStep(BooleanExpression condition, List<Statement> statements, CommandContext ctx, boolean enableProfiling) {
+  public WhileStep(final BooleanExpression condition, final List<Statement> statements,final  CommandContext ctx, final boolean enableProfiling) {
     super(ctx, enableProfiling);
     this.condition = condition;
     this.statements = statements;
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
     prev.ifPresent(x -> x.syncPull(ctx, nRecords));
     if (finalResult != null) {
       return finalResult.syncPull(ctx, nRecords);
@@ -64,10 +64,10 @@ public class WhileStep extends AbstractExecutionStep {
 
   }
 
-  public ScriptExecutionPlan initPlan(CommandContext ctx) {
-    BasicCommandContext subCtx1 = new BasicCommandContext();
+  public ScriptExecutionPlan initPlan(final CommandContext ctx) {
+    final BasicCommandContext subCtx1 = new BasicCommandContext();
     subCtx1.setParent(ctx);
-    ScriptExecutionPlan plan = new ScriptExecutionPlan(subCtx1);
+    final ScriptExecutionPlan plan = new ScriptExecutionPlan(subCtx1);
     for (Statement stm : statements) {
       if (stm.originalStatement == null) {
         stm.originalStatement = stm.toString();

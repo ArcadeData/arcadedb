@@ -83,13 +83,10 @@ public class AlterPropertyStatement extends DDLStatement {
       final Object finalValue = settingValue.execute((Identifiable) null, ctx);
 
       final Object oldValue;
-      switch (setting) {
-      case "default":
+      if ("default".equals(setting)) {
         oldValue = property.getDefaultValue();
         property.setDefaultValue(finalValue);
-        break;
-
-      default:
+      } else {
         throw new CommandExecutionException("Setting '" + setting + "' not supported");
       }
 

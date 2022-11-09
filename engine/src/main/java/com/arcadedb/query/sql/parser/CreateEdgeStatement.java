@@ -134,21 +134,21 @@ public class CreateEdgeStatement extends Statement {
 
     final CreateEdgeStatement that = (CreateEdgeStatement) o;
 
-    if (targetType != null ? !targetType.equals(that.targetType) : that.targetType != null)
+    if (!Objects.equals(targetType, that.targetType))
       return false;
-    if (targetBucketName != null ? !targetBucketName.equals(that.targetBucketName) : that.targetBucketName != null)
+    if (!Objects.equals(targetBucketName, that.targetBucketName))
       return false;
-    if (leftExpression != null ? !leftExpression.equals(that.leftExpression) : that.leftExpression != null)
+    if (!Objects.equals(leftExpression, that.leftExpression))
       return false;
-    if (rightExpression != null ? !rightExpression.equals(that.rightExpression) : that.rightExpression != null)
+    if (!Objects.equals(rightExpression, that.rightExpression))
       return false;
     if (ifNotExists != that.ifNotExists)
       return false;
-    if (body != null ? !body.equals(that.body) : that.body != null)
+    if (!Objects.equals(body, that.body))
       return false;
-    if (retry != null ? !retry.equals(that.retry) : that.retry != null)
+    if (!Objects.equals(retry, that.retry))
       return false;
-    return wait != null ? wait.equals(that.wait) : that.wait == null;
+    return Objects.equals(wait, that.wait);
   }
 
   @Override

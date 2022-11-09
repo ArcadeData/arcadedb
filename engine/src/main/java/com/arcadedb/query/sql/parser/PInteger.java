@@ -105,7 +105,7 @@ public class PInteger extends PNumber {
 
     PInteger oInteger = (PInteger) o;
 
-    return value != null ? value.equals(oInteger.value) : oInteger.value == null;
+    return Objects.equals(value, oInteger.value);
   }
 
   @Override

@@ -61,11 +61,11 @@ public class UpdatePutItem extends SimpleNode {
 
     UpdatePutItem that = (UpdatePutItem) o;
 
-    if (left != null ? !left.equals(that.left) : that.left != null)
+    if (!Objects.equals(left, that.left))
       return false;
-    if (key != null ? !key.equals(that.key) : that.key != null)
+    if (!Objects.equals(key, that.key))
       return false;
-    return value != null ? value.equals(that.value) : that.value == null;
+    return Objects.equals(value, that.value);
   }
 
   @Override

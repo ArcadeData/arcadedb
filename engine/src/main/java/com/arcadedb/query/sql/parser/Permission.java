@@ -54,7 +54,7 @@ public class Permission extends SimpleNode {
 
     Permission that = (Permission) o;
 
-    return permission != null ? permission.equals(that.permission) : that.permission == null;
+    return Objects.equals(permission, that.permission);
   }
 
   @Override

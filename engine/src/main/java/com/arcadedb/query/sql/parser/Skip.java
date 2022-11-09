@@ -84,9 +84,9 @@ public class Skip extends SimpleNode {
 
     Skip oSkip = (Skip) o;
 
-    if (num != null ? !num.equals(oSkip.num) : oSkip.num != null)
+    if (!Objects.equals(num, oSkip.num))
       return false;
-    return inputParam != null ? inputParam.equals(oSkip.inputParam) : oSkip.inputParam == null;
+    return Objects.equals(inputParam, oSkip.inputParam);
   }
 
   @Override

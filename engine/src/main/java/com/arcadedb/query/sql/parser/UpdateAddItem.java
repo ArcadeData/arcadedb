@@ -50,9 +50,9 @@ public class UpdateAddItem extends SimpleNode {
 
     UpdateAddItem that = (UpdateAddItem) o;
 
-    if (left != null ? !left.equals(that.left) : that.left != null)
+    if (!Objects.equals(left, that.left))
       return false;
-    return right != null ? right.equals(that.right) : that.right == null;
+    return Objects.equals(right, that.right);
   }
 
   @Override

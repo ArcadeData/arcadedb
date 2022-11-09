@@ -3735,9 +3735,6 @@ CreatePropertyStatement CreatePropertyStatement():
 
   jjtThis.propertyType = Identifier()
   [
-    jjtThis.linkedType = Identifier()
-  ]
-  [
     <LPAREN>
     lastAttribute = CreatePropertyAttributeStatement() { jjtThis.attributes.add(lastAttribute); }
     (<COMMA> lastAttribute = CreatePropertyAttributeStatement() { jjtThis.attributes.add(lastAttribute); })*
@@ -3989,14 +3986,6 @@ AlterDatabaseStatement AlterDatabaseStatement():
   { return jjtThis; }
 }
 
-CommandLineOption CommandLineOption():
-{}
-{
-  <MINUS> jjtThis.name = Identifier()
-  {return jjtThis;}
-}
-
-
 ExplainStatement ExplainStatement():
 {}
 {
@@ -4012,7 +4001,6 @@ ProfileStatement ProfileStatement():
   jjtThis.statement = StatementInternal()
   { return jjtThis; }
 }
-
 
 LetStatement LetStatement():
 { }

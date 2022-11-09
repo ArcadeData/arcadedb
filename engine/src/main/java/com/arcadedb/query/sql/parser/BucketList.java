@@ -30,16 +30,15 @@ public class BucketList extends SimpleNode {
 
   protected List<Identifier> buckets = new ArrayList<>();
 
-  public BucketList(int id) {
+  public BucketList(final int id) {
     super(id);
   }
 
-  public BucketList(SqlParser p, int id) {
+  public BucketList(final SqlParser p, final int id) {
     super(p, id);
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
-
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("bucket:[");
     boolean first = true;
     for (Identifier id : buckets) {
@@ -53,7 +52,7 @@ public class BucketList extends SimpleNode {
   }
 
   public List<Bucket> toListOfClusters() {
-    List<Bucket> result = new ArrayList<>();
+    final  List<Bucket> result = new ArrayList<>();
     for (Identifier id : buckets) {
       Bucket bucket = new Bucket(-1);
       bucket.bucketName = id.getStringValue();
@@ -63,21 +62,21 @@ public class BucketList extends SimpleNode {
   }
 
   public BucketList copy() {
-    BucketList result = new BucketList(-1);
+    final  BucketList result = new BucketList(-1);
     result.buckets = buckets.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals( final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    BucketList that = (BucketList) o;
+    final BucketList that = (BucketList) o;
 
-    return buckets != null ? buckets.equals(that.buckets) : that.buckets == null;
+    return Objects.equals(buckets, that.buckets);
   }
 
   @Override
@@ -86,7 +85,7 @@ public class BucketList extends SimpleNode {
   }
 
   public Result serialize() {
-    ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal();
     if (buckets != null) {
       result.setProperty("buckets", buckets.stream().map(x -> x.serialize()).collect(Collectors.toList()));
     }
@@ -96,7 +95,7 @@ public class BucketList extends SimpleNode {
   public void deserialize(Result fromResult) {
     if (fromResult.getProperty("buckets") != null) {
       buckets = new ArrayList<>();
-      List<Result> ser = fromResult.getProperty("buckets");
+      final List<Result> ser = fromResult.getProperty("buckets");
       for (Result item : ser) {
         Identifier id = new Identifier(-1);
         Identifier.deserialize(item);

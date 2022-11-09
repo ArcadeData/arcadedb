@@ -37,7 +37,6 @@ public class CreatePropertyStatement extends DDLStatement {
   public Identifier                             typeName;
   public Identifier                             propertyName;
   public Identifier                             propertyType;
-  public Identifier                             linkedType;
   public List<CreatePropertyAttributeStatement> attributes = new ArrayList<CreatePropertyAttributeStatement>();
   boolean ifNotExists = false;
 
@@ -77,16 +76,7 @@ public class CreatePropertyStatement extends DDLStatement {
     if (type == null) {
       throw new CommandExecutionException("Invalid property type: " + propertyType.getStringValue());
     }
-    DocumentType linkedClass = null;
-    Type linkedType = null;
-    if (this.linkedType != null) {
-      String linked = this.linkedType.getStringValue();
-      // FIRST SEARCH BETWEEN USERTYPEES
-      linkedClass = db.getSchema().getType(linked);
-      if (linkedClass == null)
-        // NOT FOUND: SEARCH BETWEEN TYPES
-        linkedType = Type.valueOf(linked.toUpperCase(Locale.ENGLISH));
-    }
+
     // CREATE IT LOCALLY
     final Property internalProp = typez.createProperty(propertyName.getStringValue(), type);
     for (CreatePropertyAttributeStatement attr : attributes) {
@@ -106,10 +96,6 @@ public class CreatePropertyStatement extends DDLStatement {
     }
     builder.append(" ");
     propertyType.toString(params, builder);
-    if (linkedType != null) {
-      builder.append(" ");
-      linkedType.toString(params, builder);
-    }
 
     if (!attributes.isEmpty()) {
       builder.append(" (");
@@ -131,7 +117,6 @@ public class CreatePropertyStatement extends DDLStatement {
     result.typeName = typeName == null ? null : typeName.copy();
     result.propertyName = propertyName == null ? null : propertyName.copy();
     result.propertyType = propertyType == null ? null : propertyType.copy();
-    result.linkedType = linkedType == null ? null : linkedType.copy();
     result.ifNotExists = ifNotExists;
     result.attributes = attributes == null ? null : attributes.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;
@@ -152,8 +137,6 @@ public class CreatePropertyStatement extends DDLStatement {
       return false;
     if (!Objects.equals(propertyType, that.propertyType))
       return false;
-    if (!Objects.equals(linkedType, that.linkedType))
-      return false;
     if (!Objects.equals(attributes, that.attributes))
       return false;
     return ifNotExists == that.ifNotExists;
@@ -164,7 +147,6 @@ public class CreatePropertyStatement extends DDLStatement {
     int result = typeName != null ? typeName.hashCode() : 0;
     result = 31 * result + (propertyName != null ? propertyName.hashCode() : 0);
     result = 31 * result + (propertyType != null ? propertyType.hashCode() : 0);
-    result = 31 * result + (linkedType != null ? linkedType.hashCode() : 0);
     result = 31 * result + (attributes != null ? attributes.hashCode() : 0);
     return result;
   }

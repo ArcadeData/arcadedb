@@ -107,7 +107,7 @@ public class AlterTypeStatement extends DDLStatement {
 
     final AlterTypeStatement that = (AlterTypeStatement) o;
 
-    if (name != null ? !name.equals(that.name) : that.name != null)
+    if (!Objects.equals(name, that.name))
       return false;
     if (property != that.property)
       return false;

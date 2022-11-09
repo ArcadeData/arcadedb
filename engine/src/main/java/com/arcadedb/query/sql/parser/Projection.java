@@ -197,7 +197,7 @@ public class Projection extends SimpleNode {
 
     Projection that = (Projection) o;
 
-    return items != null ? items.equals(that.items) : that.items == null;
+    return Objects.equals(items, that.items);
   }
 
   @Override

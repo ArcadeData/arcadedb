@@ -105,7 +105,7 @@ public class IsNotNullCondition extends BooleanExpression {
 
     IsNotNullCondition that = (IsNotNullCondition) o;
 
-    return expression != null ? expression.equals(that.expression) : that.expression == null;
+    return Objects.equals(expression, that.expression);
   }
 
   @Override

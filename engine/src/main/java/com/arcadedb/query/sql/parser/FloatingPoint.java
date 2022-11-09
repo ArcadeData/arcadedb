@@ -113,7 +113,7 @@ public class FloatingPoint extends PNumber {
 
     if (sign != that.sign)
       return false;
-    return stringValue != null ? stringValue.equals(that.stringValue) : that.stringValue == null;
+    return Objects.equals(stringValue, that.stringValue);
   }
 
   @Override

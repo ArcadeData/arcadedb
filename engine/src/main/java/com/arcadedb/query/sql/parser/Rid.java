@@ -125,11 +125,11 @@ public class Rid extends SimpleNode {
 
     Rid oRid = (Rid) o;
 
-    if (bucket != null ? !bucket.equals(oRid.bucket) : oRid.bucket != null)
+    if (!Objects.equals(bucket, oRid.bucket))
       return false;
-    if (position != null ? !position.equals(oRid.position) : oRid.position != null)
+    if (!Objects.equals(position, oRid.position))
       return false;
-    if (expression != null ? !expression.equals(oRid.expression) : oRid.expression != null)
+    if (!Objects.equals(expression, oRid.expression))
       return false;
     return legacy == oRid.legacy;
   }

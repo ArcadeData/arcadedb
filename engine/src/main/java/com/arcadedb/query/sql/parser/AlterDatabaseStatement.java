@@ -105,9 +105,9 @@ public class AlterDatabaseStatement extends DDLStatement {
       return false;
 
     final AlterDatabaseStatement that = (AlterDatabaseStatement) o;
-    if (settingName != null ? !settingName.equals(that.settingName) : that.settingName != null)
+    if (!Objects.equals(settingName, that.settingName))
       return false;
-    return settingValue != null ? settingValue.equals(that.settingValue) : that.settingValue == null;
+    return Objects.equals(settingValue, that.settingValue);
   }
 
   @Override

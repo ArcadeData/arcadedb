@@ -415,25 +415,25 @@ public class MatchStatement extends Statement {
 
     MatchStatement that = (MatchStatement) o;
 
-    if (matchExpressions != null ? !matchExpressions.equals(that.matchExpressions) : that.matchExpressions != null)
+    if (!Objects.equals(matchExpressions, that.matchExpressions))
       return false;
-    if (notMatchExpressions != null ? !notMatchExpressions.equals(that.notMatchExpressions) : that.notMatchExpressions != null)
+    if (!Objects.equals(notMatchExpressions, that.notMatchExpressions))
       return false;
-    if (returnItems != null ? !returnItems.equals(that.returnItems) : that.returnItems != null)
+    if (!Objects.equals(returnItems, that.returnItems))
       return false;
-    if (returnAliases != null ? !returnAliases.equals(that.returnAliases) : that.returnAliases != null)
+    if (!Objects.equals(returnAliases, that.returnAliases))
       return false;
-    if (returnNestedProjections != null ? !returnNestedProjections.equals(that.returnNestedProjections) : that.returnNestedProjections != null)
+    if (!Objects.equals(returnNestedProjections, that.returnNestedProjections))
       return false;
-    if (groupBy != null ? !groupBy.equals(that.groupBy) : that.groupBy != null)
+    if (!Objects.equals(groupBy, that.groupBy))
       return false;
-    if (orderBy != null ? !orderBy.equals(that.orderBy) : that.orderBy != null)
+    if (!Objects.equals(orderBy, that.orderBy))
       return false;
-    if (unwind != null ? !unwind.equals(that.unwind) : that.unwind != null)
+    if (!Objects.equals(unwind, that.unwind))
       return false;
-    if (skip != null ? !skip.equals(that.skip) : that.skip != null)
+    if (!Objects.equals(skip, that.skip))
       return false;
-    if (limit != null ? !limit.equals(that.limit) : that.limit != null)
+    if (!Objects.equals(limit, that.limit))
       return false;
 
     return returnDistinct == that.returnDistinct;

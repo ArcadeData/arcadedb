@@ -115,9 +115,9 @@ public class TraverseProjectionItem extends SimpleNode {
 
     TraverseProjectionItem that = (TraverseProjectionItem) o;
 
-    if (base != null ? !base.equals(that.base) : that.base != null)
+    if (!Objects.equals(base, that.base))
       return false;
-    return modifier != null ? modifier.equals(that.modifier) : that.modifier == null;
+    return Objects.equals(modifier, that.modifier);
   }
 
   @Override

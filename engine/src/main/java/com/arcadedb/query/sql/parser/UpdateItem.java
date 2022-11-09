@@ -99,11 +99,11 @@ public class UpdateItem extends SimpleNode {
 
     if (operator != that.operator)
       return false;
-    if (left != null ? !left.equals(that.left) : that.left != null)
+    if (!Objects.equals(left, that.left))
       return false;
-    if (leftModifier != null ? !leftModifier.equals(that.leftModifier) : that.leftModifier != null)
+    if (!Objects.equals(leftModifier, that.leftModifier))
       return false;
-    return right != null ? right.equals(that.right) : that.right == null;
+    return Objects.equals(right, that.right);
   }
 
   @Override
@@ -116,7 +116,7 @@ public class UpdateItem extends SimpleNode {
   }
 
   public void applyUpdate(ResultInternal doc, CommandContext ctx) {
-    Object rightValue = right.execute(doc, ctx);
+    final Object rightValue = right.execute(doc, ctx);
     if (leftModifier == null) {
       applyOperation(doc, left, rightValue, ctx);
     } else {
@@ -125,8 +125,7 @@ public class UpdateItem extends SimpleNode {
     }
   }
 
-  public void applyOperation(ResultInternal doc, Identifier attrName, Object rightValue, CommandContext ctx) {
-
+  public void applyOperation(final ResultInternal doc,final  Identifier attrName, final Object rightValue,final  CommandContext ctx) {
     switch (operator) {
     case OPERATOR_EQ:
       Object newValue = convertResultToDocument(rightValue);
@@ -150,7 +149,7 @@ public class UpdateItem extends SimpleNode {
 
   private Object convertToPropertyType(final ResultInternal res, final Identifier attrName, Object newValue) {
     final Document doc = res.toElement();
-    Optional<DocumentType> optSchema = Optional.ofNullable(doc.getType());
+    final Optional<DocumentType> optSchema = Optional.ofNullable(doc.getType());
     if (!optSchema.isPresent()) {
       return newValue;
     }
@@ -177,7 +176,7 @@ public class UpdateItem extends SimpleNode {
     return newValue;
   }
 
-  private Object convertResultToDocument(Object value) {
+  private Object convertResultToDocument(final Object value) {
     if (value instanceof Result) {
       return ((Result) value).toElement();
     }
@@ -193,16 +192,16 @@ public class UpdateItem extends SimpleNode {
     return value;
   }
 
-  private boolean containsOResult(Collection value) {
+  private boolean containsOResult(final Collection value) {
     return value.stream().anyMatch(x -> x instanceof Result);
   }
 
   private Object calculateNewValue(ResultInternal doc, CommandContext ctx, MathExpression.Operator explicitOperator) {
-    Expression leftEx = new Expression(left.copy());
+    final Expression leftEx = new Expression(left.copy());
     if (leftModifier != null) {
       ((BaseExpression) leftEx.mathExpression).modifier = leftModifier.copy();
     }
-    MathExpression mathExp = new MathExpression(-1);
+    final MathExpression mathExp = new MathExpression(-1);
     mathExp.getChildExpressions().add(leftEx.getMathExpression());
     mathExp.getChildExpressions().add(new ParenthesisExpression(right.copy()));
     mathExp.getOperators().add(explicitOperator);

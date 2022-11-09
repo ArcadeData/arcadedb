@@ -368,9 +368,9 @@ public class FunctionCall extends SimpleNode {
 
     FunctionCall that = (FunctionCall) o;
 
-    if (name != null ? !name.equals(that.name) : that.name != null)
+    if (!Objects.equals(name, that.name))
       return false;
-    return params != null ? params.equals(that.params) : that.params == null;
+    return Objects.equals(params, that.params);
   }
 
   @Override

@@ -241,11 +241,11 @@ public class LevelZeroIdentifier extends SimpleNode {
 
     final LevelZeroIdentifier that = (LevelZeroIdentifier) o;
 
-    if (functionCall != null ? !functionCall.equals(that.functionCall) : that.functionCall != null)
+    if (!Objects.equals(functionCall, that.functionCall))
       return false;
-    if (self != null ? !self.equals(that.self) : that.self != null)
+    if (!Objects.equals(self, that.self))
       return false;
-    return collection != null ? collection.equals(that.collection) : that.collection == null;
+    return Objects.equals(collection, that.collection);
   }
 
   @Override

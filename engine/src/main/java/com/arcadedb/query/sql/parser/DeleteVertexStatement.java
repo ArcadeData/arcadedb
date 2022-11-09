@@ -117,11 +117,11 @@ public class DeleteVertexStatement extends Statement {
       return false;
     if (returnBefore != that.returnBefore)
       return false;
-    if (fromClause != null ? !fromClause.equals(that.fromClause) : that.fromClause != null)
+    if (!Objects.equals(fromClause, that.fromClause))
       return false;
-    if (whereClause != null ? !whereClause.equals(that.whereClause) : that.whereClause != null)
+    if (!Objects.equals(whereClause, that.whereClause))
       return false;
-    return limit != null ? limit.equals(that.limit) : that.limit == null;
+    return Objects.equals(limit, that.limit);
   }
 
   @Override

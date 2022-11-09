@@ -32,10 +32,8 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import java.util.*;
 
 public class Expression extends SimpleNode {
-
-  protected Boolean singleQuotes;
-  protected Boolean doubleQuotes;
-
+  protected Boolean               singleQuotes;
+  protected Boolean               doubleQuotes;
   protected boolean               isNull = false;
   protected Rid                   rid;
   protected MathExpression        mathExpression;
@@ -43,28 +41,27 @@ public class Expression extends SimpleNode {
   protected Json                  json;
   protected Boolean               booleanValue;
 
-  public Expression(int id) {
+  public Expression(final int id) {
     super(id);
   }
 
-  public Expression(SqlParser p, int id) {
+  public Expression(final SqlParser p, final int id) {
     super(p, id);
   }
 
-  public Expression(Identifier identifier) {
+  public Expression(final Identifier identifier) {
     mathExpression = new BaseExpression(identifier);
   }
 
-  public Expression(Identifier identifier, Modifier modifier) {
-
+  public Expression(final Identifier identifier, Modifier modifier) {
     mathExpression = new BaseExpression(identifier, modifier);
   }
 
-  public Expression(RecordAttribute attr, Modifier modifier) {
+  public Expression(final RecordAttribute attr, final Modifier modifier) {
     mathExpression = new BaseExpression(attr, modifier);
   }
 
-  public Object execute(Identifiable iCurrentRecord, CommandContext ctx) {
+  public Object execute(final Identifiable iCurrentRecord, final CommandContext ctx) {
     if (isNull) {
       return null;
     }
@@ -89,7 +86,7 @@ public class Expression extends SimpleNode {
 
     //from here it's old stuff, only for the old executor
     if (value instanceof Rid) {
-      Rid v = (Rid) value;
+      final Rid v = (Rid) value;
       return new RID(ctx.getDatabase(), v.bucket.getValue().intValue(), v.position.getValue().longValue());
     } else if (value instanceof MathExpression) {
       return ((MathExpression) value).execute(iCurrentRecord, ctx);
@@ -106,7 +103,7 @@ public class Expression extends SimpleNode {
     return value;
   }
 
-  public Object execute(Result iCurrentRecord, CommandContext ctx) {
+  public Object execute(final Result iCurrentRecord, final CommandContext ctx) {
     if (isNull) {
       return null;
     }
@@ -184,7 +181,7 @@ public class Expression extends SimpleNode {
   }
 
   public Identifier getDefaultAlias() {
-    Identifier identifier;
+    final Identifier identifier;
     if (isBaseIdentifier()) {
       identifier = new Identifier(((BaseExpression) mathExpression).identifier.getSuffix().identifier.getStringValue());
     } else {
@@ -235,7 +232,7 @@ public class Expression extends SimpleNode {
   }
 
   public static String encode(String s) {
-    StringBuilder builder = new StringBuilder(s.length());
+    final StringBuilder builder = new StringBuilder(s.length());
     for (char c : s.toCharArray()) {
       if (c == '\n') {
         builder.append("\\n");
@@ -270,9 +267,8 @@ public class Expression extends SimpleNode {
     return false;
   }
 
-  public static String encodeSingle(String s) {
-
-    StringBuilder builder = new StringBuilder(s.length());
+  public static String encodeSingle(final String s) {
+    final StringBuilder builder = new StringBuilder(s.length());
     for (char c : s.toCharArray()) {
       if (c == '\n') {
         builder.append("\\n");
@@ -290,14 +286,15 @@ public class Expression extends SimpleNode {
     return builder.toString();
   }
 
-  public long estimateIndexedFunction(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {
+  public long estimateIndexedFunction(final FromClause target, final CommandContext context, final BinaryCompareOperator operator, final Object right) {
     if (mathExpression != null) {
       return mathExpression.estimateIndexedFunction(target, context, operator, right);
     }
     return -1;
   }
 
-  public Iterable<Record> executeIndexedFunction(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {
+  public Iterable<Record> executeIndexedFunction(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
+      final Object right) {
     if (mathExpression != null) {
       return mathExpression.executeIndexedFunction(target, context, operator, right);
     }
@@ -315,7 +312,8 @@ public class Expression extends SimpleNode {
    * @return true if current expression is an indexed function AND that function can also be executed without using the index, false
    * otherwise
    */
-  public boolean canExecuteIndexedFunctionWithoutIndex(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {
+  public boolean canExecuteIndexedFunctionWithoutIndex(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
+      final Object right) {
     if (mathExpression != null) {
       return mathExpression.canExecuteIndexedFunctionWithoutIndex(target, context, operator, right);
     }
@@ -332,7 +330,8 @@ public class Expression extends SimpleNode {
    *
    * @return true if current expression involves an indexed function AND that function can be used on this target, false otherwise
    */
-  public boolean allowsIndexedFunctionExecutionOnTarget(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {
+  public boolean allowsIndexedFunctionExecutionOnTarget(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
+      final Object right) {
     if (mathExpression != null) {
       return mathExpression.allowsIndexedFunctionExecutionOnTarget(target, context, operator, right);
     }
@@ -350,7 +349,8 @@ public class Expression extends SimpleNode {
    * @return true if current expression involves an indexed function AND the function has also to be executed after the index
    * search.
    */
-  public boolean executeIndexedFunctionAfterIndexSearch(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {
+  public boolean executeIndexedFunctionAfterIndexSearch(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
+      final Object right) {
     if (mathExpression != null) {
       return mathExpression.executeIndexedFunctionAfterIndexSearch(target, context, operator, right);
     }
@@ -368,7 +368,7 @@ public class Expression extends SimpleNode {
     return mathExpression.getExpandContent();
   }
 
-  public boolean needsAliases(Set<String> aliases) {
+  public boolean needsAliases(final Set<String> aliases) {
     if (mathExpression != null) {
       return mathExpression.needsAliases(aliases);
     }
@@ -391,11 +391,11 @@ public class Expression extends SimpleNode {
     return json != null && json.isAggregate();
   }
 
-  public Expression splitForAggregation(AggregateProjectionSplit aggregateSplit) {
+  public Expression splitForAggregation(final AggregateProjectionSplit aggregateSplit) {
     if (isAggregate()) {
-      Expression result = new Expression(-1);
+      final Expression result = new Expression(-1);
       if (mathExpression != null) {
-        SimpleNode splitResult = mathExpression.splitForAggregation(aggregateSplit);
+        final SimpleNode splitResult = mathExpression.splitForAggregation(aggregateSplit);
         if (splitResult instanceof MathExpression) {
           result.mathExpression = (MathExpression) splitResult;
         } else if (splitResult instanceof Expression) {
@@ -405,7 +405,7 @@ public class Expression extends SimpleNode {
         }
       }
       if (arrayConcatExpression != null) {
-        SimpleNode splitResult = arrayConcatExpression.splitForAggregation(aggregateSplit);
+        final SimpleNode splitResult = arrayConcatExpression.splitForAggregation(aggregateSplit);
         if (splitResult instanceof ArrayConcatExpression) {
           result.arrayConcatExpression = (ArrayConcatExpression) splitResult;
         } else if (splitResult instanceof Expression) {
@@ -423,7 +423,7 @@ public class Expression extends SimpleNode {
     }
   }
 
-  public AggregationContext getAggregationContext(CommandContext ctx) {
+  public AggregationContext getAggregationContext(final CommandContext ctx) {
     if (mathExpression != null) {
       return mathExpression.getAggregationContext(ctx);
     } else if (arrayConcatExpression != null) {
@@ -434,8 +434,7 @@ public class Expression extends SimpleNode {
   }
 
   public Expression copy() {
-
-    Expression result = new Expression(-1);
+    final Expression result = new Expression(-1);
     result.singleQuotes = singleQuotes;
     result.doubleQuotes = doubleQuotes;
     result.isNull = isNull;
@@ -444,34 +443,33 @@ public class Expression extends SimpleNode {
     result.arrayConcatExpression = arrayConcatExpression == null ? null : arrayConcatExpression.copy();
     result.json = json == null ? null : json.copy();
     result.booleanValue = booleanValue;
-
     return result;
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    Expression that = (Expression) o;
+    final Expression that = (Expression) o;
 
     if (isNull != that.isNull)
       return false;
-    if (singleQuotes != null ? !singleQuotes.equals(that.singleQuotes) : that.singleQuotes != null)
+    if (!Objects.equals(singleQuotes, that.singleQuotes))
       return false;
-    if (doubleQuotes != null ? !doubleQuotes.equals(that.doubleQuotes) : that.doubleQuotes != null)
+    if (!Objects.equals(doubleQuotes, that.doubleQuotes))
       return false;
-    if (rid != null ? !rid.equals(that.rid) : that.rid != null)
+    if (!Objects.equals(rid, that.rid))
       return false;
-    if (mathExpression != null ? !mathExpression.equals(that.mathExpression) : that.mathExpression != null)
+    if (!Objects.equals(mathExpression, that.mathExpression))
       return false;
-    if (arrayConcatExpression != null ? !arrayConcatExpression.equals(that.arrayConcatExpression) : that.arrayConcatExpression != null)
+    if (!Objects.equals(arrayConcatExpression, that.arrayConcatExpression))
       return false;
-    if (json != null ? !json.equals(that.json) : that.json != null)
+    if (!Objects.equals(json, that.json))
       return false;
-    return booleanValue != null ? booleanValue.equals(that.booleanValue) : that.booleanValue == null;
+    return Objects.equals(booleanValue, that.booleanValue);
   }
 
   @Override
@@ -487,11 +485,11 @@ public class Expression extends SimpleNode {
     return result;
   }
 
-  public void setMathExpression(MathExpression mathExpression) {
+  public void setMathExpression(final MathExpression mathExpression) {
     this.mathExpression = mathExpression;
   }
 
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
     if (mathExpression != null) {
       mathExpression.extractSubQueries(collector);
     }
@@ -503,7 +501,7 @@ public class Expression extends SimpleNode {
     }
   }
 
-  public void extractSubQueries(Identifier letAlias, SubQueryCollector collector) {
+  public void extractSubQueries(final Identifier letAlias, final SubQueryCollector collector) {
     if (mathExpression != null) {
       mathExpression.extractSubQueries(letAlias, collector);
     }
@@ -529,7 +527,7 @@ public class Expression extends SimpleNode {
     return rid;
   }
 
-  public void setRid(Rid rid) {
+  public void setRid(final Rid rid) {
     this.rid = rid;
   }
 
@@ -551,7 +549,7 @@ public class Expression extends SimpleNode {
     return null;
   }
 
-  public void applyRemove(ResultInternal result, CommandContext ctx) {
+  public void applyRemove(final ResultInternal result, final CommandContext ctx) {
     if (mathExpression != null) {
       mathExpression.applyRemove(result, ctx);
     } else {
@@ -575,7 +573,7 @@ public class Expression extends SimpleNode {
   }
 
   public Result serialize() {
-    ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal();
     result.setProperty("singleQuotes", singleQuotes);
     result.setProperty("doubleQuotes", doubleQuotes);
     result.setProperty("isNull", isNull);
@@ -619,7 +617,7 @@ public class Expression extends SimpleNode {
     booleanValue = fromResult.getProperty("booleanValue");
   }
 
-  public boolean isDefinedFor(Result currentRecord) {
+  public boolean isDefinedFor(final Result currentRecord) {
     if (mathExpression != null) {
       return mathExpression.isDefinedFor(currentRecord);
     } else {
@@ -627,7 +625,7 @@ public class Expression extends SimpleNode {
     }
   }
 
-  public boolean isDefinedFor(Record currentRecord) {
+  public boolean isDefinedFor(final Record currentRecord) {
     if (mathExpression != null) {
       return mathExpression.isDefinedFor(currentRecord);
     } else {

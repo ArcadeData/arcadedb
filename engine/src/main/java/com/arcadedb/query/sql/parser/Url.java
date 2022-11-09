@@ -25,11 +25,11 @@ import java.util.*;
 public class Url extends SimpleNode {
   protected String urlString;
 
-  public Url(int id) {
+  public Url(final int id) {
     super(id);
   }
 
-  public Url(SqlParser p, int id) {
+  public Url(final SqlParser p, final int id) {
     super(p, id);
   }
 

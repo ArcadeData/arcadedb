@@ -99,7 +99,7 @@ public class IsNotDefinedCondition extends BooleanExpression {
 
     final IsNotDefinedCondition that = (IsNotDefinedCondition) o;
 
-    return expression != null ? expression.equals(that.expression) : that.expression == null;
+    return Objects.equals(expression, that.expression);
   }
 
   @Override

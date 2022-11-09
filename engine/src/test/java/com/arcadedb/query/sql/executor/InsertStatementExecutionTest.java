@@ -276,7 +276,7 @@ public class InsertStatementExecutionTest extends TestHelper {
     database.command("sql", "INSERT INTO " + className1 + " SET name='Inactive';").close();
 
     database.command("sql", "create document type " + className2 + ";").close();
-    database.command("sql", "CREATE PROPERTY " + className2 + ".processingType LINK " + className1 + ";").close();
+    database.command("sql", "CREATE PROPERTY " + className2 + ".processingType LINK;").close();
 
     database.command("sql", "INSERT INTO " + className2 + " SET name='Active', processingType = (SELECT FROM " + className1 + " WHERE name = 'Active') ;")
         .close();
@@ -406,7 +406,7 @@ public class InsertStatementExecutionTest extends TestHelper {
 
     database.command("sql", "create document type " + className);
     database.command("sql", "create document type " + itemclassName);
-    database.command("sql", "CREATE PROPERTY " + className + ".mymap MAP " + itemclassName);
+    database.command("sql", "CREATE PROPERTY " + className + ".mymap MAP");
 
     database.command("sql", "INSERT INTO " + itemclassName + " (name) VALUES ('test')");
     database.command("sql", "INSERT INTO " + className + " (mymap) VALUES ({'A-1': (SELECT FROM " + itemclassName + " WHERE name = 'test')})");

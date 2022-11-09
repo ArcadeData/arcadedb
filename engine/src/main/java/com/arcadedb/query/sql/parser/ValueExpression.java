@@ -35,17 +35,16 @@ import java.util.*;
  * by parsing
  */
 public class ValueExpression extends Expression {
-
-  public ValueExpression(Object val) {
+  public ValueExpression(final Object val) {
     super(-1);
     this.value = val;
   }
 
-  public Object execute(Identifiable iCurrentRecord, CommandContext ctx) {
+  public Object execute(final Identifiable iCurrentRecord, final CommandContext ctx) {
     return value;
   }
 
-  public Object execute(Result iCurrentRecord, CommandContext ctx) {
+  public Object execute(final Result iCurrentRecord, final CommandContext ctx) {
     return value;
   }
 
@@ -61,7 +60,7 @@ public class ValueExpression extends Expression {
     return new Identifier(String.valueOf(value));
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append(value);
   }
 
@@ -93,7 +92,7 @@ public class ValueExpression extends Expression {
     return null;
   }
 
-  public boolean needsAliases(Set<String> aliases) {
+  public boolean needsAliases(final Set<String> aliases) {
     return false;
   }
 
@@ -101,28 +100,28 @@ public class ValueExpression extends Expression {
     return false;
   }
 
-  public ValueExpression splitForAggregation(AggregateProjectionSplit aggregateSplit) {
+  public ValueExpression splitForAggregation(final AggregateProjectionSplit aggregateSplit) {
     return this;
   }
 
-  public AggregationContext getAggregationContext(CommandContext ctx) {
+  public AggregationContext getAggregationContext(final CommandContext ctx) {
     throw new CommandExecutionException("Cannot aggregate on " + this);
   }
 
   public ValueExpression copy() {
-    ValueExpression result = new ValueExpression(-1);
+    final ValueExpression result = new ValueExpression(-1);
     result.value = value;
     return result;
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    ValueExpression that = (ValueExpression) o;
+    final ValueExpression that = (ValueExpression) o;
     return that.value == this.value;
   }
 
@@ -167,7 +166,6 @@ public class ValueExpression extends Expression {
 
   public boolean isDefinedFor(Record currentRecord) {
     return true;
-
   }
 
   public boolean isCacheable() {

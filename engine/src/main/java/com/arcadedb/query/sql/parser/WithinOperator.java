@@ -23,16 +23,16 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.DatabaseInternal;
 
 public class WithinOperator extends SimpleNode implements BinaryCompareOperator {
-  public WithinOperator(int id) {
+  public WithinOperator(final int id) {
     super(id);
   }
 
-  public WithinOperator(SqlParser p, int id) {
+  public WithinOperator(final SqlParser p, final int id) {
     super(p, id);
   }
 
   @Override
-  public boolean execute(DatabaseInternal database, Object left, Object right) {
+  public boolean execute(final DatabaseInternal database, final Object left,final Object right) {
     throw new UnsupportedOperationException(this + " operator cannot be evaluated in this context");
   }
 
@@ -52,7 +52,7 @@ public class WithinOperator extends SimpleNode implements BinaryCompareOperator 
   }
 
   @Override
-  public boolean equals(Object obj) {
+  public boolean equals(final Object obj) {
     return obj != null && obj.getClass().equals(this.getClass());
   }
 

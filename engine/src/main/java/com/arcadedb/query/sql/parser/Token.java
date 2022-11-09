@@ -139,10 +139,7 @@ public class Token implements java.io.Serializable {
    * variable to the appropriate type and use sit in your lexical actions.
    */
   public static Token newToken(int ofKind, String image) {
-    switch (ofKind) {
-    default:
-      return new Token(ofKind, image);
-    }
+    return new Token(ofKind, image);
   }
 
   public static Token newToken(int ofKind) {

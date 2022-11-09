@@ -121,9 +121,9 @@ public class TruncateBucketStatement extends DDLStatement {
 
     if (unsafe != that.unsafe)
       return false;
-    if (bucketName != null ? !bucketName.equals(that.bucketName) : that.bucketName != null)
+    if (!Objects.equals(bucketName, that.bucketName))
       return false;
-    return bucketNumber != null ? bucketNumber.equals(that.bucketNumber) : that.bucketNumber == null;
+    return Objects.equals(bucketNumber, that.bucketNumber);
   }
 
   @Override

@@ -181,13 +181,13 @@ public class ArrayRangeSelector extends SimpleNode {
       return false;
     if (included != that.included)
       return false;
-    if (from != null ? !from.equals(that.from) : that.from != null)
+    if (!Objects.equals(from, that.from))
       return false;
-    if (to != null ? !to.equals(that.to) : that.to != null)
+    if (!Objects.equals(to, that.to))
       return false;
-    if (fromSelector != null ? !fromSelector.equals(that.fromSelector) : that.fromSelector != null)
+    if (!Objects.equals(fromSelector, that.fromSelector))
       return false;
-    return toSelector != null ? toSelector.equals(that.toSelector) : that.toSelector == null;
+    return Objects.equals(toSelector, that.toSelector);
   }
 
   @Override

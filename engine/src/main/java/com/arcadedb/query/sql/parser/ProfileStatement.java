@@ -119,7 +119,7 @@ public class ProfileStatement extends Statement {
 
     ProfileStatement that = (ProfileStatement) o;
 
-    return statement != null ? statement.equals(that.statement) : that.statement == null;
+    return Objects.equals(statement, that.statement);
   }
 
   @Override

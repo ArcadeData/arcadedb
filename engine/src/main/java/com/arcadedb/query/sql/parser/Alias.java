@@ -23,16 +23,15 @@ package com.arcadedb.query.sql.parser;
 import java.util.*;
 
 public class Alias extends SimpleNode {
-  public Alias(int id) {
+  public Alias(final int id) {
     super(id);
   }
 
-  public Alias(SqlParser p, int id) {
+  public Alias(final SqlParser p, final int id) {
     super(p, id);
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
-
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
   }
 }
 /* JavaCC - OriginalChecksum=c0c2ff315abe152a8ea5f2ecafd0f853 (do not edit this line) */

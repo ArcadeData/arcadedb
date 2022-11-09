@@ -131,11 +131,11 @@ public class AlterBucketStatement extends DDLStatement {
 
     if (starred != that.starred)
       return false;
-    if (name != null ? !name.equals(that.name) : that.name != null)
+    if (!Objects.equals(name, that.name))
       return false;
-    if (attributeName != null ? !attributeName.equals(that.attributeName) : that.attributeName != null)
+    if (!Objects.equals(attributeName, that.attributeName))
       return false;
-    return attributeValue != null ? attributeValue.equals(that.attributeValue) : that.attributeValue == null;
+    return Objects.equals(attributeValue, that.attributeValue);
   }
 
   @Override

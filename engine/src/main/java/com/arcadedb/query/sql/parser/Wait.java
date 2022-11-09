@@ -21,9 +21,6 @@
 package com.arcadedb.query.sql.parser;
 
 public class Wait extends SimpleNode {
-
-  Object value;
-
   public Wait(int id) {
     super(id);
   }
@@ -31,6 +28,5 @@ public class Wait extends SimpleNode {
   public Wait(SqlParser p, int id) {
     super(p, id);
   }
-
 }
 /* JavaCC - OriginalChecksum=e77b1496216c4d2b2f8ad564da0c3dac (do not edit this line) */

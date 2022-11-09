@@ -42,30 +42,29 @@ public abstract class DDLStatement extends Statement {
 
   public abstract ResultSet executeDDL(CommandContext ctx);
 
-  public ResultSet execute(Database db, Object[] args, CommandContext parentCtx, boolean usePlanCache) {
-    BasicCommandContext ctx = new BasicCommandContext();
-    if (parentCtx != null) {
+  public ResultSet execute( final Database db, final  Object[] args,  final CommandContext parentCtx,  final boolean usePlanCache) {
+    final BasicCommandContext ctx = new BasicCommandContext();
+    if (parentCtx != null)
       ctx.setParentWithoutOverridingChild(parentCtx);
-    }
+
     ctx.setDatabase(db);
     ctx.setInputParameters(args);
-    DDLExecutionPlan executionPlan = (DDLExecutionPlan) createExecutionPlan(ctx, false);
+    final DDLExecutionPlan executionPlan = (DDLExecutionPlan) createExecutionPlan(ctx, false);
     return executionPlan.executeInternal(ctx);
   }
 
-  public ResultSet execute(Database db, Map params, CommandContext parentCtx, boolean usePlanCache) {
-    BasicCommandContext ctx = new BasicCommandContext();
+  public ResultSet execute(final Database db, final Map params, final CommandContext parentCtx, final boolean usePlanCache) {
+    final BasicCommandContext ctx = new BasicCommandContext();
     if (parentCtx != null) {
       ctx.setParentWithoutOverridingChild(parentCtx);
     }
     ctx.setDatabase(db);
     ctx.setInputParameters(params);
-    DDLExecutionPlan executionPlan = (DDLExecutionPlan) createExecutionPlan(ctx, false);
+    final DDLExecutionPlan executionPlan = (DDLExecutionPlan) createExecutionPlan(ctx, false);
     return executionPlan.executeInternal(ctx);
   }
 
-  public InternalExecutionPlan createExecutionPlan(CommandContext ctx, boolean enableProfiling) {
+  public InternalExecutionPlan createExecutionPlan( final CommandContext ctx,  final boolean enableProfiling) {
     return new DDLExecutionPlan(ctx, this);
   }
-
 }

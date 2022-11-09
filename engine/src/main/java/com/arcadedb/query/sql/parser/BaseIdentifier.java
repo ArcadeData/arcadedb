@@ -32,22 +32,21 @@ import java.util.*;
 public class BaseIdentifier extends SimpleNode {
 
   protected LevelZeroIdentifier levelZero;
+  protected SuffixIdentifier    suffix;
 
-  protected SuffixIdentifier suffix;
-
-  public BaseIdentifier(int id) {
+  public BaseIdentifier(final int id) {
     super(id);
   }
 
-  public BaseIdentifier(SqlParser p, int id) {
+  public BaseIdentifier(final SqlParser p, final int id) {
     super(p, id);
   }
 
-  public BaseIdentifier(Identifier identifier) {
+  public BaseIdentifier(final Identifier identifier) {
     this.suffix = new SuffixIdentifier(identifier);
   }
 
-  public BaseIdentifier(RecordAttribute attr) {
+  public BaseIdentifier(final RecordAttribute attr) {
     this.suffix = new SuffixIdentifier(attr);
   }
 
@@ -61,34 +60,28 @@ public class BaseIdentifier extends SimpleNode {
   public Object execute(final Record iCurrentRecord, final CommandContext ctx) {
     if (levelZero != null)
       return levelZero.execute(iCurrentRecord, ctx);
-
     if (suffix != null)
       return suffix.execute(iCurrentRecord, ctx);
-
     return null;
   }
 
   public Object execute(final Result iCurrentRecord, final CommandContext ctx) {
     if (levelZero != null)
       return levelZero.execute(iCurrentRecord, ctx);
-
     if (suffix != null)
       return suffix.execute(iCurrentRecord, ctx);
-
     return null;
   }
 
   public boolean isIndexedFunctionCall() {
     if (levelZero != null)
       return levelZero.isIndexedFunctionCall();
-
     return false;
   }
 
   public long estimateIndexedFunction(final FromClause target, final CommandContext context, final BinaryCompareOperator operator, final Object right) {
     if (levelZero != null)
       return levelZero.estimateIndexedFunction(target, context, operator, right);
-
     return -1;
   }
 
@@ -96,7 +89,6 @@ public class BaseIdentifier extends SimpleNode {
       final Object right) {
     if (levelZero != null)
       return levelZero.executeIndexedFunction(target, context, operator, right);
-
     return null;
   }
 
@@ -115,7 +107,6 @@ public class BaseIdentifier extends SimpleNode {
       final Object right) {
     if (this.levelZero == null)
       return false;
-
     return levelZero.canExecuteIndexedFunctionWithoutIndex(target, context, operator, right);
   }
 
@@ -133,7 +124,6 @@ public class BaseIdentifier extends SimpleNode {
       final Object right) {
     if (this.levelZero == null)
       return false;
-
     return levelZero.allowsIndexedFunctionExecutionOnTarget(target, context, operator, right);
   }
 
@@ -151,7 +141,6 @@ public class BaseIdentifier extends SimpleNode {
       final Object right) {
     if (this.levelZero == null)
       return false;
-
     return levelZero.executeIndexedFunctionAfterIndexSearch(target, context, operator, right);
   }
 
@@ -160,9 +149,8 @@ public class BaseIdentifier extends SimpleNode {
   }
 
   public boolean isExpand() {
-    if (levelZero != null) {
+    if (levelZero != null)
       return levelZero.isExpand();
-    }
     return false;
   }
 
@@ -173,28 +161,24 @@ public class BaseIdentifier extends SimpleNode {
   public boolean needsAliases(final Set<String> aliases) {
     if (levelZero != null && levelZero.needsAliases(aliases))
       return true;
-
     return suffix != null && suffix.needsAliases(aliases);
   }
 
   public boolean isAggregate() {
     if (levelZero != null && levelZero.isAggregate())
       return true;
-
     return suffix != null && suffix.isAggregate();
   }
 
   public boolean isCount() {
     if (levelZero != null && levelZero.isCount())
       return true;
-
     return suffix != null && suffix.isCount();
   }
 
   public boolean isEarlyCalculated() {
     if (levelZero != null && levelZero.isEarlyCalculated())
       return true;
-
     return suffix != null && suffix.isEarlyCalculated();
   }
 
@@ -267,7 +251,6 @@ public class BaseIdentifier extends SimpleNode {
   public boolean refersToParent() {
     if (levelZero != null && levelZero.refersToParent())
       return true;
-
     return suffix != null && suffix.refersToParent();
   }
 
@@ -276,7 +259,6 @@ public class BaseIdentifier extends SimpleNode {
   }
 
   public LevelZeroIdentifier getLevelZero() {
-
     return levelZero;
   }
 
@@ -291,10 +273,8 @@ public class BaseIdentifier extends SimpleNode {
     final ResultInternal result = new ResultInternal();
     if (levelZero != null)
       result.setProperty("levelZero", levelZero.serialize());
-
     if (suffix != null)
       result.setProperty("suffix", suffix.serialize());
-
     return result;
   }
 
@@ -312,14 +292,12 @@ public class BaseIdentifier extends SimpleNode {
   public boolean isDefinedFor(final Result currentRecord) {
     if (suffix != null)
       return suffix.isDefinedFor(currentRecord);
-
     return true;
   }
 
   public boolean isDefinedFor(final Record currentRecord) {
     if (suffix != null)
       return suffix.isDefinedFor(currentRecord);
-
     return true;
   }
 
@@ -336,10 +314,8 @@ public class BaseIdentifier extends SimpleNode {
   public boolean isCacheable() {
     if (levelZero != null)
       return levelZero.isCacheable();
-
     if (suffix != null)
       return suffix.isCacheable();
-
     return true;
   }
 }

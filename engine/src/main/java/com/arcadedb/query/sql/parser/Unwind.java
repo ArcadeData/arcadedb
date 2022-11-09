@@ -30,15 +30,15 @@ public class Unwind extends SimpleNode {
 
   protected List<Identifier> items = new ArrayList<Identifier>();
 
-  public Unwind(int id) {
+  public Unwind(final int id) {
     super(id);
   }
 
-  public Unwind(SqlParser p, int id) {
+  public Unwind(final SqlParser p,final  int id) {
     super(p, id);
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("UNWIND ");
     for (int i = 0; i < items.size(); i++) {
       if (i > 0) {
@@ -49,21 +49,21 @@ public class Unwind extends SimpleNode {
   }
 
   public Unwind copy() {
-    Unwind result = new Unwind(-1);
+    final Unwind result = new Unwind(-1);
     result.items = items.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    Unwind oUnwind = (Unwind) o;
+    final Unwind oUnwind = (Unwind) o;
 
-    return items != null ? items.equals(oUnwind.items) : oUnwind.items == null;
+    return Objects.equals(items, oUnwind.items);
   }
 
   @Override
@@ -76,16 +76,16 @@ public class Unwind extends SimpleNode {
   }
 
   public Result serialize() {
-    ResultInternal result = new ResultInternal();
-    if (items != null) {
+    final ResultInternal result = new ResultInternal();
+    if (items != null)
       result.setProperty("items", items.stream().map(x -> x.serialize()).collect(Collectors.toList()));
-    }
+
     return result;
   }
 
-  public void deserialize(Result fromResult) {
+  public void deserialize(final Result fromResult) {
     if (fromResult.getProperty("items") != null) {
-      List<Result> ser = fromResult.getProperty("items");
+      final List<Result> ser = fromResult.getProperty("items");
       items = new ArrayList<>();
       for (Result r : ser) {
         Identifier exp = new Identifier(-1);

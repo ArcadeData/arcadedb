@@ -291,11 +291,11 @@ public class ContainsCondition extends BooleanExpression {
 
     ContainsCondition that = (ContainsCondition) o;
 
-    if (left != null ? !left.equals(that.left) : that.left != null)
+    if (!Objects.equals(left, that.left))
       return false;
-    if (right != null ? !right.equals(that.right) : that.right != null)
+    if (!Objects.equals(right, that.right))
       return false;
-    return condition != null ? condition.equals(that.condition) : that.condition == null;
+    return Objects.equals(condition, that.condition);
   }
 
   @Override

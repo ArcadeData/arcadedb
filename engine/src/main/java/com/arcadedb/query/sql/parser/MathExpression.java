@@ -1015,9 +1015,9 @@ public class MathExpression extends SimpleNode {
 
     MathExpression that = (MathExpression) o;
 
-    if (childExpressions != null ? !childExpressions.equals(that.childExpressions) : that.childExpressions != null)
+    if (!Objects.equals(childExpressions, that.childExpressions))
       return false;
-    return operators != null ? operators.equals(that.operators) : that.operators == null;
+    return Objects.equals(operators, that.operators);
   }
 
   @Override

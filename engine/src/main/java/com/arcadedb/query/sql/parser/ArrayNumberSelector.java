@@ -113,11 +113,11 @@ public class ArrayNumberSelector extends SimpleNode {
 
     ArrayNumberSelector that = (ArrayNumberSelector) o;
 
-    if (inputValue != null ? !inputValue.equals(that.inputValue) : that.inputValue != null)
+    if (!Objects.equals(inputValue, that.inputValue))
       return false;
-    if (expressionValue != null ? !expressionValue.equals(that.expressionValue) : that.expressionValue != null)
+    if (!Objects.equals(expressionValue, that.expressionValue))
       return false;
-    return integer != null ? integer.equals(that.integer) : that.integer == null;
+    return Objects.equals(integer, that.integer);
   }
 
   @Override

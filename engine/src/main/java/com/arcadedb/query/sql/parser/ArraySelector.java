@@ -120,13 +120,13 @@ public class ArraySelector extends SimpleNode {
 
     ArraySelector that = (ArraySelector) o;
 
-    if (rid != null ? !rid.equals(that.rid) : that.rid != null)
+    if (!Objects.equals(rid, that.rid))
       return false;
-    if (inputParam != null ? !inputParam.equals(that.inputParam) : that.inputParam != null)
+    if (!Objects.equals(inputParam, that.inputParam))
       return false;
-    if (expression != null ? !expression.equals(that.expression) : that.expression != null)
+    if (!Objects.equals(expression, that.expression))
       return false;
-    return integer != null ? integer.equals(that.integer) : that.integer == null;
+    return Objects.equals(integer, that.integer);
   }
 
   @Override

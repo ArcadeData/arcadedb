@@ -74,7 +74,7 @@ public class CommitStatement extends SimpleExecStatement {
 
     CommitStatement that = (CommitStatement) o;
 
-    return retry != null ? retry.equals(that.retry) : that.retry == null;
+    return Objects.equals(retry, that.retry);
   }
 
   @Override

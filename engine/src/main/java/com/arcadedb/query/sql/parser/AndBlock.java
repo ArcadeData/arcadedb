@@ -31,19 +31,18 @@ import java.util.*;
 public class AndBlock extends BooleanExpression {
   List<BooleanExpression> subBlocks = new ArrayList<>();
 
-  public AndBlock(int id) {
+  public AndBlock(final int id) {
     super(id);
   }
 
-  public AndBlock(SqlParser p, int id) {
+  public AndBlock(final SqlParser p, final int id) {
     super(p, id);
   }
 
   @Override
-  public boolean evaluate(Identifiable currentRecord, CommandContext ctx) {
-    if (getSubBlocks() == null) {
+  public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
+    if (getSubBlocks() == null)
       return true;
-    }
 
     for (BooleanExpression block : subBlocks) {
       if (!block.evaluate(currentRecord, ctx)) {
@@ -54,10 +53,9 @@ public class AndBlock extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(Result currentRecord, CommandContext ctx) {
-    if (getSubBlocks() == null) {
+  public boolean evaluate(final Result currentRecord, final CommandContext ctx) {
+    if (getSubBlocks() == null)
       return true;
-    }
 
     for (BooleanExpression block : subBlocks) {
       if (!block.evaluate(currentRecord, ctx)) {
@@ -71,11 +69,7 @@ public class AndBlock extends BooleanExpression {
     return subBlocks;
   }
 
-  public void setSubBlocks(List<BooleanExpression> subBlocks) {
-    this.subBlocks = subBlocks;
-  }
-
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (subBlocks == null || subBlocks.size() == 0) {
       return;
     }
@@ -114,20 +108,20 @@ public class AndBlock extends BooleanExpression {
 
   @Override
   protected List<Object> getExternalCalculationConditions() {
-    List<Object> result = new ArrayList<>();
+    final List<Object> result = new ArrayList<>();
     for (BooleanExpression expr : subBlocks) {
       result.addAll(expr.getExternalCalculationConditions());
     }
     return result;
   }
 
-  public List<BinaryCondition> getIndexedFunctionConditions(DocumentType iSchemaClass, Database database) {
+  public List<BinaryCondition> getIndexedFunctionConditions(final DocumentType iSchemaClass, final Database database) {
     if (subBlocks == null) {
       return null;
     }
-    List<BinaryCondition> result = new ArrayList<>();
+    final List<BinaryCondition> result = new ArrayList<>();
     for (BooleanExpression exp : subBlocks) {
-      List<BinaryCondition> sub = exp.getIndexedFunctionConditions(iSchemaClass, database);
+      final List<BinaryCondition> sub = exp.getIndexedFunctionConditions(iSchemaClass, database);
       if (sub != null && sub.size() > 0) {
         result.addAll(sub);
       }
@@ -139,7 +133,7 @@ public class AndBlock extends BooleanExpression {
     List<AndBlock> result = new ArrayList<>();
     boolean first = true;
     for (BooleanExpression sub : subBlocks) {
-      List<AndBlock> subFlattened = sub.flatten();
+      final List<AndBlock> subFlattened = sub.flatten();
       List<AndBlock> oldResult = result;
       result = new ArrayList<>();
       for (AndBlock subAndItem : subFlattened) {
@@ -147,7 +141,7 @@ public class AndBlock extends BooleanExpression {
           result.add(subAndItem);
         } else {
           for (AndBlock oldResultItem : oldResult) {
-            AndBlock block = new AndBlock(-1);
+            final AndBlock block = new AndBlock(-1);
             block.subBlocks.addAll(oldResultItem.subBlocks);
             for (BooleanExpression resultItem : subAndItem.subBlocks) {
               block.subBlocks.add(resultItem);
@@ -161,17 +155,17 @@ public class AndBlock extends BooleanExpression {
     return result;
   }
 
-  protected AndBlock encapsulateInAndBlock(BooleanExpression item) {
+  protected AndBlock encapsulateInAndBlock(final BooleanExpression item) {
     if (item instanceof AndBlock) {
       return (AndBlock) item;
     }
-    AndBlock result = new AndBlock(-1);
+    final AndBlock result = new AndBlock(-1);
     result.subBlocks.add(item);
     return result;
   }
 
   @Override
-  public boolean needsAliases(Set<String> aliases) {
+  public boolean needsAliases(final Set<String> aliases) {
     for (BooleanExpression block : subBlocks) {
       if (block.needsAliases(aliases)) {
         return true;
@@ -181,7 +175,7 @@ public class AndBlock extends BooleanExpression {
   }
 
   public AndBlock copy() {
-    AndBlock result = new AndBlock(-1);
+    final AndBlock result = new AndBlock(-1);
     for (BooleanExpression exp : subBlocks) {
       result.subBlocks.add(exp.copy());
     }
@@ -189,15 +183,15 @@ public class AndBlock extends BooleanExpression {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    AndBlock andBlock = (AndBlock) o;
+    final AndBlock andBlock = (AndBlock) o;
 
-    return subBlocks != null ? subBlocks.equals(andBlock.subBlocks) : andBlock.subBlocks == null;
+    return Objects.equals(subBlocks, andBlock.subBlocks);
   }
 
   @Override
@@ -219,7 +213,7 @@ public class AndBlock extends BooleanExpression {
   }
 
   @Override
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
     for (BooleanExpression exp : subBlocks) {
       exp.extractSubQueries(collector);
     }
@@ -237,9 +231,9 @@ public class AndBlock extends BooleanExpression {
 
   @Override
   public List<String> getMatchPatternInvolvedAliases() {
-    List<String> result = new ArrayList<>();
+    final List<String> result = new ArrayList<>();
     for (BooleanExpression exp : subBlocks) {
-      List<String> x = exp.getMatchPatternInvolvedAliases();
+      final List<String> x = exp.getMatchPatternInvolvedAliases();
       if (x != null) {
         result.addAll(x);
       }
@@ -256,6 +250,5 @@ public class AndBlock extends BooleanExpression {
     }
     return true;
   }
-
 }
 /* JavaCC - OriginalChecksum=cf1f66cc86cfc93d357f9fcdfa4a4604 (do not edit this line) */

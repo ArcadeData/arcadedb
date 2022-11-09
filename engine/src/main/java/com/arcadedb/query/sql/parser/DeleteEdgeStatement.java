@@ -152,21 +152,21 @@ public class DeleteEdgeStatement extends Statement {
 
     DeleteEdgeStatement that = (DeleteEdgeStatement) o;
 
-    if (typeName != null ? !typeName.equals(that.typeName) : that.typeName != null)
+    if (!Objects.equals(typeName, that.typeName))
       return false;
-    if (targetBucketName != null ? !targetBucketName.equals(that.targetBucketName) : that.targetBucketName != null)
+    if (!Objects.equals(targetBucketName, that.targetBucketName))
       return false;
-    if (rid != null ? !rid.equals(that.rid) : that.rid != null)
+    if (!Objects.equals(rid, that.rid))
       return false;
-    if (rids != null ? !rids.equals(that.rids) : that.rids != null)
+    if (!Objects.equals(rids, that.rids))
       return false;
-    if (leftExpression != null ? !leftExpression.equals(that.leftExpression) : that.leftExpression != null)
+    if (!Objects.equals(leftExpression, that.leftExpression))
       return false;
-    if (rightExpression != null ? !rightExpression.equals(that.rightExpression) : that.rightExpression != null)
+    if (!Objects.equals(rightExpression, that.rightExpression))
       return false;
-    if (whereClause != null ? !whereClause.equals(that.whereClause) : that.whereClause != null)
+    if (!Objects.equals(whereClause, that.whereClause))
       return false;
-    return limit != null ? limit.equals(that.limit) : that.limit == null;
+    return Objects.equals(limit, that.limit);
   }
 
   @Override
