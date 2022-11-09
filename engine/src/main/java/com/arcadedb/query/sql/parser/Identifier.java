@@ -56,8 +56,8 @@ public class Identifier extends SimpleNode {
     super(id);
   }
 
-  public static Identifier deserialize(Result fromResult) {
-    Identifier identifier = new Identifier(-1);
+  public static Identifier deserialize(final Result fromResult) {
+    final Identifier identifier = new Identifier(-1);
     identifier.value = fromResult.getProperty("value");
     identifier.quoted = fromResult.getProperty("quoted");
     return identifier;
@@ -158,6 +158,5 @@ public class Identifier extends SimpleNode {
     result.setProperty("quoted", quoted);
     return result;
   }
-
 }
 /* JavaCC - OriginalChecksum=691a2eb5096f7b5e634b2ca8ac2ded3a (do not edit this line) */

@@ -440,6 +440,18 @@ public class InsertStatementExecutionTest extends TestHelper {
     result.close();
   }
 
+  @Test
+  public void testInsertEdgeMustFail() {
+    String className = "testInsertEdge";
+    database.getSchema().createEdgeType(className);
+    try {
+      database.command("sql", "insert into " + className + " set `@out` = #1:10, `@in` = #1:11");
+      Assertions.fail();
+    } catch (IllegalArgumentException e) {
+      // EXPECTED
+    }
+  }
+
   private void printExecutionPlan(ResultSet result) {
     //ExecutionPlanPrintUtils.printExecutionPlan(result);
   }

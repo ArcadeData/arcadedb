@@ -94,7 +94,7 @@ public class InsertStatement extends Statement {
 
   @Override
   public InsertStatement copy() {
-    InsertStatement result = new InsertStatement(-1);
+    final InsertStatement result = new InsertStatement(-1);
     result.targetType = targetType == null ? null : targetType.copy();
     result.targetBucketName = targetBucketName == null ? null : targetBucketName.copy();
     result.targetBucket = targetBucket == null ? null : targetBucket.copy();
@@ -109,44 +109,44 @@ public class InsertStatement extends Statement {
   }
 
   @Override
-  public ResultSet execute(Database db, Object[] args, CommandContext parentCtx, boolean usePlanCache) {
-    BasicCommandContext ctx = new BasicCommandContext();
-    if (parentCtx != null) {
+  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentCtx, final boolean usePlanCache) {
+    final BasicCommandContext ctx = new BasicCommandContext();
+    if (parentCtx != null)
       ctx.setParentWithoutOverridingChild(parentCtx);
-    }
+
     ctx.setDatabase(db);
     ctx.setInputParameters(args);
-    InsertExecutionPlan executionPlan = createExecutionPlan(ctx, false);
+    final InsertExecutionPlan executionPlan = createExecutionPlan(ctx, false);
     executionPlan.executeInternal();
     return new LocalResultSet(executionPlan);
   }
 
   @Override
-  public ResultSet execute(Database db, Map params, CommandContext parentCtx, boolean usePlanCache) {
-    BasicCommandContext ctx = new BasicCommandContext();
-    if (parentCtx != null) {
+  public ResultSet execute(final Database db, final Map params, final CommandContext parentCtx, final boolean usePlanCache) {
+    final BasicCommandContext ctx = new BasicCommandContext();
+    if (parentCtx != null)
       ctx.setParentWithoutOverridingChild(parentCtx);
-    }
+
     ctx.setDatabase(db);
     ctx.setInputParameters(params);
-    InsertExecutionPlan executionPlan = createExecutionPlan(ctx, false);
+    final InsertExecutionPlan executionPlan = createExecutionPlan(ctx, false);
     executionPlan.executeInternal();
     return new LocalResultSet(executionPlan);
   }
 
-  public InsertExecutionPlan createExecutionPlan(CommandContext ctx, boolean enableProfiling) {
-    InsertExecutionPlanner planner = new InsertExecutionPlanner(this);
+  public InsertExecutionPlan createExecutionPlan(final CommandContext ctx, final boolean enableProfiling) {
+    final InsertExecutionPlanner planner = new InsertExecutionPlanner(this);
     return planner.createExecutionPlan(ctx, enableProfiling);
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    InsertStatement that = (InsertStatement) o;
+    final InsertStatement that = (InsertStatement) o;
 
     if (selectInParentheses != that.selectInParentheses)
       return false;
@@ -154,19 +154,19 @@ public class InsertStatement extends Statement {
       return false;
     if (unsafe != that.unsafe)
       return false;
-    if (targetType != null ? !targetType.equals(that.targetType) : that.targetType != null)
+    if (!Objects.equals(targetType, that.targetType))
       return false;
-    if (targetBucketName != null ? !targetBucketName.equals(that.targetBucketName) : that.targetBucketName != null)
+    if (!Objects.equals(targetBucketName, that.targetBucketName))
       return false;
-    if (targetBucket != null ? !targetBucket.equals(that.targetBucket) : that.targetBucket != null)
+    if (!Objects.equals(targetBucket, that.targetBucket))
       return false;
-    if (targetIndex != null ? !targetIndex.equals(that.targetIndex) : that.targetIndex != null)
+    if (!Objects.equals(targetIndex, that.targetIndex))
       return false;
-    if (insertBody != null ? !insertBody.equals(that.insertBody) : that.insertBody != null)
+    if (!Objects.equals(insertBody, that.insertBody))
       return false;
-    if (returnStatement != null ? !returnStatement.equals(that.returnStatement) : that.returnStatement != null)
+    if (!Objects.equals(returnStatement, that.returnStatement))
       return false;
-    return selectStatement != null ? selectStatement.equals(that.selectStatement) : that.selectStatement == null;
+    return Objects.equals(selectStatement, that.selectStatement);
   }
 
   @Override
