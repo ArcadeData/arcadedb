@@ -88,7 +88,7 @@ public class CreatePropertyStatement extends DDLStatement {
         linkedType = Type.valueOf(linked.toUpperCase(Locale.ENGLISH));
     }
     // CREATE IT LOCALLY
-    Property internalProp = typez.createProperty(propertyName.getStringValue(), type);
+    final Property internalProp = typez.createProperty(propertyName.getStringValue(), type);
     for (CreatePropertyAttributeStatement attr : attributes) {
       Object val = attr.setOnProperty(internalProp, ctx);
       result.setProperty(attr.settingName.getStringValue(), val);
@@ -96,7 +96,7 @@ public class CreatePropertyStatement extends DDLStatement {
   }
 
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("CREATE PROPERTY ");
     typeName.toString(params, builder);
     builder.append(".");
@@ -114,7 +114,7 @@ public class CreatePropertyStatement extends DDLStatement {
     if (!attributes.isEmpty()) {
       builder.append(" (");
       for (int i = 0; i < attributes.size(); i++) {
-        CreatePropertyAttributeStatement att = attributes.get(i);
+        final CreatePropertyAttributeStatement att = attributes.get(i);
         att.toString(params, builder);
 
         if (i < attributes.size() - 1) {
@@ -127,7 +127,7 @@ public class CreatePropertyStatement extends DDLStatement {
 
   @Override
   public CreatePropertyStatement copy() {
-    CreatePropertyStatement result = new CreatePropertyStatement(-1);
+    final CreatePropertyStatement result = new CreatePropertyStatement(-1);
     result.typeName = typeName == null ? null : typeName.copy();
     result.propertyName = propertyName == null ? null : propertyName.copy();
     result.propertyType = propertyType == null ? null : propertyType.copy();
@@ -138,23 +138,23 @@ public class CreatePropertyStatement extends DDLStatement {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    CreatePropertyStatement that = (CreatePropertyStatement) o;
+    final CreatePropertyStatement that = (CreatePropertyStatement) o;
 
-    if (typeName != null ? !typeName.equals(that.typeName) : that.typeName != null)
+    if (!Objects.equals(typeName, that.typeName))
       return false;
-    if (propertyName != null ? !propertyName.equals(that.propertyName) : that.propertyName != null)
+    if (!Objects.equals(propertyName, that.propertyName))
       return false;
-    if (propertyType != null ? !propertyType.equals(that.propertyType) : that.propertyType != null)
+    if (!Objects.equals(propertyType, that.propertyType))
       return false;
-    if (linkedType != null ? !linkedType.equals(that.linkedType) : that.linkedType != null)
+    if (!Objects.equals(linkedType, that.linkedType))
       return false;
-    if (attributes != null ? !attributes.equals(that.attributes) : that.attributes != null)
+    if (!Objects.equals(attributes, that.attributes))
       return false;
     return ifNotExists == that.ifNotExists;
   }
