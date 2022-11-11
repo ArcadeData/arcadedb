@@ -33,7 +33,6 @@ import java.util.*;
 public class CreateBucketStatement extends DDLStatement {
   protected Identifier name;
   protected boolean    ifNotExists = false;
-  protected PInteger   id;
   protected boolean    blob        = false;
 
   public CreateBucketStatement(final int id) {
@@ -53,17 +52,6 @@ public class CreateBucketStatement extends DDLStatement {
         return new InternalResultSet();
       throw new CommandExecutionException("Bucket '" + bucketName + "' already exists");
     }
-
-    if (id != null) {
-      final String existingName = db.getSchema().getBucketById(id.getValue().intValue()).getName();
-      if (existingName != null) {
-        if (ifNotExists)
-          return new InternalResultSet();
-
-        throw new CommandExecutionException("Bucket '" + id.getValue() + "' already exists");
-      }
-    }
-
     final Bucket bucket = db.getSchema().createBucket(bucketName);
 
     final ResultInternal result = new ResultInternal();
@@ -87,10 +75,6 @@ public class CreateBucketStatement extends DDLStatement {
     if (ifNotExists) {
       builder.append(" IF NOT EXISTS");
     }
-    if (id != null) {
-      builder.append(" ID ");
-      id.toString(params, builder);
-    }
   }
 
   @Override
@@ -98,7 +82,6 @@ public class CreateBucketStatement extends DDLStatement {
     final CreateBucketStatement result = new CreateBucketStatement(-1);
     result.name = name == null ? null : name.copy();
     result.ifNotExists = this.ifNotExists;
-    result.id = id == null ? null : id.copy();
     result.blob = blob;
     return result;
   }
@@ -125,7 +108,6 @@ public class CreateBucketStatement extends DDLStatement {
   public int hashCode() {
     int result = name != null ? name.hashCode() : 0;
     result = 31 * result + (ifNotExists ? 1 : 0);
-    result = 31 * result + (id != null ? id.hashCode() : 0);
     result = 31 * result + (blob ? 1 : 0);
     return result;
   }

@@ -25,13 +25,10 @@ public class CreateBucketStatementTest extends ParserTestAbstract {
   @Test
   public void testPlain() {
     checkRightSyntax("CREATE BUCKET Foo");
-    checkRightSyntax("CREATE BUCKET Foo ID 14");
     checkRightSyntax("create bucket Foo");
-    checkRightSyntax("create bucket Foo id 14");
 
     checkWrongSyntax("CREATE Bucket");
     checkWrongSyntax("CREATE Bucket foo bar");
     checkWrongSyntax("CREATE Bucket foo.bar");
-    checkWrongSyntax("CREATE Bucket foo id bar");
   }
 }

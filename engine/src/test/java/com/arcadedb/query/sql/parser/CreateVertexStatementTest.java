@@ -73,7 +73,7 @@ public class CreateVertexStatementTest {
     checkRightSyntax("create vertex Foo set a = 1");
     checkRightSyntax("create vertex Foo set a = '1'");
     checkRightSyntax("create vertex Foo set a = \"1\"");
-
+    checkRightSyntax("create vertex AAA set `name` = 'name1'");
     checkRightSyntax("create vertex Foo set a = 1, b = 2");
   }
 
