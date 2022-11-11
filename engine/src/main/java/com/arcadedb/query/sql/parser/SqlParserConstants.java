@@ -77,9 +77,9 @@ public interface SqlParserConstants {
   /** RegularExpression Id. */
   int DEFINED = 42;
   /** RegularExpression Id. */
-  int ORDER = 43;
+  int ORDER_BY = 43;
   /** RegularExpression Id. */
-  int GROUP = 44;
+  int GROUP_BY = 44;
   /** RegularExpression Id. */
   int BY = 45;
   /** RegularExpression Id. */
@@ -537,8 +537,8 @@ public interface SqlParserConstants {
     "<OR>",
     "<NULL>",
     "<DEFINED>",
-    "<ORDER>",
-    "<GROUP>",
+    "<ORDER_BY>",
+    "<GROUP_BY>",
     "<BY>",
     "<LIMIT>",
     "<SKIP2>",

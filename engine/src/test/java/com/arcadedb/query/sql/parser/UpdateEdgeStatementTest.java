@@ -66,7 +66,7 @@ public class UpdateEdgeStatementTest {
     checkRightSyntax("update edge Foo set a = 1+1, c=foo, d='bar'");
     checkRightSyntax("update edge Foo set a = a.b.toLowerCase(), b=out('pippo')[0]");
     printTree("update edge Foo set a = a.b.toLowerCase(), b=out('pippo')[0]");
-    //checkRightSyntax("UPDATE EDGE E1 SET @out = #10:0, @in = #21:0 WHERE @rid = #24:0");
+    checkRightSyntax("UPDATE EDGE E1 SET `@out` = #10:0, `@in` = #21:0 WHERE @rid = #24:0");
   }
 
   @Test

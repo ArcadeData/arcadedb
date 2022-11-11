@@ -119,8 +119,6 @@ if (jjtc000) {
       case MERGE:
       case CONTENT:
       case REMOVE:
-      case ORDER:
-      case GROUP:
       case OFFSET:
       case RECORD:
       case CHECK:
@@ -407,12 +405,12 @@ if (jjtc000) {
   Token token = null;
     try {
       switch (jj_ntk == -1 ? jj_ntk_f() : jj_ntk) {
-      case ALIGN:{
-        token = jj_consume_token(ALIGN);
-        break;
-        }
       case IDENTIFIER:{
         token = jj_consume_token(IDENTIFIER);
+        break;
+        }
+      case ALIGN:{
+        token = jj_consume_token(ALIGN);
         break;
         }
       case IN:{
@@ -443,20 +441,12 @@ if (jjtc000) {
         token = jj_consume_token(CONTENT);
         break;
         }
-      case ORDER:{
-        token = jj_consume_token(ORDER);
-        break;
-        }
       case KEY:{
         token = jj_consume_token(KEY);
         break;
         }
       case OFFSET:{
         token = jj_consume_token(OFFSET);
-        break;
-        }
-      case GROUP:{
-        token = jj_consume_token(GROUP);
         break;
         }
       case VALUE:{
@@ -1328,8 +1318,6 @@ if (jjtc000) {
       case CONTENT:
       case REMOVE:
       case NULL:
-      case ORDER:
-      case GROUP:
       case OFFSET:
       case RECORD:
       case CHECK:
@@ -1449,7 +1437,7 @@ if (jjtc000) {
         ;
       }
       switch (jj_ntk == -1 ? jj_ntk_f() : jj_ntk) {
-      case GROUP:{
+      case GROUP_BY:{
         jjtn000.groupBy = GroupBy();
         break;
         }
@@ -1458,7 +1446,7 @@ if (jjtc000) {
         ;
       }
       switch (jj_ntk == -1 ? jj_ntk_f() : jj_ntk) {
-      case ORDER:{
+      case ORDER_BY:{
         jjtn000.orderBy = OrderBy();
         break;
         }
@@ -1575,8 +1563,6 @@ if (jjtc000) {
       case MERGE:
       case CONTENT:
       case REMOVE:
-      case ORDER:
-      case GROUP:
       case OFFSET:
       case RECORD:
       case CHECK:
@@ -1882,7 +1868,7 @@ jjtn000.returnAliases.add(lastReturnAlias);
         lastNestedProjection = null;
       }
       switch (jj_ntk == -1 ? jj_ntk_f() : jj_ntk) {
-      case GROUP:{
+      case GROUP_BY:{
         jjtn000.groupBy = GroupBy();
         break;
         }
@@ -1891,7 +1877,7 @@ jjtn000.returnAliases.add(lastReturnAlias);
         ;
       }
       switch (jj_ntk == -1 ? jj_ntk_f() : jj_ntk) {
-      case ORDER:{
+      case ORDER_BY:{
         jjtn000.orderBy = OrderBy();
         break;
         }
@@ -2254,8 +2240,6 @@ if (jjtc000) {
       case MERGE:
       case CONTENT:
       case REMOVE:
-      case ORDER:
-      case GROUP:
       case OFFSET:
       case RECORD:
       case CHECK:
@@ -2525,8 +2509,6 @@ if (jjtc000) {
       case MERGE:
       case CONTENT:
       case REMOVE:
-      case ORDER:
-      case GROUP:
       case OFFSET:
       case RECORD:
       case CHECK:
@@ -2722,8 +2704,6 @@ jjtn000.returnAfter = true;
         case CONTENT:
         case REMOVE:
         case NULL:
-        case ORDER:
-        case GROUP:
         case OFFSET:
         case RECORD:
         case CHECK:
@@ -2957,8 +2937,6 @@ jjtn000.returnCount = true;
         case CONTENT:
         case REMOVE:
         case NULL:
-        case ORDER:
-        case GROUP:
         case OFFSET:
         case RECORD:
         case CHECK:
@@ -3542,8 +3520,6 @@ if (jjtc000) {
         case MERGE:
         case CONTENT:
         case REMOVE:
-        case ORDER:
-        case GROUP:
         case OFFSET:
         case RECORD:
         case CHECK:
@@ -4106,8 +4082,6 @@ if (jjtc000) {
       case MERGE:
       case CONTENT:
       case REMOVE:
-      case ORDER:
-      case GROUP:
       case OFFSET:
       case RECORD:
       case CHECK:
@@ -4357,8 +4331,6 @@ Token token;
       case MERGE:
       case CONTENT:
       case REMOVE:
-      case ORDER:
-      case GROUP:
       case OFFSET:
       case RECORD:
       case CHECK:
@@ -4715,8 +4687,6 @@ jjtn000.star = true;
       case CONTENT:
       case REMOVE:
       case NULL:
-      case ORDER:
-      case GROUP:
       case OFFSET:
       case RECORD:
       case CHECK:
@@ -5168,8 +5138,6 @@ if (jjtc000) {
       case MERGE:
       case CONTENT:
       case REMOVE:
-      case ORDER:
-      case GROUP:
       case OFFSET:
       case RECORD:
       case CHECK:
@@ -5268,8 +5236,6 @@ jjtn000.name = new Identifier("distinct");
       case CONTENT:
       case REMOVE:
       case NULL:
-      case ORDER:
-      case GROUP:
       case OFFSET:
       case RECORD:
       case CHECK:
@@ -5431,8 +5397,6 @@ if (jjtc000) {
       case CONTENT:
       case REMOVE:
       case NULL:
-      case ORDER:
-      case GROUP:
       case OFFSET:
       case RECORD:
       case CHECK:
@@ -6161,8 +6125,6 @@ if (jjtc000) {
         case CONTENT:
         case REMOVE:
         case NULL:
-        case ORDER:
-        case GROUP:
         case OFFSET:
         case RECORD:
         case CHECK:
@@ -6317,8 +6279,6 @@ if (jjtc000) {
       case MERGE:
       case CONTENT:
       case REMOVE:
-      case ORDER:
-      case GROUP:
       case OFFSET:
       case RECORD:
       case CHECK:
@@ -6754,8 +6714,6 @@ jjtn000.inputParams.add(lastParam);
                   case MERGE:
                   case CONTENT:
                   case REMOVE:
-                  case ORDER:
-                  case GROUP:
                   case OFFSET:
                   case RECORD:
                   case CHECK:
@@ -6929,8 +6887,6 @@ if (jjtc000) {
       case MERGE:
       case CONTENT:
       case REMOVE:
-      case ORDER:
-      case GROUP:
       case OFFSET:
       case RECORD:
       case CHECK:
@@ -7309,8 +7265,6 @@ jjtn000.negate = true;
       case CONTENT:
       case REMOVE:
       case NULL:
-      case ORDER:
-      case GROUP:
       case OFFSET:
       case RECORD:
       case CHECK:
@@ -8097,8 +8051,6 @@ if (jjtc000) {
       case MERGE:
       case CONTENT:
       case REMOVE:
-      case ORDER:
-      case GROUP:
       case OFFSET:
       case RECORD:
       case CHECK:
@@ -8253,8 +8205,6 @@ if (jjtc000) {
         case CONTENT:
         case REMOVE:
         case NULL:
-        case ORDER:
-        case GROUP:
         case OFFSET:
         case RECORD:
         case CHECK:
@@ -8386,8 +8336,6 @@ jjtn000.between = true;
         case CONTENT:
         case REMOVE:
         case NULL:
-        case ORDER:
-        case GROUP:
         case OFFSET:
         case RECORD:
         case CHECK:
@@ -8515,8 +8463,6 @@ jjtn000.leftExpressions.add(lastExpression);
         case CONTENT:
         case REMOVE:
         case NULL:
-        case ORDER:
-        case GROUP:
         case OFFSET:
         case RECORD:
         case CHECK:
@@ -8954,8 +8900,6 @@ if (jjtc000) {
         case MERGE:
         case CONTENT:
         case REMOVE:
-        case ORDER:
-        case GROUP:
         case OFFSET:
         case RECORD:
         case CHECK:
@@ -9120,8 +9064,6 @@ if (jjtc000) {
         case MERGE:
         case CONTENT:
         case REMOVE:
-        case ORDER:
-        case GROUP:
         case OFFSET:
         case RECORD:
         case CHECK:
@@ -9440,8 +9382,7 @@ if (jjtc000) {
   Rid lastRid;
   Token lastToken;
     try {
-      jj_consume_token(ORDER);
-      jj_consume_token(BY);
+      jj_consume_token(ORDER_BY);
       switch (jj_ntk == -1 ? jj_ntk_f() : jj_ntk) {
       case ALIGN:
       case CUSTOM:
@@ -9454,8 +9395,6 @@ if (jjtc000) {
       case MERGE:
       case CONTENT:
       case REMOVE:
-      case ORDER:
-      case GROUP:
       case OFFSET:
       case RECORD:
       case CHECK:
@@ -9546,8 +9485,6 @@ lastItem = new OrderByItem();
         case MERGE:
         case CONTENT:
         case REMOVE:
-        case ORDER:
-        case GROUP:
         case OFFSET:
         case RECORD:
         case CHECK:
@@ -9694,8 +9631,6 @@ lastItem = new OrderByItem();
         case MERGE:
         case CONTENT:
         case REMOVE:
-        case ORDER:
-        case GROUP:
         case OFFSET:
         case RECORD:
         case CHECK:
@@ -9855,8 +9790,6 @@ lastItem.type = OrderByItem.ASC;
         case MERGE:
         case CONTENT:
         case REMOVE:
-        case ORDER:
-        case GROUP:
         case OFFSET:
         case RECORD:
         case CHECK:
@@ -9947,8 +9880,6 @@ lastItem = new OrderByItem();
           case MERGE:
           case CONTENT:
           case REMOVE:
-          case ORDER:
-          case GROUP:
           case OFFSET:
           case RECORD:
           case CHECK:
@@ -10095,8 +10026,6 @@ lastItem = new OrderByItem();
           case MERGE:
           case CONTENT:
           case REMOVE:
-          case ORDER:
-          case GROUP:
           case OFFSET:
           case RECORD:
           case CHECK:
@@ -10267,8 +10196,7 @@ if (jjtc000) {
   jjtree.openNodeScope(jjtn000);
   jjtn000.jjtSetFirstToken(getToken(1));Expression lastExpression;
     try {
-      jj_consume_token(GROUP);
-      jj_consume_token(BY);
+      jj_consume_token(GROUP_BY);
       lastExpression = Expression();
 jjtn000.items.add(lastExpression);
       label_35:
@@ -10642,8 +10570,6 @@ if (jjtc000) {
       case CONTENT:
       case REMOVE:
       case NULL:
-      case ORDER:
-      case GROUP:
       case OFFSET:
       case RECORD:
       case CHECK:
@@ -10842,8 +10768,6 @@ if (jjtc000) {
       case MERGE:
       case CONTENT:
       case REMOVE:
-      case ORDER:
-      case GROUP:
       case OFFSET:
       case RECORD:
       case CHECK:
@@ -10932,8 +10856,6 @@ lastItem = new JsonItem();
         case MERGE:
         case CONTENT:
         case REMOVE:
-        case ORDER:
-        case GROUP:
         case OFFSET:
         case RECORD:
         case CHECK:
@@ -11056,8 +10978,6 @@ lastItem = new JsonItem();
           case MERGE:
           case CONTENT:
           case REMOVE:
-          case ORDER:
-          case GROUP:
           case OFFSET:
           case RECORD:
           case CHECK:
@@ -11639,8 +11559,6 @@ if (jjtc000) {
         case MERGE:
         case CONTENT:
         case REMOVE:
-        case ORDER:
-        case GROUP:
         case OFFSET:
         case RECORD:
         case CHECK:
@@ -11867,8 +11785,6 @@ if (jjtc000) {
         case MERGE:
         case CONTENT:
         case REMOVE:
-        case ORDER:
-        case GROUP:
         case OFFSET:
         case RECORD:
         case CHECK:
@@ -12019,8 +11935,6 @@ if (jjtc000) {
         case MERGE:
         case CONTENT:
         case REMOVE:
-        case ORDER:
-        case GROUP:
         case OFFSET:
         case RECORD:
         case CHECK:
@@ -12169,8 +12083,6 @@ if (jjtc000) {
         case MERGE:
         case CONTENT:
         case REMOVE:
-        case ORDER:
-        case GROUP:
         case OFFSET:
         case RECORD:
         case CHECK:
@@ -12319,8 +12231,6 @@ if (jjtc000) {
         case MERGE:
         case CONTENT:
         case REMOVE:
-        case ORDER:
-        case GROUP:
         case OFFSET:
         case RECORD:
         case CHECK:
@@ -12479,8 +12389,6 @@ if (jjtc000) {
         case MERGE:
         case CONTENT:
         case REMOVE:
-        case ORDER:
-        case GROUP:
         case OFFSET:
         case RECORD:
         case CHECK:
@@ -12637,8 +12545,6 @@ if (jjtc000) {
         case MERGE:
         case CONTENT:
         case REMOVE:
-        case ORDER:
-        case GROUP:
         case OFFSET:
         case RECORD:
         case CHECK:
@@ -12850,8 +12756,6 @@ if (jjtc000) {
       case MERGE:
       case CONTENT:
       case REMOVE:
-      case ORDER:
-      case GROUP:
       case OFFSET:
       case RECORD:
       case CHECK:
@@ -13582,8 +13486,6 @@ if (jjtc000) {
       case MERGE:
       case CONTENT:
       case REMOVE:
-      case ORDER:
-      case GROUP:
       case OFFSET:
       case RECORD:
       case CHECK:
@@ -13872,8 +13774,6 @@ if (jjtc000) {
         case MERGE:
         case CONTENT:
         case REMOVE:
-        case ORDER:
-        case GROUP:
         case OFFSET:
         case RECORD:
         case CHECK:
@@ -14079,8 +13979,6 @@ jjtn000.ifNotExists = true;
         case MERGE:
         case CONTENT:
         case REMOVE:
-        case ORDER:
-        case GROUP:
         case OFFSET:
         case RECORD:
         case CHECK:
@@ -14218,8 +14116,6 @@ lastProperty.byValue = true;
           case MERGE:
           case CONTENT:
           case REMOVE:
-          case ORDER:
-          case GROUP:
           case OFFSET:
           case RECORD:
           case CHECK:
@@ -14349,8 +14245,6 @@ lastProperty.byValue = true;
         case MERGE:
         case CONTENT:
         case REMOVE:
-        case ORDER:
-        case GROUP:
         case OFFSET:
         case RECORD:
         case CHECK:
@@ -14450,8 +14344,6 @@ jjtn000.ifNotExists = true;
         case MERGE:
         case CONTENT:
         case REMOVE:
-        case ORDER:
-        case GROUP:
         case OFFSET:
         case RECORD:
         case CHECK:
@@ -14547,8 +14439,6 @@ jjtn000.ifNotExists = true;
         case MERGE:
         case CONTENT:
         case REMOVE:
-        case ORDER:
-        case GROUP:
         case OFFSET:
         case RECORD:
         case CHECK:
@@ -14636,8 +14526,6 @@ jjtn000.ifNotExists = true;
             case MERGE:
             case CONTENT:
             case REMOVE:
-            case ORDER:
-            case GROUP:
             case OFFSET:
             case RECORD:
             case CHECK:
@@ -14762,8 +14650,6 @@ jjtn000.keyTypes.add(lastIdentifier);
         case MERGE:
         case CONTENT:
         case REMOVE:
-        case ORDER:
-        case GROUP:
         case OFFSET:
         case RECORD:
         case CHECK:
@@ -14851,8 +14737,6 @@ jjtn000.keyTypes.add(lastIdentifier);
             case MERGE:
             case CONTENT:
             case REMOVE:
-            case ORDER:
-            case GROUP:
             case OFFSET:
             case RECORD:
             case CHECK:
@@ -15037,8 +14921,6 @@ if (jjtc000) {
       case MERGE:
       case CONTENT:
       case REMOVE:
-      case ORDER:
-      case GROUP:
       case OFFSET:
       case RECORD:
       case CHECK:
@@ -15170,8 +15052,6 @@ if (jjtc000) {
       case MERGE:
       case CONTENT:
       case REMOVE:
-      case ORDER:
-      case GROUP:
       case OFFSET:
       case RECORD:
       case CHECK:
@@ -15410,8 +15290,6 @@ if (jjtc000) {
       case MERGE:
       case CONTENT:
       case REMOVE:
-      case ORDER:
-      case GROUP:
       case OFFSET:
       case RECORD:
       case CHECK:
@@ -15813,8 +15691,6 @@ if (jjtc000) {
       case CONTENT:
       case REMOVE:
       case NULL:
-      case ORDER:
-      case GROUP:
       case OFFSET:
       case RECORD:
       case CHECK:
@@ -18073,45 +17949,6 @@ if (jjtc000) {
     finally { jj_save(145, xla); }
   }
 
-  private boolean jj_3R_809()
- {
-    if (jj_scan_token(WHILE)) return true;
-    if (jj_scan_token(LPAREN)) return true;
-    if (jj_3R_145()) return true;
-    if (jj_scan_token(RPAREN)) return true;
-    if (jj_scan_token(LBRACE)) return true;
-    Token xsp;
-    while (true) {
-      xsp = jj_scanpos;
-      if (jj_3R_822()) { jj_scanpos = xsp; break; }
-    }
-    if (jj_scan_token(RBRACE)) return true;
-    return false;
-  }
-
-  private boolean jj_3R_331()
- {
-    Token xsp;
-    xsp = jj_scanpos;
-    if (jj_3R_461()) {
-    jj_scanpos = xsp;
-    if (jj_3R_462()) {
-    jj_scanpos = xsp;
-    if (jj_3R_463()) {
-    jj_scanpos = xsp;
-    if (jj_3R_464()) {
-    jj_scanpos = xsp;
-    if (jj_3R_465()) {
-    jj_scanpos = xsp;
-    if (jj_3R_466()) return true;
-    }
-    }
-    }
-    }
-    }
-    return false;
-  }
-
   private boolean jj_3R_461()
  {
     if (jj_scan_token(NULL)) return true;
@@ -19843,6 +19680,24 @@ if (jjtc000) {
     return false;
   }
 
+  private boolean jj_3R_491()
+ {
+    if (jj_3R_122()) return true;
+    Token xsp;
+    while (true) {
+      xsp = jj_scanpos;
+      if (jj_3R_578()) { jj_scanpos = xsp; break; }
+    }
+    return false;
+  }
+
+  private boolean jj_3R_578()
+ {
+    if (jj_scan_token(COMMA)) return true;
+    if (jj_3R_122()) return true;
+    return false;
+  }
+
   private boolean jj_3R_136()
  {
     Token xsp;
@@ -19857,17 +19712,6 @@ if (jjtc000) {
     return false;
   }
 
-  private boolean jj_3R_491()
- {
-    if (jj_3R_122()) return true;
-    Token xsp;
-    while (true) {
-      xsp = jj_scanpos;
-      if (jj_3R_578()) { jj_scanpos = xsp; break; }
-    }
-    return false;
-  }
-
   private boolean jj_3_1()
  {
     if (jj_scan_token(247)) return true;
@@ -19877,18 +19721,21 @@ if (jjtc000) {
     return false;
   }
 
-  private boolean jj_3R_578()
- {
-    if (jj_scan_token(COMMA)) return true;
-    if (jj_3R_122()) return true;
-    return false;
-  }
-
   private boolean jj_3_2()
  {
     if (jj_3R_61()) return true;
     if (jj_scan_token(COLON)) return true;
     if (jj_3R_61()) return true;
+    return false;
+  }
+
+  private boolean jj_3R_175()
+ {
+    if (jj_3R_122()) return true;
+    if (jj_scan_token(BETWEEN)) return true;
+    if (jj_3R_122()) return true;
+    if (jj_scan_token(AND)) return true;
+    if (jj_3R_122()) return true;
     return false;
   }
 
@@ -19904,16 +19751,6 @@ if (jjtc000) {
     if (jj_scan_token(COLON)) return true;
     if (jj_3R_122()) return true;
     if (jj_scan_token(RBRACE)) return true;
-    return false;
-  }
-
-  private boolean jj_3R_175()
- {
-    if (jj_3R_122()) return true;
-    if (jj_scan_token(BETWEEN)) return true;
-    if (jj_3R_122()) return true;
-    if (jj_scan_token(AND)) return true;
-    if (jj_3R_122()) return true;
     return false;
   }
 
@@ -19945,6 +19782,14 @@ if (jjtc000) {
     return false;
   }
 
+  private boolean jj_3R_171()
+ {
+    if (jj_3R_122()) return true;
+    if (jj_scan_token(IS)) return true;
+    if (jj_scan_token(DEFINED)) return true;
+    return false;
+  }
+
   private boolean jj_3R_803()
  {
     if (jj_3R_61()) return true;
@@ -19954,14 +19799,6 @@ if (jjtc000) {
   private boolean jj_3R_804()
  {
     if (jj_3R_132()) return true;
-    return false;
-  }
-
-  private boolean jj_3R_171()
- {
-    if (jj_3R_122()) return true;
-    if (jj_scan_token(IS)) return true;
-    if (jj_scan_token(DEFINED)) return true;
     return false;
   }
 
@@ -20001,12 +19838,6 @@ if (jjtc000) {
     return false;
   }
 
-  private boolean jj_3_3()
- {
-    if (jj_3R_62()) return true;
-    return false;
-  }
-
   private boolean jj_3R_363()
  {
     if (jj_scan_token(IN)) return true;
@@ -20016,6 +19847,12 @@ if (jjtc000) {
   private boolean jj_3_113()
  {
     if (jj_3R_122()) return true;
+    return false;
+  }
+
+  private boolean jj_3_3()
+ {
+    if (jj_3R_62()) return true;
     return false;
   }
 
@@ -20035,17 +19872,6 @@ if (jjtc000) {
     return false;
   }
 
-  private boolean jj_3R_488()
- {
-    Token xsp;
-    xsp = jj_scanpos;
-    if (jj_scan_token(159)) {
-    jj_scanpos = xsp;
-    if (jj_scan_token(142)) return true;
-    }
-    return false;
-  }
-
   private boolean jj_3_115()
  {
     if (jj_scan_token(LPAREN)) return true;
@@ -20059,9 +19885,34 @@ if (jjtc000) {
     return false;
   }
 
+  private boolean jj_3R_488()
+ {
+    Token xsp;
+    xsp = jj_scanpos;
+    if (jj_scan_token(159)) {
+    jj_scanpos = xsp;
+    if (jj_scan_token(142)) return true;
+    }
+    return false;
+  }
+
   private boolean jj_3R_184()
  {
     if (jj_3R_121()) return true;
+    return false;
+  }
+
+  private boolean jj_3R_185()
+ {
+    if (jj_3R_298()) return true;
+    return false;
+  }
+
+  private boolean jj_3_116()
+ {
+    if (jj_scan_token(LPAREN)) return true;
+    if (jj_3R_137()) return true;
+    if (jj_scan_token(RPAREN)) return true;
     return false;
   }
 
@@ -20069,9 +19920,9 @@ if (jjtc000) {
  {
     Token xsp;
     xsp = jj_scanpos;
-    if (jj_scan_token(12)) {
-    jj_scanpos = xsp;
     if (jj_scan_token(232)) {
+    jj_scanpos = xsp;
+    if (jj_scan_token(12)) {
     jj_scanpos = xsp;
     if (jj_scan_token(218)) {
     jj_scanpos = xsp;
@@ -20087,13 +19938,9 @@ if (jjtc000) {
     jj_scanpos = xsp;
     if (jj_scan_token(36)) {
     jj_scanpos = xsp;
-    if (jj_scan_token(43)) {
-    jj_scanpos = xsp;
     if (jj_scan_token(229)) {
     jj_scanpos = xsp;
     if (jj_scan_token(49)) {
-    jj_scanpos = xsp;
-    if (jj_scan_token(44)) {
     jj_scanpos = xsp;
     if (jj_scan_token(30)) {
     jj_scanpos = xsp;
@@ -20317,22 +20164,6 @@ if (jjtc000) {
     }
     }
     }
-    }
-    }
-    return false;
-  }
-
-  private boolean jj_3R_185()
- {
-    if (jj_3R_298()) return true;
-    return false;
-  }
-
-  private boolean jj_3_116()
- {
-    if (jj_scan_token(LPAREN)) return true;
-    if (jj_3R_137()) return true;
-    if (jj_scan_token(RPAREN)) return true;
     return false;
   }
 
@@ -20535,8 +20366,7 @@ if (jjtc000) {
 
   private boolean jj_3R_428()
  {
-    if (jj_scan_token(ORDER)) return true;
-    if (jj_scan_token(BY)) return true;
+    if (jj_scan_token(ORDER_BY)) return true;
     Token xsp;
     xsp = jj_scanpos;
     if (jj_3R_531()) {
@@ -20814,8 +20644,7 @@ if (jjtc000) {
 
   private boolean jj_3R_427()
  {
-    if (jj_scan_token(GROUP)) return true;
-    if (jj_scan_token(BY)) return true;
+    if (jj_scan_token(GROUP_BY)) return true;
     if (jj_3R_122()) return true;
     Token xsp;
     while (true) {
@@ -26220,6 +26049,45 @@ if (jjtc000) {
     return false;
   }
 
+  private boolean jj_3R_809()
+ {
+    if (jj_scan_token(WHILE)) return true;
+    if (jj_scan_token(LPAREN)) return true;
+    if (jj_3R_145()) return true;
+    if (jj_scan_token(RPAREN)) return true;
+    if (jj_scan_token(LBRACE)) return true;
+    Token xsp;
+    while (true) {
+      xsp = jj_scanpos;
+      if (jj_3R_822()) { jj_scanpos = xsp; break; }
+    }
+    if (jj_scan_token(RBRACE)) return true;
+    return false;
+  }
+
+  private boolean jj_3R_331()
+ {
+    Token xsp;
+    xsp = jj_scanpos;
+    if (jj_3R_461()) {
+    jj_scanpos = xsp;
+    if (jj_3R_462()) {
+    jj_scanpos = xsp;
+    if (jj_3R_463()) {
+    jj_scanpos = xsp;
+    if (jj_3R_464()) {
+    jj_scanpos = xsp;
+    if (jj_3R_465()) {
+    jj_scanpos = xsp;
+    if (jj_3R_466()) return true;
+    }
+    }
+    }
+    }
+    }
+    return false;
+  }
+
   /** Generated Token Manager. */
   public SqlParserTokenManager token_source;
   /** Current token. */
@@ -26253,7 +26121,7 @@ if (jjtc000) {
 	   jj_la1_0 = new int[] {0x0,0x0,0xc4041000,0x108bf000,0x10000000,0x0,0xc4041000,0x0,0x0,0x0,0xe000,0x10000,0x0,0x1000,0x0,0x0,0xe000,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0xc4041000,0x0,0x8000000,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0xc4041000,0x0,0x10000000,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x8000000,0x0,0x0,0x2000000,0x0,0x8000000,0x0,0x0,0x0,0x0,0xc4041000,0x4000000,0x8000000,0x0,0x8000000,0x0,0x8000000,0x0,0xc4041000,0x8000000,0x0,0x0,0x1000000,0x0,0xc4041000,0x0,0x8000000,0x0,0x0,0x0,0x1000000,0x0,0xc4041000,0x0,0x8000000,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0xc4041000,0x0,0x2000000,0x2000,0x2000,0x2000,0x2002000,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0xc4041000,0x0,0x0,0x0,0x0,0x0,0xc6041000,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0xc4041000,0x0,0x0,0x0,0x0,0x0,0xc4041000,0x0,0xc4041000,0x0,0xc4041000,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0xc4051000,0x0,0xc4041000,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0xc4041000,0x0,0x0,0xc4041000,0x0,0x0,0x0,0x0,0xc4041000,0x0,0x0,0x0,0x0,0x0,0xc4041000,0x0,0xc4041000,0x0,0xc4041000,0x0,0xc4041000,0x0,0x2000,0xc4041000,0x2000,0xc4041000,0x0,0x0,0xc4041000,0x0,0x0,0x0,0xc4041000,0x0,0x0,0xc4041000,0x0,0x0,0xc4041000,0x0,0x0,0x0,0xc4041000,0x0,0x0,0xc4041000,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0xc4041000,0xc4041000,0x0,0xc4041000,0xc4041000,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x18000000,0xc4041000,0x0,0x0,0x18000000,0xc4041000,0x0,0xc4041000,0x0,0xc4041000,0x0,0xc4041000,0x0,0x0,0xc4041000,0x0,0x0,0xc4041000,0x0,0x0,0x0,0x0,0xc4041000,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x40000,0xc4041000,0x0,0x0,0x0,0x0,0xc4041000,0x0,0x0,0x0,0xc4041000,0x40000000,0x0,0x0,0xc4041000,0x40000000,0x0,0xc4041000,0xc4041000,0x0,0x0,0xc4041000,0xc4041000,0x0,0x0,0xc4041000,0xc4041000,0x0,0x0,0xc4041000,0xc4041000,0x0,0x0,0x0,0xc4041000,0x0,0x0,0x0,0xc4041000,0x108bf000,0x10000000,0x108bf000,0x10000000,0x108bf000,0x10000000,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,};
 	}
 	private static void jj_la1_init_1() {
-	   jj_la1_1 = new int[] {0x0,0x0,0x2202183f,0x30400000,0x0,0x0,0x2202183f,0x0,0x0,0x0,0x0,0x0,0x0,0x20400000,0x0,0x10000000,0x0,0x10000000,0x0,0x4000,0x28000,0x2c000,0x2c000,0x40000,0x22021a3f,0x10000000,0x0,0x1000,0x800,0x0,0x4000,0x28000,0x2c000,0x2c000,0x40000,0x0,0x2202183f,0x0,0x0,0x4000,0x0,0x80000000,0x0,0x0,0x0,0x0,0x100000,0x0,0x0,0x100000,0x1000,0x800,0x0,0x28000,0x4000,0x400000,0x0,0x4000,0x40000000,0x0,0x400000,0x0,0x4000,0x0,0x0,0x0,0x2202183f,0x0,0x0,0x4000,0x0,0x4000,0x0,0x4000,0x2202183f,0x0,0x4000,0x7f,0x0,0x1800000,0x22021a3f,0x400000,0x0,0x4000,0x40000,0x7f,0x0,0x1800000,0x22021a3f,0x400000,0x0,0x4000,0x40000,0x0,0x0,0x18,0x42,0x0,0x0,0x7f,0x0,0x0,0x0,0x0,0x0,0x2202183f,0x400000,0x0,0x0,0x0,0x0,0x0,0x40000000,0x0,0x0,0x0,0x0,0x0,0x0,0x10,0x0,0x0,0x400000,0x0,0x2202183f,0x0,0x11,0x8000000,0x4000000,0x0,0x2202d83f,0x0,0x0,0x0,0x0,0x0,0x100000,0x0,0x0,0x0,0x22021a3f,0x0,0x100000,0x0,0x0,0x0,0x2202183f,0x0,0x22021a3f,0x0,0x22021a3f,0x0,0x0,0x0,0x0,0x200,0x0,0x0,0x200,0x0,0x0,0x22021a3f,0x0,0x2202183f,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x2202183f,0x0,0x0,0x2202183f,0x0,0x0,0x100,0x80,0x22021a3f,0x0,0x0,0x0,0x0,0x0,0x2202183f,0x0,0x22021a3f,0x0,0x22021a3f,0x0,0x22021a3f,0x0,0x0,0x2202183f,0x0,0x2202183f,0x0,0x0,0x2202183f,0x280000,0x280000,0x0,0x2202183f,0x280000,0x280000,0x2202183f,0x0,0x0,0x2202183f,0x280000,0x280000,0x0,0x2202183f,0x280000,0x280000,0x2202183f,0x0,0x0,0x0,0x0,0x0,0x28000,0x400000,0x400000,0x0,0x22021a3f,0x2202183f,0x0,0x2202183f,0x2202183f,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x100000,0x2202183f,0x0,0x0,0x100000,0x2202183f,0x0,0x2202183f,0x0,0x2202183f,0x0,0x2202183f,0x0,0x0,0x2202183f,0x0,0x0,0x2202183f,0x0,0x0,0x0,0x40000000,0x2202183f,0x40000000,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x200,0x0,0x0,0x0,0x0,0x2202183f,0x0,0x40000000,0x0,0x0,0x2202183f,0x0,0x0,0x0,0x2202183f,0x0,0x2000,0x0,0x2202183f,0x0,0x2000,0x2202183f,0x2202183f,0x0,0x0,0x2202183f,0x2202183f,0x0,0x0,0x2202183f,0x2202183f,0x18000,0x0,0x2202183f,0x2202183f,0x0,0x0,0x0,0x2202183f,0x0,0x0,0x8000000,0x22021a3f,0x30400000,0x0,0x30400000,0x0,0x30400000,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,};
+	   jj_la1_1 = new int[] {0x0,0x0,0x2202003f,0x30400000,0x0,0x0,0x2202003f,0x0,0x0,0x0,0x0,0x0,0x0,0x20400000,0x0,0x10000000,0x0,0x10000000,0x0,0x4000,0x28000,0x2c000,0x2c000,0x40000,0x2202023f,0x10000000,0x0,0x1000,0x800,0x0,0x4000,0x28000,0x2c000,0x2c000,0x40000,0x0,0x2202003f,0x0,0x0,0x4000,0x0,0x80000000,0x0,0x0,0x0,0x0,0x100000,0x0,0x0,0x100000,0x1000,0x800,0x0,0x28000,0x4000,0x400000,0x0,0x4000,0x40000000,0x0,0x400000,0x0,0x4000,0x0,0x0,0x0,0x2202003f,0x0,0x0,0x4000,0x0,0x4000,0x0,0x4000,0x2202003f,0x0,0x4000,0x7f,0x0,0x1800000,0x2202023f,0x400000,0x0,0x4000,0x40000,0x7f,0x0,0x1800000,0x2202023f,0x400000,0x0,0x4000,0x40000,0x0,0x0,0x18,0x42,0x0,0x0,0x7f,0x0,0x0,0x0,0x0,0x0,0x2202003f,0x400000,0x0,0x0,0x0,0x0,0x0,0x40000000,0x0,0x0,0x0,0x0,0x0,0x0,0x10,0x0,0x0,0x400000,0x0,0x2202003f,0x0,0x11,0x8000000,0x4000000,0x0,0x2202c03f,0x0,0x0,0x0,0x0,0x0,0x100000,0x0,0x0,0x0,0x2202023f,0x0,0x100000,0x0,0x0,0x0,0x2202003f,0x0,0x2202023f,0x0,0x2202023f,0x0,0x0,0x0,0x0,0x200,0x0,0x0,0x200,0x0,0x0,0x2202023f,0x0,0x2202003f,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x2202003f,0x0,0x0,0x2202003f,0x0,0x0,0x100,0x80,0x2202023f,0x0,0x0,0x0,0x0,0x0,0x2202003f,0x0,0x2202023f,0x0,0x2202023f,0x0,0x2202023f,0x0,0x0,0x2202003f,0x0,0x2202003f,0x0,0x0,0x2202003f,0x280000,0x280000,0x0,0x2202003f,0x280000,0x280000,0x2202003f,0x0,0x0,0x2202003f,0x280000,0x280000,0x0,0x2202003f,0x280000,0x280000,0x2202003f,0x0,0x0,0x0,0x0,0x0,0x28000,0x400000,0x400000,0x0,0x2202023f,0x2202003f,0x0,0x2202003f,0x2202003f,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x100000,0x2202003f,0x0,0x0,0x100000,0x2202003f,0x0,0x2202003f,0x0,0x2202003f,0x0,0x2202003f,0x0,0x0,0x2202003f,0x0,0x0,0x2202003f,0x0,0x0,0x0,0x40000000,0x2202003f,0x40000000,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x200,0x0,0x0,0x0,0x0,0x2202003f,0x0,0x40000000,0x0,0x0,0x2202003f,0x0,0x0,0x0,0x2202003f,0x0,0x2000,0x0,0x2202003f,0x0,0x2000,0x2202003f,0x2202003f,0x0,0x0,0x2202003f,0x2202003f,0x0,0x0,0x2202003f,0x2202003f,0x18000,0x0,0x2202003f,0x2202003f,0x0,0x0,0x0,0x2202003f,0x0,0x0,0x8000000,0x2202023f,0x30400000,0x0,0x30400000,0x0,0x30400000,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,};
 	}
 	private static void jj_la1_init_2() {
 	   jj_la1_2 = new int[] {0x0,0x0,0xbff6ffcc,0x2289000,0x0,0x0,0xbff6ffcc,0x0,0x0,0x0,0x0,0x0,0x0,0x80000,0x0,0x0,0x0,0x0,0x10,0x0,0x0,0x0,0x0,0x0,0xbff6ffcc,0x0,0x0,0x0,0x0,0x10,0x0,0x0,0x0,0x0,0x0,0x0,0xbff6ffcc,0x20,0x0,0x0,0x3,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x10,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0xbff6ffcc,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0xbff6ffcc,0x0,0x0,0x0,0x0,0x0,0xbff6ffcc,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0xbff6ffcc,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0xbff6ffcc,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0xbff6ffcc,0x0,0x0,0x0,0x0,0x0,0xbff6ffcc,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0xbff6ffcc,0x0,0x0,0x0,0x0,0x0,0xbff6ffcc,0x0,0xbff6ffcc,0x0,0xbff6ffcc,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0xbff6ffcc,0x0,0xbff6ffcc,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0xbff6ffcc,0x0,0x0,0xbff6ffcc,0x0,0x0,0x0,0x0,0xbff6ffcc,0x0,0xc,0x0,0x0,0xc,0xbff6ffcc,0x0,0xbff6ffcc,0x0,0xbff6ffcc,0x0,0xbff6ffcc,0xc,0x0,0xbff6ffcc,0x0,0xbff6ffcc,0x0,0x0,0xbff6ffcc,0x0,0x0,0x0,0xbff6ffcc,0x0,0x0,0xbff6ffcc,0x0,0x0,0xbff6ffcc,0x0,0x0,0x0,0xbff6ffcc,0x0,0x0,0xbff6ffcc,0x0,0x0,0x0,0x0,0x0,0x0,0x800,0x800,0x0,0xbff6ffcc,0xbff6ffcc,0x0,0xbff6ffcc,0xbff6ffcc,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x2a0,0xbff6ffcc,0x0,0x0,0x2a0,0xbff6ffcc,0x0,0xbff6ffcc,0x0,0xbff6ffcc,0x0,0xbff6ffcc,0x0,0x0,0xbff6ffcc,0x0,0x0,0xbff6ffcc,0x0,0x0,0x10000,0x0,0xbff6ffcc,0x0,0x0,0x0,0x0,0x0,0x0,0x40000,0x0,0x0,0x100000,0x0,0x0,0x40000,0x0,0x0,0x100000,0x0,0x0,0x40000,0x0,0x0,0x100000,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x400100,0xbff6ffcc,0x0,0x0,0x0,0x0,0xbff6ffcc,0x0,0x8000000,0x0,0xbff6ffcc,0x0,0x0,0x0,0xbff6ffcc,0x0,0x0,0xbff6ffcc,0xbff6ffcc,0x0,0x10000000,0xbff6ffcc,0xbff6ffcc,0x0,0x10000000,0xbff6ffcc,0xbff6ffcc,0x0,0x40000000,0xbff6ffcc,0xbff6ffcc,0x0,0x0,0x0,0xbff6ffcc,0x0,0x0,0x0,0xbff6ffcc,0x2289000,0x0,0x2289000,0x0,0x2289000,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x80,0x0,0x0,0x0,};
