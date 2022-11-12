@@ -36,7 +36,7 @@ public class CreateRecordStep extends AbstractExecutionStep {
   private final int    total;
   private final String typeName;
 
-  public CreateRecordStep(final String typeName, CommandContext ctx, int total, boolean profilingEnabled) {
+  public CreateRecordStep(final String typeName, final CommandContext ctx, final int total, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
     this.typeName = typeName;
     this.total = total;
@@ -86,7 +86,6 @@ public class CreateRecordStep extends AbstractExecutionStep {
 
       @Override
       public void close() {
-
       }
 
       @Override

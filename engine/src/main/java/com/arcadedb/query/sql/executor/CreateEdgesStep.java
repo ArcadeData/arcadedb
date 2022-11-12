@@ -49,21 +49,21 @@ public class CreateEdgesStep extends AbstractExecutionStep {
   private final Number     retry;
 
   // operation stuff
-  private Iterator    fromIter;
-  private Iterator    toIterator;
-  private Vertex      currentFrom;
-  private Vertex      currentTo;
-  private MutableEdge edgeToUpdate; // for upsert
-  private boolean     finished = false;
+  private       Iterator    fromIter;
+  private       Iterator    toIterator;
+  private       Vertex      currentFrom;
+  private       Vertex      currentTo;
+  private       MutableEdge edgeToUpdate; // for upsert
+  private       boolean     finished = false;
   private final List        toList   = new ArrayList<>();
-  private Index       uniqueIndex;
+  private       Index       uniqueIndex;
 
   private boolean inited = false;
 
   private long cost = 0;
 
-  public CreateEdgesStep(Identifier targetClass, Identifier targetClusterName, String uniqueIndex, Identifier fromAlias, Identifier toAlias,
-      final boolean ifNotExists, Number wait, Number retry, CommandContext ctx, boolean profilingEnabled) {
+  public CreateEdgesStep(final Identifier targetClass, final Identifier targetClusterName, final String uniqueIndex, final Identifier fromAlias,
+      final Identifier toAlias, final boolean ifNotExists, final Number wait, final Number retry, final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
     this.targetClass = targetClass;
     this.targetCluster = targetClusterName;
@@ -76,7 +76,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
     getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
     init();
     return new ResultSet() {
@@ -200,7 +200,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
   }
 
   protected void loadNextFromTo() {
-    long begin = profilingEnabled ? System.nanoTime() : 0;
+    final long begin = profilingEnabled ? System.nanoTime() : 0;
     try {
       edgeToUpdate = null;
       this.currentTo = null;
@@ -246,7 +246,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
     }
   }
 
-  private Edge getExistingEdge(Vertex currentFrom, Vertex currentTo) {
+  private Edge getExistingEdge(final Vertex currentFrom, final Vertex currentTo) {
     final RID[] key = new RID[] { currentFrom.getIdentity(), currentTo.getIdentity() };
 
     final IndexCursor cursor = uniqueIndex.get(key);
@@ -279,7 +279,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
+  public String prettyPrint(final int depth, final int indent) {
     String spaces = ExecutionStepInternal.getIndent(depth, indent);
     String result = spaces + "+ FOR EACH x in " + fromAlias + "\n";
     result += spaces + "    FOR EACH y in " + toAlias + "\n";
@@ -304,7 +304,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ExecutionStep copy(CommandContext ctx) {
+  public ExecutionStep copy(final CommandContext ctx) {
     return new CreateEdgesStep(targetClass == null ? null : targetClass.copy(), targetCluster == null ? null : targetCluster.copy(), uniqueIndexName,
         fromAlias == null ? null : fromAlias.copy(), toAlias == null ? null : toAlias.copy(), ifNotExists, wait, retry, ctx, profilingEnabled);
   }

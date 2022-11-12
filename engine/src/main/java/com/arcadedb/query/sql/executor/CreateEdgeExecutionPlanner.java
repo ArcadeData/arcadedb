@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.parser.CreateEdgeStatement;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.Identifier;
@@ -58,14 +59,14 @@ public class CreateEdgeExecutionPlanner {
 
     if (targetClass == null) {
       if (targetClusterName == null) {
-        targetClass = new Identifier("E");
+        throw new CommandSQLParsingException("Missing target");
       } else {
-        Database db = ctx.getDatabase();
+        final Database db = ctx.getDatabase();
         DocumentType typez = db.getSchema().getTypeByBucketId((db.getSchema().getBucketByName(targetClusterName.getStringValue()).getId()));
         if (typez != null) {
           targetClass = new Identifier(typez.getName());
         } else {
-          targetClass = new Identifier("E");
+          throw new CommandSQLParsingException("Missing target");
         }
       }
     }
@@ -84,7 +85,7 @@ public class CreateEdgeExecutionPlanner {
 //          .filter(x -> x.getPropertyNames().size() == 2 && x.getPropertyNames().contains("@out") && x.getPropertyNames().contains("@in")).map(x -> x.getName())
 //          .findFirst().orElse(null);
 //    } else
-      uniqueIndexName = null;
+    uniqueIndexName = null;
 
     result.chain(new CreateEdgesStep(targetClass, targetClusterName, uniqueIndexName, new Identifier("$__ARCADEDB_CREATE_EDGE_fromV"),
         new Identifier("$__ARCADEDB_CREATE_EDGE_toV"), ifNotExists, wait, retry, ctx, enableProfiling));

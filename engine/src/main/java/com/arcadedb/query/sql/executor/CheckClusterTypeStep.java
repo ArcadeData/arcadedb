@@ -32,39 +32,35 @@ import com.arcadedb.schema.DocumentType;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class CheckClusterTypeStep extends AbstractExecutionStep {
-
-  Bucket bucket;
-  String bucketName;
-
-  final String targetClass;
-
-  private long cost = 0;
-
+  final   Bucket bucket;
+  final   String bucketName;
+  final   String targetType;
+  private long   cost = 0;
   boolean found = false;
 
-  public CheckClusterTypeStep(String targetClusterName, String typez, CommandContext ctx, boolean profilingEnabled) {
+  public CheckClusterTypeStep(final String targetBucketName, final String typez, final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
-    this.bucketName = targetClusterName;
-    this.targetClass = typez;
+    this.bucketName = targetBucketName;
+    this.bucket = null;
+    this.targetType = typez;
   }
 
-  public CheckClusterTypeStep(Bucket targetCluster, String typez, CommandContext ctx, boolean profilingEnabled) {
+  public CheckClusterTypeStep(final Bucket targetBucket, final String typez, final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
-    this.bucket = targetCluster;
-    this.targetClass = typez;
-
+    this.bucketName = null;
+    this.bucket = targetBucket;
+    this.targetType = typez;
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
     getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
     long begin = profilingEnabled ? System.nanoTime() : 0;
     try {
       if (found) {
         return new InternalResultSet();
       }
-      Database db = ctx.getDatabase();
-
+      final Database db = ctx.getDatabase();
       com.arcadedb.engine.Bucket bucketObj;
       if (bucketName != null) {
         bucketObj = db.getSchema().getBucketByName(bucketName);
@@ -74,22 +70,22 @@ public class CheckClusterTypeStep extends AbstractExecutionStep {
         bucketObj = db.getSchema().getBucketById(bucket.getBucketNumber());
       }
       if (bucketObj == null) {
-        throw new CommandExecutionException("Cluster not found: " + bucketName);
+        throw new CommandExecutionException("Bucket not found: " + bucketName);
       }
 
-      final DocumentType typez = db.getSchema().getType(targetClass);
+      final DocumentType typez = db.getSchema().getType(targetType);
       if (typez == null) {
-        throw new CommandExecutionException("Type not found: " + targetClass);
+        throw new CommandExecutionException("Type not found: " + targetType);
       }
 
-      for (com.arcadedb.engine.Bucket clust : typez.getBuckets(true)) {
-        if (clust.getId() == bucketObj.getId()) {
+      for (com.arcadedb.engine.Bucket bucket : typez.getBuckets(true)) {
+        if (bucket.getId() == bucketObj.getId()) {
           found = true;
           break;
         }
       }
       if (!found) {
-        throw new CommandExecutionException("Cluster " + bucketObj.getId() + " does not belong to the type " + targetClass);
+        throw new CommandExecutionException("Bucket " + bucketObj.getId() + " does not belong to the type " + targetType);
       }
       return new InternalResultSet();
     } finally {
@@ -100,17 +96,17 @@ public class CheckClusterTypeStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    StringBuilder result = new StringBuilder();
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
+    final StringBuilder result = new StringBuilder();
     result.append(spaces);
-    result.append("+ CHECK TARGET CLUSTER FOR USERTYPE");
+    result.append("+ CHECK TARGET BUCKET FOR USERTYPE");
     if (profilingEnabled) {
       result.append(" (").append(getCostFormatted()).append(")");
     }
     result.append("\n");
     result.append(spaces);
-    result.append("  ").append(this.targetClass);
+    result.append("  ").append(this.targetType);
     return result.toString();
   }
 
