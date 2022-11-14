@@ -173,33 +173,34 @@ public class Console {
     try {
       if (line != null && !line.isEmpty()) {
         line = line.trim();
+        final String lineLowerCase = line.toLowerCase();
 
-        if (line.startsWith("begin"))
+        if (lineLowerCase.startsWith("begin"))
           executeBegin();
-        else if (line.startsWith("close"))
+        else if (lineLowerCase.startsWith("close"))
           executeClose();
-        else if (line.startsWith("commit"))
+        else if (lineLowerCase.startsWith("commit"))
           executeCommit();
-        else if (line.startsWith("connect"))
+        else if (lineLowerCase.startsWith("connect"))
           executeConnect(line);
-        else if (line.startsWith("create database"))
+        else if (lineLowerCase.startsWith("create database"))
           executeCreateDatabase(line);
-        else if (line.startsWith("drop database"))
+        else if (lineLowerCase.startsWith("drop database"))
           executeDropDatabase(line);
-        else if (line.equalsIgnoreCase("help") || line.equals("?"))
+        else if (lineLowerCase.equals("help") || line.equals("?"))
           executeHelp();
-        else if (line.startsWith("info"))
+        else if (lineLowerCase.startsWith("info"))
           executeInfo(line.substring("info".length()).trim());
-        else if (line.startsWith("load"))
+        else if (lineLowerCase.startsWith("load"))
           executeLoad(line.substring("load".length()).trim());
-        else if (line.equalsIgnoreCase("quit") || line.equalsIgnoreCase("exit")) {
+        else if (lineLowerCase.equals("quit") || lineLowerCase.equals("exit")) {
           executeClose();
           return false;
-        } else if (line.startsWith("pwd"))
+        } else if (lineLowerCase.startsWith("pwd"))
           outputLine("Current directory: " + new File(".").getAbsolutePath());
-        else if (line.startsWith("rollback"))
+        else if (lineLowerCase.startsWith("rollback"))
           executeRollback();
-        else if (line.startsWith("set"))
+        else if (lineLowerCase.startsWith("set"))
           executeSet(line.substring("set".length()).trim());
         else {
           executeSQL(line);
