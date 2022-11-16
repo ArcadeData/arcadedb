@@ -166,6 +166,68 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
     });
   }
 
+  @Test
+  public void checkUnique() throws Exception {
+    testEachServer((serverIndex) -> {
+      // BEGIN
+      HttpURLConnection connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/begin/graph").openConnection();
+
+      connection.setRequestMethod("POST");
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      connection.connect();
+
+      String sessionId;
+      try {
+        final String response = readResponse(connection);
+        LogManager.instance().log(this, Level.FINE, "Response: ", null, response);
+        Assertions.assertEquals(204, connection.getResponseCode());
+        sessionId = connection.getHeaderField(ARCADEDB_SESSION_ID).trim();
+
+        Assertions.assertNotNull(sessionId);
+
+      } finally {
+        connection.disconnect();
+      }
+
+      // CREATE DOCUMENT
+      connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").openConnection();
+
+      connection.setRequestMethod("POST");
+      connection.setRequestProperty(ARCADEDB_SESSION_ID, sessionId);
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+
+      final JSONObject payload = new JSONObject("{\"language\":\"sqlScript\", \"command\":\"" +//
+          "CREATE VERTEX TYPE eltdev;" +//
+          "CREATE PROPERTY eltdev.SN string;" +//
+          "CREATE INDEX ON eltdev (SN) UNIQUE;" +//
+          "CREATE VERTEX eltdev SET SN='bubu';" +//
+          "CREATE VERTEX eltdev SET SN='bubu';" +//
+          "\"}");
+
+      connection.setRequestMethod("POST");
+      connection.setDoOutput(true);
+
+      connection.connect();
+
+      PrintWriter pw = new PrintWriter(new OutputStreamWriter(connection.getOutputStream()));
+      pw.write(payload.toString());
+      pw.close();
+
+      String response = null;
+      try {
+        response = readResponse(connection);
+        Assertions.fail();
+      } catch (IOException e) {
+        response = readError(connection);
+        Assertions.assertEquals(503, connection.getResponseCode());
+        connection.disconnect();
+        Assertions.assertTrue(response.contains("DuplicatedKeyException"));
+      }
+    });
+  }
+
   private void checkDocumentWasCreated(int serverIndex, JSONObject payload, String rid, String sessionId) throws IOException {
     HttpURLConnection connection = (HttpURLConnection) new URL(
         "http://127.0.0.1:248" + serverIndex + "/api/v1/document/graph/" + rid.substring(1)).openConnection();

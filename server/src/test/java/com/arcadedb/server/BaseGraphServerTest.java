@@ -361,9 +361,14 @@ public abstract class BaseGraphServerTest {
   }
 
   protected String readResponse(final HttpURLConnection connection) throws IOException {
-    InputStream in = connection.getInputStream();
+    final InputStream in = connection.getInputStream();
+    final   String buffer = FileUtils.readStreamAsString(in, "utf8");
+    return buffer.replace('\n', ' ');
+  }
 
-    String buffer = FileUtils.readStreamAsString(in, "utf8");
+  protected String readError(final HttpURLConnection connection) throws IOException {
+    final InputStream in = connection.getErrorStream();
+    final String buffer = FileUtils.readStreamAsString(in, "utf8");
     return buffer.replace('\n', ' ');
   }
 
