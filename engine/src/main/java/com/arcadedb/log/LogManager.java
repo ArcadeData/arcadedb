@@ -36,7 +36,7 @@ public class LogManager {
   public static final LogContext CONTEXT_INSTANCE = new LogContext();
 
   protected LogManager() {
-    logger   = new DefaultLogger();
+    logger = new DefaultLogger();
   }
 
   public static LogManager instance() {

@@ -36,7 +36,17 @@ import java.util.logging.*;
 public enum GlobalConfiguration {
   // ENVIRONMENT
   DUMP_CONFIG_AT_STARTUP("arcadedb.dumpConfigAtStartup", "Dumps the configuration at startup", Boolean.class, false, value -> {
-    dumpConfiguration(System.out);
+    //dumpConfiguration(System.out);
+
+    try {
+      final ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+      dumpConfiguration(new PrintStream(buffer));
+      LogManager.instance().log(buffer, Level.WARNING, new String(buffer.toByteArray()));
+      buffer.close();
+    } catch (IOException e) {
+      System.out.println("Error on printing initial configuration to log (error=" + e + ")");
+    }
+
     return value;
   }),
 
@@ -211,8 +221,7 @@ public enum GlobalConfiguration {
 
   SERVER_DEFAULT_DATABASE_MODE("arcadedb.server.defaultDatabaseMode",
       "The default mode to load pre-existing databases. The value must match a com.arcadedb.engine.PaginatedFile.MODE enum value: {READ_ONLY, READ_WRITE}"
-      + "Databases which are newly created will always be opened READ_WRITE.",
-      String.class, "READ_WRITE"),
+          + "Databases which are newly created will always be opened READ_WRITE.", String.class, "READ_WRITE"),
 
   SERVER_PLUGINS("arcadedb.server.plugins", "List of server plugins to install. The format to load a plugin is: `<pluginName>:<pluginFullClass>`", String.class,
       ""),
@@ -379,6 +388,7 @@ public enum GlobalConfiguration {
       out.print(" = ");
       out.println(v.isHidden() ? "<hidden>" : String.valueOf((Object) v.getValue()));
     }
+    out.flush();
   }
 
   public static void fromJSON(final String input) {
