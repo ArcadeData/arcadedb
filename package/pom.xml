@@ -33,7 +33,7 @@
     <packaging>pom</packaging>
 
     <properties>
-        <kubernetes-maven-plugin.version>1.9.1</kubernetes-maven-plugin.version>
+        <kubernetes-maven-plugin.version>1.10.0</kubernetes-maven-plugin.version>
     </properties>
 
     <build>
