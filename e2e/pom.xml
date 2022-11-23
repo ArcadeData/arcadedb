@@ -31,7 +31,7 @@
 
     <properties>
         <testcontainers.version>1.17.5</testcontainers.version>
-        <postgresql.version>42.5.0</postgresql.version>
+        <postgresql.version>42.5.1</postgresql.version>
         <logback-classic.version>1.4.4</logback-classic.version>
     </properties>
 
