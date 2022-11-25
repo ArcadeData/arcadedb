@@ -322,6 +322,11 @@ public class CreateIndexStatement extends DDLStatement {
       }
       return result.toString();
     }
+
+    @Override
+    public String toString() {
+      return name.toString();
+    }
   }
 }
 /* JavaCC - OriginalChecksum=bd090e02c4346ad390a6b8c77f1b9dba (do not edit this line) */
