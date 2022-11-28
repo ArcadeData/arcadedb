@@ -51,7 +51,7 @@ public class GetExistsDatabaseHandler extends DatabaseAbstractHandler {
     final boolean existsDatabase = server.existsDatabase(databaseName.getFirst());
 
     exchange.setStatusCode(200);
-    exchange.getResponseSender().send("{ \"result\" : \"" + existsDatabase + "\"}");
+    exchange.getResponseSender().send("{ \"result\" : " + existsDatabase + "}");
   }
 
   @Override
