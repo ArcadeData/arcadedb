@@ -38,6 +38,16 @@ public class DefaultLogger implements Logger {
   private final        ConcurrentMap<String, java.util.logging.Logger> loggersCache                 = new ConcurrentHashMap<>();
 
   public DefaultLogger() {
+    final File logDir = new File("./log");
+
+    try {
+      if (!logDir.exists() || !logDir.isDirectory())
+        // TRY TO CREATE LOG DIRECTORY
+        logDir.mkdirs();
+    } catch (Exception e) {
+      // IGNORE
+    }
+
     installCustomFormatter();
   }
 
@@ -46,7 +56,6 @@ public class DefaultLogger implements Logger {
   }
 
   public void installCustomFormatter() {
-
     InputStream stream = getClass().getClassLoader().getResourceAsStream(FILE_LOG_PROPERTIES);
     if (stream == null) {
       try {
