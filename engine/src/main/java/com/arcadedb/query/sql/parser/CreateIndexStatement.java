@@ -47,11 +47,11 @@ public class CreateIndexStatement extends DDLStatement {
   protected Json                               schema;
   protected boolean                            ifNotExists  = false;
 
-  public CreateIndexStatement(int id) {
+  public CreateIndexStatement(final int id) {
     super(id);
   }
 
-  public CreateIndexStatement(SqlParser p, int id) {
+  public CreateIndexStatement(final SqlParser p, final int id) {
     super(p, id);
   }
 

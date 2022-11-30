@@ -320,12 +320,12 @@ public class ResultInternal implements Result {
 
   @Override
   public boolean equals(final Object obj) {
-    if (this == obj) {
+    if (this == obj)
       return true;
-    }
-    if (!(obj instanceof ResultInternal)) {
+
+    if (!(obj instanceof ResultInternal))
       return false;
-    }
+
     final ResultInternal resultObj = (ResultInternal) obj;
     if (element != null) {
       if (resultObj.getElement().isEmpty()) {
@@ -333,9 +333,9 @@ public class ResultInternal implements Result {
       }
       return element.equals(resultObj.getElement().get());
     } else {
-      if (resultObj.getElement().isPresent()) {
+      if (resultObj.getElement().isPresent())
         return false;
-      }
+
       return this.content != null && this.content.equals(resultObj.content);
     }
   }
@@ -345,7 +345,10 @@ public class ResultInternal implements Result {
     if (element != null)
       return element.hashCode();
 
-    return content.hashCode();
+    if (content != null)
+      return content.hashCode();
+
+    return super.hashCode();
   }
 
   public ResultInternal setPropertiesFromMap(final Map<String, Object> stats) {

@@ -995,11 +995,11 @@ public class SelectStatementExecutionTest extends TestHelper {
     Result item = result.next();
     Assertions.assertEquals("testQuerySchema", item.getProperty("name"));
 
-    List<Result> customType = item.getProperty("custom");
+    Map<String, Object> customType = item.getProperty("custom");
     Assertions.assertNotNull(customType);
     Assertions.assertEquals(1, customType.size());
 
-    Assertions.assertEquals("this is just a test", customType.get(0).getProperty("description"));
+    Assertions.assertEquals("this is just a test", customType.get("description"));
 
     Assertions.assertFalse(result.hasNext());
     result.close();

@@ -105,9 +105,9 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
           }).collect(Collectors.toList());
           r.setProperty("indexes", indexes);
 
-          final List<ResultInternal> customs = new ArrayList<>();
+          final Map<String, Object> customs = new HashMap<>();
           for (Object customKey : type.getCustomKeys().stream().sorted(String::compareToIgnoreCase).toArray())
-            customs.add(new ResultInternal().setProperty((String) customKey, type.getCustomValue((String) customKey)));
+            customs.put((String) customKey, type.getCustomValue((String) customKey));
           r.setProperty("custom", customs);
 
         }
