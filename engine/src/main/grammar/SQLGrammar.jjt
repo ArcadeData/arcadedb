@@ -464,6 +464,7 @@ TOKEN :
 {
   < EQ: "=" >
   | < EQEQ: "==" >
+  | < NSEQ: "<=>" >
   | < LT: "<" >
   | < GT: ">" >
   | < BANG: "!" >
@@ -2452,6 +2453,7 @@ BinaryCompareOperator CompareOperator():
 {
 (
   result = EqualsCompareOperator()
+  | result = NullSafeEqualsCompareOperator()
   | result = LtOperator()
   | result = GtOperator()
   | result = NeOperator()
@@ -2548,6 +2550,12 @@ EqualsCompareOperator EqualsCompareOperator():
   |
   <EQEQ> { jjtThis.doubleEquals = true; }
 ){return jjtThis;}
+}
+
+NullSafeEqualsCompareOperator NullSafeEqualsCompareOperator():
+{}
+{
+ <NSEQ> {return jjtThis;}
 }
 
 
