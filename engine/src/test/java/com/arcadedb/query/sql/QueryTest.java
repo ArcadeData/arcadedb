@@ -105,6 +105,28 @@ public class QueryTest extends TestHelper {
     });
   }
 
+
+  @Test
+  public void testNullSafeEqualsFiltering() {
+    database.transaction(() -> {
+      Map<String, Object> params = new HashMap<>();
+      params.put(":name", "Jay");
+      params.put(":surname", "Miner123");
+      ResultSet rs = database.command("SQL", "SELECT FROM V WHERE notExistent <=> null");
+
+      final AtomicInteger total = new AtomicInteger();
+      while (rs.hasNext()) {
+        Result record = rs.next();
+        Assertions.assertNotNull(record);
+
+        Assertions.assertEquals(3, record.getPropertyNames().size(), 9);
+        total.incrementAndGet();
+      }
+
+      Assertions.assertEquals(TOT, total.get());
+    });
+  }
+
   @Test
   public void testCachedStatementAndExecutionPlan() {
 
