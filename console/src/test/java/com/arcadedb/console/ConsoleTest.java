@@ -70,6 +70,11 @@ public class ConsoleTest {
   }
 
   @Test
+  public void testSetLanguage() throws IOException {
+    console.parse("set language = sql; select 1", false);
+  }
+
+  @Test
   public void testCreateClass() throws IOException {
     Assertions.assertTrue(console.parse("connect " + DB_NAME, false));
     Assertions.assertTrue(console.parse("create document type Person", false));

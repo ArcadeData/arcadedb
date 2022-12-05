@@ -69,6 +69,7 @@ public class Console {
   private              ResultSet        resultSet;
   private              String           databaseDirectory;
   private              int              verboseLevel         = 1;
+  private              String           language             = SQL_LANGUAGE;
 
   public Console(final DatabaseInternal database) throws IOException {
     this(false);
@@ -81,8 +82,8 @@ public class Console {
     GlobalConfiguration.PROFILE.setValue("low-cpu");
 
     terminal = TerminalBuilder.builder().system(system).streams(System.in, System.out).jansi(true).build();
-    Completer completer = new StringsCompleter("align database", "begin", "rollback", "commit", "check database", "close", "connect", "create database", "drop database",
-        "export", "import", "help", "info types", "load", "exit", "quit", "set", "match", "select", "insert into", "update", "delete", "pwd");
+    Completer completer = new StringsCompleter("align database", "begin", "rollback", "commit", "check database", "close", "connect", "create database",
+        "drop database", "export", "import", "help", "info types", "load", "exit", "quit", "set", "match", "select", "insert into", "update", "delete", "pwd");
 
     lineReader = LineReaderBuilder.builder().terminal(terminal).parser(parser).variable("history-file", ".history").history(new DefaultHistory())
         .completer(completer).build();
@@ -156,8 +157,7 @@ public class Console {
     else if (root.endsWith(File.separator))
       root = root.substring(0, root.length() - 1);
 
-    if (!new File(root + File.separator + "config").exists() && new File(
-        root + File.separator + ".." + File.separator + "config").exists()) {
+    if (!new File(root + File.separator + "config").exists() && new File(root + File.separator + ".." + File.separator + "config").exists()) {
       databaseDirectory = new File(root).getAbsoluteFile().getParentFile().getPath() + File.separator + "databases" + File.separator;
     } else
       databaseDirectory = root + File.separator + "databases" + File.separator;
@@ -230,6 +230,9 @@ public class Console {
     if ("limit".equalsIgnoreCase(key)) {
       limit = Integer.parseInt(value);
       outputLine("Set new limit to %d", limit);
+    } else if ("language".equalsIgnoreCase(key)) {
+      language = value;
+      outputLine("Set language to %s", language);
     } else if ("expandResultSet".equalsIgnoreCase(key)) {
       expandResultSet = value.equalsIgnoreCase("true");
       outputLine("Set expanded result set to %s", expandResultSet);
@@ -421,9 +424,9 @@ public class Console {
     final long beginTime = System.currentTimeMillis();
 
     if (remoteDatabase != null)
-      resultSet = remoteDatabase.command(SQL_LANGUAGE, line);
+      resultSet = remoteDatabase.command(language, line);
     else
-      resultSet = localDatabase.command(SQL_LANGUAGE, line);
+      resultSet = localDatabase.command(language, line);
 
     final long elapsed;
 
