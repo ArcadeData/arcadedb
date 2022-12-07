@@ -173,6 +173,7 @@ public class DatabaseChecker {
     result.put("totalDeletedRecords", 0L);
     result.put("totalMaxOffset", 0L);
     result.put("totalAllocatedDocuments", 0L);
+    result.put("totalActiveDocuments", 0L);
     result.put("totalAllocatedVertices", 0L);
     result.put("totalActiveVertices", 0L);
     result.put("totalAllocatedEdges", 0L);
