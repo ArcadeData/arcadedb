@@ -55,7 +55,7 @@ public class DatabaseChecker {
     result.put("autoFix", 0L);
     result.put("invalidLinks", 0L);
     result.put("warnings", new LinkedHashSet<>());
-    result.put("deletedRecords", new LinkedHashSet<>());
+    result.put("deletedRecordsAfterFix", new LinkedHashSet<>());
     result.put("corruptedRecords", new LinkedHashSet<>());
 
     checkEdges();
@@ -199,7 +199,7 @@ public class DatabaseChecker {
       updateStats(stats);
 
       ((LinkedHashSet<String>) result.get("warnings")).addAll((Collection<String>) stats.get("warnings"));
-      ((LinkedHashSet<RID>) result.get("deletedRecords")).addAll((Collection<RID>) stats.get("deletedRecords"));
+      ((LinkedHashSet<RID>) result.get("deletedRecordsAfterFix")).addAll((Collection<RID>) stats.get("deletedRecordsAfterFix"));
     }
 
     result.put("avgPageUsed", (Long) result.get("totalPages") > 0 ?

@@ -321,7 +321,7 @@ public class Bucket extends PaginatedComponent {
 
     long errors = 0L;
     final List<String> warnings = new ArrayList<>();
-    final List<RID> deletedRecords = new ArrayList<>();
+    final List<RID> deletedRecordsAfterFix = new ArrayList<>();
 
     String warning = null;
 
@@ -353,7 +353,7 @@ public class Bucket extends PaginatedComponent {
             warning = String.format("invalid record offset %d in page for record %s", recordPositionInPage, rid);
             if (fix) {
               deleteRecord(rid);
-              deletedRecords.add(rid);
+              deletedRecordsAfterFix.add(rid);
               ++totalDeletedRecords;
             }
           } else {
@@ -394,7 +394,7 @@ public class Bucket extends PaginatedComponent {
                 warning = String.format("wrong record size %d found for record %s", recordSize[1] + recordSize[0], rid);
                 if (fix) {
                   deleteRecord(rid);
-                  deletedRecords.add(rid);
+                  deletedRecordsAfterFix.add(rid);
                   ++totalDeletedRecords;
                 }
               }
@@ -462,7 +462,7 @@ public class Bucket extends PaginatedComponent {
       stats.put("totalActiveEdges", totalActiveRecords);
     }
 
-    stats.put("deletedRecords", deletedRecords);
+    stats.put("deletedRecordsAfterFix", deletedRecordsAfterFix);
     stats.put("warnings", warnings);
     stats.put("autoFix", 0L);
     stats.put("errors", errors);
