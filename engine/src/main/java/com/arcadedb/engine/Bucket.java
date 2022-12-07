@@ -319,7 +319,7 @@ public class Bucket extends PaginatedComponent {
     long totalMaxOffset = 0L;
     long totalChunks = 0L;
 
-    long errors = 0L;
+    long totalErrors = 0L;
     final List<String> warnings = new ArrayList<>();
     final List<RID> deletedRecordsAfterFix = new ArrayList<>();
 
@@ -349,7 +349,7 @@ public class Bucket extends PaginatedComponent {
             totalDeletedRecords++;
 
           } else if (recordPositionInPage > page.getContentSize()) {
-            ++errors;
+            ++totalErrors;
             warning = String.format("invalid record offset %d in page for record %s", recordPositionInPage, rid);
             if (fix) {
               deleteRecord(rid);
@@ -390,7 +390,7 @@ public class Bucket extends PaginatedComponent {
 
               final long endPosition = recordPositionInPage + recordSize[1] + recordSize[0];
               if (endPosition > file.getPageSize()) {
-                ++errors;
+                ++totalErrors;
                 warning = String.format("wrong record size %d found for record %s", recordSize[1] + recordSize[0], rid);
                 if (fix) {
                   deleteRecord(rid);
@@ -403,7 +403,7 @@ public class Bucket extends PaginatedComponent {
                 pageMaxOffset = (int) endPosition;
 
             } catch (Exception e) {
-              ++errors;
+              ++totalErrors;
               warning = String.format("unknown error on loading record %s: %s", rid, e.getMessage());
             }
           }
@@ -425,7 +425,7 @@ public class Bucket extends PaginatedComponent {
                   pageChunks, pageMaxOffset);
 
       } catch (Exception e) {
-        ++errors;
+        ++totalErrors;
         warning = String.format("unknown error on checking page %d: %s", pageId, e.getMessage());
       }
 
@@ -460,12 +460,15 @@ public class Bucket extends PaginatedComponent {
     } else if (type instanceof EdgeType) {
       stats.put("totalAllocatedEdges", totalAllocatedRecords);
       stats.put("totalActiveEdges", totalActiveRecords);
+    } else {
+      stats.put("totalAllocatedDocuments", totalAllocatedRecords);
+      stats.put("totalActiveDocuments", totalActiveRecords);
     }
 
     stats.put("deletedRecordsAfterFix", deletedRecordsAfterFix);
     stats.put("warnings", warnings);
     stats.put("autoFix", 0L);
-    stats.put("errors", errors);
+    stats.put("totalErrors", totalErrors);
 
     return stats;
   }
