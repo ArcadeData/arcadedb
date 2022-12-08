@@ -14,14 +14,7 @@
 @REM limitations under the License.
 @REM
 
-echo ""
-echo " █████╗ ██████╗  ██████╗ █████╗ ██████╗ ███████╗██████╗ ██████╗ "
-echo "██╔══██╗██╔══██╗██╔════╝██╔══██╗██╔══██╗██╔════╝██╔══██╗██╔══██╗"
-echo "███████║██████╔╝██║     ███████║██║  ██║█████╗  ██║  ██║██████╔╝"
-echo "██╔══██║██╔══██╗██║     ██╔══██║██║  ██║██╔══╝  ██║  ██║██╔══██╗"
-echo "██║  ██║██║  ██║╚██████╗██║  ██║██████╔╝███████╗██████╔╝██████╔╝"
-echo "╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝╚═════╝ ╚══════╝╚═════╝ ╚═════╝ "
-echo "PLAY WITH DATA                                    arcadedb.com"
+echo "ARCADEDB - PLAY WITH DATA - arcadedb.com"
 
 rem Guess ARCADEDB_HOME if not defined
 set CURRENT_DIR=%cd%
