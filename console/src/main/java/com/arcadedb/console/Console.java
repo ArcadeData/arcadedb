@@ -26,6 +26,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.exception.ArcadeDBException;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.MultiValue;
@@ -83,7 +84,8 @@ public class Console {
 
     terminal = TerminalBuilder.builder().system(system).streams(System.in, System.out).jansi(true).build();
     Completer completer = new StringsCompleter("align database", "begin", "rollback", "commit", "check database", "close", "connect", "create database",
-        "drop database", "export", "import", "help", "info types", "load", "exit", "quit", "set", "match", "select", "insert into", "update", "delete", "pwd");
+        "create user", "drop database", "drop user", "export", "import", "help", "info types", "load", "exit", "quit", "set", "match", "select", "insert into",
+        "update", "delete", "pwd");
 
     lineReader = LineReaderBuilder.builder().terminal(terminal).parser(parser).variable("history-file", ".history").history(new DefaultHistory())
         .completer(completer).build();
@@ -185,8 +187,12 @@ public class Console {
           executeConnect(line);
         else if (lineLowerCase.startsWith("create database"))
           executeCreateDatabase(line);
+        else if (lineLowerCase.startsWith("create user"))
+          executeCreateUser(line);
         else if (lineLowerCase.startsWith("drop database"))
           executeDropDatabase(line);
+        else if (lineLowerCase.startsWith("drop user"))
+          executeDropUser(line);
         else if (lineLowerCase.equals("help") || line.equals("?"))
           executeHelp();
         else if (lineLowerCase.startsWith("info"))
@@ -353,10 +359,50 @@ public class Console {
       throw new ConsoleException("URL missing");
   }
 
+  private void executeCreateUser(final String line) {
+    if (localDatabase != null || remoteDatabase == null)
+      throw new ArcadeDBException("Create a new user is allowed only on a server connected in remote");
+
+    String params = line.substring("create user ".length()).trim();
+    final String paramsUpperCase = params.toUpperCase();
+
+    final int identifiedByPos = paramsUpperCase.indexOf("IDENTIFIED BY");
+    if (identifiedByPos < 0)
+      throw new CommandSQLParsingException("IDENTIFIED BY is missing");
+
+    final int databasesByPos = paramsUpperCase.indexOf(" GRANT CONNECT TO ");
+
+    final String userName = params.substring(0, identifiedByPos).trim();
+    if (userName.isEmpty())
+      throw new CommandSQLParsingException("User name is empty");
+
+    final String password;
+    final List<String> databases;
+    if (databasesByPos > -1) {
+      password = params.substring(identifiedByPos + "IDENTIFIED BY".length() + 1, databasesByPos).trim();
+      final String databasesList = params.substring(databasesByPos + " GRANT CONNECT TO ".length()).trim();
+      final String[] databasesArray = databasesList.split(",");
+      databases = List.of(databasesArray);
+    } else {
+      password = params.substring(identifiedByPos + "IDENTIFIED BY".length() + 1).trim();
+      databases = new ArrayList<>();
+    }
+
+    if (password.isEmpty())
+      throw new CommandSQLParsingException("User password missing");
+
+    if (password.indexOf(" ") > -1)
+      throw new CommandSQLParsingException("User password cannot have spaces");
+
+    remoteDatabase.createUser(userName, password, databases);
+
+    outputLine("User '" + userName + "' created correctly on the server");
+  }
+
   private void executeDropDatabase(final String line) {
     final String url = line.substring("drop database".length()).trim();
     if (localDatabase != null || remoteDatabase != null)
-      outputLine("Database already connected, to connect to a different database close the current one first");
+      outputLine("A database is open, close the database first");
     else if (!url.isEmpty()) {
       if (url.startsWith(REMOTE_PREFIX)) {
         connectToRemoteServer(url);
@@ -375,6 +421,19 @@ public class Console {
 
     remoteDatabase = null;
     localDatabase = null;
+  }
+
+  private void executeDropUser(final String line) {
+    if (localDatabase != null || remoteDatabase == null)
+      throw new ArcadeDBException("Dropping a user is allowed only on a server connected in remote");
+
+    final String userName = line.substring("drop user ".length()).trim();
+    if (userName.isEmpty())
+      throw new CommandSQLParsingException("User name is empty");
+
+    remoteDatabase.dropUser(userName);
+
+    outputLine("User '" + userName + "' correctly deleted on the server");
   }
 
   private void printRecord(final Result currentRecord) {

@@ -40,7 +40,6 @@ import io.undertow.util.HeaderValues;
 import io.undertow.util.Headers;
 import org.json.JSONObject;
 
-import java.io.*;
 import java.util.*;
 import java.util.logging.*;
 
@@ -54,7 +53,7 @@ public abstract class AbstractHandler implements HttpHandler {
 
   protected abstract void execute(HttpServerExchange exchange, ServerSecurityUser user) throws Exception;
 
-  protected String parseRequestPayload(final HttpServerExchange e) throws IOException {
+  protected String parseRequestPayload(final HttpServerExchange e) {
     final StringBuilder result = new StringBuilder();
     //e.startBlocking();
     e.getRequestReceiver().receiveFullBytes(

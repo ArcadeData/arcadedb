@@ -153,6 +153,33 @@ public class ConsoleTest {
   }
 
   @Test
+  public void testUserMgmtLocalError() throws IOException {
+    Assertions.assertTrue(console.parse("connect " + DB_NAME, false));
+    try {
+      Assertions.assertTrue(console.parse("create user elon identified by musk", false));
+      Assertions.fail("local connection allowed user creation");
+    } catch (Exception e) {
+      // EXPECTED
+    }
+
+    try {
+      Assertions.assertTrue(console.parse("drop user jack", false));
+      Assertions.fail("local connection allowed user deletion");
+    } catch (Exception e) {
+      // EXPECTED
+    }
+  }
+
+  @Test
+  public void testUserMgmt() throws IOException {
+    Assertions.assertTrue(console.parse("connect " + DB_NAME, false));
+    Assertions.assertTrue(console.parse("create user elon identified by musk", false));
+    Assertions.assertTrue(console.parse("create user jack identified by tramiel grant connect to db1", false));
+    Assertions.assertTrue(console.parse("drop user jack", false));
+    Assertions.assertTrue(console.parse("drop user elon", false));
+  }
+
+  @Test
   public void testImportNeo4jConsoleOK() throws IOException {
     final String DATABASE_PATH = "testNeo4j";
 

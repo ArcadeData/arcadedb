@@ -25,6 +25,7 @@ import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ServerPlugin;
+import com.arcadedb.server.http.handler.DeleteDropUserHandler;
 import com.arcadedb.server.http.handler.GetDatabasesHandler;
 import com.arcadedb.server.http.handler.GetDocumentHandler;
 import com.arcadedb.server.http.handler.GetDynamicContentHandler;
@@ -38,6 +39,7 @@ import com.arcadedb.server.http.handler.PostCommandHandler;
 import com.arcadedb.server.http.handler.PostCommitHandler;
 import com.arcadedb.server.http.handler.PostCreateDatabaseHandler;
 import com.arcadedb.server.http.handler.PostCreateDocumentHandler;
+import com.arcadedb.server.http.handler.PostCreateUserHandler;
 import com.arcadedb.server.http.handler.PostDropDatabaseHandler;
 import com.arcadedb.server.http.handler.PostOpenDatabaseHandler;
 import com.arcadedb.server.http.handler.PostQueryHandler;
@@ -134,6 +136,8 @@ public class HttpServer implements ServerPlugin {
             .get("/query/{database}/{language}/{command}", new GetQueryHandler(this))//
             .post("/query/{database}", new PostQueryHandler(this))//
             .post("/rollback/{database}", new PostRollbackHandler(this))//
+            .post("/user", new PostCreateUserHandler(this))//
+            .delete("/user/{userName}", new DeleteDropUserHandler(this))//
             .get("/server", new GetServersHandler(this))//
             .get("/ready", new GetReadyHandler(this))//
     );

@@ -143,6 +143,48 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
   }
 
   @Test
+  public void testUserMgmt() throws IOException {
+    Assertions.assertTrue(console.parse("connect " + URL, false));
+    try {
+      Assertions.assertTrue(console.parse("drop user elon", false));
+    } catch (Exception e) {
+      // EXPECTED IF ALREADY EXISTENT
+    }
+
+    try {
+      Assertions.assertTrue(console.parse("create user jay identified by m", false));
+      Assertions.fail();
+    } catch (RuntimeException e) {
+      // PASSWORD MUST BE AT LEAST 5 CHARS
+    }
+
+    try {
+      String longPassword = "";
+      for (int i = 0; i < 257; i++)
+        longPassword += "P";
+
+      Assertions.assertTrue(console.parse("create user jay identified by " + longPassword, false));
+      Assertions.fail();
+    } catch (RuntimeException e) {
+      // PASSWORD MUST BE MAX 256 CHARS LONG
+    }
+
+    Assertions.assertTrue(console.parse("create user elon identified by musk", false));
+    Assertions.assertTrue(console.parse("drop user elon", false));
+
+    // TEST SYNTAX ERROR
+    try {
+      Assertions.assertTrue(console.parse("create user elon identified by musk grand connect on db1", false));
+      Assertions.fail();
+    } catch (Exception e) {
+      // EXPECTED
+    }
+
+    Assertions.assertTrue(console.parse("create user elon identified by musk grant connect to db1", false));
+    Assertions.assertTrue(console.parse("drop user elon", false));
+  }
+
+  @Test
   public void testHelp() throws IOException {
     final StringBuilder buffer = new StringBuilder();
     console.setOutput(buffer::append);

@@ -193,6 +193,7 @@ public class RemoteDatabase extends RWLockContext {
   public void rollback() {
     if (sessionId == null)
       throw new TransactionException("Transaction not begun");
+
     try {
       final HttpURLConnection connection = createConnection("POST", getUrl("rollback", databaseName));
       connection.connect();
@@ -256,6 +257,48 @@ public class RemoteDatabase extends RWLockContext {
   @Override
   public String toString() {
     return databaseName;
+  }
+
+  public void createUser(final String userName, final String password, final List<String> databases) {
+    try {
+      final HttpURLConnection connection = createConnection("POST", getUrl("user"));
+      connection.setDoOutput(true);
+
+      final JSONObject jsonRequest = new JSONObject();
+      jsonRequest.put("name", userName);
+      jsonRequest.put("password", password);
+      if (databases != null && !databases.isEmpty()) {
+        final JSONObject databasesJson = new JSONObject();
+        for (String dbName : databases)
+          databasesJson.put(dbName, new String[] { "admin" });
+        jsonRequest.put("databases", databasesJson);
+      }
+
+      final byte[] postData = jsonRequest.toString().getBytes(StandardCharsets.UTF_8);
+      connection.setRequestProperty("Content-Length", Integer.toString(postData.length));
+      try (DataOutputStream wr = new DataOutputStream(connection.getOutputStream())) {
+        wr.write(postData);
+      }
+
+      connection.connect();
+      if (connection.getResponseCode() != 204)
+        throw new RuntimeException("Error on creating user: " + connection.getResponseMessage());
+
+    } catch (Exception e) {
+      throw new RuntimeException("Error on creating user", e);
+    }
+  }
+
+  public void dropUser(final String userName) {
+    try {
+      final HttpURLConnection connection = createConnection("DELETE", getUrl("user") + "/" + userName);
+      connection.connect();
+      if (connection.getResponseCode() != 204)
+        throw new RuntimeException("Error on deleting user: " + connection.getResponseMessage());
+
+    } catch (Exception e) {
+      throw new RuntimeException("Error on deleting user", e);
+    }
   }
 
   private Object serverCommand(final String method, final String operation, final String language, final String payloadCommand,
@@ -555,8 +598,12 @@ public class RemoteDatabase extends RWLockContext {
     return params;
   }
 
+  private String getUrl(final String command) {
+    return protocol + "://" + currentServer + ":" + currentPort + "/api/v" + apiVersion + "/" + command;
+  }
+
   private String getUrl(final String command, final String databaseName) {
-    return protocol + "://" + currentServer + ":" + currentPort + "/api/v" + apiVersion + "/" + command + "/" + databaseName;
+    return getUrl(command) + "/" + databaseName;
   }
 
   protected ResultSet createResultSet(final JSONObject response) {

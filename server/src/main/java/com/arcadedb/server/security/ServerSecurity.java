@@ -192,15 +192,26 @@ public class ServerSecurity implements ServerPlugin, com.arcadedb.security.Secur
     if (users.containsKey(name))
       throw new SecurityException("User '" + name + "' already exists");
 
+    if (userConfiguration.has("password")) {
+      final String password = userConfiguration.getString("password");
+      if (password.length() < 5)
+        throw new ServerSecurityException("User password must be 5 minimum characters");
+      if (password.length() > 256)
+        throw new ServerSecurityException("User password cannot be longer than 256 characters");
+    }
+
     final ServerSecurityUser user = new ServerSecurityUser(server, userConfiguration);
     users.put(name, user);
     saveUsers();
     return user;
   }
 
-  public void dropUser(final String userName) {
-    if (users.remove(userName) != null)
+  public boolean dropUser(final String userName) {
+    if (users.remove(userName) != null) {
       saveUsers();
+      return true;
+    }
+    return false;
   }
 
   @Override
