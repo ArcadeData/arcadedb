@@ -37,7 +37,11 @@ public class GetDynamicContentHandler extends AbstractHandler {
 
   public GetDynamicContentHandler(final HttpServer httpServer) {
     super(httpServer);
-    setRequireAuthentication(false);
+  }
+
+  @Override
+  public boolean isRequireAuthentication() {
+    return false;
   }
 
   @Override

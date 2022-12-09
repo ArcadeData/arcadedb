@@ -45,8 +45,7 @@ import java.util.*;
 import java.util.logging.*;
 
 public abstract class AbstractHandler implements HttpHandler {
-  private              boolean    requireAuthentication = true;
-  private static final String     AUTHORIZATION_BASIC   = "Basic";
+  private static final String     AUTHORIZATION_BASIC = "Basic";
   protected final      HttpServer httpServer;
 
   public AbstractHandler(final HttpServer httpServer) {
@@ -78,7 +77,7 @@ public abstract class AbstractHandler implements HttpHandler {
       exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
 
       final HeaderValues authorization = exchange.getRequestHeaders().get("Authorization");
-      if (requireAuthentication && (authorization == null || authorization.isEmpty())) {
+      if (isRequireAuthentication() && (authorization == null || authorization.isEmpty())) {
         exchange.setStatusCode(403);
         sendErrorResponse(exchange, 403, "No authentication was provided", null, null);
         return;
@@ -151,12 +150,11 @@ public abstract class AbstractHandler implements HttpHandler {
     }
   }
 
+  /**
+   * Returns true if the handler require authentication to be executed, any valid user. False means the handler can be executed without authentication.
+   */
   public boolean isRequireAuthentication() {
-    return requireAuthentication;
-  }
-
-  public void setRequireAuthentication(final boolean requireAuthentication) {
-    this.requireAuthentication = requireAuthentication;
+    return true;
   }
 
   protected ServerSecurityUser authenticate(final String userName, final String userPassword) {

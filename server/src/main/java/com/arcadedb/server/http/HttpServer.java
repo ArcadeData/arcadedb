@@ -30,6 +30,8 @@ import com.arcadedb.server.http.handler.GetDocumentHandler;
 import com.arcadedb.server.http.handler.GetDynamicContentHandler;
 import com.arcadedb.server.http.handler.GetExistsDatabaseHandler;
 import com.arcadedb.server.http.handler.GetQueryHandler;
+import com.arcadedb.server.http.handler.GetReadyHandler;
+import com.arcadedb.server.http.handler.GetServersHandler;
 import com.arcadedb.server.http.handler.PostBeginHandler;
 import com.arcadedb.server.http.handler.PostCloseDatabaseHandler;
 import com.arcadedb.server.http.handler.PostCommandHandler;
@@ -40,7 +42,6 @@ import com.arcadedb.server.http.handler.PostDropDatabaseHandler;
 import com.arcadedb.server.http.handler.PostOpenDatabaseHandler;
 import com.arcadedb.server.http.handler.PostQueryHandler;
 import com.arcadedb.server.http.handler.PostRollbackHandler;
-import com.arcadedb.server.http.handler.GetServersHandler;
 import com.arcadedb.server.http.ws.WebSocketConnectionHandler;
 import com.arcadedb.server.http.ws.WebSocketEventBus;
 import io.undertow.Handlers;
@@ -134,6 +135,7 @@ public class HttpServer implements ServerPlugin {
             .post("/query/{database}", new PostQueryHandler(this))//
             .post("/rollback/{database}", new PostRollbackHandler(this))//
             .get("/server", new GetServersHandler(this))//
+            .get("/ready", new GetReadyHandler(this))//
     );
 
     if (!"production".equals(GlobalConfiguration.SERVER_MODE.getValueAsString())) {

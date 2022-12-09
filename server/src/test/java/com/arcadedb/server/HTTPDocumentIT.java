@@ -60,6 +60,22 @@ public class HTTPDocumentIT extends BaseGraphServerTest {
   }
 
   @Test
+  public void testServerReady() throws Exception {
+    testEachServer((serverIndex) -> {
+      HttpURLConnection connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/ready").openConnection();
+      connection.setRequestMethod("GET");
+      try {
+        connection.connect();
+        final String response = readResponse(connection);
+        LogManager.instance().log(this, Level.FINE, "Response: ", null, response);
+        Assertions.assertEquals(204, connection.getResponseCode());
+      } finally {
+        connection.disconnect();
+      }
+    });
+  }
+
+  @Test
   public void checkAuthenticationError() throws Exception {
     testEachServer((serverIndex) -> {
       HttpURLConnection connection = (HttpURLConnection) new URL(
