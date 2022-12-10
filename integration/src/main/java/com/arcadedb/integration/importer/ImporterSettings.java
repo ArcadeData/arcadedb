@@ -23,10 +23,10 @@ import com.arcadedb.utility.FileUtils;
 import java.util.*;
 
 public class ImporterSettings {
-  public String  database      = "./databases/imported";
-  public String  url           = null;
-  public boolean wal           = false;
-  public int     verboseLevel  = 2;
+  public String  database     = "./databases/imported";
+  public String  url          = null;
+  public boolean wal          = false;
+  public int     verboseLevel = 2;
 
   public String documents;
   public String documentsFileType;
@@ -78,8 +78,12 @@ public class ImporterSettings {
 
   protected void parseParameters(final String[] args) {
     if (args != null)
-      for (int i = 0; i < args.length - 1; i += 2)
+      for (int i = 0; i < args.length - 1; i += 2) {
+        final char begin = args[i].charAt(0);
+        if (begin != '-')
+          throw new IllegalArgumentException("Arguments must begin with '-'");
         parseParameter(args[i].substring(1), args[i + 1]);
+      }
   }
 
   public void parseParameter(final String name, final String value) {

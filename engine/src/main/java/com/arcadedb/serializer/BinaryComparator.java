@@ -303,6 +303,8 @@ public class BinaryComparator {
    * Compare 2 values. If strings or byte[] the unsafe native comparator will be used.
    */
   public static int compareTo(final Object a, final Object b) {
+    if( a == null && b == null )
+      return 0;
     if (a instanceof String && b instanceof String)
       return compareBytes(((String) a).getBytes(), ((String) b).getBytes(DatabaseFactory.getDefaultCharset()));
     if (a instanceof byte[] && b instanceof byte[])
