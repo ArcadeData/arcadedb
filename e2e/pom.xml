@@ -32,7 +32,7 @@
     <properties>
         <testcontainers.version>1.17.6</testcontainers.version>
         <postgresql.version>42.5.1</postgresql.version>
-        <logback-classic.version>1.4.4</logback-classic.version>
+        <logback-classic.version>1.4.5</logback-classic.version>
     </properties>
 
     <artifactId>arcadedb-e2e</artifactId>
