@@ -32,7 +32,10 @@ import java.util.*;
 
 public class ImportDatabaseStatement extends SimpleExecStatement {
 
-  protected Url url;
+  protected Url                         url;
+  protected Expression                  key;
+  protected Expression                  value;
+  protected Map<Expression, Expression> settings = new HashMap<>();
 
   public ImportDatabaseStatement(int id) {
     super(id);
@@ -53,6 +56,12 @@ public class ImportDatabaseStatement extends SimpleExecStatement {
       final Class<?> clazz = Class.forName("com.arcadedb.integration.importer.Importer");
       final Object importer = clazz.getConstructor(Database.class, String.class).newInstance(ctx.getDatabase(), url.getUrlString());
 
+      // TRANSFORM SETTINGS
+      final Map<String, String> settingsToString = new HashMap<>();
+      for (Map.Entry<Expression, Expression> entry : settings.entrySet())
+        settingsToString.put(entry.getKey().value.toString(), entry.getValue().value.toString());
+
+      clazz.getMethod("setSettings", Map.class).invoke(importer, settingsToString);
       clazz.getMethod("load").invoke(importer);
 
     } catch (ClassNotFoundException | NoSuchMethodException | IllegalAccessException | InstantiationException e) {

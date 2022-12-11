@@ -99,7 +99,7 @@ public class GraphMLImporterIT {
 
     try (Database database = new DatabaseFactory(DATABASE_PATH).create()) {
 
-      database.command("sql", "import database file://" + inputFile.getFile());
+      database.command("sql", "import database file://" + inputFile.getFile() + " WITH commitEvery = 1000");
 
       Assertions.assertTrue(databaseDirectory.exists());
 

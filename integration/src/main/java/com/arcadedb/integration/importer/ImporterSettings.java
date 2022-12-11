@@ -60,7 +60,7 @@ public class ImporterSettings {
   public boolean typeIdPropertyIsUnique = false;
   public String  typeIdType             = "String";
   public int     parallel               = 1;
-  public boolean forceDatabaseCreate;
+  public boolean forceDatabaseCreate    = false;
   public boolean trimText               = true;
   public long    analysisLimitBytes     = 100000;
   public long    analysisLimitEntries   = 10000;

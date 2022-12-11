@@ -201,6 +201,8 @@ TOKEN:
   |
   < NEAR: ("n"|"N")("e"|"E")("a"|"A")("r"|"R")>
   |
+  < WITH: ("w"|"W")("i"|"I")("t"|"T")("h"|"H")>
+  |
   < WITHIN: ("w"|"W")("i"|"I")("t"|"T")("h"|"H")("i"|"I")("n"|"N")>
   |
   < UNWIND: ("u"|"U")("n"|"N")("w"|"W")("i"|"I")("n"|"N")("d"|"D")>
@@ -722,6 +724,8 @@ Identifier Identifier():
   token = <MINDEPTH>
   |
   token = <NEAR>
+  |
+  token = <WITH>
   |
   token = <WITHIN>
   |
@@ -4116,10 +4120,19 @@ WhileBlock WhileBlock():
 }
 
 ImportDatabaseStatement ImportDatabaseStatement():
-{ }
+{
+}
 {
   <IMPORT> <DATABASE>
   jjtThis.url = Url()
+  [
+    <WITH>
+    jjtThis.key = Expression() <EQ> jjtThis.value = Expression() { jjtThis.settings.put( jjtThis.key, jjtThis.value ); }
+    (
+      <COMMA>
+      jjtThis.key = Expression() <EQ> jjtThis.value = Expression() { jjtThis.settings.put( jjtThis.key, jjtThis.value ); }
+    )*
+  ]
   {return jjtThis; }
 }
 

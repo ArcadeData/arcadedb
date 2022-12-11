@@ -54,6 +54,12 @@ public abstract class AbstractImporter {
     this.databaseCreatedDuringImporting = false;
   }
 
+  public void setSettings(final Map<String, String> parameters) {
+    if (parameters != null)
+      for (Map.Entry<String, String> entry : parameters.entrySet())
+        settings.parseParameter(entry.getKey(), entry.getValue());
+  }
+
   protected void printProgress() {
     if (settings.verboseLevel < 2)
       return;
