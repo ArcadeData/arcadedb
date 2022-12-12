@@ -82,6 +82,10 @@ public class SQLFunctionConvertTest {
       assertNotNull(results);
       assertTrue(results.next().getProperty("convert") instanceof BigDecimal);
 
+      results = db.query("sql", "select \"100000.123\".asDecimal()*1000 as convert");
+      assertNotNull(results);
+      assertTrue(results.next().getProperty("convert") instanceof BigDecimal);
+
       results = db.query("sql", "select number.convert('LONG') as convert from TestConversion");
       assertNotNull(results);
       assertTrue(results.next().getProperty("convert") instanceof Long);
