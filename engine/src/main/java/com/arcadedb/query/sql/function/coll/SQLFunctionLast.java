@@ -42,7 +42,7 @@ public class SQLFunctionLast extends SQLFunctionConfigurableAbstract {
     if (MultiValue.isMultiValue(value))
       return MultiValue.getLastValue(value);
 
-    return null;
+    return value;
   }
 
   public String getSyntax() {

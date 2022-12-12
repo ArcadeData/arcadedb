@@ -42,7 +42,7 @@ public class SQLFunctionFirst extends SQLFunctionConfigurableAbstract {
     if (MultiValue.isMultiValue(value))
       return MultiValue.getFirstValue(value);
 
-    return null;
+    return value;
   }
 
   public String getSyntax() {

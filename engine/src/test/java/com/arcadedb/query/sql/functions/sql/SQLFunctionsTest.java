@@ -491,6 +491,31 @@ public class SQLFunctionsTest {
   }
 
   @Test
+  public void testFirstAndLastFunctionsWithMultipleValues() {
+    database.transaction(() -> {
+      database.execute("sql",//
+          "CREATE DOCUMENT TYPE mytype;\n" +//
+              "INSERT INTO mytype SET value = 1;\n" +//
+              "INSERT INTO mytype SET value = [1,2,3];\n" +//
+              "INSERT INTO mytype SET value = [1];\n" +//
+              "INSERT INTO mytype SET value = map(\"a\",1,\"b\",2);");
+    });
+
+    ResultSet result = database.query("sql", "SELECT first(value) as first, last(value) as last FROM mytype");
+
+    Object[] array = result.stream().toArray();
+
+    Assertions.assertEquals(4, array.length);
+    for (Object r : array) {
+      ((Result) r).hasProperty("first");
+      Assertions.assertNotNull(((Result) r).getProperty("first"));
+
+      ((Result) r).hasProperty("last");
+      Assertions.assertNotNull(((Result) r).getProperty("last"));
+    }
+  }
+
+  @Test
   public void testLastFunction() {
     List<Long> sequence = new ArrayList<Long>(100);
     for (long i = 0; i < 100; ++i) {
