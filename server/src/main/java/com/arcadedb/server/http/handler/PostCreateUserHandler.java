@@ -19,6 +19,7 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 import org.json.JSONObject;
@@ -46,6 +47,10 @@ public class PostCreateUserHandler extends AbstractHandler {
     }
 
     final String userPassword = json.getString("password");
+    if (userPassword.length() < 4)
+      throw new ServerSecurityException("User password must be 5 minimum characters");
+    if (userPassword.length() > 256)
+      throw new ServerSecurityException("User password cannot be longer than 256 characters");
 
     json.put("password", httpServer.getServer().getSecurity().encodePassword(userPassword));
 
