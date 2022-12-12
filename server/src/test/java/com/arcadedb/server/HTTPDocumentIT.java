@@ -120,6 +120,30 @@ public class HTTPDocumentIT extends BaseGraphServerTest {
   }
 
   @Test
+  public void checkQueryCommandEncoding() throws Exception {
+    testEachServer((serverIndex) -> {
+      HttpURLConnection connection = (HttpURLConnection) new URL(
+          "http://127.0.0.1:248" + serverIndex + "/api/v1/query/"+DATABASE_NAME+"/sql/select%201%20%2B%201%20as%20result").openConnection();
+
+      connection.setRequestMethod("GET");
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      connection.connect();
+
+      try {
+        final String response = readResponse(connection);
+        LogManager.instance().log(this, Level.FINE, "TEST: Response: %s", null, response);
+        Assertions.assertEquals(200, connection.getResponseCode());
+        Assertions.assertEquals("OK", connection.getResponseMessage());
+        Assertions.assertTrue(response.contains("result"));
+
+      } finally {
+        connection.disconnect();
+      }
+    });
+  }
+
+  @Test
   public void checkQueryInPost() throws Exception {
     testEachServer((serverIndex) -> {
       HttpURLConnection connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME).openConnection();

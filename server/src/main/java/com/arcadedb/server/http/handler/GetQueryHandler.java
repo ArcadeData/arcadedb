@@ -27,7 +27,6 @@ import io.undertow.server.HttpServerExchange;
 import org.json.JSONObject;
 
 import java.io.*;
-import java.net.*;
 import java.util.*;
 
 public class GetQueryHandler extends AbstractQueryHandler {
@@ -72,8 +71,7 @@ public class GetQueryHandler extends AbstractQueryHandler {
     final ServerMetrics.MetricTimer timer = httpServer.getServer().getServerMetrics().timer("http.query");
     try {
 
-      final String command = URLDecoder.decode(text, exchange.getRequestCharset());
-      final ResultSet qResult = database.query(language, command);
+      final ResultSet qResult = database.query(language, text);
 
       serializeResultSet(database, serializer, limit, response, qResult);
 
