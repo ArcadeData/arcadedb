@@ -30,7 +30,6 @@ import java.util.*;
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
 public class SQLMethodKeys extends AbstractSQLMethod {
-
   public static final String NAME = "keys";
 
   public SQLMethodKeys() {
@@ -38,18 +37,18 @@ public class SQLMethodKeys extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute( final Object iThis, Identifiable iCurrentRecord, CommandContext iContext,
-      Object ioResult, Object[] iParams) {
-    if (ioResult instanceof Map) {
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult, final Object[] iParams) {
+    if (ioResult instanceof Map)
       return ((Map<?, ?>) ioResult).keySet();
-    }
-    if (ioResult instanceof Document) {
+
+    if (ioResult instanceof Document)
       return Arrays.asList(((Document) ioResult).getPropertyNames());
-    }
+
     if (ioResult instanceof Result) {
       Result res = (Result) ioResult;
       return res.getPropertyNames();
     }
+
     if (ioResult instanceof Collection) {
       List result = new ArrayList();
       for (Object o : (Collection) ioResult) {

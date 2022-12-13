@@ -29,26 +29,26 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class SQLMethodFieldTest {
 
-    private SQLMethod method;
+  private SQLMethod method;
 
-    @BeforeEach
-    void setUp() {
-        method = new SQLMethodField();
+  @BeforeEach
+  void setUp() {
+    method = new SQLMethodField();
 
-    }
+  }
 
-    @Test
-    void testNulIParamsReturnedAsNull() {
-        Object result = method.execute(null, null, null, null, new Object[]{null});
-        assertThat(result).isNull();
-    }
+  @Test
+  void testNulIParamsReturnedAsNull() {
+    Object result = method.execute(null, null, null, null, new Object[] { null });
+    assertThat(result).isNull();
+  }
 
-    @Test
-    void testFieldValue() {
+  @Test
+  void testFieldValue() {
 
-        Database database = Mockito.mock(Database.class);
+    Database database = Mockito.mock(Database.class);
 
-        DocumentType type = Mockito.mock(DocumentType.class);
+    DocumentType type = Mockito.mock(DocumentType.class);
 
 //        MutableDocument doc = new MutableDocument(database, type, null);
 //        doc.set("name", "Foo");
@@ -58,5 +58,5 @@ class SQLMethodFieldTest {
 //        assertThat(result).isNotNull();
 //        assertThat(result).isEqualTo("Foo");
 
-    }
+  }
 }
