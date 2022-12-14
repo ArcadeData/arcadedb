@@ -89,7 +89,7 @@ MORE :
 
 SPECIAL_TOKEN :
 {
-  <SINGLE_LINE_COMMENT: "-- "(~["\n"])* (["\n"])? > : DEFAULT
+  <SINGLE_LINE_COMMENT: "-- "(~["\n"])* ("\n")? > : DEFAULT
 }
 
 /* reserved words */
