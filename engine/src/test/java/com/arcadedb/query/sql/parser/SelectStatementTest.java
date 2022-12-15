@@ -106,6 +106,9 @@ public class SelectStatementTest {
     checkRightSyntax("select from Foo/* aaa bbb ccc*/");
     checkRightSyntax("/* aaa bbb ccc*/select from Foo/* aaa bbb ccc*/");
 
+    checkRightSyntax("select from Foo -- This is a test");
+    checkRightSyntax("select from Foo; -- This is a test");
+
     checkWrongSyntax("select /** aaa bbb */ccc*/from Foo");
 
     checkWrongSyntax("select /**  /*aaa bbb */ccc*/from Foo");
