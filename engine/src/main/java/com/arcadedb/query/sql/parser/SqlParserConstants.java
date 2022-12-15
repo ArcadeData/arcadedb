@@ -11,9 +11,11 @@ public interface SqlParserConstants {
   /** End of File. */
   int EOF = 0;
   /** RegularExpression Id. */
-  int FORMAL_COMMENT = 9;
+  int FORMAL_COMMENT = 8;
   /** RegularExpression Id. */
-  int MULTI_LINE_COMMENT = 10;
+  int MULTI_LINE_COMMENT = 9;
+  /** RegularExpression Id. */
+  int SINGLE_LINE_COMMENT = 11;
   /** RegularExpression Id. */
   int ALIGN = 12;
   /** RegularExpression Id. */
@@ -506,10 +508,10 @@ public interface SqlParserConstants {
     "\"\\f\"",
     "<token of kind 6>",
     "\"/*\"",
-    "<token of kind 8>",
     "\"*/\"",
     "\"*/\"",
-    "<token of kind 11>",
+    "<token of kind 10>",
+    "<SINGLE_LINE_COMMENT>",
     "<ALIGN>",
     "<SELECT>",
     "<TRAVERSE>",
