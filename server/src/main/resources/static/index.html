@@ -144,6 +144,10 @@ $(function () {
     }
   });
 
+  $('#loginPopup').on('shown.bs.modal', function () {
+    $('#inputUserName').delay(1000).focus().select();
+  });
+
   if( globalCredentials == null )
     showLoginPopup();
 });
