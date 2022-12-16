@@ -7,61 +7,11 @@
         <div class="col-1">
           <b>Method</b>
         </div>
-        <div class="col-3">
+        <div class="col-4">
           <b>URL</b>
         </div>
-        <div class="col-8">
-          <b>Description</b>
-        </div>
-      </div>
-
-      <div class="row">
-        <div class="col-1">
-          POST
-        </div>
-        <div class="col-3">
-          <pre>/api/v1/begin/{database}</pre>
-        </div>
-        <div class="col-8">
-          Begins a transaction on the server managed as a session. The response header contains the session id. Set this id in the following requests to execute
-          them in the same transaction scope. See also <b>/commit</b> and <b>/rollback</b>.
-        </div>
-      </div>
-
-      <div class="row">
-        <div class="col-1">
-          POST
-        </div>
-        <div class="col-3">
-          <pre>/api/v1/command/{database}</pre>
-        </div>
-        <div class="col-8">
-          Executes a non-idempotent command.
-        </div>
-      </div>
-
-      <div class="row">
-        <div class="col-1">
-          POST
-        </div>
-        <div class="col-3">
-          <pre>/api/v1/commit/{database}</pre>
-        </div>
-        <div class="col-8">
-          Commits a transaction on the server. Set the session id obtained with the <b>/begin</b> command as a header of the request. See also <b>/begin</b> and
-          <b>/rollback</b>.
-        </div>
-      </div>
-
-      <div class="row">
-        <div class="col-1">
-          POST
-        </div>
-        <div class="col-3">
-          <pre>/api/v1/create/{database}</pre>
-        </div>
-        <div class="col-8">
-          Creates a database
+        <div class="col-7">
+          <b>Documentation</b>
         </div>
       </div>
 
@@ -69,23 +19,11 @@
         <div class="col-1">
           GET
         </div>
-        <div class="col-3">
-          <pre>/api/v1/databases</pre>
+        <div class="col-4">
+          <pre>/api/v1/ready</pre>
         </div>
-        <div class="col-8">
-          Returns the list of databases the current authenticated user can access to.
-        </div>
-      </div>
-
-      <div class="row">
-        <div class="col-1">
-          POST
-        </div>
-        <div class="col-3">
-          <pre>/api/v1/document/{database}</pre>
-        </div>
-        <div class="col-8">
-          Creates a new document
+        <div class="col-7">
+          <a class="link" href="https://docs.arcadedb.com/#HTTP-CheckReady">Get server status</a>
         </div>
       </div>
 
@@ -93,59 +31,191 @@
         <div class="col-1">
           GET
         </div>
-        <div class="col-3">
-          <pre>/api/v1/document/{database}/{rid}</pre>
-        </div>
-        <div class="col-8">
-          Returns a document by record id (rid)
-        </div>
-      </div>
-
-      <div class="row">
-        <div class="col-1">
-          POST
-        </div>
-        <div class="col-3">
-          <pre>/api/v1/drop/{database}</pre>
-        </div>
-        <div class="col-8">
-          Drops a database
-        </div>
-      </div>
-
-      <div class="row">
-        <div class="col-1">
-          GET
-        </div>
-        <div class="col-3">
-          <pre>/api/v1/query/{database}</pre>
-        </div>
-        <div class="col-8">
-          Executes an idempotent commands, like SELECT ad MATCH.
-        </div>
-      </div>
-      <div class="row">
-        <div class="col-1">
-          POST
-        </div>
-        <div class="col-3">
-          <pre>/api/v1/rollback/{database}</pre>
-        </div>
-        <div class="col-8">
-          Rollbacks a transaction on the server. Set the session id obtained with the <b>/begin</b> command as a header of the request. See also
-          <b>/begin</b> and <b>/commit</b>.
-        </div>
-      </div>
-
-      <div class="row">
-        <div class="col-1">
-          GET
-        </div>
-        <div class="col-3">
+        <div class="col-4">
           <pre>/api/v1/server</pre>
         </div>
-        <div class="col-8">
-          Returns the current HA configuration.
+        <div class="col-7">
+          <a class="link" href="https://docs.arcadedb.com/#HTTP-ServerInfo">Get server information</a>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="col-1">
+          POST
+        </div>
+        <div class="col-4">
+          <pre>/api/v1/user</pre>
+        </div>
+        <div class="col-7">
+          <a class="link" href="https://docs.arcadedb.com/#HTTP-CreateUser">Create a user</a>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="col-1">
+          DELETE
+        </div>
+        <div class="col-4">
+          <pre>/api/v1/user/{user}</pre>
+        </div>
+        <div class="col-7">
+          <a class="link" href="https://docs.arcadedb.com/#HTTP-DropUser">Drop a user</a>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="col-1">
+          POST
+        </div>
+        <div class="col-4">
+          <pre>/api/v1/create/{database}</pre>
+        </div>
+        <div class="col-7">
+          <a class="link" href="https://docs.arcadedb.com/#HTTP-CreateDatabase">Create a database</a>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="col-1">
+          POST
+        </div>
+        <div class="col-4">
+          <pre>/api/v1/drop/{database}</pre>
+        </div>
+        <div class="col-7">
+          <a class="link" href="https://docs.arcadedb.com/#HTTP-DropDatabase">Drop a database</a>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="col-1">
+          GET
+        </div>
+        <div class="col-4">
+          <pre>/api/v1/databases</pre>
+        </div>
+        <div class="col-7">
+          <a class="link" href="https://docs.arcadedb.com/#HTTP-ListDatabases">List of databases</a>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="col-1">
+          GET
+        </div>
+        <div class="col-4">
+          <pre>/api/v1/exists/{database}</pre>
+        </div>
+        <div class="col-7">
+          <a class="link" href="https://docs.arcadedb.com/#HTTP-DatabaseExists">Does database exist?</a>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="col-1">
+          POST
+        </div>
+        <div class="col-4">
+          <pre>/api/v1/open/{database}</pre>
+        </div>
+        <div class="col-7">
+          <a class="link" href="https://docs.arcadedb.com/#HTTP-OpenDatabase">Open a database</a>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="col-1">
+          POST
+        </div>
+        <div class="col-4">
+          <pre>/api/v1/close/{database}</pre>
+        </div>
+        <div class="col-7">
+          <a class="link" href="https://docs.arcadedb.com/#HTTP-CloseDatabase">Close a database</a>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="col-1">
+          GET
+        </div>
+        <div class="col-4">
+          <pre>/api/v1/query/{database}/{language}/{query}</pre>
+        </div>
+        <div class="col-7">
+          <a class="link" href="https://docs.arcadedb.com/#HTTP-ExecuteQuery">Execute a query</a>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="col-1">
+          POST
+        </div>
+        <div class="col-4">
+          <pre>/api/v1/command/{database}</pre>
+        </div>
+        <div class="col-7">
+          <a class="link" href="https://docs.arcadedb.com/#HTTP-ExecuteCommand">Execute a command</a>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="col-1">
+          POST
+        </div>
+        <div class="col-4">
+          <pre>/api/v1/begin/{database}</pre>
+        </div>
+        <div class="col-7">
+          <a class="link" href="https://docs.arcadedb.com/#HTTP-Begin">Begin a new transaction</a>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="col-1">
+          POST
+        </div>
+        <div class="col-4">
+          <pre>/api/v1/commit/{database}</pre>
+        </div>
+        <div class="col-7">
+          <a class="link" href="https://docs.arcadedb.com/#HTTP-Commit">Commit a transaction</a>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="col-1">
+          POST
+        </div>
+        <div class="col-4">
+          <pre>/api/v1/rollback/{database}</pre>
+        </div>
+        <div class="col-7">
+          <a class="link" href="https://docs.arcadedb.com/#HTTP-Rollback">Rollback a transaction</a>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="col-1">
+          POST
+        </div>
+        <div class="col-4">
+          <pre>/api/v1/document/{database}</pre>
+        </div>
+        <div class="col-7">
+          <a class="link" href="https://docs.arcadedb.com/#HTTP-CreateDocument">Create a document (Deprecated)</a>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="col-1">
+          GET
+        </div>
+        <div class="col-4">
+          <pre>/api/v1/document/{database}/{rid}</pre>
+        </div>
+        <div class="col-7">
+          <a class="link" href="https://docs.arcadedb.com/#HTTP-LoadDocument">Load a document (Deprecated)</a>
         </div>
       </div>
 
