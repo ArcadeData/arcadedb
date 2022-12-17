@@ -56,8 +56,8 @@ Join our growing community around the world, for ideas, discussions and help reg
 
 - View our official [Blog](https://blog.arcadedb.com/)
 - Chat live with us on [Discord](https://discord.com/channels/883057780553052180/883057780553052184)
-- Follow us on [Twitter](https://twitter.com/surrealdb)
-- Connect with us on [LinkedIn](https://twitter.com/arcade_db)
+- Follow us on [Twitter](https://twitter.com/arcade_db)
+- Connect with us on [LinkedIn](https://www.linkedin.com/products/arcadedb)
 - Questions tagged #arcadedb on [Stack Overflow](https://stackoverflow.com/questions/tagged/arcadedb)
 
 ## Security
