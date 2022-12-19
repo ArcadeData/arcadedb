@@ -143,27 +143,6 @@ public class GraphEngine {
       connectIncomingEdge(toVertex, fromVertex.getIdentity(), edge.getIdentity());
   }
 
-  public void upgradeEdge(VertexInternal fromVertex, final Identifiable toVertex, final MutableEdge edge, final boolean bidirectional) {
-    fromVertex = fromVertex.modify();
-    final EdgeSegment outChunk = createOutEdgeChunk((MutableVertex) fromVertex);
-
-    final EdgeLinkedList outLinkedList = new EdgeLinkedList(fromVertex, Vertex.DIRECTION.OUT, outChunk);
-
-    outLinkedList.upgrade(edge.getIdentity(), toVertex.getIdentity());
-
-    if (bidirectional)
-      upgradeIncomingEdge(toVertex, fromVertex.getIdentity(), edge.getIdentity());
-  }
-
-  public void upgradeIncomingEdge(final Identifiable toVertex, final RID fromVertexRID, final RID edgeRID) {
-    final MutableVertex toVertexRecord = toVertex.asVertex().modify();
-
-    final EdgeSegment inChunk = createInEdgeChunk(toVertexRecord);
-
-    final EdgeLinkedList inLinkedList = new EdgeLinkedList(toVertexRecord, Vertex.DIRECTION.IN, inChunk);
-    inLinkedList.upgrade(edgeRID, fromVertexRID);
-  }
-
   public List<Edge> newEdges(VertexInternal sourceVertex, final List<CreateEdgeOperation> connections, final boolean bidirectional) {
 
     if (connections == null || connections.isEmpty())

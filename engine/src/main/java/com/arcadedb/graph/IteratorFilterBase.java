@@ -95,7 +95,7 @@ public abstract class IteratorFilterBase<T> implements Iterator<T>, Iterable<T> 
 
       } else {
         // FETCH NEXT CHUNK
-        currentContainer = currentContainer.getNext();
+        currentContainer = currentContainer.getPrevious();
         if (currentContainer != null) {
           currentPosition.set(MutableEdgeSegment.CONTENT_START_POSITION);
           lastElementPosition = currentPosition.get();

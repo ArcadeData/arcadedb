@@ -316,8 +316,13 @@ public class CheckDatabaseTest extends TestHelper {
   private int countEdges(RID rootVertex) {
     final Iterable<Edge> iter = rootVertex.asVertex().getEdges(Vertex.DIRECTION.OUT);
     int totalEdges = 0;
-    for (Edge e : iter)
-      ++totalEdges;
+    try {
+      for (Edge e : iter)
+        ++totalEdges;
+    } catch (NoSuchElementException e) {
+      // EXPECTED FOR BROKEN EDGES WHEN THE FIRST ITEM (LAST IN THE ITERATOR) IS DELETED
+    }
+
     return totalEdges;
   }
 

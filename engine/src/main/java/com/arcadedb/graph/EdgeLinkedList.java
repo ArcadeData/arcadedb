@@ -30,42 +30,47 @@ import org.json.JSONObject;
 
 import java.util.*;
 
+/**
+ * Linked list uses to manage edges in vertex. The edges are stored in reverse order from insertion. The last item is the first in the list.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
 public class EdgeLinkedList {
   private final Vertex           vertex;
   private final Vertex.DIRECTION direction;
-  private       EdgeSegment      first;
+  private       EdgeSegment      lastSegment;
 
-  public EdgeLinkedList(final Vertex vertex, final Vertex.DIRECTION direction, final EdgeSegment first) {
+  public EdgeLinkedList(final Vertex vertex, final Vertex.DIRECTION direction, final EdgeSegment lastSegment) {
     this.vertex = vertex;
     this.direction = direction;
-    this.first = first;
+    this.lastSegment = lastSegment;
   }
 
   public Iterator<Pair<RID, RID>> entryIterator(final String... edgeTypes) {
     if (edgeTypes == null || edgeTypes.length == 0)
-      return new EdgeVertexIterator(first, vertex.getIdentity(), direction);
-    return new EdgeVertexIteratorFilter((DatabaseInternal) vertex.getDatabase(), first, edgeTypes);
+      return new EdgeVertexIterator(lastSegment, vertex.getIdentity(), direction);
+    return new EdgeVertexIteratorFilter((DatabaseInternal) vertex.getDatabase(), lastSegment, edgeTypes);
   }
 
   public Iterator<Edge> edgeIterator(final String... edgeTypes) {
     if (edgeTypes == null || edgeTypes.length == 0)
-      return new EdgeIterator(first, vertex.getIdentity(), direction);
-    return new EdgeIteratorFilter((DatabaseInternal) vertex.getDatabase(), vertex, direction, first, edgeTypes);
+      return new EdgeIterator(lastSegment, vertex.getIdentity(), direction);
+    return new EdgeIteratorFilter((DatabaseInternal) vertex.getDatabase(), vertex, direction, lastSegment, edgeTypes);
   }
 
   public Iterator<Vertex> vertexIterator(final String... edgeTypes) {
     if (edgeTypes == null || edgeTypes.length == 0)
-      return new VertexIterator(first);
-    return new VertexIteratorFilter((DatabaseInternal) vertex.getDatabase(), first, edgeTypes);
+      return new VertexIterator(lastSegment);
+    return new VertexIteratorFilter((DatabaseInternal) vertex.getDatabase(), lastSegment, edgeTypes);
   }
 
   public boolean containsEdge(final RID rid) {
-    EdgeSegment current = first;
+    EdgeSegment current = lastSegment;
     while (current != null) {
       if (current.containsEdge(rid))
         return true;
 
-      current = current.getNext();
+      current = current.getPrevious();
     }
 
     return false;
@@ -74,7 +79,7 @@ public class EdgeLinkedList {
   public JSONArray toJSON() {
     final JSONArray array = new JSONArray();
 
-    EdgeSegment current = first;
+    EdgeSegment current = lastSegment;
     while (current != null) {
       final JSONObject j = current.toJSON();
       if (j.has("array")) {
@@ -82,19 +87,19 @@ public class EdgeLinkedList {
         for (int i = 0; i < a.length(); ++i)
           array.put(a.getString(i));
       }
-      current = current.getNext();
+      current = current.getPrevious();
     }
 
     return array;
   }
 
   public boolean containsVertex(final RID rid, final int[] edgeBucketFilter) {
-    EdgeSegment current = first;
+    EdgeSegment current = lastSegment;
     while (current != null) {
       if (current.containsVertex(rid, edgeBucketFilter))
         return true;
 
-      current = current.getNext();
+      current = current.getPrevious();
     }
 
     return false;
@@ -120,23 +125,18 @@ public class EdgeLinkedList {
     } else
       fileIdToFilter = null;
 
-    EdgeSegment current = first;
+    EdgeSegment current = lastSegment;
     while (current != null) {
       total += current.count(fileIdToFilter);
-      current = current.getNext();
+      current = current.getPrevious();
     }
 
     return total;
   }
 
-  public void upgrade(final RID newEdgeRID, final RID vertexRID) {
-    // TODO: ???HOW TO MANAGE THE NEW SPACE REQUESTED FOR THE COMPRESSED RIDS??????
-
-  }
-
   public void add(final RID edgeRID, final RID vertexRID) {
-    if (first.add(edgeRID, vertexRID))
-      ((DatabaseInternal) vertex.getDatabase()).updateRecord(first);
+    if (lastSegment.add(edgeRID, vertexRID))
+      ((DatabaseInternal) vertex.getDatabase()).updateRecord(lastSegment);
     else {
       // CHUNK FULL, ALLOCATE A NEW ONE
       DatabaseInternal database = (DatabaseInternal) vertex.getDatabase();
@@ -144,9 +144,9 @@ public class EdgeLinkedList {
       final MutableEdgeSegment newChunk = new MutableEdgeSegment(database, computeBestSize());
 
       newChunk.add(edgeRID, vertexRID);
-      newChunk.setNext(first);
+      newChunk.setPrevious(lastSegment);
 
-      database.createRecord(newChunk, database.getSchema().getBucketById(first.getIdentity().getBucketId()).getName());
+      database.createRecord(newChunk, database.getSchema().getBucketById(lastSegment.getIdentity().getBucketId()).getName());
 
       final MutableVertex modifiableV = vertex.modify();
 
@@ -155,7 +155,7 @@ public class EdgeLinkedList {
       else
         modifiableV.setInEdgesHeadChunk(newChunk.getIdentity());
 
-      first = newChunk;
+      lastSegment = newChunk;
 
       modifiableV.save();
     }
@@ -174,16 +174,16 @@ public class EdgeLinkedList {
       final RID edgeRID = entry.getFirst() != null ? entry.getFirst().getIdentity() : null;
       final RID vertexRID = entry.getSecond().getIdentity();
 
-      if (first.add(edgeRID, vertexRID))
-        recordsToUpdate.add(first);
+      if (lastSegment.add(edgeRID, vertexRID))
+        recordsToUpdate.add(lastSegment);
       else {
         // CHUNK FULL, ALLOCATE A NEW ONE
         final MutableEdgeSegment newChunk = new MutableEdgeSegment(database, computeBestSize());
 
         newChunk.add(edgeRID, vertexRID);
-        newChunk.setNext(first);
+        newChunk.setPrevious(lastSegment);
 
-        database.createRecord(newChunk, database.getSchema().getBucketById(first.getIdentity().getBucketId()).getName());
+        database.createRecord(newChunk, database.getSchema().getBucketById(lastSegment.getIdentity().getBucketId()).getName());
 
         final MutableVertex modifiableV = currentVertex.modify();
         currentVertex = modifiableV;
@@ -193,7 +193,7 @@ public class EdgeLinkedList {
         else
           modifiableV.setInEdgesHeadChunk(newChunk.getIdentity());
 
-        first = newChunk;
+        lastSegment = newChunk;
 
         recordsToUpdate.add(modifiableV);
       }
@@ -204,7 +204,7 @@ public class EdgeLinkedList {
   }
 
   public void removeEdge(final Edge edge) {
-    EdgeSegment current = first;
+    EdgeSegment current = lastSegment;
     while (current != null) {
       RID rid = edge.getIdentity();
 
@@ -219,31 +219,31 @@ public class EdgeLinkedList {
       if (deleted > 0)
         ((DatabaseInternal) vertex.getDatabase()).updateRecord(current);
 
-      current = current.getNext();
+      current = current.getPrevious();
     }
   }
 
   public void removeEdgeRID(final RID edge) {
-    EdgeSegment current = first;
+    EdgeSegment current = lastSegment;
     while (current != null) {
       final int deleted = current.removeEdge(edge);
       if (deleted > 0)
         ((DatabaseInternal) vertex.getDatabase()).updateRecord(current);
-      current = current.getNext();
+      current = current.getPrevious();
     }
   }
 
   public void removeVertex(final RID vertexRID) {
-    EdgeSegment current = first;
+    EdgeSegment current = lastSegment;
     while (current != null) {
       if (current.removeVertex(vertexRID) > 0)
         ((DatabaseInternal) vertex.getDatabase()).updateRecord(current);
 
-      current = current.getNext();
+      current = current.getPrevious();
     }
   }
 
   private int computeBestSize() {
-    return ((DatabaseInternal) vertex.getDatabase()).getNewEdgeListSize(first.getRecordSize());
+    return ((DatabaseInternal) vertex.getDatabase()).getNewEdgeListSize(lastSegment.getRecordSize());
   }
 }

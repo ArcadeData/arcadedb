@@ -55,7 +55,7 @@ public class EdgeVertexIterator implements Iterator<Pair<RID, RID>>, Iterable<Pa
     if (currentPosition.get() < currentContainer.getUsed())
       return true;
 
-    currentContainer = currentContainer.getNext();
+    currentContainer = currentContainer.getPrevious();
     if (currentContainer != null) {
       currentPosition.set(MutableEdgeSegment.CONTENT_START_POSITION);
       return currentPosition.get() < currentContainer.getUsed();

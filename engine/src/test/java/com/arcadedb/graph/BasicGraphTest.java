@@ -230,12 +230,12 @@ public class BasicGraphTest extends BaseGraphTest {
 
       Iterator<Vertex> vertices = v1.getVertices(Vertex.DIRECTION.OUT).iterator();
       Assertions.assertTrue(vertices.hasNext());
-      Vertex v2 = vertices.next();
-      Assertions.assertNotNull(v2);
-
-      Assertions.assertTrue(vertices.hasNext());
       Vertex v3 = vertices.next();
       Assertions.assertNotNull(v3);
+
+      Assertions.assertTrue(vertices.hasNext());
+      Vertex v2 = vertices.next();
+      Assertions.assertNotNull(v2);
 
       final long totalVertices = database.countType(v1.getTypeName(), true);
 
@@ -297,12 +297,12 @@ public class BasicGraphTest extends BaseGraphTest {
 
       Iterator<Edge> edges = v1.getEdges(Vertex.DIRECTION.OUT).iterator();
       Assertions.assertTrue(edges.hasNext());
-      Edge e2 = edges.next();
-      Assertions.assertNotNull(e2);
-
-      Assertions.assertTrue(edges.hasNext());
       Edge e3 = edges.next();
       Assertions.assertNotNull(e3);
+
+      Assertions.assertTrue(edges.hasNext());
+      Edge e2 = edges.next();
+      Assertions.assertNotNull(e2);
 
       // DELETE THE EDGE
       // -----------------------
@@ -353,6 +353,11 @@ public class BasicGraphTest extends BaseGraphTest {
       Assertions.assertNotNull(v1);
 
       Iterator<Edge> edges = v1.getEdges(Vertex.DIRECTION.OUT).iterator();
+
+      Assertions.assertTrue(edges.hasNext());
+      Edge e3 = edges.next();
+      Assertions.assertNotNull(e3);
+
       Assertions.assertTrue(edges.hasNext());
       Edge e2 = edges.next();
       Assertions.assertNotNull(e2);
@@ -361,9 +366,7 @@ public class BasicGraphTest extends BaseGraphTest {
       // -----------------------
       edges.remove();
 
-      Assertions.assertTrue(edges.hasNext());
-      Edge e3 = edges.next();
-      Assertions.assertNotNull(e3);
+      Assertions.assertFalse(edges.hasNext());
 
       Vertex vOut = e2.getOutVertex();
       edges = vOut.getEdges(Vertex.DIRECTION.OUT).iterator();
@@ -686,5 +689,25 @@ public class BasicGraphTest extends BaseGraphTest {
     } catch (ClassCastException e) {
       // EXPECTED
     }
+  }
+
+  // https://github.com/ArcadeData/arcadedb/issues/689
+  @Test
+  public void testEdgeDescendantOrder() {
+    var vType = database.getSchema().createVertexType("testEdgeDescendantOrderVertex");
+    var eType = database.getSchema().createEdgeType("testEdgeDescendantOrderEdge");
+
+    database.transaction(() -> {
+      var v1 = database.newVertex("testEdgeDescendantOrderVertex").set("id", -1).save();
+      for (int i = 0; i < 10000; i++) {
+        var v2 = database.newVertex("testEdgeDescendantOrderVertex").set("id", i).save();
+        v1.newEdge("testEdgeDescendantOrderEdge", v2, true);
+      }
+
+      final Iterator<Vertex> vertices = v1.getVertices(Vertex.DIRECTION.OUT).iterator();
+      for (int i = 10000 - 1; vertices.hasNext(); --i) {
+        Assertions.assertEquals(i, vertices.next().get("id"));
+      }
+    });
   }
 }
