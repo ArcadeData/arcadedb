@@ -229,8 +229,7 @@ public class GraphEngine {
       try {
         inChunk = (EdgeSegment) database.lookupByRID(inEdgesHeadChunk, true);
       } catch (RecordNotFoundException e) {
-        LogManager.instance()
-            .log(this, Level.WARNING, "Record %s (inEdgesHeadChunk) not found on vertex %s. Creating a new one", inEdgesHeadChunk, toVertex);
+        LogManager.instance().log(this, Level.WARNING, "Record %s (inEdgesHeadChunk) not found on vertex %s. Creating a new one", inEdgesHeadChunk, toVertex);
         inEdgesHeadChunk = null;
       }
 
@@ -254,8 +253,8 @@ public class GraphEngine {
       try {
         outChunk = (EdgeSegment) database.lookupByRID(outEdgesHeadChunk, true);
       } catch (RecordNotFoundException e) {
-        LogManager.instance().log(this, Level.WARNING, "Record %s (outEdgesHeadChunk) not found on vertex %s. Creating a new one", outEdgesHeadChunk,
-            fromVertex.getIdentity());
+        LogManager.instance()
+            .log(this, Level.WARNING, "Record %s (outEdgesHeadChunk) not found on vertex %s. Creating a new one", outEdgesHeadChunk, fromVertex.getIdentity());
         outEdgesHeadChunk = null;
       }
 

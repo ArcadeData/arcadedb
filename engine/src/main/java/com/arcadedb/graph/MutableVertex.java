@@ -111,11 +111,13 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
 
   @Override
   public void setOutEdgesHeadChunk(final RID outEdges) {
+    dirty = true;
     this.outEdges = outEdges;
   }
 
   @Override
   public void setInEdgesHeadChunk(final RID inEdges) {
+    dirty = true;
     this.inEdges = inEdges;
   }
 

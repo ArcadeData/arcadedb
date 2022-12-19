@@ -126,11 +126,12 @@ public class TransactionContext implements Transaction {
 
   public Record getRecordFromCache(final RID rid) {
     Record rec = null;
-    if (database.isReadYourWrites()) {
-      rec = modifiedRecordsCache.get(rid);
-      if (rec == null)
-        rec = immutableRecordsCache.get(rid);
-    }
+    rec = modifiedRecordsCache.get(rid);
+    if (rec == null)
+      rec = immutableRecordsCache.get(rid);
+    if (rec == null && updatedRecords != null)
+      // IN CASE READYOURWRITE IS FALSE, THE MODIFIED RECORD IS NT IN CACHE AND MUST BE READ FROM UPDATEDRECORDS
+      rec = updatedRecords.get(rid);
     return rec;
   }
 
@@ -191,8 +192,8 @@ public class TransactionContext implements Transaction {
 
   @Override
   public void rollback() {
-    LogManager.instance().log(this, Level.FINE, "Rollback transaction newPages=%s modifiedPages=%s (threadId=%d)", newPages, modifiedPages,
-        Thread.currentThread().getId());
+    LogManager.instance()
+        .log(this, Level.FINE, "Rollback transaction newPages=%s modifiedPages=%s (threadId=%d)", newPages, modifiedPages, Thread.currentThread().getId());
 
     if (database.isOpen() && database.getSchema().getDictionary() != null) {
       if (modifiedPages != null) {
@@ -540,8 +541,8 @@ public class TransactionContext implements Transaction {
 
       // AT THIS POINT, LOCK + VERSION CHECK, THERE IS NO NEED TO MANAGE ROLLBACK BECAUSE THERE CANNOT BE CONCURRENT TX THAT UPDATE THE SAME PAGE CONCURRENTLY
       // UPDATE PAGE COUNTER FIRST
-      LogManager.instance().log(this, Level.FINE, "TX committing pages newPages=%s modifiedPages=%s (threadId=%d)", newPages, modifiedPages,
-          Thread.currentThread().getId());
+      LogManager.instance()
+          .log(this, Level.FINE, "TX committing pages newPages=%s modifiedPages=%s (threadId=%d)", newPages, modifiedPages, Thread.currentThread().getId());
 
       pageManager.updatePages(newPages, modifiedPages, asyncFlush);
 
