@@ -23,6 +23,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.Index;
@@ -456,8 +457,17 @@ public class OrientDBImporter {
               Object attrValue = entry.getValue();
 
               if (attrValue instanceof Map) {
-                //EMBEDDED
-                attrValue = createRecord((Map<String, Object>) attrValue);
+                final Map<String, Object> attrValueMap = (Map<String, Object>) attrValue;
+                if (!attrValueMap.containsKey("@class"))
+                  // EMBEDDED MAP
+                  ;
+                else if (!attrValueMap.containsKey("@rid")) {
+                  createEmbeddedDocument(record, attrName, attrValueMap);
+                  // ALREADY SET BY THE NEW EMBEDDED DOCUMENT API
+                  continue;
+                } else
+                  // CHECK IF IS POSSIBLE TO HAVE AN EMBEDDED RECORD WITH RID
+                  attrValue = createRecord(attrValueMap);
               } else if (attrValue instanceof List) {
                 if (record instanceof Vertex && (attrName.startsWith("out_") || attrName.startsWith("in_")))
                   // EDGES WILL BE CREATE BELOW IN THE 2ND PHASE
@@ -489,6 +499,39 @@ public class OrientDBImporter {
     }
 
     return record;
+  }
+
+  private MutableEmbeddedDocument createEmbeddedDocument(final MutableDocument record, final String propertyName, final Map<String, Object> attributes)
+      throws IOException {
+    MutableEmbeddedDocument embedded = null;
+
+    // DOCUMENT, VERTEX, EDGE
+    final String className = (String) attributes.remove("@class");
+
+    incrementRecordByClass(className);
+    ++totalRecordParsed;
+    context.parsed.incrementAndGet();
+
+    if (!excludeClasses.contains(className)) {
+      final DocumentType type = database.getSchema().getType(className);
+
+      embedded = record.newEmbeddedDocument(className, propertyName);
+
+      for (Map.Entry<String, Object> entry : attributes.entrySet()) {
+        final String attrName = entry.getKey();
+        if (attrName.startsWith("@"))
+          continue;
+
+        Object attrValue = entry.getValue();
+
+        if (attrValue != null)
+          embedded.set(attrName, attrValue);
+      }
+
+      context.createdEmbeddedDocuments.incrementAndGet();
+    }
+
+    return embedded;
   }
 
   private void createEdges(final Map<String, Object> attributes) {
