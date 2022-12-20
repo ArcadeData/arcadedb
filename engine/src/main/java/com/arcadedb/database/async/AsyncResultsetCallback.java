@@ -40,6 +40,7 @@ public interface AsyncResultsetCallback {
    * @param resultset result set to fetch
    */
   default void onStart(ResultSet resultset) {
+    // NO ACTION BY DEFAULT
   }
 
   /**
@@ -55,6 +56,7 @@ public interface AsyncResultsetCallback {
    * Invoked when the fetching of the entire result set has been completed.
    */
   default void onComplete() {
+    // NO ACTION BY DEFAULT
   }
 
   /**
@@ -63,5 +65,6 @@ public interface AsyncResultsetCallback {
    * @param exception The exception caught
    */
   default void onError(Exception exception) {
+    // NO ACTION BY DEFAULT
   }
 }

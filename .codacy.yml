@@ -9,3 +9,5 @@ exclude_paths:
   - "**/*.sh"
   - "**/*.bat"
   - "**/*.md"
+  - "**/*Test.java"
+  - "**/*IT.java"
