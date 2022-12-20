@@ -637,18 +637,24 @@ public class Console {
   }
 
   private void executeHelp() {
-    outputLine("HELP");
-    outputLine("begin                               -> begins a new transaction");
-    outputLine("check database                      -> check database integrity");
-    outputLine("close                               -> closes the database");
-    outputLine("create database <path>|remote:<url> -> creates a new database");
-    outputLine("commit                              -> commits current transaction");
-    outputLine("connect <path>|remote:<url>         -> connects to a database stored on <path>");
-    outputLine("help|?                              -> ask for this help");
-    outputLine("info types                          -> print available types");
-    outputLine("info transaction                    -> print current transaction");
-    outputLine("rollback                            -> rollbacks current transaction");
-    outputLine("quit or exit                        -> exits from the console");
+    outputLine("HELP:");
+    outputLine("begin                                             -> begins a new transaction");
+    outputLine("check database                                    -> check database integrity");
+    outputLine("close |<path>|remote:<url> <user> <pw>            -> closes the database");
+    outputLine("commit                                            -> commits current transaction");
+    outputLine("connect <path>|remote:<url> <user> <pw>           -> connects to a database");
+    outputLine("create database <path>|remote:<url> <user> <pw>   -> creates a new database");
+    outputLine("create user <user> identified by <pw> [grant connect to <db>*] -> creates a user");
+    outputLine("drop database <path>|remote:<url> <user> <pw>     -> deletes a database");
+    outputLine("drop user <user>                                  -> deletes a user");
+    outputLine("help|?                                            -> ask for this help");
+    outputLine("info types                                        -> prints available types");
+    outputLine("info transaction                                  -> prints current transaction");
+    outputLine("load <path>                                       -> runs local script");
+    outputLine("rollback                                          -> rolls back current transaction");
+    outputLine("set language = sql|sqlscript|cypher|gremlin|mongo -> sets console query language");
+    outputLine("-- <comment>                                      -> comment (no operation)");
+    outputLine("quit|exit                                         -> exits from the console");
   }
 
   private void checkDatabaseIsOpen() {
