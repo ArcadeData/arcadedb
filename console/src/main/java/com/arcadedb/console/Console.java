@@ -174,8 +174,11 @@ public class Console {
 
   private boolean execute(String line) throws IOException {
     try {
+
+      line = line.trim();
+
       if (line != null && !line.isEmpty()) {
-        line = line.trim();
+
         final String lineLowerCase = line.toLowerCase();
 
         if (lineLowerCase.startsWith("begin"))
