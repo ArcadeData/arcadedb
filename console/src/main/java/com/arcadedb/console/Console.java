@@ -212,6 +212,8 @@ public class Console {
           executeRollback();
         else if (lineLowerCase.startsWith("set"))
           executeSet(line.substring("set".length()).trim());
+        else if (lineLowerCase.startsWith("--"))
+          return true;
         else {
           executeSQL(line);
         }
