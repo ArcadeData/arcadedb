@@ -55,7 +55,7 @@ Now open your browser on http://localhost:2480 and play with [ArcadeDB Studio](h
 Join our growing community around the world, for ideas, discussions and help regarding ArcadeDB.
 
 - View our official [Blog](https://blog.arcadedb.com/)
-- Chat live with us on [Discord](https://discord.com/channels/883057780553052180/883057780553052184)
+- Chat live with us on [Discord](https://discord.gg/w2Npx2B7hZ)
 - Follow us on [Twitter](https://twitter.com/arcade_db)
 - Connect with us on [LinkedIn](https://www.linkedin.com/products/arcadedb)
 - Questions tagged #arcadedb on [Stack Overflow](https://stackoverflow.com/questions/tagged/arcadedb)
