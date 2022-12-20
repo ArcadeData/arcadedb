@@ -152,6 +152,27 @@ public class ConsoleTest {
     Assertions.assertTrue(buffer.toString().contains("Elon"));
   }
 
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/691
+   */
+  @Test
+  public void testNotStringProperties() throws IOException {
+    Assertions.assertTrue(console.parse("connect " + DB_NAME, false));
+    Assertions.assertTrue(console.parse("CREATE VERTEX TYPE v", false));
+    Assertions.assertTrue(console.parse("CREATE PROPERTY v.s STRING", false));
+    Assertions.assertTrue(console.parse("CREATE PROPERTY v.i INTEGER", false));
+    Assertions.assertTrue(console.parse("CREATE PROPERTY v.b BOOLEAN", false));
+    Assertions.assertTrue(console.parse("CREATE PROPERTY v.sh SHORT", false));
+    Assertions.assertTrue(console.parse("CREATE PROPERTY v.d DOUBLE", false));
+    Assertions.assertTrue(console.parse("CREATE PROPERTY v.da DATETIME", false));
+
+
+    final StringBuilder buffer = new StringBuilder();
+    console.setOutput(output -> buffer.append(output));
+    Assertions.assertTrue(console.parse("CREATE VERTEX v SET s=\"abc\", i=1, b=true, sh=2, d=3.5, da=\"2022-12-20 18:00\"", false));
+    Assertions.assertTrue(buffer.toString().contains("true"));
+  }
+
   @Test
   public void testUserMgmtLocalError() throws IOException {
     Assertions.assertTrue(console.parse("connect " + DB_NAME, false));
