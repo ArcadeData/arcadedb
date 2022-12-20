@@ -127,7 +127,8 @@ public class Console {
   public static void main(String[] args) throws IOException {
     if (args.length > 0) {
       final Console console = new Console(false);
-      console.parse(args[0], false);
+      console.parse(args[0], true);
+      console.parse("exit",true);
     } else
       new Console(true);
   }
