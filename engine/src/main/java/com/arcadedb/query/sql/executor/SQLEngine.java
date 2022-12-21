@@ -94,7 +94,11 @@ public class SQLEngine {
   }
 
   public static Statement parse(final String query, final DatabaseInternal database) {
-    return database.getStatementCache().get(query);
+    try {
+      return database.getStatementCache().get(query);
+    } catch (Error e) {
+      throw new CommandSQLParsingException(e);
+    }
   }
 
   public static List<Statement> parseScript(final String script, final DatabaseInternal database) {
