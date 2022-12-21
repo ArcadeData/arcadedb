@@ -33,7 +33,8 @@ public class PostgresWTest extends BaseGraphServerTest {
   @Override
   public void setTestConfiguration() {
     super.setTestConfiguration();
-    GlobalConfiguration.SERVER_PLUGINS.setValue("Postgres:com.arcadedb.postgres.PostgresProtocolPlugin,GremlinServer:com.arcadedb.server.gremlin.GremlinServerPlugin");
+    GlobalConfiguration.SERVER_PLUGINS.setValue(
+        "Postgres:com.arcadedb.postgres.PostgresProtocolPlugin,GremlinServer:com.arcadedb.server.gremlin.GremlinServerPlugin");
   }
 
   @AfterEach
@@ -51,6 +52,20 @@ public class PostgresWTest extends BaseGraphServerTest {
           st.executeQuery("SELECT * FROM V");
           Assertions.fail("The query should go in error");
         } catch (PSQLException e) {
+        }
+      }
+    }
+  }
+
+  @Test
+  public void testParsingErrorMgmt() throws Exception {
+    try (final Connection conn = getConnection()) {
+      try (Statement st = conn.createStatement()) {
+        try {
+          st.executeQuery("SELECT 'abc \\u30 def';");
+          Assertions.fail("The query should go in error");
+        } catch (PSQLException e) {
+          Assertions.assertTrue(e.toString().contains("Syntax error"));
         }
       }
     }

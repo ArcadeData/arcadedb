@@ -115,15 +115,17 @@ public class StatementCache {
       throwParsingException(e, statement);
     } catch (TokenMgrError e2) {
       throwParsingException(e2, statement);
+    } catch (Throwable e3) {
+      throwParsingException(e3, statement);
     }
     return null;
   }
 
-  protected static void throwParsingException(ParseException e, String statement) {
+  protected static void throwParsingException(final Throwable e, final String statement) {
     throw new CommandSQLParsingException(statement, e);
   }
 
-  protected static void throwParsingException(TokenMgrError e, String statement) {
+  protected static void throwParsingException(final TokenMgrError e, final String statement) {
     throw new CommandSQLParsingException(statement, e);
   }
 
