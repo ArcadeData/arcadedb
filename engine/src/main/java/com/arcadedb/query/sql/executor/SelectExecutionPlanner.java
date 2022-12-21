@@ -135,20 +135,22 @@ public class SelectExecutionPlanner {
 
     handleGlobalLet(result, info, ctx, enableProfiling);
 
-    calculateShardingStrategy(info, ctx);
+    info.buckets = calculateTargetBuckets(info, ctx);
+
+    info.fetchExecutionPlan = new SelectExecutionPlan(ctx);
 
     handleFetchFromTarger(result, info, ctx, enableProfiling);
 
     if (info.globalLetPresent)
       // do the raw fetch remotely, then do the rest on the coordinator
-      buildDistributedExecutionPlan(result, info, ctx, enableProfiling);
+      buildExecutionPlan(result, info, ctx, enableProfiling);
 
     handleLet(result, info, ctx, enableProfiling);
 
     handleWhere(result, info, ctx, enableProfiling);
 
     // TODO optimization: in most cases the projections can be calculated on remote nodes
-    buildDistributedExecutionPlan(result, info, ctx, enableProfiling);
+    buildExecutionPlan(result, info, ctx, enableProfiling);
 
     handleProjectionsBlock(result, info, ctx, enableProfiling);
 
@@ -198,251 +200,16 @@ public class SelectExecutionPlanner {
     }
   }
 
-  private void buildDistributedExecutionPlan(SelectExecutionPlan result, QueryPlanningInfo info, CommandContext ctx, boolean enableProfiling) {
-    if (info.distributedFetchExecutionPlans == null) {
+  private void buildExecutionPlan(SelectExecutionPlan result, QueryPlanningInfo info, CommandContext ctx, boolean enableProfiling) {
+    if (info.fetchExecutionPlan == null)
       return;
+
+    //everything is executed on local server
+    for (ExecutionStep step : info.fetchExecutionPlan.getSteps()) {
+      result.chain((ExecutionStepInternal) step);
+      info.fetchExecutionPlan = null;
+      info.planCreated = true;
     }
-//    String currentNode =  ctx.getDatabase().getLocalNodeName();
-    final String currentNode = LOCAL_NODE_NAME;
-    if (info.distributedFetchExecutionPlans.size() == 1) {
-      if (info.distributedFetchExecutionPlans.get(currentNode) != null) {
-        //everything is executed on local server
-        SelectExecutionPlan localSteps = info.distributedFetchExecutionPlans.get(currentNode);
-        for (ExecutionStep step : localSteps.getSteps()) {
-          result.chain((ExecutionStepInternal) step);
-        }
-      } else {
-        //everything is executed on a single remote node
-        final String node = info.distributedFetchExecutionPlans.keySet().iterator().next();
-        final SelectExecutionPlan subPlan = info.distributedFetchExecutionPlans.get(node);
-        final DistributedExecutionStep step = new DistributedExecutionStep(subPlan, node, ctx, enableProfiling);
-        result.chain(step);
-      }
-      info.distributedFetchExecutionPlans = null;
-    } else {
-      //sharded fetching
-      // TODO
-    }
-    info.distributedPlanCreated = true;
-  }
-
-  /**
-   * based on the cluster/server map and the query target, this method tries to find an optimal strategy to execute the query on the
-   * bucket.
-   *
-   * @param info
-   * @param ctx
-   */
-  private void calculateShardingStrategy(final QueryPlanningInfo info, final CommandContext ctx) {
-    info.distributedFetchExecutionPlans = new LinkedHashMap<>();
-
-    //TODO remove all this
-//    Database db = ctx.getDatabase();
-//    Map<String, Set<String>> clusterMap = db.getActiveClusterMap();
-    final Map<String, Set<String>> clusterMap = new HashMap<>();
-    clusterMap.put(LOCAL_NODE_NAME, new HashSet<>());
-    clusterMap.get(LOCAL_NODE_NAME).add("*");
-
-    final Set<String> queryClusters = calculateTargetClusters(info, ctx);
-    if (queryClusters == null || queryClusters.isEmpty()) {//no target
-      String localNode = LOCAL_NODE_NAME;
-      info.serverToClusters = new LinkedHashMap<>();
-      info.serverToClusters.put(localNode, clusterMap.get(localNode));
-      info.distributedFetchExecutionPlans.put(localNode, new SelectExecutionPlan(ctx));
-      return;
-    }
-
-//    Set<String> serversWithAllTheClusters = getServersThatHasAllClusters(clusterMap, queryClusters);
-//    if (serversWithAllTheClusters.isEmpty()) {
-    // sharded query
-    final Map<String, Set<String>> minimalSetOfNodes = getMinimalSetOfNodesForShardedQuery(LOCAL_NODE_NAME, clusterMap, queryClusters);
-    if (minimalSetOfNodes == null) {
-      throw new CommandExecutionException("Cannot execute sharded query");
-    }
-    info.serverToClusters = minimalSetOfNodes;
-    for (String node : info.serverToClusters.keySet())
-      info.distributedFetchExecutionPlans.put(node, new SelectExecutionPlan(ctx));
-
-//    else {
-//      // all on a node
-//      String targetNode = serversWithAllTheClusters.contains(db.getLocalNodeName()) ?
-//          db.getLocalNodeName() :
-//          serversWithAllTheClusters.iterator().next();
-//      info.serverToClusters = new HashMap<>();
-//      info.serverToClusters.put(targetNode, queryClusters);
-//    }
-  }
-
-  /**
-   * given a bucket map and a set of clusters involved in a query, tries to calculate the minimum number of nodes that will have to
-   * be involved in the query execution, with clusters involved for each node.
-   *
-   * @param clusterMap
-   * @param queryClusters
-   *
-   * @return a map that has node names as a key and clusters (data files) for each node as a value
-   */
-  private Map<String, Set<String>> getMinimalSetOfNodesForShardedQuery(final String localNode, final Map<String, Set<String>> clusterMap,
-      final Set<String> queryClusters) {
-    final HashMap<String, Set<String>> result = new HashMap<>();
-    result.put(LOCAL_NODE_NAME, queryClusters);
-    return result;
-
-//    //approximate algorithm, the problem is NP-complete
-//    Map<String, Set<String>> result = new LinkedHashMap<>();
-//    Set<String> uncovered = new HashSet<>();
-//    uncovered.addAll(queryClusters);
-//
-//    //try local node first
-//    Set<String> nextNodeClusters = new HashSet<>();
-//    Set<String> clustersForNode = clusterMap.get(localNode);
-//    if (clustersForNode != null) {
-//      nextNodeClusters.addAll(clustersForNode);
-//    }
-//    nextNodeClusters.retainAll(uncovered);
-//    if (nextNodeClusters.size() > 0) {
-//      result.put(localNode, nextNodeClusters);
-//      uncovered.removeAll(nextNodeClusters);
-//    }
-//
-//    while (uncovered.size() > 0) {
-//      String nextNode = findItemThatCoversMore(uncovered, clusterMap);
-//      nextNodeClusters = new HashSet<>();
-//      nextNodeClusters.addAll(clusterMap.get(nextNode));
-//      nextNodeClusters.retainAll(uncovered);
-//      if (nextNodeClusters.size() == 0) {
-//        throw new PCommandExecutionException(
-//            "Cannot execute a sharded query: clusters [" + uncovered.stream().collect(Collectors.joining(", "))
-//                + "] are not present on any node" + "\n [" + clusterMap.entrySet().stream()
-//                .map(x -> "" + x.getKey() + ":(" + x.getValue().stream().collect(Collectors.joining(",")) + ")")
-//                .collect(Collectors.joining(", ")) + "]");
-//      }
-//      result.put(nextNode, nextNodeClusters);
-//      uncovered.removeAll(nextNodeClusters);
-//    }
-//    return result;
-  }
-
-  private String findItemThatCoversMore(Set<String> uncovered, Map<String, Set<String>> clusterMap) {
-    String lastFound = null;
-    int lastSize = -1;
-    for (Map.Entry<String, Set<String>> nodeConfig : clusterMap.entrySet()) {
-      Set<String> current = new HashSet<>(nodeConfig.getValue());
-      current.retainAll(uncovered);
-      int thisSize = current.size();
-      if (lastFound == null || thisSize > lastSize) {
-        lastFound = nodeConfig.getKey();
-        lastSize = thisSize;
-      }
-    }
-    return lastFound;
-
-  }
-
-//  /**
-//   * @param clusterMap    the bucket map for current sharding configuration
-//   * @param queryClusters the clusters that are target of the query
-//   *
-//   * @return
-//   */
-//  private Set<String> getServersThatHasAllClusters(Map<String, Set<String>> clusterMap, Set<String> queryClusters) {
-//    Set<String> remainingServers = clusterMap.keySet();
-//    for (String bucket : queryClusters) {
-//      for (Map.Entry<String, Set<String>> serverConfig : clusterMap.entrySet()) {
-//        if (!serverConfig.getValue().contains(bucket)) {
-//          remainingServers.remove(serverConfig.getKey());
-//        }
-//      }
-//    }
-//    return remainingServers;
-//  }
-
-  /**
-   * tries to calculate which clusters will be impacted by this query
-   *
-   * @param info
-   * @param ctx
-   *
-   * @return a set of bucket names this query will fetch from
-   */
-  private Set<String> calculateTargetClusters(QueryPlanningInfo info, CommandContext ctx) {
-    if (info.target == null) {
-      return Collections.EMPTY_SET;
-    }
-
-    Set<String> result = new HashSet<>();
-    Database db = ctx.getDatabase();
-    FromItem item = info.target.getItem();
-    if (item.getRids() != null && item.getRids().size() > 0) {
-      if (item.getRids().size() == 1) {
-        PInteger bucket = item.getRids().get(0).getBucket();
-        result.add(db.getSchema().getBucketById(bucket.getValue().intValue()).getName());
-      } else {
-        for (Rid rid : item.getRids()) {
-          PInteger bucket = rid.getBucket();
-          result.add(db.getSchema().getBucketById(bucket.getValue().intValue()).getName());
-        }
-      }
-      return result;
-    } else if (item.getInputParams() != null && item.getInputParams().size() > 0) {
-      return null;
-    } else if (item.getBucket() != null) {
-      String name = item.getBucket().getBucketName();
-      if (name == null) {
-        name = db.getSchema().getBucketById(item.getBucket().getBucketNumber()).getName();
-      }
-      if (name != null) {
-        result.add(name);
-        return result;
-      } else {
-        return null;
-      }
-    } else if (item.getBucketList() != null) {
-      for (Bucket bucket : item.getBucketList().toListOfClusters()) {
-        String name = bucket.getBucketName();
-        if (name == null) {
-          name = db.getSchema().getBucketById(bucket.getBucketNumber()).getName();
-        }
-        if (name != null) {
-          result.add(name);
-        }
-      }
-      return result;
-    } else if (item.getIndex() != null) {
-      String indexName = item.getIndex().getIndexName();
-      Index idx = db.getSchema().getIndexByName(indexName);
-      if (idx == null)
-        throw new CommandExecutionException("Index '" + indexName + "' does not exist");
-
-      if (idx instanceof TypeIndex) {
-        for (Index subIdx : ((TypeIndex) idx).getSubIndexes())
-          result.add(db.getSchema().getBucketById(subIdx.getAssociatedBucketId()).getName());
-      } else
-        result.add(db.getSchema().getBucketById(idx.getAssociatedBucketId()).getName());
-
-      if (result.isEmpty()) {
-        return null;
-      }
-      return result;
-    } else if (item.getInputParam() != null) {
-      return null;
-    } else if (item.getIdentifier() != null) {
-      String className = item.getIdentifier().getStringValue();
-      DocumentType typez = db.getSchema().getType(className);
-      if (typez == null) {
-        return null;
-      }
-      int[] bucketIds = typez.getBuckets(true).stream().mapToInt(x -> x.getId()).toArray();
-      for (int bucketId : bucketIds) {
-        String bucketName = db.getSchema().getBucketById(bucketId).getName();
-        if (bucketName != null) {
-          result.add(bucketName);
-        }
-      }
-      return result;
-    }
-
-    return null;
   }
 
   /**
@@ -988,73 +755,67 @@ public class SelectExecutionPlanner {
 
   private void handleFetchFromTarger(final SelectExecutionPlan result, final QueryPlanningInfo info, final CommandContext ctx, final boolean profilingEnabled) {
     final FromItem target = info.target == null ? null : info.target.getItem();
-    for (Map.Entry<String, SelectExecutionPlan> shardedPlan : info.distributedFetchExecutionPlans.entrySet()) {
-      if (target == null) {
-        handleNoTarget(shardedPlan.getValue(), ctx, profilingEnabled);
-      } else if (target.getIdentifier() != null) {
-        Set<String> filterClusters = info.serverToClusters.get(shardedPlan.getKey());
 
-        AndBlock ridRangeConditions = extractRidRanges(info.flattenedWhereClause, ctx);
-        if (ridRangeConditions != null && !ridRangeConditions.isEmpty()) {
-          info.ridRangeConditions = ridRangeConditions;
-          filterClusters = filterClusters.stream().filter(x -> clusterMatchesRidRange(x, ridRangeConditions, ctx.getDatabase(), ctx))
-              .collect(Collectors.toSet());
-        }
+    if (target == null) {
+      handleNoTarget(info.fetchExecutionPlan, ctx, profilingEnabled);
+    } else if (target.getIdentifier() != null) {
+      Set<String> filterClusters = info.buckets;
 
-        handleClassAsTarget(shardedPlan.getValue(), filterClusters, info, ctx, profilingEnabled);
-      } else if (target.getBucket() != null) {
-        handleClustersAsTarget(shardedPlan.getValue(), info, Collections.singletonList(target.getBucket()), ctx, profilingEnabled);
-      } else if (target.getBucketList() != null) {
-        List<Bucket> allClusters = target.getBucketList().toListOfClusters();
-        List<Bucket> clustersForShard = new ArrayList<>();
-        for (Bucket bucket : allClusters) {
-          String name = bucket.getBucketName();
-          if (name == null) {
-            name = ctx.getDatabase().getSchema().getBucketById(bucket.getBucketNumber()).getName();
-          }
-          if (name != null && info.serverToClusters.get(shardedPlan.getKey()).contains(name)) {
-            clustersForShard.add(bucket);
-          }
-        }
-        handleClustersAsTarget(shardedPlan.getValue(), info, clustersForShard, ctx, profilingEnabled);
-      } else if (target.getStatement() != null) {
-        handleSubqueryAsTarget(shardedPlan.getValue(), target.getStatement(), ctx, profilingEnabled);
-      } else if (target.getFunctionCall() != null) {
-        //        handleFunctionCallAsTarget(result, target.getFunctionCall(), ctx);//TODO
-        throw new CommandExecutionException("function call as target is not supported yet");
-      } else if (target.getInputParam() != null) {
-        handleInputParamAsTarget(shardedPlan.getValue(), info.serverToClusters.get(shardedPlan.getKey()), info, target.getInputParam(), ctx, profilingEnabled);
-      } else if (target.getInputParams() != null && target.getInputParams().size() > 0) {
-        List<InternalExecutionPlan> plans = new ArrayList<>();
-        for (InputParameter param : target.getInputParams()) {
-          SelectExecutionPlan subPlan = new SelectExecutionPlan(ctx);
-          handleInputParamAsTarget(subPlan, info.serverToClusters.get(shardedPlan.getKey()), info, param, ctx, profilingEnabled);
-          plans.add(subPlan);
-        }
-        shardedPlan.getValue().chain(new ParallelExecStep(plans, ctx, profilingEnabled));
-      } else if (target.getIndex() != null) {
-        handleIndexAsTarget(shardedPlan.getValue(), info, target.getIndex(), null, ctx, profilingEnabled);
-        if (info.serverToClusters.size() > 1) {
-          shardedPlan.getValue().chain(new FilterByClustersStep(info.serverToClusters.get(shardedPlan.getKey()), ctx, profilingEnabled));
-        }
-      } else if (target.getSchema() != null) {
-        handleSchemaAsTarget(shardedPlan.getValue(), target.getSchema(), ctx, profilingEnabled);
-      } else if (target.getRids() != null && target.getRids().size() > 0) {
-        Set<String> filterClusters = info.serverToClusters.get(shardedPlan.getKey());
-        List<Rid> rids = new ArrayList<>();
-        for (Rid rid : target.getRids()) {
-          if (filterClusters == null || isFromClusters(rid, filterClusters, ctx.getDatabase())) {
-            rids.add(rid);
-          }
-        }
-        if (rids.size() > 0) {
-          handleRidsAsTarget(shardedPlan.getValue(), rids, ctx, profilingEnabled);
-        } else {
-          result.chain(new EmptyStep(ctx, profilingEnabled));//nothing to return
-        }
-      } else {
-        throw new UnsupportedOperationException();
+      AndBlock ridRangeConditions = extractRidRanges(info.flattenedWhereClause, ctx);
+      if (ridRangeConditions != null && !ridRangeConditions.isEmpty()) {
+        info.ridRangeConditions = ridRangeConditions;
+        filterClusters = filterClusters.stream().filter(x -> clusterMatchesRidRange(x, ridRangeConditions, ctx.getDatabase(), ctx)).collect(Collectors.toSet());
       }
+      handleClassAsTarget(info.fetchExecutionPlan, filterClusters, info, ctx, profilingEnabled);
+    } else if (target.getBucket() != null) {
+      handleClustersAsTarget(info.fetchExecutionPlan, info, Collections.singletonList(target.getBucket()), ctx, profilingEnabled);
+    } else if (target.getBucketList() != null) {
+      List<Bucket> allClusters = target.getBucketList().toListOfClusters();
+      List<Bucket> clustersForShard = new ArrayList<>();
+      for (Bucket bucket : allClusters) {
+        String name = bucket.getBucketName();
+        if (name == null)
+          name = ctx.getDatabase().getSchema().getBucketById(bucket.getBucketNumber()).getName();
+
+        if (name != null && info.buckets.contains(name))
+          clustersForShard.add(bucket);
+      }
+      handleClustersAsTarget(info.fetchExecutionPlan, info, clustersForShard, ctx, profilingEnabled);
+    } else if (target.getStatement() != null) {
+      handleSubqueryAsTarget(info.fetchExecutionPlan, target.getStatement(), ctx, profilingEnabled);
+    } else if (target.getFunctionCall() != null) {
+      //        handleFunctionCallAsTarget(result, target.getFunctionCall(), ctx);//TODO
+      throw new CommandExecutionException("function call as target is not supported yet");
+    } else if (target.getInputParam() != null) {
+      handleInputParamAsTarget(info.fetchExecutionPlan, info.buckets, info, target.getInputParam(), ctx, profilingEnabled);
+    } else if (target.getInputParams() != null && target.getInputParams().size() > 0) {
+      List<InternalExecutionPlan> plans = new ArrayList<>();
+      for (InputParameter param : target.getInputParams()) {
+        SelectExecutionPlan subPlan = new SelectExecutionPlan(ctx);
+        handleInputParamAsTarget(subPlan, info.buckets, info, param, ctx, profilingEnabled);
+        plans.add(subPlan);
+      }
+      info.fetchExecutionPlan.chain(new ParallelExecStep(plans, ctx, profilingEnabled));
+    } else if (target.getIndex() != null) {
+      if (info.buckets.size() > 1)
+        handleIndexAsTarget(info.fetchExecutionPlan, info, target.getIndex(), null, ctx, profilingEnabled);
+    } else if (target.getSchema() != null) {
+      handleSchemaAsTarget(info.fetchExecutionPlan, target.getSchema(), ctx, profilingEnabled);
+    } else if (target.getRids() != null && target.getRids().size() > 0) {
+      Set<String> filterClusters = info.buckets;
+      List<Rid> rids = new ArrayList<>();
+      for (Rid rid : target.getRids()) {
+        if (filterClusters == null || isFromClusters(rid, filterClusters, ctx.getDatabase())) {
+          rids.add(rid);
+        }
+      }
+      if (rids.size() > 0) {
+        handleRidsAsTarget(info.fetchExecutionPlan, rids, ctx, profilingEnabled);
+      } else {
+        result.chain(new EmptyStep(ctx, profilingEnabled));//nothing to return
+      }
+    } else {
+      throw new UnsupportedOperationException();
     }
   }
 
@@ -1355,7 +1116,7 @@ public class SelectExecutionPlanner {
   private void handleLet(final SelectExecutionPlan plan, final QueryPlanningInfo info, final CommandContext ctx, final boolean profilingEnabled) {
     if (info.perRecordLetClause != null) {
       final List<LetItem> items = info.perRecordLetClause.getItems();
-      if (info.distributedPlanCreated) {
+      if (info.planCreated) {
         for (LetItem item : items) {
           if (item.getExpression() != null) {
             plan.chain(new LetExpressionStep(item.getVarName(), item.getExpression(), ctx, profilingEnabled));
@@ -1364,23 +1125,22 @@ public class SelectExecutionPlanner {
           }
         }
       } else {
-        for (SelectExecutionPlan shardedPlan : info.distributedFetchExecutionPlans.values()) {
-          boolean containsSubQuery = false;
-          for (LetItem item : items) {
-            if (item.getExpression() != null) {
-              shardedPlan.chain(new LetExpressionStep(item.getVarName().copy(), item.getExpression().copy(), ctx, profilingEnabled));
-            } else {
-              shardedPlan.chain(new LetQueryStep(item.getVarName().copy(), item.getQuery().copy(), ctx, profilingEnabled));
-              containsSubQuery = true;
-            }
-          }
 
-          if (containsSubQuery) {
-            // RE-EXECUTE THE EXPRESSION IF THERE IS ANY SUB-QUERY. THIS IS A MUST BECAUSE THERE IS NO CONCEPT OF DEPENDENCY BETWEEN LETS
-            for (LetItem item : items) {
-              if (item.getExpression() != null)
-                shardedPlan.chain(new LetExpressionStep(item.getVarName().copy(), item.getExpression().copy(), ctx, profilingEnabled));
-            }
+        boolean containsSubQuery = false;
+        for (LetItem item : items) {
+          if (item.getExpression() != null) {
+            info.fetchExecutionPlan.chain(new LetExpressionStep(item.getVarName().copy(), item.getExpression().copy(), ctx, profilingEnabled));
+          } else {
+            info.fetchExecutionPlan.chain(new LetQueryStep(item.getVarName().copy(), item.getQuery().copy(), ctx, profilingEnabled));
+            containsSubQuery = true;
+          }
+        }
+
+        if (containsSubQuery) {
+          // RE-EXECUTE THE EXPRESSION IF THERE IS ANY SUB-QUERY. THIS IS A MUST BECAUSE THERE IS NO CONCEPT OF DEPENDENCY BETWEEN LETS
+          for (LetItem item : items) {
+            if (item.getExpression() != null)
+              info.fetchExecutionPlan.chain(new LetExpressionStep(item.getVarName().copy(), item.getExpression().copy(), ctx, profilingEnabled));
           }
         }
       }
@@ -1389,12 +1149,10 @@ public class SelectExecutionPlanner {
 
   private void handleWhere(final SelectExecutionPlan plan, final QueryPlanningInfo info, final CommandContext ctx, final boolean profilingEnabled) {
     if (info.whereClause != null) {
-      if (info.distributedPlanCreated) {
+      if (info.planCreated) {
         plan.chain(new FilterStep(info.whereClause, ctx, profilingEnabled));
       } else {
-        for (SelectExecutionPlan shardedPlan : info.distributedFetchExecutionPlans.values()) {
-          shardedPlan.chain(new FilterStep(info.whereClause.copy(), ctx, profilingEnabled));
-        }
+        info.fetchExecutionPlan.chain(new FilterStep(info.whereClause.copy(), ctx, profilingEnabled));
       }
     }
   }
@@ -1427,7 +1185,8 @@ public class SelectExecutionPlanner {
    * @param ctx
    * @param profilingEnabled
    */
-  private void handleClassAsTarget(SelectExecutionPlan plan, Set<String> filterClusters, QueryPlanningInfo info, CommandContext ctx, boolean profilingEnabled) {
+  private void handleClassAsTarget(SelectExecutionPlan plan, final Set<String> filterClusters, QueryPlanningInfo info, CommandContext ctx,
+      boolean profilingEnabled) {
     handleClassAsTarget(plan, filterClusters, info.target, info, ctx, profilingEnabled);
   }
 
@@ -1458,9 +1217,9 @@ public class SelectExecutionPlanner {
 //    }
     FetchFromClassExecutionStep fetcher = new FetchFromClassExecutionStep(identifier.getStringValue(), filterClusters, info, ctx, orderByRidAsc,
         profilingEnabled);
-    if (orderByRidAsc != null && info.serverToClusters.size() == 1) {
+    if (orderByRidAsc != null)
       info.orderApplied = true;
-    }
+
     plan.chain(fetcher);
   }
 
@@ -1652,9 +1411,7 @@ public class SelectExecutionPlanner {
           filterClusterIds = filterClusters.stream().map(name -> ctx.getDatabase().getSchema().getBucketByName(name).getId()).mapToInt(i -> i).toArray();
         }
         plan.chain(new GetValueFromIndexEntryStep(ctx, filterClusterIds, profilingEnabled));
-        if (info.serverToClusters.size() == 1) {
-          info.orderApplied = true;
-        }
+        info.orderApplied = true;
         return true;
       }
     }
@@ -1822,7 +1579,7 @@ public class SelectExecutionPlanner {
       if (requiresMultipleIndexLookups(desc.keyCondition)) {
         result.add(new DistinctExecutionStep(ctx, profilingEnabled));
       }
-      if (orderAsc != null && info.orderBy != null && fullySorted(info.orderBy, desc.keyCondition, desc.idx) && info.serverToClusters.size() == 1) {
+      if (orderAsc != null && info.orderBy != null && fullySorted(info.orderBy, desc.keyCondition, desc.idx)) {
         info.orderApplied = true;
       }
       if (desc.remainingCondition != null && !desc.remainingCondition.isEmpty()) {
@@ -2420,7 +2177,7 @@ public class SelectExecutionPlanner {
       orderByRidAsc = true;
 //    else if (isOrderByRidDesc(info))
 //      orderByRidAsc = false;
-    if (orderByRidAsc != null && info.serverToClusters.size() == 1)
+    if (orderByRidAsc != null)
       info.orderApplied = true;
 
     if (buckets.size() == 1) {
@@ -2518,5 +2275,89 @@ public class SelectExecutionPlanner {
       return true;
     else
       return info.target.getItem().getBucketList() != null;
+  }
+
+  /**
+   * Tries to calculate which clusters will be impacted by this query
+   *
+   * @return a set of bucket names this query will fetch from
+   */
+  private Set<String> calculateTargetBuckets(final QueryPlanningInfo info, final CommandContext ctx) {
+    if (info.target == null)
+      return Collections.EMPTY_SET;
+
+    final Set<String> result = new HashSet<>();
+    final Database db = ctx.getDatabase();
+    final FromItem item = info.target.getItem();
+    if (item.getRids() != null && item.getRids().size() > 0) {
+      if (item.getRids().size() == 1) {
+        final PInteger bucket = item.getRids().get(0).getBucket();
+        result.add(db.getSchema().getBucketById(bucket.getValue().intValue()).getName());
+      } else {
+        for (Rid rid : item.getRids()) {
+          final PInteger bucket = rid.getBucket();
+          result.add(db.getSchema().getBucketById(bucket.getValue().intValue()).getName());
+        }
+      }
+      return result;
+    } else if (item.getInputParams() != null && item.getInputParams().size() > 0) {
+      return null;
+    } else if (item.getBucket() != null) {
+      String name = item.getBucket().getBucketName();
+      if (name == null) {
+        name = db.getSchema().getBucketById(item.getBucket().getBucketNumber()).getName();
+      }
+      if (name != null) {
+        result.add(name);
+        return result;
+      } else {
+        return null;
+      }
+    } else if (item.getBucketList() != null) {
+      for (Bucket bucket : item.getBucketList().toListOfClusters()) {
+        String name = bucket.getBucketName();
+        if (name == null) {
+          name = db.getSchema().getBucketById(bucket.getBucketNumber()).getName();
+        }
+        if (name != null) {
+          result.add(name);
+        }
+      }
+      return result;
+    } else if (item.getIndex() != null) {
+      final String indexName = item.getIndex().getIndexName();
+      Index idx = db.getSchema().getIndexByName(indexName);
+      if (idx == null)
+        throw new CommandExecutionException("Index '" + indexName + "' does not exist");
+
+      if (idx instanceof TypeIndex) {
+        for (Index subIdx : ((TypeIndex) idx).getSubIndexes())
+          result.add(db.getSchema().getBucketById(subIdx.getAssociatedBucketId()).getName());
+      } else
+        result.add(db.getSchema().getBucketById(idx.getAssociatedBucketId()).getName());
+
+      if (result.isEmpty()) {
+        return null;
+      }
+      return result;
+    } else if (item.getInputParam() != null) {
+      return null;
+    } else if (item.getIdentifier() != null) {
+      final String className = item.getIdentifier().getStringValue();
+      final DocumentType typez = db.getSchema().getType(className);
+      if (typez == null) {
+        return null;
+      }
+      int[] bucketIds = typez.getBuckets(true).stream().mapToInt(x -> x.getId()).toArray();
+      for (int bucketId : bucketIds) {
+        final String bucketName = db.getSchema().getBucketById(bucketId).getName();
+        if (bucketName != null) {
+          result.add(bucketName);
+        }
+      }
+      return result;
+    }
+
+    return null;
   }
 }
