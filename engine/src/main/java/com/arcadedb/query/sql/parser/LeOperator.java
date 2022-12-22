@@ -25,22 +25,21 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
 
 public class LeOperator extends SimpleNode implements BinaryCompareOperator {
-  public LeOperator(int id) {
+  public LeOperator(final int id) {
     super(id);
   }
 
-  public LeOperator(SqlParser p, int id) {
+  public LeOperator(final SqlParser p, final int id) {
     super(p, id);
   }
 
   @Override
-  public boolean execute(DatabaseInternal database, Object iLeft, Object iRight) {
-    if (iLeft == iRight) {
+  public boolean execute(final DatabaseInternal database, Object iLeft, Object iRight) {
+    if (iLeft == iRight)
       return true;
-    }
-    if (iLeft == null || iRight == null) {
+
+    if (iLeft == null || iRight == null)
       return false;
-    }
 
     if (iLeft.getClass() != iRight.getClass() && iLeft instanceof Number && iRight instanceof Number) {
       Number[] couple = Type.castComparableNumber((Number) iLeft, (Number) iRight);
@@ -76,7 +75,7 @@ public class LeOperator extends SimpleNode implements BinaryCompareOperator {
   }
 
   @Override
-  public boolean equals( final Object obj) {
+  public boolean equals(final Object obj) {
     return obj != null && obj.getClass().equals(this.getClass());
   }
 

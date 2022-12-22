@@ -41,43 +41,43 @@ public class MathExpression extends SimpleNode {
     throw new CommandExecutionException("Invalid expand expression");
   }
 
-  public boolean isDefinedFor(Result currentRecord) {
+  public boolean isDefinedFor(final Result currentRecord) {
     return true;
   }
 
-  public boolean isDefinedFor(Record currentRecord) {
+  public boolean isDefinedFor(final Record currentRecord) {
     return true;
   }
 
   public enum Operator {
     STAR(10) {
       @Override
-      public Number apply(Integer left, Integer right) {
+      public Number apply(Integer left, final Integer right) {
         return left * right;
       }
 
       @Override
-      public Number apply(Long left, Long right) {
+      public Number apply(final Long left, final Long right) {
         return left * right;
       }
 
       @Override
-      public Number apply(Float left, Float right) {
+      public Number apply(final Float left, final Float right) {
         return left * right;
       }
 
       @Override
-      public Number apply(Double left, Double right) {
+      public Number apply(Double left, final Double right) {
         return left * right;
       }
 
       @Override
-      public Number apply(BigDecimal left, BigDecimal right) {
+      public Number apply(final BigDecimal left, final BigDecimal right) {
         return left.multiply(right);
       }
 
       @Override
-      public Object apply(Object left, Object right) {
+      public Object apply(final Object left, final Object right) {
         if (left == null || right == null) {
           return null;
         }
@@ -85,7 +85,7 @@ public class MathExpression extends SimpleNode {
       }
     }, SLASH(10) {
       @Override
-      public Number apply(Integer left, Integer right) {
+      public Number apply(final Integer left, final Integer right) {
         if (left % right == 0) {
           return left / right;
         }
@@ -93,7 +93,7 @@ public class MathExpression extends SimpleNode {
       }
 
       @Override
-      public Number apply(Long left, Long right) {
+      public Number apply(final Long left, final Long right) {
         if (left % right == 0) {
           return left / right;
         }
@@ -101,22 +101,22 @@ public class MathExpression extends SimpleNode {
       }
 
       @Override
-      public Number apply(Float left, Float right) {
+      public Number apply(final Float left, final Float right) {
         return left / right;
       }
 
       @Override
-      public Number apply(Double left, Double right) {
+      public Number apply(Double left, final Double right) {
         return left / right;
       }
 
       @Override
-      public Number apply(BigDecimal left, BigDecimal right) {
+      public Number apply(final BigDecimal left, final BigDecimal right) {
         return left.divide(right, RoundingMode.HALF_UP);
       }
 
       @Override
-      public Object apply(Object left, Object right) {
+      public Object apply(final Object left, final Object right) {
         if (left == null || right == null) {
           return null;
         }
@@ -125,32 +125,32 @@ public class MathExpression extends SimpleNode {
 
     }, REM(10) {
       @Override
-      public Number apply(Integer left, Integer right) {
+      public Number apply(Integer left, final Integer right) {
         return left % right;
       }
 
       @Override
-      public Number apply(Long left, Long right) {
+      public Number apply(final Long left, final Long right) {
         return left % right;
       }
 
       @Override
-      public Number apply(Float left, Float right) {
+      public Number apply(final Float left, final Float right) {
         return left % right;
       }
 
       @Override
-      public Number apply(Double left, Double right) {
+      public Number apply(Double left, final Double right) {
         return left % right;
       }
 
       @Override
-      public Number apply(BigDecimal left, BigDecimal right) {
+      public Number apply(final BigDecimal left, final BigDecimal right) {
         return left.remainder(right);
       }
 
       @Override
-      public Object apply(Object left, Object right) {
+      public Object apply(final Object left, final Object right) {
         if (left == null || right == null) {
           return null;
         }
@@ -159,7 +159,7 @@ public class MathExpression extends SimpleNode {
 
     }, PLUS(20) {
       @Override
-      public Number apply(Integer left, Integer right) {
+      public Number apply(Integer left, final Integer right) {
         final int sum = left + right;
         if (sum < 0 && left > 0 && right > 0)
           // SPECIAL CASE: UPGRADE TO LONG
@@ -168,27 +168,27 @@ public class MathExpression extends SimpleNode {
       }
 
       @Override
-      public Number apply(Long left, Long right) {
+      public Number apply(final Long left, final Long right) {
         return left + right;
       }
 
       @Override
-      public Number apply(Float left, Float right) {
+      public Number apply(final Float left, final Float right) {
         return left + right;
       }
 
       @Override
-      public Number apply(Double left, Double right) {
+      public Number apply(Double left, final Double right) {
         return left + right;
       }
 
       @Override
-      public Number apply(BigDecimal left, BigDecimal right) {
+      public Number apply(final BigDecimal left, final BigDecimal right) {
         return left.add(right);
       }
 
       @Override
-      public Object apply(Object left, Object right) {
+      public Object apply(final Object left, final Object right) {
         if (left == null && right == null) {
           return null;
         }
@@ -202,14 +202,14 @@ public class MathExpression extends SimpleNode {
           return super.apply(left, right);
         }
         if (left instanceof Date || right instanceof Date) {
-          Number result = apply(toLong(left), toLong(right));
+          final Number result = apply(toLong(left), toLong(right));
           return new Date(result.longValue());
         }
         return String.valueOf(left) + right;
       }
     }, MINUS(20) {
       @Override
-      public Number apply(Integer left, Integer right) {
+      public Number apply(Integer left, final Integer right) {
         int result = left - right;
         if (result > 0 && left < 0 && right > 0)
           // SPECIAL CASE: UPGRADE TO LONG
@@ -219,27 +219,27 @@ public class MathExpression extends SimpleNode {
       }
 
       @Override
-      public Number apply(Long left, Long right) {
+      public Number apply(final Long left, final Long right) {
         return left - right;
       }
 
       @Override
-      public Number apply(Float left, Float right) {
+      public Number apply(final Float left, final Float right) {
         return left - right;
       }
 
       @Override
-      public Number apply(Double left, Double right) {
+      public Number apply(Double left, final Double right) {
         return left - right;
       }
 
       @Override
-      public Number apply(BigDecimal left, BigDecimal right) {
+      public Number apply(final BigDecimal left, final BigDecimal right) {
         return left.subtract(right);
       }
 
       @Override
-      public Object apply(Object left, Object right) {
+      public Object apply(final Object left, final Object right) {
         Object result = null;
         if (left == null && right == null) {
           result = null;
@@ -259,32 +259,32 @@ public class MathExpression extends SimpleNode {
 
     }, LSHIFT(30) {
       @Override
-      public Number apply(Integer left, Integer right) {
+      public Number apply(Integer left, final Integer right) {
         return left << right;
       }
 
       @Override
-      public Number apply(Long left, Long right) {
+      public Number apply(final Long left, final Long right) {
         return left << right;
       }
 
       @Override
-      public Number apply(Float left, Float right) {
+      public Number apply(final Float left, final Float right) {
         return null;
       }
 
       @Override
-      public Number apply(Double left, Double right) {
+      public Number apply(Double left, final Double right) {
         return null;
       }
 
       @Override
-      public Number apply(BigDecimal left, BigDecimal right) {
+      public Number apply(final BigDecimal left, final BigDecimal right) {
         return null;
       }
 
       @Override
-      public Object apply(Object left, Object right) {
+      public Object apply(final Object left, final Object right) {
         if (left == null || right == null) {
           return null;
         }
@@ -292,32 +292,32 @@ public class MathExpression extends SimpleNode {
       }
     }, RSHIFT(30) {
       @Override
-      public Number apply(Integer left, Integer right) {
+      public Number apply(Integer left, final Integer right) {
         return left >> right;
       }
 
       @Override
-      public Number apply(Long left, Long right) {
+      public Number apply(final Long left, final Long right) {
         return left >> right;
       }
 
       @Override
-      public Number apply(Float left, Float right) {
+      public Number apply(final Float left, final Float right) {
         return null;
       }
 
       @Override
-      public Number apply(Double left, Double right) {
+      public Number apply(Double left, final Double right) {
         return null;
       }
 
       @Override
-      public Number apply(BigDecimal left, BigDecimal right) {
+      public Number apply(final BigDecimal left, final BigDecimal right) {
         return null;
       }
 
       @Override
-      public Object apply(Object left, Object right) {
+      public Object apply(final Object left, final Object right) {
         if (left == null || right == null) {
           return null;
         }
@@ -326,32 +326,32 @@ public class MathExpression extends SimpleNode {
 
     }, RUNSIGNEDSHIFT(30) {
       @Override
-      public Number apply(Integer left, Integer right) {
+      public Number apply(Integer left, final Integer right) {
         return left >>> right;
       }
 
       @Override
-      public Number apply(Long left, Long right) {
+      public Number apply(final Long left, final Long right) {
         return left >>> right;
       }
 
       @Override
-      public Number apply(Float left, Float right) {
+      public Number apply(final Float left, final Float right) {
         return null;
       }
 
       @Override
-      public Number apply(Double left, Double right) {
+      public Number apply(Double left, final Double right) {
         return null;
       }
 
       @Override
-      public Number apply(BigDecimal left, BigDecimal right) {
+      public Number apply(final BigDecimal left, final BigDecimal right) {
         return null;
       }
 
       @Override
-      public Object apply(Object left, Object right) {
+      public Object apply(final Object left, final Object right) {
         if (left == null || right == null) {
           return null;
         }
@@ -360,31 +360,31 @@ public class MathExpression extends SimpleNode {
 
     }, BIT_AND(40) {
       @Override
-      public Number apply(Integer left, Integer right) {
+      public Number apply(Integer left, final Integer right) {
         return left & right;
       }
 
       @Override
-      public Number apply(Long left, Long right) {
+      public Number apply(final Long left, final Long right) {
         return left & right;
       }
 
       @Override
-      public Number apply(Float left, Float right) {
+      public Number apply(final Float left, final Float right) {
         return null;
       }
 
       @Override
-      public Number apply(Double left, Double right) {
+      public Number apply(Double left, final Double right) {
         return null;
       }
 
       @Override
-      public Number apply(BigDecimal left, BigDecimal right) {
+      public Number apply(final BigDecimal left, final BigDecimal right) {
         return null;
       }
 
-      public Object apply(Object left, Object right) {
+      public Object apply(final Object left, final Object right) {
         if (left == null || right == null) {
           return null;
         }
@@ -392,32 +392,32 @@ public class MathExpression extends SimpleNode {
       }
     }, XOR(50) {
       @Override
-      public Number apply(Integer left, Integer right) {
+      public Number apply(Integer left, final Integer right) {
         return left ^ right;
       }
 
       @Override
-      public Number apply(Long left, Long right) {
+      public Number apply(final Long left, final Long right) {
         return left ^ right;
       }
 
       @Override
-      public Number apply(Float left, Float right) {
+      public Number apply(final Float left, final Float right) {
         return null;
       }
 
       @Override
-      public Number apply(Double left, Double right) {
+      public Number apply(Double left, final Double right) {
         return null;
       }
 
       @Override
-      public Number apply(BigDecimal left, BigDecimal right) {
+      public Number apply(final BigDecimal left, final BigDecimal right) {
         return null;
       }
 
       @Override
-      public Object apply(Object left, Object right) {
+      public Object apply(final Object left, final Object right) {
         if (left == null && right == null) {
           return null;
         }
@@ -437,31 +437,31 @@ public class MathExpression extends SimpleNode {
 
     }, BIT_OR(60) {
       @Override
-      public Number apply(Integer left, Integer right) {
+      public Number apply(Integer left, final Integer right) {
         return left | right;
       }
 
       @Override
-      public Number apply(Long left, Long right) {
+      public Number apply(final Long left, final Long right) {
         return left | right;
       }
 
       @Override
-      public Number apply(Float left, Float right) {
+      public Number apply(final Float left, final Float right) {
         return null;
       }
 
       @Override
-      public Number apply(Double left, Double right) {
+      public Number apply(Double left, final Double right) {
         return null;
       }
 
       @Override
-      public Number apply(BigDecimal left, BigDecimal right) {
+      public Number apply(final BigDecimal left, final BigDecimal right) {
         return null;
       }
 
-      public Object apply(Object left, Object right) {
+      public Object apply(final Object left, final Object right) {
         if (left == null && right == null) {
           return null;
         }
@@ -470,36 +470,36 @@ public class MathExpression extends SimpleNode {
 
     }, NULL_COALESCING(25) {
       @Override
-      public Number apply(Integer left, Integer right) {
+      public Number apply(Integer left, final Integer right) {
         return left != null ? left : right;
       }
 
       @Override
-      public Number apply(Long left, Long right) {
+      public Number apply(final Long left, final Long right) {
         return left != null ? left : right;
       }
 
       @Override
-      public Number apply(Float left, Float right) {
+      public Number apply(final Float left, final Float right) {
         return left != null ? left : right;
       }
 
       @Override
-      public Number apply(Double left, Double right) {
+      public Number apply(Double left, final Double right) {
         return left != null ? left : right;
       }
 
       @Override
-      public Number apply(BigDecimal left, BigDecimal right) {
+      public Number apply(final BigDecimal left, final BigDecimal right) {
         return left != null ? left : right;
       }
 
-      public Object apply(Object left, Object right) {
+      public Object apply(final Object left, final Object right) {
         return left != null ? left : right;
       }
     };
 
-    private static Long toLong(Object left) {
+    private static Long toLong(final Object left) {
       if (left instanceof Number) {
         return ((Number) left).longValue();
       }
@@ -515,17 +515,17 @@ public class MathExpression extends SimpleNode {
       this.priority = priority;
     }
 
-    public abstract Number apply(Integer left, Integer right);
+    public abstract Number apply(Integer left, final Integer right);
 
-    public abstract Number apply(Long left, Long right);
+    public abstract Number apply(final Long left, final Long right);
 
-    public abstract Number apply(Float left, Float right);
+    public abstract Number apply(final Float left, final Float right);
 
-    public abstract Number apply(Double left, Double right);
+    public abstract Number apply(Double left, final Double right);
 
-    public abstract Number apply(BigDecimal left, BigDecimal right);
+    public abstract Number apply(final BigDecimal left, final BigDecimal right);
 
-    public Object apply(Object left, Object right) {
+    public Object apply(final Object left, final Object right) {
       if (left == null) {
         return right;
       }
@@ -827,14 +827,14 @@ public class MathExpression extends SimpleNode {
     return this.childExpressions.get(0).isIndexedFunctionCall();
   }
 
-  public long estimateIndexedFunction(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {
+  public long estimateIndexedFunction(FromClause target, CommandContext context, BinaryCompareOperator operator, final Object right) {
     if (this.childExpressions.size() != 1) {
       return -1;
     }
     return this.childExpressions.get(0).estimateIndexedFunction(target, context, operator, right);
   }
 
-  public Iterable<Record> executeIndexedFunction(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {
+  public Iterable<Record> executeIndexedFunction(FromClause target, CommandContext context, BinaryCompareOperator operator, final Object right) {
     if (this.childExpressions.size() != 1) {
       return null;
     }
@@ -850,7 +850,7 @@ public class MathExpression extends SimpleNode {
    * @return true if current expression is an indexed function AND that function can also be executed without using the index, false
    * otherwise
    */
-  public boolean canExecuteIndexedFunctionWithoutIndex(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {
+  public boolean canExecuteIndexedFunctionWithoutIndex(FromClause target, CommandContext context, BinaryCompareOperator operator, final Object right) {
     if (this.childExpressions.size() != 1) {
       return false;
     }
@@ -865,7 +865,7 @@ public class MathExpression extends SimpleNode {
    *
    * @return true if current expression is an indexed function AND that function can be used on this target, false otherwise
    */
-  public boolean allowsIndexedFunctionExecutionOnTarget(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {
+  public boolean allowsIndexedFunctionExecutionOnTarget(FromClause target, CommandContext context, BinaryCompareOperator operator, final Object right) {
     if (this.childExpressions.size() != 1) {
       return false;
     }
@@ -882,7 +882,7 @@ public class MathExpression extends SimpleNode {
    *
    * @return true if current expression is an indexed function AND the function has also to be executed after the index search.
    */
-  public boolean executeIndexedFunctionAfterIndexSearch(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {
+  public boolean executeIndexedFunctionAfterIndexSearch(FromClause target, CommandContext context, BinaryCompareOperator operator, final Object right) {
     if (this.childExpressions.size() != 1) {
       return false;
     }
@@ -1007,7 +1007,7 @@ public class MathExpression extends SimpleNode {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())

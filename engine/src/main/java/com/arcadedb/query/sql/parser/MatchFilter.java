@@ -29,11 +29,11 @@ public class MatchFilter extends SimpleNode {
   // TODO transform in a map
   protected List<MatchFilterItem> items = new ArrayList<MatchFilterItem>();
 
-  public MatchFilter(int id) {
+  public MatchFilter(final int id) {
     super(id);
   }
 
-  public MatchFilter(SqlParser p, int id) {
+  public MatchFilter(final SqlParser p, final int id) {
     super(p, id);
   }
 
@@ -46,7 +46,7 @@ public class MatchFilter extends SimpleNode {
     return null;
   }
 
-  public void setAlias(String alias) {
+  public void setAlias(final String alias) {
     boolean found = false;
     for (MatchFilterItem item : items) {
       if (item.alias != null) {
@@ -56,7 +56,7 @@ public class MatchFilter extends SimpleNode {
       }
     }
     if (!found) {
-      MatchFilterItem newItem = new MatchFilterItem(-1);
+      final MatchFilterItem newItem = new MatchFilterItem(-1);
       newItem.alias = new Identifier(alias);
       items.add(newItem);
     }
@@ -71,7 +71,7 @@ public class MatchFilter extends SimpleNode {
     return null;
   }
 
-  public void setFilter(WhereClause filter) {
+  public void setFilter(final WhereClause filter) {
     boolean found = false;
     for (MatchFilterItem item : items) {
       if (item.filter != null) {
@@ -81,7 +81,7 @@ public class MatchFilter extends SimpleNode {
       }
     }
     if (!found) {
-      MatchFilterItem newItem = new MatchFilterItem(-1);
+      final MatchFilterItem newItem = new MatchFilterItem(-1);
       newItem.filter = filter;
       items.add(newItem);
     }
@@ -96,14 +96,13 @@ public class MatchFilter extends SimpleNode {
     return null;
   }
 
-  public String getTypeName(CommandContext context) {
+  public String getTypeName(final CommandContext context) {
     for (MatchFilterItem item : items) {
       if (item.typeName != null) {
         if (item.typeName.value instanceof String)
           return (String) item.typeName.value;
         else if (item.typeName.value instanceof SimpleNode) {
-          StringBuilder builder = new StringBuilder();
-
+          final StringBuilder builder = new StringBuilder();
           ((SimpleNode) item.typeName.value).toString(context == null ? null : context.getInputParameters(), builder);
           return builder.toString();
         } else if (item.typeName.isBaseIdentifier()) {
@@ -116,7 +115,7 @@ public class MatchFilter extends SimpleNode {
     return null;
   }
 
-  public String getBucketName(CommandContext context) {
+  public String getBucketName(final CommandContext context) {
     for (MatchFilterItem item : items) {
       if (item.bucketName != null) {
         return item.bucketName.getStringValue();
@@ -191,19 +190,19 @@ public class MatchFilter extends SimpleNode {
 
   @Override
   public MatchFilter copy() {
-    MatchFilter result = new MatchFilter(-1);
+    final MatchFilter result = new MatchFilter(-1);
     result.items = items == null ? null : items.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    MatchFilter that = (MatchFilter) o;
+    final MatchFilter that = (MatchFilter) o;
 
     return Objects.equals(items, that.items);
   }

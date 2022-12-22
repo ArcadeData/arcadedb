@@ -37,11 +37,11 @@ public class MatchFilterItem extends SimpleNode {
   protected Identifier         depthAlias;
   protected Identifier         pathAlias;
 
-  public MatchFilterItem(int id) {
+  public MatchFilterItem(final int id) {
     super(id);
   }
 
-  public MatchFilterItem(SqlParser p, int id) {
+  public MatchFilterItem(final SqlParser p, final int id) {
     super(p, id);
   }
 
@@ -119,7 +119,7 @@ public class MatchFilterItem extends SimpleNode {
 
   @Override
   public MatchFilterItem copy() {
-    MatchFilterItem result = new MatchFilterItem(-1);
+    final MatchFilterItem result = new MatchFilterItem(-1);
     result.typeName = typeName == null ? null : typeName.copy();
     result.typeNames = typeNames == null ? null : typeNames.copy();
     result.bucketName = bucketName == null ? null : bucketName.copy();
@@ -137,7 +137,7 @@ public class MatchFilterItem extends SimpleNode {
   }
 
   @Override
-  public boolean equals( final Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())

@@ -33,16 +33,16 @@ public class LetStatement extends SimpleExecStatement {
   protected Statement  statement;
   protected Expression expression;
 
-  public LetStatement(int id) {
+  public LetStatement(final int id) {
     super(id);
   }
 
-  public LetStatement(SqlParser p, int id) {
+  public LetStatement(final SqlParser p, final int id) {
     super(p, id);
   }
 
   @Override
-  public ResultSet executeSimple(CommandContext ctx) {
+  public ResultSet executeSimple(final CommandContext ctx) {
     Object result;
     if (expression != null) {
       result = expression.execute((Result) null, ctx);
@@ -60,7 +60,6 @@ public class LetStatement extends SimpleExecStatement {
 
     if (ctx != null) {
       if (ctx.getParent() != null) {
-
         ctx.getParent().setVariable(name.getStringValue(), result);
       } else {
         ctx.setVariable(name.getStringValue(), result);
@@ -70,7 +69,7 @@ public class LetStatement extends SimpleExecStatement {
   }
 
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("LET ");
     name.toString(params, builder);
     builder.append(" = ");
@@ -83,7 +82,7 @@ public class LetStatement extends SimpleExecStatement {
 
   @Override
   public LetStatement copy() {
-    LetStatement result = new LetStatement(-1);
+    final LetStatement result = new LetStatement(-1);
     result.name = name == null ? null : name.copy();
     result.statement = statement == null ? null : statement.copy();
     result.expression = expression == null ? null : expression.copy();
@@ -91,7 +90,7 @@ public class LetStatement extends SimpleExecStatement {
   }
 
   @Override
-  public boolean equals( final Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
