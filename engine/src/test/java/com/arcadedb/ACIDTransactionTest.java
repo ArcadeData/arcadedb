@@ -25,6 +25,7 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.engine.WALException;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
@@ -181,14 +182,14 @@ public class ACIDTransactionTest extends TestHelper {
 
     try {
       ((DatabaseInternal) db).registerCallback(DatabaseInternal.CALLBACK_EVENT.TX_AFTER_WAL_WRITE, new Callable<>() {
-          @Override
-          public Void call() throws IOException {
-              if (commits.incrementAndGet() > TOT - 1) {
-                  LogManager.instance().log(this, Level.INFO, "TEST: Causing IOException at commit %d...", commits.get());
-                  throw new IOException("Test IO Exception");
-              }
-              return null;
+        @Override
+        public Void call() throws IOException {
+          if (commits.incrementAndGet() > TOT - 1) {
+            LogManager.instance().log(this, Level.INFO, "TEST: Causing IOException at commit %d...", commits.get());
+            throw new IOException("Test IO Exception");
           }
+          return null;
+        }
       });
 
       for (; total.get() < TOT; total.incrementAndGet()) {
@@ -230,12 +231,20 @@ public class ACIDTransactionTest extends TestHelper {
     final int TOT = 100000;
 
     final AtomicInteger total = new AtomicInteger(0);
-
     final AtomicInteger errors = new AtomicInteger(0);
 
     db.async().setTransactionSync(WALFile.FLUSH_TYPE.YES_NOMETADATA);
+    Assertions.assertEquals(WALFile.FLUSH_TYPE.YES_NOMETADATA, db.async().getTransactionSync());
+
     db.async().setTransactionUseWAL(true);
+    Assertions.assertTrue(db.async().isTransactionUseWAL());
+
     db.async().setCommitEvery(1000000);
+    Assertions.assertEquals(1000000, db.async().getCommitEvery());
+
+    db.async().setBackPressure(1);
+    Assertions.assertEquals(1, db.async().getBackPressure());
+
     db.async().onError(exception -> errors.incrementAndGet());
 
     try {
@@ -347,6 +356,60 @@ public class ACIDTransactionTest extends TestHelper {
         now.add(Calendar.DAY_OF_YEAR, +1);
       }
     });
+  }
+
+  @Test
+  public void testAsyncEdges() {
+    final Database db = database;
+
+    final int TOT = 10000;
+
+    final AtomicInteger total = new AtomicInteger(0);
+    final AtomicInteger errors = new AtomicInteger(0);
+
+    db.async().setTransactionSync(WALFile.FLUSH_TYPE.YES_NOMETADATA);
+    Assertions.assertEquals(WALFile.FLUSH_TYPE.YES_NOMETADATA, db.async().getTransactionSync());
+
+    db.async().setTransactionUseWAL(true);
+    Assertions.assertTrue(db.async().isTransactionUseWAL());
+
+    db.async().setCommitEvery(TOT);
+    Assertions.assertEquals(TOT, db.async().getCommitEvery());
+
+    db.async().setBackPressure(1);
+    Assertions.assertEquals(1, db.async().getBackPressure());
+
+    db.async().onError(exception -> errors.incrementAndGet());
+
+    database.getSchema().getOrCreateVertexType("Node").getOrCreateProperty("id", Type.STRING).getOrCreateIndex(Schema.INDEX_TYPE.LSM_TREE, true);
+    database.getSchema().getOrCreateEdgeType("Arc");
+
+    for (; total.get() < TOT; total.incrementAndGet()) {
+      final MutableVertex v = db.newVertex("Node");
+      v.set("id", total.get());
+      v.set("name", "Crash");
+      v.set("surname", "Test");
+      db.async().createRecord(v, null);
+    }
+    db.async().waitCompletion();
+
+    Assertions.assertEquals(0, errors.get());
+
+    for (int i = 1; i < TOT; ++i) {
+      db.async().newEdgeByKeys("Node", "id", i, "Node", "id", i - 1, false, "Arc", true, false, null, "id", i);
+    }
+    db.async().waitCompletion();
+
+    Assertions.assertEquals(0, errors.get());
+
+    ((DatabaseInternal) db).kill();
+
+    verifyWALFilesAreStillPresent();
+
+    verifyDatabaseWasNotClosedProperly();
+
+    database.transaction(() -> Assertions.assertEquals(TOT, database.countType("Node", true)));
+    database.transaction(() -> Assertions.assertEquals(TOT - 1, database.countType("Arc", true)));
   }
 
   private void verifyDatabaseWasNotClosedProperly() {

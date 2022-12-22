@@ -196,6 +196,11 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   }
 
   @Override
+  public WALFile.FLUSH_TYPE getTransactionSync() {
+    return transactionSync;
+  }
+
+  @Override
   public void setTransactionSync(final WALFile.FLUSH_TYPE transactionSync) {
     this.transactionSync = transactionSync;
     createThreads(parallelLevel);

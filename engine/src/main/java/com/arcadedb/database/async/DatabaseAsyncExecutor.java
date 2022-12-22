@@ -356,6 +356,13 @@ public interface DatabaseAsyncExecutor {
   void setTransactionUseWAL(boolean transactionUseWAL);
 
   /**
+   * Returns the current settings for asynchronous transaction sync
+   *
+   * @return NO (no flush), YES_NOMETADATA (flush only data, no metadata), YES_FULL (full flush)
+   */
+  WALFile.FLUSH_TYPE getTransactionSync();
+
+  /**
    * Sets the WAL (Write Ahead Log - Transaction Journal) flush strategy for asynchronous operations.
    *
    * @param transactionSync The new value contained in the enum: NO (no flush), YES_NOMETADATA (flush only data, no metadata), YES_FULL (full flush)
