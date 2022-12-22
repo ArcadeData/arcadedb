@@ -97,10 +97,6 @@ public class SqlParserDefaultVisitor implements SqlParserVisitor {
     return defaultVisit(node, data);
   }
 
-  public Object visit(DeleteVertexStatement node, Object data) {
-    return defaultVisit(node, data);
-  }
-
   public Object visit(DeleteEdgeStatement node, Object data) {
     return defaultVisit(node, data);
   }

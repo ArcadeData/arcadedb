@@ -56,8 +56,6 @@ public interface SqlParserVisitor {
 
   Object visit(DeleteStatement node, Object data);
 
-  Object visit(DeleteVertexStatement node, Object data);
-
   Object visit(DeleteEdgeStatement node, Object data);
 
   Object visit(DeleteEdgeByRidStatement node, Object data);

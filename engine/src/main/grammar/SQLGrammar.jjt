@@ -945,9 +945,6 @@ Statement StatementInternal():
         result = DeleteStatement()
         |
         LOOKAHEAD(2)
-        result = DeleteVertexStatement()
-        |
-        LOOKAHEAD(2)
         result = DeleteEdgeStatement()
         |
         result = InsertStatement()
@@ -1212,26 +1209,13 @@ MatchStatement MatchStatement():
 DeleteStatement DeleteStatement():
 {}
 {
-  <DELETE>
+  <DELETE> [<VERTEX>]
   <FROM>
   jjtThis.fromClause = FromClause()
   [ <RETURN> <BEFORE> { jjtThis.returnBefore = true; } ]
   [ <WHERE> jjtThis.whereClause = WhereClause() ]
   [ jjtThis.limit = Limit() ]
   [ <UNSAFE> { jjtThis.unsafe = true; }]
-  {return jjtThis;}
-}
-
-DeleteVertexStatement DeleteVertexStatement():
-{}
-{
-  <DELETE>
-  <VERTEX>
-  [ <FROM> {jjtThis.from = true;} ]
-  jjtThis.fromClause = FromClause()
-  [ <RETURN> <BEFORE> { jjtThis.returnBefore = true; } ]
-  [ <WHERE> jjtThis.whereClause = WhereClause() ]
-  [ jjtThis.limit = Limit() ]
   {return jjtThis;}
 }
 
