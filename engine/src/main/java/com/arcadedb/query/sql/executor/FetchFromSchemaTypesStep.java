@@ -84,9 +84,9 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
                 propRes.setProperty("name", property.getName());
                 propRes.setProperty("type", property.getType());
 
-                final List<ResultInternal> customs = new ArrayList<>();
+                final Map<String, Object> customs = new HashMap<>();
                 for (Object customKey : property.getCustomKeys().stream().sorted(String::compareToIgnoreCase).toArray())
-                  customs.add(new ResultInternal().setProperty((String) customKey, property.getCustomValue((String) customKey)));
+                  customs.put((String) customKey, type.getCustomValue((String) customKey));
                 propRes.setProperty("custom", customs);
 
                 return propRes;
