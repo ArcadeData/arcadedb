@@ -168,8 +168,7 @@ public class ArcadeGraph implements Graph, Closeable {
       throw new IllegalArgumentException("Type '" + label + "' is not a vertex");
 
     final MutableVertex modifiableVertex = this.database.newVertex(label);
-    final ArcadeVertex vertex = new ArcadeVertex(this, modifiableVertex);
-    ElementHelper.attachProperties(vertex, keyValues);
+    final ArcadeVertex vertex = new ArcadeVertex(this, modifiableVertex, keyValues);
     modifiableVertex.save();
     return vertex;
   }

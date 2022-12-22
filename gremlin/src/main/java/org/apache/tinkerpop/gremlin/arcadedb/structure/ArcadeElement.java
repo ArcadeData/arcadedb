@@ -19,10 +19,14 @@
 package org.apache.tinkerpop.gremlin.arcadedb.structure;
 
 import com.arcadedb.database.Document;
+import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
+import org.apache.tinkerpop.gremlin.structure.Edge;
 import org.apache.tinkerpop.gremlin.structure.Element;
 import org.apache.tinkerpop.gremlin.structure.Graph;
 import org.apache.tinkerpop.gremlin.structure.Property;
+import org.apache.tinkerpop.gremlin.structure.Vertex;
+import org.apache.tinkerpop.gremlin.structure.VertexProperty;
 import org.apache.tinkerpop.gremlin.structure.util.ElementHelper;
 
 import java.util.*;
@@ -35,9 +39,10 @@ public abstract class ArcadeElement<T extends Document> implements Element {
   protected       T           baseElement;
   protected final ArcadeGraph graph;
 
-  protected ArcadeElement(final ArcadeGraph graph, final T baseElement) {
+  protected ArcadeElement(final ArcadeGraph graph, final T baseElement, Object... keyValues) {
     this.baseElement = baseElement;
     this.graph = graph;
+    attachProperties(keyValues);
   }
 
   @Override
@@ -105,4 +110,47 @@ public abstract class ArcadeElement<T extends Document> implements Element {
   public T getBaseElement() {
     return baseElement;
   }
+
+  /**
+   * Assign key/value pairs as properties to an {@link Vertex}.  If the value of {@link org.apache.tinkerpop.gremlin.structure.T#id} or {@link org.apache.tinkerpop.gremlin.structure.T#label} is
+   * in the set of pairs, then they are ignored. The {@link VertexProperty.Cardinality} of the key is determined from
+   * the {@link Graph.Features.VertexFeatures}.
+   *
+   * @param propertyKeyValues the key/value pairs to assign to the {@code element}
+   *
+   * @throws ClassCastException       if the value of the key is not a {@link String}
+   * @throws IllegalArgumentException if the value of {@code element} is null
+   */
+  protected void attachProperties(final Object... propertyKeyValues) {
+    if (propertyKeyValues == null || propertyKeyValues.length == 0)
+      return;
+
+    final boolean allowNullPropertyValues = this instanceof Vertex ?//
+        graph.features().vertex().supportsNullPropertyValues() : this instanceof Edge ?//
+        graph.features().edge().supportsNullPropertyValues() ://
+        graph.features().vertex().properties().supportsNullPropertyValues();
+
+    final MutableDocument mutableElement = baseElement.modify();
+
+    for (int i = 0; i < propertyKeyValues.length; i = i + 2) {
+      if (!propertyKeyValues[i].equals(org.apache.tinkerpop.gremlin.structure.T.id) && !propertyKeyValues[i].equals(
+          org.apache.tinkerpop.gremlin.structure.T.label)) {
+        final String propertyName = (String) propertyKeyValues[i];
+        final Object propertyValue = propertyKeyValues[i + 1];
+
+        ElementHelper.validateProperty(propertyName, propertyValue);
+        ArcadeProperty.validateValue(propertyValue);
+
+        if (!allowNullPropertyValues && null == propertyValue)
+          mutableElement.remove(propertyName);
+        else
+          mutableElement.set(propertyName, propertyValue);
+      }
+    }
+
+    if (mutableElement != baseElement)
+      // REPLACE WITH MUTABLE ELEMENT
+      baseElement = (T) mutableElement;
+  }
+
 }

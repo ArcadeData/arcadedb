@@ -36,8 +36,8 @@ import java.util.*;
  */
 public class ArcadeVertex extends ArcadeElement<com.arcadedb.graph.Vertex> implements Vertex {
 
-  protected ArcadeVertex(final ArcadeGraph graph, final com.arcadedb.graph.Vertex baseElement) {
-    super(graph, baseElement);
+  protected ArcadeVertex(final ArcadeGraph graph, final com.arcadedb.graph.Vertex baseElement, final Object... keyValues) {
+    super(graph, baseElement, keyValues);
   }
 
   @Override
@@ -63,8 +63,7 @@ public class ArcadeVertex extends ArcadeElement<com.arcadedb.graph.Vertex> imple
     com.arcadedb.graph.Vertex baseElement = getBaseElement();
 
     MutableEdge edge = baseElement.newEdge(label, vertex.getBaseElement(), true);
-    ArcadeEdge arcadeEdge = new ArcadeEdge(graph, edge);
-    ElementHelper.attachProperties(arcadeEdge, keyValues);
+    ArcadeEdge arcadeEdge = new ArcadeEdge(graph, edge, keyValues);
     edge.save();
     return arcadeEdge;
   }

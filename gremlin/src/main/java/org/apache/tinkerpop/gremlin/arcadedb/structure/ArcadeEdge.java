@@ -35,8 +35,8 @@ import java.util.*;
  */
 public class ArcadeEdge extends ArcadeElement<com.arcadedb.graph.Edge> implements Edge {
 
-  protected ArcadeEdge(final ArcadeGraph graph, final com.arcadedb.graph.Edge baseElement) {
-    super(graph, baseElement);
+  protected ArcadeEdge(final ArcadeGraph graph, final com.arcadedb.graph.Edge baseElement, final Object... keyValues) {
+    super(graph, baseElement, keyValues);
   }
 
   @Override
@@ -57,7 +57,8 @@ public class ArcadeEdge extends ArcadeElement<com.arcadedb.graph.Edge> implement
     case OUT:
       return new SingletonIterator(new ArcadeVertex(graph, baseElement.getOutVertex()));
     case BOTH:
-      return new ArrayIterator(new Vertex[] { new ArcadeVertex(graph, baseElement.getOutVertex()), new ArcadeVertex(graph, baseElement.getInVertex()) });
+      return new ArrayIterator(
+          new Vertex[] { new ArcadeVertex(graph, baseElement.getOutVertex()), new ArcadeVertex(graph, baseElement.getInVertex()) });
     default:
       throw new IllegalArgumentException("Direction " + direction + " not supported");
     }

@@ -25,6 +25,8 @@ import org.json.JSONObject;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
+import java.util.*;
+
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -58,6 +60,13 @@ public class AlterPropertyExecutionTest extends TestHelper {
     database.command("sql", "ALTER PROPERTY Car.name CUSTOM age = null");
     Assertions.assertNull(database.getSchema().getType("Car").getProperty("name").getCustomValue("age"));
     Assertions.assertFalse(database.getSchema().getType("Car").getProperty("name").getCustomKeys().contains("age"));
+
+    final ResultSet resultset = database.query("sql", "SELECT properties FROM schema:types");
+    while (resultset.hasNext()) {
+      final Result result = resultset.next();
+      final Object custom = ((Result) ((List) result.getProperty("properties")).get(0)).getProperty("custom");
+      Assertions.assertTrue(custom instanceof Map);
+    }
   }
 
   @Test

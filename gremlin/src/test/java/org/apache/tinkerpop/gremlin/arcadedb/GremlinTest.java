@@ -25,6 +25,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.FileUtils;
 import org.apache.tinkerpop.gremlin.arcadedb.structure.ArcadeGraph;
 import org.apache.tinkerpop.gremlin.arcadedb.structure.ArcadeGremlin;
@@ -254,6 +255,25 @@ public class GremlinTest {
       bob.property("hair", 500);
 
       final ArcadeGremlin gremlinReadOnly = graph.gremlin("g.V().has('hair', 500.00)");
+      final ResultSet result = gremlinReadOnly.execute();
+
+      Assertions.assertTrue(result.hasNext());
+
+    } finally {
+      graph.drop();
+    }
+  }
+
+  // ISSUE: https://github.com/ArcadeData/arcadedb/issues/690
+  @Test
+  public void testVertexConstraints() throws ExecutionException, InterruptedException {
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testConstraints");
+    try {
+      final VertexType type = graph.getDatabase().getSchema().getOrCreateVertexType("ChipID");
+      type.getOrCreateProperty("name", Type.STRING).setMandatory(true).setNotNull(true).setReadonly(true);
+      type.getOrCreateProperty("uid", Type.STRING).setMandatory(true).setNotNull(true).setReadonly(true);
+
+      final ArcadeGremlin gremlinReadOnly = graph.gremlin("g.addV('ChipID').property('name', 'a').property('uid', 'b')");
       final ResultSet result = gremlinReadOnly.execute();
 
       Assertions.assertTrue(result.hasNext());
