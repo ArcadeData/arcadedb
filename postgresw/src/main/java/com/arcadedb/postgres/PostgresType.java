@@ -98,7 +98,7 @@ public enum PostgresType {
 
     case BOOLEAN:
       typeBuffer.putInt(Binary.BYTE_SERIALIZED_SIZE);
-      typeBuffer.put((byte) (((Boolean) value) ? 1 : 0));
+      typeBuffer.put((byte) (((Boolean) value) ? '1' : '0'));
       break;
 //
 //    case ANY:
@@ -109,6 +109,19 @@ public enum PostgresType {
     default:
       throw new PostgresProtocolException("Type " + this + " not supported for serializing");
     }
+  }
+
+  public void serializeAsText(final long code, final ByteBuffer typeBuffer, Object value) {
+    if (value == null) {
+      if (code == BOOLEAN.code)
+        value = "0";
+      else
+        value = "null";
+    }
+
+    final byte[] str = value.toString().getBytes(DatabaseFactory.getDefaultCharset());
+    typeBuffer.putInt(str.length);
+    typeBuffer.put(str);
   }
 
   public static Object deserialize(final long code, final int formatCode, final byte[] valueAsBytes) {

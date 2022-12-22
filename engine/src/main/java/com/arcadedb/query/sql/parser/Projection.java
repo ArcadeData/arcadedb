@@ -175,8 +175,8 @@ public class Projection extends SimpleNode {
     return result;
   }
 
-  public Set<String> getAllAliases() {
-    return items.stream().map(i -> i.getProjectionAliasAsString()).collect(Collectors.toSet());
+  public List<String> getAllAliases() {
+    return items.stream().map(i -> i.getProjectionAliasAsString()).collect(Collectors.toList());
   }
 
   public Projection copy() {

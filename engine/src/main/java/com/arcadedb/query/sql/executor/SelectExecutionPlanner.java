@@ -517,13 +517,13 @@ public class SelectExecutionPlanner {
    * @return a list of additional projections to add to the existing projections to allow ORDER BY calculation (empty if nothing has
    * to be added).
    */
-  private static List<ProjectionItem> calculateAdditionalOrderByProjections(Set<String> allAliases, OrderBy orderBy) {
-    List<ProjectionItem> result = new ArrayList<>();
+  private static List<ProjectionItem> calculateAdditionalOrderByProjections(final List<String> allAliases, final OrderBy orderBy) {
+    final List<ProjectionItem> result = new ArrayList<>();
     int nextAliasCount = 0;
     if (orderBy != null && orderBy.getItems() != null && !orderBy.getItems().isEmpty()) {
       for (OrderByItem item : orderBy.getItems()) {
         if (!allAliases.contains(item.getAlias())) {
-          ProjectionItem newProj = new ProjectionItem(-1);
+          final ProjectionItem newProj = new ProjectionItem(-1);
           if (item.getAlias() != null) {
             newProj.setExpression(new Expression(new Identifier(item.getAlias()), item.getModifier()));
           } else if (item.getRecordAttr() != null) {
@@ -535,7 +535,7 @@ public class SelectExecutionPlanner {
             exp.setRid(item.getRid().copy());
             newProj.setExpression(exp);
           }
-          Identifier newAlias = new Identifier("_$$$ORDER_BY_ALIAS$$$_" + (nextAliasCount++));
+          final Identifier newAlias = new Identifier("_$$$ORDER_BY_ALIAS$$$_" + (nextAliasCount++));
           newProj.setAlias(newAlias);
           item.setAlias(newAlias.getStringValue());
           item.setModifier(null);
@@ -549,16 +549,15 @@ public class SelectExecutionPlanner {
   /**
    * splits projections in three parts (pre-aggregate, aggregate and final) to efficiently manage aggregations
    */
-  private static void splitProjectionsForGroupBy(QueryPlanningInfo info) {
-    if (info.projection == null) {
+  private static void splitProjectionsForGroupBy(final QueryPlanningInfo info) {
+    if (info.projection == null)
       return;
-    }
 
-    Projection preAggregate = new Projection(-1);
+    final Projection preAggregate = new Projection(-1);
     preAggregate.setItems(new ArrayList<>());
-    Projection aggregate = new Projection(-1);
+    final Projection aggregate = new Projection(-1);
     aggregate.setItems(new ArrayList<>());
-    Projection postAggregate = new Projection(-1);
+    final Projection postAggregate = new Projection(-1);
     postAggregate.setItems(new ArrayList<>());
 
     boolean isSplitted = false;
@@ -602,12 +601,12 @@ public class SelectExecutionPlanner {
     }
   }
 
-  private static boolean isAggregate(ProjectionItem item) {
+  private static boolean isAggregate(final ProjectionItem item) {
     return item.isAggregate();
   }
 
-  private static ProjectionItem projectionFromAlias(Identifier oIdentifier) {
-    ProjectionItem result = new ProjectionItem(-1);
+  private static ProjectionItem projectionFromAlias(final Identifier oIdentifier) {
+    final ProjectionItem result = new ProjectionItem(-1);
     result.setExpression(new Expression(oIdentifier));
     return result;
   }
@@ -616,11 +615,11 @@ public class SelectExecutionPlanner {
    * if GROUP BY is performed on an expression that is not explicitly in the pre-aggregate projections, then that expression has to
    * be put in the pre-aggregate (only here, in subsequent steps it's removed)
    */
-  private static void addGroupByExpressionsToProjections(QueryPlanningInfo info) {
+  private static void addGroupByExpressionsToProjections(final QueryPlanningInfo info) {
     if (info.groupBy == null || info.groupBy.getItems() == null || info.groupBy.getItems().size() == 0) {
       return;
     }
-    GroupBy newGroupBy = new GroupBy(-1);
+    final GroupBy newGroupBy = new GroupBy(-1);
     int i = 0;
     for (Expression exp : info.groupBy.getItems()) {
       if (exp.isAggregate()) {
@@ -639,7 +638,7 @@ public class SelectExecutionPlanner {
         }
       }
       if (!found) {
-        ProjectionItem newItem = new ProjectionItem(-1);
+        final ProjectionItem newItem = new ProjectionItem(-1);
         newItem.setExpression(exp);
         Identifier groupByAlias = new Identifier("_$$$GROUP_BY_ALIAS$$$_" + i);
         newItem.setAlias(groupByAlias);
@@ -661,16 +660,16 @@ public class SelectExecutionPlanner {
   /**
    * translates subqueries to LET statements
    */
-  private static void extractSubQueries(QueryPlanningInfo info) {
-    SubQueryCollector collector = new SubQueryCollector();
-    if (info.perRecordLetClause != null) {
+  private static void extractSubQueries(final QueryPlanningInfo info) {
+    final SubQueryCollector collector = new SubQueryCollector();
+    if (info.perRecordLetClause != null)
       info.perRecordLetClause.extractSubQueries(collector);
-    }
+
     int i = 0;
     int j = 0;
     for (Map.Entry<Identifier, Statement> entry : collector.getSubQueries().entrySet()) {
-      Identifier alias = entry.getKey();
-      Statement query = entry.getValue();
+      final Identifier alias = entry.getKey();
+      final Statement query = entry.getValue();
       if (query.refersToParent()) {
         addRecordLevelLet(info, alias, query);
       } else {

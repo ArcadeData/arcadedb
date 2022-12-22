@@ -109,7 +109,7 @@ public class PostgresWTest extends BaseGraphServerTest {
         pst.execute();
         pst.close();
 
-        ResultSet rs = st.executeQuery("SELECT id, name, lastName, short, int, long, float, double, date FROM V order by id");
+        ResultSet rs = st.executeQuery("SELECT name, lastName, short, int, long, float, double, boolean FROM V order by id");
 
         Assertions.assertTrue(!rs.isAfterLast());
 

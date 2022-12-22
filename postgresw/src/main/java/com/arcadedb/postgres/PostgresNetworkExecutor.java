@@ -74,7 +74,7 @@ public class PostgresNetworkExecutor extends Thread {
   private              boolean                                        errorInTransaction         = false;
   private final        Set<String>                                    ignoreQueriesAppNames      = new HashSet<>(//
       List.of("dbvis", "Database Navigator - Pool"));
-  private  final     Set<String>                                    ignoreQueries              = new HashSet<>(//
+  private final        Set<String>                                    ignoreQueries              = new HashSet<>(//
       List.of(//
           "select distinct PRIVILEGE_TYPE as PRIVILEGE_NAME from INFORMATION_SCHEMA.USAGE_PRIVILEGES order by PRIVILEGE_TYPE asc",//
           "SELECT oid, typname FROM pg_type"));
@@ -458,7 +458,7 @@ public class PostgresNetworkExecutor extends Thread {
       bufferDescription.putShort((short) columnType.size);// The data type size (see pg_type.typlen). Note that negative values denote variable-width types.
       bufferDescription.putInt(columnType.modifier);// The type modifier (see pg_attribute.atttypmod). The meaning of the modifier is type-specific.
       bufferDescription.putShort(
-          (short) 1); // The format code being used for the field. Currently will be zero (text) or one (binary). In a RowDescription returned from the statement variant of Describe, the format code is not yet known and will always be zero.
+          (short) 0); // The format code being used for the field. Currently will be zero (text) or one (binary). In a RowDescription returned from the statement variant of Describe, the format code is not yet known and will always be zero.
     }
 
     bufferDescription.flip();
@@ -484,7 +484,7 @@ public class PostgresNetworkExecutor extends Thread {
         final String propertyName = entry.getKey();
         final Object value = row.getProperty(propertyName);
 
-        entry.getValue().serialize(bufferValues, value);
+        entry.getValue().serializeAsText(entry.getValue().code, bufferValues, value);
       }
 
       bufferValues.flip();

@@ -385,6 +385,7 @@ fabric.properties
 **/security.json
 security.json
 *.rlog
+**/log
 
 databases
 .history
@@ -395,7 +396,6 @@ doc/src/main/asciidoc/*/.asciidoctor/
 doc/src/main/asciidoc/*/var/
 gremlin/file:/
 server/backups/
-server/log/*
 server/config/*
 server/exports
 server/backups
