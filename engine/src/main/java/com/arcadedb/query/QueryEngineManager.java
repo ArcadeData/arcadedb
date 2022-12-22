@@ -53,7 +53,7 @@ public class QueryEngineManager {
   public QueryEngine getInstance(final String language, DatabaseInternal database) {
     final QueryEngine.QueryEngineFactory impl = implementations.get(language.toLowerCase());
     if (impl == null)
-      throw new IllegalArgumentException("Query engine '" + language + "' was not found");
+      throw new IllegalArgumentException("Query engine '" + language + "' was not found. Check your configuration");
     return impl.getInstance(database);
   }
 

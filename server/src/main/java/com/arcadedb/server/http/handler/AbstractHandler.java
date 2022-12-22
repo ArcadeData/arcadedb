@@ -25,6 +25,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.QueryParsingException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
@@ -127,7 +128,7 @@ public abstract class AbstractHandler implements HttpHandler {
     } catch (RecordNotFoundException e) {
       LogManager.instance().log(this, getErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
       sendErrorResponse(exchange, 404, "Record not found", e, null);
-    } catch (CommandExecutionException | CommandSQLParsingException e) {
+    } catch (CommandExecutionException | CommandSQLParsingException | QueryParsingException e) {
       Throwable realException = e;
       if (e.getCause() != null)
         realException = e.getCause();
