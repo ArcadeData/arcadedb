@@ -43,7 +43,8 @@ public abstract class SQLFunctionAbstract implements SQLFunction {
   }
 
   @Override
-  public void config(final Object[] iConfiguredParameters) {
+  public SQLFunction config(final Object[] iConfiguredParameters) {
+    return this;
   }
 
   @Override

@@ -38,29 +38,28 @@ import java.util.stream.*;
 public class FunctionCall extends SimpleNode {
   protected Identifier       name;
   protected List<Expression> params = new ArrayList<>();
-  private   SQLFunction      function;
+  private   SQLFunction      cachedFunction;
 
-  public FunctionCall(int id) {
+  public FunctionCall(final int id) {
     super(id);
   }
 
-  public FunctionCall(SqlParser p, int id) {
+  public FunctionCall(final SqlParser p, final int id) {
     super(p, id);
   }
 
   public boolean isStar() {
-    if (this.params.size() != 1) {
+    if (this.params.size() != 1)
       return false;
-    }
-    Expression param = params.get(0);
-    if (param.mathExpression == null || !(param.mathExpression instanceof BaseExpression)) {
 
+    final Expression param = params.get(0);
+    if (param.mathExpression == null || !(param.mathExpression instanceof BaseExpression))
       return false;
-    }
-    BaseExpression base = (BaseExpression) param.mathExpression;
-    if (base.identifier == null || base.identifier.suffix == null) {
+
+    final BaseExpression base = (BaseExpression) param.mathExpression;
+    if (base.identifier == null || base.identifier.suffix == null)
       return false;
-    }
+
     return base.identifier.suffix.star;
   }
 
@@ -68,11 +67,11 @@ public class FunctionCall extends SimpleNode {
     return params;
   }
 
-  public void setParams(List<Expression> params) {
+  public void setParams(final List<Expression> params) {
     this.params = params;
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     name.toString(params, builder);
     builder.append("(");
     boolean first = true;
@@ -86,12 +85,12 @@ public class FunctionCall extends SimpleNode {
     builder.append(")");
   }
 
-  public Object execute(Object targetObjects, CommandContext ctx) {
+  public Object execute(final Object targetObjects, final CommandContext ctx) {
     return execute(targetObjects, ctx, name.getStringValue());
   }
 
-  private Object execute(Object targetObjects, CommandContext ctx, String name) {
-    List<Object> paramValues = new ArrayList<>();
+  private Object execute(final Object targetObjects, final CommandContext ctx, final String name) {
+    final List<Object> paramValues = new ArrayList<>();
 
     Object record = null;
 
@@ -145,7 +144,7 @@ public class FunctionCall extends SimpleNode {
   }
 
   public boolean isIndexedFunctionCall() {
-    final SQLFunction function = getFunction();
+    final SQLFunction function = getCachedFunction();
     return (function instanceof IndexableSQLFunction);
   }
 
@@ -195,7 +194,7 @@ public class FunctionCall extends SimpleNode {
    * otherwise
    */
   public boolean canExecuteIndexedFunctionWithoutIndex(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {
-    final SQLFunction function = getFunction();
+    final SQLFunction function = getCachedFunction();
     if (function instanceof IndexableSQLFunction)
       return ((IndexableSQLFunction) function).canExecuteInline(target, operator, right, context, this.getParams().toArray(new Expression[] {}));
 
@@ -213,7 +212,7 @@ public class FunctionCall extends SimpleNode {
    * @return true if current function is an indexed function AND that function can be used on this target, false otherwise
    */
   public boolean allowsIndexedFunctionExecutionOnTarget(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {
-    final SQLFunction function = getFunction();
+    final SQLFunction function = getCachedFunction();
     if (function instanceof IndexableSQLFunction)
       return ((IndexableSQLFunction) function).allowsIndexedExecution(target, operator, right, context, this.getParams().toArray(new Expression[] {}));
 
@@ -310,8 +309,7 @@ public class FunctionCall extends SimpleNode {
   }
 
   private boolean isAggregateFunction() {
-    final SQLFunction function = getFunction();
-    return function.aggregateResults();
+    return getCachedFunction().aggregateResults();
   }
 
   private ProjectionItem createProjection(final FunctionCall newFunct, final Identifier alias) {
@@ -338,27 +336,25 @@ public class FunctionCall extends SimpleNode {
     return true;
   }
 
-  public AggregationContext getAggregationContext(CommandContext ctx) {
-    final SQLFunction function = getFunction();
-    final FunctionAggregationContext result = new FunctionAggregationContext(function, this.params);
-    return result;
+  public AggregationContext getAggregationContext(final CommandContext ctx) {
+    return new FunctionAggregationContext(getFunction(), this.params);
   }
 
   public FunctionCall copy() {
-    FunctionCall result = new FunctionCall(parser, -1);
+    final FunctionCall result = new FunctionCall(parser, -1);
     result.name = name;
     result.params = params.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    FunctionCall that = (FunctionCall) o;
+    final FunctionCall that = (FunctionCall) o;
 
     if (!Objects.equals(name, that.name))
       return false;
@@ -388,31 +384,31 @@ public class FunctionCall extends SimpleNode {
   }
 
   public MethodCall toMethod() {
-    MethodCall result = new MethodCall(-1);
+    final MethodCall result = new MethodCall(-1);
     result.methodName = name.copy();
     result.params = params.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;
   }
 
   public Result serialize() {
-    ResultInternal result = new ResultInternal();
-    if (name != null) {
+    final ResultInternal result = new ResultInternal();
+    if (name != null)
       result.setProperty("name", name.serialize());
-    }
-    if (params != null) {
+
+    if (params != null)
       result.setProperty("collection", params.stream().map(x -> x.serialize()).collect(Collectors.toList()));
-    }
+
     return result;
   }
 
-  public void deserialize(Result fromResult) {
+  public void deserialize(final Result fromResult) {
     if (fromResult.getProperty("name") != null) {
       name = new Identifier(-1);
       Identifier.deserialize(fromResult.getProperty("name"));
     }
     if (fromResult.getProperty("params") != null) {
       params = new ArrayList<>();
-      List<Result> ser = fromResult.getProperty("params");
+      final List<Result> ser = fromResult.getProperty("params");
       for (Result item : ser) {
         Expression exp = new Expression(-1);
         exp.deserialize(item);
@@ -421,16 +417,15 @@ public class FunctionCall extends SimpleNode {
     }
   }
 
-  public void extractSubQueries(Identifier letAlias, SubQueryCollector collector) {
+  public void extractSubQueries(final Identifier letAlias, final SubQueryCollector collector) {
     for (Expression param : this.params) {
       param.extractSubQueries(letAlias, collector);
     }
   }
 
-  public void extractSubQueries(SubQueryCollector collector) {
-    for (Expression param : this.params) {
+  public void extractSubQueries(final SubQueryCollector collector) {
+    for (Expression param : this.params)
       param.extractSubQueries(collector);
-    }
   }
 
   public boolean isCacheable() {
@@ -438,41 +433,36 @@ public class FunctionCall extends SimpleNode {
   }
 
   private boolean isGraphFunction() {
-    String string = name.getStringValue();
-    if (string.equalsIgnoreCase("out")) {
+    final String string = name.getStringValue();
+    if (string.equalsIgnoreCase("out"))
       return true;
-    }
-    if (string.equalsIgnoreCase("outE")) {
+    else if (string.equalsIgnoreCase("outE"))
       return true;
-    }
-    if (string.equalsIgnoreCase("outV")) {
+    else if (string.equalsIgnoreCase("outV"))
       return true;
-    }
-    if (string.equalsIgnoreCase("in")) {
+    else if (string.equalsIgnoreCase("in"))
       return true;
-    }
-    if (string.equalsIgnoreCase("inE")) {
+    else if (string.equalsIgnoreCase("inE"))
       return true;
-    }
-    if (string.equalsIgnoreCase("inV")) {
+    else if (string.equalsIgnoreCase("inV"))
       return true;
-    }
-    if (string.equalsIgnoreCase("both")) {
+    else if (string.equalsIgnoreCase("both"))
       return true;
-    }
-    if (string.equalsIgnoreCase("bothE")) {
+    else if (string.equalsIgnoreCase("bothE"))
       return true;
-    }
-    return string.equalsIgnoreCase("bothV");
+    else
+      return string.equalsIgnoreCase("bothV");
   }
 
   private SQLFunction getFunction() {
-    if (function == null) {
-      function = ((SQLQueryEngine) parser.getDatabase().getQueryEngine("sql")).getFunction(name.getStringValue());
-      if (function != null && params != null)
-        function.config(params.toArray());
-    }
-    return function;
+    return ((SQLQueryEngine) parser.getDatabase().getQueryEngine("sql")).getFunction(name.getStringValue()).config(params.toArray());
+  }
+
+  private SQLFunction getCachedFunction() {
+    if (cachedFunction == null)
+      cachedFunction = getFunction();
+
+    return cachedFunction;
   }
 }
 /* JavaCC - OriginalChecksum=290d4e1a3f663299452e05f8db718419 (do not edit this line) */

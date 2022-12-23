@@ -41,7 +41,6 @@ public class SQLFunctionMax extends SQLFunctionMathAbstract {
 
   @SuppressWarnings({ "unchecked", "rawtypes" })
   public Object execute(Object iThis, final Identifiable iCurrentRecord, Object iCurrentResult, final Object[] iParams, CommandContext iContext) {
-
     // calculate max value for current record
     // consider both collection of parameters and collection in each parameter
     Object max = null;
