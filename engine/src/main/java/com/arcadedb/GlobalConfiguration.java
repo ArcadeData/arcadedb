@@ -170,6 +170,9 @@ public enum GlobalConfiguration {
   // COMMAND
   COMMAND_TIMEOUT("arcadedb.command.timeout", "Default timeout for commands (in ms)", Long.class, 0),
 
+  // USER CODE
+  POLYGLOT_COMMAND_TIMEOUT("arcadedb.polyglotCommand.timeout", "Default timeout for polyglot commands (in ms)", Long.class, 10_000),
+
   QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP("arcadedb.queryMaxHeapElementsAllowedPerOp",
       "Maximum number of elements (records) allowed in a single query for memory-intensive operations (eg. ORDER BY in heap). "
           + "If exceeded, the query fails with an OCommandExecutionException. Negative number means no limit."

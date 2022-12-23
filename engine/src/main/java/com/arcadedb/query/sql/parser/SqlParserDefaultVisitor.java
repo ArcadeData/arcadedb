@@ -696,5 +696,9 @@ public class SqlParserDefaultVisitor implements SqlParserVisitor {
   public Object visit(WhileBlock node, Object data) {
     return defaultVisit(node, data);
   }
+
+  public Object visit(DefineFunctionStatement node, Object data) {
+    return defaultVisit(node, data);
+  }
 }
 /* ParserGeneratorCC - OriginalChecksum=b4d9e905040f8723ce073fb48971de37 (do not edit this line) */

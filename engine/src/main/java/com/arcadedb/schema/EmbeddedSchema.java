@@ -34,6 +34,8 @@ import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.DatabaseMetadataException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.function.FunctionDefinition;
+import com.arcadedb.function.FunctionLibraryDefinition;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexFactory;
@@ -58,32 +60,33 @@ import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
 public class EmbeddedSchema implements Schema {
-  public static final  String                     DEFAULT_DATE_FORMAT     = "yyyy-MM-dd";
-  public static final  String                     DEFAULT_DATETIME_FORMAT = "yyyy-MM-dd HH:mm:ss";
-  public static final  String                     DEFAULT_ENCODING        = "UTF-8";
-  public static final  String                     SCHEMA_FILE_NAME        = "schema.json";
-  public static final  String                     SCHEMA_PREV_FILE_NAME   = "schema.prev.json";
-  private static final String                     ENCODING                = DEFAULT_ENCODING;
-  private static final int                        EDGE_DEF_PAGE_SIZE      = Bucket.DEF_PAGE_SIZE / 3;
-  private final        DatabaseInternal           database;
-  private final        SecurityManager            security;
-  private final        List<PaginatedComponent>   files                   = new ArrayList<>();
-  private final        Map<String, DocumentType>  types                   = new HashMap<>();
-  private final        Map<String, Bucket>        bucketMap               = new HashMap<>();
-  protected final      Map<String, IndexInternal> indexMap                = new HashMap<>();
-  private final        String                     databasePath;
-  private final        File                       configurationFile;
-  private final        PaginatedComponentFactory  paginatedComponentFactory;
-  private final        IndexFactory               indexFactory            = new IndexFactory();
-  private              Dictionary                 dictionary;
-  private              String                     dateFormat              = DEFAULT_DATE_FORMAT;
-  private              String                     dateTimeFormat          = DEFAULT_DATETIME_FORMAT;
-  private              TimeZone                   timeZone                = TimeZone.getDefault();
-  private              boolean                    readingFromFile         = false;
-  private              boolean                    dirtyConfiguration      = false;
-  private              boolean                    loadInRamCompleted      = false;
-  private              boolean                    multipleUpdate          = false;
-  private final        AtomicLong                 versionSerial           = new AtomicLong();
+  public static final  String                                 DEFAULT_DATE_FORMAT     = "yyyy-MM-dd";
+  public static final  String                                 DEFAULT_DATETIME_FORMAT = "yyyy-MM-dd HH:mm:ss";
+  public static final  String                                 DEFAULT_ENCODING        = "UTF-8";
+  public static final  String                                 SCHEMA_FILE_NAME        = "schema.json";
+  public static final  String                                 SCHEMA_PREV_FILE_NAME   = "schema.prev.json";
+  private static final String                                 ENCODING                = DEFAULT_ENCODING;
+  private static final int                                    EDGE_DEF_PAGE_SIZE      = Bucket.DEF_PAGE_SIZE / 3;
+  private final        DatabaseInternal                       database;
+  private final        SecurityManager                        security;
+  private final        List<PaginatedComponent>               files                   = new ArrayList<>();
+  private final        Map<String, DocumentType>              types                   = new HashMap<>();
+  private final        Map<String, Bucket>                    bucketMap               = new HashMap<>();
+  protected final      Map<String, IndexInternal>             indexMap                = new HashMap<>();
+  private final        String                                 databasePath;
+  private final        File                                   configurationFile;
+  private final        PaginatedComponentFactory              paginatedComponentFactory;
+  private final        IndexFactory                           indexFactory            = new IndexFactory();
+  private              Dictionary                             dictionary;
+  private              String                                 dateFormat              = DEFAULT_DATE_FORMAT;
+  private              String                                 dateTimeFormat          = DEFAULT_DATETIME_FORMAT;
+  private              TimeZone                               timeZone                = TimeZone.getDefault();
+  private              boolean                                readingFromFile         = false;
+  private              boolean                                dirtyConfiguration      = false;
+  private              boolean                                loadInRamCompleted      = false;
+  private              boolean                                multipleUpdate          = false;
+  private final        AtomicLong                             versionSerial           = new AtomicLong();
+  private              Map<String, FunctionLibraryDefinition> functionLibraries       = new ConcurrentHashMap<>();
 
   public EmbeddedSchema(final DatabaseInternal database, final String databasePath, final SecurityManager security) {
     this.database = database;
@@ -1335,6 +1338,41 @@ public class EmbeddedSchema implements Schema {
         f.onAfterLoad();
   }
 
+  @Override
+  public Schema registerFunctionLibrary(final FunctionLibraryDefinition library) {
+    if (functionLibraries.putIfAbsent(library.getName(), library) != null)
+      throw new IllegalArgumentException("Function library '" + library.getName() + "' already registered");
+    return this;
+  }
+
+  @Override
+  public Schema unregisterFunctionLibrary(final String name) {
+    functionLibraries.remove(name);
+    return this;
+  }
+
+  @Override
+  public Iterable<FunctionLibraryDefinition> getFunctionLibraries() {
+    return functionLibraries.values();
+  }
+
+  @Override
+  public boolean hasFunctionLibrary(final String name) {
+    return functionLibraries.containsKey(name);
+  }
+
+  public FunctionLibraryDefinition getFunctionLibrary(final String name) {
+    final FunctionLibraryDefinition flib = functionLibraries.get(name);
+    if (flib == null)
+      throw new IllegalArgumentException("Function library '" + name + "' not defined");
+    return flib;
+  }
+
+  @Override
+  public FunctionDefinition getFunction(String libraryName, String functionName) throws IllegalArgumentException {
+    return getFunctionLibrary(libraryName).getFunction(functionName);
+  }
+
   public boolean isDirty() {
     return dirtyConfiguration;
   }
@@ -1345,6 +1383,29 @@ public class EmbeddedSchema implements Schema {
 
   public long getVersion() {
     return versionSerial.get();
+  }
+
+  public synchronized void update(final JSONObject newSchema) throws IOException {
+    if (newSchema.has("schemaVersion"))
+      versionSerial.set(newSchema.getLong("schemaVersion"));
+
+    final String latestSchema = newSchema.toString();
+
+    if (configurationFile.exists()) {
+      final File copy = new File(databasePath + File.separator + SCHEMA_PREV_FILE_NAME);
+      if (copy.exists())
+        if (!copy.delete())
+          LogManager.instance().log(this, Level.WARNING, "Error on deleting previous schema file '%s'", null, copy);
+
+      if (!configurationFile.renameTo(copy))
+        LogManager.instance().log(this, Level.WARNING, "Error on renaming previous schema file '%s'", null, copy);
+    }
+
+    try (FileWriter file = new FileWriter(databasePath + File.separator + SCHEMA_FILE_NAME)) {
+      file.write(latestSchema);
+    }
+
+    database.getExecutionPlanCache().invalidate();
   }
 
   private void updateSecurity() {
@@ -1377,28 +1438,5 @@ public class EmbeddedSchema implements Schema {
         // ROLLBACK THE DIRTY STATUS
         dirtyConfiguration = false;
     }
-  }
-
-  public synchronized void update(final JSONObject newSchema) throws IOException {
-    if (newSchema.has("schemaVersion"))
-      versionSerial.set(newSchema.getLong("schemaVersion"));
-
-    final String latestSchema = newSchema.toString();
-
-    if (configurationFile.exists()) {
-      final File copy = new File(databasePath + File.separator + SCHEMA_PREV_FILE_NAME);
-      if (copy.exists())
-        if (!copy.delete())
-          LogManager.instance().log(this, Level.WARNING, "Error on deleting previous schema file '%s'", null, copy);
-
-      if (!configurationFile.renameTo(copy))
-        LogManager.instance().log(this, Level.WARNING, "Error on renaming previous schema file '%s'", null, copy);
-    }
-
-    try (FileWriter file = new FileWriter(databasePath + File.separator + SCHEMA_FILE_NAME)) {
-      file.write(latestSchema);
-    }
-
-    database.getExecutionPlanCache().invalidate();
   }
 }

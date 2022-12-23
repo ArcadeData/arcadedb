@@ -4030,7 +4030,7 @@ public class SelectStatementExecutionTest extends TestHelper {
 //        final String functionName = getClass().getSimpleName() + "_sleep";
 //        database.getSchema().createDocumentType(className);
 //
-//        SQLEngine.getInstance()
+//        ((SQLQueryEngine) ctx.getDatabase().getQueryEngine("sql"))
 //                .registerFunction(
 //                        functionName,
 //                        new SQLFunction() {

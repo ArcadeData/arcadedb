@@ -52,7 +52,7 @@ public class SQLFunctionAdjacencyTest {
       setUpDatabase(graph);
 
       final Iterator<Identifiable> iterator = (Iterator<Identifiable>) new SQLFunctionOutE().execute(vertices.get(3), null, null, new Object[] {},
-          new BasicCommandContext());
+          new BasicCommandContext().setDatabase(graph));
 
       final Set<RID> result = new HashSet<>();
       while (iterator.hasNext()) {
@@ -74,7 +74,7 @@ public class SQLFunctionAdjacencyTest {
       setUpDatabase(graph);
 
       final Iterator<Identifiable> iterator = (Iterator<Identifiable>) new SQLFunctionInE().execute(vertices.get(3), null, null, new Object[] {},
-          new BasicCommandContext());
+          new BasicCommandContext().setDatabase(graph));
 
       final Set<RID> result = new HashSet<>();
       while (iterator.hasNext()) {
@@ -95,7 +95,7 @@ public class SQLFunctionAdjacencyTest {
       setUpDatabase(graph);
 
       final Iterator<Identifiable> iterator = (Iterator<Identifiable>) new SQLFunctionBothE().execute(vertices.get(3), null, null, new Object[] {},
-          new BasicCommandContext());
+          new BasicCommandContext().setDatabase(graph));
 
       final Set<RID> result = new HashSet<>();
       while (iterator.hasNext()) {
@@ -118,7 +118,7 @@ public class SQLFunctionAdjacencyTest {
       setUpDatabase(graph);
 
       final Iterator<Identifiable> iterator = (Iterator<Identifiable>) new SQLFunctionBoth().execute(vertices.get(3), null, null, new Object[] {},
-          new BasicCommandContext());
+          new BasicCommandContext().setDatabase(graph));
 
       final Set<RID> result = new HashSet<>();
       while (iterator.hasNext()) {
@@ -141,7 +141,7 @@ public class SQLFunctionAdjacencyTest {
       setUpDatabase(graph);
 
       final Iterator<Identifiable> iterator = (Iterator<Identifiable>) new SQLFunctionOut().execute(vertices.get(3), null, null, new Object[] {},
-          new BasicCommandContext());
+          new BasicCommandContext().setDatabase(graph));
 
       final Set<RID> result = new HashSet<>();
       while (iterator.hasNext()) {
@@ -163,7 +163,7 @@ public class SQLFunctionAdjacencyTest {
       setUpDatabase(graph);
 
       final Iterator<Identifiable> iterator = (Iterator<Identifiable>) new SQLFunctionIn().execute(vertices.get(3), null, null, new Object[] {},
-          new BasicCommandContext());
+          new BasicCommandContext().setDatabase(graph));
 
       final Set<RID> result = new HashSet<>();
       while (iterator.hasNext()) {
@@ -183,7 +183,7 @@ public class SQLFunctionAdjacencyTest {
     TestHelper.executeInNewDatabase("testOutV", (graph) -> {
       setUpDatabase(graph);
 
-      Vertex v = (Vertex) new SQLFunctionOutV().execute(edges.get(3), null, null, new Object[] {}, new BasicCommandContext());
+      Vertex v = (Vertex) new SQLFunctionOutV().execute(edges.get(3), null, null, new Object[] {}, new BasicCommandContext().setDatabase(graph));
 
       Assertions.assertEquals(v.getIdentity(), vertices.get(3).getIdentity());
     });
@@ -194,7 +194,7 @@ public class SQLFunctionAdjacencyTest {
     TestHelper.executeInNewDatabase("testInV", (graph) -> {
       setUpDatabase(graph);
 
-      Vertex v = (Vertex) new SQLFunctionInV().execute(edges.get(3), null, null, new Object[] {}, new BasicCommandContext());
+      Vertex v = (Vertex) new SQLFunctionInV().execute(edges.get(3), null, null, new Object[] {}, new BasicCommandContext().setDatabase(graph));
 
       Assertions.assertEquals(v.getIdentity(), vertices.get(1).getIdentity());
     });
@@ -206,7 +206,7 @@ public class SQLFunctionAdjacencyTest {
       setUpDatabase(graph);
 
       final ArrayList<Identifiable> iterator = (ArrayList<Identifiable>) new SQLFunctionBothV().execute(edges.get(3), null, null, new Object[] {},
-          new BasicCommandContext());
+          new BasicCommandContext().setDatabase(graph));
 
       Assertions.assertTrue(iterator.contains(vertices.get(3).getIdentity()));
       Assertions.assertTrue(iterator.contains(vertices.get(1).getIdentity()));

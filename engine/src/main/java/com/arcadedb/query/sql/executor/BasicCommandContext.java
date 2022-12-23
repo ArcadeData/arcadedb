@@ -361,8 +361,9 @@ public class BasicCommandContext implements CommandContext {
     return null;
   }
 
-  public void setDatabase(final Database database) {
+  public CommandContext setDatabase(final Database database) {
     this.database = (DatabaseInternal) database;
+    return this;
   }
 
   public static int getLowerIndexOf(final String iText, final int iBeginOffset, final String... iToSearch) {

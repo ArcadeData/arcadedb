@@ -563,7 +563,7 @@ public class SelectExecutionPlanner {
     boolean isSplitted = false;
 
     //split for aggregate projections
-    AggregateProjectionSplit result = new AggregateProjectionSplit();
+    final AggregateProjectionSplit result = new AggregateProjectionSplit();
     for (ProjectionItem item : info.projection.getItems()) {
       result.reset();
       if (isAggregate(item)) {
@@ -692,8 +692,8 @@ public class SelectExecutionPlanner {
     }
 
     for (Map.Entry<Identifier, Statement> entry : collector.getSubQueries().entrySet()) {
-      Identifier alias = entry.getKey();
-      Statement query = entry.getValue();
+      final Identifier alias = entry.getKey();
+      final Statement query = entry.getValue();
       if (query.refersToParent()) {
         addRecordLevelLet(info, alias, query);
       } else {
@@ -964,7 +964,7 @@ public class SelectExecutionPlanner {
    *
    * @return
    */
-  private boolean isFromClusters(final Rid rid, Set<String> filterClusters, final Database database) {
+  private boolean isFromClusters(final Rid rid, final Set<String> filterClusters, final Database database) {
     if (filterClusters == null) {
       throw new IllegalArgumentException();
     }
@@ -1098,9 +1098,9 @@ public class SelectExecutionPlanner {
     }
   }
 
-  private void handleGlobalLet(SelectExecutionPlan result, QueryPlanningInfo info, CommandContext ctx, boolean profilingEnabled) {
+  private void handleGlobalLet(final SelectExecutionPlan result, final QueryPlanningInfo info, final CommandContext ctx, final boolean profilingEnabled) {
     if (info.globalLetClause != null) {
-      List<LetItem> items = info.globalLetClause.getItems();
+      final List<LetItem> items = info.globalLetClause.getItems();
       for (LetItem item : items) {
         if (item.getExpression() != null) {
           result.chain(new GlobalLetExpressionStep(item.getVarName(), item.getExpression(), ctx, profilingEnabled));
@@ -1184,8 +1184,8 @@ public class SelectExecutionPlanner {
    * @param ctx
    * @param profilingEnabled
    */
-  private void handleClassAsTarget(SelectExecutionPlan plan, final Set<String> filterClusters, QueryPlanningInfo info, CommandContext ctx,
-      boolean profilingEnabled) {
+  private void handleClassAsTarget(final SelectExecutionPlan plan, final Set<String> filterClusters, final QueryPlanningInfo info, final CommandContext ctx,
+      final boolean profilingEnabled) {
     handleClassAsTarget(plan, filterClusters, info.target, info, ctx, profilingEnabled);
   }
 
@@ -1417,10 +1417,10 @@ public class SelectExecutionPlanner {
     return false;
   }
 
-  private boolean handleClassAsTargetWithIndex(SelectExecutionPlan plan, Identifier targetClass, Set<String> filterClusters, QueryPlanningInfo info,
-      CommandContext ctx, boolean profilingEnabled) {
+  private boolean handleClassAsTargetWithIndex(final SelectExecutionPlan plan, final Identifier targetClass, final Set<String> filterClusters,
+      QueryPlanningInfo info, final CommandContext ctx, final boolean profilingEnabled) {
 
-    List<ExecutionStepInternal> result = handleClassAsTargetWithIndex(targetClass.getStringValue(), filterClusters, info, ctx, profilingEnabled);
+    final List<ExecutionStepInternal> result = handleClassAsTargetWithIndex(targetClass.getStringValue(), filterClusters, info, ctx, profilingEnabled);
     if (result != null) {
       result.forEach(x -> plan.chain(x));
       info.whereClause = null;
@@ -1439,7 +1439,7 @@ public class SelectExecutionPlanner {
 
     final Collection<DocumentType> subTypes = typez.getSubTypes();
 
-    List<InternalExecutionPlan> subTypePlans = new ArrayList<>();
+    final List<InternalExecutionPlan> subTypePlans = new ArrayList<>();
     for (DocumentType subType : subTypes) {
       List<ExecutionStepInternal> subSteps = handleClassAsTargetWithIndexRecursive(subType.getName(), filterClusters, info, ctx, profilingEnabled);
       if (subSteps == null || subSteps.size() == 0) {
@@ -1456,8 +1456,8 @@ public class SelectExecutionPlanner {
     return false;
   }
 
-  private boolean isEmptyNoSubclasses(DocumentType typez) {
-    List<com.arcadedb.engine.Bucket> buckets = typez.getBuckets(false);
+  private boolean isEmptyNoSubclasses(final DocumentType typez) {
+    final List<com.arcadedb.engine.Bucket> buckets = typez.getBuckets(false);
     for (com.arcadedb.engine.Bucket bucket : buckets) {
       if (bucket.iterator().hasNext()) {
         return false;
@@ -1474,11 +1474,11 @@ public class SelectExecutionPlanner {
    * @return
    */
   private boolean isDiamondHierarchy(final DocumentType typez) {
-    Set<DocumentType> traversed = new HashSet<>();
-    List<DocumentType> stack = new ArrayList<>();
+    final Set<DocumentType> traversed = new HashSet<>();
+    final List<DocumentType> stack = new ArrayList<>();
     stack.add(typez);
     while (!stack.isEmpty()) {
-      DocumentType current = stack.remove(0);
+      final DocumentType current = stack.remove(0);
       traversed.add(current);
       for (DocumentType sub : current.getSubTypes()) {
         if (traversed.contains(sub)) {
@@ -1491,8 +1491,8 @@ public class SelectExecutionPlanner {
     return false;
   }
 
-  private List<ExecutionStepInternal> handleClassAsTargetWithIndexRecursive(String targetClass, Set<String> filterClusters, QueryPlanningInfo info,
-      CommandContext ctx, boolean profilingEnabled) {
+  private List<ExecutionStepInternal> handleClassAsTargetWithIndexRecursive(final String targetClass, final Set<String> filterClusters,
+      final QueryPlanningInfo info, final CommandContext ctx, final boolean profilingEnabled) {
     List<ExecutionStepInternal> result = handleClassAsTargetWithIndex(targetClass, filterClusters, info, ctx, profilingEnabled);
     if (result == null) {
       result = new ArrayList<>();

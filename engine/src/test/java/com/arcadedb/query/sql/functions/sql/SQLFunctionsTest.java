@@ -23,10 +23,10 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.query.sql.executor.SQLEngine;
 import com.arcadedb.query.sql.function.SQLFunctionAbstract;
 import com.arcadedb.query.sql.function.text.SQLMethodHash;
 import com.arcadedb.schema.DocumentType;
@@ -406,7 +406,7 @@ public class SQLFunctionsTest {
 
   @Test
   public void queryCustomFunction() {
-    SQLEngine.getInstance().getFunctionFactory().register(new SQLFunctionAbstract("bigger") {
+    ((SQLQueryEngine) database.getQueryEngine("sql")).getFunctionFactory().register(new SQLFunctionAbstract("bigger") {
       @Override
       public String getSyntax() {
         return "bigger(<first>, <second>)";
@@ -438,7 +438,7 @@ public class SQLFunctionsTest {
       Assertions.assertTrue((Integer) d.getProperty("id") <= 1000);
     }
 
-    SQLEngine.getInstance().getFunctionFactory().unregister("bigger");
+    ((SQLQueryEngine) database.getQueryEngine("sql")).getFunctionFactory().unregister("bigger");
   }
 
   @Test

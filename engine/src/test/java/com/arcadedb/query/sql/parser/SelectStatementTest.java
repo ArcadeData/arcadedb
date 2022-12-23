@@ -687,6 +687,6 @@ public class SelectStatementTest {
 
   protected SqlParser getParserFor(String string) {
     InputStream is = new ByteArrayInputStream(string.getBytes(DatabaseFactory.getDefaultCharset()));
-    return new SqlParser(is);
+    return new SqlParser(null, is);
   }
 }

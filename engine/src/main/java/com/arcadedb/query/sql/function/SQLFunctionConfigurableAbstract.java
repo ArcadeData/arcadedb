@@ -18,6 +18,8 @@
  */
 package com.arcadedb.query.sql.function;
 
+import com.arcadedb.query.sql.executor.SQLFunction;
+
 /**
  * Abstract class to extend to build Custom SQL Functions that saves the configured parameters. Extend it and register it with:
  * {@literal OSQLParser.getInstance().registerStatelessFunction()} or
@@ -34,8 +36,9 @@ public abstract class SQLFunctionConfigurableAbstract extends SQLFunctionAbstrac
   }
 
   @Override
-  public void config(final Object[] iConfiguredParameters) {
+  public SQLFunction config(final Object[] iConfiguredParameters) {
     configuredParameters = iConfiguredParameters;
+    return this;
   }
 
   @Override

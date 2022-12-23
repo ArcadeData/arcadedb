@@ -36,6 +36,8 @@ public interface QueryEngine {
     QueryEngine getInstance(DatabaseInternal database);
   }
 
+  String getLanguage();
+
   AnalyzedQuery analyze(String query);
 
   ResultSet query(String query, Map<String, Object> parameters);
@@ -45,4 +47,19 @@ public interface QueryEngine {
   ResultSet command(String query, Map<String, Object> parameters);
 
   ResultSet command(String query, Object... parameters);
+
+  default QueryEngine registerFunctions(String function) {
+    return this;
+  }
+
+  default QueryEngine unregisterFunctions() {
+    return this;
+  }
+
+  default boolean isReusable() {
+    return true;
+  }
+
+  default void close() {
+  }
 }

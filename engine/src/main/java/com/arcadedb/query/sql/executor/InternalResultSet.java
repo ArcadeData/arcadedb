@@ -64,8 +64,9 @@ public class InternalResultSet implements ResultSet {
     return new HashMap<>();
   }
 
-  public void add(final Result nextResult) {
+  public InternalResultSet add(final Result nextResult) {
     content.add(nextResult);
+    return this;
   }
 
   public void addAll(final List<ResultInternal> list) {

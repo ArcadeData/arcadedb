@@ -23,9 +23,9 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
-import com.arcadedb.query.sql.executor.SQLEngine;
 import com.arcadedb.query.sql.function.SQLFunctionConfigurableAbstract;
 import com.arcadedb.utility.FileUtils;
 
@@ -60,8 +60,8 @@ public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
     else
       labels = null;
 
-    return SQLEngine.foreachRecord(iArgument -> move(iContext.getDatabase(), iArgument, labels), iThis, iContext);
-
+    return ((SQLQueryEngine) iContext.getDatabase().getQueryEngine("sql")).foreachRecord(iArgument -> move(iContext.getDatabase(), iArgument, labels), iThis,
+        iContext);
   }
 
   protected Object v2v(final Database graph, final Identifiable iRecord, final Vertex.DIRECTION iDirection, final String[] iLabels) {

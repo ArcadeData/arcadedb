@@ -56,12 +56,13 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexCompacted;
 import com.arcadedb.index.lsm.LSMTreeIndexMutable;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.QueryEngineManager;
+import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalExecutionPlan;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.query.sql.executor.SQLEngine;
 import com.arcadedb.query.sql.executor.ScriptExecutionPlan;
 import com.arcadedb.query.sql.parser.BeginStatement;
 import com.arcadedb.query.sql.parser.CommitStatement;
@@ -134,6 +135,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   private              FileChannel                               lockFileIOChannel;
   private              FileLock                                  lockFileLock;
   private final        RecordEventsRegistry                      events                               = new RecordEventsRegistry();
+  private              ConcurrentHashMap<String, QueryEngine>    reusableQueryEngines                 = new ConcurrentHashMap<>();
 
   protected EmbeddedDatabase(final String path, final PaginatedFile.MODE mode, final ContextConfiguration configuration, final SecurityManager security,
       final Map<CALLBACK_EVENT, List<Callable<Void>>> callbacks) {
@@ -1215,12 +1217,27 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   }
 
   @Override
+  public QueryEngine getQueryEngine(final String language) {
+    QueryEngine engine = reusableQueryEngines.get(language);
+    if (engine == null) {
+      engine = queryEngineManager.getInstance(language, this);
+      if (engine.isReusable()) {
+        final QueryEngine prev = reusableQueryEngines.putIfAbsent(language, engine);
+        if (prev != null)
+          engine = prev;
+      }
+    }
+
+    return engine;
+  }
+
+  @Override
   public ResultSet command(final String language, final String query, final Object... parameters) {
     checkDatabaseIsOpen();
 
     stats.commands.incrementAndGet();
 
-    return queryEngineManager.getInstance(language, this).command(query, parameters);
+    return getQueryEngine(language).command(query, parameters);
   }
 
   @Override
@@ -1229,7 +1246,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
     stats.commands.incrementAndGet();
 
-    return queryEngineManager.getInstance(language, this).command(query, parameters);
+    return getQueryEngine(language).command(query, parameters);
   }
 
   @Override
@@ -1240,7 +1257,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     context.setDatabase(getWrappedDatabaseInstance());
     context.setInputParameters(params);
 
-    final List<Statement> statements = SQLEngine.parseScript(script, wrappedDatabaseInstance);
+    final List<Statement> statements = ((SQLQueryEngine) getQueryEngine(language)).parseScript(script, wrappedDatabaseInstance);
     return new LocalResultSetLifecycleDecorator(executeInternal(statements, context));
   }
 
@@ -1252,66 +1269,22 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     context.setDatabase(getWrappedDatabaseInstance());
     context.setInputParameters(args);
 
-    final List<Statement> statements = SQLEngine.parseScript(script, wrappedDatabaseInstance);
+    final List<Statement> statements = ((SQLQueryEngine) getQueryEngine(language)).parseScript(script, wrappedDatabaseInstance);
     return new LocalResultSetLifecycleDecorator(executeInternal(statements, context));
-  }
-
-  private ResultSet executeInternal(final List<Statement> statements, final CommandContext scriptContext) {
-    ScriptExecutionPlan plan = new ScriptExecutionPlan(scriptContext);
-
-    plan.setStatement(statements.stream().map(Statement::toString).collect(Collectors.joining(";")));
-
-    List<Statement> lastRetryBlock = new ArrayList<>();
-    int nestedTxLevel = 0;
-
-    for (Statement stm : statements) {
-      if (stm.getOriginalStatement() == null)
-        stm.setOriginalStatement(stm.toString());
-
-      if (stm instanceof BeginStatement)
-        nestedTxLevel++;
-
-      if (nestedTxLevel <= 0) {
-        InternalExecutionPlan sub = stm.createExecutionPlan(scriptContext);
-        plan.chain(sub, false);
-      } else
-        lastRetryBlock.add(stm);
-
-      if (stm instanceof CommitStatement && nestedTxLevel > 0) {
-        nestedTxLevel--;
-        if (nestedTxLevel == 0) {
-
-          for (Statement statement : lastRetryBlock) {
-            InternalExecutionPlan sub = statement.createExecutionPlan(scriptContext);
-            plan.chain(sub, false);
-          }
-          lastRetryBlock = new ArrayList<>();
-        }
-      }
-
-      if (stm instanceof LetStatement)
-        scriptContext.declareScriptVariable(((LetStatement) stm).getName().getStringValue());
-    }
-
-    return new LocalResultSet(plan);
   }
 
   @Override
   public ResultSet query(final String language, final String query, final Object... parameters) {
     checkDatabaseIsOpen();
-
     stats.queries.incrementAndGet();
-
-    return queryEngineManager.getInstance(language, this).query(query, parameters);
+    return getQueryEngine(language).query(query, parameters);
   }
 
   @Override
   public ResultSet query(final String language, final String query, final Map<String, Object> parameters) {
     checkDatabaseIsOpen();
-
     stats.queries.incrementAndGet();
-
-    return queryEngineManager.getInstance(language, this).query(query, parameters);
+    return getQueryEngine(language).query(query, parameters);
   }
 
   /**
@@ -1466,6 +1439,10 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     this.wrappedDatabaseInstance = wrappedDatabaseInstance;
   }
 
+  public void registerReusableQueryEngine(final QueryEngine queryEngine) {
+    reusableQueryEngines.put(queryEngine.getLanguage(), queryEngine);
+  }
+
   @Override
   public int getEdgeListSize() {
     return this.edgeListSize;
@@ -1585,6 +1562,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
         fileManager.close();
         transactionManager.close(drop);
         statementCache.clear();
+        reusableQueryEngines.clear();
       } catch (Throwable e) {
         LogManager.instance().log(this, Level.WARNING, "Error on closing internal components during closing operation for database '%s'", e, name);
       } finally {
@@ -1713,5 +1691,45 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
         }
       }
     }
+  }
+
+  private ResultSet executeInternal(final List<Statement> statements, final CommandContext scriptContext) {
+    ScriptExecutionPlan plan = new ScriptExecutionPlan(scriptContext);
+
+    plan.setStatement(statements.stream().map(Statement::toString).collect(Collectors.joining(";")));
+
+    List<Statement> lastRetryBlock = new ArrayList<>();
+    int nestedTxLevel = 0;
+
+    for (Statement stm : statements) {
+      if (stm.getOriginalStatement() == null)
+        stm.setOriginalStatement(stm.toString());
+
+      if (stm instanceof BeginStatement)
+        nestedTxLevel++;
+
+      if (nestedTxLevel <= 0) {
+        InternalExecutionPlan sub = stm.createExecutionPlan(scriptContext);
+        plan.chain(sub, false);
+      } else
+        lastRetryBlock.add(stm);
+
+      if (stm instanceof CommitStatement && nestedTxLevel > 0) {
+        nestedTxLevel--;
+        if (nestedTxLevel == 0) {
+
+          for (Statement statement : lastRetryBlock) {
+            InternalExecutionPlan sub = statement.createExecutionPlan(scriptContext);
+            plan.chain(sub, false);
+          }
+          lastRetryBlock = new ArrayList<>();
+        }
+      }
+
+      if (stm instanceof LetStatement)
+        scriptContext.declareScriptVariable(((LetStatement) stm).getName().getStringValue());
+    }
+
+    return new LocalResultSet(plan);
   }
 }

@@ -32,6 +32,7 @@ package com.arcadedb.query.sql.parser;
 import java.io.InputStream;
 import java.util.List;
 import java.util.ArrayList;
+import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.QueryParsingException;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
@@ -40,13 +41,20 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 public class SqlParser {
 
   private int inputParamCount = 0;
+  private Database database;
 
-  public SqlParser(InputStream stream) {
+  public SqlParser(final Database database, final InputStream stream) {
     this(new JavaCharStream(stream));
+    this.database = database;
   }
 
-  public SqlParser(InputStream stream, String charset) throws java.io.UnsupportedEncodingException {
+  public SqlParser(final Database database, InputStream stream, String charset) throws java.io.UnsupportedEncodingException {
     this(new JavaCharStream(stream, charset));
+    this.database = database;
+  }
+
+  public Database getDatabase(){
+    return database;
   }
 }
 
@@ -154,6 +162,8 @@ TOKEN:
   < OR: ("o"|"O")("r"|"R")>
   |
   < NULL: ("N"|"n")("U"|"u")("L"|"l")("L"|"l")>
+  |
+  < DEFINE: ("D"|"d")("E"|"e")("F"|"f")("I"|"i")("N"|"n")("E"|"e")>
   |
   < DEFINED: ("D"|"d")("E"|"e")("F"|"f")("I"|"i")("N"|"n")("E"|"e")("D"|"d")>
   |
@@ -298,6 +308,10 @@ TOKEN:
   < NONE: ("N"|"n")("O"|"o")("N"|"n")("E"|"e")>
   |
   < FUNCTION: ("F"|"f")("U"|"u")("N"|"n")("C"|"c")("T"|"t")("I"|"i")("O"|"o")("N"|"n")>
+  |
+  < PARAMETERS: ( "P" | "p") ( "A" | "a")  ( "R" | "r") ( "A" | "a") ( "M" | "m")  ( "E" | "e") ( "T" | "t")  ( "E" | "e") ( "R" | "r") ( "S" | "s") >
+  |
+  < LANGUAGE: ( "L" | "l") ( "A" | "a")  ( "N" | "n") ( "G" | "g") ( "U" | "u")  ( "A" | "a") ( "G" | "g")  ( "E" | "e") >
   |
   < BEGIN: ("B"|"b")("E"|"e")("G"|"g")("I"|"i")("N"|"n") >
   |
@@ -818,6 +832,10 @@ Identifier Identifier():
   |
   token = <FUNCTION>
   |
+  token = <LANGUAGE>
+  |
+  token = <PARAMETERS>
+  |
   token = <BEGIN>
   |
   token = <COMMIT>
@@ -987,6 +1005,12 @@ Statement StatementInternal():
         |
         LOOKAHEAD(UpdateStatement())
         result = UpdateStatement()
+        |
+        LOOKAHEAD(DefineFunctionStatement())
+        result = DefineFunctionStatement()
+        |
+        LOOKAHEAD(DeleteFunctionStatement())
+        result = DeleteFunctionStatement()
         |
         LOOKAHEAD(TruncateTypeStatement())
         result = TruncateTypeStatement()
@@ -1891,6 +1915,7 @@ RecordAttribute RecordAttribute():
 FunctionCall FunctionCall():
 {
   Expression lastExpression = null;
+  jjtn000.parser = this;
 }
 {
   (
@@ -4202,4 +4227,55 @@ AlignDatabaseStatement AlignDatabaseStatement():
     <ALIGN> <DATABASE>
   )
   {return jjtThis; }
+}
+
+DefineFunctionStatement DefineFunctionStatement():
+{
+    Token token;
+    Identifier lastIdentifier;
+}
+{
+    (
+        <DEFINE> <FUNCTION>
+        jjtThis.libraryName = Identifier()
+        <DOT>
+        jjtThis.functionName = Identifier()
+        (
+            jjtThis.codeQuoted = PString()
+            { jjtThis.code = jjtThis.codeQuoted.substring(1, jjtThis.codeQuoted.length() -1); }
+        )
+        [
+            <PARAMETERS>
+            <LBRACKET>
+            lastIdentifier = Identifier() {
+                jjtThis.parameters = new ArrayList<Identifier>();
+                jjtThis.parameters.add(lastIdentifier);
+            }
+            (
+                <COMMA>
+                lastIdentifier = Identifier() { jjtThis.parameters.add(lastIdentifier); }
+            )*
+            <RBRACKET>
+        ]
+        [
+            <LANGUAGE>
+            jjtThis.language = Identifier()
+        ]
+    )
+    { return jjtThis; }
+}
+
+DeleteFunctionStatement DeleteFunctionStatement():
+{
+    Token token;
+    Identifier lastIdentifier;
+}
+{
+    (
+        <DELETE> <FUNCTION>
+        jjtThis.libraryName = Identifier()
+        <DOT>
+        jjtThis.functionName = Identifier()
+    )
+    { return jjtThis; }
 }

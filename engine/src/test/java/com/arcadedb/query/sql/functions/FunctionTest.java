@@ -20,9 +20,9 @@ package com.arcadedb.query.sql.functions;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.query.sql.executor.SQLEngine;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -124,10 +124,11 @@ public class FunctionTest extends TestHelper {
   }
 
   @Test
-  public void testAllFunctionsHaveSyntax(){
-    for( String name : SQLEngine.getInstance().getFunctionFactory().getFunctionNames() ) {
-      Assertions.assertNotNull(SQLEngine.getInstance().getFunction(name).getName());
-      Assertions.assertNotNull(SQLEngine.getInstance().getFunction(name).getSyntax());
+  public void testAllFunctionsHaveSyntax() {
+    final SQLQueryEngine sqlEngine = (SQLQueryEngine) database.getQueryEngine("sql");
+    for (String name : sqlEngine.getFunctionFactory().getFunctionNames()) {
+      Assertions.assertNotNull(sqlEngine.getFunction(name).getName());
+      Assertions.assertNotNull(sqlEngine.getFunction(name).getSyntax());
     }
   }
 }

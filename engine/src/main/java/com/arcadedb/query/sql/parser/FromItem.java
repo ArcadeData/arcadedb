@@ -357,7 +357,7 @@ public class FromItem extends SimpleNode {
       Identifier.deserialize(fromResult.getProperty("identifier"));
     }
     if (fromResult.getProperty("functionCall") != null) {
-      functionCall = new FunctionCall(-1);
+      functionCall = new FunctionCall(parser, -1);
       functionCall.deserialize(fromResult.getProperty("functionCall"));
     }
     if (fromResult.getProperty("modifier") != null) {

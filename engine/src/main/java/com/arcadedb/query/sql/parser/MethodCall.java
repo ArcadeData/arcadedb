@@ -22,10 +22,10 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
-import com.arcadedb.query.sql.executor.SQLEngine;
 import com.arcadedb.query.sql.executor.SQLFunction;
 import com.arcadedb.query.sql.executor.SQLFunctionFiltered;
 import com.arcadedb.query.sql.executor.SQLMethod;
@@ -107,7 +107,7 @@ public class MethodCall extends SimpleNode {
       }
     }
     if (isGraphFunction()) {
-      SQLFunction function = SQLEngine.getInstance().getFunction(name);
+      SQLFunction function = ((SQLQueryEngine) ctx.getDatabase().getQueryEngine("sql")).getFunction(name);
       if (function instanceof SQLFunctionFiltered) {
         Object current = ctx.getVariable("$current");
         if (current instanceof Result) {
@@ -127,7 +127,7 @@ public class MethodCall extends SimpleNode {
 
     }
 
-    final SQLMethod method = SQLEngine.getInstance().getMethod(name);
+    final SQLMethod method = ((SQLQueryEngine) ctx.getDatabase().getQueryEngine("sql")).getMethod(name);
     if (method != null) {
       if (val instanceof Result)
         val = ((Result) val).getElement().orElse(null);

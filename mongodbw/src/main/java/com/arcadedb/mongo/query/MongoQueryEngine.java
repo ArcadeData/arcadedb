@@ -28,11 +28,16 @@ import java.util.*;
 import java.util.logging.*;
 
 public class MongoQueryEngine implements QueryEngine {
-  public static final String                 ENGINE_NAME = "mongo-engine";
+  public static final String                 ENGINE_NAME = "mongo";
   private final       MongoDBDatabaseWrapper mongoDBWrapper;
 
   protected MongoQueryEngine(final MongoDBDatabaseWrapper mongoDBWrapper) {
     this.mongoDBWrapper = mongoDBWrapper;
+  }
+
+  @Override
+  public String getLanguage() {
+    return ENGINE_NAME;
   }
 
   @Override
