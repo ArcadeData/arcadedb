@@ -68,7 +68,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
     try {
 
       final ResultSet qResult = language.equalsIgnoreCase("sqlScript") ?
-          executeScript(database, language, command, paramMap) :
+          executeScript(database, "sql", command, paramMap) :
           executeCommand(database, language, command, paramMap);
 
       if (qResult == null)
