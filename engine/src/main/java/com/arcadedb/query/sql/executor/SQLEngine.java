@@ -102,9 +102,9 @@ public class SQLEngine {
     return parseScript(is, database);
   }
 
-  public static List<Statement> parseScript(InputStream script, final DatabaseInternal database) {
+  public static List<Statement> parseScript(final InputStream script, final DatabaseInternal database) {
     try {
-      final SqlParser parser = new SqlParser(script);
+      final SqlParser parser = new SqlParser(database, script);
       return parser.ParseScript();
     } catch (ParseException e) {
       throw new CommandSQLParsingException(e);
