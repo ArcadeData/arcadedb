@@ -2,6 +2,7 @@ package com.arcadedb.function.sql;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.function.FunctionLibraryDefinition;
+import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -11,6 +12,13 @@ public class SQLDefinedSQLFunctionTest extends TestHelper {
     registerFunctions();
     Integer result = (Integer) database.getSchema().getFunction("math", "sum").execute(3, 5);
     Assertions.assertEquals(8, result);
+  }
+
+  @Test
+  public void testCallFromSQL() {
+    registerFunctions();
+    ResultSet result = database.command("sql", "select `math.sum`(?,?) as result", 3, 5);
+    Assertions.assertEquals(8, (Integer) result.next().getProperty("result"));
   }
 
   @Test
