@@ -86,11 +86,14 @@ public class StatementCache {
    */
   protected Statement parse(final String statement) throws CommandSQLParsingException {
     try {
-      final InputStream is;
-      if (db == null)
+
+      InputStream is;
+
+      if (db == null) {
         is = new ByteArrayInputStream(statement.getBytes(DatabaseFactory.getDefaultCharset()));
-      else
+      } else {
         is = new ByteArrayInputStream(statement.getBytes(StandardCharsets.UTF_8));
+      }
 
       SqlParser osql = null;
       if (db == null) {

@@ -20,23 +20,26 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
-import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.AggregationContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.FunctionAggregationContext;
 import com.arcadedb.query.sql.executor.IndexableSQLFunction;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.SQLEngine;
 import com.arcadedb.query.sql.executor.SQLFunction;
 
 import java.util.*;
 import java.util.stream.*;
 
 public class FunctionCall extends SimpleNode {
+
   protected Identifier name;
+
   protected List<Expression> params = new ArrayList<>();
 
   public FunctionCall(int id) {
@@ -45,6 +48,10 @@ public class FunctionCall extends SimpleNode {
 
   public FunctionCall(SqlParser p, int id) {
     super(p, id);
+  }
+
+  public static Database getDatabase() {
+    throw new UnsupportedOperationException();
   }
 
   public boolean isStar() {
@@ -126,7 +133,7 @@ public class FunctionCall extends SimpleNode {
         throw new CommandExecutionException("Invalid value for $current: " + record);
       }
     }
-    SQLFunction function = ((SQLQueryEngine) parser.getDatabase().getQueryEngine("sql")).getFunction(name);
+    SQLFunction function = SQLEngine.getInstance().getFunction(name);
     if (function != null) {
       if (record instanceof Identifiable) {
         return function.execute(targetObjects, (Identifiable) record, null, paramValues.toArray(), ctx);
@@ -143,7 +150,7 @@ public class FunctionCall extends SimpleNode {
   }
 
   public boolean isIndexedFunctionCall() {
-    SQLFunction function = ((SQLQueryEngine) parser.getDatabase().getQueryEngine("sql")).getFunction(name.getStringValue());
+    SQLFunction function = SQLEngine.getInstance().getFunction(name.getStringValue());
     return (function instanceof IndexableSQLFunction);
   }
 
@@ -158,7 +165,7 @@ public class FunctionCall extends SimpleNode {
    * @return
    */
   public Iterable<Record> executeIndexedFunction(FromClause target, CommandContext ctx, BinaryCompareOperator operator, Object rightValue) {
-    SQLFunction function = ((SQLQueryEngine) parser.getDatabase().getQueryEngine("sql")).getFunction(name.getStringValue());
+    SQLFunction function = SQLEngine.getInstance().getFunction(name.getStringValue());
     if (function instanceof IndexableSQLFunction) {
       return ((IndexableSQLFunction) function).searchFromTarget(target, operator, rightValue, ctx, this.getParams().toArray(new Expression[] {}));
     }
@@ -174,7 +181,7 @@ public class FunctionCall extends SimpleNode {
    * @return the approximate number of items returned by the condition execution, -1 if the estimation cannot be executed
    */
   public long estimateIndexedFunction(FromClause target, CommandContext ctx, BinaryCompareOperator operator, Object rightValue) {
-    SQLFunction function = ((SQLQueryEngine) parser.getDatabase().getQueryEngine("sql")).getFunction(name.getStringValue());
+    SQLFunction function = SQLEngine.getInstance().getFunction(name.getStringValue());
     if (function instanceof IndexableSQLFunction) {
       return ((IndexableSQLFunction) function).estimate(target, operator, rightValue, ctx, this.getParams().toArray(new Expression[] {}));
     }
@@ -193,7 +200,7 @@ public class FunctionCall extends SimpleNode {
    * otherwise
    */
   public boolean canExecuteIndexedFunctionWithoutIndex(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {
-    SQLFunction function = ((SQLQueryEngine) parser.getDatabase().getQueryEngine("sql")).getFunction(name.getStringValue());
+    SQLFunction function = SQLEngine.getInstance().getFunction(name.getStringValue());
     if (function instanceof IndexableSQLFunction) {
       return ((IndexableSQLFunction) function).canExecuteInline(target, operator, right, context, this.getParams().toArray(new Expression[] {}));
     }
@@ -211,7 +218,7 @@ public class FunctionCall extends SimpleNode {
    * @return true if current function is an indexed function AND that function can be used on this target, false otherwise
    */
   public boolean allowsIndexedFunctionExecutionOnTarget(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {
-    SQLFunction function = ((SQLQueryEngine) parser.getDatabase().getQueryEngine("sql")).getFunction(name.getStringValue());
+    SQLFunction function = SQLEngine.getInstance().getFunction(name.getStringValue());
     if (function instanceof IndexableSQLFunction) {
       return ((IndexableSQLFunction) function).allowsIndexedExecution(target, operator, right, context, this.getParams().toArray(new Expression[] {}));
     }
@@ -228,9 +235,8 @@ public class FunctionCall extends SimpleNode {
    *
    * @return true if current expression is an indexed function AND the function has also to be executed after the index search.
    */
-  public boolean executeIndexedFunctionAfterIndexSearch(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
-      final Object right) {
-    final SQLFunction function = ((SQLQueryEngine) parser.getDatabase().getQueryEngine("sql")).getFunction(name.getStringValue());
+  public boolean executeIndexedFunctionAfterIndexSearch(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {
+    SQLFunction function = SQLEngine.getInstance().getFunction(name.getStringValue());
     if (function instanceof IndexableSQLFunction) {
       return ((IndexableSQLFunction) function).shouldExecuteAfterSearch(target, operator, right, context, this.getParams().toArray(new Expression[] {}));
     }
@@ -241,7 +247,7 @@ public class FunctionCall extends SimpleNode {
     return name.getStringValue().equals("expand");
   }
 
-  public boolean needsAliases(final Set<String> aliases) {
+  public boolean needsAliases(Set<String> aliases) {
     for (Expression param : params) {
       if (param.needsAliases(aliases)) {
         return true;
@@ -264,13 +270,14 @@ public class FunctionCall extends SimpleNode {
     return false;
   }
 
-  public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateProj) {
+  public SimpleNode splitForAggregation(AggregateProjectionSplit aggregateProj) {
     if (isAggregate()) {
-      final FunctionCall newFunct = new FunctionCall(parser, -1);
+      FunctionCall newFunct = new FunctionCall(-1);
       newFunct.name = this.name;
       Identifier functionResultAlias = aggregateProj.getNextAlias();
 
       if (isAggregateFunction()) {
+
         if (isStar()) {
           for (Expression param : params) {
             newFunct.getParams().add(param);
@@ -280,8 +287,8 @@ public class FunctionCall extends SimpleNode {
             if (param.isAggregate()) {
               throw new CommandExecutionException("Cannot calculate an aggregate function of another aggregate function " + this);
             }
-            final Identifier nextAlias = aggregateProj.getNextAlias();
-            final ProjectionItem paramItem = new ProjectionItem(-1);
+            Identifier nextAlias = aggregateProj.getNextAlias();
+            ProjectionItem paramItem = new ProjectionItem(-1);
             paramItem.alias = nextAlias;
             paramItem.expression = param;
             aggregateProj.getPreAggregate().add(paramItem);
@@ -308,21 +315,21 @@ public class FunctionCall extends SimpleNode {
   }
 
   private boolean isAggregateFunction() {
-    final SQLFunction function = ((SQLQueryEngine) parser.getDatabase().getQueryEngine("sql")).getFunction(name.getStringValue());
+    SQLFunction function = SQLEngine.getInstance().getFunction(name.getStringValue());
     function.config(this.params.toArray());
     return function.aggregateResults();
   }
 
-  private ProjectionItem createProjection(final FunctionCall newFunct, final Identifier alias) {
-    final LevelZeroIdentifier l0 = new LevelZeroIdentifier(-1);
+  private ProjectionItem createProjection(FunctionCall newFunct, Identifier alias) {
+    LevelZeroIdentifier l0 = new LevelZeroIdentifier(-1);
     l0.functionCall = newFunct;
-    final BaseIdentifier l1 = new BaseIdentifier(-1);
+    BaseIdentifier l1 = new BaseIdentifier(-1);
     l1.levelZero = l0;
-    final BaseExpression l2 = new BaseExpression(-1);
+    BaseExpression l2 = new BaseExpression(-1);
     l2.identifier = l1;
-    final Expression l3 = new Expression(-1);
+    Expression l3 = new Expression(-1);
     l3.mathExpression = l2;
-    final ProjectionItem item = new ProjectionItem(-1);
+    ProjectionItem item = new ProjectionItem(-1);
     item.alias = alias;
     item.expression = l3;
     return item;
@@ -338,7 +345,7 @@ public class FunctionCall extends SimpleNode {
   }
 
   public AggregationContext getAggregationContext(CommandContext ctx) {
-    SQLFunction function = ((SQLQueryEngine) parser.getDatabase().getQueryEngine("sql")).getFunction(name.getStringValue());
+    SQLFunction function = SQLEngine.getInstance().getFunction(name.getStringValue());
     function.config(this.params.toArray());
 
     FunctionAggregationContext result = new FunctionAggregationContext(function, this.params);
@@ -346,7 +353,7 @@ public class FunctionCall extends SimpleNode {
   }
 
   public FunctionCall copy() {
-    FunctionCall result = new FunctionCall(parser, -1);
+    FunctionCall result = new FunctionCall(-1);
     result.name = name;
     result.params = params.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;
