@@ -19,6 +19,11 @@ import com.arcadedb.function.FunctionLibraryDefinition;
 import java.lang.reflect.*;
 import java.util.*;
 
+/**
+ * Function library that allows invocation of functions written in Java language.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
 public class JavaMethodFunctionLibraryDefinition implements FunctionLibraryDefinition<JavaMethodFunctionDefinition> {
   private final String                       libraryName;
   private final Method                       method;
@@ -47,8 +52,15 @@ public class JavaMethodFunctionLibraryDefinition implements FunctionLibraryDefin
   }
 
   @Override
+  public boolean hasFunction(final String functionName) {
+    return method.getName().equals(functionName);
+  }
+
+  @Override
   public JavaMethodFunctionDefinition getFunction(final String functionName) {
-    return method.getName().equals(functionName) ? function : null;
+    if (!method.getName().equals(functionName))
+      throw new IllegalArgumentException("Function '" + functionName + "' not defined");
+    return function;
   }
 
   @Override

@@ -117,7 +117,7 @@ public class PolyglotQueryEngine implements QueryEngine {
           if (result.isHostObject()) {
             final Object host = result.asHostObject();
             if (host instanceof ResultSet)
-              return (ResultSet) host;
+              return host;
 
             final InternalResultSet resultSet = new InternalResultSet();
             if (host instanceof Iterable) {

@@ -14,14 +14,49 @@ package com.arcadedb.function;/*
  * limitations under the License.
  */
 
+/**
+ * A function library manages executable functions.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
 public interface FunctionLibraryDefinition<T extends FunctionDefinition> {
+  /**
+   * Returns the name of the library.
+   */
   String getName();
 
+  /**
+   * Returns an iterable of the defined functions.
+   */
   Iterable<T> getFunctions();
 
-  T getFunction(String functionName);
+  /**
+   * Returns a function by its name
+   *
+   * @param functionName Name of the function to retrieve
+   *
+   * @throws IllegalArgumentException If the function was not defined
+   */
+  T getFunction(String functionName) throws IllegalArgumentException;
 
+  /**
+   * Returns true if the function was defined, otherwise false.
+   *
+   * @param functionName Name of the function to look up to
+   */
+  boolean hasFunction(String functionName);
+
+  /**
+   * Registers a new function in the library.
+   *
+   * @param registerFunction function object to register
+   */
   FunctionLibraryDefinition<T> registerFunction(T registerFunction);
 
+  /**
+   * Unregister a function from the library by its name.
+   *
+   * @param functionName Name of the function to unregister
+   */
   FunctionLibraryDefinition<T> unregisterFunction(String functionName);
 }

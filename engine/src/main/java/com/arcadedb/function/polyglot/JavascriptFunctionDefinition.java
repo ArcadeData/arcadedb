@@ -19,12 +19,24 @@ import org.graalvm.polyglot.Value;
 
 import java.io.*;
 
+/**
+ * Javascript implementation of a function. To define the function, pass the function name, code and optional parameters in the constructor.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
 public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition {
   private final String                            functionName;
   private final String                            implementation;
   private final String[]                          parameters;
   private       PolyglotFunctionLibraryDefinition library;
 
+  /**
+   * Creates the function with its name, implementation in form of text and optional parameters.
+   *
+   * @param functionName   Name of the function
+   * @param implementation Implementation code as string
+   * @param parameters     optional positional parameter names
+   */
   public JavascriptFunctionDefinition(final String functionName, final String implementation, final String... parameters) {
     this.functionName = functionName;
     this.implementation = implementation;

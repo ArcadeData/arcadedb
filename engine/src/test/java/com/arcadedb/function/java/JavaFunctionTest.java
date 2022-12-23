@@ -76,7 +76,12 @@ public class JavaFunctionTest extends TestHelper {
 
   @Test
   public void testFunctionNotFound() {
-    Assertions.assertNull(database.getSchema().getFunction("math", "sum"));
+    try {
+      database.getSchema().getFunction("math", "sum");
+      Assertions.fail();
+    } catch (IllegalArgumentException e) {
+      // EXPECTED
+    }
   }
 
   @Test

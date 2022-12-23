@@ -20,6 +20,12 @@ import java.lang.reflect.*;
 import java.util.*;
 import java.util.concurrent.*;
 
+/**
+ * Binds a Java class into a function library, where each method of the class are invokable functions. At construction time, the class is inspected to
+ * find the methods by using reflection This library definition implementation does not allow dynamic function registration.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
 public class JavaClassFunctionLibraryDefinition implements FunctionLibraryDefinition<JavaMethodFunctionDefinition> {
   private final String                                              libraryName;
   private final ConcurrentMap<String, JavaMethodFunctionDefinition> functions = new ConcurrentHashMap<>();
@@ -60,8 +66,16 @@ public class JavaClassFunctionLibraryDefinition implements FunctionLibraryDefini
   }
 
   @Override
-  public JavaMethodFunctionDefinition getFunction(final String functionName) {
-    return functions.get(functionName);
+  public boolean hasFunction(final String functionName) {
+    return functions.containsKey(functionName);
+  }
+
+  @Override
+  public JavaMethodFunctionDefinition getFunction(final String functionName) throws IllegalArgumentException {
+    final JavaMethodFunctionDefinition f = functions.get(functionName);
+    if (f == null)
+      throw new IllegalArgumentException("Function '" + functionName + "' not defined");
+    return f;
   }
 
   @Override

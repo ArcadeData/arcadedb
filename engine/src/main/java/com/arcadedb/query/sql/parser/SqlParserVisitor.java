@@ -98,6 +98,8 @@ public interface SqlParserVisitor {
 
   Object visit(CreateEdgeStatement node, Object data);
 
+  Object visit(DefineFunctionStatement node, Object data);
+
   Object visit(InputParameter node, Object data);
 
   Object visit(PositionalParameter node, Object data);

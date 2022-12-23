@@ -170,7 +170,7 @@ public class SQLQueryEngine implements QueryEngine {
   }
 
   public SQLFunction getFunction(final String name) {
-    SQLFunction sqlFunction = functions.createFunction(name);
+    SQLFunction sqlFunction = functions.getFunctionInstance(name);
     if (sqlFunction == null) {
       final int pos = name.indexOf(".");
       if (pos > -1) {
@@ -214,7 +214,7 @@ public class SQLQueryEngine implements QueryEngine {
     return parseScript(is, database);
   }
 
-  public static List<Statement> parseScript(InputStream script, final DatabaseInternal database) {
+  public static List<Statement> parseScript(final InputStream script, final DatabaseInternal database) {
     try {
       final SqlParser parser = new SqlParser(database, script);
       return parser.ParseScript();
@@ -222,5 +222,4 @@ public class SQLQueryEngine implements QueryEngine {
       throw new CommandSQLParsingException(e);
     }
   }
-
 }

@@ -94,10 +94,6 @@ public class JavaQueryEngine implements QueryEngine {
     public QueryEngine getInstance(final DatabaseInternal database) {
       return new JavaQueryEngine(database, allowedPackages);
     }
-
-    public static Iterable<String> getSupportedLanguages() {
-      return Collections.singleton("Java");
-    }
   }
 
   protected JavaQueryEngine(final DatabaseInternal database, final List<String> allowedPackages) {

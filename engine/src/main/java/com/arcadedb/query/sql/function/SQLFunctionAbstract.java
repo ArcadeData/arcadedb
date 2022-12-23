@@ -28,8 +28,8 @@ import com.arcadedb.query.sql.executor.SQLFunction;
 public abstract class SQLFunctionAbstract implements SQLFunction {
   protected String name;
 
-  public SQLFunctionAbstract(final String iName) {
-    this.name = iName;
+  public SQLFunctionAbstract(final String name) {
+    this.name = name;
   }
 
   @Override

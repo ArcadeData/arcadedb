@@ -14,8 +14,23 @@ package com.arcadedb.function;/*
  * limitations under the License.
  */
 
+/**
+ * Defines a function with a name and an entrypoint for execution.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
 public interface FunctionDefinition {
+  /**
+   * Returns the name of the function.
+   */
   String getName();
 
+  /**
+   * Executes the function passing optional parameters.
+   *
+   * @param parameters are optional and can be positional or a map of key/value pairs.
+   *
+   * @return The result of the function
+   */
   Object execute(Object... parameters);
 }

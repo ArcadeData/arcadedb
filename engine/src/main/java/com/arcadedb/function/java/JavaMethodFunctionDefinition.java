@@ -19,16 +19,42 @@ import com.arcadedb.function.FunctionExecutionException;
 
 import java.lang.reflect.*;
 
+/**
+ * Maps a Java method execution to a callable function.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
 public class JavaMethodFunctionDefinition implements FunctionDefinition {
   private final Method method;
   private final Object instance;
 
+  /**
+   * Creates a function bound to a Java method.
+   *
+   * @param instance Java object against where to invoke the method
+   * @param method   Java Method object to invoke
+   *
+   * @throws NoSuchMethodException
+   * @throws InvocationTargetException
+   * @throws InstantiationException
+   * @throws IllegalAccessException
+   */
   public JavaMethodFunctionDefinition(final Object instance, final Method method)
       throws NoSuchMethodException, InvocationTargetException, InstantiationException, IllegalAccessException {
     this.instance = Modifier.isStatic(method.getModifiers()) ? null : instance != null ? instance : method.getDeclaringClass().getConstructor().newInstance();
     this.method = method;
   }
 
+  /**
+   * Creates a function bound to a static Java method.
+   *
+   * @param method static method to execute
+   *
+   * @throws NoSuchMethodException
+   * @throws InvocationTargetException
+   * @throws InstantiationException
+   * @throws IllegalAccessException
+   */
   public JavaMethodFunctionDefinition(final Method method)
       throws NoSuchMethodException, InvocationTargetException, InstantiationException, IllegalAccessException {
     this(null, method);
@@ -48,6 +74,9 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
     }
   }
 
+  /**
+   * Returns the current java object instance to use for method calling. If the instance is null, then the method is static.
+   */
   public Object getInstance() {
     return instance;
   }

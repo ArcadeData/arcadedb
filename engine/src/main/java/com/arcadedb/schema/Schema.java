@@ -161,15 +161,55 @@ public interface Schema {
 
   EmbeddedSchema getEmbedded();
 
+  /**
+   * Registers a function library.
+   *
+   * @param library Function library definition implementation
+   *
+   * @return The current schema instance
+   */
   Schema registerFunctionLibrary(FunctionLibraryDefinition library);
 
+  /**
+   * Unregister a function library previously defined.
+   *
+   * @param name Name of the function to unregister
+   *
+   * @return The current schema instance
+   */
   Schema unregisterFunctionLibrary(String name);
 
+  /**
+   * Returns all the registered function libraries.
+   */
   Iterable<FunctionLibraryDefinition> getFunctionLibraries();
 
-  FunctionLibraryDefinition getFunctionLibrary(String name);
+  /**
+   * Returns true if the a function library is defined, otherwise false.
+   *
+   * @param name Function library nme
+   */
+  boolean hasFunctionLibrary(String name);
 
-  FunctionDefinition getFunction(String libraryName, String functionName);
+  /**
+   * Returns the requested function library if defined or IllegalArgumentException if not
+   *
+   * @param name Function library to search
+   * @throws IllegalArgumentException if the library is not defined
+   */
+  FunctionLibraryDefinition getFunctionLibrary(String name) throws IllegalArgumentException;
+
+  /**
+   * Returns a function defined in a library.
+   *
+   * @param libraryName  Name of the function library
+   * @param functionName Name of the function
+   *
+   * @return The function definition if found
+   *
+   * @throws IllegalArgumentException if the library or the function is not defined
+   */
+  FunctionDefinition getFunction(String libraryName, String functionName) throws IllegalArgumentException;
 
   enum INDEX_TYPE {
     LSM_TREE, FULL_TEXT

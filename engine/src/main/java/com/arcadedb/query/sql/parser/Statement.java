@@ -48,7 +48,7 @@ public class Statement extends SimpleNode {
     super(p, id);
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     throw new UnsupportedOperationException("missing implementation in " + getClass().getSimpleName());
   }
 

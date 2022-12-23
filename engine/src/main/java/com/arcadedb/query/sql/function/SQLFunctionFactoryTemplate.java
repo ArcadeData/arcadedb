@@ -57,7 +57,7 @@ public abstract class SQLFunctionFactoryTemplate implements SQLFunctionFactory {
   }
 
   @Override
-  public SQLFunction createFunction(final String name) throws CommandExecutionException {
+  public SQLFunction getFunctionInstance(final String name) throws CommandExecutionException {
     final Object obj = functions.get(name.toLowerCase(Locale.ENGLISH));
     if (obj == null)
       return null;

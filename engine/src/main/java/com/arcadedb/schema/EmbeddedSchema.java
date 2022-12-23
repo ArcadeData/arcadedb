@@ -1356,14 +1356,21 @@ public class EmbeddedSchema implements Schema {
     return functionLibraries.values();
   }
 
+  @Override
+  public boolean hasFunctionLibrary(final String name) {
+    return functionLibraries.containsKey(name);
+  }
+
   public FunctionLibraryDefinition getFunctionLibrary(final String name) {
-    return functionLibraries.get(name);
+    final FunctionLibraryDefinition flib = functionLibraries.get(name);
+    if (flib == null)
+      throw new IllegalArgumentException("Function library '" + name + "' not defined");
+    return flib;
   }
 
   @Override
-  public FunctionDefinition getFunction(String libraryName, String functionName) {
-    final FunctionLibraryDefinition library = functionLibraries.get(libraryName);
-    return library != null ? library.getFunction(functionName) : null;
+  public FunctionDefinition getFunction(String libraryName, String functionName) throws IllegalArgumentException {
+    return getFunctionLibrary(libraryName).getFunction(functionName);
   }
 
   public boolean isDirty() {

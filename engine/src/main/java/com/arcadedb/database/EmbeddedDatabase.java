@@ -1257,7 +1257,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     context.setDatabase(getWrappedDatabaseInstance());
     context.setInputParameters(params);
 
-    final List<Statement> statements = ((SQLQueryEngine) getQueryEngine("sql")).parseScript(script, wrappedDatabaseInstance);
+    final List<Statement> statements = ((SQLQueryEngine) getQueryEngine(language)).parseScript(script, wrappedDatabaseInstance);
     return new LocalResultSetLifecycleDecorator(executeInternal(statements, context));
   }
 
@@ -1269,7 +1269,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     context.setDatabase(getWrappedDatabaseInstance());
     context.setInputParameters(args);
 
-    final List<Statement> statements = ((SQLQueryEngine) getQueryEngine("sql")).parseScript(script, wrappedDatabaseInstance);
+    final List<Statement> statements = ((SQLQueryEngine) getQueryEngine(language)).parseScript(script, wrappedDatabaseInstance);
     return new LocalResultSetLifecycleDecorator(executeInternal(statements, context));
   }
 

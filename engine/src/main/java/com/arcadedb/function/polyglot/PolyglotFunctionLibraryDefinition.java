@@ -42,7 +42,7 @@ public abstract class PolyglotFunctionLibraryDefinition<T extends PolyglotFuncti
     this.polyglotEngine = GraalPolyglotEngine.newBuilder(database, Engine.create()).setLanguage(language).setAllowedPackages(allowedPackages).build();
   }
 
-  public PolyglotFunctionLibraryDefinition registerFunction(T function) {
+  public PolyglotFunctionLibraryDefinition registerFunction(final T function) {
     if (functions.putIfAbsent(function.getName(), function) != null)
       throw new IllegalArgumentException("Function '" + function.getName() + "' already defined in library '" + libraryName + "'");
 
@@ -72,8 +72,16 @@ public abstract class PolyglotFunctionLibraryDefinition<T extends PolyglotFuncti
   }
 
   @Override
+  public boolean hasFunction(final String functionName) {
+    return functions.containsKey(functionName);
+  }
+
+  @Override
   public T getFunction(final String functionName) {
-    return functions.get(functionName);
+    final T f = functions.get(functionName);
+    if (f == null)
+      throw new IllegalArgumentException("Function '" + functionName + "' not defined");
+    return f;
   }
 
   public Object execute(final Callback callback) {
