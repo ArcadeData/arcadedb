@@ -58,8 +58,7 @@ public abstract class SQLFunctionFactoryTemplate implements SQLFunctionFactory {
 
   @Override
   public SQLFunction createFunction(final String name) throws CommandExecutionException {
-    Object obj = functions.get(name.toLowerCase(Locale.ENGLISH));
-
+    final Object obj = functions.get(name.toLowerCase(Locale.ENGLISH));
     if (obj == null)
       return null;
 
@@ -73,14 +72,11 @@ public abstract class SQLFunctionFactoryTemplate implements SQLFunctionFactory {
       } catch (Exception e) {
         throw new CommandExecutionException(
             "Error in creation of function " + name + "(). Probably there is not an empty constructor or the constructor generates errors", e);
-
       }
     }
-
   }
 
   public Map<String, Object> getFunctions() {
     return functions;
   }
-
 }

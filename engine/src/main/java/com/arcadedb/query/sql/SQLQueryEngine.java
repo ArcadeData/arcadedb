@@ -171,7 +171,6 @@ public class SQLQueryEngine implements QueryEngine {
 
   public SQLFunction getFunction(final String name) {
     SQLFunction sqlFunction = functions.createFunction(name);
-
     if (sqlFunction == null) {
       final int pos = name.indexOf(".");
       if (pos > -1) {
