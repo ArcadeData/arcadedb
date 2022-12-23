@@ -22,6 +22,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -107,6 +108,16 @@ public class JsonSerializer {
               o = serializeDocument((Document) o);
             else if (o instanceof Result)
               o = serializeResult((Result) o);
+            else if (o instanceof ResultSet) {
+              final ResultSet resultSet = (ResultSet) o;
+              final JSONArray array = new JSONArray();
+              while (resultSet.hasNext()) {
+                final Result row = resultSet.next();
+                array.put(serializeResult(row));
+              }
+              o = array;
+            }
+
             list.put(o);
           }
           value = list;

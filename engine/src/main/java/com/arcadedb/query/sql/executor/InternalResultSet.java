@@ -55,7 +55,7 @@ public class InternalResultSet implements ResultSet {
     return Optional.ofNullable(plan);
   }
 
-  public void setPlan(ExecutionPlan plan) {
+  public void setPlan(final ExecutionPlan plan) {
     this.plan = plan;
   }
 
@@ -64,7 +64,7 @@ public class InternalResultSet implements ResultSet {
     return new HashMap<>();
   }
 
-  public void add(Result nextResult) {
+  public void add(final Result nextResult) {
     content.add(nextResult);
   }
 

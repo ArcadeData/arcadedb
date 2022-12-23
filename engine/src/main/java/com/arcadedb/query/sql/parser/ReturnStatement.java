@@ -33,23 +33,23 @@ import java.util.*;
 public class ReturnStatement extends SimpleExecStatement {
   protected Expression expression;
 
-  public ReturnStatement(int id) {
+  public ReturnStatement(final int id) {
     super(id);
   }
 
-  public ReturnStatement(SqlParser p, int id) {
+  public ReturnStatement(final SqlParser p, final int id) {
     super(p, id);
   }
 
   @Override
   public ResultSet executeSimple(CommandContext ctx) {
-    InternalResultSet rs = new InternalResultSet();
+    final InternalResultSet rs = new InternalResultSet();
 
-    Object result = expression == null ? null : expression.execute((Result) null, ctx);
+    final Object result = expression == null ? null : expression.execute((Result) null, ctx);
     if (result instanceof Result) {
       rs.add((Result) result);
     } else if (result instanceof Identifiable) {
-      ResultInternal res = new ResultInternal();
+      final ResultInternal res = new ResultInternal();
       res.setElement((Document) ((Identifiable) result).getRecord());
       rs.add(res);
     } else if (result instanceof ResultSet) {
@@ -67,7 +67,7 @@ public class ReturnStatement extends SimpleExecStatement {
       }
       return (ResultSet) result;
     } else {
-      ResultInternal res = new ResultInternal();
+      final ResultInternal res = new ResultInternal();
       res.setProperty("value", result);
       rs.add(res);
     }
@@ -75,7 +75,7 @@ public class ReturnStatement extends SimpleExecStatement {
   }
 
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("RETURN");
     if (expression != null) {
       builder.append(" ");
@@ -85,19 +85,19 @@ public class ReturnStatement extends SimpleExecStatement {
 
   @Override
   public ReturnStatement copy() {
-    ReturnStatement result = new ReturnStatement(-1);
+    final ReturnStatement result = new ReturnStatement(-1);
     result.expression = expression == null ? null : expression.copy();
     return result;
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    ReturnStatement that = (ReturnStatement) o;
+    final ReturnStatement that = (ReturnStatement) o;
 
     return Objects.equals(expression, that.expression);
   }
