@@ -47,6 +47,33 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
 
   protected void serializeResultSet(final Database database, final String serializer, final int limit, final JSONObject response, final ResultSet qResult) {
     switch (serializer) {
+    case "strictgraph": {
+      final JsonGraphSerializer serializerImpl = new JsonGraphSerializer().setExpandVertexEdges(false);
+      final Set<Identifiable> includedVertices = new HashSet<>();
+      final Set<Identifiable> includedEdges = new HashSet<>();
+      final JSONArray vertices = new JSONArray();
+      final JSONArray edges = new JSONArray();
+
+      while (qResult.hasNext()) {
+        final Result row = qResult.next();
+
+        if (row.isVertex()) {
+          final Vertex v = row.getVertex().get();
+          if (includedVertices.add(v.getIdentity()))
+            vertices.put(serializerImpl.serializeGraphElement(v));
+        } else if (row.isEdge()) {
+          final Edge e = row.getEdge().get();
+          if (includedEdges.add(e.getIdentity()))
+            edges.put(serializerImpl.serializeGraphElement(e));
+        } else {
+          analyzeResultContent(database, serializerImpl, includedVertices, vertices, edges, row);
+        }
+      }
+
+      response.put("result", new JSONObject().put("vertices", vertices).put("edges", edges));
+      break;
+    }
+
     case "graph": {
       final JsonGraphSerializer serializerImpl = new JsonGraphSerializer().setExpandVertexEdges(false);
       final Set<Identifiable> includedRecords = new HashSet<>();
