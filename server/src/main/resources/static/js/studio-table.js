@@ -7,6 +7,7 @@ function renderTable(){
 
   var tableColumns = [];
   var tableRecords = [];
+  var metadataColumns = ["@rid", "@type", "@cat", "@in", "@out"];
 
   if( globalResultset.records.length > 0 ) {
     let columns = {};
@@ -26,7 +27,7 @@ function renderTable(){
       orderedColumns.push("@type");
 
     for( let colName in columns ){
-      if( !colName.startsWith("@"))
+      if( !metadataColumns.includes(colName) )
         orderedColumns.push(colName);
     }
 

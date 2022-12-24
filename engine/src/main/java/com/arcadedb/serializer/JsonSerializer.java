@@ -29,9 +29,10 @@ import org.json.JSONObject;
 import java.util.*;
 
 public class JsonSerializer {
-  private boolean useCollectionSize  = false;
-  private boolean includeVertexEdges = true;
-  private boolean useVertexEdgeSize  = true;
+  private boolean useCollectionSize         = false;
+  private boolean includeVertexEdges        = true;
+  private boolean useVertexEdgeSize         = true;
+  private boolean useCollectionSizeForEdges = true;
 
   public JSONObject serializeDocument(final Document document) {
     final JSONObject object = new JSONObject();
@@ -99,28 +100,32 @@ public class JsonSerializer {
       else if (value instanceof Result)
         value = serializeResult((Result) value);
       else if (value instanceof Collection) {
-        if (useCollectionSize) {
-          value = ((Collection) value).size();
-        } else {
-          final JSONArray list = new JSONArray();
-          for (Object o : (Collection) value) {
-            if (o instanceof Document)
-              o = serializeDocument((Document) o);
-            else if (o instanceof Result)
-              o = serializeResult((Result) o);
-            else if (o instanceof ResultSet) {
-              final ResultSet resultSet = (ResultSet) o;
-              final JSONArray array = new JSONArray();
-              while (resultSet.hasNext()) {
-                final Result row = resultSet.next();
-                array.put(serializeResult(row));
+        if (!((Collection<?>) value).isEmpty()) {
+          if (useCollectionSizeForEdges && ((Collection<?>) value).iterator().next() instanceof Edge)
+            value = ((Collection) value).size();
+          else if (useCollectionSize) {
+            value = ((Collection) value).size();
+          } else {
+            final JSONArray list = new JSONArray();
+            for (Object o : (Collection) value) {
+              if (o instanceof Document)
+                o = serializeDocument((Document) o);
+              else if (o instanceof Result)
+                o = serializeResult((Result) o);
+              else if (o instanceof ResultSet) {
+                final ResultSet resultSet = (ResultSet) o;
+                final JSONArray array = new JSONArray();
+                while (resultSet.hasNext()) {
+                  final Result row = resultSet.next();
+                  array.put(serializeResult(row));
+                }
+                o = array;
               }
-              o = array;
-            }
 
-            list.put(o);
+              list.put(o);
+            }
+            value = list;
           }
-          value = list;
         }
       } else if (value instanceof Map) {
         if (useCollectionSize) {
@@ -169,6 +174,15 @@ public class JsonSerializer {
 
   public JsonSerializer setIncludeVertexEdges(final boolean includeVertexEdges) {
     this.includeVertexEdges = includeVertexEdges;
+    return this;
+  }
+
+  public boolean isUseCollectionSizeForEdges() {
+    return useCollectionSizeForEdges;
+  }
+
+  public JsonSerializer setUseCollectionSizeForEdges(final boolean useCollectionSizeForEdges) {
+    this.useCollectionSizeForEdges = useCollectionSizeForEdges;
     return this;
   }
 

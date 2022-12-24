@@ -47,8 +47,11 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
 
   protected void serializeResultSet(final Database database, final String serializer, final int limit, final JSONObject response, final ResultSet qResult) {
     switch (serializer) {
-    case "strictgraph": {
+    case "graph": {
+      // SERIALIZES THE GRAPH ELEMENTS IN VERTICES AND EDGES
       final JsonGraphSerializer serializerImpl = new JsonGraphSerializer().setExpandVertexEdges(false);
+      serializerImpl.setUseCollectionSize(false).setUseCollectionSizeForEdges(true);
+
       final Set<Identifiable> includedVertices = new HashSet<>();
       final Set<Identifiable> includedEdges = new HashSet<>();
       final JSONArray vertices = new JSONArray();
@@ -74,8 +77,11 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
       break;
     }
 
-    case "graph": {
+    case "studio": {
+      // USE BY STUDIO TO RENDER GRAPH AND TABLE AT THE SAME TIME
       final JsonGraphSerializer serializerImpl = new JsonGraphSerializer().setExpandVertexEdges(false);
+      serializerImpl.setUseCollectionSize(false).setUseCollectionSizeForEdges(true);
+
       final Set<Identifiable> includedRecords = new HashSet<>();
       final Set<Identifiable> includedVertices = new HashSet<>();
       final JSONArray vertices = new JSONArray();
@@ -143,14 +149,14 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
     }
 
     case "record": {
-      final JsonSerializer serializerImpl = new JsonSerializer().setIncludeVertexEdges(false).setUseCollectionSize(false);
+      final JsonSerializer serializerImpl = new JsonSerializer().setIncludeVertexEdges(false).setUseCollectionSize(false).setUseCollectionSizeForEdges(false);
       final JSONArray result = new JSONArray(qResult.stream().limit(limit + 1).map(r -> serializerImpl.serializeResult(r)).collect(Collectors.toList()));
       response.put("result", result);
       break;
     }
 
     default: {
-      final JsonSerializer serializerImpl = new JsonSerializer().setIncludeVertexEdges(true).setUseCollectionSize(false);
+      final JsonSerializer serializerImpl = new JsonSerializer().setIncludeVertexEdges(true).setUseCollectionSize(false).setUseCollectionSizeForEdges(false);
       final JSONArray result = new JSONArray(qResult.stream().limit(limit + 1).map(r -> serializerImpl.serializeResult(r)).collect(Collectors.toList()));
       response.put("result", result);
     }
