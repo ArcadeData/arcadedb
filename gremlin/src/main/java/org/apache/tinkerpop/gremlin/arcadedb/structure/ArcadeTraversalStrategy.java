@@ -95,18 +95,23 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
             for (HasContainer c : hasContainers) {
               final String key = c.getKey();
               if (!key.startsWith("~")) {
-                final TypeIndex index = graph.database.getSchema().getType(typeNameToMatch).getPolymorphicIndexByProperties(key);
-                if (index != null) {
-                  if (c.getBiPredicate().equals(Compare.eq))
-                    indexCursors.add(index.get(c.getValue().getClass().isArray() ? (Object[]) c.getValue() : new Object[] { c.getValue() }));
-                  else if (c.getBiPredicate().equals(Compare.gt))
-                    indexCursors.add(index.iterator(true, c.getValue().getClass().isArray() ? (Object[]) c.getValue() : new Object[] { c.getValue() }, false));
-                  else if (c.getBiPredicate().equals(Compare.gte))
-                    indexCursors.add(index.iterator(true, c.getValue().getClass().isArray() ? (Object[]) c.getValue() : new Object[] { c.getValue() }, true));
-                  else if (c.getBiPredicate().equals(Compare.lt))
-                    indexCursors.add(index.iterator(false, c.getValue().getClass().isArray() ? (Object[]) c.getValue() : new Object[] { c.getValue() }, false));
-                  else if (c.getBiPredicate().equals(Compare.lte))
-                    indexCursors.add(index.iterator(false, c.getValue().getClass().isArray() ? (Object[]) c.getValue() : new Object[] { c.getValue() }, true));
+                if (graph.database.getSchema().existsType(typeNameToMatch)) {
+                  final TypeIndex index = graph.database.getSchema().getType(typeNameToMatch).getPolymorphicIndexByProperties(key);
+                  if (index != null) {
+                    if (c.getBiPredicate().equals(Compare.eq))
+                      indexCursors.add(index.get(c.getValue().getClass().isArray() ? (Object[]) c.getValue() : new Object[] { c.getValue() }));
+                    else if (c.getBiPredicate().equals(Compare.gt))
+                      indexCursors.add(
+                          index.iterator(true, c.getValue().getClass().isArray() ? (Object[]) c.getValue() : new Object[] { c.getValue() }, false));
+                    else if (c.getBiPredicate().equals(Compare.gte))
+                      indexCursors.add(index.iterator(true, c.getValue().getClass().isArray() ? (Object[]) c.getValue() : new Object[] { c.getValue() }, true));
+                    else if (c.getBiPredicate().equals(Compare.lt))
+                      indexCursors.add(
+                          index.iterator(false, c.getValue().getClass().isArray() ? (Object[]) c.getValue() : new Object[] { c.getValue() }, false));
+                    else if (c.getBiPredicate().equals(Compare.lte))
+                      indexCursors.add(
+                          index.iterator(false, c.getValue().getClass().isArray() ? (Object[]) c.getValue() : new Object[] { c.getValue() }, true));
+                  }
                 }
               }
             }
