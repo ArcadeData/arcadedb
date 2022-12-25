@@ -825,7 +825,7 @@ public class PostgresNetworkExecutor extends Thread {
       writeError(ERROR_SEVERITY.FATAL, "Credentials not valid", "28P01");
       return false;
     } catch (DatabaseOperationException e) {
-      writeError(ERROR_SEVERITY.FATAL, "Database not exists", "HV00Q");
+      writeError(ERROR_SEVERITY.FATAL, "Database does not exist", "HV00Q");
       return false;
     }
 

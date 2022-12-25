@@ -201,7 +201,7 @@ public class PageManager extends LockContext {
       }
 
       if (page == null)
-        throw new IllegalArgumentException("Page id '" + pageId + "' does not exists (threadId=" + Thread.currentThread().getId() + ")");
+        throw new IllegalArgumentException("Page id '" + pageId + "' does not exist (threadId=" + Thread.currentThread().getId() + ")");
     }
 
     return page;
@@ -212,7 +212,7 @@ public class PageManager extends LockContext {
 
     if (!fileManager.existsFile(pageId.getFileId()))
       throw new ConcurrentModificationException("Concurrent modification on page " + pageId + " file with id " + pageId.getFileId()
-          + " does not exists anymore. Please retry the operation (threadId=" + Thread.currentThread().getId() + ")");
+          + " does not exist anymore. Please retry the operation (threadId=" + Thread.currentThread().getId() + ")");
 
     final BasePage mostRecentPage = getPage(pageId, page.getPhysicalSize(), isNew, false);
 
