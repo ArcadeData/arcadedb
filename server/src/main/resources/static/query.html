@@ -258,12 +258,6 @@ function initQuery() {
     editor.setOption("mode", getEditorMode() );
   });
 
-  var dbPar = getURLParameter("db");
-  if( dbPar != null && dbPar != "null") {
-    $("#currentDatabase").html( escapeHtml( dbPar ) );
-    $("#inputDatabase").val( escapeHtml( dbPar ) );
-  }
-
   $('.dropdown-menu').on("click.bs.dropdown", function (e) {
     e.stopPropagation();
     e.preventDefault();
@@ -275,6 +269,20 @@ function initQuery() {
 
   renderCodeEditor();
   executeCommand();
+
+  // APPLY SETTINGS FROM URL
+  var dbPar = getURLParameter("db");
+  if( dbPar != null && dbPar != "null") {
+    $("#currentDatabase").html( escapeHtml( dbPar ) );
+    $("#inputDatabase").val( escapeHtml( dbPar ) );
+  }
+
+  var limitPar = getURLParameter("limit");
+  if( limitPar != null && limitPar != "null") {
+    if( limitPar != "25" && limitPar != "100" && limitPar != "500" && limitPar != "-1" )
+      $("#inputLimit").append("<option value='" + limitPar + "' selected='selected'>"+limitPar+"</option>");
+    $("#inputLimit").val( escapeHtml( limitPar ) );
+  }
 }
 
 function renderCodeEditor(){
