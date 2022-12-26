@@ -348,7 +348,7 @@ function executeCommandGraph(){
     let elapsed = new Date() - beginTime;
     $("#result-elapsed").html( elapsed );
 
-    $("#result-num").html( data.result.vertices.length + data.result.edges.length );
+    $("#result-num").html( data.result.records.length );
     $("#resultJson").val( JSON.stringify(data, null, 2) );
 
     globalResultset = data.result;
