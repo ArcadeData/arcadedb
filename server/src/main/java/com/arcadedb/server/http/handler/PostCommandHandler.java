@@ -68,12 +68,12 @@ public class PostCommandHandler extends AbstractQueryHandler {
     try {
       if (language.equalsIgnoreCase("sql") || language.equalsIgnoreCase("sqlScript")) {
         final String commandLC = command.toLowerCase().trim();
-        if (commandLC.startsWith("select") || commandLC.startsWith("match")) {
+        if ((commandLC.startsWith("select") || commandLC.startsWith("match")) && !commandLC.endsWith(";")) {
           if (!command.contains(" limit ")) {
             command += " limit " + limit;
           } else {
             final String[] words = commandLC.split(" ");
-            if( !"limit".equals( words[words.length-2] ) )
+            if (!"limit".equals(words[words.length - 2]))
               command += " limit " + limit;
           }
         }
