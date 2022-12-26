@@ -197,7 +197,7 @@ public class HTTPDocumentIT extends BaseGraphServerTest {
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
-      formatPayload(connection, "sql", "SELECT FROM Person", "graph", Collections.emptyMap());
+      formatPayload(connection, "sql", "SELECT FROM Person", "studio", Collections.emptyMap());
       connection.connect();
 
       try {
