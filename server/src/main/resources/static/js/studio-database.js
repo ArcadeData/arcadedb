@@ -251,13 +251,68 @@ function dropIndex(indexName){
   });
 }
 
+function setCurrentDatabase( dbName ){
+  $("#currentDatabase").html( escapeHtml( dbName ) );
+  $("#inputDatabase").val( escapeHtml( dbName ) );
+}
+
+function getQueryHistory(){
+  let queryHistory = localStorage.getItem("database.query.history");
+  if( queryHistory == null )
+    queryHistory = [];
+  else {
+    try{
+      queryHistory = JSON.parse(queryHistory);
+    } catch(e) {
+      // RESET HISTORY
+      localStorage.setItem("database.query.history", "[]");
+      queryHistory = [];
+    }
+  }
+
+  return queryHistory;
+}
+
+function loadQueryHistory(){
+  $("#inputHistory").html("");
+  $("#inputHistory").append( "<option value=''></option>" );
+
+  let queryHistory = getQueryHistory();
+  if( queryHistory != null && queryHistory.length > 0 ){
+    let database = escapeHtml( $("#inputDatabase").val() );
+    for( let index = 0; index < queryHistory.length; ++index ) {
+      let q = queryHistory[index];
+      if( q != null && q.d == database && q.l != null && q.c != null )
+        $("#inputHistory").append( "<option value='" + index + "'>("+q.l+") "+q.c+"</option>" );
+    }
+  }
+}
+
+function copyQueryFromHistory(){
+  let index = $("#inputHistory").val();
+  if( index != "" ){
+    let queryHistory = getQueryHistory();
+    let q = queryHistory[index];
+    if( q != null ) {
+      setCurrentDatabase( q.d );
+       $("#inputLanguage").val( q.l );
+      editor.setValue( q.c );
+    }
+  }
+}
+
 function executeCommand(language, query){
   globalResultset = null;
 
   if( language != null )
     $("#inputLanguage").val( language );
+  else
+    language = $("#inputLanguage").val();
+
   if( query != null )
     editor.setValue( query );
+  else
+    query = editor.getValue();
 
   if( escapeHtml( $("#inputDatabase").val() ) == "" )
     return;
@@ -273,7 +328,32 @@ function executeCommand(language, query){
     executeCommandTable();
   else if( activeTab == "tab-graph-sel" )
     executeCommandGraph();
+
+  let database = escapeHtml( $("#inputDatabase").val() );
+
+  let queryHistory = getQueryHistory();
+
+  for( index in queryHistory ){
+    let q = queryHistory[index];
+    if( q == null ||
+        ( q.d == database &&
+          q.l == language &&
+          q.c == query ) ) {
+      // RE-EXECUTED OLD QUERY, REMOVE OLD ENTRY AND INSERT AT THE TOP OF THE LIST
+      queryHistory.splice(index,1);
+    }
+  }
+
+  // REMOVE OLD QUERIES
+  while( queryHistory.length > 20 )
+    queryHistory.pop();
+
+  queryHistory = [ {"d": database, "l": language, "c": query} ].concat(queryHistory);
+  localStorage.setItem("database.query.history", JSON.stringify( queryHistory ) );
+
+  loadQueryHistory();
 }
+
 
 function executeCommandTable(){
   let database = escapeHtml( $("#inputDatabase").val() );
