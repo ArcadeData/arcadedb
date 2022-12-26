@@ -279,6 +279,7 @@ function executeCommandTable(){
   let database = escapeHtml( $("#inputDatabase").val() );
   let language = escapeHtml( $("#inputLanguage").val() );
   let command = escapeHtml( editor.getValue() );
+  let limit = parseInt( $("#inputLimit").val() );
 
   $("#executeSpinner").show();
 
@@ -291,6 +292,7 @@ function executeCommandTable(){
       {
         language: language,
         command: command,
+        limit: limit,
         serializer: "studio"
       }
     ),
@@ -321,6 +323,7 @@ function executeCommandGraph(){
   let database = escapeHtml( $("#inputDatabase").val() );
   let language = escapeHtml( $("#inputLanguage").val() );
   let command = escapeHtml( editor.getValue() );
+  let limit = parseInt( $("#inputLimit").val() );
 
   $("#executeSpinner").show();
 
@@ -333,6 +336,7 @@ function executeCommandGraph(){
       {
         language: language,
         command: command,
+        limit: limit,
         serializer: "studio"
       }
     ),

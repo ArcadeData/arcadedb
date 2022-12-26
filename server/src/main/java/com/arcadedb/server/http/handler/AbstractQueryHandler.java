@@ -125,6 +125,9 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
         } else {
           analyzeResultContent(database, serializerImpl, includedVertices, vertices, edges, row);
         }
+
+        if( limit > -1  && records.length() >= limit )
+          break;
       }
 
       // FILTER OUT NOT CONNECTED EDGES

@@ -185,3 +185,13 @@ function base64ToBlob(base64Image){
   // Return BLOB image after conversion
   return new Blob([uInt8Array], { type: imageType });
 }
+
+function getURLParameter(param) {
+  var sPageURL = window.location.search.substring(1);
+  var sURLVariables = sPageURL.split('&');
+  for (var i = 0; i < sURLVariables.length; i++) {
+    var paramName = sURLVariables[i].split('=');
+    if (paramName[0] == param)
+        return paramName[1];
+  }
+}

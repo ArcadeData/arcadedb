@@ -51,7 +51,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
     final Map<String, Object> requestMap = json.toMap();
 
     final String language = (String) requestMap.get("language");
-    final String command = decode((String) requestMap.get("command"));
+    String command = decode((String) requestMap.get("command"));
     final int limit = (int) requestMap.getOrDefault("limit", DEFAULT_LIMIT);
     final String serializer = (String) requestMap.getOrDefault("serializer", "record");
 
@@ -66,6 +66,18 @@ public class PostCommandHandler extends AbstractQueryHandler {
     final ServerMetrics.MetricTimer timer = httpServer.getServer().getServerMetrics().timer("http.command");
 
     try {
+      if (language.equalsIgnoreCase("sql") || language.equalsIgnoreCase("sqlScript")) {
+        final String commandLC = command.toLowerCase().trim();
+        if (commandLC.startsWith("select") || commandLC.startsWith("match")) {
+          if (!command.contains(" limit ")) {
+            command += " limit " + limit;
+          } else {
+            final String[] words = commandLC.split(" ");
+            if( !"limit".equals( words[words.length-2] ) )
+              command += " limit " + limit;
+          }
+        }
+      }
 
       final ResultSet qResult = language.equalsIgnoreCase("sqlScript") ?
           executeScript(database, "sql", command, paramMap) :

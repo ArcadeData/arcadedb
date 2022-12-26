@@ -22,10 +22,22 @@
 
     <div class="col-1">
     </div>
-    <div class="col-5 text-left">
+    <div class="col-6 text-left">
       <label>Current database:&nbsp;<a href="#" onclick="globalActivateTab('tab-database');" class="link"><span id="currentDatabase"></span></a></label>
     </div>
-    <div class="col-6 text-right">
+    <div class="col-2 text-left">
+      <label>Auto Limit &nbsp;
+        <i class="fa fa-question-circle" data-toggle="tooltip" data-html="true"
+           title="If the limit is not set in the query, then the following automatic limit is used."></i>
+        <select id="inputLimit">
+          <option value="25">25</option>
+          <option value="100">100</option>
+          <option value="500">500</option>
+          <option value="-1">No Limits</option>
+        </select>
+      </label>
+    </div>
+    <div class="col-3 text-right">
       <label>Returned <span id="result-num"></span>&nbsp;records in <span id="result-elapsed"></span>ms</label>
     </div>
 
@@ -245,6 +257,12 @@ function initQuery() {
   $("#inputLanguage").change( function(){
     editor.setOption("mode", getEditorMode() );
   });
+
+  var dbPar = getURLParameter("db");
+  if( dbPar != null && dbPar != "null") {
+    $("#currentDatabase").html( escapeHtml( dbPar ) );
+    $("#inputDatabase").val( escapeHtml( dbPar ) );
+  }
 
   $('.dropdown-menu').on("click.bs.dropdown", function (e) {
     e.stopPropagation();
