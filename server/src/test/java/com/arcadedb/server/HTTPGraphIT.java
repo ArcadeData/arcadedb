@@ -268,7 +268,7 @@ public class HTTPGraphIT extends BaseGraphServerTest {
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
-      formatPayload(connection, "sql", "SELECT FROM E1", "graph", Collections.emptyMap());
+      formatPayload(connection, "sql", "SELECT FROM E1", "studio", Collections.emptyMap());
       connection.connect();
 
       try {
