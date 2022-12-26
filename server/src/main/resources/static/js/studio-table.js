@@ -45,6 +45,9 @@ function renderTable(){
         tableColumns.push( { sTitle: escapeHtml( orderedColumns[i] ), "defaultContent": "" } );
     }
 
+    if( Object.keys(columns).length == 0 )
+      return;
+
     for( let i in globalResultset.records ){
       let row = globalResultset.records[i];
 
