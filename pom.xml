@@ -192,6 +192,8 @@
                     <excludes>
                         <exclude>**/*HASplitBrainIT.java</exclude>
                         <exclude>**/*HTTP2ServersIT.java</exclude>
+                        <exclude>**/ReplicationServerReplicaRestartForceDbInstallIT.java</exclude>
+                        <exclude>**/IndexOperations3ServersIT.java</exclude>
                         <exclude>**/ArcadeGraphProcessDebugTest.java</exclude>
                         <exclude>**/ArcadeGraphStructureDebugTest.java</exclude>
                         <exclude>${exclude.tests}</exclude>
