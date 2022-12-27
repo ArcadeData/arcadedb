@@ -52,10 +52,10 @@ public class ProjectionCalculationStep extends AbstractExecutionStep {
       @Override
       public Result next() {
         Result item = parentRs.next();
-        Object oldCurrent = ctx.getVariable("$current");
-        ctx.setVariable("$current", item);
+        Object oldCurrent = ctx.getVariable("current");
+        ctx.setVariable("current", item);
         Result result = calculateProjections(ctx, item);
-        ctx.setVariable("$current", oldCurrent);
+        ctx.setVariable("current", oldCurrent);
         return result;
       }
 

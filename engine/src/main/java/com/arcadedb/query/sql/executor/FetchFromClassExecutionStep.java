@@ -174,7 +174,7 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
           if (currentResultSet != null && currentResultSet.hasNext()) {
             totDispatched++;
             Result result = currentResultSet.next();
-            ctx.setVariable("$current", result);
+            ctx.setVariable("current", result);
             return result;
           } else {
             if (currentStep >= getSubSteps().size()) {

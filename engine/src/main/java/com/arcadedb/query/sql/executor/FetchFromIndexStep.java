@@ -117,7 +117,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
           ResultInternal result = new ResultInternal();
           result.setProperty("key", key);
           result.setProperty("rid", value);
-          ctx.setVariable("$current", result);
+          ctx.setVariable("current", result);
           return result;
         } finally {
           if (profilingEnabled) {

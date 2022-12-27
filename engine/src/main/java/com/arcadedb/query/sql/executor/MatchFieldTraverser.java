@@ -49,14 +49,14 @@ public class MatchFieldTraverser extends MatchEdgeTraverser {
       }
     }
 
-    Object prevCurrent = iCommandContext.getVariable("$current");
-    iCommandContext.setVariable("$current", startingPoint);
+    Object prevCurrent = iCommandContext.getVariable("current");
+    iCommandContext.setVariable("current", startingPoint);
     Object qR;
     try {
       // TODO check possible results!
       qR = ((FieldMatchPathItem) this.item).getExp().execute(startingPoint, iCommandContext);
     } finally {
-      iCommandContext.setVariable("$current", prevCurrent);
+      iCommandContext.setVariable("current", prevCurrent);
     }
 
     if (qR == null) {

@@ -107,10 +107,11 @@ public class StatementCache {
           osql = new SqlParser(db, is);
         }
       }
-      Statement result = osql.parse();
-      result.originalStatement = statement;
 
+      final Statement result = osql.parse();
+      result.originalStatementAsString = statement;
       return result;
+
     } catch (ParseException e) {
       throwParsingException(e, statement);
     } catch (TokenMgrError e2) {

@@ -124,7 +124,7 @@ public class ConvertToUpdatableResultStep extends AbstractExecutionStep {
         Result result = nextItem;
         nextItem = null;
         fetched++;
-        ctx.setVariable("$current", result);
+        ctx.setVariable("current", result);
         return result;
       }
 

@@ -22,6 +22,8 @@ package com.arcadedb.query.sql.executor;
  * Created by luigidellaquila on 08/08/16.
  */
 
+import com.arcadedb.query.sql.parser.Statement;
+
 import java.util.*;
 import java.util.stream.*;
 
@@ -35,14 +37,15 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
   protected     List<ScriptLineStep>  steps       = new ArrayList<>();
   private       ExecutionStepInternal lastStep    = null;
   private       ResultSet             finalResult = null;
-  private       String                statement;
+  private       List<Statement>       statements;
+  private       String                statementAsString;
 
-  public ScriptExecutionPlan(CommandContext ctx) {
+  public ScriptExecutionPlan(final CommandContext ctx) {
     this.ctx = ctx;
   }
 
   @Override
-  public void reset(CommandContext ctx) {
+  public void reset(final CommandContext ctx) {
     // TODO
     throw new UnsupportedOperationException();
   }
@@ -53,7 +56,7 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
   }
 
   @Override
-  public ResultSet fetchNext(int n) {
+  public ResultSet fetchNext(final int n) {
     doExecute(n);
     return new ResultSet() {
 
@@ -88,7 +91,7 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
     };
   }
 
-  private void doExecute(int n) {
+  private void doExecute(final int n) {
     if (!executed) {
       executeUntilReturn();
       executed = true;
@@ -109,10 +112,10 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    StringBuilder result = new StringBuilder();
+  public String prettyPrint(final int depth, final int indent) {
+    final StringBuilder result = new StringBuilder();
     for (int i = 0; i < steps.size(); i++) {
-      ExecutionStepInternal step = steps.get(i);
+      final ExecutionStepInternal step = steps.get(i);
       result.append(step.prettyPrint(depth, indent));
       if (i < steps.size() - 1) {
         result.append("\n");
@@ -121,9 +124,9 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
     return result.toString();
   }
 
-  public void chain(InternalExecutionPlan nextPlan, boolean profilingEnabled) {
-    ScriptLineStep lastStep = steps.size() == 0 ? null : steps.get(steps.size() - 1);
-    ScriptLineStep nextStep = new ScriptLineStep(nextPlan, ctx, profilingEnabled);
+  public void chain(final InternalExecutionPlan nextPlan, final boolean profilingEnabled) {
+    final ScriptLineStep lastStep = steps.size() == 0 ? null : steps.get(steps.size() - 1);
+    final ScriptLineStep nextStep = new ScriptLineStep(nextPlan, ctx, profilingEnabled);
     if (lastStep != null) {
       lastStep.setNext(nextStep);
       nextStep.setPrevious(lastStep);
@@ -138,13 +141,13 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
     return (List) steps;
   }
 
-  public void setSteps(List<ExecutionStepInternal> steps) {
+  public void setSteps(final List<ExecutionStepInternal> steps) {
     this.steps = (List) steps;
   }
 
   @Override
   public Result toResult() {
-    ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal();
     result.setProperty("type", "ScriptExecutionPlan");
     result.setProperty("javaType", getClass().getName());
     result.setProperty("cost", getCost());
@@ -237,11 +240,13 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
 
   @Override
   public String getStatement() {
-    return statement;
+    if (statementAsString == null)
+      statementAsString = statements.stream().map(Statement::toString).collect(Collectors.joining(";"));
+    return statementAsString;
   }
 
   @Override
-  public void setStatement(String statement) {
-    this.statement = statement;
+  public void setStatements(final List<Statement> statements) {
+    this.statements = statements;
   }
 }

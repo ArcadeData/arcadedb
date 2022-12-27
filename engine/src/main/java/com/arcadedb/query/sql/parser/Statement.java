@@ -34,9 +34,10 @@ import java.util.*;
 public class Statement extends SimpleNode {
 
   //only for internal use!!! (caching)
-  protected String  originalStatement;
-  protected Limit   limit   = null;
-  protected Timeout timeout = null;
+  protected Statement originalStatement;
+  protected String    originalStatementAsString;
+  protected Limit     limit   = null;
+  protected Timeout   timeout = null;
 
   public static final String CUSTOM_STRICT_SQL = "strictSql";
 
@@ -162,11 +163,16 @@ public class Statement extends SimpleNode {
   }
 
   public String getOriginalStatement() {
-    return originalStatement;
+    if (originalStatementAsString == null)
+      originalStatementAsString = originalStatement.toString();
+    return originalStatementAsString;
   }
 
-  public void setOriginalStatement(String originalStatement) {
-    this.originalStatement = originalStatement;
+  public void setOriginalStatement(final Statement originalStatement) {
+    if (!originalStatement.equals(this.originalStatement)) {
+      this.originalStatement = originalStatement;
+      this.originalStatementAsString = null;
+    }
   }
 
   public Limit getLimit() {

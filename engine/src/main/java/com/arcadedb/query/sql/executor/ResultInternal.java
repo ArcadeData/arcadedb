@@ -276,27 +276,6 @@ public class ResultInternal implements Result {
     metadata.put(key, value);
   }
 
-  public void clearMetadata() {
-    metadata = null;
-  }
-
-  public void removeMetadata(final String key) {
-    if (key == null || metadata == null)
-      return;
-
-    metadata.remove(key);
-  }
-
-  public void addMetadata(final Map<String, Object> values) {
-    if (values == null)
-      return;
-
-    if (this.metadata == null)
-      this.metadata = new HashMap<>();
-
-    this.metadata.putAll(values);
-  }
-
   @Override
   public Set<String> getMetadataKeys() {
     return metadata == null ? Collections.emptySet() : metadata.keySet();

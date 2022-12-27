@@ -35,21 +35,21 @@ public class ParenthesisExpression extends MathExpression {
   protected Expression expression;
   protected Statement  statement;
 
-  public ParenthesisExpression(int id) {
+  public ParenthesisExpression(final int id) {
     super(id);
   }
 
-  public ParenthesisExpression(SqlParser p, int id) {
+  public ParenthesisExpression(final SqlParser p, final int id) {
     super(p, id);
   }
 
-  public ParenthesisExpression(Expression exp) {
+  public ParenthesisExpression(final Expression exp) {
     super(-1);
     this.expression = exp;
   }
 
   @Override
-  public Object execute(Identifiable iCurrentRecord, CommandContext ctx) {
+  public Object execute(final Identifiable iCurrentRecord, final CommandContext ctx) {
     if (expression != null) {
       return expression.execute(iCurrentRecord, ctx);
     }
@@ -60,7 +60,7 @@ public class ParenthesisExpression extends MathExpression {
   }
 
   @Override
-  public Object execute(Result iCurrentRecord, CommandContext ctx) {
+  public Object execute(final Result iCurrentRecord, final CommandContext ctx) {
     if (expression != null) {
       return expression.execute(iCurrentRecord, ctx);
     }
@@ -143,31 +143,32 @@ public class ParenthesisExpression extends MathExpression {
 
   @Override
   public ParenthesisExpression copy() {
-    ParenthesisExpression result = new ParenthesisExpression(-1);
+    final ParenthesisExpression result = new ParenthesisExpression(-1);
     result.expression = expression == null ? null : expression.copy();
     result.statement = statement == null ? null : statement.copy();
+    result.cachedStringForm = cachedStringForm;
     return result;
   }
 
-  public void setStatement(Statement statement) {
+  public void setStatement(final Statement statement) {
     this.statement = statement;
   }
 
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
     if (expression != null) {
       expression.extractSubQueries(collector);
     } else if (statement != null) {
-      Identifier alias = collector.addStatement(statement);
+      final Identifier alias = collector.addStatement(statement);
       statement = null;
       expression = new Expression(alias);
     }
   }
 
-  public void extractSubQueries(Identifier letAlias, SubQueryCollector collector) {
+  public void extractSubQueries(final Identifier letAlias, final SubQueryCollector collector) {
     if (expression != null) {
       expression.extractSubQueries(collector);
     } else if (statement != null) {
-      Identifier alias = collector.addStatement(letAlias, statement);
+      final Identifier alias = collector.addStatement(letAlias, statement);
       statement = null;
       expression = new Expression(alias);
     }
@@ -181,7 +182,7 @@ public class ParenthesisExpression extends MathExpression {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
@@ -189,7 +190,7 @@ public class ParenthesisExpression extends MathExpression {
     if (!super.equals(o))
       return false;
 
-    ParenthesisExpression that = (ParenthesisExpression) o;
+    final ParenthesisExpression that = (ParenthesisExpression) o;
 
     if (!Objects.equals(expression, that.expression))
       return false;
@@ -218,7 +219,7 @@ public class ParenthesisExpression extends MathExpression {
   }
 
   public Result serialize() {
-    ResultInternal result = (ResultInternal) super.serialize();
+    final ResultInternal result = (ResultInternal) super.serialize();
     if (expression != null) {
       result.setProperty("expression", expression.serialize());
     }
@@ -228,7 +229,7 @@ public class ParenthesisExpression extends MathExpression {
     return result;
   }
 
-  public void deserialize(Result fromResult) {
+  public void deserialize(final Result fromResult) {
     super.deserialize(fromResult);
     if (fromResult.getProperty("expression") != null) {
       expression = new Expression(-1);

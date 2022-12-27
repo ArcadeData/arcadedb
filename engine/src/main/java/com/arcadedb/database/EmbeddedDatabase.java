@@ -93,7 +93,6 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 import java.util.concurrent.locks.*;
 import java.util.logging.*;
-import java.util.stream.*;
 
 public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal {
   public static final  int                                       EDGE_LIST_INITIAL_CHUNK_SIZE         = 64;
@@ -1696,14 +1695,13 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   private ResultSet executeInternal(final List<Statement> statements, final CommandContext scriptContext) {
     ScriptExecutionPlan plan = new ScriptExecutionPlan(scriptContext);
 
-    plan.setStatement(statements.stream().map(Statement::toString).collect(Collectors.joining(";")));
+    plan.setStatements(statements);
 
     List<Statement> lastRetryBlock = new ArrayList<>();
     int nestedTxLevel = 0;
 
     for (Statement stm : statements) {
-      if (stm.getOriginalStatement() == null)
-        stm.setOriginalStatement(stm.toString());
+      stm.setOriginalStatement(stm);
 
       if (stm instanceof BeginStatement)
         nestedTxLevel++;
