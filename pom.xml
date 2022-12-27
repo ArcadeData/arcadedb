@@ -405,6 +405,8 @@
                             <excludes>
                                 <exclude>com/arcadedb/graphql/parser/**/*</exclude>
                                 <exclude>**/SqlParserTokenManager.*</exclude>
+                                <exclude>**/*Test.java</exclude>
+                                <exclude>**/*IT.java</exclude>
                                 <exclude>**/static/*</exclude>
                                 <exclude>**/*.bat</exclude>
                                 <exclude>**/*.sh</exclude>
@@ -469,6 +471,7 @@
             <properties>
                 <skipIntegration>false</skipIntegration>
                 <exclude.tests>
+                    com/arcadedb/integration/backup/FullBackupIT.java,
                     com/arcadedb/server/ha/HASplitBrainIT.java,
                     com/arcadedb/server/ha/ReplicationServerLeaderChanges3TimesIT.java,
                     com/arcadedb/server/ha/ReplicationServerLeaderDownIT.java,

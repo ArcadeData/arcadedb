@@ -46,7 +46,6 @@ import java.util.concurrent.atomic.*;
 public class FullBackupIT {
   private final static String DATABASE_PATH     = "target/databases/performance";
   private final static String FILE              = "target/arcadedb-backup.zip";
-  private final        File   databaseDirectory = new File(DATABASE_PATH);
   private final        File   restoredDirectory = new File(DATABASE_PATH + "_restored");
   private final        File   file              = new File(FILE);
 
