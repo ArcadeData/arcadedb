@@ -77,7 +77,7 @@ public class MatchStep extends AbstractExecutionStep {
         Result result = nextResult;
         fetchNext(ctx, nRecords);
         localCount++;
-        ctx.setVariable("$matched", result);
+        ctx.setVariable("matched", result);
         return result;
       }
 

@@ -104,7 +104,7 @@ public class FunctionCall extends SimpleNode {
       }
     }
     if (record == null) {
-      Object current = ctx == null ? null : ctx.getVariable("$current");
+      Object current = ctx == null ? null : ctx.getVariable("current");
       if (current != null) {
         if (current instanceof Identifiable) {
           record = current;

@@ -58,7 +58,7 @@ public class MatchMultiEdgeTraverser extends MatchEdgeTraverser {
     List<Object> nextStep = new ArrayList<>();
     nextStep.add(startingPoint);
 
-    Object oldCurrent = iCommandContext.getVariable("$current");
+    Object oldCurrent = iCommandContext.getVariable("current");
     for (MatchPathItem sub : item.getItems()) {
       List<ResultInternal> rightSide = new ArrayList<>();
       for (Object o : nextStep) {
@@ -78,7 +78,7 @@ public class MatchMultiEdgeTraverser extends MatchEdgeTraverser {
           subtraverser.executeTraversal(iCommandContext, sub, (Identifiable) current, 0, null).forEach(x -> rightSide.add(x));
 
         } else {
-          iCommandContext.setVariable("$current", o);
+          iCommandContext.setVariable("current", o);
           Object nextSteps = method.execute(o, possibleResults, iCommandContext);
           if (nextSteps instanceof Collection) {
             ((Collection) nextSteps).stream().map(x -> toOResultInternal(x)).filter(Objects::nonNull)
@@ -109,7 +109,7 @@ public class MatchMultiEdgeTraverser extends MatchEdgeTraverser {
       result = rightSide;
     }
 
-    iCommandContext.setVariable("$current", oldCurrent);
+    iCommandContext.setVariable("current", oldCurrent);
     //    return (qR instanceof Iterable) ? (Iterable) qR : Collections.singleton((PIdentifiable) qR);
     return result;
   }

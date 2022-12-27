@@ -70,7 +70,7 @@ public class WhileStep extends AbstractExecutionStep {
     final ScriptExecutionPlan plan = new ScriptExecutionPlan(subCtx1);
     for (Statement stm : statements) {
       if (stm.originalStatement == null) {
-        stm.originalStatement = stm.toString();
+        stm.originalStatement = stm;
       }
       InternalExecutionPlan subPlan = stm.createExecutionPlan(subCtx1, profilingEnabled);
       plan.chain(subPlan, profilingEnabled);

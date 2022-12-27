@@ -175,7 +175,7 @@ public class MatchEdgeTraverser {
           }
 
           public void fetchNext() {
-            Object previousMatch = iCommandContext.getVariable("$currentMatch");
+            Object previousMatch = iCommandContext.getVariable("currentMatch");
             ResultInternal matched = (ResultInternal) iCommandContext.getVariable("matched");
             if (matched != null) {
               matched.setProperty(getStartingPointAlias(), sourceRecord.getProperty(getStartingPointAlias()));
@@ -183,14 +183,14 @@ public class MatchEdgeTraverser {
             while (iter.hasNext()) {
               ResultInternal next = iter.next();
               Document elem = next.toElement();
-              iCommandContext.setVariable("$currentMatch", elem);
+              iCommandContext.setVariable("currentMatch", elem);
               if (matchesFilters(iCommandContext, theFilter, elem) && matchesClass(iCommandContext, theClassName, elem) && matchesCluster(iCommandContext,
                   theClusterId, elem) && matchesRid(iCommandContext, theTargetRid, elem)) {
                 nextElement = next;
                 break;
               }
             }
-            iCommandContext.setVariable("$currentMatch", previousMatch);
+            iCommandContext.setVariable("currentMatch", previousMatch);
           }
         };
       };
@@ -198,9 +198,9 @@ public class MatchEdgeTraverser {
     } else { // in this case also zero level (starting point) is considered and traversal depth is
       // given by the while condition
       result = new ArrayList<>();
-      iCommandContext.setVariable("$depth", depth);
-      Object previousMatch = iCommandContext.getVariable("$currentMatch");
-      iCommandContext.setVariable("$currentMatch", startingPoint);
+      iCommandContext.setVariable("depth", depth);
+      Object previousMatch = iCommandContext.getVariable("currentMatch");
+      iCommandContext.setVariable("currentMatch", startingPoint);
 
       if (matchesFilters(iCommandContext, filter, startingPoint) && matchesClass(iCommandContext, className, startingPoint) && matchesCluster(iCommandContext,
           clusterId, startingPoint) && matchesRid(iCommandContext, targetRid, startingPoint)) {
@@ -241,7 +241,7 @@ public class MatchEdgeTraverser {
           }
         }
       }
-      iCommandContext.setVariable("$currentMatch", previousMatch);
+      iCommandContext.setVariable("currentMatch", previousMatch);
     }
     return result;
   }
@@ -334,13 +334,13 @@ public class MatchEdgeTraverser {
       }
     }
 
-    Object prevCurrent = iCommandContext.getVariable("$current");
-    iCommandContext.setVariable("$current", startingPoint);
+    Object prevCurrent = iCommandContext.getVariable("current");
+    iCommandContext.setVariable("current", startingPoint);
     Object qR;
     try {
       qR = this.item.getMethod().execute(startingPoint, possibleResults, iCommandContext);
     } finally {
-      iCommandContext.setVariable("$current", prevCurrent);
+      iCommandContext.setVariable("current", prevCurrent);
     }
 
     if (qR == null) {

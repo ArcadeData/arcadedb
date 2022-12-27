@@ -366,6 +366,9 @@ public class BasicCommandContext implements CommandContext {
     return this;
   }
 
+  /**
+   * TODO OPTIMIZE THIS
+   */
   public static int getLowerIndexOf(final String iText, final int iBeginOffset, final String... iToSearch) {
     int lowest = -1;
     for (String toSearch : iToSearch) {
@@ -401,14 +404,17 @@ public class BasicCommandContext implements CommandContext {
     return lowest;
   }
 
+  /**
+   * TODO: optimize this
+   */
   public static int getHigherIndexOf(final String iText, final int iBeginOffset, final String... iToSearch) {
-    int lowest = -1;
+    int highest = -1;
     for (String toSearch : iToSearch) {
       int index = iText.indexOf(toSearch, iBeginOffset);
-      if (index > -1 && (lowest == -1 || index > lowest))
-        lowest = index;
+      if (index > -1 && (highest == -1 || index > highest))
+        highest = index;
     }
-    return lowest;
+    return highest;
   }
 
   @Override

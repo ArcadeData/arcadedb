@@ -87,17 +87,17 @@ public class MatchPathItem extends SimpleNode {
       }
 
       for (Identifiable origin : queryResult) {
-        Object previousMatch = iCommandContext.getVariable("$currentMatch");
-        iCommandContext.setVariable("$currentMatch", origin);
+        Object previousMatch = iCommandContext.getVariable("currentMatch");
+        iCommandContext.setVariable("currentMatch", origin);
         if ((oClass == null || matchesClass(origin, oClass)) && (filter == null || filter.matchesFilters(origin, iCommandContext))) {
           result.add(origin);
         }
-        iCommandContext.setVariable("$currentMatch", previousMatch);
+        iCommandContext.setVariable("currentMatch", previousMatch);
       }
     } else {// in this case also zero level (starting point) is considered and traversal depth is given by the while condition
-      iCommandContext.setVariable("$depth", depth);
-      Object previousMatch = iCommandContext.getVariable("$currentMatch");
-      iCommandContext.setVariable("$currentMatch", startingPoint);
+      iCommandContext.setVariable("depth", depth);
+      Object previousMatch = iCommandContext.getVariable("currentMatch");
+      iCommandContext.setVariable("currentMatch", startingPoint);
       if ((oClass == null || matchesClass(startingPoint, oClass)) && (filter == null || filter.matchesFilters(startingPoint, iCommandContext))) {
         result.add(startingPoint);
       }
@@ -118,7 +118,7 @@ public class MatchPathItem extends SimpleNode {
           }
         }
       }
-      iCommandContext.setVariable("$currentMatch", previousMatch);
+      iCommandContext.setVariable("currentMatch", previousMatch);
     }
     return result;
   }

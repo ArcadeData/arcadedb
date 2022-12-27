@@ -54,7 +54,7 @@ public class EmptyDataGeneratorStep extends AbstractExecutionStep {
           if (served < size) {
             served++;
             ResultInternal result = new ResultInternal();
-            ctx.setVariable("$current", result);
+            ctx.setVariable("current", result);
             return result;
           }
           throw new IllegalStateException();

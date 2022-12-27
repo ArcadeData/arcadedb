@@ -156,20 +156,17 @@ public class SelectStatement extends Statement {
 
   @Override
   public boolean executionPlanCanBeCached() {
-    if (originalStatement == null) {
+    if (originalStatementAsString == null && originalStatement == null)
       return false;
-    }
-    if (this.target != null && !this.target.isCacheable()) {
-      return false;
-    }
 
-    if (this.letClause != null && !this.letClause.isCacheable()) {
+    if (this.target != null && !this.target.isCacheable())
       return false;
-    }
 
-    if (projection != null && !this.projection.isCacheable()) {
+    if (this.letClause != null && !this.letClause.isCacheable())
       return false;
-    }
+
+    if (projection != null && !this.projection.isCacheable())
+      return false;
 
     return whereClause == null || whereClause.isCacheable();
   }
@@ -219,25 +216,23 @@ public class SelectStatement extends Statement {
 
   @Override
   public SelectStatement copy() {
-    SelectStatement result = null;
     try {
-      result = getClass().getConstructor(Integer.TYPE).newInstance(-1);
+      final SelectStatement result = getClass().getConstructor(Integer.TYPE).newInstance(-1);
+      result.originalStatement = originalStatement;
+      result.target = target == null ? null : target.copy();
+      result.projection = projection == null ? null : projection.copy();
+      result.whereClause = whereClause == null ? null : whereClause.copy();
+      result.groupBy = groupBy == null ? null : groupBy.copy();
+      result.orderBy = orderBy == null ? null : orderBy.copy();
+      result.unwind = unwind == null ? null : unwind.copy();
+      result.skip = skip == null ? null : skip.copy();
+      result.limit = limit == null ? null : limit.copy();
+      result.letClause = letClause == null ? null : letClause.copy();
+      result.timeout = timeout == null ? null : timeout.copy();
+      return result;
     } catch (Exception e) {
       throw new ArcadeDBException(e);
     }
-    result.originalStatement = originalStatement;
-    result.target = target == null ? null : target.copy();
-    result.projection = projection == null ? null : projection.copy();
-    result.whereClause = whereClause == null ? null : whereClause.copy();
-    result.groupBy = groupBy == null ? null : groupBy.copy();
-    result.orderBy = orderBy == null ? null : orderBy.copy();
-    result.unwind = unwind == null ? null : unwind.copy();
-    result.skip = skip == null ? null : skip.copy();
-    result.limit = limit == null ? null : limit.copy();
-    result.letClause = letClause == null ? null : letClause.copy();
-    result.timeout = timeout == null ? null : timeout.copy();
-
-    return result;
   }
 
   @Override

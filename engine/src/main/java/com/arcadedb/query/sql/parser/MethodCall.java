@@ -89,7 +89,7 @@ public class MethodCall extends SimpleNode {
   private Object execute(final Object targetObjects, final CommandContext ctx, final String name, final List<Expression> iParams,
       final Iterable<Identifiable> iPossibleResults) {
     final List<Object> paramValues = new ArrayList<Object>();
-    Object val = ctx.getVariable("$current");
+    Object val = ctx.getVariable("current");
     if (val == null && targetObjects == null) {
       return null;
     }
@@ -109,13 +109,13 @@ public class MethodCall extends SimpleNode {
     if (isGraphFunction()) {
       SQLFunction function = ((SQLQueryEngine) ctx.getDatabase().getQueryEngine("sql")).getFunction(name);
       if (function instanceof SQLFunctionFiltered) {
-        Object current = ctx.getVariable("$current");
+        Object current = ctx.getVariable("current");
         if (current instanceof Result) {
           current = ((Result) current).getElement().orElse(null);
         }
         return ((SQLFunctionFiltered) function).execute(targetObjects, (Identifiable) current, null, paramValues.toArray(), iPossibleResults, ctx);
       } else {
-        final Object current = ctx.getVariable("$current");
+        final Object current = ctx.getVariable("current");
         if (current instanceof Identifiable) {
           return function.execute(targetObjects, (Identifiable) current, null, paramValues.toArray(), ctx);
         } else if (current instanceof Result) {

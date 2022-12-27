@@ -18,6 +18,10 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.query.sql.parser.Statement;
+
+import java.util.*;
+
 /**
  * Created by luigidellaquila on 06/07/16.
  */
@@ -59,6 +63,6 @@ public interface InternalExecutionPlan extends ExecutionPlan {
     return null;
   }
 
-  default void setStatement(String stm) {
+  default void setStatements(List<Statement> stm) {
   }
 }

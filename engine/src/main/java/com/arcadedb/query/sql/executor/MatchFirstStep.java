@@ -83,7 +83,7 @@ public class MatchFirstStep extends AbstractExecutionStep {
         } else {
           result.setProperty(getAlias(), subResultSet.next());
         }
-        ctx.setVariable("$matched", result);
+        ctx.setVariable("matched", result);
         currentCount++;
         return result;
       }

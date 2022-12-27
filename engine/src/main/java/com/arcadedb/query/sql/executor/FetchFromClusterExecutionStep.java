@@ -124,7 +124,7 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
             nFetched++;
             ResultInternal result = new ResultInternal();
             result.element = (Document) record;
-            ctx.setVariable("$current", result);
+            ctx.setVariable("current", result);
             return result;
           } finally {
             if (profilingEnabled) {

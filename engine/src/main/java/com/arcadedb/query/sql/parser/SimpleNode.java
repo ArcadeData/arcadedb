@@ -30,16 +30,17 @@ public class SimpleNode implements Node {
   protected SqlParser parser;
   protected Token     firstToken;
   protected Token     lastToken;
+  protected String    cachedStringForm;
 
   public SimpleNode() {
     id = -1;
   }
 
-  public SimpleNode(int i) {
+  public SimpleNode(final int i) {
     id = i;
   }
 
-  public SimpleNode(SqlParser p, int i) {
+  public SimpleNode(final SqlParser p, final int i) {
     this(i);
     parser = p;
   }
@@ -50,7 +51,7 @@ public class SimpleNode implements Node {
   public void jjtClose() {
   }
 
-  public void jjtSetParent(Node n) {
+  public void jjtSetParent(final Node n) {
     parent = n;
   }
 
@@ -58,11 +59,11 @@ public class SimpleNode implements Node {
     return parent;
   }
 
-  public void jjtAddChild(Node n, int i) {
+  public void jjtAddChild(final Node n, final int i) {
     if (children == null) {
       children = new Node[i + 1];
     } else if (i >= children.length) {
-      Node[] c = new Node[i + 1];
+      final Node[] c = new Node[i + 1];
       System.arraycopy(children, 0, c, 0, children.length);
       children = c;
     }
@@ -77,7 +78,7 @@ public class SimpleNode implements Node {
     return (children == null) ? 0 : children.length;
   }
 
-  public void jjtSetValue(Object value) {
+  public void jjtSetValue(final Object value) {
     this.value = value;
   }
 
@@ -89,7 +90,7 @@ public class SimpleNode implements Node {
     return firstToken;
   }
 
-  public void jjtSetFirstToken(Token token) {
+  public void jjtSetFirstToken(final Token token) {
     this.firstToken = token;
   }
 
@@ -97,7 +98,7 @@ public class SimpleNode implements Node {
     return lastToken;
   }
 
-  public void jjtSetLastToken(Token token) {
+  public void jjtSetLastToken(final Token token) {
     this.lastToken = token;
   }
 
@@ -127,12 +128,15 @@ public class SimpleNode implements Node {
    */
 
   public String toString() {
-    StringBuilder result = new StringBuilder();
-    toString(null, result);
-    return result.toString();
+    if (cachedStringForm == null) {
+      final StringBuilder result = new StringBuilder();
+      toString(null, result);
+      cachedStringForm = result.toString();
+    }
+    return cachedStringForm;
   }
 
-  public String toString(String prefix) {
+  public String toString(final String prefix) {
     return prefix + this;
   }
 
@@ -140,7 +144,7 @@ public class SimpleNode implements Node {
    * Override this method if you want to customize how the node dumps out its children.
    */
 
-  public void dump(String prefix) {
+  public void dump(final String prefix) {
     System.out.println(toString(prefix));
     if (children != null) {
       for (int i = 0; i < children.length; ++i) {
@@ -152,8 +156,8 @@ public class SimpleNode implements Node {
     }
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
-    throw new UnsupportedOperationException("not implemented in " + getClass().getSimpleName());
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
+    throw new UnsupportedOperationException("Not implemented in " + getClass().getSimpleName());
   }
 
   public Object getValue() {

@@ -71,11 +71,6 @@ public class BaseExpression extends MathExpression {
     }
   }
 
-  @Override
-  public String toString() {
-    return super.toString();
-  }
-
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (number != null) {
       number.toString(params, builder);
@@ -304,6 +299,7 @@ public class BaseExpression extends MathExpression {
     result.inputParam = inputParam == null ? null : inputParam.copy();
     result.string = string;
     result.modifier = modifier == null ? null : modifier.copy();
+    result.cachedStringForm = cachedStringForm;
     return result;
   }
 

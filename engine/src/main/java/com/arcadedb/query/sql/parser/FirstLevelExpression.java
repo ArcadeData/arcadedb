@@ -38,11 +38,5 @@ public class FirstLevelExpression extends MathExpression {
   public boolean isBaseIdentifier() {
     return value instanceof Identifier;
   }
-
-  //never used, this class is never returned by the parser!
-  @Override
-  public MathExpression copy() {
-    return super.copy();
-  }
 }
 /* JavaCC - OriginalChecksum=30dc1016b686d4841bbd57d6e6c0bfbd (do not edit this line) */
