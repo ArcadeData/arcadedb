@@ -173,7 +173,6 @@
                         </org.slf4j.simpleLogger.log.org.apache.maven.cli.transfer.Slf4jMavenTransferListener>
                         <polyglot.engine.WarnInterpreterOnly>false</polyglot.engine.WarnInterpreterOnly>
                     </systemPropertyVariables>
-                    <argLine>-Dpolyglot.engine.WarnInterpreterOnly=false</argLine>
                 </configuration>
             </plugin>
             <plugin>
