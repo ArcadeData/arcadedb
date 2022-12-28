@@ -162,8 +162,8 @@ public class TokenMgrError extends Error {
   /**
    * Full Constructor.
    */
-  public TokenMgrError(boolean EOFSeen, int lexState, int errorLine, int errorColumn, String errorAfter, char curChar, int reason) {
-    this(LexicalError(EOFSeen, lexState, errorLine, errorColumn, errorAfter, curChar), reason);
+  public TokenMgrError(boolean EOFSeen, int lexState, int errorLine, int errorColumn, String errorAfter, int curChar, int reason) {
+    this(LexicalError(EOFSeen, lexState, errorLine, errorColumn, errorAfter, (char) curChar), reason);
   }
 }
 /* JavaCC - OriginalChecksum=ba41a3baf9b613d153dead2008963e1c (do not edit this line) */

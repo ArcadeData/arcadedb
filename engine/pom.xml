@@ -35,7 +35,7 @@
 
     <properties>
         <maven-resources-plugin.version>3.3.0</maven-resources-plugin.version>
-        <ph-javacc-maven-plugin.version>4.1.5</ph-javacc-maven-plugin.version>
+        <javacc-maven-plugin.version>3.0.1</javacc-maven-plugin.version>
         <disruptor.version>1.2.21</disruptor.version>
         <json.version>20220924</json.version>
         <gson.version>2.10</gson.version>
@@ -66,17 +66,15 @@
                 </executions>
             </plugin>
             <plugin>
-                <groupId>com.helger.maven</groupId>
-                <artifactId>ph-javacc-maven-plugin</artifactId>
-                <version>${ph-javacc-maven-plugin.version}</version>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>javacc-maven-plugin</artifactId>
+                <version>${javacc-maven-plugin.version}</version>
                 <executions>
                     <execution>
-                        <id>jjc1</id>
+                        <id>jjtree-javacc</id>
                         <phase>generate-sources</phase>
                         <goals>
                             <goal>jjtree-javacc</goal>
-                            <!--<goal>jjdoc</goal>-->
-
                         </goals>
                         <configuration>
                             <jdkVersion>1.8</jdkVersion>
