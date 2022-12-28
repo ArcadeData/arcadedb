@@ -411,8 +411,6 @@
                             <excludes>
                                 <exclude>com/arcadedb/graphql/parser/**/*</exclude>
                                 <exclude>**/SqlParserTokenManager.*</exclude>
-                                <exclude>**/*Test.java</exclude>
-                                <exclude>**/*IT.java</exclude>
                                 <exclude>**/static/*</exclude>
                                 <exclude>**/*.bat</exclude>
                                 <exclude>**/*.sh</exclude>
