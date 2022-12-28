@@ -20,7 +20,6 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.database.Document;
 
 import java.util.*;
 import java.util.concurrent.atomic.*;
@@ -45,55 +44,21 @@ public class BasicCommandContext implements CommandContext {
   public BasicCommandContext() {
   }
 
-  public Object getVariable(String iName) {
-    return getVariable(iName, null);
+  public Object getVariable(String name) {
+    return getVariable(name, null);
   }
 
-  public Object getVariable(String iName, final Object iDefault) {
-    if (iName == null)
+  public Object getVariable(String name, final Object iDefault) {
+    if (name == null)
       return iDefault;
 
     Object result;
 
-    if (iName.startsWith("$"))
-      iName = iName.substring(1);
-
-    int pos = getLowerIndexOf(iName, 0, ".", "[");
+    if (name.startsWith("$"))
+      name = name.substring(1);
 
     String firstPart;
-    String lastPart;
-    if (pos > -1) {
-      firstPart = iName.substring(0, pos);
-      if (iName.charAt(pos) == '.')
-        pos++;
-      lastPart = iName.substring(pos);
-      if (firstPart.equalsIgnoreCase("PARENT") && parent != null) {
-        // UP TO THE PARENT
-        if (lastPart.startsWith("$"))
-          result = parent.getVariable(lastPart.substring(1));
-        else
-//          result = ODocumentHelper.getFieldValue(parent, lastPart);
-          result = parent.getVariable(lastPart);
-
-        return result != null ? result : iDefault;
-
-      } else if (firstPart.equalsIgnoreCase("ROOT")) {
-        CommandContext p = this;
-        while (p.getParent() != null)
-          p = p.getParent();
-
-        if (lastPart.startsWith("$"))
-          result = p.getVariable(lastPart.substring(1));
-        else
-//          result = ODocumentHelper.getFieldValue(p, lastPart, this);
-          result = p.getVariable(lastPart);
-
-        return result != null ? result : iDefault;
-      }
-    } else {
-      firstPart = iName;
-      lastPart = null;
-    }
+    firstPart = name;
 
     if (firstPart.equalsIgnoreCase("CONTEXT"))
       result = getVariables();
@@ -115,10 +80,6 @@ public class BasicCommandContext implements CommandContext {
       }
     }
 
-    if (pos > -1) {
-      result = ((Document) result).get(lastPart);
-    }
-
     return result != null ? result : iDefault;
   }
 
@@ -132,64 +93,51 @@ public class BasicCommandContext implements CommandContext {
     return null;
   }
 
-  public CommandContext setVariable(String iName, final Object iValue) {
-    if (iName == null)
+  public CommandContext setVariable(String name, final Object value) {
+    if (name == null)
       return null;
 
-    if (iName.startsWith("$"))
-      iName = iName.substring(1);
+    if (name.startsWith("$"))
+      name = name.substring(1);
 
     init();
 
-    int pos = getHigherIndexOf(iName, 0, ".", "[");
-    if (pos > -1) {
-      Object nested = getVariable(iName.substring(0, pos));
-      if (nested instanceof CommandContext)
-        ((CommandContext) nested).setVariable(iName.substring(pos + 1), iValue);
+    if (variables.containsKey(name)) {
+      variables.put(name, value);//this is a local existing variable, so it's bound to current context
+    } else if (parent != null && parent instanceof BasicCommandContext && ((BasicCommandContext) parent).hasVariable(name)) {
+      parent.setVariable(name, value);// it is an existing variable in parent context, so it's bound to parent context
     } else {
-      if (variables.containsKey(iName)) {
-        variables.put(iName, iValue);//this is a local existing variable, so it's bound to current context
-      } else if (parent != null && parent instanceof BasicCommandContext && ((BasicCommandContext) parent).hasVariable(iName)) {
-        parent.setVariable(iName, iValue);// it is an existing variable in parent context, so it's bound to parent context
-      } else {
-        variables.put(iName, iValue); //it's a new variable, so it's created in this context
-      }
+      variables.put(name, value); //it's a new variable, so it's created in this context
     }
+
     return this;
   }
 
-  boolean hasVariable(String iName) {
-    if (variables != null && variables.containsKey(iName)) {
+  boolean hasVariable(String name) {
+    if (variables != null && variables.containsKey(name)) {
       return true;
     }
     if (parent != null && parent instanceof BasicCommandContext) {
-      return ((BasicCommandContext) parent).hasVariable(iName);
+      return ((BasicCommandContext) parent).hasVariable(name);
     }
     return false;
   }
 
   @Override
-  public CommandContext incrementVariable(String iName) {
-    if (iName != null) {
-      if (iName.startsWith("$"))
-        iName = iName.substring(1);
+  public CommandContext incrementVariable(String name) {
+    if (name != null) {
+      if (name.startsWith("$"))
+        name = name.substring(1);
 
       init();
 
-      int pos = getHigherIndexOf(iName, 0, ".", "[");
-      if (pos > -1) {
-        Object nested = getVariable(iName.substring(0, pos));
-        if (nested instanceof CommandContext)
-          ((CommandContext) nested).incrementVariable(iName.substring(pos + 1));
-      } else {
-        final Object v = variables.get(iName);
-        if (v == null)
-          variables.put(iName, 1);
-        else if (v instanceof Number)
-          variables.put(iName, ((Number) v).longValue() + 1);
-        else
-          throw new IllegalArgumentException("Variable '" + iName + "' is not a number, but: " + v.getClass());
-      }
+      final Object v = variables.get(name);
+      if (v == null)
+        variables.put(name, 1);
+      else if (v instanceof Number)
+        variables.put(name, ((Number) v).longValue() + 1);
+      else
+        throw new IllegalArgumentException("Variable '" + name + "' is not a number, but: " + v.getClass());
     }
     return this;
   }
@@ -402,19 +350,6 @@ public class BasicCommandContext implements CommandContext {
     }
 
     return lowest;
-  }
-
-  /**
-   * TODO: optimize this
-   */
-  public static int getHigherIndexOf(final String iText, final int iBeginOffset, final String... iToSearch) {
-    int highest = -1;
-    for (String toSearch : iToSearch) {
-      int index = iText.indexOf(toSearch, iBeginOffset);
-      if (index > -1 && (highest == -1 || index > highest))
-        highest = index;
-    }
-    return highest;
   }
 
   @Override

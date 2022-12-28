@@ -59,6 +59,11 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
+/**
+ * Embedded schema implementation.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
 public class EmbeddedSchema implements Schema {
   public static final  String                                 DEFAULT_DATE_FORMAT     = "yyyy-MM-dd";
   public static final  String                                 DEFAULT_DATETIME_FORMAT = "yyyy-MM-dd HH:mm:ss";
@@ -72,6 +77,7 @@ public class EmbeddedSchema implements Schema {
   private final        List<PaginatedComponent>               files                   = new ArrayList<>();
   private final        Map<String, DocumentType>              types                   = new HashMap<>();
   private final        Map<String, Bucket>                    bucketMap               = new HashMap<>();
+  private              Map<Integer, DocumentType>             bucketId2TypeMap        = new HashMap<>();
   protected final      Map<String, IndexInternal>             indexMap                = new HashMap<>();
   private final        String                                 databasePath;
   private final        File                                   configurationFile;
@@ -665,6 +671,7 @@ public class EmbeddedSchema implements Schema {
     bucketMap.clear();
     indexMap.clear();
     dictionary = null;
+    bucketId2TypeMap.clear();
   }
 
   public Dictionary getDictionary() {
@@ -688,29 +695,13 @@ public class EmbeddedSchema implements Schema {
 
   @Override
   public String getTypeNameByBucketId(final int bucketId) {
-    for (DocumentType t : types.values()) {
-      for (Bucket b : t.getBuckets(false)) {
-        if (b.getId() == bucketId)
-          return t.getName();
-      }
-    }
-
-    // NOT FOUND
-    return null;
+    final DocumentType type = getTypeByBucketId(bucketId);
+    return type != null ? type.getName() : null;
   }
 
-  // TODO: CREATE A MAP FOR THIS
   @Override
   public DocumentType getTypeByBucketId(final int bucketId) {
-    for (DocumentType t : types.values()) {
-      for (Bucket b : t.getBuckets(false)) {
-        if (b.getId() == bucketId)
-          return t;
-      }
-    }
-
-    // NOT FOUND
-    return null;
+    return bucketId2TypeMap.get(bucketId);
   }
 
   public boolean existsType(final String typeName) {
@@ -1276,10 +1267,14 @@ public class EmbeddedSchema implements Schema {
 
       if (dirtyConfiguration)
         saveConfiguration();
+
+      rebuildBucketTypeMap();
     }
   }
 
   public synchronized void saveConfiguration() {
+    rebuildBucketTypeMap();
+
     if (readingFromFile || !loadInRamCompleted || multipleUpdate || database.isTransactionActive()) {
       // POSTPONE THE SAVING
       dirtyConfiguration = true;
@@ -1438,5 +1433,19 @@ public class EmbeddedSchema implements Schema {
         // ROLLBACK THE DIRTY STATUS
         dirtyConfiguration = false;
     }
+  }
+
+  /**
+   * Replaces the map to allow concurrent usage while rebuilding the map.
+   */
+  private void rebuildBucketTypeMap() {
+    final Map<Integer, DocumentType> newBucketId2TypeMap = new HashMap<>();
+
+    for (DocumentType t : types.values()) {
+      for (Bucket b : t.getBuckets(false))
+        newBucketId2TypeMap.put(b.getId(), t);
+    }
+
+    bucketId2TypeMap = newBucketId2TypeMap;
   }
 }
