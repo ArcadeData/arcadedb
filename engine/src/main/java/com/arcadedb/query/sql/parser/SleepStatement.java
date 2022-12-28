@@ -31,16 +31,16 @@ public class SleepStatement extends SimpleExecStatement {
 
   protected PInteger millis;
 
-  public SleepStatement(int id) {
+  public SleepStatement(final int id) {
     super(id);
   }
 
-  public SleepStatement(SqlParser p, int id) {
+  public SleepStatement(final SqlParser p, final int id) {
     super(p, id);
   }
 
   @Override
-  public ResultSet executeSimple(CommandContext ctx) {
+  public ResultSet executeSimple(final CommandContext ctx) {
 
     InternalResultSet result = new InternalResultSet();
     ResultInternal item = new ResultInternal();
@@ -61,26 +61,26 @@ public class SleepStatement extends SimpleExecStatement {
   }
 
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("SLEEP ");
     millis.toString(params, builder);
   }
 
   @Override
   public SleepStatement copy() {
-    SleepStatement result = new SleepStatement(-1);
+    final SleepStatement result = new SleepStatement(-1);
     result.millis = millis == null ? null : millis.copy();
     return result;
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    SleepStatement that = (SleepStatement) o;
+    final SleepStatement that = (SleepStatement) o;
 
     return Objects.equals(millis, that.millis);
   }
