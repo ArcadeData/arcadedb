@@ -25,6 +25,8 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.utility.FileUtils;
 import org.apache.commons.collections.IteratorUtils;
+import org.apache.commons.configuration2.BaseConfiguration;
+import org.apache.commons.configuration2.Configuration;
 import org.apache.tinkerpop.gremlin.arcadedb.structure.ArcadeGraph;
 import org.json.JSONObject;
 import org.junit.jupiter.api.AfterEach;
@@ -34,9 +36,10 @@ import org.junit.jupiter.api.Test;
 
 import java.io.*;
 import java.util.*;
-import java.util.concurrent.*;
 import java.util.stream.*;
 
+import static org.apache.tinkerpop.gremlin.arcadedb.structure.ArcadeGraph.CONFIG_DIRECTORY;
+import static org.apache.tinkerpop.gremlin.arcadedb.structure.ArcadeGraph.CONFIG_EVALUATION_TIMEOUT;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.equalTo;
@@ -49,8 +52,12 @@ public class CypherQueryEngineTest {
   private static final String DB_PATH = "./target/testsql";
 
   @Test
-  public void verifyProjectionWithCollectFunction() throws ExecutionException, InterruptedException {
-    final ArcadeGraph graph = ArcadeGraph.open(DB_PATH);
+  public void verifyProjectionWithCollectFunction() {
+    final Configuration config = new BaseConfiguration();
+    config.setProperty(CONFIG_DIRECTORY, DB_PATH);
+    config.setProperty(CONFIG_EVALUATION_TIMEOUT, 180000);
+
+    final ArcadeGraph graph = ArcadeGraph.open(config);
     try (Database database = graph.getDatabase()) {
       database.transaction(() -> {
         Schema schema = database.getSchema();

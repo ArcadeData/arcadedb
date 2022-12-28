@@ -170,6 +170,8 @@ public enum GlobalConfiguration {
   // COMMAND
   COMMAND_TIMEOUT("arcadedb.command.timeout", "Default timeout for commands (in ms)", Long.class, 0),
 
+  GREMLIN_COMMAND_TIMEOUT("arcadedb.gremlin.timeout", "Default timeout for gremlin commands (in ms)", Long.class, 8_000),
+
   // USER CODE
   POLYGLOT_COMMAND_TIMEOUT("arcadedb.polyglotCommand.timeout", "Default timeout for polyglot commands (in ms)", Long.class, 10_000),
 
