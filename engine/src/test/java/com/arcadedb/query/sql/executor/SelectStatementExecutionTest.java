@@ -56,7 +56,6 @@ public class SelectStatementExecutionTest extends TestHelper {
 
   @Test
   public void testGroupByCount() {
-
     database.getSchema().createDocumentType("InputTx");
 
     database.begin();

@@ -26,7 +26,7 @@ import java.util.*;
 /**
  * Iterator that allow to iterate against multiple collection of elements.
  */
-public class MultiIterator<T> implements Iterator<T>, Iterable<T> {
+public class MultiIterator<T> implements ResettableIterator<T>, Iterable<T> {
   private List<Object> sources;
   private Iterator<?>  sourcesIterator;
   private Iterator<T>  partialIterator;
@@ -105,6 +105,7 @@ public class MultiIterator<T> implements Iterator<T>, Iterable<T> {
     return this;
   }
 
+  @Override
   public void reset() {
     sourcesIterator = null;
     partialIterator = null;
@@ -121,6 +122,7 @@ public class MultiIterator<T> implements Iterator<T>, Iterable<T> {
     return this;
   }
 
+  @Override
   public int countEntries() {
     // SUM ALL THE COLLECTION SIZES
     int size = 0;

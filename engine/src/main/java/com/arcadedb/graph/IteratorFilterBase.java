@@ -25,22 +25,17 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.EdgeType;
 
 import java.util.*;
-import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
-public abstract class IteratorFilterBase<T> implements Iterator<T>, Iterable<T> {
-  protected final DatabaseInternal database;
-  protected       EdgeSegment      currentContainer;
-  protected final AtomicInteger    currentPosition     = new AtomicInteger(MutableEdgeSegment.CONTENT_START_POSITION);
-  private         int              lastElementPosition = currentPosition.get();
-  protected       RID              nextEdge;
-  protected       RID              nextVertex;
-  protected       RID              next;
-  protected       Set<Integer>     validBuckets;
+public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> implements Iterable<T> {
+  private   int          lastElementPosition = currentPosition.get();
+  protected RID          nextEdge;
+  protected RID          nextVertex;
+  protected RID          next;
+  protected Set<Integer> validBuckets;
 
   protected IteratorFilterBase(final DatabaseInternal database, final EdgeSegment current, final String[] edgeTypes) {
-    this.database = database;
-    this.currentContainer = current;
+    super(database, current);
 
     validBuckets = new HashSet<>();
     for (String e : edgeTypes) {
