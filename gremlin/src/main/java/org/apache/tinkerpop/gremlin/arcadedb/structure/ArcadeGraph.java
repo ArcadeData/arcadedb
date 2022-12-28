@@ -18,6 +18,7 @@
  */
 package org.apache.tinkerpop.gremlin.arcadedb.structure;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
@@ -65,6 +66,9 @@ import java.util.logging.*;
 @Graph.OptIn("org.apache.tinkerpop.gremlin.arcadedb.structure.DebugStructureSuite")
 public class ArcadeGraph implements Graph, Closeable {
 
+  public static final String CONFIG_DIRECTORY          = "gremlin.arcadedb.directory";
+  public static final String CONFIG_EVALUATION_TIMEOUT = "gremlin.evaluationTimeout";
+
   //private final   ArcadeVariableFeatures graphVariables = new ArcadeVariableFeatures();
   private final        ArcadeGraphTransaction transaction;
   protected final      Database               database;
@@ -105,10 +109,13 @@ public class ArcadeGraph implements Graph, Closeable {
   protected ArcadeGraph(final Database database) {
     this.database = database;
     this.transaction = new ArcadeGraphTransaction(this);
+
+    if (database.getConfiguration().hasValue(GlobalConfiguration.GREMLIN_COMMAND_TIMEOUT.getKey()))
+      // SET CUSTOM TIMEOUT
+      configuration.setProperty(CONFIG_EVALUATION_TIMEOUT, database.getConfiguration().getValueAsLong(GlobalConfiguration.GREMLIN_COMMAND_TIMEOUT));
+
     init();
   }
-
-  public static final String CONFIG_DIRECTORY = "gremlin.arcadedb.directory";
 
   @Override
   public Features features() {
@@ -417,6 +424,11 @@ public class ArcadeGraph implements Graph, Closeable {
 
     final GremlinExecutor.Builder builder = GremlinExecutor.build();
     builder.globalBindings(globalBindings);
+
+    if (configuration.containsKey(CONFIG_EVALUATION_TIMEOUT))
+      // SET CUSTOM TIMEOUT
+      builder.evaluationTimeout(configuration.getLong(CONFIG_EVALUATION_TIMEOUT));
+
     gremlinExecutor = builder.create();
   }
 }
