@@ -84,7 +84,7 @@ public class Console {
 
     terminal = TerminalBuilder.builder().system(system).streams(System.in, System.out).jansi(true).build();
     Completer completer = new StringsCompleter("align database", "begin", "rollback", "commit", "check database", "close", "connect", "create database",
-        "create user", "drop database", "drop user", "export", "import", "help", "info types", "load", "exit", "quit", "set", "match", "select", "insert into",
+        "create user", "drop database", "drop user", "export", "import", "help", "info types", "list databases", "load", "exit", "quit", "set", "match", "select", "insert into",
         "update", "delete", "pwd");
 
     lineReader = LineReaderBuilder.builder().terminal(terminal).parser(parser).variable("history-file", ".history").history(new DefaultHistory())
@@ -187,7 +187,7 @@ public class Console {
           executeClose();
         else if (lineLowerCase.startsWith("commit"))
           executeCommit();
-        else if (lineLowerCase.startsWith("list"))
+        else if (lineLowerCase.startsWith("list databases"))
           executeList(line);
         else if (lineLowerCase.startsWith("connect"))
           executeConnect(line);
@@ -315,17 +315,18 @@ public class Console {
   }
 
   private void executeList(final String line) {
-    final String url = line.substring("list".length()).trim();
+    final String url = line.substring("list databases".length()).trim();
 
     final String[] urlParts = url.split(" ");
 
     outputLine("Databases:");
     if (urlParts[0].startsWith(REMOTE_PREFIX)) {
+      final RemoteDatabase holdRemoteDatabase = remoteDatabase;
       connectToRemoteServer(url, false);
       for (Object f : remoteDatabase.databases()) {
         outputLine(f.toString());
       }
-      remoteDatabase = null;
+      remoteDatabase = holdRemoteDatabase;
 
     } else {
       File file = new File(databaseDirectory);
@@ -674,7 +675,7 @@ public class Console {
     outputLine("help|?                                            -> ask for this help");
     outputLine("info types                                        -> prints available types");
     outputLine("info transaction                                  -> prints current transaction");
-    outputLine("list |remote:<url> <user> <pw>                    -> lists databases");
+    outputLine("list databases |remote:<url> <user> <pw>          -> lists databases");
     outputLine("load <path>                                       -> runs local script");
     outputLine("rollback                                          -> rolls back current transaction");
     outputLine("set language = sql|sqlscript|cypher|gremlin|mongo -> sets console query language");
