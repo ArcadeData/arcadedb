@@ -20,6 +20,8 @@ package com.arcadedb.graph;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -37,18 +39,50 @@ public class TxGraphTest extends TestHelper {
     final RID[] c64 = new RID[1];
 
     database.transaction(() -> {
-      commodore[0] = database.newVertex("Supplier").set("name", "Commodore").save().getIdentity();
-      c64[0] = database.newVertex("Good").set("name", "Commodore64").save().getIdentity();
+      commodore[0] = database.newVertex("Supplier").set("name", "Commodore").set("date", System.currentTimeMillis()).save().getIdentity();
+      c64[0] = database.newVertex("Good").set("name", "Commodore64").set("date", System.currentTimeMillis()).save().getIdentity();
     });
 
     database.transaction(() -> {
       commodore[0].asVertex().newEdge("SELLS", c64[0], true).save();
 
-      final Vertex vic20 = database.newVertex("Good").set("name", "Vic20").save();
+      final Vertex vic20 = database.newVertex("Good").set("name", "Vic20").set("date", System.currentTimeMillis()).save();
 
-      commodore[0].asVertex(false).newEdge("SELLS", vic20, true).save();
+      commodore[0].asVertex(false).newEdge("SELLS", vic20, true).set("date", System.currentTimeMillis()).save();
 
       Assertions.assertEquals(2, commodore[0].asVertex().countEdges(Vertex.DIRECTION.OUT, "SELLS"));
+
+      ResultSet result = database.query("sql", "select expand( in().include('name') ) from Good");
+      Assertions.assertTrue(result.hasNext());
+      while (result.hasNext()) {
+        Result next = result.next();
+        Assertions.assertNotNull(next.getProperty("name"));
+        Assertions.assertNull(next.getProperty("date"));
+      }
+
+      result = database.query("sql", "select expand( in().include('date') ) from Good");
+      Assertions.assertTrue(result.hasNext());
+      while (result.hasNext()) {
+        Result next = result.next();
+        Assertions.assertNotNull(next.getProperty("date"));
+        Assertions.assertNull(next.getProperty("name"));
+      }
+
+      result = database.query("sql", "select expand( in().exclude('name') ) from Good");
+      Assertions.assertTrue(result.hasNext());
+      while (result.hasNext()) {
+        Result next = result.next();
+        Assertions.assertNotNull(next.getProperty("date"));
+        Assertions.assertNull(next.getProperty("name"));
+      }
+
+      result = database.query("sql", "select expand( in().exclude('date') ) from Good");
+      Assertions.assertTrue(result.hasNext());
+      while (result.hasNext()) {
+        Result next = result.next();
+        Assertions.assertNotNull(next.getProperty("name"));
+        Assertions.assertNull(next.getProperty("date"));
+      }
     });
   }
 }

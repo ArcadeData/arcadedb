@@ -27,6 +27,9 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
+import com.arcadedb.schema.VertexType;
 
 import java.util.*;
 
@@ -98,7 +101,8 @@ public class SQLMethodExclude extends AbstractSQLMethod {
         return copy((Map) current, iParams);
       } else if (MultiValue.isMultiValue(current)) {
         // ACT ON MULTIPLE DOCUMENTS
-        final List<Object> result = new ArrayList<Object>(MultiValue.getSize(current));
+        final int size = MultiValue.getSizeIfAvailable(current);
+        final List<Object> result = size > 0 ? new ArrayList<>(size) : new ArrayList<>();
         for (Object o : MultiValue.getMultiValueIterable(current, false)) {
           if (o instanceof Identifiable) {
             result.add(copy((Document) ((Identifiable) o).getRecord(), iParams));
@@ -113,8 +117,18 @@ public class SQLMethodExclude extends AbstractSQLMethod {
   }
 
   private Object copy(final Document document, final Object[] iFieldNames) {
-    final MutableDocument doc = document.getDatabase().newDocument(document.getTypeName());
+    final DocumentType type = document.getDatabase().getSchema().getType(document.getTypeName());
+
+    final MutableDocument doc;
+    if (type instanceof VertexType)
+      doc = document.getDatabase().newVertex(document.getTypeName());
+    else if (type instanceof EdgeType)
+      throw new IllegalArgumentException("Cannot copy an edge");
+    else
+      doc = document.getDatabase().newDocument(document.getTypeName());
+
     doc.set(document.toMap());
+    doc.setIdentity(document.getIdentity());
 
     for (Object iFieldName : iFieldNames) {
       if (iFieldName != null) {

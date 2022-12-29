@@ -16,24 +16,15 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.graph;
+package com.arcadedb.utility;
 
 import java.util.*;
 
 /**
- * Created by luigidellaquila on 02/07/16.
+ * Iterator can be reset to start from the beginning. This is useful to count instances.
  */
-public class EdgeToVertexIterable implements Iterable<Vertex> {
-  private final Iterable<Edge>   edges;
-  private final Vertex.DIRECTION direction;
+public interface ResettableIterator<T> extends Iterator<T> {
+  void reset();
 
-  public EdgeToVertexIterable(final Iterable<Edge> edges, Vertex.DIRECTION direction) {
-    this.edges = edges;
-    this.direction = direction;
-  }
-
-  @Override
-  public Iterator<Vertex> iterator() {
-    return new EdgeToVertexIterator((EdgeIterator) edges.iterator(), direction);
-  }
+  int countEntries();
 }

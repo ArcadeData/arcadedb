@@ -37,7 +37,8 @@ public class JsonSerializer {
   public JSONObject serializeDocument(final Document document) {
     final JSONObject object = new JSONObject();
 
-    object.put("@rid", document.getIdentity().toString());
+    if (document.getIdentity() != null)
+      object.put("@rid", document.getIdentity().toString());
     object.put("@type", document.getTypeName());
 
     for (String p : document.getPropertyNames()) {
@@ -86,7 +87,8 @@ public class JsonSerializer {
 
     if (result.isElement()) {
       final Document document = result.toElement();
-      object.put("@rid", document.getIdentity().toString());
+      if (document.getIdentity() != null)
+        object.put("@rid", document.getIdentity().toString());
       object.put("@type", document.getTypeName());
 
       setMetadata(document, object);

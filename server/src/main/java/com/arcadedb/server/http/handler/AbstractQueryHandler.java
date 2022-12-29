@@ -19,6 +19,7 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
@@ -126,7 +127,7 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
           analyzeResultContent(database, serializerImpl, includedVertices, vertices, edges, row);
         }
 
-        if( limit > -1  && records.length() >= limit )
+        if (limit > -1 && records.length() >= limit)
           break;
       }
 
@@ -183,9 +184,15 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
   protected void analyzePropertyValue(final Database database, final JsonGraphSerializer serializerImpl, final Set<Identifiable> includedVertices,
       final JSONArray vertices, final JSONArray edges, final Object value) {
     if (value instanceof Identifiable) {
-      final RID rid = ((Identifiable) value).getIdentity();
 
-      final DocumentType type = database.getSchema().getTypeByBucketId(rid.getBucketId());
+      final DocumentType type;
+      if (value instanceof Document)
+        type = ((Document) value).getType();
+      else {
+        final RID rid = ((Identifiable) value).getIdentity();
+        type = database.getSchema().getTypeByBucketId(rid.getBucketId());
+      }
+
       if (type instanceof VertexType) {
         includedVertices.add((Identifiable) value);
         vertices.put(serializerImpl.serializeGraphElement(((Identifiable) value).asVertex(true)));

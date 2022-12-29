@@ -26,23 +26,17 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.Pair;
 
 import java.util.*;
-import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
-public class EdgeVertexIterator implements Iterator<Pair<RID, RID>>, Iterable<Pair<RID, RID>> {
-  private       EdgeSegment      currentContainer;
+public class EdgeVertexIterator extends ResettableIteratorBase<Pair<RID, RID>> implements Iterable<Pair<RID, RID>> {
   private final RID              vertex;
   private final Vertex.DIRECTION direction;
-  private final AtomicInteger    currentPosition     = new AtomicInteger(MutableEdgeSegment.CONTENT_START_POSITION);
   private       int              lastElementPosition = currentPosition.get();
   private       RID              nextEdgeRID;
   private       RID              nextVertexRID;
 
   public EdgeVertexIterator(final EdgeSegment current, final RID vertex, final Vertex.DIRECTION direction) {
-    if (current == null)
-      throw new IllegalArgumentException("Edge chunk is null");
-
-    this.currentContainer = current;
+    super(null, current);
     this.vertex = vertex;
     this.direction = direction;
   }

@@ -80,7 +80,7 @@ public abstract class BaseRecord implements Record {
 
   @Override
   public int hashCode() {
-    return rid.hashCode();
+    return rid != null ? rid.hashCode() : super.hashCode();
   }
 
   @Override

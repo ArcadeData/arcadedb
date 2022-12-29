@@ -22,16 +22,11 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
 
 import java.util.*;
-import java.util.concurrent.atomic.*;
 
-public class VertexIterator implements Iterator<Vertex>, Iterable<Vertex> {
-  private       EdgeSegment   currentContainer;
-  private final AtomicInteger currentPosition = new AtomicInteger(MutableEdgeSegment.CONTENT_START_POSITION);
+public class VertexIterator extends ResettableIteratorBase<Vertex> implements Iterable<Vertex> {
 
   public VertexIterator(final EdgeSegment current) {
-    if (current == null)
-      throw new IllegalArgumentException("Edge chunk is null");
-    this.currentContainer = current;
+    super(null, current);
   }
 
   @Override
