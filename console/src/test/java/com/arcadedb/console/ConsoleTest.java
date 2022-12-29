@@ -55,6 +55,11 @@ public class ConsoleTest {
   }
 
   @Test
+  public void testList() throws IOException {
+    Assertions.assertTrue(console.parse("list;", false));
+  }
+
+  @Test
   public void testConnect() throws IOException {
     Assertions.assertTrue(console.parse("connect " + DB_NAME + ";info types", false));
   }
