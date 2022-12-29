@@ -203,8 +203,13 @@ public class SelectStatement extends Statement {
 
     setProfilingConstraints((DatabaseInternal) db);
 
+    boolean profileExecution = false;
+    if (params != null && params.containsKey("$profileExecution")) {
+      profileExecution = (Boolean) params.remove("$profileExecution");
+    }
+
     ctx.setInputParameters(params);
-    final InternalExecutionPlan executionPlan = createExecutionPlan(ctx, false);
+    final InternalExecutionPlan executionPlan = createExecutionPlan(ctx, profileExecution);
     final LocalResultSet result = new LocalResultSet(executionPlan);
     return result;
   }

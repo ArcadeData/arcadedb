@@ -324,10 +324,10 @@ function executeCommand(language, query){
   globalActivateTab("tab-query");
 
   let activeTab = $("#tabs-command .active").attr("id");
-  if( activeTab == "tab-table-sel" )
-    executeCommandTable();
-  else if( activeTab == "tab-graph-sel" )
+  if( activeTab == "tab-graph-sel" )
     executeCommandGraph();
+  else
+    executeCommandTable();
 
   let database = escapeHtml( $("#inputDatabase").val() );
 
@@ -360,6 +360,7 @@ function executeCommandTable(){
   let language = escapeHtml( $("#inputLanguage").val() );
   let command = escapeHtml( editor.getValue() );
   let limit = parseInt( $("#inputLimit").val() );
+  let profileExecution = $('#profileCommand').prop('checked') ? "detailed" : "basic";
 
   $("#executeSpinner").show();
 
@@ -373,6 +374,7 @@ function executeCommandTable(){
         language: language,
         command: command,
         limit: limit,
+        profileExecution: profileExecution,
         serializer: "studio"
       }
     ),
@@ -386,6 +388,7 @@ function executeCommandTable(){
 
     $("#result-num").html( data.result.records.length );
     $("#resultJson").val( JSON.stringify(data, null, 2) );
+    $("#resultExplain").val( data.explain != null ? data.explain : "'" );
 
     globalResultset = data.result;
     globalCy = null;
@@ -404,6 +407,7 @@ function executeCommandGraph(){
   let language = escapeHtml( $("#inputLanguage").val() );
   let command = escapeHtml( editor.getValue() );
   let limit = parseInt( $("#inputLimit").val() );
+  let profileExecution = $('#profileCommand').prop('checked') ? "detailed" : "basic";
 
   $("#executeSpinner").show();
 
@@ -417,6 +421,7 @@ function executeCommandGraph(){
         language: language,
         command: command,
         limit: limit,
+        profileExecution: profileExecution,
         serializer: "studio"
       }
     ),
@@ -430,6 +435,7 @@ function executeCommandGraph(){
 
     $("#result-num").html( data.result.records.length );
     $("#resultJson").val( JSON.stringify(data, null, 2) );
+    $("#resultExplain").val( data.explain != null ? data.explain : "'" );
 
     globalResultset = data.result;
     globalCy = null;
