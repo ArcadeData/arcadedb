@@ -19,7 +19,9 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.query.sql.parser.Bucket;
 import com.arcadedb.query.sql.parser.FromClause;
+import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.query.sql.parser.Limit;
 import com.arcadedb.query.sql.parser.Projection;
 import com.arcadedb.query.sql.parser.SelectStatement;
@@ -66,8 +68,8 @@ public class UpdateExecutionPlanner {
     this.timeout = oUpdateStatement.getTimeout() == null ? null : oUpdateStatement.getTimeout().copy();
   }
 
-  public UpdateExecutionPlan createExecutionPlan(CommandContext ctx, boolean enableProfiling) {
-    UpdateExecutionPlan result = new UpdateExecutionPlan(ctx);
+  public UpdateExecutionPlan createExecutionPlan(final CommandContext ctx, final boolean enableProfiling) {
+    final UpdateExecutionPlan result = new UpdateExecutionPlan(ctx);
 
     handleTarget(result, ctx, this.target, this.whereClause, this.timeout, enableProfiling);
     if (updateEdge) {
@@ -79,7 +81,7 @@ public class UpdateExecutionPlanner {
     handleLimit(result, ctx, this.limit, enableProfiling);
     handleReturnBefore(result, ctx, this.returnBefore, enableProfiling);
     handleOperations(result, ctx, this.operations, enableProfiling);
-    handleSave(result, ctx, enableProfiling);
+    handleSave(result, target.getItem().getBucket(), ctx, enableProfiling);
     handleResultForReturnBefore(result, ctx, this.returnBefore, returnProjection, enableProfiling);
     handleResultForReturnAfter(result, ctx, this.returnAfter, returnProjection, enableProfiling);
     handleResultForReturnCount(result, ctx, this.returnCount, enableProfiling);
@@ -92,18 +94,19 @@ public class UpdateExecutionPlanner {
    * @param plan the execution plan
    * @param ctx  the execution context
    */
-  private void convertToModifiableResult(UpdateExecutionPlan plan, CommandContext ctx, boolean profilingEnabled) {
+  private void convertToModifiableResult(final UpdateExecutionPlan plan, CommandContext ctx, final boolean profilingEnabled) {
     plan.chain(new ConvertToUpdatableResultStep(ctx, profilingEnabled));
   }
 
-  private void handleResultForReturnCount(UpdateExecutionPlan result, CommandContext ctx, boolean returnCount, boolean profilingEnabled) {
+  private void handleResultForReturnCount(final UpdateExecutionPlan result, final CommandContext ctx, final boolean returnCount,
+      final boolean profilingEnabled) {
     if (returnCount) {
       result.chain(new CountStep(ctx, profilingEnabled));
     }
   }
 
-  private void handleResultForReturnAfter(UpdateExecutionPlan result, CommandContext ctx, boolean returnAfter, Projection returnProjection,
-      boolean profilingEnabled) {
+  private void handleResultForReturnAfter(final UpdateExecutionPlan result, final CommandContext ctx, final boolean returnAfter,
+      final Projection returnProjection, final boolean profilingEnabled) {
     if (returnAfter) {
       //re-convert to normal step
       result.chain(new ConvertToResultInternalStep(ctx, profilingEnabled));
@@ -113,8 +116,8 @@ public class UpdateExecutionPlanner {
     }
   }
 
-  private void handleResultForReturnBefore(UpdateExecutionPlan result, CommandContext ctx, boolean returnBefore, Projection returnProjection,
-      boolean profilingEnabled) {
+  private void handleResultForReturnBefore(final UpdateExecutionPlan result, final CommandContext ctx, final boolean returnBefore,
+      final Projection returnProjection, final boolean profilingEnabled) {
     if (returnBefore) {
       result.chain(new UnwrapPreviousValueStep(ctx, profilingEnabled));
       if (returnProjection != null) {
@@ -123,35 +126,41 @@ public class UpdateExecutionPlanner {
     }
   }
 
-  private void handleSave(UpdateExecutionPlan result, CommandContext ctx, boolean profilingEnabled) {
-    result.chain(new SaveElementStep(ctx, profilingEnabled));
+  private void handleSave(final UpdateExecutionPlan result, final Bucket bucket, final CommandContext ctx, final boolean profilingEnabled) {
+    if (bucket != null) {
+      final String bucketName =
+          bucket.getBucketName() != null ? bucket.getBucketName() : ctx.getDatabase().getSchema().getBucketById(bucket.getBucketNumber()).getName();
+      result.chain(new SaveElementStep(ctx, new Identifier(bucketName), profilingEnabled));
+    } else
+      result.chain(new SaveElementStep(ctx, profilingEnabled));
   }
 
-  private void handleTimeout(UpdateExecutionPlan result, CommandContext ctx, Timeout timeout, boolean profilingEnabled) {
+  private void handleTimeout(final UpdateExecutionPlan result, final CommandContext ctx, final Timeout timeout, final boolean profilingEnabled) {
     if (timeout != null && timeout.getVal().longValue() > 0) {
       result.chain(new TimeoutStep(timeout, ctx, profilingEnabled));
     }
   }
 
-  private void handleReturnBefore(UpdateExecutionPlan result, CommandContext ctx, boolean returnBefore, boolean profilingEnabled) {
+  private void handleReturnBefore(final UpdateExecutionPlan result, final CommandContext ctx, final boolean returnBefore, final boolean profilingEnabled) {
     if (returnBefore) {
       result.chain(new CopyRecordContentBeforeUpdateStep(ctx, profilingEnabled));
     }
   }
 
-  private void handleLimit(UpdateExecutionPlan plan, CommandContext ctx, Limit limit, boolean profilingEnabled) {
+  private void handleLimit(final UpdateExecutionPlan plan, final CommandContext ctx, final Limit limit, final boolean profilingEnabled) {
     if (limit != null) {
       plan.chain(new LimitExecutionStep(limit, ctx, profilingEnabled));
     }
   }
 
-  private void handleUpsert(UpdateExecutionPlan plan, CommandContext ctx, FromClause target, WhereClause where, boolean upsert, boolean profilingEnabled) {
+  private void handleUpsert(final UpdateExecutionPlan plan, final CommandContext ctx, final FromClause target, final WhereClause where, final boolean upsert,
+      final boolean profilingEnabled) {
     if (upsert) {
       plan.chain(new UpsertStep(target, where, ctx, profilingEnabled));
     }
   }
 
-  private void handleOperations(UpdateExecutionPlan plan, CommandContext ctx, List<UpdateOperations> ops, boolean profilingEnabled) {
+  private void handleOperations(final UpdateExecutionPlan plan, final CommandContext ctx, final List<UpdateOperations> ops, final boolean profilingEnabled) {
     if (ops != null) {
       for (UpdateOperations op : ops) {
         switch (op.getType()) {
@@ -180,15 +189,15 @@ public class UpdateExecutionPlanner {
     }
   }
 
-  private void handleTarget(UpdateExecutionPlan result, CommandContext ctx, FromClause target, WhereClause whereClause, Timeout timeout,
-      boolean profilingEnabled) {
+  private void handleTarget(final UpdateExecutionPlan result, final CommandContext ctx, final FromClause target, final WhereClause whereClause,
+      final Timeout timeout, boolean profilingEnabled) {
     final SelectStatement sourceStatement = new SelectStatement(-1);
     sourceStatement.setTarget(target);
     sourceStatement.setWhereClause(whereClause);
     if (timeout != null) {
       sourceStatement.setTimeout(this.timeout.copy());
     }
-    SelectExecutionPlanner planner = new SelectExecutionPlanner(sourceStatement);
+    final SelectExecutionPlanner planner = new SelectExecutionPlanner(sourceStatement);
     result.chain(new SubQueryStep(planner.createExecutionPlan(ctx, profilingEnabled), ctx, ctx, profilingEnabled));
   }
 }

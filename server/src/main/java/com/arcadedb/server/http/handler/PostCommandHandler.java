@@ -54,6 +54,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
     String command = decode((String) requestMap.get("command"));
     final int limit = (int) requestMap.getOrDefault("limit", DEFAULT_LIMIT);
     final String serializer = (String) requestMap.getOrDefault("serializer", "record");
+    final String profileExecution = (String) requestMap.getOrDefault("profileExecution", null);
 
     if (command == null || command.isEmpty()) {
       exchange.setStatusCode(400);
@@ -61,13 +62,15 @@ public class PostCommandHandler extends AbstractQueryHandler {
       return;
     }
 
-    final Map<String, Object> paramMap = (Map<String, Object>) requestMap.get("params");
+    Map<String, Object> paramMap = (Map<String, Object>) requestMap.get("params");
+    if (paramMap == null)
+      paramMap = new HashMap<>();
 
     final ServerMetrics.MetricTimer timer = httpServer.getServer().getServerMetrics().timer("http.command");
 
     try {
       if (language.equalsIgnoreCase("sql") || language.equalsIgnoreCase("sqlScript")) {
-        final String commandLC = command.toLowerCase().trim();
+        String commandLC = command.toLowerCase().trim();
         if ((commandLC.startsWith("select") || commandLC.startsWith("match")) && !commandLC.endsWith(";")) {
           if (!command.contains(" limit ")) {
             command += " limit " + limit;
@@ -77,6 +80,9 @@ public class PostCommandHandler extends AbstractQueryHandler {
               command += " limit " + limit;
           }
         }
+
+        if ("detailed".equalsIgnoreCase(profileExecution))
+          paramMap.put("$profileExecution", true);
       }
 
       final ResultSet qResult = language.equalsIgnoreCase("sqlScript") ?
@@ -89,6 +95,9 @@ public class PostCommandHandler extends AbstractQueryHandler {
       final JSONObject response = createResult(user);
 
       serializeResultSet(database, serializer, limit, response, qResult);
+
+      if (profileExecution != null && qResult.getExecutionPlan().isPresent())
+        qResult.getExecutionPlan().ifPresent(x -> response.put("explain", qResult.getExecutionPlan().get().prettyPrint(0, 2)));
 
       final String responseAsString = response.toString();
 

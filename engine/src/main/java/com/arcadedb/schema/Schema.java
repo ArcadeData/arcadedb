@@ -91,6 +91,8 @@ public interface Schema {
 
   DocumentType getTypeByBucketId(int bucketId);
 
+  DocumentType getTypeByBucketName(String bucketName);
+
   boolean existsType(String typeName);
 
   void dropBucket(String bucketName);

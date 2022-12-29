@@ -60,11 +60,22 @@ public class UpsertStep extends AbstractExecutionStep {
   }
 
   private Result createNewRecord(final FromClause commandTarget, final WhereClause initialFilter) {
-    if (commandTarget.getItem().getIdentifier() == null)
-      throw new CommandExecutionException("Cannot execute UPSERT on target '" + commandTarget + "'");
-
     final DatabaseInternal database = ctx.getDatabase();
-    final DocumentType type = database.getSchema().getType(commandTarget.getItem().getIdentifier().getStringValue());
+    final DocumentType type;
+
+    if (commandTarget.getItem().getBucket() != null) {
+      // TARGET = BUCKET
+      if (commandTarget.getItem().getBucket().getBucketNumber() != null) {
+        // BUCKET ID
+        type = database.getSchema().getTypeByBucketId(commandTarget.getItem().getBucket().getBucketNumber());
+      } else {
+        // BUCKET NAME
+        type = database.getSchema().getTypeByBucketName(commandTarget.getItem().getBucket().getBucketName());
+      }
+    } else if (commandTarget.getItem().getIdentifier() != null) {
+      type = database.getSchema().getType(commandTarget.getItem().getIdentifier().getStringValue());
+    } else
+      throw new CommandExecutionException("Cannot execute UPSERT on target '" + commandTarget + "'");
 
     final MutableDocument doc = (MutableDocument) ctx.getDatabase().getRecordFactory().newMutableRecord(ctx.getDatabase(), type);
     final UpdatableResult result = new UpdatableResult(doc);
@@ -90,7 +101,7 @@ public class UpsertStep extends AbstractExecutionStep {
   @Override
   public String prettyPrint(final int depth, final int indent) {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    final String result = spaces + "+ INSERT (upsert, if needed)\n" + spaces + "  target: " + commandTarget + "\n" + spaces + "  content: " + initialFilter;
+    final String result = spaces + "+ UPSERT (if needed)\n" + spaces + "  target: " + commandTarget + "\n" + spaces + "  content: " + initialFilter;
     return result;
   }
 }

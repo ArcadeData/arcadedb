@@ -289,10 +289,15 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
 
   public synchronized MutableDocument save(final String bucketName) {
     dirty = true;
-    if (rid != null)
-      throw new IllegalStateException("Cannot update a record in a custom bucket");
+    if (rid != null) {
+      // UPDATE
+      if (rid.bucketId != database.getSchema().getBucketByName(bucketName).getId())
+        throw new IllegalStateException("Cannot update a record in a custom bucket");
 
-    database.createRecord(this, bucketName);
+      database.updateRecord(this);
+    } else
+      // CREATE
+      database.createRecord(this, bucketName);
     return this;
   }
 
