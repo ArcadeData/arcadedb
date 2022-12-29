@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
@@ -426,6 +427,67 @@ public class UpdateStatementExecutionTest extends TestHelper {
       Assertions.assertEquals("foo", item.getProperty("name"));
       Assertions.assertEquals("bar", item.getProperty("secondName"));
       Assertions.assertTrue(item.getProperty("surname").toString().startsWith("surname"));
+    }
+    Assertions.assertFalse(result.hasNext());
+    result.close();
+  }
+
+  @Test
+  public void testUpsertBucket() {
+    final List<Bucket> buckets = database.getSchema().getType(className).getBuckets(false);
+
+    // BY BUCKET ID
+    ResultSet result = database.command("sql", "update bucket:" + buckets.get(0).getName() + " set foo = 'bar' upsert where name = 'name1'");
+    Assertions.assertTrue(result.hasNext());
+    Result item = result.next();
+    Assertions.assertNotNull(item);
+    Assertions.assertEquals((Object) 1L, item.getProperty("count"));
+    Assertions.assertFalse(result.hasNext());
+    result.close();
+
+    // BY BUCKET ID
+    result = database.command("sql", "update bucket:" + buckets.get(0).getId() + " set foo = 'bar' upsert where name = 'name1'");
+    Assertions.assertTrue(result.hasNext());
+    item = result.next();
+    Assertions.assertNotNull(item);
+    Assertions.assertEquals((Object) 1L, item.getProperty("count"));
+    Assertions.assertFalse(result.hasNext());
+    result.close();
+
+    result = database.query("sql", "SElect from bucket:" + buckets.get(0).getName());
+    Assertions.assertTrue(result.hasNext());
+
+    while (result.hasNext()) {
+      item = result.next();
+      Assertions.assertNotNull(item);
+      String name = item.getProperty("name");
+      Assertions.assertNotNull(name);
+      if ("name1".equals(name)) {
+        Assertions.assertEquals("bar", item.getProperty("foo"));
+      } else {
+        Assertions.assertNull(item.getProperty("foo"));
+      }
+    }
+    Assertions.assertFalse(result.hasNext());
+    result.close();
+
+    result = database.command("sql", "update bucket:" + buckets.get(0).getName() + " remove foo upsert where name = 'name1'");
+    Assertions.assertTrue(result.hasNext());
+    item = result.next();
+    Assertions.assertNotNull(item);
+    Assertions.assertEquals((Object) 1L, item.getProperty("count"));
+    Assertions.assertFalse(result.hasNext());
+    result.close();
+
+    result = database.query("sql", "SElect from bucket:" + buckets.get(0).getName());
+    Assertions.assertTrue(result.hasNext());
+
+    while (result.hasNext()) {
+      item = result.next();
+      Assertions.assertNotNull(item);
+      String name = item.getProperty("name");
+      Assertions.assertNotNull(name);
+      Assertions.assertNull(item.getProperty("foo"));
     }
     Assertions.assertFalse(result.hasNext());
     result.close();

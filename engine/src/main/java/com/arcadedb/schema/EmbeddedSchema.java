@@ -704,6 +704,11 @@ public class EmbeddedSchema implements Schema {
     return bucketId2TypeMap.get(bucketId);
   }
 
+  @Override
+  public DocumentType getTypeByBucketName(final String bucketName) {
+    return bucketId2TypeMap.get(getBucketByName(bucketName).getId());
+  }
+
   public boolean existsType(final String typeName) {
     return types.containsKey(typeName);
   }
