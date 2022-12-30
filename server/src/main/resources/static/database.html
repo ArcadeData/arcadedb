@@ -113,7 +113,8 @@
 
 <script>
   $("#inputDatabase").change( function() {
-    $("#currentDatabase").html( escapeHtml( $("#inputDatabase").val() ) );
+    setCurrentDatabase( escapeHtml( $("#inputDatabase").val() ) );
+    loadQueryHistory();
     displaySchema();
   });
 </script>

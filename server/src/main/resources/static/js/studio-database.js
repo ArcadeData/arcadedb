@@ -41,7 +41,9 @@ function editorFocus(){
 }
 
 function updateDatabases( callback ){
-  let selected = $("#inputDatabase").val();
+  let selected = getCurrentDatabase();
+  if( selected == null || selected == "" )
+    selected = globalStorageLoad("database.current");
 
   jQuery.ajax({
     type: "GET",
@@ -61,7 +63,7 @@ function updateDatabases( callback ){
     if( selected != null && selected != "" )
       $("#inputDatabase").val(selected);
 
-    $("#currentDatabase").html( escapeHtml( $("#inputDatabase").val() ) );
+    $("#currentDatabase").html( escapeHtml( getCurrentDatabase() ) );
 
     $("#user").html(data.user);
 
@@ -133,7 +135,7 @@ function createDatabase(){
 }
 
 function dropDatabase(){
-  let database = escapeHtml( $("#inputDatabase").val().trim() );
+  let database = escapeHtml( getCurrentDatabase() );
   if( database == "" ){
     globalNotify( "Error", "Database not selected", "danger");
     return;
@@ -158,7 +160,7 @@ function dropDatabase(){
 }
 
 function backupDatabase(){
-  let database = escapeHtml( $("#inputDatabase").val().trim() );
+  let database = escapeHtml( getCurrentDatabase() );
   if( database == "" ){
     globalNotify( "Error", "Database not selected", "danger");
     return;
@@ -189,7 +191,7 @@ function backupDatabase(){
 }
 
 function dropProperty(type, property){
-  let database = escapeHtml( $("#inputDatabase").val().trim() );
+  let database = escapeHtml( getCurrentDatabase() );
   if( database == "" ){
     globalNotify( "Error", "Database not selected", "danger");
     return;
@@ -221,7 +223,7 @@ function dropProperty(type, property){
 
 
 function dropIndex(indexName){
-  let database = escapeHtml( $("#inputDatabase").val().trim() );
+  let database = escapeHtml( getCurrentDatabase() );
   if( database == "" ){
     globalNotify( "Error", "Database not selected", "danger");
     return;
@@ -251,13 +253,19 @@ function dropIndex(indexName){
   });
 }
 
+function getCurrentDatabase(){
+  let db = $("#inputDatabase").val();
+  return db != null ? db.trim() : null;
+}
+
 function setCurrentDatabase( dbName ){
   $("#currentDatabase").html( escapeHtml( dbName ) );
   $("#inputDatabase").val( escapeHtml( dbName ) );
+  globalStorageSave("database.current", dbName);
 }
 
 function getQueryHistory(){
-  let queryHistory = localStorage.getItem("database.query.history");
+  let queryHistory = globalStorageLoad("database.query.history");
   if( queryHistory == null )
     queryHistory = [];
   else {
@@ -265,7 +273,7 @@ function getQueryHistory(){
       queryHistory = JSON.parse(queryHistory);
     } catch(e) {
       // RESET HISTORY
-      localStorage.setItem("database.query.history", "[]");
+      globalStorageSave("database.query.history", "[]");
       queryHistory = [];
     }
   }
@@ -279,7 +287,7 @@ function loadQueryHistory(){
 
   let queryHistory = getQueryHistory();
   if( queryHistory != null && queryHistory.length > 0 ){
-    let database = escapeHtml( $("#inputDatabase").val() );
+    let database = escapeHtml( getCurrentDatabase() );
     for( let index = 0; index < queryHistory.length; ++index ) {
       let q = queryHistory[index];
       if( q != null && q.d == database && q.l != null && q.c != null )
@@ -314,7 +322,7 @@ function executeCommand(language, query){
   else
     query = editor.getValue();
 
-  if( escapeHtml( $("#inputDatabase").val() ) == "" )
+  if( escapeHtml( getCurrentDatabase() ) == "" )
     return;
   if( escapeHtml( $("#inputLanguage").val() ) == "" )
     return;
@@ -329,7 +337,7 @@ function executeCommand(language, query){
   else
     executeCommandTable();
 
-  let database = escapeHtml( $("#inputDatabase").val() );
+  let database = escapeHtml( getCurrentDatabase() );
 
   let queryHistory = getQueryHistory();
 
@@ -349,14 +357,14 @@ function executeCommand(language, query){
     queryHistory.pop();
 
   queryHistory = [ {"d": database, "l": language, "c": query} ].concat(queryHistory);
-  localStorage.setItem("database.query.history", JSON.stringify( queryHistory ) );
+  globalStorageSave("database.query.history", JSON.stringify( queryHistory ) );
 
   loadQueryHistory();
 }
 
 
 function executeCommandTable(){
-  let database = escapeHtml( $("#inputDatabase").val() );
+  let database = escapeHtml( getCurrentDatabase() );
   let language = escapeHtml( $("#inputLanguage").val() );
   let command = escapeHtml( editor.getValue() );
   let limit = parseInt( $("#inputLimit").val() );
@@ -403,7 +411,7 @@ function executeCommandTable(){
 }
 
 function executeCommandGraph(){
-  let database = escapeHtml( $("#inputDatabase").val() );
+  let database = escapeHtml( getCurrentDatabase() );
   let language = escapeHtml( $("#inputLanguage").val() );
   let command = escapeHtml( editor.getValue() );
   let limit = parseInt( $("#inputLimit").val() );
@@ -466,7 +474,7 @@ function executeCommandGraph(){
 }
 
 function displaySchema(){
-  let database = escapeHtml( $("#inputDatabase").val() );
+  let database = escapeHtml( getCurrentDatabase() );
   if( database == null || database == "" )
     return;
 

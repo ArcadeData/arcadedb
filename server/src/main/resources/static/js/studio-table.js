@@ -2,6 +2,29 @@ function renderTable(){
   if( globalResultset == null )
     return;
 
+  let tableTruncateColumns = $("#tableTruncateColumns").prop("checked");
+  if( tableTruncateColumns == null )
+    tableTruncateColumns = globalStorageLoad( "table.truncateColumns" ) == "true";
+  let tableTruncateColumnsChecked = tableTruncateColumns;
+  if( tableTruncateColumnsChecked == true )
+    tableTruncateColumnsChecked = "checked";
+  else
+    tableTruncateColumnsChecked = "";
+
+  let tableFitInPage = $("#tableFitInPage").prop("checked");
+  if( tableFitInPage == null )
+    tableFitInPage = globalStorageLoad( "table.fitInPage" ) == "true";
+  let tableFitInPageChecked = tableFitInPage;
+  if( tableFitInPageChecked == true )
+    tableFitInPageChecked = "checked";
+  else
+    tableFitInPageChecked = "";
+
+  if( tableFitInPage == true)
+    $("#result").css({"width": "100%", "table-layout": "fixed"});
+  else
+    $("#result").css({"table-layout": "auto"});
+
   if ( $.fn.dataTable.isDataTable( '#result' ) )
     try{ $('#result').DataTable().destroy(); $('#result').empty(); } catch(e){};
 
@@ -59,8 +82,10 @@ function renderTable(){
         if( colName == "@rid" ){
           //RID
           value = "<a class='link' onclick=\"addNodeFromRecord('"+value+"')\">"+value+"</a>";
-        } else if ( value != null && ( typeof value === 'string' || value instanceof String) && value.toString().length > 30 )
-          value = value.toString().substr( 0, 30) + "...";
+        } else if ( value != null && ( typeof value === 'string' || value instanceof String) && value.toString().length > 30 ){
+          if( tableTruncateColumns )
+            value = value.toString().substr( 0, 30) + "...";
+        }
 
         record.push( escapeHtml( value ) );
       }
@@ -96,17 +121,33 @@ function renderTable(){
           text: "<i class='fas fa-file-csv'></i> CSV",
           className: 'btn btn-secondary',
         },
-        {
-          extend: 'pdf',
+        { extend: 'pdf',
           text: "<i class='fas fa-file-pdf'></i> PDF",
           className: 'btn btn-secondary',
           orientation: 'landscape',
         },
-        {
-          extend: 'print',
+        { extend: 'print',
           text: "<i class='fas fa-print'></i> Print",
           className: 'btn btn-secondary',
           orientation: 'landscape',
+        },
+        { text: "<a class='nav-link dropdown-toggle btn btn-secondary' href='#' role='button' aria-haspopup='true' aria-expanded='false' class='dropdown-toggle' data-toggle='dropdown'>" +
+                "    <i class='fa fa-sliders-h'></i> Settings" +
+                "  </a>" +
+                "  <ul class='dropdown-menu dropdown-menu-right' aria-labelledby='navbarDropdown' style='width: 300px'>" +
+                "    <li class='dropdown-item' onclick='globalToggleCheckboxAndSave(\"#tableTruncateColumns\", \"table.truncateColumns\");renderTable()'>" +
+                "      <div class='form-check'>" +
+                "        <input id='tableTruncateColumns' class='form-check-input' type='checkbox' " + tableTruncateColumnsChecked + ">" +
+                "        <label for='tableTruncateColumns' class='form-label'>Truncate long values</label>" +
+                "      </div>" +
+                "    </li>" +
+                "    <li class='dropdown-item' onclick='globalToggleCheckboxAndSave(\"#tableFitInPage\", \"table.fitInPage\");renderTable()'>" +
+                "      <div class='form-check'>" +
+                "        <input id='tableFitInPage' class='form-check-input' type='checkbox' " + tableFitInPageChecked + ">" +
+                "        <label for='tableFitInPage' class='form-label'>Fit table in page</label>" +
+                "      </div>" +
+                "    </li>" +
+                "  </ul>"
         },
       ],
       initComplete: function() {

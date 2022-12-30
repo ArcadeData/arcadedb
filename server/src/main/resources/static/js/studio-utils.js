@@ -120,8 +120,23 @@ function arrayRemoveAll(array, predicate) {
   return removed;
 }
 
+function globalStorageLoad(key, defaultValue){
+  let value = localStorage.getItem(key);
+  return value == null ? defaultValue : value;
+}
+
+function globalStorageSave(key, value){
+  localStorage.setItem(key, value);
+}
+
 function globalToggleCheckbox(element){
   $(element).prop('checked', !$(element).prop('checked') );
+}
+
+function globalToggleCheckboxAndSave(element, storageKey){
+  let checked = !$(element).prop('checked');
+  $(element).prop('checked', checked );
+  globalStorageSave(storageKey, checked);
 }
 
 function globalTogglePanel(panelId1, panelId2, panelId3, panelId4, panelId5){

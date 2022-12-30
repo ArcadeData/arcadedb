@@ -55,7 +55,7 @@ public class ConsoleTest {
   }
 
   @Test
-  public void testList() throws IOException {
+  public void testListDatabases() throws IOException {
     Assertions.assertTrue(console.parse("list databases;", false));
   }
 

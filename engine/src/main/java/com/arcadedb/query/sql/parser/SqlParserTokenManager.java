@@ -12,6 +12,7 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 
 /** Token Manager. */
 @SuppressWarnings ("unused")
+@Generated("JavaCC")
 public class SqlParserTokenManager implements SqlParserConstants {
 
   /** Debug output. */
