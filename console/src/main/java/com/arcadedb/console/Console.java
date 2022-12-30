@@ -188,7 +188,7 @@ public class Console {
         else if (lineLowerCase.startsWith("commit"))
           executeCommit();
         else if (lineLowerCase.startsWith("list databases"))
-          executeList(line);
+          executeListDatabases(line);
         else if (lineLowerCase.startsWith("connect"))
           executeConnect(line);
         else if (lineLowerCase.startsWith("create database"))
@@ -314,7 +314,7 @@ public class Console {
     }
   }
 
-  private void executeList(final String line) {
+  private void executeListDatabases(final String line) {
     final String url = line.substring("list databases".length()).trim();
 
     final String[] urlParts = url.split(" ");

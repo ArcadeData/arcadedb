@@ -109,17 +109,12 @@ public class RemoteDatabase extends RWLockContext {
   }
 
   public List databases() {
-    return (List) serverCommand("GET","databases", "SQL", null, null, true, true, (connection, response) -> {
-
-      return response.getJSONArray("result").toList();
-    });
+    return (List) serverCommand("GET", "databases", "SQL", null, null, true, true, (connection, response) -> response.getJSONArray("result").toList());
   }
 
   public boolean exists() {
     return (boolean) databaseCommand("exists", "SQL", null, null, true, (connection, response) -> {
-
       final boolean exists = response.getBoolean("result");
-
       return exists;
     });
   }
