@@ -321,83 +321,76 @@ public class Console {
   private void executeListDatabases(final String line) {
     final String url = line.substring("list databases".length()).trim();
 
-    final String[] urlParts = url.split(" ");
-
     outputLine("Databases:");
-    if (urlParts[0].startsWith(REMOTE_PREFIX)) {
+    if (url.startsWith(REMOTE_PREFIX)) {
       final RemoteDatabase holdRemoteDatabase = remoteDatabase;
+
       connectToRemoteServer(url, false);
       for (Object f : remoteDatabase.databases()) {
         outputLine(f.toString());
       }
+
       remoteDatabase = holdRemoteDatabase;
 
     } else {
-      File file = new File(databaseDirectory);
-      for (String f : file.list()) {
+      for (String f : new File(databaseDirectory).list()) {
         outputLine(f);
       }
     }
+
     flushOutput();
   }
 
   private void executeConnect(final String line) {
     final String url = line.substring("connect".length()).trim();
 
-    final String[] urlParts = url.split(" ");
+    checkDatabaseIsConnected();
+    checkUrlIsEmpty(url);
 
-    if (localDatabase != null || remoteDatabase != null)
-      outputLine("Database already connected, to connect to a different database close the current one first");
-    else if (!urlParts[0].isEmpty()) {
-      if (urlParts[0].startsWith(REMOTE_PREFIX)) {
-        connectToRemoteServer(url, true);
+    if (url.startsWith(REMOTE_PREFIX)) {
+      connectToRemoteServer(url, true);
 
-        outputLine("Connected");
-        flushOutput();
+    } else {
+      final String[] urlParts = url.split(" ");
 
-      } else {
-        PaginatedFile.MODE mode = PaginatedFile.MODE.READ_WRITE;
-        if (urlParts.length > 1)
-          mode = PaginatedFile.MODE.valueOf(urlParts[1].toUpperCase());
+      final String localUrl = parseLocalUrl(urlParts[0]);
 
-        final String databaseUrl = databaseDirectory + urlParts[0];
+      checkDatabaseIsLocked(localUrl);
 
-        final File lockFile = new File(databaseUrl + "/database.lck");
+      PaginatedFile.MODE mode = PaginatedFile.MODE.READ_WRITE;
+      if (urlParts.length > 1)
+        mode = PaginatedFile.MODE.valueOf(urlParts[1].toUpperCase());
 
-        if (!lockFile.exists()) {
-          databaseFactory = new DatabaseFactory(databaseUrl);
-          localDatabase = (DatabaseInternal) databaseFactory.setAutoTransaction(true).open(mode);
-        } else {
-          outputLine("Database appears locked by server.");
-        }
-      }
-    } else
-      throw new ConsoleException("URL missing");
+      databaseFactory = new DatabaseFactory(localUrl);
+      localDatabase = (DatabaseInternal) databaseFactory.setAutoTransaction(true).open(mode);
+    }
+
+    outputLine("Database connected");
+    flushOutput();
   }
 
   private void executeCreateDatabase(final String line) {
     String url = line.substring("create database".length()).trim();
-    if (localDatabase != null || remoteDatabase != null)
-      outputLine("Database already connected, to connect to a different database close the current one first");
-    else if (!url.isEmpty()) {
-      if (url.startsWith(REMOTE_PREFIX)) {
-        connectToRemoteServer(url, true);
-        remoteDatabase.create();
 
-        outputLine("Database created");
-        flushOutput();
+    checkDatabaseIsConnected();
+    checkUrlIsEmpty(url);
 
-      } else {
-        if (url.startsWith("file://"))
-          url = url.substring("file://".length());
+    if (url.startsWith(REMOTE_PREFIX)) {
+      connectToRemoteServer(url, true);
+      remoteDatabase.create();
 
-        url = databaseDirectory + url;
+    } else {
+      final String localUrl = parseLocalUrl(url);
 
-        databaseFactory = new DatabaseFactory(url);
-        localDatabase = (DatabaseInternal) databaseFactory.setAutoTransaction(true).create();
-      }
-    } else
-      throw new ConsoleException("URL missing");
+      if(new File(localUrl).exists())
+        throw new ConsoleException("Database already exists");
+
+      databaseFactory = new DatabaseFactory(localUrl);
+      localDatabase = (DatabaseInternal) databaseFactory.setAutoTransaction(true).create();
+    }
+
+    outputLine("Database created");
+    flushOutput();
   }
 
   private void executeCreateUser(final String line) {
@@ -442,26 +435,29 @@ public class Console {
 
   private void executeDropDatabase(final String line) {
     final String url = line.substring("drop database".length()).trim();
-    if (localDatabase != null || remoteDatabase != null)
-      outputLine("A database is open, close the database first");
-    else if (!url.isEmpty()) {
-      if (url.startsWith(REMOTE_PREFIX)) {
-        connectToRemoteServer(url, true);
-        remoteDatabase.drop();
 
-        outputLine("Database dropped");
-        flushOutput();
+    checkDatabaseIsConnected();
+    checkUrlIsEmpty(url);
 
-      } else {
-        databaseFactory = new DatabaseFactory(url);
-        localDatabase = (DatabaseInternal) databaseFactory.setAutoTransaction(true).open();
-        localDatabase.drop();
-      }
-    } else
-      throw new ConsoleException("URL missing");
+    if (url.startsWith(REMOTE_PREFIX)) {
+      connectToRemoteServer(url, true);
+      remoteDatabase.drop();
+
+    } else {
+      final String localUrl = parseLocalUrl(url);
+
+      checkDatabaseIsLocked(localUrl);
+
+      databaseFactory = new DatabaseFactory(localUrl);
+      localDatabase = (DatabaseInternal) databaseFactory.setAutoTransaction(true).open();
+      localDatabase.drop();
+    }
 
     remoteDatabase = null;
     localDatabase = null;
+
+    outputLine("Database dropped");
+    flushOutput();
   }
 
   private void executeDropUser(final String line) {
@@ -675,9 +671,9 @@ public class Console {
     outputLine("HELP:");
     outputLine("begin                                             -> begins a new transaction");
     outputLine("check database                                    -> check database integrity");
-    outputLine("close |<path>|remote:<url> <user> <pw>            -> closes the database");
     outputLine("commit                                            -> commits current transaction");
     outputLine("connect <path>|remote:<url> <user> <pw>           -> connects to a database");
+    outputLine("close                                             -> disconnects a database");
     outputLine("create database <path>|remote:<url> <user> <pw>   -> creates a new database");
     outputLine("create user <user> identified by <pw> [grant connect to <db>*] -> creates a user");
     outputLine("drop database <path>|remote:<url> <user> <pw>     -> deletes a database");
@@ -695,7 +691,27 @@ public class Console {
 
   private void checkDatabaseIsOpen() {
     if (localDatabase == null && remoteDatabase == null)
-      throw new ArcadeDBException("No active database. Open a database first");
+      throw new ConsoleException("No active database. Open a database first");
+  }
+
+  private void checkDatabaseIsConnected() {
+    if (localDatabase != null || remoteDatabase != null)
+      throw new ConsoleException("Database already connected, close current first");
+  }
+
+  private void checkDatabaseIsLocked(final String url) {
+
+    if (new File(url + "/database.lck").exists())
+      throw new ConsoleException("Database appears locked by server");
+  }
+
+  private void checkUrlIsEmpty(final String url) {
+    if(url.isEmpty())
+      throw new ConsoleException("URL missing");
+  }
+
+  private String parseLocalUrl(final String url) {
+    return databaseDirectory + url.replaceFirst("file://","");
   }
 
   private void connectToRemoteServer(final String url, final Boolean needsDatabase) {
