@@ -95,6 +95,10 @@ public class Console {
     if (!interactive)
       return;
 
+    Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+      close();
+    }));
+
     lineReader.getHistory().load();
 
     try {
@@ -358,8 +362,14 @@ public class Console {
 
         final String databaseUrl = databaseDirectory + urlParts[0];
 
-        databaseFactory = new DatabaseFactory(databaseUrl);
-        localDatabase = (DatabaseInternal) databaseFactory.setAutoTransaction(true).open(mode);
+        final File lockFile = new File(databaseUrl + "/database.lck");
+
+        if (!lockFile.exists()) {
+          databaseFactory = new DatabaseFactory(databaseUrl);
+          localDatabase = (DatabaseInternal) databaseFactory.setAutoTransaction(true).open(mode);
+        } else {
+          outputLine("Database appears locked by server.");
+        }
       }
     } else
       throw new ConsoleException("URL missing");
@@ -675,7 +685,7 @@ public class Console {
     outputLine("help|?                                            -> ask for this help");
     outputLine("info types                                        -> prints available types");
     outputLine("info transaction                                  -> prints current transaction");
-    outputLine("list databases |remote:<url> <user> <pw>          -> lists databases");
+    outputLine("list databases |remote:<url> <user> <pw>          -> prints list of databases");
     outputLine("load <path>                                       -> runs local script");
     outputLine("rollback                                          -> rolls back current transaction");
     outputLine("set language = sql|sqlscript|cypher|gremlin|mongo -> sets console query language");
