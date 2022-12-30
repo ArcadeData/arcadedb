@@ -70,21 +70,19 @@ public class ArcadeDBServer {
 
   public ArcadeDBServer() {
     this.configuration = new ContextConfiguration();
-
     setRootPath(configuration);
-
     loadConfiguration();
-
     this.serverName = configuration.getValueAsString(GlobalConfiguration.SERVER_NAME);
     this.testEnabled = configuration.getValueAsBoolean(GlobalConfiguration.TEST);
+    init();
   }
 
   public ArcadeDBServer(final ContextConfiguration configuration) {
     this.configuration = configuration;
+    setRootPath(configuration);
     this.serverName = configuration.getValueAsString(GlobalConfiguration.SERVER_NAME);
     this.testEnabled = configuration.getValueAsBoolean(GlobalConfiguration.TEST);
-
-    setRootPath(configuration);
+    init();
   }
 
   public static void main(final String[] args) {
@@ -546,4 +544,9 @@ public class ArcadeDBServer {
     }
   }
 
+  private void init() {
+    Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+      stop();
+    }));
+  }
 }
