@@ -84,7 +84,7 @@ public class Console {
 
     terminal = TerminalBuilder.builder().system(system).streams(System.in, System.out).jansi(true).build();
     Completer completer = new StringsCompleter("align database", "begin", "rollback", "commit", "check database", "close", "connect", "create database",
-        "create user", "drop database", "drop user", "export", "import", "help", "info types", "load", "exit", "quit", "set", "match", "select", "insert into",
+        "create user", "drop database", "drop user", "export", "import", "help", "info types", "list databases", "load", "exit", "quit", "set", "match", "select", "insert into",
         "update", "delete", "pwd");
 
     lineReader = LineReaderBuilder.builder().terminal(terminal).parser(parser).variable("history-file", ".history").history(new DefaultHistory())
@@ -187,6 +187,8 @@ public class Console {
           executeClose();
         else if (lineLowerCase.startsWith("commit"))
           executeCommit();
+        else if (lineLowerCase.startsWith("list databases"))
+          executeList(line);
         else if (lineLowerCase.startsWith("connect"))
           executeConnect(line);
         else if (lineLowerCase.startsWith("create database"))
@@ -312,6 +314,29 @@ public class Console {
     }
   }
 
+  private void executeList(final String line) {
+    final String url = line.substring("list databases".length()).trim();
+
+    final String[] urlParts = url.split(" ");
+
+    outputLine("Databases:");
+    if (urlParts[0].startsWith(REMOTE_PREFIX)) {
+      final RemoteDatabase holdRemoteDatabase = remoteDatabase;
+      connectToRemoteServer(url, false);
+      for (Object f : remoteDatabase.databases()) {
+        outputLine(f.toString());
+      }
+      remoteDatabase = holdRemoteDatabase;
+
+    } else {
+      File file = new File(databaseDirectory);
+      for (String f : file.list()) {
+        outputLine(f);
+      }
+    }
+    flushOutput();
+  }
+
   private void executeConnect(final String line) {
     final String url = line.substring("connect".length()).trim();
 
@@ -321,7 +346,7 @@ public class Console {
       outputLine("Database already connected, to connect to a different database close the current one first");
     else if (!urlParts[0].isEmpty()) {
       if (urlParts[0].startsWith(REMOTE_PREFIX)) {
-        connectToRemoteServer(url);
+        connectToRemoteServer(url, true);
 
         outputLine("Connected");
         flushOutput();
@@ -346,7 +371,7 @@ public class Console {
       outputLine("Database already connected, to connect to a different database close the current one first");
     else if (!url.isEmpty()) {
       if (url.startsWith(REMOTE_PREFIX)) {
-        connectToRemoteServer(url);
+        connectToRemoteServer(url, true);
         remoteDatabase.create();
 
         outputLine("Database created");
@@ -411,7 +436,7 @@ public class Console {
       outputLine("A database is open, close the database first");
     else if (!url.isEmpty()) {
       if (url.startsWith(REMOTE_PREFIX)) {
-        connectToRemoteServer(url);
+        connectToRemoteServer(url, true);
         remoteDatabase.drop();
 
         outputLine("Database dropped");
@@ -650,6 +675,7 @@ public class Console {
     outputLine("help|?                                            -> ask for this help");
     outputLine("info types                                        -> prints available types");
     outputLine("info transaction                                  -> prints current transaction");
+    outputLine("list databases |remote:<url> <user> <pw>          -> lists databases");
     outputLine("load <path>                                       -> runs local script");
     outputLine("rollback                                          -> rolls back current transaction");
     outputLine("set language = sql|sqlscript|cypher|gremlin|mongo -> sets console query language");
@@ -662,15 +688,15 @@ public class Console {
       throw new ArcadeDBException("No active database. Open a database first");
   }
 
-  private void connectToRemoteServer(final String url) {
+  private void connectToRemoteServer(final String url, final Boolean needsDatabase) {
     final String conn = url.startsWith(REMOTE_PREFIX + "//") ? url.substring((REMOTE_PREFIX + "//").length()) : url.substring(REMOTE_PREFIX.length());
 
-    final String[] serverUserPassword = conn.split(" ");
+    final String[] serverUserPassword = conn.trim().split(" ");
     if (serverUserPassword.length != 3)
       throw new ConsoleException("URL username and password are missing");
 
     final String[] serverParts = serverUserPassword[0].split("/");
-    if (serverParts.length != 2)
+    if ((needsDatabase && serverParts.length != 2) || (!needsDatabase && serverParts.length != 1))
       throw new ConsoleException("Remote URL '" + url + "' not valid");
 
     String remoteServer;
@@ -685,7 +711,15 @@ public class Console {
       remotePort = Integer.parseInt(serverParts[0].substring(portPos + 1));
     }
 
-    remoteDatabase = new RemoteDatabase(remoteServer, remotePort, serverParts[1], serverUserPassword[1], serverUserPassword[2]);
+    String serverDatabaseName;
+
+    if (needsDatabase) {
+      serverDatabaseName = serverParts[1];
+    } else {
+      serverDatabaseName = "";
+    }
+
+    remoteDatabase = new RemoteDatabase(remoteServer, remotePort, serverDatabaseName, serverUserPassword[1], serverUserPassword[2]);
   }
 
   private void flushOutput() {

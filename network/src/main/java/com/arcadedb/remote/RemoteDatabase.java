@@ -108,6 +108,13 @@ public class RemoteDatabase extends RWLockContext {
     databaseCommand("create", "SQL", null, null, true, null);
   }
 
+  public List databases() {
+    return (List) serverCommand("GET","databases", "SQL", null, null, true, true, (connection, response) -> {
+
+      return response.getJSONArray("result").toList();
+    });
+  }
+
   public boolean exists() {
     return (boolean) databaseCommand("exists", "SQL", null, null, true, (connection, response) -> {
 
