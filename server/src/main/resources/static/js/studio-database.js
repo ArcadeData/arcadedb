@@ -93,7 +93,7 @@ function updateDatabases( callback ){
 
 
 function createDatabase(){
-  let html = "<label for='inputCreateDatabaseName'>Enter the database name:&nbsp;&nbsp;</label><input id='inputCreateDatabaseName'>";
+  let html = "<label for='inputCreateDatabaseName'>Enter the database name:&nbsp;&nbsp;</label><input onkeydown='if (event.which === 13) Swal.clickConfirm()' id='inputCreateDatabaseName'>";
 
   Swal.fire({
     title: 'Create a new database',
