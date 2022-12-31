@@ -44,7 +44,7 @@ public class ConsoleTest {
   public void populate() throws IOException {
     FileUtils.deleteRecursively(new File("./target/databases"));
     console = new Console(false).setRootPath("./target");
-    Assertions.assertTrue(console.parse("create database " + DB_NAME, false));
+    Assertions.assertTrue(console.parse("create database " + DB_NAME + "; close", false));
   }
 
   @AfterEach
@@ -76,7 +76,7 @@ public class ConsoleTest {
 
   @Test
   public void testSetLanguage() throws IOException {
-    console.parse("set language = sql; select 1", false);
+    console.parse("connect " + DB_NAME + ";set language = sql; select 1", false);
   }
 
   @Test
