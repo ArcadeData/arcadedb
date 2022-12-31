@@ -142,10 +142,13 @@ public class ArcadeDBServer {
 
     LogManager.instance().log(this, Level.INFO, "Available query languages: %s", new QueryEngineManager().getAvailableLanguages());
 
-    LogManager.instance().log(this, Level.INFO, "ArcadeDB Server started (CPUs=%d MAXRAM=%s)", Runtime.getRuntime().availableProcessors(),
+    final String mode = GlobalConfiguration.SERVER_MODE.getValueAsString();
+
+    LogManager.instance().log(this, Level.INFO, "ArcadeDB Server started in '%s' mode (CPUs=%d MAXRAM=%s)", mode, Runtime.getRuntime().availableProcessors(),
         FileUtils.getSizeAsString(Runtime.getRuntime().maxMemory()));
 
-    LogManager.instance().log(this, Level.INFO, "Studio web tool available at http://localhost:%d ", httpServer.getPort());
+    if (!"production".equals(mode))
+      LogManager.instance().log(this, Level.INFO, "Studio web tool available at http://localhost:%d ", httpServer.getPort());
 
     try {
       lifecycleEvent(TestCallback.TYPE.SERVER_UP, null);

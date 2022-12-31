@@ -151,7 +151,7 @@ public enum GlobalConfiguration {
 
   ASYNC_OPERATIONS_QUEUE_IMPL("arcadedb.asyncOperationsQueueImpl",
       "Queue implementation to use between 'standard' and 'fast'. 'standard' consumes less CPU than the 'fast' implementation, but it could be slower with high loads",
-      String.class, "standard"),
+      String.class, "standard", Set.of(new String[] { "standard", "fast" })),
 
   ASYNC_OPERATIONS_QUEUE_SIZE("arcadedb.asyncOperationsQueueSize",
       "Size of the total asynchronous operation queues (it is divided by the number of parallel threads in the pool)", Integer.class, 1024),
@@ -208,7 +208,8 @@ public enum GlobalConfiguration {
   SERVER_ROOT_PASSWORD("arcadedb.server.rootPassword",
       "Password for root user to use at first startup of the server. Set this to avoid asking the password to the user", String.class, null),
 
-  SERVER_MODE("arcadedb.server.mode", "Server mode between development, test and production", String.class, "development"),
+  SERVER_MODE("arcadedb.server.mode", "Server mode between 'development', 'test' and 'production'", String.class, "development",
+      Set.of(new String[] { "development", "test", "production" })),
 
   SERVER_METRICS("arcadedb.serverMetrics", "True to enable metrics", Boolean.class, true),
 
@@ -226,7 +227,8 @@ public enum GlobalConfiguration {
 
   SERVER_DEFAULT_DATABASE_MODE("arcadedb.server.defaultDatabaseMode",
       "The default mode to load pre-existing databases. The value must match a com.arcadedb.engine.PaginatedFile.MODE enum value: {READ_ONLY, READ_WRITE}"
-          + "Databases which are newly created will always be opened READ_WRITE.", String.class, "READ_WRITE"),
+          + "Databases which are newly created will always be opened READ_WRITE.", String.class, "READ_WRITE",
+      Set.of(new String[] { "read_only", "read_write" })),
 
   SERVER_PLUGINS("arcadedb.server.plugins", "List of server plugins to install. The format to load a plugin is: `<pluginName>:<pluginFullClass>`", String.class,
       ""),
@@ -264,7 +266,8 @@ public enum GlobalConfiguration {
   HA_SERVER_LIST("arcadedb.ha.serverList",
       "Servers in the cluster as a list of <hostname/ip-address:port> items separated by comma. Example: localhost:2424,192.168.0.1:2424", String.class, ""),
 
-  HA_QUORUM("arcadedb.ha.quorum", "Default quorum between 'none', 1, 2, 3, 'majority' and 'all' servers. Default is majority", String.class, "MAJORITY"),
+  HA_QUORUM("arcadedb.ha.quorum", "Default quorum between 'none', 1, 2, 3, 'majority' and 'all' servers. Default is majority", String.class, "majority",
+      Set.of(new String[] { "none", "1", "2", "3", "majority", "all" })),
 
   HA_QUORUM_TIMEOUT("arcadedb.ha.quorumTimeout", "Timeout waiting for the quorum", Long.class, 10000),
 
@@ -294,8 +297,6 @@ public enum GlobalConfiguration {
       "Max number of entries in the cypher statement cache. Use 0 to disable. Caching statements speeds up execution of the same cypher queries", Integer.class,
       1000),
 
-  // GREMLIN
-
   // POSTGRES
   POSTGRES_PORT("arcadedb.postgres.port", "TCP/IP port number used for incoming connections for Postgres plugin. Default is 5432", Integer.class, 5432),
 
@@ -323,6 +324,7 @@ public enum GlobalConfiguration {
   private final       String                   description;
   private final       Boolean                  canChangeAtRuntime;
   private final       boolean                  hidden;
+  private final       Set<Object>              allowed;
   public final static String                   PREFIX = "arcadedb.";
 
   private static final Timer TIMER;
@@ -333,22 +335,24 @@ public enum GlobalConfiguration {
   }
 
   GlobalConfiguration(final String iKey, final String iDescription, final Class<?> iType, final Object iDefValue) {
-    this(iKey, iDescription, iType, iDefValue, null);
+    this(iKey, iDescription, iType, iDefValue, null, null, null);
+  }
+
+  GlobalConfiguration(final String iKey, final String iDescription, final Class<?> iType, final Object iDefValue, final Set<Object> allowed) {
+    this(iKey, iDescription, iType, iDefValue, null, null, allowed);
   }
 
   GlobalConfiguration(final String iKey, final String iDescription, final Class<?> iType, final Object iDefValue, final Callable<Object, Object> callback) {
-    this.key = iKey;
-    this.description = iDescription;
-    this.defValue = iDefValue;
-    this.type = iType;
-    this.canChangeAtRuntime = true;
-    this.hidden = false;
-    this.callback = callback;
-    this.callbackIfNoSet = null;
+    this(iKey, iDescription, iType, iDefValue, callback, null, null);
   }
 
   GlobalConfiguration(final String iKey, final String iDescription, final Class<?> iType, final Object iDefValue, final Callable<Object, Object> callback,
       final Callable<Object, Object> callbackIfNoSet) {
+    this(iKey, iDescription, iType, iDefValue, callback, callbackIfNoSet, null);
+  }
+
+  GlobalConfiguration(final String iKey, final String iDescription, final Class<?> iType, final Object iDefValue, final Callable<Object, Object> callback,
+      final Callable<Object, Object> callbackIfNoSet, final Set<Object> allowed) {
     this.key = iKey;
     this.description = iDescription;
     this.defValue = iDefValue;
@@ -357,6 +361,7 @@ public enum GlobalConfiguration {
     this.hidden = false;
     this.callback = callback;
     this.callbackIfNoSet = callbackIfNoSet;
+    this.allowed = allowed;
   }
 
   /**
@@ -371,7 +376,7 @@ public enum GlobalConfiguration {
    * Reset the configuration to the default value.
    */
   public void reset() {
-    value = defValue;
+    value = nullValue;
   }
 
   public static void dumpConfiguration(final PrintStream out) {
@@ -514,52 +519,65 @@ public enum GlobalConfiguration {
   }
 
   public void setValue(final Object iValue) {
-    if (iValue == null)
-      value = null;
-    else if (type == Boolean.class)
-      value = Boolean.parseBoolean(iValue.toString());
-    else if (type == Integer.class)
-      value = Integer.parseInt(iValue.toString());
-    else if (type == Long.class)
-      value = Long.parseLong(iValue.toString());
-    else if (type == Float.class)
-      value = Float.parseFloat(iValue.toString());
-    else if (type == String.class)
-      value = iValue.toString();
-    else if (type.isEnum()) {
-      boolean accepted = false;
+    Object oldValue = value;
 
-      if (type.isInstance(iValue)) {
-        value = iValue;
-        accepted = true;
-      } else if (iValue instanceof String) {
-        final String string = (String) iValue;
+    try {
+      if (iValue == null)
+        value = null;
+      else if (type == Boolean.class)
+        value = Boolean.parseBoolean(iValue.toString());
+      else if (type == Integer.class)
+        value = Integer.parseInt(iValue.toString());
+      else if (type == Long.class)
+        value = Long.parseLong(iValue.toString());
+      else if (type == Float.class)
+        value = Float.parseFloat(iValue.toString());
+      else if (type == String.class)
+        value = iValue.toString();
+      else if (type.isEnum()) {
+        boolean accepted = false;
 
-        for (Object constant : type.getEnumConstants()) {
-          final Enum<?> enumConstant = (Enum<?>) constant;
+        if (type.isInstance(iValue)) {
+          value = iValue;
+          accepted = true;
+        } else if (iValue instanceof String) {
+          final String string = (String) iValue;
 
-          if (enumConstant.name().equalsIgnoreCase(string)) {
-            value = enumConstant;
-            accepted = true;
-            break;
+          for (Object constant : type.getEnumConstants()) {
+            final Enum<?> enumConstant = (Enum<?>) constant;
+
+            if (enumConstant.name().equalsIgnoreCase(string)) {
+              value = enumConstant;
+              accepted = true;
+              break;
+            }
           }
         }
-      }
 
-      if (!accepted)
-        throw new IllegalArgumentException("Invalid value of `" + key + "` option");
-    } else
-      value = iValue;
+        if (!accepted)
+          throw new IllegalArgumentException("Invalid value of `" + key + "` option");
+      } else
+        value = iValue;
 
-    if (callback != null)
-      try {
-        final Object newValue = callback.call(value);
-        if (newValue != value)
-          // OVERWRITE IT
-          value = newValue;
-      } catch (Exception e) {
-        LogManager.instance().log(this, Level.SEVERE, "Error during setting property %s=%s", e, key, value);
-      }
+      if (callback != null)
+        try {
+          final Object newValue = callback.call(value);
+          if (newValue != value)
+            // OVERWRITE IT
+            value = newValue;
+        } catch (Exception e) {
+          LogManager.instance().log(this, Level.SEVERE, "Error during setting property %s=%s", e, key, value);
+        }
+
+      if (allowed != null && value != null)
+        if (!allowed.contains(value.toString().toLowerCase()))
+          throw new IllegalArgumentException("Global setting '" + key + "=" + value + "' is not valid. Allowed values are " + allowed);
+
+    } catch (Exception e) {
+      // RESTORE THE PREVIOUS VALUE
+      value = oldValue;
+      throw e;
+    }
   }
 
   public boolean getValueAsBoolean() {
