@@ -28,7 +28,7 @@ import com.arcadedb.utility.Pair;
 import java.util.*;
 import java.util.logging.*;
 
-public class EdgeVertexIterator extends ResettableIteratorBase<Pair<RID, RID>> implements Iterable<Pair<RID, RID>> {
+public class EdgeVertexIterator extends ResettableIteratorBase<Pair<RID, RID>> {
   private final RID              vertex;
   private final Vertex.DIRECTION direction;
   private       int              lastElementPosition = currentPosition.get();
@@ -67,6 +67,7 @@ public class EdgeVertexIterator extends ResettableIteratorBase<Pair<RID, RID>> i
     nextEdgeRID = currentContainer.getRID(currentPosition);
     nextVertexRID = currentContainer.getRID(currentPosition);
 
+    ++browsed;
     return new Pair(nextEdgeRID, nextVertexRID);
   }
 
@@ -96,10 +97,5 @@ public class EdgeVertexIterator extends ResettableIteratorBase<Pair<RID, RID>> i
     ((DatabaseInternal) vertex.getDatabase()).updateRecord(currentContainer);
 
     currentPosition.set(lastElementPosition);
-  }
-
-  @Override
-  public Iterator<Pair<RID, RID>> iterator() {
-    return this;
   }
 }

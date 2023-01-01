@@ -23,7 +23,7 @@ import com.arcadedb.exception.RecordNotFoundException;
 
 import java.util.*;
 
-public class VertexIterator extends ResettableIteratorBase<Vertex> implements Iterable<Vertex> {
+public class VertexIterator extends ResettableIteratorBase<Vertex> {
 
   public VertexIterator(final EdgeSegment current) {
     super(null, current);
@@ -54,16 +54,13 @@ public class VertexIterator extends ResettableIteratorBase<Vertex> implements It
       currentContainer.getRID(currentPosition); // SKIP EDGE
       final RID rid = currentContainer.getRID(currentPosition);
 
+      ++browsed;
+
       try {
         return rid.asVertex();
       } catch (RecordNotFoundException e) {
         // SKIP
       }
     }
-  }
-
-  @Override
-  public Iterator<Vertex> iterator() {
-    return this;
   }
 }

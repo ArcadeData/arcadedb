@@ -49,6 +49,7 @@ public class VertexIteratorFilter extends IteratorFilterBase<Vertex> {
       throw e;
     } finally {
       next = null;
+      ++browsed;
     }
   }
 }

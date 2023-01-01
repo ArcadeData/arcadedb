@@ -32,6 +32,7 @@ import com.arcadedb.query.sql.function.text.SQLMethodHash;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
@@ -167,7 +168,7 @@ public class SQLFunctionsTest {
   @Test
   public void queryUnionAllAsAggregationNotRemoveDuplicates() {
     ResultSet result = database.command("sql", "select from City");
-    int count = (int) result.countEntries();
+    int count = (int) CollectionUtils.countEntries(result);
 
     result = database.command("sql", "select unionAll(name) as name from City");
     Assertions.assertTrue(result.hasNext());

@@ -27,7 +27,7 @@ import com.arcadedb.schema.DocumentType;
 import java.util.*;
 import java.util.logging.*;
 
-public class EdgeIterator extends ResettableIteratorBase<Edge> implements Iterable<Edge> {
+public class EdgeIterator extends ResettableIteratorBase<Edge> {
   private final RID              vertex;
   private final Vertex.DIRECTION direction;
   private       int              lastElementPosition = currentPosition.get();
@@ -77,6 +77,8 @@ public class EdgeIterator extends ResettableIteratorBase<Edge> implements Iterab
           return new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdgeRID, nextVertexRID, vertex);
       }
 
+      ++browsed;
+
       try {
         return nextEdgeRID.asEdge();
       } catch (RecordNotFoundException e) {
@@ -111,10 +113,5 @@ public class EdgeIterator extends ResettableIteratorBase<Edge> implements Iterab
     ((DatabaseInternal) vertex.getDatabase()).updateRecord(currentContainer);
 
     currentPosition.set(lastElementPosition);
-  }
-
-  @Override
-  public Iterator<Edge> iterator() {
-    return this;
   }
 }

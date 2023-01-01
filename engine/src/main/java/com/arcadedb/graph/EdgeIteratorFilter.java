@@ -78,6 +78,7 @@ public class EdgeIteratorFilter extends IteratorFilterBase<Edge> {
       throw e;
     } finally {
       next = null;
+      ++browsed;
     }
   }
 

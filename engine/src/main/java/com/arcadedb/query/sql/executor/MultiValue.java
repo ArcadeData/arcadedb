@@ -66,7 +66,7 @@ public class MultiValue {
   }
 
   /**
-   * Returns the size of the multi-value object
+   * Returns the estimated size of the multi-value object.
    *
    * @param object Multi-value object (array, collection or map)
    *
@@ -86,7 +86,7 @@ public class MultiValue {
     else if (object.getClass().isArray())
       return Array.getLength(object);
     else if ((object instanceof ResettableIterator))
-      return ((ResettableIterator<?>) object).countEntries();
+      return (int) ((ResettableIterator<?>) object).countEntries();
     else if ((object instanceof Iterable)) {
       int i = 0;
       for (Object o : (Iterable) object) {

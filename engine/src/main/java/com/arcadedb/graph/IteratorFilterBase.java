@@ -27,7 +27,7 @@ import com.arcadedb.schema.EdgeType;
 import java.util.*;
 import java.util.logging.*;
 
-public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> implements Iterable<T> {
+public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
   private   int          lastElementPosition = currentPosition.get();
   protected RID          nextEdge;
   protected RID          nextVertex;
@@ -117,10 +117,5 @@ public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> im
 
   public RID getNextVertex() {
     return nextVertex;
-  }
-
-  @Override
-  public Iterator<T> iterator() {
-    return this;
   }
 }

@@ -26,6 +26,7 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.utility.CollectionUtils;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -51,7 +52,7 @@ public class TransactionTypeTest extends TestHelper {
       Assertions.assertNotNull(record);
 
       Set<String> prop = new HashSet<String>();
-        prop.addAll(record.getPropertyNames());
+      prop.addAll(record.getPropertyNames());
 
       Assertions.assertEquals(3, record.getPropertyNames().size(), 9);
       Assertions.assertTrue(prop.contains("id"));
@@ -79,7 +80,7 @@ public class TransactionTypeTest extends TestHelper {
       Assertions.assertEquals(record, record2);
 
       Set<String> prop = new HashSet<String>();
-        prop.addAll(record2.getPropertyNames());
+      prop.addAll(record2.getPropertyNames());
 
       Assertions.assertEquals(record2.getPropertyNames().size(), 3);
       Assertions.assertTrue(prop.contains("id"));
@@ -111,7 +112,7 @@ public class TransactionTypeTest extends TestHelper {
       Assertions.assertEquals(i, record2.get("id"));
 
       Set<String> prop = new HashSet<String>();
-        prop.addAll(record2.getPropertyNames());
+      prop.addAll(record2.getPropertyNames());
 
       Assertions.assertEquals(record2.getPropertyNames().size(), 3);
       Assertions.assertTrue(prop.contains("id"));
@@ -260,9 +261,9 @@ public class TransactionTypeTest extends TestHelper {
       database.transaction(() -> database.newDocument(TYPE_NAME).set("id", -2, "tx", 2).save());
     });
 
-    Assertions.assertEquals(0, database.query("sql", "select from " + TYPE_NAME + " where tx = 0").countEntries());
-    Assertions.assertEquals(1, database.query("sql", "select from " + TYPE_NAME + " where tx = 1").countEntries());
-    Assertions.assertEquals(1, database.query("sql", "select from " + TYPE_NAME + " where tx = 2").countEntries());
+    Assertions.assertEquals(0, CollectionUtils.countEntries(database.query("sql", "select from " + TYPE_NAME + " where tx = 0")));
+    Assertions.assertEquals(1, CollectionUtils.countEntries(database.query("sql", "select from " + TYPE_NAME + " where tx = 1")));
+    Assertions.assertEquals(1, CollectionUtils.countEntries(database.query("sql", "select from " + TYPE_NAME + " where tx = 2")));
   }
 
   @Override

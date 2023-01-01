@@ -31,12 +31,12 @@ public class MultiIterator<T> implements ResettableIterator<T>, Iterable<T> {
   private Iterator<?>  sourcesIterator;
   private Iterator<T>  partialIterator;
 
-  private long    browsed   = 0L;
-  private long    skip      = -1L;
-  private long    limit     = -1L;
-  private long    timeout   = -1L;
-  private boolean embedded  = false;
-  private int     skipped   = 0;
+  private       long    browsed   = 0L;
+  private       long    skip      = -1L;
+  private       long    limit     = -1L;
+  private       long    timeout   = -1L;
+  private       boolean embedded  = false;
+  private       int     skipped   = 0;
   private final long    beginTime = System.currentTimeMillis();
 
   public MultiIterator() {
@@ -123,9 +123,9 @@ public class MultiIterator<T> implements ResettableIterator<T>, Iterable<T> {
   }
 
   @Override
-  public int countEntries() {
+  public long countEntries() {
     // SUM ALL THE COLLECTION SIZES
-    int size = 0;
+    long size = 0;
     final int totSources = sources.size();
     for (int i = 0; i < totSources; ++i) {
       if (timeout > -1L && System.currentTimeMillis() - beginTime > timeout)
@@ -140,6 +140,8 @@ public class MultiIterator<T> implements ResettableIterator<T>, Iterable<T> {
           size += ((Map<?, ?>) o).size();
         else if (o.getClass().isArray())
           size += Array.getLength(o);
+        else if (o instanceof ResettableIterator)
+          size += ((ResettableIterator<?>) o).countEntries();
         else
           size++;
     }
@@ -147,8 +149,13 @@ public class MultiIterator<T> implements ResettableIterator<T>, Iterable<T> {
   }
 
   @Override
+  public long getBrowsed() {
+    return  browsed;
+  }
+
+  @Override
   public void remove() {
-    throw new UnsupportedOperationException("PMultiIterator.remove()");
+    throw new UnsupportedOperationException("MultiIterator.remove()");
   }
 
   public long getLimit() {

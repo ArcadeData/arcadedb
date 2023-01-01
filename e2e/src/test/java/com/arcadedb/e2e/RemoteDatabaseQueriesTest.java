@@ -20,6 +20,7 @@ package com.arcadedb.e2e;
 
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
+import com.arcadedb.utility.CollectionUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -46,7 +47,7 @@ public class RemoteDatabaseQueriesTest extends ArcadeContainerTemplate {
   void simpleSQLQuery() {
     database.transaction(() -> {
       ResultSet result = database.query("SQL", "select from Beer limit 10");
-      assertThat(result.countEntries()).isEqualTo(10);
+      assertThat(CollectionUtils.countEntries(result)).isEqualTo(10);
     }, 10);
   }
 
@@ -54,7 +55,7 @@ public class RemoteDatabaseQueriesTest extends ArcadeContainerTemplate {
   void simpleGremlinQuery() {
     database.transaction(() -> {
       ResultSet result = database.query("gremlin", "g.V().limit(10)");
-      assertThat(result.countEntries()).isEqualTo(10);
+      assertThat(CollectionUtils.countEntries(result)).isEqualTo(10);
     }, 10);
   }
 
@@ -62,7 +63,7 @@ public class RemoteDatabaseQueriesTest extends ArcadeContainerTemplate {
   void simpleCypherQuery() {
     database.transaction(() -> {
       ResultSet result = database.query("cypher", "MATCH(p:Beer) RETURN * LIMIT 10");
-      assertThat(result.countEntries()).isEqualTo(10);
+      assertThat(CollectionUtils.countEntries(result)).isEqualTo(10);
     }, 10);
   }
 }

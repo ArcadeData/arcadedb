@@ -23,11 +23,12 @@ import com.arcadedb.utility.ResettableIterator;
 
 import java.util.concurrent.atomic.*;
 
-public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>, Iterable<T> {
+public abstract class ResettableIteratorBase<T> implements ResettableIterator<T> {
   protected final DatabaseInternal database;
   private         EdgeSegment      initialContainer;
   protected       EdgeSegment      currentContainer;
   protected final AtomicInteger    currentPosition = new AtomicInteger(MutableEdgeSegment.CONTENT_START_POSITION);
+  protected       int              browsed         = 0;
 
   protected ResettableIteratorBase(final DatabaseInternal database, final EdgeSegment current) {
     if (current == null)
@@ -41,16 +42,34 @@ public abstract class ResettableIteratorBase<T> implements ResettableIterator<T>
   public void reset() {
     this.currentContainer = initialContainer;
     currentPosition.set(MutableEdgeSegment.CONTENT_START_POSITION);
+    browsed = 0;
   }
 
   @Override
-  public int countEntries() {
-    int total = 0;
-    while (hasNext()) {
-      next();
-      ++total;
+  public long countEntries() {
+    long total = browsed;
+
+    final EdgeSegment savedContainer = currentContainer;
+    final int savedCurrentPosition = currentPosition.get();
+    final int savedBrowsed = browsed;
+
+    try {
+      while (hasNext()) {
+        next();
+        ++total;
+      }
+    } finally {
+      // RESTORE SAVED POSITION
+      currentContainer = savedContainer;
+      currentPosition.set(savedCurrentPosition);
+      browsed = savedBrowsed;
     }
-    reset();
+
     return total;
+  }
+
+  @Override
+  public long getBrowsed() {
+    return browsed;
   }
 }

@@ -51,7 +51,12 @@ public class EdgeToVertexIterator implements ResettableIterator<Vertex> {
   }
 
   @Override
-  public int countEntries() {
+  public long countEntries() {
     return edgeIterator.countEntries();
+  }
+
+  @Override
+  public long getBrowsed() {
+    return edgeIterator.getBrowsed();
   }
 }

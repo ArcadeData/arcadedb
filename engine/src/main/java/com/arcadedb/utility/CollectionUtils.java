@@ -39,4 +39,20 @@ public class CollectionUtils {
       return -1;
     return 0;
   }
+
+  /**
+   * Returns the count of the remaining items that have not been iterated yet.<br>
+   * <b>NOTE: the default implementation consumes the iterator</b>.
+   */
+  public static long countEntries(final Iterator iterator) {
+    long tot = 0;
+
+    while (iterator.hasNext()) {
+      iterator.next();
+      tot++;
+    }
+
+    return tot;
+  }
+
 }

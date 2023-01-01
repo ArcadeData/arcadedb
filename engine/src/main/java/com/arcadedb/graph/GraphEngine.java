@@ -422,13 +422,13 @@ public class GraphEngine {
     case OUT:
       final EdgeLinkedList outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
       if (outEdges != null)
-        return (Iterable<Edge>) outEdges.edgeIterator(edgeTypes);
+        return () -> outEdges.edgeIterator(edgeTypes);
       break;
 
     case IN:
       final EdgeLinkedList inEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.IN);
       if (inEdges != null)
-        return (Iterable<Edge>) inEdges.edgeIterator(edgeTypes);
+        return () -> inEdges.edgeIterator(edgeTypes);
       break;
 
     default:
@@ -485,13 +485,13 @@ public class GraphEngine {
     case OUT:
       final EdgeLinkedList outEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.OUT);
       if (outEdges != null)
-        return (Iterable<Vertex>) outEdges.vertexIterator(edgeTypes);
+        return () -> outEdges.vertexIterator(edgeTypes);
       break;
 
     case IN:
       final EdgeLinkedList inEdges = getEdgeHeadChunk(vertex, Vertex.DIRECTION.IN);
       if (inEdges != null)
-        return (Iterable<Vertex>) inEdges.vertexIterator(edgeTypes);
+        return () -> inEdges.vertexIterator(edgeTypes);
       break;
 
     default:

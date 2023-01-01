@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.utility.CollectionUtils;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -59,7 +60,7 @@ public class DeleteStatementTest extends TestHelper {
 
     ResultSet result = database.query("sql", "select from Foo");
     Assertions.assertNotNull(result);
-    Assertions.assertEquals(result.countEntries(), 2);
+    Assertions.assertEquals(CollectionUtils.countEntries(result), 2);
     for (ResultSet it = result; it.hasNext(); ) {
       Document doc = it.next().toElement();
       Assertions.assertNotEquals(doc.getString("k"), "key2");

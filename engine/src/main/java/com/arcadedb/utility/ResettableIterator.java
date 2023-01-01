@@ -26,5 +26,7 @@ import java.util.*;
 public interface ResettableIterator<T> extends Iterator<T> {
   void reset();
 
-  int countEntries();
+  long countEntries();
+
+  long getBrowsed();
 }
