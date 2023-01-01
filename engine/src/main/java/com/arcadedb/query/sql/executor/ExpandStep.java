@@ -128,12 +128,12 @@ public class ExpandStep extends AbstractExecutionStep {
         if (lastResult == null || !lastResult.hasNext()) {
           lastResult = getPrev().get().syncPull(ctx, n);
         }
-        if (!lastResult.hasNext()) {
-          return;
-        }
       }
 
-      Result nextAggregateItem = lastResult.next();
+      if (!lastResult.hasNext())
+        return;
+
+      final Result nextAggregateItem = lastResult.next();
       long begin = profilingEnabled ? System.nanoTime() : 0;
       try {
         if (nextAggregateItem.getPropertyNames().size() == 0) {
