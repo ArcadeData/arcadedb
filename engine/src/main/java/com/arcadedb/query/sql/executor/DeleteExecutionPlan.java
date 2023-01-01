@@ -23,12 +23,12 @@ package com.arcadedb.query.sql.executor;
  */
 public class DeleteExecutionPlan extends UpdateExecutionPlan {
 
-  public DeleteExecutionPlan(CommandContext ctx) {
+  public DeleteExecutionPlan(final CommandContext ctx) {
     super(ctx);
   }
 
   @Override public Result toResult() {
-    ResultInternal res = (ResultInternal) super.toResult();
+    final ResultInternal res = (ResultInternal) super.toResult();
     res.setProperty("type", "DeleteExecutionPlan");
     return res;
   }

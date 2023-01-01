@@ -36,14 +36,13 @@ public class OrderByItem {
   protected           String   alias;
   protected           Modifier modifier;
   protected           String   recordAttr;
-  protected           Rid      rid;
   protected           String   type = ASC;
 
   public String getAlias() {
     return alias;
   }
 
-  public void setAlias(String alias) {
+  public void setAlias(final String alias) {
     this.alias = alias;
   }
 
@@ -51,7 +50,7 @@ public class OrderByItem {
     return type;
   }
 
-  public void setType(String type) {
+  public void setType(final String type) {
     this.type = type;
   }
 
@@ -59,20 +58,15 @@ public class OrderByItem {
     return recordAttr;
   }
 
-  public void setRecordAttr(String recordAttr) {
+  public void setRecordAttr(final String recordAttr) {
     this.recordAttr = recordAttr;
   }
 
-  public Rid getRid() {
-    return rid;
+  public String getName() {
+    return alias != null ? alias : recordAttr != null ? recordAttr : null;
   }
 
-  public void setRid(Rid rid) {
-    this.rid = rid;
-  }
-
-  public void toString(Map<String, Object> params, StringBuilder builder) {
-
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (alias != null) {
       builder.append(alias);
       if (modifier != null) {
@@ -80,20 +74,15 @@ public class OrderByItem {
       }
     } else if (recordAttr != null) {
       builder.append(recordAttr);
-    } else if (rid != null) {
-      rid.toString(params, builder);
     }
     if (type != null) {
       builder.append(" " + type);
     }
   }
 
-  public int compare(Result a, Result b, CommandContext ctx) {
+  public int compare(final Result a, final Result b, final CommandContext ctx) {
     Object aVal = null;
     Object bVal = null;
-    if (rid != null) {
-      throw new UnsupportedOperationException("ORDER BY " + rid + " is not supported yet");
-    }
 
     int result = 0;
     if (recordAttr != null) {
@@ -144,25 +133,23 @@ public class OrderByItem {
   }
 
   public OrderByItem copy() {
-    OrderByItem result = new OrderByItem();
+    final OrderByItem result = new OrderByItem();
     result.alias = alias;
     result.modifier = modifier == null ? null : modifier.copy();
     result.recordAttr = recordAttr;
-    result.rid = rid == null ? null : rid.copy();
     result.type = type;
     return result;
   }
 
-  public void extractSubQueries(SubQueryCollector collector) {
-    if (modifier != null) {
+  public void extractSubQueries(final SubQueryCollector collector) {
+    if (modifier != null)
       modifier.extractSubQueries(collector);
-    }
   }
 
   public boolean refersToParent() {
-    if (alias != null && alias.equalsIgnoreCase("$parent")) {
+    if (alias != null && alias.equalsIgnoreCase("$parent"))
       return true;
-    }
+
     return modifier != null && modifier.refersToParent();
   }
 
@@ -171,34 +158,27 @@ public class OrderByItem {
   }
 
   public Result serialize() {
-    ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal();
     result.setProperty("alias", alias);
-    if (modifier != null) {
+    if (modifier != null)
       result.setProperty("modifier", modifier.serialize());
-    }
+
     result.setProperty("recordAttr", recordAttr);
-    if (rid != null) {
-      result.setProperty("rid", rid.serialize());
-    }
     result.setProperty("type", type);
     return result;
   }
 
-  public void deserialize(Result fromResult) {
+  public void deserialize(final Result fromResult) {
     alias = fromResult.getProperty("alias");
     if (fromResult.getProperty("modifier") != null) {
       modifier = new Modifier(-1);
       modifier.deserialize(fromResult.getProperty("modifier"));
     }
     recordAttr = fromResult.getProperty("recordAttr");
-    if (fromResult.getProperty("rid") != null) {
-      rid = new Rid(-1);
-      rid.deserialize(fromResult.getProperty("rid"));
-    }
     type = DESC.equals(fromResult.getProperty("type")) ? DESC : ASC;
   }
 
-  public void setModifier(Modifier modifier) {
+  public void setModifier(final Modifier modifier) {
     this.modifier = modifier;
   }
 }

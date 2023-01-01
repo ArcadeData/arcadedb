@@ -40,16 +40,16 @@ public class DeleteEdgeStatement extends Statement {
   protected Expression  rightExpression;
   protected WhereClause whereClause;
 
-  public DeleteEdgeStatement(int id) {
+  public DeleteEdgeStatement(final int id) {
     super(id);
   }
 
-  public DeleteEdgeStatement(SqlParser p, int id) {
+  public DeleteEdgeStatement(final SqlParser p, final int id) {
     super(p, id);
   }
 
   @Override
-  public ResultSet execute(Database db, Map params, CommandContext parentCtx, boolean usePlanCache) {
+  public ResultSet execute(final Database db, final Map params, final CommandContext parentCtx, final boolean usePlanCache) {
     BasicCommandContext ctx = new BasicCommandContext();
     if (parentCtx != null) {
       ctx.setParentWithoutOverridingChild(parentCtx);
@@ -62,8 +62,8 @@ public class DeleteEdgeStatement extends Statement {
   }
 
   @Override
-  public ResultSet execute(Database db, Object[] args, CommandContext parentCtx, boolean usePlanCache) {
-    Map<String, Object> params = new HashMap<>();
+  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentCtx, final boolean usePlanCache) {
+    final Map<String, Object> params = new HashMap<>();
     if (args != null) {
       for (int i = 0; i < args.length; i++) {
         params.put(String.valueOf(i), args[i]);
@@ -72,12 +72,12 @@ public class DeleteEdgeStatement extends Statement {
     return execute(db, params, parentCtx);
   }
 
-  public DeleteExecutionPlan createExecutionPlan(CommandContext ctx, boolean enableProfiling) {
-    DeleteEdgeExecutionPlanner planner = new DeleteEdgeExecutionPlanner(this);
+  public DeleteExecutionPlan createExecutionPlan(final CommandContext ctx, final boolean enableProfiling) {
+    final DeleteEdgeExecutionPlanner planner = new DeleteEdgeExecutionPlanner(this);
     return planner.createExecutionPlan(ctx, enableProfiling);
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("DELETE EDGE");
 
     if (typeName != null) {
@@ -126,31 +126,31 @@ public class DeleteEdgeStatement extends Statement {
 
   @Override
   public DeleteEdgeStatement copy() {
-    DeleteEdgeStatement result = null;
+    final DeleteEdgeStatement result;
     try {
       result = getClass().getConstructor(Integer.TYPE).newInstance(-1);
+      result.typeName = typeName == null ? null : typeName.copy();
+      result.targetBucketName = targetBucketName == null ? null : targetBucketName.copy();
+      result.rid = rid == null ? null : rid.copy();
+      result.rids = rids == null ? null : rids.stream().map(x -> x.copy()).collect(Collectors.toList());
+      result.leftExpression = leftExpression == null ? null : leftExpression.copy();
+      result.rightExpression = rightExpression == null ? null : rightExpression.copy();
+      result.whereClause = whereClause == null ? null : whereClause.copy();
+      result.limit = limit == null ? null : limit.copy();
+      return result;
     } catch (Exception e) {
       throw new ArcadeDBException(e);
     }
-    result.typeName = typeName == null ? null : typeName.copy();
-    result.targetBucketName = targetBucketName == null ? null : targetBucketName.copy();
-    result.rid = rid == null ? null : rid.copy();
-    result.rids = rids == null ? null : rids.stream().map(x -> x.copy()).collect(Collectors.toList());
-    result.leftExpression = leftExpression == null ? null : leftExpression.copy();
-    result.rightExpression = rightExpression == null ? null : rightExpression.copy();
-    result.whereClause = whereClause == null ? null : whereClause.copy();
-    result.limit = limit == null ? null : limit.copy();
-    return result;
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    DeleteEdgeStatement that = (DeleteEdgeStatement) o;
+    final DeleteEdgeStatement that = (DeleteEdgeStatement) o;
 
     if (!Objects.equals(typeName, that.typeName))
       return false;

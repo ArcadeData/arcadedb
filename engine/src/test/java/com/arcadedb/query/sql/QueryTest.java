@@ -105,7 +105,6 @@ public class QueryTest extends TestHelper {
     });
   }
 
-
   @Test
   public void testNullSafeEqualsFiltering() {
     database.transaction(() -> {
@@ -454,7 +453,6 @@ public class QueryTest extends TestHelper {
 
   @Test
   public void testTimeout() {
-
     database.transaction(() -> {
       try {
         for (int i = 0; i < TOT * 3; ++i) {
@@ -475,6 +473,33 @@ public class QueryTest extends TestHelper {
       } catch (TimeoutException e) {
         // OK
       }
+    });
+  }
+
+  /**
+   * Test case for issue https://github.com/ArcadeData/arcadedb/issues/725
+   */
+  @Test
+  public void testOrderByRID() {
+    database.transaction(() -> {
+      ResultSet rs = database.query("SQL", "SELECT @rid, name FROM V order by @rid asc LIMIT 2");
+
+      final AtomicInteger total = new AtomicInteger();
+      while (rs.hasNext()) {
+        Result record = rs.next();
+        Assertions.assertNotNull(record);
+
+        Set<String> prop = new HashSet<>();
+        prop.addAll(record.getPropertyNames());
+
+        Assertions.assertEquals(2, record.getPropertyNames().size());
+        Assertions.assertTrue(prop.contains("@rid"));
+        Assertions.assertTrue(prop.contains("name"));
+
+        total.incrementAndGet();
+      }
+
+      Assertions.assertEquals(2, total.get());
     });
   }
 }

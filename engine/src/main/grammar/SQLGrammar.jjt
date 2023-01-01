@@ -1343,9 +1343,7 @@ DeleteEdgeStatement DeleteEdgeWhereStatement():
 }
 {
   <DELETE> <EDGE>
-
   [ jjtThis.typeName = Identifier() ]
-
   [ <WHERE> jjtThis.whereClause = WhereClause() ]
   [ jjtThis.limit = Limit() ]
   {return jjtThis;}
@@ -2855,7 +2853,6 @@ OrderBy OrderBy():
   OrderByItem lastItem;
   Identifier lastIdentifier;
   Modifier lastModifier;
-  Rid lastRid;
   Token lastToken;
 }
 {
@@ -2873,8 +2870,6 @@ OrderBy OrderBy():
           [ lastModifier = Modifier()  { lastItem.modifier = lastModifier; } ]
         )
         |
-        lastItem.rid = Rid()
-        |
         lastToken = <RECORD_ATTRIBUTE> { lastItem.recordAttr = lastToken.image; }
       )
       [ <DESC> { lastItem.type = OrderByItem.DESC; }| <ASC>  { lastItem.type = OrderByItem.ASC; }]
@@ -2891,8 +2886,6 @@ OrderBy OrderBy():
           lastIdentifier = Identifier() { lastItem.alias = lastIdentifier.getStringValue(); }
           [ lastModifier = Modifier()  { lastItem.modifier = lastModifier; } ]
         )
-        |
-        lastItem.rid = Rid()
         |
         lastToken = <RECORD_ATTRIBUTE> { lastItem.recordAttr = lastToken.image; }
       )
@@ -2914,8 +2907,6 @@ OrderBy OrderBy():
             [ lastModifier = Modifier()  { lastItem.modifier = lastModifier; } ]
           )
           |
-          lastItem.rid = Rid()
-          |
           lastToken = <RECORD_ATTRIBUTE> { lastItem.recordAttr = lastToken.image; }
         )
         [ <DESC> { lastItem.type = OrderByItem.DESC; }| <ASC>  { lastItem.type = OrderByItem.ASC; }]
@@ -2932,8 +2923,6 @@ OrderBy OrderBy():
             lastIdentifier = Identifier() { lastItem.alias = lastIdentifier.toString(); }
             [ lastModifier = Modifier()  { lastItem.modifier = lastModifier; } ]
           )
-          |
-          lastItem.rid = Rid()
           |
           lastToken = <RECORD_ATTRIBUTE> { lastItem.recordAttr = lastToken.image; }
         )
@@ -4233,51 +4222,51 @@ AlignDatabaseStatement AlignDatabaseStatement():
 
 DefineFunctionStatement DefineFunctionStatement():
 {
-    Token token;
-    Identifier lastIdentifier;
+  Token token;
+  Identifier lastIdentifier;
 }
 {
+  (
+    <DEFINE> <FUNCTION>
+    jjtThis.libraryName = Identifier()
+    <DOT>
+    jjtThis.functionName = Identifier()
     (
-        <DEFINE> <FUNCTION>
-        jjtThis.libraryName = Identifier()
-        <DOT>
-        jjtThis.functionName = Identifier()
-        (
-            jjtThis.codeQuoted = PString()
-            { jjtThis.code = jjtThis.codeQuoted.substring(1, jjtThis.codeQuoted.length() -1); }
-        )
-        [
-            <PARAMETERS>
-            <LBRACKET>
-            lastIdentifier = Identifier() {
-                jjtThis.parameters = new ArrayList<Identifier>();
-                jjtThis.parameters.add(lastIdentifier);
-            }
-            (
-                <COMMA>
-                lastIdentifier = Identifier() { jjtThis.parameters.add(lastIdentifier); }
-            )*
-            <RBRACKET>
-        ]
-        [
-            <LANGUAGE>
-            jjtThis.language = Identifier()
-        ]
+      jjtThis.codeQuoted = PString()
+      { jjtThis.code = jjtThis.codeQuoted.substring(1, jjtThis.codeQuoted.length() -1); }
     )
-    { return jjtThis; }
+    [
+      <PARAMETERS>
+      <LBRACKET>
+      lastIdentifier = Identifier() {
+        jjtThis.parameters = new ArrayList<Identifier>();
+        jjtThis.parameters.add(lastIdentifier);
+      }
+      (
+        <COMMA>
+        lastIdentifier = Identifier() { jjtThis.parameters.add(lastIdentifier); }
+      )*
+      <RBRACKET>
+    ]
+    [
+      <LANGUAGE>
+      jjtThis.language = Identifier()
+    ]
+  )
+  { return jjtThis; }
 }
 
 DeleteFunctionStatement DeleteFunctionStatement():
 {
-    Token token;
-    Identifier lastIdentifier;
+  Token token;
+  Identifier lastIdentifier;
 }
 {
-    (
-        <DELETE> <FUNCTION>
-        jjtThis.libraryName = Identifier()
-        <DOT>
-        jjtThis.functionName = Identifier()
-    )
-    { return jjtThis; }
+  (
+    <DELETE> <FUNCTION>
+    jjtThis.libraryName = Identifier()
+    <DOT>
+    jjtThis.functionName = Identifier()
+  )
+  { return jjtThis; }
 }

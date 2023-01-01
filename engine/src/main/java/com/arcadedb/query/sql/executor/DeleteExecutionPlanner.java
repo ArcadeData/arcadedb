@@ -42,7 +42,7 @@ public class DeleteExecutionPlanner {
   private final Limit       limit;
   private final boolean     unsafe;
 
-  public DeleteExecutionPlanner(DeleteStatement stm) {
+  public DeleteExecutionPlanner(final DeleteStatement stm) {
     this.fromClause = stm.getFromClause() == null ? null : stm.getFromClause().copy();
     this.whereClause = stm.getWhereClause() == null ? null : stm.getWhereClause().copy();
     this.returnBefore = stm.isReturnBefore();
@@ -50,10 +50,10 @@ public class DeleteExecutionPlanner {
     this.unsafe = stm.isUnsafe();
   }
 
-  public DeleteExecutionPlan createExecutionPlan(CommandContext ctx, boolean enableProfiling) {
-    DeleteExecutionPlan result = new DeleteExecutionPlan(ctx);
+  public DeleteExecutionPlan createExecutionPlan(final CommandContext ctx, final boolean enableProfiling) {
+    final DeleteExecutionPlan result = new DeleteExecutionPlan(ctx);
 
-    if (handleIndexAsTarget(result, fromClause.getItem().getIndex(), whereClause, ctx,enableProfiling)) {
+    if (handleIndexAsTarget(result, fromClause.getItem().getIndex(), whereClause, ctx, enableProfiling)) {
       if (limit != null) {
         throw new CommandExecutionException("Cannot apply a LIMIT on a delete from index");
       }
@@ -75,13 +75,13 @@ public class DeleteExecutionPlanner {
     return result;
   }
 
-  private boolean handleIndexAsTarget(DeleteExecutionPlan result, IndexIdentifier indexIdentifier, WhereClause whereClause,
-      CommandContext ctx, boolean profilingEnabled) {
+  private boolean handleIndexAsTarget(final DeleteExecutionPlan result, final IndexIdentifier indexIdentifier, WhereClause whereClause,
+      final CommandContext ctx, final boolean profilingEnabled) {
     if (indexIdentifier == null) {
       return false;
     }
-    String indexName = indexIdentifier.getIndexName();
-    RangeIndex index = (RangeIndex) ctx.getDatabase().getSchema().getIndexByName(indexName);
+    final String indexName = indexIdentifier.getIndexName();
+    final RangeIndex index = (RangeIndex) ctx.getDatabase().getSchema().getIndexByName(indexName);
     if (index == null) {
       throw new CommandExecutionException("Index not found: " + indexName);
     }
@@ -94,7 +94,7 @@ public class DeleteExecutionPlanner {
       if (flattenedWhereClause == null || flattenedWhereClause.size() == 0) {
         //TODO
 //        if (!index.supportsOrderedIterations()) {
-          throw new CommandExecutionException("Index " + indexName + " does not allow iteration without a condition");
+        throw new CommandExecutionException("Index " + indexName + " does not allow iteration without a condition");
 //        }
       } else if (flattenedWhereClause.size() > 1) {
         throw new CommandExecutionException("Index queries with this kind of condition are not supported yet: " + whereClause);
@@ -133,14 +133,14 @@ public class DeleteExecutionPlanner {
       break;
     case VALUESASC:
 //      if (!index.supportsOrderedIterations()) {
-        throw new CommandExecutionException("Index " + indexName + " does not allow iteration on values");
+      throw new CommandExecutionException("Index " + indexName + " does not allow iteration on values");
 //      }
 //      result.chain(new FetchFromIndexValuesStep(index, true, ctx, profilingEnabled));
 //      result.chain(new GetValueFromIndexEntryStep(ctx, null, profilingEnabled));
 //      break;
     case VALUESDESC:
 //      if (!index.supportsOrderedIterations()) {
-        throw new CommandExecutionException("Index " + indexName + " does not allow iteration on values");
+      throw new CommandExecutionException("Index " + indexName + " does not allow iteration on values");
 //      }
 //      result.chain(new FetchFromIndexValuesStep(index, false, ctx, profilingEnabled));
 //      result.chain(new GetValueFromIndexEntryStep(ctx, null, profilingEnabled));
@@ -149,60 +149,56 @@ public class DeleteExecutionPlanner {
     return false;
   }
 
-  private void handleDelete(DeleteExecutionPlan result, CommandContext ctx, boolean profilingEnabled) {
+  private void handleDelete(final DeleteExecutionPlan result, final CommandContext ctx, final boolean profilingEnabled) {
     result.chain(new DeleteStep(ctx, profilingEnabled));
   }
 
-  private void handleUnsafe(DeleteExecutionPlan result, CommandContext ctx, boolean unsafe, boolean profilingEnabled) {
-    if (!unsafe) {
+  private void handleUnsafe(final DeleteExecutionPlan result, final CommandContext ctx, final boolean unsafe, final boolean profilingEnabled) {
+    if (!unsafe)
       result.chain(new CheckSafeDeleteStep(ctx, profilingEnabled));
-    }
   }
 
-  private void handleReturn(DeleteExecutionPlan result, CommandContext ctx, boolean returnBefore, boolean profilingEnabled) {
-    if (!returnBefore) {
+  private void handleReturn(final DeleteExecutionPlan result, final CommandContext ctx, final boolean returnBefore, final boolean profilingEnabled) {
+    if (!returnBefore)
       result.chain(new CountStep(ctx, profilingEnabled));
-    }
   }
 
-  private void handleLimit(UpdateExecutionPlan plan, CommandContext ctx, Limit limit, boolean profilingEnabled) {
-    if (limit != null) {
+  private void handleLimit(final UpdateExecutionPlan plan, final CommandContext ctx, final Limit limit, final boolean profilingEnabled) {
+    if (limit != null)
       plan.chain(new LimitExecutionStep(limit, ctx, profilingEnabled));
-    }
   }
 
-  private void handleTarget(UpdateExecutionPlan result, CommandContext ctx, FromClause target, WhereClause whereClause, boolean profilingEnabled) {
-    SelectStatement sourceStatement = new SelectStatement(-1);
+  private void handleTarget(final UpdateExecutionPlan result, final CommandContext ctx, final FromClause target, final WhereClause whereClause,
+      final boolean profilingEnabled) {
+    final SelectStatement sourceStatement = new SelectStatement(-1);
     sourceStatement.setTarget(target);
     sourceStatement.setWhereClause(whereClause);
-    SelectExecutionPlanner planner = new SelectExecutionPlanner(sourceStatement);
+    final SelectExecutionPlanner planner = new SelectExecutionPlanner(sourceStatement);
     result.chain(new SubQueryStep(planner.createExecutionPlan(ctx, profilingEnabled), ctx, ctx, profilingEnabled));
   }
 
-  private BooleanExpression getKeyCondition(AndBlock andBlock) {
+  private BooleanExpression getKeyCondition(final AndBlock andBlock) {
     for (BooleanExpression exp : andBlock.getSubBlocks()) {
-      String str = exp.toString();
-      if (str.length() < 5) {
+      final String str = exp.toString();
+      if (str.length() < 5)
         continue;
-      }
-      if (str.substring(0, 4).equalsIgnoreCase("key ")) {
+
+      if (str.substring(0, 4).equalsIgnoreCase("key "))
         return exp;
-      }
     }
     return null;
   }
 
-  private BooleanExpression getRidCondition(AndBlock andBlock) {
+  private BooleanExpression getRidCondition(final AndBlock andBlock) {
     for (BooleanExpression exp : andBlock.getSubBlocks()) {
-      String str = exp.toString();
-      if (str.length() < 5) {
+      final String str = exp.toString();
+      if (str.length() < 5)
         continue;
-      }
-      if (str.substring(0, 4).equalsIgnoreCase("rid ")) {
+
+      if (str.substring(0, 4).equalsIgnoreCase("rid "))
         return exp;
-      }
+
     }
     return null;
   }
-
 }

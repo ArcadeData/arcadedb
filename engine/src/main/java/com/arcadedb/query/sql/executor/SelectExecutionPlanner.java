@@ -522,7 +522,7 @@ public class SelectExecutionPlanner {
     int nextAliasCount = 0;
     if (orderBy != null && orderBy.getItems() != null && !orderBy.getItems().isEmpty()) {
       for (OrderByItem item : orderBy.getItems()) {
-        if (!allAliases.contains(item.getAlias())) {
+        if (!allAliases.contains(item.getName())) {
           final ProjectionItem newProj = new ProjectionItem(-1);
           if (item.getAlias() != null) {
             newProj.setExpression(new Expression(new Identifier(item.getAlias()), item.getModifier()));
@@ -530,10 +530,6 @@ public class SelectExecutionPlanner {
             RecordAttribute attr = new RecordAttribute(-1);
             attr.setName(item.getRecordAttr());
             newProj.setExpression(new Expression(attr, item.getModifier()));
-          } else if (item.getRid() != null) {
-            Expression exp = new Expression(-1);
-            exp.setRid(item.getRid().copy());
-            newProj.setExpression(exp);
           }
           final Identifier newAlias = new Identifier("_$$$ORDER_BY_ALIAS$$$_" + (nextAliasCount++));
           newProj.setAlias(newAlias);
