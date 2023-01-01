@@ -85,7 +85,7 @@ public class MatchFieldTraverser extends MatchEdgeTraverser {
             fetchNext();
           }
           if (nextElement == null) {
-            throw new IllegalStateException();
+            throw new NoSuchElementException();
           }
           ResultInternal res = nextElement;
           nextElement = null;

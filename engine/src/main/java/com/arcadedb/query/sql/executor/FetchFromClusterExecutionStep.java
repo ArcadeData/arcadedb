@@ -106,13 +106,13 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
           long begin1 = profilingEnabled ? System.nanoTime() : 0;
           try {
             if (nFetched >= nRecords) {
-              throw new IllegalStateException();
+              throw new NoSuchElementException();
             }
 //            if (ORDER_DESC == order && !iterator.hasPrevious()) {
-//              throw new IllegalStateException();
+//              throw new NoSuchElementException();
 //            } else
             if (!iterator.hasNext()) {
-              throw new IllegalStateException();
+              throw new NoSuchElementException();
             }
 
             Record record = null;

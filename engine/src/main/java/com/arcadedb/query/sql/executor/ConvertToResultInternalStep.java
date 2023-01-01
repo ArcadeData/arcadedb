@@ -110,13 +110,13 @@ public class ConvertToResultInternalStep extends AbstractExecutionStep {
       @Override
       public Result next() {
         if (fetched >= nRecords || finished) {
-          throw new IllegalStateException();
+          throw new NoSuchElementException();
         }
         if (nextItem == null) {
           fetchNextItem();
         }
         if (nextItem == null) {
-          throw new IllegalStateException();
+          throw new NoSuchElementException();
         }
         Result result = nextItem;
         nextItem = null;

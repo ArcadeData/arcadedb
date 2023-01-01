@@ -67,7 +67,7 @@ public class FetchFromSchemaDatabaseStep extends AbstractExecutionStep {
             served = true;
             return result;
           }
-          throw new IllegalStateException();
+          throw new NoSuchElementException();
         } finally {
           if (profilingEnabled) {
             cost += (System.nanoTime() - begin);

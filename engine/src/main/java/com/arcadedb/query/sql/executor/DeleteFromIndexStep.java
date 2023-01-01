@@ -92,7 +92,7 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
         long begin = profilingEnabled ? System.nanoTime() : 0;
         try {
           if (!hasNext()) {
-            throw new IllegalStateException();
+            throw new NoSuchElementException();
           }
           Pair<Object, Identifiable> entry = nextEntry;
           ResultInternal result = new ResultInternal();

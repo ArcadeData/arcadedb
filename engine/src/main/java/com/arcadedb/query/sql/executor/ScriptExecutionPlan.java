@@ -69,7 +69,7 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
       @Override
       public Result next() {
         if (!hasNext()) {
-          throw new IllegalStateException();
+          throw new NoSuchElementException();
         }
         return finalResult.next();
       }

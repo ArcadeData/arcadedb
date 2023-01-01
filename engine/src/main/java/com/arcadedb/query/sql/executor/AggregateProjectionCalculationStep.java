@@ -67,7 +67,7 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
       @Override
       public Result next() {
         if (localNext > nRecords || nextItem >= finalResults.size()) {
-          throw new IllegalStateException();
+          throw new NoSuchElementException();
         }
         Result result = finalResults.get(nextItem);
         nextItem++;

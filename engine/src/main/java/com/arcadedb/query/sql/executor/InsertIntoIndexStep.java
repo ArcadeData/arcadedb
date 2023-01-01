@@ -46,7 +46,7 @@ public class InsertIntoIndexStep extends AbstractExecutionStep {
 //      @Override
 //      public OResult next() {
 //        if (!hasNext()) {
-//          throw new IllegalStateException();
+//          throw new NoSuchElementException();
 //        }
 //        //TODO
 //        OIndex<?> index = ctx.getDatabase().getMetadata().getIndexManager().getIndex(targetIndex.getIndexName());

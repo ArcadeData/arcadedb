@@ -64,7 +64,7 @@ public class CartesianProductStep extends AbstractExecutionStep {
       @Override
       public Result next() {
         if (currentCount >= nRecords || nextRecord == null) {
-          throw new IllegalStateException();
+          throw new NoSuchElementException();
         }
         ResultInternal result = nextRecord;
         fetchNextRecord();

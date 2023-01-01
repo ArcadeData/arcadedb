@@ -76,10 +76,10 @@ public class OrderByStep extends AbstractExecutionStep {
         long begin = profilingEnabled ? System.nanoTime() : 0;
         try {
           if (currentBatchReturned >= nRecords) {
-            throw new IllegalStateException();
+            throw new NoSuchElementException();
           }
           if (cachedResult.size() <= nextElement) {
-            throw new IllegalStateException();
+            throw new NoSuchElementException();
           }
           Result result = cachedResult.get(offset + currentBatchReturned);
           nextElement++;

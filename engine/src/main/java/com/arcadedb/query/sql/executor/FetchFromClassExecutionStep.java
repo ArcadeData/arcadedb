@@ -169,7 +169,7 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
       public Result next() {
         while (true) {
           if (totDispatched >= nRecords) {
-            throw new IllegalStateException();
+            throw new NoSuchElementException();
           }
           if (currentResultSet != null && currentResultSet.hasNext()) {
             totDispatched++;
@@ -178,7 +178,7 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
             return result;
           } else {
             if (currentStep >= getSubSteps().size()) {
-              throw new IllegalStateException();
+              throw new NoSuchElementException();
             }
             currentResultSet = ((AbstractExecutionStep) getSubSteps().get(currentStep)).syncPull(ctx, nRecords);
             if (!currentResultSet.hasNext()) {

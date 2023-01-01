@@ -63,7 +63,7 @@ public class CountFromClassStep extends AbstractExecutionStep {
       @Override
       public Result next() {
         if (executed) {
-          throw new IllegalStateException();
+          throw new NoSuchElementException();
         }
         long begin = profilingEnabled ? System.nanoTime() : 0;
         try {

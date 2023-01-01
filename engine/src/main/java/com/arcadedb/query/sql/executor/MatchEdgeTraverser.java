@@ -55,7 +55,7 @@ public class MatchEdgeTraverser {
   public Result next(CommandContext ctx) {
     init(ctx);
     if (!downstream.hasNext()) {
-      throw new IllegalStateException();
+      throw new NoSuchElementException();
     }
     String endPointAlias = getEndpointAlias();
     ResultInternal nextR = downstream.next();
@@ -167,7 +167,7 @@ public class MatchEdgeTraverser {
               fetchNext();
             }
             if (nextElement == null) {
-              throw new IllegalStateException();
+              throw new NoSuchElementException();
             }
             ResultInternal res = nextElement;
             nextElement = null;

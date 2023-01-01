@@ -61,7 +61,7 @@ public class CreateRecordStep extends AbstractExecutionStep {
         long begin = profilingEnabled ? System.nanoTime() : 0;
         try {
           if (!hasNext()) {
-            throw new IllegalStateException();
+            throw new NoSuchElementException();
           }
           created++;
           locallyCreated++;

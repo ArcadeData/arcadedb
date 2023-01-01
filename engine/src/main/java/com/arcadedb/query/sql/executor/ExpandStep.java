@@ -64,13 +64,13 @@ public class ExpandStep extends AbstractExecutionStep {
       @Override
       public Result next() {
         if (localCount >= nRecords) {
-          throw new IllegalStateException();
+          throw new NoSuchElementException();
         }
         if (nextElement == null) {
           fetchNext(ctx, nRecords);
         }
         if (nextElement == null) {
-          throw new IllegalStateException();
+          throw new NoSuchElementException();
         }
 
         Result result = nextElement;

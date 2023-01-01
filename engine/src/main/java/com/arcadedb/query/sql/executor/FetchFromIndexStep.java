@@ -104,7 +104,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       @Override
       public Result next() {
         if (!hasNext()) {
-          throw new IllegalStateException();
+          throw new NoSuchElementException();
         }
         long begin = profilingEnabled ? System.nanoTime() : 0;
         try {
@@ -258,7 +258,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
           @Override
           public Map.Entry next() {
             if (!localCursor.hasNext()) {
-              throw new IllegalStateException();
+              throw new NoSuchElementException();
             }
             Identifiable value = localCursor.next();
             return new Map.Entry() {

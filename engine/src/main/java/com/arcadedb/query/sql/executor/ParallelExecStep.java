@@ -60,12 +60,12 @@ public class ParallelExecStep extends AbstractExecutionStep {
       @Override
       public Result next() {
         if (localCount >= nRecords) {
-          throw new IllegalStateException();
+          throw new NoSuchElementException();
         }
         while (currentResultSet == null || !currentResultSet.hasNext()) {
           fetchNext(ctx, nRecords);
           if (currentResultSet == null) {
-            throw new IllegalStateException();
+            throw new NoSuchElementException();
           }
         }
         localCount++;

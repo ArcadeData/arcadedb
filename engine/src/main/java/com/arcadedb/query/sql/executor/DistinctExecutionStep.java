@@ -69,13 +69,13 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
       @Override
       public Result next() {
         if (nextLocal >= nRecords) {
-          throw new IllegalStateException();
+          throw new NoSuchElementException();
         }
         if (nextValue == null) {
           fetchNext(nRecords);
         }
         if (nextValue == null) {
-          throw new IllegalStateException();
+          throw new NoSuchElementException();
         }
         Result result1 = nextValue;
         nextValue = null;

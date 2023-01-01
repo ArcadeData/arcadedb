@@ -111,11 +111,11 @@ public class FetchFromClustersExecutionStep extends AbstractExecutionStep {
       public Result next() {
         while (true) {
           if (totDispatched >= nRecords) {
-            throw new IllegalStateException();
+            throw new NoSuchElementException();
           }
           if (currentResultSet == null || !currentResultSet.hasNext()) {
             if (currentStep >= subSteps.size()) {
-              throw new IllegalStateException();
+              throw new NoSuchElementException();
             }
             currentResultSet = ((AbstractExecutionStep) subSteps.get(currentStep)).syncPull(ctx, nRecords);
             if (!currentResultSet.hasNext()) {

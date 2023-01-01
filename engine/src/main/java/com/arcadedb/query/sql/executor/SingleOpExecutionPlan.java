@@ -70,7 +70,7 @@ public class SingleOpExecutionPlan implements InternalExecutionPlan {
       @Override
       public Result next() {
         if (fetched >= n) {
-          throw new IllegalStateException();
+          throw new NoSuchElementException();
         }
         fetched++;
         return result.next();

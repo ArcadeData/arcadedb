@@ -96,7 +96,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
         try {
 
           if (finished || currentBatch >= nRecords) {
-            throw new IllegalStateException();
+            throw new NoSuchElementException();
           }
           if (currentTo == null) {
             throw new CommandExecutionException("Invalid TO vertex for edge");

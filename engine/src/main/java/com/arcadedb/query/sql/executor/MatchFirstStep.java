@@ -75,7 +75,7 @@ public class MatchFirstStep extends AbstractExecutionStep {
       @Override
       public Result next() {
         if (currentCount >= nRecords) {
-          throw new IllegalStateException();
+          throw new NoSuchElementException();
         }
         ResultInternal result = new ResultInternal();
         if (iterator != null) {

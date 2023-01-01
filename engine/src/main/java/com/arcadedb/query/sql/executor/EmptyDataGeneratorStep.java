@@ -57,7 +57,7 @@ public class EmptyDataGeneratorStep extends AbstractExecutionStep {
             ctx.setVariable("current", result);
             return result;
           }
-          throw new IllegalStateException();
+          throw new NoSuchElementException();
         } finally {
           if (profilingEnabled) {
             cost += (System.nanoTime() - begin);

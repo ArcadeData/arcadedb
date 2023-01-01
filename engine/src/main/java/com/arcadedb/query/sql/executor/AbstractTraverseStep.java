@@ -69,12 +69,12 @@ public abstract class AbstractTraverseStep extends AbstractExecutionStep {
       @Override
       public Result next() {
         if (localFetched >= nRecords) {
-          throw new IllegalStateException();
+          throw new NoSuchElementException();
         }
         if (results.isEmpty()) {
           fetchNextBlock(ctx, nRecords);
           if (results.isEmpty()) {
-            throw new IllegalStateException();
+            throw new NoSuchElementException();
           }
         }
         localFetched++;

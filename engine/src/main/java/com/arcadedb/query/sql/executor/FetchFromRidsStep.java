@@ -92,9 +92,8 @@ public class FetchFromRidsStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        if (!hasNext()) {
-          throw new IllegalStateException();
-        }
+        if (!hasNext())
+          throw new NoSuchElementException();
 
         internalNext++;
         Result result = nextResult;

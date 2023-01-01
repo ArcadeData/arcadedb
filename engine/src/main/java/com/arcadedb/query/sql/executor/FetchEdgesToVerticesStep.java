@@ -64,7 +64,7 @@ public class FetchEdgesToVerticesStep extends AbstractExecutionStep {
       @Override
       public Result next() {
         if (!hasNext()) {
-          throw new IllegalStateException();
+          throw new NoSuchElementException();
         }
         Edge edge = nextEdge;
         fetchNextEdge();

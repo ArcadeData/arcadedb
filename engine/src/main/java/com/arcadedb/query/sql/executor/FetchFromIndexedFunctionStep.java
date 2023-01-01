@@ -66,10 +66,10 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
         long begin = profilingEnabled ? System.nanoTime() : 0;
         try {
           if (localCount >= nRecords) {
-            throw new IllegalStateException();
+            throw new NoSuchElementException();
           }
           if (!fullResult.hasNext()) {
-            throw new IllegalStateException();
+            throw new NoSuchElementException();
           }
           ResultInternal result = new ResultInternal();
           result.setElement((Document) fullResult.next().getRecord());

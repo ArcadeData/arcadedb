@@ -405,6 +405,8 @@ public class RemoteDatabase extends RWLockContext {
                 throw new TimeoutException(detail);
               } else if (exception.equals(SchemaException.class.getName())) {
                 throw new SchemaException(detail);
+              } else if (exception.equals(NoSuchElementException.class.getName())) {
+                throw new NoSuchElementException(detail);
               } else
                 // ELSE
                 throw new RemoteException("Error on executing remote operation " + operation + " (cause:" + exception + " detail:" + detail + ")");

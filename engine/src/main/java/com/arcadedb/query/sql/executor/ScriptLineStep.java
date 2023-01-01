@@ -23,6 +23,8 @@ import com.arcadedb.query.sql.parser.IfStatement;
 import com.arcadedb.query.sql.parser.ReturnStatement;
 import com.arcadedb.query.sql.parser.Statement;
 
+import java.util.*;
+
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  * <p>
@@ -33,13 +35,13 @@ public class ScriptLineStep extends AbstractExecutionStep {
 
   boolean executed = false;
 
-  public ScriptLineStep(InternalExecutionPlan nextPlan, CommandContext ctx, boolean profilingEnabled) {
+  public ScriptLineStep(final InternalExecutionPlan nextPlan, final CommandContext ctx,final  boolean profilingEnabled) {
     super(ctx, profilingEnabled);
     this.plan = nextPlan;
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext ctx,final  int nRecords) throws TimeoutException {
     if (!executed) {
       if (plan instanceof InsertExecutionPlan) {
         ((InsertExecutionPlan) plan).executeInternal();
@@ -67,7 +69,7 @@ public class ScriptLineStep extends AbstractExecutionStep {
       }
     }
     if (plan instanceof IfExecutionPlan) {
-      IfStep step = (IfStep) plan.getSteps().get(0);
+      final IfStep step = (IfStep) plan.getSteps().get(0);
       if (step.positivePlan != null && step.positivePlan.containsReturn()) {
         return true;
       } else if (step.positiveStatements != null) {
@@ -85,10 +87,10 @@ public class ScriptLineStep extends AbstractExecutionStep {
     return false;
   }
 
-  private boolean containsReturn(Statement stm) {
-    if (stm instanceof ReturnStatement) {
+  private boolean containsReturn(final Statement stm) {
+    if (stm instanceof ReturnStatement)
       return true;
-    }
+
     if (stm instanceof IfStatement) {
       for (Statement o : ((IfStatement) stm).getStatements()) {
         if (containsReturn(o)) {
@@ -99,18 +101,18 @@ public class ScriptLineStep extends AbstractExecutionStep {
     return false;
   }
 
-  public ExecutionStepInternal executeUntilReturn(CommandContext ctx) {
-    if (plan instanceof ScriptExecutionPlan) {
+  public ExecutionStepInternal executeUntilReturn(final CommandContext ctx) {
+    if (plan instanceof ScriptExecutionPlan)
       return ((ScriptExecutionPlan) plan).executeUntilReturn();
-    }
+
     if (plan instanceof SingleOpExecutionPlan) {
       if (((SingleOpExecutionPlan) plan).statement instanceof ReturnStatement) {
         return new ReturnStep(((SingleOpExecutionPlan) plan).statement, ctx, profilingEnabled);
       }
     }
-    if (plan instanceof IfExecutionPlan) {
+    if (plan instanceof IfExecutionPlan)
       return ((IfExecutionPlan) plan).executeUntilReturn();
-    }
-    throw new IllegalStateException();
+
+    throw new NoSuchElementException();
   }
 }

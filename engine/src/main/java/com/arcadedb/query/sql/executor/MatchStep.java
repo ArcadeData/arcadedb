@@ -66,13 +66,13 @@ public class MatchStep extends AbstractExecutionStep {
       @Override
       public Result next() {
         if (localCount >= nRecords) {
-          throw new IllegalStateException();
+          throw new NoSuchElementException();
         }
         if (nextResult == null) {
           fetchNext(ctx, nRecords);
         }
         if (nextResult == null) {
-          throw new IllegalStateException();
+          throw new NoSuchElementException();
         }
         Result result = nextResult;
         fetchNext(ctx, nRecords);

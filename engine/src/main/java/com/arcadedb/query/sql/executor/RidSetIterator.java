@@ -47,7 +47,7 @@ public class RidSetIterator implements Iterator<RID> {
   @Override
   public RID next() {
     if (!hasNext()) {
-      throw new IllegalStateException();
+      throw new NoSuchElementException();
     }
     RID result = new RID(ctx.getDatabase(), currentCluster, currentId);
     currentId++;
