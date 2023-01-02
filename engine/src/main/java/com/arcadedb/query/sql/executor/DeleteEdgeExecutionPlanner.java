@@ -65,9 +65,14 @@ public class DeleteEdgeExecutionPlanner {
     final DeleteExecutionPlan result = new DeleteExecutionPlan(ctx);
 
     if (leftExpression != null || rightExpression != null) {
-      handleGlobalLet(result, new Identifier("$__ARCADEDB_DELETE_EDGE_fromV"), leftExpression, ctx, enableProfiling);
-      handleGlobalLet(result, new Identifier("$__ARCADEDB_DELETE_EDGE_toV"), rightExpression, ctx, enableProfiling);
-      handleFetchFromTo(result, ctx, "$__ARCADEDB_DELETE_EDGE_fromV", "$__ARCADEDB_DELETE_EDGE_toV", className, targetClusterName, enableProfiling);
+      if (leftExpression != null)
+        handleGlobalLet(result, new Identifier("$__ARCADEDB_DELETE_EDGE_fromV"), leftExpression, ctx, enableProfiling);
+      if (rightExpression != null)
+        handleGlobalLet(result, new Identifier("$__ARCADEDB_DELETE_EDGE_toV"), rightExpression, ctx, enableProfiling);
+      handleFetchFromTo(result, ctx,//
+          leftExpression != null ? "$__ARCADEDB_DELETE_EDGE_fromV" : null,//
+          rightExpression != null ? "$__ARCADEDB_DELETE_EDGE_toV" : null,//
+          className, targetClusterName, enableProfiling);
       handleWhere(result, ctx, whereClause, enableProfiling);
     } else if (whereClause != null) {
       final FromClause fromClause = new FromClause(-1);
@@ -99,11 +104,10 @@ public class DeleteEdgeExecutionPlanner {
 
   private void handleFetchFromTo(final DeleteExecutionPlan result, final CommandContext ctx, final String fromAlias, final String toAlias,
       final Identifier targetClass, final Identifier targetCluster, final boolean profilingEnabled) {
-    if (fromAlias != null && toAlias != null) {
+    if (fromAlias != null)
       result.chain(new FetchEdgesFromToVerticesStep(fromAlias, toAlias, targetClass, targetCluster, ctx, profilingEnabled));
-    } else if (toAlias != null) {
+    else if (toAlias != null)
       result.chain(new FetchEdgesToVerticesStep(toAlias, targetClass, targetCluster, ctx, profilingEnabled));
-    }
   }
 
   private void handleTargetRids(final DeleteExecutionPlan result, final CommandContext ctx, final List<Rid> rids, final boolean profilingEnabled) {

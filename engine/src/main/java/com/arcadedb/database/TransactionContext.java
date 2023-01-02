@@ -223,7 +223,11 @@ public class TransactionContext implements Transaction {
     // RELOAD PREVIOUS VERSION OF MODIFIED RECORDS
     if (database.isOpen())
       for (Record r : modifiedRecordsCache.values())
-        r.reload();
+        try {
+          r.reload();
+        } catch (Exception e) {
+          // IGNORE EXCEPTION (RECORD DELETED OR TYPE REMOVED)
+        }
 
     reset();
   }
