@@ -3,8 +3,13 @@ function renderTable(){
     return;
 
   let tableTruncateColumns = $("#tableTruncateColumns").prop("checked");
-  if( tableTruncateColumns == null )
-    tableTruncateColumns = globalStorageLoad( "table.truncateColumns" ) == "true";
+  if( tableTruncateColumns == null ){
+    let saved = globalStorageLoad( "table.truncateColumns" );
+    if( saved == null )
+      tableTruncateColumns = true; // DEFAULT
+    else
+      tableTruncateColumns = saved == "true";
+  }
   let tableTruncateColumnsChecked = tableTruncateColumns;
   if( tableTruncateColumnsChecked == true )
     tableTruncateColumnsChecked = "checked";
@@ -12,8 +17,13 @@ function renderTable(){
     tableTruncateColumnsChecked = "";
 
   let tableFitInPage = $("#tableFitInPage").prop("checked");
-  if( tableFitInPage == null )
-    tableFitInPage = globalStorageLoad( "table.fitInPage" ) == "true";
+  if( tableFitInPage == null ) {
+    let saved = globalStorageLoad( "table.fitInPage" );
+    if( saved == null )
+      tableFitInPage = true; // DEFAULT
+    else
+      tableFitInPage = saved == "true";
+  }
   let tableFitInPageChecked = tableFitInPage;
   if( tableFitInPageChecked == true )
     tableFitInPageChecked = "checked";
@@ -135,16 +145,16 @@ function renderTable(){
                 "    <i class='fa fa-sliders-h'></i> Settings" +
                 "  </a>" +
                 "  <ul class='dropdown-menu dropdown-menu-right' aria-labelledby='navbarDropdown' style='width: 300px'>" +
-                "    <li class='dropdown-item' onclick='globalToggleCheckboxAndSave(\"#tableTruncateColumns\", \"table.truncateColumns\");renderTable()'>" +
+                "    <li class='dropdown-item'>" +
                 "      <div class='form-check'>" +
-                "        <input id='tableTruncateColumns' class='form-check-input' type='checkbox' " + tableTruncateColumnsChecked + ">" +
-                "        <label for='tableTruncateColumns' class='form-label'>Truncate long values</label>" +
+                "        <input id='tableTruncateColumns' class='form-check-input' type='checkbox' " + tableTruncateColumnsChecked + " onclick='globalCheckboxAndSave(\"#tableTruncateColumns\", \"table.truncateColumns\");renderTable()'>" +
+                "        <label for='tableTruncateColumns' class='form-label' onclick='globalToggleCheckboxAndSave(\"#tableTruncateColumns\", \"table.truncateColumns\");renderTable()'>Truncate long values</label>" +
                 "      </div>" +
                 "    </li>" +
-                "    <li class='dropdown-item' onclick='globalToggleCheckboxAndSave(\"#tableFitInPage\", \"table.fitInPage\");renderTable()'>" +
+                "    <li class='dropdown-item'>" +
                 "      <div class='form-check'>" +
-                "        <input id='tableFitInPage' class='form-check-input' type='checkbox' " + tableFitInPageChecked + ">" +
-                "        <label for='tableFitInPage' class='form-label'>Fit table in page</label>" +
+                "        <input id='tableFitInPage' class='form-check-input' type='checkbox' " + tableFitInPageChecked + " onclick='globalCheckboxAndSave(\"#tableFitInPage\", \"table.fitInPage\");renderTable()'>" +
+                "        <label for='tableFitInPage' class='form-label' onclick='globalToggleCheckboxAndSave(\"#tableFitInPage\", \"table.fitInPage\");renderTable()'>Fit table in page</label>" +
                 "      </div>" +
                 "    </li>" +
                 "  </ul>"

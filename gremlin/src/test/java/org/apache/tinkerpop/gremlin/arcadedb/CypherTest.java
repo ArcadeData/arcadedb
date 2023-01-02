@@ -211,6 +211,26 @@ public class CypherTest {
     }
   }
 
+  /**
+   * https://github.com/ArcadeData/arcadedb/issues/734
+   */
+  @Test
+  public void testIssue734() throws ExecutionException, InterruptedException {
+    final ArcadeGraph graph = ArcadeGraph.open("./target/testcypher");
+    try {
+
+      ResultSet p1 = graph.cypher("CREATE (p:Person) RETURN p").execute();
+      Assertions.assertTrue(p1.hasNext());
+      p1.next().getIdentity().get();
+
+      ResultSet p2 = graph.cypher("MATCH (p) DELETE p").execute();
+
+    } finally {
+      graph.drop();
+      Assertions.assertNull(graph.getGremlinExecutor());
+    }
+  }
+
   @BeforeEach
   @AfterEach
   public void clean() {

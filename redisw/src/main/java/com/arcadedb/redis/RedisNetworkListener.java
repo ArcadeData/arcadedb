@@ -32,7 +32,6 @@ public class RedisNetworkListener extends Thread {
   private final        ArcadeDBServer      server;
   private final        ServerSocketFactory socketFactory;
   private              ServerSocket        serverSocket;
-  private              InetSocketAddress   inboundAddr;
   private volatile     boolean             active          = true;
   private static final int                 protocolVersion = -1;
   private final        String              hostName;
@@ -122,7 +121,7 @@ public class RedisNetworkListener extends Thread {
   private void listen(final String hostName, final String hostPortRange) {
 
     for (int tryPort : getPorts(hostPortRange)) {
-      inboundAddr = new InetSocketAddress(hostName, tryPort);
+      final InetSocketAddress inboundAddr = new InetSocketAddress(hostName, tryPort);
       try {
         serverSocket = socketFactory.createServerSocket(tryPort, 0, InetAddress.getByName(hostName));
 

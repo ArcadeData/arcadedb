@@ -41,11 +41,17 @@ public interface ResultSet extends Spliterator<Result>, Iterator<Result>, AutoCl
     throw new UnsupportedOperationException();
   }
 
-  void close();
+  default void close() {
+    // NO ACTIONS
+  }
 
-  Optional<ExecutionPlan> getExecutionPlan();
+  default Optional<ExecutionPlan> getExecutionPlan() {
+    return Optional.empty();
+  }
 
-  Map<String, Long> getQueryStats();
+  default Map<String, Long> getQueryStats() {
+    return null;
+  }
 
   default void reset() {
     throw new UnsupportedOperationException("Implement RESET on " + getClass().getSimpleName());

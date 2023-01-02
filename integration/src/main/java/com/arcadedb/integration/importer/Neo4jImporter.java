@@ -74,9 +74,7 @@ public class Neo4jImporter {
   private              long                           beginTime;
   private              long                           beginTimeVerticesCreation;
   private              long                           beginTimeEdgesCreation;
-  private              InputStream                    inputStream;
   private              boolean                        error                 = false;
-  private              File                           file;
   private final        Map<String, Map<String, Type>> schemaProperties      = new HashMap<>();
   private final static SimpleDateFormat               dateTimeISO8601Format = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss");
 
@@ -440,7 +438,7 @@ public class Neo4jImporter {
   }
 
   public InputStream openInputStream() throws IOException {
-    file = new File(inputFile);
+    final File file = new File(inputFile);
     if (!file.exists()) {
       error = true;
       throw new IllegalArgumentException("File '" + inputFile + "' not found");
@@ -450,7 +448,7 @@ public class Neo4jImporter {
   }
 
   private void readFile(Callable<Void, JSONObject> callback) throws IOException {
-    inputStream = openInputStream();
+    final InputStream inputStream = openInputStream();
     try {
       final BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, DatabaseFactory.getDefaultCharset()));
       try {
@@ -486,7 +484,6 @@ public class Neo4jImporter {
       }
     } finally {
       inputStream.close();
-      inputStream = null;
     }
   }
 

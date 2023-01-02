@@ -38,6 +38,7 @@ import org.apache.commons.configuration2.Configuration;
 import org.apache.tinkerpop.gremlin.arcadedb.structure.io.ArcadeIoRegistry;
 import org.apache.tinkerpop.gremlin.groovy.engine.GremlinExecutor;
 import org.apache.tinkerpop.gremlin.jsr223.ConcurrentBindings;
+import org.apache.tinkerpop.gremlin.jsr223.ImportGremlinPlugin;
 import org.apache.tinkerpop.gremlin.process.computer.GraphComputer;
 import org.apache.tinkerpop.gremlin.process.traversal.TraversalStrategies;
 import org.apache.tinkerpop.gremlin.structure.Direction;
@@ -72,9 +73,12 @@ public class ArcadeGraph implements Graph, Closeable {
   //private final   ArcadeVariableFeatures graphVariables = new ArcadeVariableFeatures();
   private final        ArcadeGraphTransaction transaction;
   protected final      Database               database;
-  protected final      BaseConfiguration      configuration  = new BaseConfiguration();
-  private final static Iterator<Vertex>       EMPTY_VERTICES = Collections.emptyIterator();
-  private final static Iterator<Edge>         EMPTY_EDGES    = Collections.emptyIterator();
+  protected final      BaseConfiguration      configuration           = new BaseConfiguration();
+  private final static Iterator<Vertex>       EMPTY_VERTICES          = Collections.emptyIterator();
+  private final static Iterator<Edge>         EMPTY_EDGES             = Collections.emptyIterator();
+  protected            Features               features                = new ArcadeGraphFeatures();
+  private              GremlinExecutor        gremlinExecutor;
+  private              boolean                cypherEngineInitialized = false;
 
   static {
     TraversalStrategies.GlobalCache.registerStrategies(ArcadeGraph.class, TraversalStrategies.GlobalCache.getStrategies(Graph.class).clone()//
@@ -83,9 +87,6 @@ public class ArcadeGraph implements Graph, Closeable {
             new ArcadeTraversalStrategy())//
     );
   }
-
-  protected Features        features = new ArcadeGraphFeatures();
-  private   GremlinExecutor gremlinExecutor;
 
   protected ArcadeGraph(final Configuration configuration) {
     this.configuration.copy(configuration);
@@ -146,6 +147,17 @@ public class ArcadeGraph implements Graph, Closeable {
 
   public ArcadeCypher cypher(final String query, final Map<String, Object> parameters) {
     try {
+      synchronized (this) {
+        if (!cypherEngineInitialized) {
+          // REGISTER CYPHER CUSTOM FUNCTIONS
+          final ImportGremlinPlugin.Builder importPlugin = ImportGremlinPlugin.build();
+          importPlugin.classImports(new Class[] { java.lang.Math.class, org.opencypher.gremlin.traversal.CustomFunctions.class,
+              org.opencypher.gremlin.traversal.CustomPredicate.class });
+          importPlugin.methodImports(List.of("java.lang.Math#*", "org.opencypher.gremlin.traversal.CustomFunctions#*"));
+          gremlinExecutor.getScriptEngineManager().addPlugin(importPlugin.create());
+          cypherEngineInitialized = true;
+        }
+      }
       return new ArcadeCypher(this, query, parameters);
     } catch (SyntaxException e) {
       throw new QueryParsingException(e);
@@ -382,10 +394,6 @@ public class ArcadeGraph implements Graph, Closeable {
     return database;
   }
 
-  public GremlinExecutor getGremlinExecutor() {
-    return gremlinExecutor;
-  }
-
   @Override
   public boolean equals(final Object o) {
     if (this == o)
@@ -416,6 +424,13 @@ public class ArcadeGraph implements Graph, Closeable {
       return com.arcadedb.graph.Vertex.DIRECTION.BOTH;
     }
     throw new IllegalArgumentException(String.format("Cannot get direction for argument %s", direction));
+  }
+
+  /**
+   * Callback to register additional functions or plugin to the Gremlin executor.
+   */
+  public GremlinExecutor getGremlinExecutor() {
+    return gremlinExecutor;
   }
 
   private void init() {

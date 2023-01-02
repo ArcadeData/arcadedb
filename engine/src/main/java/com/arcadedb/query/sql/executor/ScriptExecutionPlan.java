@@ -84,10 +84,7 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
         return finalResult == null ? Optional.empty() : finalResult.getExecutionPlan();
       }
 
-      @Override
-      public Map<String, Long> getQueryStats() {
-        return null;
-      }
+
     };
   }
 

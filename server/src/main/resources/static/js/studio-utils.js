@@ -139,6 +139,12 @@ function globalToggleCheckboxAndSave(element, storageKey){
   globalStorageSave(storageKey, checked);
 }
 
+function globalCheckboxAndSave(element, storageKey){
+  let checked = $(element).prop('checked');
+  $(element).prop('checked', checked );
+  globalStorageSave(storageKey, checked);
+}
+
 function globalTogglePanel(panelId1, panelId2, panelId3, panelId4, panelId5){
   $('#'+panelId1).collapse('toggle');
   if( panelId2 )

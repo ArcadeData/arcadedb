@@ -109,19 +109,9 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
         }
       }
 
-      @Override
-      public void close() {
-      }
 
-      @Override
-      public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
-      }
 
-      @Override
-      public Map<String, Long> getQueryStats() {
-        return null;
-      }
+
     };
   }
 

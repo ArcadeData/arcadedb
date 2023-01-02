@@ -97,10 +97,7 @@ public class OrderByStep extends AbstractExecutionStep {
         prev.ifPresent(p -> p.close());
       }
 
-      @Override
-      public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
-      }
+
 
       @Override
       public Map<String, Long> getQueryStats() {

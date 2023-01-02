@@ -6,6 +6,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.EmbeddedDatabase;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.graalvm.polyglot.PolyglotException;
 import org.junit.jupiter.api.Assertions;
@@ -59,7 +60,6 @@ public class PolyglotQueryTest extends TestHelper {
     ResultSet result = database.command("js", "let BigDecimal = Java.type('java.math.BigDecimal'); new BigDecimal(1)");
 
     Assertions.assertTrue(result.hasNext());
-
     Assertions.assertEquals(new BigDecimal(1), result.next().getProperty("value"));
   }
 
@@ -89,5 +89,12 @@ public class PolyglotQueryTest extends TestHelper {
     } finally {
       GlobalConfiguration.POLYGLOT_COMMAND_TIMEOUT.reset();
     }
+  }
+
+  @Test
+  public void testAnalyzeQuery() {
+    QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine("js").analyze("3 + 5");
+    Assertions.assertFalse(analyzed.isDDL());
+    Assertions.assertFalse(analyzed.isIdempotent());
   }
 }

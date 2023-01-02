@@ -53,6 +53,7 @@ public class SQLFunctionDefinition implements FunctionDefinition {
 
   @Override
   public Object execute(final Object... parameters) {
+    // TODO: CHECK PASSED PARAMETERS AS ARGUMENT WITH DEFINED PARAMETERS
     final ResultSet result = database.execute("sql", implementation, parameters);
     Object first = null;
     if (result.hasNext()) {
