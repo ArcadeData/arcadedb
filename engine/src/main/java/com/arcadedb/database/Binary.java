@@ -19,6 +19,7 @@
 package com.arcadedb.database;
 
 import com.arcadedb.log.LogManager;
+import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.UnsignedBytesComparator;
 
 import java.io.*;
@@ -649,7 +650,8 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
     if (!(o instanceof Binary))
       return false;
     final Binary binary = (Binary) o;
-    return UnsignedBytesComparator.BEST_COMPARATOR.compare(content, binary.content) == 0;
+
+    return BinaryComparator.equalsBinary(this, binary);
   }
 
   @Override

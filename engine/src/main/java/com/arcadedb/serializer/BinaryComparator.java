@@ -303,7 +303,7 @@ public class BinaryComparator {
    * Compare 2 values. If strings or byte[] the unsafe native comparator will be used.
    */
   public static int compareTo(final Object a, final Object b) {
-    if( a == null && b == null )
+    if (a == null && b == null)
       return 0;
     if (a instanceof String && b instanceof String)
       return compareBytes(((String) a).getBytes(), ((String) b).getBytes(DatabaseFactory.getDefaultCharset()));
@@ -315,8 +315,10 @@ public class BinaryComparator {
   public static boolean equals(final Object a, final Object b) {
     if (a instanceof String && b instanceof String)
       return equalsString((String) a, (String) b);
-    if (a instanceof byte[] && b instanceof byte[])
+    else if (a instanceof byte[] && b instanceof byte[])
       return equalsBytes((byte[]) a, (byte[]) b);
+    else if (a instanceof Binary && b instanceof Binary)
+      return equalsBinary((Binary) a, (Binary) b);
     return a.equals(b);
   }
 
@@ -338,11 +340,25 @@ public class BinaryComparator {
       // OPTIMIZATION: CHECK THE LAST BYTE IF IT'S THE SAME FIRST
       return false;
 
-    return compareBytes(buffer1, buffer2) == 0;
+    return equalsBytes(buffer1, buffer2, buffer1.length);
+  }
+
+  public static boolean equalsBinary(final Binary buffer1, final Binary buffer2) {
+    if (buffer1 == null || buffer2 == null)
+      return false;
+
+    if (buffer1.size() != buffer2.size())
+      return false;
+
+    return equalsBytes(buffer1.getContent(), buffer2.getContent(), buffer1.size());
   }
 
   public static int compareBytes(final byte[] buffer1, final byte[] buffer2) {
     return UnsignedBytesComparator.BEST_COMPARATOR.compare(buffer1, buffer2);
+  }
+
+  public static boolean equalsBytes(final byte[] buffer1, final byte[] buffer2, final int length) {
+    return UnsignedBytesComparator.BEST_COMPARATOR.equals(buffer1, buffer2, length);
   }
 
   public int compareBytes(final byte[] buffer1, final Binary buffer2) {

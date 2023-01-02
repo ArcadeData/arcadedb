@@ -32,4 +32,14 @@ public class CompressionTest {
 
     Assertions.assertEquals(buffer, decompressed);
   }
+
+  @Test
+  public void testEmptyCompression() {
+    final Binary buffer = new Binary();
+
+    final Binary compressed = CompressionFactory.getDefault().compress(buffer);
+    final Binary decompressed = CompressionFactory.getDefault().decompress(compressed, buffer.size());
+
+    Assertions.assertEquals(buffer, decompressed);
+  }
 }

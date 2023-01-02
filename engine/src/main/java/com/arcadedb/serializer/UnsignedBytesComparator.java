@@ -24,7 +24,6 @@ import sun.misc.Unsafe;
 import java.lang.reflect.*;
 import java.nio.*;
 import java.security.*;
-import java.util.*;
 
 /**
  * This class was inspired by Guava's UnsignedBytes, under Apache 2 license.
@@ -35,11 +34,11 @@ import java.util.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public final class UnsignedBytesComparator {
-  private static final int                UNSIGNED_MASK        = 0xFF;
-  private static final Unsafe             theUnsafe;
-  private static final int                BYTE_ARRAY_BASE_OFFSET;
-  public static final  PureJavaComparator PURE_JAVA_COMPARATOR = new PureJavaComparator();
-  public static final  Comparator<byte[]> BEST_COMPARATOR;
+  private static final int                 UNSIGNED_MASK        = 0xFF;
+  private static final Unsafe              theUnsafe;
+  private static final int                 BYTE_ARRAY_BASE_OFFSET;
+  public static final  PureJavaComparator  PURE_JAVA_COMPARATOR = new PureJavaComparator();
+  public static final  ByteArrayComparator BEST_COMPARATOR;
 
   static {
     theUnsafe = getUnsafe();
@@ -58,7 +57,7 @@ public final class UnsignedBytesComparator {
   private UnsignedBytesComparator() {
   }
 
-  public static class UnsafeComparator implements Comparator<byte[]> {
+  public static class UnsafeComparator implements ByteArrayComparator {
     static final boolean BIG_ENDIAN = ByteOrder.nativeOrder().equals(ByteOrder.BIG_ENDIAN);
 
     @Override
@@ -95,12 +94,39 @@ public final class UnsignedBytesComparator {
     }
 
     @Override
+    public boolean equals(final byte[] left, final byte[] right, final int length) {
+      final int stride = 8;
+      final int strideLimit = length & -stride;
+      int i;
+
+      /*
+       * Compare 8 bytes at a time. Benchmarking on x86 shows a stride of 8 bytes is no slower
+       * than 4 bytes even on 32-bit. On the other hand, it is substantially faster on 64-bit.
+       */
+      for (i = 0; i < strideLimit; i += stride) {
+        final long lw = theUnsafe.getLong(left, BYTE_ARRAY_BASE_OFFSET + (long) i);
+        final long rw = theUnsafe.getLong(right, BYTE_ARRAY_BASE_OFFSET + (long) i);
+        if (lw != rw)
+          return false;
+      }
+
+      // The epilogue to cover the last (minLength % stride) elements.
+      for (; i < length; i++) {
+        final int result = UnsignedBytesComparator.compare(left[i], right[i]);
+        if (result != 0)
+          return false;
+      }
+
+      return true;
+    }
+
+    @Override
     public String toString() {
       return "UnsignedBytes.lexicographicalComparator() (sun.misc.Unsafe version)";
     }
   }
 
-  public static class PureJavaComparator implements Comparator<byte[]> {
+  public static class PureJavaComparator implements ByteArrayComparator {
     @Override
     public int compare(final byte[] left, final byte[] right) {
       int minLength = Math.min(left.length, right.length);
@@ -111,6 +137,21 @@ public final class UnsignedBytesComparator {
         }
       }
       return left.length - right.length;
+    }
+
+    @Override
+    public boolean equals(final byte[] left, final byte[] right, final int length) {
+      // OPTIMIZATION: TEST LAST BYTE FIRST
+      int result = UnsignedBytesComparator.compare(left[length - 1], right[length - 1]);
+      if (result != 0)
+        return false;
+
+      for (int i = 0; i < length - 1; i++) {
+        result = UnsignedBytesComparator.compare(left[i], right[i]);
+        if (result != 0)
+          return false;
+      }
+      return true;
     }
 
     @Override
