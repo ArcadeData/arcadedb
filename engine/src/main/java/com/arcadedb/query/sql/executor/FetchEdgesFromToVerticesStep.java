@@ -91,15 +91,9 @@ public class FetchEdgesFromToVerticesStep extends AbstractExecutionStep {
         }
       }
 
-      @Override
-      public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
-      }
 
-      @Override
-      public Map<String, Long> getQueryStats() {
-        return null;
-      }
+
+
     };
   }
 

@@ -29,12 +29,11 @@ import net.jpountz.lz4.LZ4FastDecompressor;
 public class LZ4Compression implements Compression {
   private static final byte[]              EMPTY_BYTES  = new byte[0];
   private static final Binary              EMPTY_BINARY = new Binary(EMPTY_BYTES);
-  private final        LZ4Factory          factory;
   private final        LZ4Compressor       compressor;
   private final        LZ4FastDecompressor decompressor;
 
   public LZ4Compression() {
-    this.factory = LZ4Factory.fastestInstance();
+    final LZ4Factory factory = LZ4Factory.fastestInstance();
     this.compressor = factory.fastCompressor();
     this.decompressor = factory.fastDecompressor();
   }
@@ -44,8 +43,7 @@ public class LZ4Compression implements Compression {
     final int decompressedLength = data.size() - data.position();
     final int maxCompressedLength = compressor.maxCompressedLength(decompressedLength);
     final byte[] compressed = new byte[maxCompressedLength];
-    final int compressedLength = compressor
-        .compress(data.getContent(), data.position(), data.size(), compressed, 0, maxCompressedLength);
+    final int compressedLength = compressor.compress(data.getContent(), data.position(), data.size(), compressed, 0, maxCompressedLength);
 
     return new Binary(compressed, compressedLength);
   }

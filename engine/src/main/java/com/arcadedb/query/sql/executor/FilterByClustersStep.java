@@ -133,15 +133,9 @@ public class FilterByClustersStep extends AbstractExecutionStep {
         FilterByClustersStep.this.close();
       }
 
-      @Override
-      public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
-      }
 
-      @Override
-      public Map<String, Long> getQueryStats() {
-        return null;
-      }
+
+
     };
 
   }

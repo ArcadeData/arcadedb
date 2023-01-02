@@ -57,7 +57,6 @@ public class Console {
   private static final String           SQL_LANGUAGE         = "SQL";
   private final        boolean          system               = System.console() != null;
   private final        Terminal         terminal;
-  private final        LineReader       lineReader;
   private final        TerminalParser   parser               = new TerminalParser();
   private              RemoteDatabase   remoteDatabase;
   private              ConsoleOutput    output;
@@ -84,11 +83,11 @@ public class Console {
 
     terminal = TerminalBuilder.builder().system(system).streams(System.in, System.out).jansi(true).build();
     Completer completer = new StringsCompleter("align database", "begin", "rollback", "commit", "check database", "close", "connect", "create database",
-        "create user", "drop database", "drop user", "export", "import", "help", "info types", "list databases", "load", "exit", "quit", "set", "match", "select", "insert into",
-        "update", "delete", "pwd");
+        "create user", "drop database", "drop user", "export", "import", "help", "info types", "list databases", "load", "exit", "quit", "set", "match",
+        "select", "insert into", "update", "delete", "pwd");
 
-    lineReader = LineReaderBuilder.builder().terminal(terminal).parser(parser).variable("history-file", ".history").history(new DefaultHistory())
-        .completer(completer).build();
+    final LineReader lineReader = LineReaderBuilder.builder().terminal(terminal).parser(parser).variable("history-file", ".history")
+        .history(new DefaultHistory()).completer(completer).build();
 
     output("%s Console v.%s - %s (%s)", Constants.PRODUCT, Constants.getRawVersion(), Constants.COPYRIGHT, Constants.URL);
 
@@ -132,7 +131,7 @@ public class Console {
     if (args.length > 0) {
       final Console console = new Console(false);
       console.parse(args[0], true);
-      console.parse("exit",true);
+      console.parse("exit", true);
     } else
       new Console(true);
   }
@@ -382,7 +381,7 @@ public class Console {
     } else {
       final String localUrl = parseLocalUrl(url);
 
-      if(new File(localUrl).exists())
+      if (new File(localUrl).exists())
         throw new ConsoleException("Database already exists");
 
       databaseFactory = new DatabaseFactory(localUrl);
@@ -706,12 +705,12 @@ public class Console {
   }
 
   private void checkUrlIsEmpty(final String url) {
-    if(url.isEmpty())
+    if (url.isEmpty())
       throw new ConsoleException("URL missing");
   }
 
   private String parseLocalUrl(final String url) {
-    return databaseDirectory + url.replaceFirst("file://","");
+    return databaseDirectory + url.replaceFirst("file://", "");
   }
 
   private void connectToRemoteServer(final String url, final Boolean needsDatabase) {

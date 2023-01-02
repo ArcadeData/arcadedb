@@ -133,15 +133,9 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
         result.clear();
       }
 
-      @Override
-      public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
-      }
 
-      @Override
-      public Map<String, Long> getQueryStats() {
-        return null;
-      }
+
+
 
       @Override
       public void reset() {

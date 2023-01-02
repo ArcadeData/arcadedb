@@ -221,6 +221,8 @@ public class PolyglotQueryEngine implements QueryEngine {
 
   @Override
   public void close() {
+    userCodeExecutor.shutdown();
+    userCodeExecutorQueue.clear();
     polyglotEngine.close();
   }
 

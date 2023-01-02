@@ -96,6 +96,12 @@ public class JavaQueryEngine implements QueryEngine {
   }
 
   @Override
+  public void close() {
+    userCodeExecutor.shutdown();
+    userCodeExecutorQueue.clear();
+  }
+
+  @Override
   public ResultSet command(final String query, final Object... parameters) {
     try {
       return executeUserCode(() -> {

@@ -77,15 +77,9 @@ public class CartesianProductStep extends AbstractExecutionStep {
         // EMPTY METHOD
       }
 
-      @Override
-      public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
-      }
 
-      @Override
-      public Map<String, Long> getQueryStats() {
-        return null;
-      }
+
+
     };
     //    throw new UnsupportedOperationException("cartesian product is not yet implemented in MATCH statement");
     //TODO
