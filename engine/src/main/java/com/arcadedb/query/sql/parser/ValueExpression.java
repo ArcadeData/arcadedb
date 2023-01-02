@@ -133,7 +133,7 @@ public class ValueExpression extends Expression {
   public void extractSubQueries(SubQueryCollector collector) {
   }
 
-  public void extractSubQueries(Identifier letAlias, SubQueryCollector collector) {
+  public void extractSubQueries(final Identifier letAlias, final SubQueryCollector collector) {
   }
 
   public boolean refersToParent() {
@@ -144,7 +144,7 @@ public class ValueExpression extends Expression {
     return null;
   }
 
-  public void applyRemove(ResultInternal result, CommandContext ctx) {
+  public void applyRemove(final ResultInternal result, final CommandContext ctx) {
     throw new CommandExecutionException("Cannot apply REMOVE " + this);
   }
 
@@ -156,15 +156,15 @@ public class ValueExpression extends Expression {
     throw new UnsupportedOperationException("Cannot serialize value expression (not supported yet)");
   }
 
-  public void deserialize(Result fromResult) {
+  public void deserialize(final Result fromResult) {
     throw new UnsupportedOperationException("Cannot deserialize value expression (not supported yet)");
   }
 
-  public boolean isDefinedFor(Result currentRecord) {
+  public boolean isDefinedFor(final Result currentRecord) {
     return true;
   }
 
-  public boolean isDefinedFor(Record currentRecord) {
+  public boolean isDefinedFor(final Record currentRecord) {
     return true;
   }
 

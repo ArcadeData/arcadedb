@@ -18,6 +18,8 @@
  */
 package com.arcadedb.utility;
 
+import com.arcadedb.database.Document;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.BinaryComparator;
 
 import java.util.*;
@@ -55,4 +57,22 @@ public class CollectionUtils {
     return tot;
   }
 
+  public static List<Document> resultsetToListOfDocuments(final ResultSet resultset) {
+    final List<Document> list = new ArrayList<>();
+    while (resultset.hasNext())
+      list.add(resultset.next().toElement());
+    return list;
+  }
+
+  public static Document getFirstResultAsDocument(final ResultSet resultset) {
+    while (resultset.hasNext())
+      return resultset.next().toElement();
+    return null;
+  }
+
+  public static Object getFirstResultValue(final ResultSet resultset, final String propertyName) {
+    while (resultset.hasNext())
+      return resultset.next().getProperty(propertyName);
+    return null;
+  }
 }

@@ -32,8 +32,7 @@ import java.util.*;
  * Instances of this class are immutable and can be recycled multiple times in the same or in different queries.
  */
 public class Identifier extends SimpleNode {
-
-  protected String  value;
+  private   String  value;
   protected boolean quoted = false;
 
   /**
@@ -57,10 +56,7 @@ public class Identifier extends SimpleNode {
   }
 
   public static Identifier deserialize(final Result fromResult) {
-    final Identifier identifier = new Identifier(-1);
-    identifier.value = fromResult.getProperty("value");
-    identifier.quoted = fromResult.getProperty("quoted");
-    return identifier;
+    return new Identifier(fromResult.getProperty("value"), (boolean) fromResult.getProperty("quoted"));
   }
 
   public Identifier(final SqlParser p, final int id) {
@@ -82,12 +78,6 @@ public class Identifier extends SimpleNode {
    * @return
    */
   public String getStringValue() {
-    if (value == null)
-      return null;
-
-    if (value.contains("`"))
-      return value.replaceAll("\\\\`", "`");
-
     return value;
   }
 
@@ -97,13 +87,18 @@ public class Identifier extends SimpleNode {
    *
    * @param s
    */
-  private void setStringValue(final String s) {
+  public void setStringValue(final String s) {
     if (s == null)
       value = null;
     else if (s.contains("`"))
       value = s.replaceAll("`", "\\\\`");
     else
       value = s;
+  }
+
+  public void setQuotedStringValue(final String s) {
+    quoted = true;
+    setStringValue(s.substring(1, s.length() - 1));
   }
 
   @Override

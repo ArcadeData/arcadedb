@@ -27,7 +27,6 @@ import java.util.*;
 import java.util.stream.*;
 
 public class Unwind extends SimpleNode {
-
   protected List<Identifier> items = new ArrayList<Identifier>();
 
   public Unwind(final int id) {

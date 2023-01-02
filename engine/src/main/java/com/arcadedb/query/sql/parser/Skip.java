@@ -28,61 +28,57 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import java.util.*;
 
 public class Skip extends SimpleNode {
-
-  protected PInteger num;
-
+  protected PInteger       num;
   protected InputParameter inputParam;
 
-  public Skip(int id) {
+  public Skip(final int id) {
     super(id);
   }
 
-  public Skip(SqlParser p, int id) {
+  public Skip(final SqlParser p, final int id) {
     super(p, id);
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
-    if (num == null && inputParam == null) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
+    if (num == null && inputParam == null)
       return;
-    }
+
     builder.append(" SKIP ");
-    if (num != null) {
+    if (num != null)
       num.toString(params, builder);
-    } else {
+    else
       inputParam.toString(params, builder);
-    }
   }
 
-  public int getValue(CommandContext ctx) {
-    if (num != null) {
+  public int getValue(final CommandContext ctx) {
+    if (num != null)
       return num.getValue().intValue();
-    }
+
     if (inputParam != null) {
-      Object paramValue = inputParam.getValue(ctx.getInputParameters());
-      if (paramValue instanceof Number) {
+      final Object paramValue = inputParam.getValue(ctx.getInputParameters());
+      if (paramValue instanceof Number)
         return ((Number) paramValue).intValue();
-      } else {
+      else
         throw new CommandExecutionException("Invalid value for SKIP: " + paramValue);
-      }
     }
     throw new CommandExecutionException("No value for SKIP");
   }
 
   public Skip copy() {
-    Skip result = new Skip(-1);
+    final Skip result = new Skip(-1);
     result.num = num == null ? null : num.copy();
     result.inputParam = inputParam == null ? null : inputParam.copy();
     return result;
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    Skip oSkip = (Skip) o;
+    final Skip oSkip = (Skip) o;
 
     if (!Objects.equals(num, oSkip.num))
       return false;
@@ -97,24 +93,23 @@ public class Skip extends SimpleNode {
   }
 
   public Result serialize() {
-    ResultInternal result = new ResultInternal();
-    if (num != null) {
+    final ResultInternal result = new ResultInternal();
+    if (num != null)
       result.setProperty("num", num.serialize());
-    }
-    if (inputParam != null) {
+
+    if (inputParam != null)
       result.setProperty("inputParam", inputParam.serialize());
-    }
+
     return result;
   }
 
-  public void deserialize(Result fromResult) {
+  public void deserialize(final Result fromResult) {
     if (fromResult.getProperty("num") != null) {
       num = new PInteger(-1);
       num.deserialize(fromResult.getProperty("num"));
     }
-    if (fromResult.getProperty("inputParam") != null) {
+    if (fromResult.getProperty("inputParam") != null)
       inputParam = InputParameter.deserializeFromOResult(fromResult.getProperty("inputParam"));
-    }
   }
 }
 /* JavaCC - OriginalChecksum=8e13ca184705a8fc1b5939ecefe56a60 (do not edit this line) */

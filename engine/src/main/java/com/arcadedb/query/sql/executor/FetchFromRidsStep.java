@@ -33,12 +33,10 @@ import java.util.stream.*;
  */
 public class FetchFromRidsStep extends AbstractExecutionStep {
   private final Collection<RID> rids;
+  private       Iterator<RID>   iterator;
+  private       Result          nextResult = null;
 
-  private Iterator<RID> iterator;
-
-  private Result nextResult = null;
-
-  public FetchFromRidsStep(Collection<RID> rids, CommandContext ctx, boolean profilingEnabled) {
+  public FetchFromRidsStep(final Collection<RID> rids, final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
     this.rids = rids;
     reset();
@@ -50,7 +48,7 @@ public class FetchFromRidsStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
     getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
     return new ResultSet() {
       int internalNext = 0;
@@ -61,32 +59,33 @@ public class FetchFromRidsStep extends AbstractExecutionStep {
         }
         while (iterator.hasNext()) {
           RID nextRid = iterator.next();
-          if (nextRid == null) {
+          if (nextRid == null)
             continue;
-          }
+
           Identifiable nextDoc = null;
           try {
             nextDoc = ctx.getDatabase().lookupByRID(nextRid, true);
           } catch (RecordNotFoundException e) {
             // IGNORE HERE< HANDLED BELOW
           }
-          if (nextDoc == null) {
+
+          if (nextDoc == null)
             continue;
-          }
+
           nextResult = new ResultInternal();
           ((ResultInternal) nextResult).setElement((Document) nextDoc);
-          return;
+          break;
         }
       }
 
       @Override
       public boolean hasNext() {
-        if (internalNext >= nRecords) {
+        if (internalNext >= nRecords)
           return false;
-        }
-        if (nextResult == null) {
+
+        if (nextResult == null)
           fetchNext();
-        }
+
         return nextResult != null;
       }
 
@@ -96,14 +95,13 @@ public class FetchFromRidsStep extends AbstractExecutionStep {
           throw new NoSuchElementException();
 
         internalNext++;
-        Result result = nextResult;
+        final Result result = nextResult;
         nextResult = null;
         return result;
       }
 
       @Override
       public void close() {
-
       }
 
       @Override
@@ -119,21 +117,21 @@ public class FetchFromRidsStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
+  public String prettyPrint(final int depth, final int indent) {
     return ExecutionStepInternal.getIndent(depth, indent) + "+ FETCH FROM RIDs\n" + ExecutionStepInternal.getIndent(depth, indent) + "  " + rids;
   }
 
   @Override
   public Result serialize() {
-    ResultInternal result = ExecutionStepInternal.basicSerialize(this);
-    if (rids != null) {
+    final ResultInternal result = ExecutionStepInternal.basicSerialize(this);
+    if (rids != null)
       result.setProperty("rids", rids.stream().map(x -> x.toString()).collect(Collectors.toList()));
-    }
+
     return result;
   }
 
   @Override
-  public void deserialize(Result fromResult) {
+  public void deserialize(final Result fromResult) {
     try {
       ExecutionStepInternal.basicDeserialize(fromResult, this);
       if (fromResult.getProperty("rids") != null) {

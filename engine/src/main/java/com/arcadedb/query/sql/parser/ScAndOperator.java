@@ -24,7 +24,6 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.sql.executor.QueryOperatorEquals;
 
 public class ScAndOperator extends SimpleNode implements BinaryCompareOperator {
-
   QueryOperatorEquals lowLevelOperator = null;
 
   public ScAndOperator(int id) {
@@ -62,7 +61,7 @@ public class ScAndOperator extends SimpleNode implements BinaryCompareOperator {
   }
 
   @Override
-  public boolean equals(Object obj) {
+  public boolean equals(final Object obj) {
     return obj != null && obj.getClass().equals(this.getClass());
   }
 

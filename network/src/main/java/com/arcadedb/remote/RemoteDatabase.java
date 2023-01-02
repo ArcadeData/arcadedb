@@ -36,7 +36,6 @@ import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
-import com.arcadedb.network.http.HttpUtils;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -54,6 +53,7 @@ import java.util.*;
 import java.util.logging.*;
 
 public class RemoteDatabase extends RWLockContext {
+  public static final String ARCADEDB_SESSION_ID = "arcadedb-session-id";
 
   public static final  int                         DEFAULT_PORT              = 2480;
   private final        String                      originalServer;
@@ -172,7 +172,7 @@ public class RemoteDatabase extends RWLockContext {
       connection.connect();
       if (connection.getResponseCode() != 204)
         throw new TransactionException("Error on transaction begin");
-      sessionId = connection.getHeaderField(HttpUtils.ARCADEDB_SESSION_ID);
+      sessionId = connection.getHeaderField(ARCADEDB_SESSION_ID);
     } catch (Exception e) {
       throw new TransactionException("Error on transaction begin", e);
     }
@@ -495,7 +495,7 @@ public class RemoteDatabase extends RWLockContext {
     connection.setReadTimeout(timeout);
 
     if (sessionId != null)
-      connection.setRequestProperty(HttpUtils.ARCADEDB_SESSION_ID, sessionId);
+      connection.setRequestProperty(ARCADEDB_SESSION_ID, sessionId);
 
     return connection;
   }

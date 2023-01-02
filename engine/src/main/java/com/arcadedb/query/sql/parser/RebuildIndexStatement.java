@@ -37,16 +37,15 @@ import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
 public class RebuildIndexStatement extends DDLStatement {
-
   protected            boolean    all      = false;
   protected            Identifier name;
   private static final int        pageSize = LSMTreeIndexAbstract.DEF_PAGE_SIZE;
 
-  public RebuildIndexStatement(int id) {
+  public RebuildIndexStatement(final int id) {
     super(id);
   }
 
-  public RebuildIndexStatement(SqlParser p, int id) {
+  public RebuildIndexStatement(final SqlParser p, final int id) {
     super(p, id);
   }
 
@@ -130,7 +129,7 @@ public class RebuildIndexStatement extends DDLStatement {
   }
 
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("REBUILD INDEX ");
     if (all) {
       builder.append("*");
@@ -141,20 +140,20 @@ public class RebuildIndexStatement extends DDLStatement {
 
   @Override
   public RebuildIndexStatement copy() {
-    RebuildIndexStatement result = new RebuildIndexStatement(-1);
+    final RebuildIndexStatement result = new RebuildIndexStatement(-1);
     result.all = all;
     result.name = name == null ? null : name.copy();
     return result;
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    RebuildIndexStatement that = (RebuildIndexStatement) o;
+    final RebuildIndexStatement that = (RebuildIndexStatement) o;
 
     if (all != that.all)
       return false;

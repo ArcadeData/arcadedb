@@ -69,7 +69,6 @@ import com.arcadedb.query.sql.parser.CommitStatement;
 import com.arcadedb.query.sql.parser.ExecutionPlanCache;
 import com.arcadedb.query.sql.parser.LetStatement;
 import com.arcadedb.query.sql.parser.LocalResultSet;
-import com.arcadedb.query.sql.parser.LocalResultSetLifecycleDecorator;
 import com.arcadedb.query.sql.parser.Statement;
 import com.arcadedb.query.sql.parser.StatementCache;
 import com.arcadedb.schema.DocumentType;
@@ -1257,7 +1256,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     context.setInputParameters(params);
 
     final List<Statement> statements = ((SQLQueryEngine) getQueryEngine(language)).parseScript(script, wrappedDatabaseInstance);
-    return new LocalResultSetLifecycleDecorator(executeInternal(statements, context));
+    return executeInternal(statements, context);
   }
 
   @Override
@@ -1269,7 +1268,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
     context.setInputParameters(args);
 
     final List<Statement> statements = ((SQLQueryEngine) getQueryEngine(language)).parseScript(script, wrappedDatabaseInstance);
-    return new LocalResultSetLifecycleDecorator(executeInternal(statements, context));
+    return executeInternal(statements, context);
   }
 
   @Override

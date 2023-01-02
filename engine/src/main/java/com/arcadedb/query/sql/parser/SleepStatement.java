@@ -28,7 +28,6 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import java.util.*;
 
 public class SleepStatement extends SimpleExecStatement {
-
   protected PInteger millis;
 
   public SleepStatement(final int id) {
@@ -42,8 +41,8 @@ public class SleepStatement extends SimpleExecStatement {
   @Override
   public ResultSet executeSimple(final CommandContext ctx) {
 
-    InternalResultSet result = new InternalResultSet();
-    ResultInternal item = new ResultInternal();
+    final InternalResultSet result = new InternalResultSet();
+    final ResultInternal item = new ResultInternal();
     item.setProperty("operation", "sleep");
     try {
       Thread.sleep(millis.getValue().intValue());
@@ -57,7 +56,6 @@ public class SleepStatement extends SimpleExecStatement {
     }
     result.add(item);
     return result;
-
   }
 
   @Override

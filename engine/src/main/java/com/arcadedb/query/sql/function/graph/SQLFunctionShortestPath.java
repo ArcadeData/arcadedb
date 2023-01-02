@@ -194,7 +194,6 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
           return neighborIdentity;
 
       } else {
-
         // START EVALUATING FROM RIGHT
         neighborIdentity = walkRight(ctx);
         if (neighborIdentity != null)
@@ -219,16 +218,16 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
 
   }
 
-  private void bindAdditionalParams(Object additionalParams, OShortestPathContext ctx) {
-    if (additionalParams == null) {
+  private void bindAdditionalParams(final Object additionalParams, final OShortestPathContext ctx) {
+    if (additionalParams == null)
       return;
-    }
+
     Map<String, Object> mapParams = null;
-    if (additionalParams instanceof Map) {
+    if (additionalParams instanceof Map)
       mapParams = (Map) additionalParams;
-    } else if (additionalParams instanceof Identifiable) {
+    else if (additionalParams instanceof Identifiable)
       mapParams = ((Document) ((Identifiable) additionalParams).getRecord()).propertiesAsMap();
-    }
+
     if (mapParams != null) {
       ctx.maxDepth = integer(mapParams.get("maxDepth"));
       Boolean withEdge = toBoolean(mapParams.get("edge"));
@@ -236,13 +235,13 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
     }
   }
 
-  private Integer integer(Object fromObject) {
-    if (fromObject == null) {
+  private Integer integer(final Object fromObject) {
+    if (fromObject == null)
       return null;
-    }
-    if (fromObject instanceof Number) {
+
+    if (fromObject instanceof Number)
       return ((Number) fromObject).intValue();
-    }
+
     if (fromObject instanceof String) {
       try {
         return Integer.parseInt(fromObject.toString());
@@ -257,13 +256,13 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
    *
    * @author Thomas Young (YJJThomasYoung@hotmail.com)
    */
-  private Boolean toBoolean(Object fromObject) {
-    if (fromObject == null) {
+  private Boolean toBoolean(final Object fromObject) {
+    if (fromObject == null)
       return null;
-    }
-    if (fromObject instanceof Boolean) {
+
+    if (fromObject instanceof Boolean)
       return (Boolean) fromObject;
-    }
+
     if (fromObject instanceof String) {
       try {
         return Boolean.parseBoolean(fromObject.toString());
@@ -284,20 +283,20 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
    *
    * @author Thomas Young (YJJThomasYoung@hotmail.com)
    */
-  private Pair<Iterable<Vertex>, Iterable<Edge>> getVerticesAndEdges(Vertex srcVertex, Vertex.DIRECTION direction, String... types) {
+  private Pair<Iterable<Vertex>, Iterable<Edge>> getVerticesAndEdges(final Vertex srcVertex, final Vertex.DIRECTION direction, final String... types) {
     if (direction == Vertex.DIRECTION.BOTH) {
-      MultiIterator<Vertex> vertexIterator = new MultiIterator<>();
-      MultiIterator<Edge> edgeIterator = new MultiIterator<>();
-      Pair<Iterable<Vertex>, Iterable<Edge>> pair1 = getVerticesAndEdges(srcVertex, Vertex.DIRECTION.OUT, types);
-      Pair<Iterable<Vertex>, Iterable<Edge>> pair2 = getVerticesAndEdges(srcVertex, Vertex.DIRECTION.IN, types);
+      final MultiIterator<Vertex> vertexIterator = new MultiIterator<>();
+      final MultiIterator<Edge> edgeIterator = new MultiIterator<>();
+      final Pair<Iterable<Vertex>, Iterable<Edge>> pair1 = getVerticesAndEdges(srcVertex, Vertex.DIRECTION.OUT, types);
+      final Pair<Iterable<Vertex>, Iterable<Edge>> pair2 = getVerticesAndEdges(srcVertex, Vertex.DIRECTION.IN, types);
       vertexIterator.addIterator(pair1.getFirst());
       vertexIterator.addIterator(pair2.getFirst());
       edgeIterator.addIterator(pair1.getSecond());
       edgeIterator.addIterator(pair2.getSecond());
       return new Pair<>(vertexIterator, edgeIterator);
     } else {
-      Iterable<Edge> edges1 = srcVertex.getEdges(direction, types);
-      Iterable<Edge> edges2 = srcVertex.getEdges(direction, types);
+      final Iterable<Edge> edges1 = srcVertex.getEdges(direction, types);
+      final Iterable<Edge> edges2 = srcVertex.getEdges(direction, types);
       return new Pair<>(new EdgeToVertexIterable(edges1, direction), edges2);
     }
   }
@@ -312,7 +311,7 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
    *
    * @author Thomas Young (YJJThomasYoung@hotmail.com)
    */
-  private Pair<Iterable<Vertex>, Iterable<Edge>> getVerticesAndEdges(Vertex srcVertex, Vertex.DIRECTION direction) {
+  private Pair<Iterable<Vertex>, Iterable<Edge>> getVerticesAndEdges(final Vertex srcVertex, final Vertex.DIRECTION direction) {
     return getVerticesAndEdges(srcVertex, direction, (String[]) null);
   }
 
@@ -321,7 +320,7 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
   }
 
   protected List<RID> walkLeft(final SQLFunctionShortestPath.OShortestPathContext ctx) {
-    ArrayDeque<Vertex> nextLevelQueue = new ArrayDeque<>();
+    final ArrayDeque<Vertex> nextLevelQueue = new ArrayDeque<>();
     if (!Boolean.TRUE.equals(ctx.edge)) {
       while (!ctx.queueLeft.isEmpty()) {
         ctx.current = ctx.queueLeft.poll();
@@ -353,7 +352,7 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
       while (!ctx.queueLeft.isEmpty()) {
         ctx.current = ctx.queueLeft.poll();
 
-        Pair<Iterable<Vertex>, Iterable<Edge>> neighbors;
+        final Pair<Iterable<Vertex>, Iterable<Edge>> neighbors;
         if (ctx.edgeType == null) {
           neighbors = getVerticesAndEdges(ctx.current, ctx.directionLeft);
         } else {
@@ -362,7 +361,7 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
         Iterator<Vertex> vertexIterator = neighbors.getFirst().iterator();
         Iterator<Edge> edgeIterator = neighbors.getSecond().iterator();
         while (vertexIterator.hasNext() && edgeIterator.hasNext()) {
-          Vertex v = vertexIterator.next();
+          final Vertex v = vertexIterator.next();
           final RID neighborVertexIdentity = v.getIdentity();
           final RID neighborEdgeIdentity = edgeIterator.next().getIdentity();
 
@@ -391,7 +390,7 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
       while (!ctx.queueRight.isEmpty()) {
         ctx.currentRight = ctx.queueRight.poll();
 
-        Iterable<Vertex> neighbors;
+        final Iterable<Vertex> neighbors;
         if (ctx.edgeType == null) {
           neighbors = ctx.currentRight.getVertices(ctx.directionRight);
         } else {
@@ -419,7 +418,7 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
       while (!ctx.queueRight.isEmpty()) {
         ctx.currentRight = ctx.queueRight.poll();
 
-        Pair<Iterable<Vertex>, Iterable<Edge>> neighbors;
+        final Pair<Iterable<Vertex>, Iterable<Edge>> neighbors;
         if (ctx.edgeType == null) {
           neighbors = getVerticesAndEdges(ctx.currentRight, ctx.directionRight);
         } else {
