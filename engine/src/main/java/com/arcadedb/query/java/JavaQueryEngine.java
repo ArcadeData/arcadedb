@@ -78,13 +78,6 @@ public class JavaQueryEngine implements QueryEngine {
   }
 
   public static class JavaQueryEngineFactory implements QueryEngineFactory {
-    private List<String> allowedPackages = null;
-
-    public JavaQueryEngineFactory setAllowedPackages(final List<String> allowedPackages) {
-      this.allowedPackages = allowedPackages;
-      return this;
-    }
-
     @Override
     public String getLanguage() {
       return ENGINE_NAME;
@@ -92,11 +85,11 @@ public class JavaQueryEngine implements QueryEngine {
 
     @Override
     public QueryEngine getInstance(final DatabaseInternal database) {
-      return new JavaQueryEngine(database, allowedPackages);
+      return new JavaQueryEngine(database);
     }
   }
 
-  protected JavaQueryEngine(final DatabaseInternal database, final List<String> allowedPackages) {
+  protected JavaQueryEngine(final DatabaseInternal database) {
     this.userCodeExecutorQueue = new ArrayBlockingQueue<>(10000);
     this.userCodeExecutor = new ThreadPoolExecutor(8, 8, 30, TimeUnit.SECONDS, userCodeExecutorQueue, new ThreadPoolExecutor.CallerRunsPolicy());
     this.timeout = database.getConfiguration().getValueAsLong(GlobalConfiguration.POLYGLOT_COMMAND_TIMEOUT);

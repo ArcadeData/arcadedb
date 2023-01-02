@@ -27,33 +27,28 @@ import java.util.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class SQLMethodJavaTypeTest {
+  private SQLMethod method;
 
-    private SQLMethod method;
+  @BeforeEach
+  void setUp() {
+    method = new SQLMethodJavaType();
+  }
 
-    @BeforeEach
-    void setUp() {
-        method = new SQLMethodJavaType();
-    }
+  @Test
+  void testNulIsReturnedAsNull() {
+    Object result = method.execute(null, null, null, null, null);
+    assertThat(result).isNull();
+  }
 
-    @Test
-    void testNulIsReturnedAsNull() {
-        Object result = method.execute(null, null, null, null, null);
-        assertThat(result).isNull();
-    }
+  @Test
+  void testJavaClassName() {
+    final Object result = method.execute(null, null, null, "string", null);
+    assertThat(result).isEqualTo(String.class.getName());
+  }
 
-    @Test
-    void testJavaClassName() {
-
-        Object result = method.execute(null, null, null, "string", null);
-        assertThat(result).isEqualTo(String.class.getName());
-
-    }
-
-    @Test
-    void testJavaClassNameOfList() {
-
-        Object result = method.execute(null, null, null, new ArrayList<>(), null);
-        assertThat(result).isEqualTo(ArrayList.class.getName());
-
-    }
+  @Test
+  void testJavaClassNameOfList() {
+    final Object result = method.execute(null, null, null, new ArrayList<>(), null);
+    assertThat(result).isEqualTo(ArrayList.class.getName());
+  }
 }
