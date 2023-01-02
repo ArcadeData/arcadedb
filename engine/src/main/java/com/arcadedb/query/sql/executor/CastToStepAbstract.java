@@ -22,8 +22,6 @@ import com.arcadedb.database.Document;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 
-import java.util.*;
-
 /**
  * Created by luigidellaquila on 20/02/17.
  */

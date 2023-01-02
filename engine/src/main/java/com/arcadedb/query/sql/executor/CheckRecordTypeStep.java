@@ -22,8 +22,6 @@ import com.arcadedb.database.Document;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 
-import java.util.*;
-
 /**
  * Checks that all the records from the upstream are of a particular type (or subTypes). Throws PCommandExecutionException in case
  * it's not true

@@ -20,8 +20,6 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.TimeoutException;
 
-import java.util.*;
-
 /**
  * <p>
  * Checks if a record can be safely deleted (throws PCommandExecutionException in case).

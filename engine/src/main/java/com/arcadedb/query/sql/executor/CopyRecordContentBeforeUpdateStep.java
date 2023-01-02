@@ -23,8 +23,6 @@ import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 
-import java.util.*;
-
 /**
  * <p>Reads an upstream result set and returns a new result set that contains copies of the original OResult instances
  * </p>

@@ -24,8 +24,6 @@ import com.arcadedb.database.Record;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.Identifier;
 
-import java.util.*;
-
 /**
  * Assigns a class to documents coming from upstream
  *

@@ -21,8 +21,6 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.Projection;
 
-import java.util.*;
-
 /**
  * Created by luigidellaquila on 12/07/16.
  */
