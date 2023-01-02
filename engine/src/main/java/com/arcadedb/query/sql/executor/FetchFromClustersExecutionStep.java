@@ -30,8 +30,7 @@ public class FetchFromClustersExecutionStep extends AbstractExecutionStep {
 
   final   List<ExecutionStep> subSteps;
   private boolean             orderByRidAsc  = false;
-  private boolean orderByRidDesc = false;
-
+  private boolean             orderByRidDesc = false;
   ResultSet currentResultSet;
   int       currentStep = 0;
 
@@ -39,27 +38,26 @@ public class FetchFromClustersExecutionStep extends AbstractExecutionStep {
    * iterates over a class and its subTypes
    *
    * @param bucketIds the clusters
-   * @param ctx        the query context
-   * @param ridOrder   true to sort by RID asc, false to sort by RID desc, null for no sort.
+   * @param ctx       the query context
+   * @param ridOrder  true to sort by RID asc, false to sort by RID desc, null for no sort.
    */
-  public FetchFromClustersExecutionStep(int[] bucketIds, CommandContext ctx, Boolean ridOrder, boolean profilingEnabled) {
+  public FetchFromClustersExecutionStep(final int[] bucketIds, final CommandContext ctx, final Boolean ridOrder, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
 
-    if (Boolean.TRUE.equals(ridOrder)) {
+    if (Boolean.TRUE.equals(ridOrder))
       orderByRidAsc = true;
-    } else if (Boolean.FALSE.equals(ridOrder)) {
+    else if (Boolean.FALSE.equals(ridOrder))
       orderByRidDesc = true;
-    }
 
     subSteps = new ArrayList<>();
     sort(bucketIds);
     for (int bucketId : bucketIds) {
-      FetchFromClusterExecutionStep step = new FetchFromClusterExecutionStep(bucketId, ctx, profilingEnabled);
-      if (orderByRidAsc) {
+      final FetchFromClusterExecutionStep step = new FetchFromClusterExecutionStep(bucketId, ctx, profilingEnabled);
+      if (orderByRidAsc)
         step.setOrder(FetchFromClusterExecutionStep.ORDER_ASC);
-      } else if (orderByRidDesc) {
+      else if (orderByRidDesc)
         step.setOrder(FetchFromClusterExecutionStep.ORDER_DESC);
-      }
+
       subSteps.add(step);
     }
   }
@@ -88,43 +86,41 @@ public class FetchFromClustersExecutionStep extends AbstractExecutionStep {
       @Override
       public boolean hasNext() {
         while (true) {
-          if (totDispatched >= nRecords) {
+          if (totDispatched >= nRecords)
             return false;
-          }
+
           if (currentResultSet == null || !currentResultSet.hasNext()) {
-            if (currentStep >= subSteps.size()) {
+            if (currentStep >= subSteps.size())
               return false;
-            }
+
             currentResultSet = ((AbstractExecutionStep) subSteps.get(currentStep)).syncPull(ctx, nRecords);
             if (!currentResultSet.hasNext()) {
               currentResultSet = ((AbstractExecutionStep) subSteps.get(currentStep++)).syncPull(ctx, nRecords);
             }
           }
-          if (!currentResultSet.hasNext()) {
-            continue;
-          }
-          return true;
+
+          if (currentResultSet.hasNext())
+            return true;
         }
       }
 
       @Override
       public Result next() {
         while (true) {
-          if (totDispatched >= nRecords) {
+          if (totDispatched >= nRecords)
             throw new NoSuchElementException();
-          }
+
           if (currentResultSet == null || !currentResultSet.hasNext()) {
-            if (currentStep >= subSteps.size()) {
+            if (currentStep >= subSteps.size())
               throw new NoSuchElementException();
-            }
+
             currentResultSet = ((AbstractExecutionStep) subSteps.get(currentStep)).syncPull(ctx, nRecords);
-            if (!currentResultSet.hasNext()) {
+            if (!currentResultSet.hasNext())
               currentResultSet = ((AbstractExecutionStep) subSteps.get(currentStep++)).syncPull(ctx, nRecords);
-            }
           }
-          if (!currentResultSet.hasNext()) {
+          if (!currentResultSet.hasNext())
             continue;
-          }
+
           totDispatched++;
           return currentResultSet.next();
         }
@@ -167,11 +163,11 @@ public class FetchFromClustersExecutionStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    StringBuilder builder = new StringBuilder();
-    String ind = ExecutionStepInternal.getIndent(depth, indent);
+  public String prettyPrint(final int depth, final int indent) {
+    final StringBuilder builder = new StringBuilder();
+    final String ind = ExecutionStepInternal.getIndent(depth, indent);
     builder.append(ind);
-    builder.append("+ FETCH FROM BUCKETSS");
+    builder.append("+ FETCH FROM BUCKETS");
     if (profilingEnabled) {
       builder.append(" (").append(getCostFormatted()).append(")");
     }
@@ -198,14 +194,14 @@ public class FetchFromClustersExecutionStep extends AbstractExecutionStep {
 
   @Override
   public Result serialize() {
-    ResultInternal result = ExecutionStepInternal.basicSerialize(this);
+    final ResultInternal result = ExecutionStepInternal.basicSerialize(this);
     result.setProperty("orderByRidAsc", orderByRidAsc);
     result.setProperty("orderByRidDesc", orderByRidDesc);
     return result;
   }
 
   @Override
-  public void deserialize(Result fromResult) {
+  public void deserialize(final Result fromResult) {
     try {
       ExecutionStepInternal.basicDeserialize(fromResult, this);
       this.orderByRidAsc = fromResult.getProperty("orderByRidAsc");

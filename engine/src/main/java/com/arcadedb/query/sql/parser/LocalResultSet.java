@@ -29,13 +29,12 @@ import java.util.*;
  * Created by luigidellaquila on 07/07/16.
  */
 public class LocalResultSet implements ResultSet {
-
   private final InternalExecutionPlan executionPlan;
   private       ResultSet             lastFetch          = null;
   private       boolean               finished           = false;
   private       long                  totalExecutionTime = 0;
 
-  public LocalResultSet(InternalExecutionPlan executionPlan) {
+  public LocalResultSet(final InternalExecutionPlan executionPlan) {
     this.executionPlan = executionPlan;
     fetchNext();
   }
@@ -56,21 +55,19 @@ public class LocalResultSet implements ResultSet {
 
   @Override
   public boolean hasNext() {
-    if (finished) {
+    if (finished)
       return false;
-    }
-    if (lastFetch.hasNext()) {
+
+    if (lastFetch.hasNext())
       return true;
-    } else {
-      return fetchNext();
-    }
+    return fetchNext();
   }
 
   @Override
   public Result next() {
-    if (finished) {
+    if (finished)
       throw new IllegalStateException();
-    }
+
     if (!lastFetch.hasNext()) {
       if (!fetchNext()) {
         throw new IllegalStateException();
@@ -111,5 +108,4 @@ public class LocalResultSet implements ResultSet {
   public Map<String, Long> getQueryStats() {
     return new HashMap<>();//TODO
   }
-
 }

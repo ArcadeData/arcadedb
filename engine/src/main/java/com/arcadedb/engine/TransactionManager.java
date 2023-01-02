@@ -337,13 +337,12 @@ public class TransactionManager {
         changed = true;
         LogManager.instance().log(this, Level.FINE, "  - updating page %s v%d", null, pageId, modifiedPage.version);
 
+      } catch (ClosedByInterruptException e) {
+        // NORMAL EXCEPTION IN CASE THE CONNECTION/THREAD IS CLOSED (=INTERRUPTED)
+        Thread.currentThread().interrupt();
+        throw new WALException("Cannot apply changes to page " + pageId, e);
       } catch (IOException e) {
-        if (e instanceof ClosedByInterruptException)
-          // NORMAL EXCEPTION IN CASE THE CONNECTION/THREAD IS CLOSED (=INTERRUPTED)
-          Thread.currentThread().interrupt();
-        else
-          LogManager.instance().log(this, Level.SEVERE, "Error on applying changes to page %s", e, pageId);
-
+        LogManager.instance().log(this, Level.SEVERE, "Error on applying changes to page %s", e, pageId);
         throw new WALException("Cannot apply changes to page " + pageId, e);
       }
     }

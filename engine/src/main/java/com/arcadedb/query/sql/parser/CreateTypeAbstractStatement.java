@@ -103,7 +103,7 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
   protected void checkSuperTypes(Schema schema, CommandContext ctx) {
     if (supertypes != null) {
       for (Identifier superType : supertypes) {
-        if (!schema.existsType(superType.value)) {
+        if (!schema.existsType(superType.getStringValue())) {
           throw new CommandExecutionException("Supertype '" + superType + "' not found");
         }
       }

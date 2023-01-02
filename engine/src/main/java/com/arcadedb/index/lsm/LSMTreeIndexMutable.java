@@ -50,7 +50,6 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
   public static final int                   CURRENT_VERSION     = 1;
   public static final String                UNIQUE_INDEX_EXT    = "umtidx";
   public static final String                NOTUNIQUE_INDEX_EXT = "numtidx";
-  private             int                   subIndexFileId      = -1;
   private             LSMTreeIndexCompacted subIndex            = null;
   private final       AtomicLong            statsAdjacentSteps  = new AtomicLong();
   private             int                   minPagesToScheduleACompaction;
@@ -105,7 +104,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
       // TODO: COUNT THE MUTABLE PAGES FROM THE TAIL BACK TO THE HEAD
       currentMutablePages = 1;
 
-      subIndexFileId = currentPage.readInt(pos);
+      final int subIndexFileId = currentPage.readInt(pos);
 
       pos += INT_SERIALIZED_SIZE;
 
@@ -483,8 +482,9 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
       setValuesFreePosition(currentPage, keyValueFreePosition);
 
       if (LogManager.instance().isDebugEnabled())
-        LogManager.instance().log(this, Level.FINE, "Put entry %s=%s in index '%s' (page=%s countInPage=%d newPage=%s thread=%d)",  Arrays.toString(keys),
-            Arrays.toString(rids), name, currentPage.getPageId(), count + 1, newPage, Thread.currentThread().getId());
+        LogManager.instance()
+            .log(this, Level.FINE, "Put entry %s=%s in index '%s' (page=%s countInPage=%d newPage=%s thread=%d)", Arrays.toString(keys), Arrays.toString(rids),
+                name, currentPage.getPageId(), count + 1, newPage, Thread.currentThread().getId());
 
     } catch (IOException e) {
       throw new DatabaseOperationException(

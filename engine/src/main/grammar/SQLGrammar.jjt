@@ -887,11 +887,9 @@ Identifier Identifier():
   quotedToken = <QUOTED_IDENTIFIER>
 ) {
   if(token!=null){
-    jjtThis.value = token.image;
+    jjtThis.setStringValue( token.image );
   }else{
-    jjtThis.quoted = true;
-    jjtThis.value = quotedToken.image;
-    jjtThis.value = jjtThis.value.substring(1, jjtThis.value.length() - 1);
+    jjtThis.setQuotedStringValue( quotedToken.image );
   }
 
   return jjtThis;
@@ -3305,7 +3303,6 @@ MatchFilterItem MatchFilterItem():
 MatchPathItem OutPathItem():
 { Identifier edgeName = null; }
 {
-
     (
       (
         <MINUS>
@@ -3320,8 +3317,7 @@ MatchPathItem OutPathItem():
 
   {
    jjtThis.method = new MethodCall(-1);
-   jjtThis.method.methodName = new Identifier(-1);
-   jjtThis.method.methodName.value = "out";
+   jjtThis.method.methodName = new Identifier("out");
    if (edgeName != null) {
      Expression exp = new Expression(-1);
      BaseExpression sub = new BaseExpression(edgeName.getStringValue());
@@ -3335,7 +3331,6 @@ MatchPathItem OutPathItem():
 MatchPathItem InPathItem():
 { Identifier edgeName = null; }
 {
-
     <LT>
     (
       (
@@ -3350,8 +3345,7 @@ MatchPathItem InPathItem():
 
   {
    jjtThis.method = new MethodCall(-1);
-   jjtThis.method.methodName = new Identifier(-1);
-   jjtThis.method.methodName.value = "in";
+   jjtThis.method.methodName = new Identifier("in");
    if (edgeName != null) {
      Expression exp = new Expression(-1);
      BaseExpression sub = new BaseExpression(edgeName.getStringValue());
@@ -3365,7 +3359,6 @@ MatchPathItem InPathItem():
 MatchPathItem BothPathItem():
 { Identifier edgeName = null; }
 {
-
     (
       (
         <MINUS>
@@ -3379,8 +3372,7 @@ MatchPathItem BothPathItem():
 
   {
    jjtThis.method = new MethodCall(-1);
-   jjtThis.method.methodName = new Identifier(-1);
-   jjtThis.method.methodName.value = "both";
+   jjtThis.method.methodName = new Identifier("both");
    if (edgeName != null) {
      Expression exp = new Expression(-1);
      BaseExpression sub = new BaseExpression(edgeName.getStringValue());
@@ -3395,7 +3387,6 @@ MatchPathItem BothPathItem():
 MatchPathItem OutPathItemOpt():
 { Identifier edgeName = null; }
 {
-
     (
       (
         <MINUS>
@@ -3410,8 +3401,7 @@ MatchPathItem OutPathItemOpt():
 
   {
    jjtThis.method = new MethodCall(-1);
-   jjtThis.method.methodName = new Identifier(-1);
-   jjtThis.method.methodName.value = "out";
+   jjtThis.method.methodName = new Identifier("out");
    if (edgeName != null) {
      Expression exp = new Expression(-1);
      BaseExpression sub = new BaseExpression(edgeName.getStringValue());
@@ -3425,7 +3415,6 @@ MatchPathItem OutPathItemOpt():
 MatchPathItem InPathItemOpt():
 { Identifier edgeName = null; }
 {
-
     <LT>
     (
       (
@@ -3440,8 +3429,7 @@ MatchPathItem InPathItemOpt():
 
   {
    jjtThis.method = new MethodCall(-1);
-   jjtThis.method.methodName = new Identifier(-1);
-   jjtThis.method.methodName.value = "in";
+   jjtThis.method.methodName = new Identifier("in");
    if(edgeName!=null){
      Expression exp = new Expression(-1);
      BaseExpression sub = new BaseExpression(edgeName.getStringValue());
@@ -3455,7 +3443,6 @@ MatchPathItem InPathItemOpt():
 MatchPathItem BothPathItemOpt():
 { Identifier edgeName = null; }
 {
-
     (
       (
         <MINUS>
@@ -3469,8 +3456,7 @@ MatchPathItem BothPathItemOpt():
 
   {
    jjtThis.method = new MethodCall(-1);
-   jjtThis.method.methodName = new Identifier(-1);
-   jjtThis.method.methodName.value = "both";
+   jjtThis.method.methodName = new Identifier("both");
    if (edgeName != null) {
      Expression exp = new Expression(-1);
      BaseExpression sub = new BaseExpression(edgeName.getStringValue());

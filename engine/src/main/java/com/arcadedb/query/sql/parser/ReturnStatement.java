@@ -42,7 +42,7 @@ public class ReturnStatement extends SimpleExecStatement {
   }
 
   @Override
-  public ResultSet executeSimple(CommandContext ctx) {
+  public ResultSet executeSimple(final CommandContext ctx) {
     final InternalResultSet rs = new InternalResultSet();
 
     final Object result = expression == null ? null : expression.execute((Result) null, ctx);

@@ -27,10 +27,10 @@ public class EdgeToVertexIterator implements ResettableIterator<Vertex> {
   private final EdgeIterator     edgeIterator;
   private final Vertex.DIRECTION direction;
 
-  public EdgeToVertexIterator(EdgeIterator iterator, Vertex.DIRECTION direction) {
-    if (direction == Vertex.DIRECTION.BOTH) {
+  public EdgeToVertexIterator(final EdgeIterator iterator, final Vertex.DIRECTION direction) {
+    if (direction == Vertex.DIRECTION.BOTH)
       throw new IllegalArgumentException("edge to vertex iterator does not support BOTH as direction");
-    }
+
     this.edgeIterator = iterator;
     this.direction = direction;
   }

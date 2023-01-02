@@ -63,12 +63,12 @@ public class FetchEdgesToVerticesStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        if (!hasNext()) {
+        if (!hasNext())
           throw new NoSuchElementException();
-        }
-        Edge edge = nextEdge;
+
+        final Edge edge = nextEdge;
         fetchNextEdge();
-        ResultInternal result = new ResultInternal();
+        final ResultInternal result = new ResultInternal();
         result.setElement(edge);
         currentBatch++;
         return result;
@@ -139,27 +139,27 @@ public class FetchEdgesToVerticesStep extends AbstractExecutionStep {
           return;
         }
       }
-      Edge edge = this.currentToEdgesIter.next();
-      if (matchesClass(edge) && matchesCluster(edge)) {
+      final Edge edge = this.currentToEdgesIter.next();
+      if (matchesType(edge) && matchesBucket(edge)) {
         this.nextEdge = edge;
         return;
       }
     }
   }
 
-  private boolean matchesCluster(Edge edge) {
-    if (targetBucket == null) {
+  private boolean matchesBucket(Edge edge) {
+    if (targetBucket == null)
       return true;
-    }
+
     int bucketId = edge.getIdentity().getBucketId();
-    String bucketName = ctx.getDatabase().getSchema().getBucketById(bucketId).getName();
+    final String bucketName = ctx.getDatabase().getSchema().getBucketById(bucketId).getName();
     return bucketName.equals(targetBucket.getStringValue());
   }
 
-  private boolean matchesClass(Edge edge) {
-    if (targetType == null) {
+  private boolean matchesType(final Edge edge) {
+    if (targetType == null)
       return true;
-    }
+
     return edge.getTypeName().equals(targetType.getStringValue());
   }
 
