@@ -38,6 +38,7 @@ import org.apache.commons.configuration2.Configuration;
 import org.apache.tinkerpop.gremlin.arcadedb.structure.io.ArcadeIoRegistry;
 import org.apache.tinkerpop.gremlin.groovy.engine.GremlinExecutor;
 import org.apache.tinkerpop.gremlin.jsr223.ConcurrentBindings;
+import org.apache.tinkerpop.gremlin.jsr223.ImportGremlinPlugin;
 import org.apache.tinkerpop.gremlin.process.computer.GraphComputer;
 import org.apache.tinkerpop.gremlin.process.traversal.TraversalStrategies;
 import org.apache.tinkerpop.gremlin.structure.Direction;
@@ -430,5 +431,13 @@ public class ArcadeGraph implements Graph, Closeable {
       builder.evaluationTimeout(configuration.getLong(CONFIG_EVALUATION_TIMEOUT));
 
     gremlinExecutor = builder.create();
+
+    // REGISTER CYPHER CUSTOM FUNCTIONS
+    final ImportGremlinPlugin.Builder importPlugin = ImportGremlinPlugin.build();
+    importPlugin.classImports(
+        new Class[] { java.lang.Math.class, org.opencypher.gremlin.traversal.CustomFunctions.class, org.opencypher.gremlin.traversal.CustomPredicate.class });
+    importPlugin.methodImports(
+        List.of("java.lang.Math#*", "org.opencypher.gremlin.traversal.CustomPredicate#*", "org.opencypher.gremlin.traversal.CustomFunctions#*"));
+    gremlinExecutor.getScriptEngineManager().addPlugin(importPlugin.create());
   }
 }
