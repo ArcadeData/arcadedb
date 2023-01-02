@@ -25,8 +25,6 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.PaginatedFile;
-import com.arcadedb.exception.ArcadeDBException;
-import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.MultiValue;
@@ -341,7 +339,7 @@ public class Console {
 
   private void executeConnect(final String url) {
     checkDatabaseIsConnected();
-    checkIsEmpty("URL",url);
+    checkIsEmpty("URL", url);
 
     String databaseName;
 
@@ -365,13 +363,13 @@ public class Console {
       databaseName = localDatabase.getName();
     }
 
-    outputLine("Database '%s' connected",databaseName);
+    outputLine("Database '%s' connected", databaseName);
     flushOutput();
   }
 
   private void executeCreateDatabase(final String url) {
     checkDatabaseIsConnected();
-    checkIsEmpty("URL",url);
+    checkIsEmpty("URL", url);
 
     String databaseName;
 
@@ -391,7 +389,7 @@ public class Console {
       databaseName = localDatabase.getName();
     }
 
-    outputLine("Database '%s' created",databaseName);
+    outputLine("Database '%s' created", databaseName);
     flushOutput();
   }
 
@@ -408,8 +406,8 @@ public class Console {
 
     final String userName = params.substring(0, identifiedByPos).trim();
 
-    checkIsEmpty("User name",userName);
-    checkHasSpaces("User name",userName);
+    checkIsEmpty("User name", userName);
+    checkHasSpaces("User name", userName);
 
     final String password;
     final List<String> databases;
@@ -424,19 +422,19 @@ public class Console {
       databases = new ArrayList<>();
     }
 
-    checkIsEmpty("User password",password);
-    checkHasSpaces("User password",password);
+    checkIsEmpty("User password", password);
+    checkHasSpaces("User password", password);
 
     remoteDatabase.createUser(userName, password, databases);
 
-    outputLine("User '%s' created (on the server)",userName);
+    outputLine("User '%s' created (on the server)", userName);
     flushOutput();
   }
 
   private void executeDropDatabase(final String url) {
 
     checkDatabaseIsConnected();
-    checkIsEmpty("URL",url);
+    checkIsEmpty("URL", url);
 
     String databaseName;
 
@@ -459,14 +457,14 @@ public class Console {
     remoteDatabase = null;
     localDatabase = null;
 
-    outputLine("Database '%s' dropped",databaseName);
+    outputLine("Database '%s' dropped", databaseName);
     flushOutput();
   }
 
   private void executeDropUser(final String userName) {
     checkRemoteDatabaseIsConnected();
-    checkIsEmpty("User name",userName);
-    checkHasSpaces("User name",userName);
+    checkIsEmpty("User name", userName);
+    checkHasSpaces("User name", userName);
 
     remoteDatabase.dropUser(userName);
 
@@ -583,7 +581,7 @@ public class Console {
   }
 
   private void executeLoad(final String fileName) throws IOException {
-    checkIsEmpty("File name",fileName);
+    checkIsEmpty("File name", fileName);
 
     final File file = new File(fileName);
     if (!file.exists())
@@ -718,13 +716,9 @@ public class Console {
       throw new ConsoleException(key + " is empty");
   }
 
-  private void checkHasSpaces(final String key,final String value) {
+  private void checkHasSpaces(final String key, final String value) {
     if (value.indexOf(" ") > -1)
       throw new ConsoleException(key + " cannot have spaces");
-
-  private void checkUrlIsEmpty(final String url) {
-    if (url.isEmpty())
-      throw new ConsoleException("URL missing");
   }
 
   private String parseLocalUrl(final String url) {
