@@ -55,6 +55,31 @@ public class ConsoleTest {
   }
 
   @Test
+  public void testNull() throws IOException {
+    Assertions.assertTrue(console.parse(null, false));
+  }
+
+  @Test
+  public void testEmpty() throws IOException {
+    Assertions.assertTrue(console.parse("", false));
+  }
+
+  @Test
+  public void testEmpty2() throws IOException {
+    Assertions.assertTrue(console.parse(" ", false));
+  }
+
+  @Test
+  public void testEmpty3() throws IOException {
+    Assertions.assertTrue(console.parse(";", false));
+  }
+
+  @Test
+  public void testComment() throws IOException {
+    Assertions.assertTrue(console.parse("-- This is a comment;", false));
+  }
+
+  @Test
   public void testListDatabases() throws IOException {
     Assertions.assertTrue(console.parse("list databases;", false));
   }

@@ -184,19 +184,24 @@ public class Console {
 
       final String lineTrimmed = line.trim();
 
-      if (line.isEmpty())
+      if (lineTrimmed.isEmpty() || lineTrimmed.startsWith("--"))
         return true;
 
       final String lineLowerCase = lineTrimmed.toLowerCase();
 
-      if (lineLowerCase.startsWith("--"))
-        return true;
+      if (lineLowerCase.equals("quit") || lineLowerCase.equals("exit")) {
+        executeClose();
+        return false;
+      } else if (lineLowerCase.equals("help") || line.equals("?"))
+        executeHelp();
       else if (lineLowerCase.startsWith("begin"))
         executeBegin();
       else if (lineLowerCase.startsWith("close"))
         executeClose();
       else if (lineLowerCase.startsWith("commit"))
         executeCommit();
+      else if (lineLowerCase.startsWith("rollback"))
+        executeRollback();
       else if (lineLowerCase.startsWith("list databases"))
         executeListDatabases(lineTrimmed.substring("list databases".length()).trim());
       else if (lineLowerCase.startsWith("connect "))
@@ -209,24 +214,16 @@ public class Console {
         executeDropDatabase(lineTrimmed.substring("drop database".length()).trim());
       else if (lineLowerCase.startsWith("drop user "))
         executeDropUser(lineTrimmed.substring("drop user".length()).trim());
-      else if (lineLowerCase.equals("help") || line.equals("?"))
-        executeHelp();
       else if (lineLowerCase.startsWith("info"))
         executeInfo(lineTrimmed.substring("info".length()).trim());
       else if (lineLowerCase.startsWith("load"))
         executeLoad(lineTrimmed.substring("load".length()).trim());
-      else if (lineLowerCase.equals("quit") || lineLowerCase.equals("exit")) {
-        executeClose();
-        return false;
-      } else if (lineLowerCase.startsWith("pwd"))
-        outputLine("Current directory: " + new File(".").getAbsolutePath());
-      else if (lineLowerCase.startsWith("rollback"))
-        executeRollback();
       else if (lineLowerCase.startsWith("set "))
         executeSet(lineTrimmed.substring("set".length()).trim());
-      else {
+      else if (lineLowerCase.startsWith("pwd"))
+        outputLine("Current directory: " + new File(".").getAbsolutePath());
+      else
         executeSQL(lineTrimmed);
-      }
 
       return true;
     } catch (IOException | RuntimeException e) {
@@ -415,9 +412,6 @@ public class Console {
     checkIsEmpty("User name",userName);
     checkHasSpaces("User name",userName);
 
-    if (userName.indexOf(" ") > -1)
-      throw new CommandSQLParsingException("User name cannot have spaces");
-
     final String password;
     final List<String> databases;
 
@@ -434,9 +428,6 @@ public class Console {
     checkIsEmpty("User password",password);
     checkHasSpaces("User password",password);
 
-    if (password.indexOf(" ") > -1)
-      throw new CommandSQLParsingException("User password cannot have spaces");
-
     remoteDatabase.createUser(userName, password, databases);
 
     outputLine("User '%s' created (on the server)",userName);
@@ -446,7 +437,7 @@ public class Console {
   private void executeDropDatabase(final String url) {
 
     checkDatabaseIsConnected();
-    checkIsEmpty("UR",url);
+    checkIsEmpty("URL",url);
 
     String databaseName;
 
@@ -607,7 +598,12 @@ public class Console {
 
   public boolean parse(final String line, final boolean printCommand) throws IOException {
 
-    for (String w : parser.parse(line, 0).words()) {
+    final ParsedLine parsedLine = parser.parse(line, 0);
+
+    if (parsedLine == null)
+      return true;
+
+    for (String w : parsedLine.words()) {
       if (printCommand)
         output(getPrompt() + w);
 
@@ -714,13 +710,12 @@ public class Console {
   }
 
   private void checkDatabaseIsLocked(final String url) {
-
     if (new File(url + "/database.lck").exists())
       throw new ConsoleException("Database appears locked by server");
   }
 
   private void checkIsEmpty(final String key, final String value) {
-    if(value.isEmpty())
+    if (value.isEmpty())
       throw new ConsoleException(key + " is empty");
   }
 
