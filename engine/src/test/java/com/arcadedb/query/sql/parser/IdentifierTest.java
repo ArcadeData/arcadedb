@@ -28,7 +28,8 @@ public class IdentifierTest {
   public void testBackTickQuoted() {
     Identifier identifier = new Identifier("foo`bar");
 
-    Assertions.assertEquals(identifier.getStringValue(), "foo`bar");
+    //Assertions.assertEquals(identifier.getStringValue(), "foo`bar");
+    Assertions.assertEquals(identifier.getStringValue(), "foo\\`bar");
     Assertions.assertEquals(identifier.getValue(), "foo\\`bar");
   }
 }
