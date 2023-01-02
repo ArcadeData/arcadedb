@@ -3,8 +3,13 @@ function renderTable(){
     return;
 
   let tableTruncateColumns = $("#tableTruncateColumns").prop("checked");
-  if( tableTruncateColumns == null )
-    tableTruncateColumns = globalStorageLoad( "table.truncateColumns" ) == "true";
+  if( tableTruncateColumns == null ){
+    let saved = globalStorageLoad( "table.truncateColumns" );
+    if( saved == null )
+      tableTruncateColumns = true; // DEFAULT
+    else
+      tableTruncateColumns = saved;
+  }
   let tableTruncateColumnsChecked = tableTruncateColumns;
   if( tableTruncateColumnsChecked == true )
     tableTruncateColumnsChecked = "checked";
@@ -12,8 +17,13 @@ function renderTable(){
     tableTruncateColumnsChecked = "";
 
   let tableFitInPage = $("#tableFitInPage").prop("checked");
-  if( tableFitInPage == null )
-    tableFitInPage = globalStorageLoad( "table.fitInPage" ) == "true";
+  if( tableFitInPage == null ) {
+    let saved = globalStorageLoad( "table.fitInPage" );
+    if( saved == null )
+      tableFitInPage = true; // DEFAULT
+    else
+      tableFitInPage = saved;
+  }
   let tableFitInPageChecked = tableFitInPage;
   if( tableFitInPageChecked == true )
     tableFitInPageChecked = "checked";
