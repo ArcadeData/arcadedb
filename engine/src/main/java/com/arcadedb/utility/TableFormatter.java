@@ -117,23 +117,23 @@ public class TableFormatter {
 
     if (columnSorting != null) {
       rows.sort((Comparator<Object>) (o1, o2) -> {
-          final Document doc1 = (Document) ((Identifiable) o1).getRecord();
-          final Document doc2 = (Document) ((Identifiable) o2).getRecord();
-          final Object value1 = doc1.get(columnSorting.getFirst());
-          final Object value2 = doc2.get(columnSorting.getFirst());
-          final boolean ascending = columnSorting.getSecond();
+        final Document doc1 = (Document) ((Identifiable) o1).getRecord();
+        final Document doc2 = (Document) ((Identifiable) o2).getRecord();
+        final Object value1 = doc1.get(columnSorting.getFirst());
+        final Object value2 = doc2.get(columnSorting.getFirst());
+        final boolean ascending = columnSorting.getSecond();
 
-          final int result;
-          if (value2 == null)
-              result = 1;
-          else if (value1 == null)
-              result = 0;
-          else if (value1 instanceof Comparable)
-              result = BinaryComparator.compareTo(value1, value2);
-          else
-              result = BinaryComparator.compareTo(value1.toString(), value2.toString());
+        final int result;
+        if (value2 == null)
+          result = 1;
+        else if (value1 == null)
+          result = 0;
+        else if (value1 instanceof Comparable)
+          result = BinaryComparator.compareTo(value1, value2);
+        else
+          result = BinaryComparator.compareTo(value1.toString(), value2.toString());
 
-          return ascending ? result : result * -1;
+        return ascending ? result : result * -1;
       });
     }
 
@@ -347,7 +347,9 @@ public class TableFormatter {
   }
 
   public static Object getPrettyFieldValue(Object value, final int multiValueMaxEntries) {
-    if (value instanceof MultiIterator<?>)
+    if (value == null)
+      value = "<null>";
+    else if (value instanceof MultiIterator<?>)
       value = getPrettyFieldMultiValue(((MultiIterator<?>) value).iterator(), multiValueMaxEntries);
     else if (value instanceof Iterator)
       value = getPrettyFieldMultiValue((Iterator<?>) value, multiValueMaxEntries);

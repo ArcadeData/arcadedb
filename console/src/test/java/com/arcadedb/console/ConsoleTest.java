@@ -196,7 +196,6 @@ public class ConsoleTest {
     Assertions.assertTrue(console.parse("CREATE PROPERTY v.d DOUBLE", false));
     Assertions.assertTrue(console.parse("CREATE PROPERTY v.da DATETIME", false));
 
-
     final StringBuilder buffer = new StringBuilder();
     console.setOutput(output -> buffer.append(output));
     Assertions.assertTrue(console.parse("CREATE VERTEX v SET s=\"abc\", i=1, b=true, sh=2, d=3.5, da=\"2022-12-20 18:00\"", false));
@@ -258,6 +257,27 @@ public class ConsoleTest {
         Assertions.assertEquals(1993, e.get("since"));
         Assertions.assertEquals("P5M1DT12H", e.get("bffSince"));
       }
+    }
+  }
+
+  @Test
+  public void testNullValues() throws IOException {
+    Assertions.assertTrue(console.parse("connect " + DB_NAME, false));
+    Assertions.assertTrue(console.parse("create document type Person", false));
+    Assertions.assertTrue(console.parse("insert into Person set name = 'Jay', lastname='Miner', nothing = null", false));
+    Assertions.assertTrue(console.parse("insert into Person set name = 'Thom', lastname='Yorke', nothing = 'something'", false));
+
+    {
+      final StringBuilder buffer = new StringBuilder();
+      console.setOutput(output -> buffer.append(output));
+      Assertions.assertTrue(console.parse("select from Person where nothing is null", false));
+      Assertions.assertTrue(buffer.toString().contains("<null>"));
+    }
+    {
+      final StringBuilder buffer = new StringBuilder();
+      console.setOutput(output -> buffer.append(output));
+      Assertions.assertTrue(console.parse("select name, lastname, nothing from Person", false));
+      Assertions.assertTrue(buffer.toString().contains("<null>"));
     }
   }
 }
