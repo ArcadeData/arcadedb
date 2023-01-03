@@ -31,16 +31,6 @@ public class DefaultServerSocketFactory extends ServerSocketFactory {
   }
 
   @Override
-  public ServerSocket createServerSocket(final int port) throws IOException {
-    return new ServerSocket(port);
-  }
-
-  @Override
-  public ServerSocket createServerSocket(final int port, final int backlog) throws IOException {
-    return new ServerSocket(port, backlog);
-  }
-
-  @Override
   public ServerSocket createServerSocket(final int port, final int backlog, final InetAddress ifAddress) throws IOException {
     return new ServerSocket(port, backlog, ifAddress);
   }

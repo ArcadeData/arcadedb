@@ -59,7 +59,6 @@ public class RandomTestSingleThread extends TestHelper {
 
       for (int i = 0; i < CYCLES; ++i) {
         try {
-
           final int op = rnd.nextInt(6);
 
           LogManager.instance().log(this, Level.INFO, "Operation %d %d/%d", op, i, CYCLES);
@@ -82,6 +81,8 @@ public class RandomTestSingleThread extends TestHelper {
             database.commit();
             database.begin();
             break;
+          default:
+            LogManager.instance().log(this, Level.INFO, "Operation " + op + " not supported");
           }
 
         } catch (final Exception e) {

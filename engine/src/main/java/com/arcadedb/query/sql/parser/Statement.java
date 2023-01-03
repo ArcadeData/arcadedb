@@ -54,6 +54,7 @@ public class Statement extends SimpleNode {
   }
 
   public void validate() throws CommandSQLParsingException {
+    // NO VALIDATION BY DEFAULT
   }
 
   @Override

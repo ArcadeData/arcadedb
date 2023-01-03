@@ -108,7 +108,8 @@ public class UpdateOperations extends SimpleNode {
         first = false;
       }
       break;
-
+    default:
+      throw new IllegalArgumentException("Type " + type + " not supported");
     }
   }
 

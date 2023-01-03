@@ -45,15 +45,14 @@ import java.util.concurrent.*;
 import java.util.logging.*;
 
 public class RedisNetworkExecutor extends Thread {
-  private static final String              DEFAULT_BUCKET = "default";
-  private final        ArcadeDBServer      server;
-  private final        ChannelBinaryServer channel;
-  private volatile     boolean             shutdown       = false;
-  private              int                 posInBuffer    = 0;
-  private final        StringBuilder       value          = new StringBuilder();
-  private final        byte[]              buffer         = new byte[32 * 1024];
-  private              int                 bytesRead      = 0;
-  private final        Map<String, Object> defaultBucket  = new ConcurrentHashMap<>();
+  private final    ArcadeDBServer      server;
+  private final    ChannelBinaryServer channel;
+  private volatile boolean             shutdown      = false;
+  private          int                 posInBuffer   = 0;
+  private final    StringBuilder       value         = new StringBuilder();
+  private final    byte[]              buffer        = new byte[32 * 1024];
+  private          int                 bytesRead     = 0;
+  private final    Map<String, Object> defaultBucket = new ConcurrentHashMap<>();
 
   public RedisNetworkExecutor(final ArcadeDBServer server, final Socket socket) throws IOException {
     setName(Constants.PRODUCT + "-redis/" + socket.getInetAddress());

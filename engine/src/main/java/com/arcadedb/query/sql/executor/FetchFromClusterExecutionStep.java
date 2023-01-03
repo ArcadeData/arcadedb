@@ -19,19 +19,9 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Document;
-import com.arcadedb.database.Identifiable;
-import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
-import com.arcadedb.query.sql.parser.BinaryCompareOperator;
-import com.arcadedb.query.sql.parser.BinaryCondition;
-import com.arcadedb.query.sql.parser.BooleanExpression;
-import com.arcadedb.query.sql.parser.GeOperator;
-import com.arcadedb.query.sql.parser.GtOperator;
-import com.arcadedb.query.sql.parser.LeOperator;
-import com.arcadedb.query.sql.parser.LtOperator;
-import com.arcadedb.query.sql.parser.Rid;
 
 import java.util.*;
 
@@ -153,68 +143,67 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
         cost += (System.nanoTime() - begin);
       }
     }
-
   }
 
-  private long calculateMinClusterPosition() {
-    if (queryPlanning == null || queryPlanning.ridRangeConditions == null || queryPlanning.ridRangeConditions.isEmpty()) {
-      return -1;
-    }
-
-    long maxValue = -1;
-
-    for (final BooleanExpression ridRangeCondition : queryPlanning.ridRangeConditions.getSubBlocks()) {
-      if (ridRangeCondition instanceof BinaryCondition) {
-        final BinaryCondition cond = (BinaryCondition) ridRangeCondition;
-        final Rid condRid = cond.getRight().getRid();
-        final BinaryCompareOperator operator = cond.getOperator();
-        if (condRid != null) {
-          if (condRid.getBucket().getValue().intValue() != this.bucketId) {
-            continue;
-          }
-          if (operator instanceof GtOperator || operator instanceof GeOperator) {
-            maxValue = Math.max(maxValue, condRid.getPosition().getValue().longValue());
-          }
-        }
-      }
-    }
-
-    return maxValue;
-  }
-
-  private long calculateMaxClusterPosition() {
-    if (queryPlanning == null || queryPlanning.ridRangeConditions == null || queryPlanning.ridRangeConditions.isEmpty()) {
-      return -1;
-    }
-    long minValue = Long.MAX_VALUE;
-
-    for (final BooleanExpression ridRangeCondition : queryPlanning.ridRangeConditions.getSubBlocks()) {
-      if (ridRangeCondition instanceof BinaryCondition) {
-        final BinaryCondition cond = (BinaryCondition) ridRangeCondition;
-        final RID conditionRid;
-
-        final Object obj;
-        if (((BinaryCondition) ridRangeCondition).getRight().getRid() != null) {
-          obj = ((BinaryCondition) ridRangeCondition).getRight().getRid().toRecordId((Result) null, ctx);
-        } else {
-          obj = ((BinaryCondition) ridRangeCondition).getRight().execute((Result) null, ctx);
-        }
-
-        conditionRid = ((Identifiable) obj).getIdentity();
-        final BinaryCompareOperator operator = cond.getOperator();
-        if (conditionRid != null) {
-          if (conditionRid.getBucketId() != this.bucketId) {
-            continue;
-          }
-          if (operator instanceof LtOperator || operator instanceof LeOperator) {
-            minValue = Math.min(minValue, conditionRid.getPosition());
-          }
-        }
-      }
-    }
-
-    return minValue == Long.MAX_VALUE ? -1 : minValue;
-  }
+//  private long calculateMinClusterPosition() {
+//    if (queryPlanning == null || queryPlanning.ridRangeConditions == null || queryPlanning.ridRangeConditions.isEmpty()) {
+//      return -1;
+//    }
+//
+//    long maxValue = -1;
+//
+//    for (final BooleanExpression ridRangeCondition : queryPlanning.ridRangeConditions.getSubBlocks()) {
+//      if (ridRangeCondition instanceof BinaryCondition) {
+//        final BinaryCondition cond = (BinaryCondition) ridRangeCondition;
+//        final Rid condRid = cond.getRight().getRid();
+//        final BinaryCompareOperator operator = cond.getOperator();
+//        if (condRid != null) {
+//          if (condRid.getBucket().getValue().intValue() != this.bucketId) {
+//            continue;
+//          }
+//          if (operator instanceof GtOperator || operator instanceof GeOperator) {
+//            maxValue = Math.max(maxValue, condRid.getPosition().getValue().longValue());
+//          }
+//        }
+//      }
+//    }
+//
+//    return maxValue;
+//  }
+//
+//  private long calculateMaxClusterPosition() {
+//    if (queryPlanning == null || queryPlanning.ridRangeConditions == null || queryPlanning.ridRangeConditions.isEmpty()) {
+//      return -1;
+//    }
+//    long minValue = Long.MAX_VALUE;
+//
+//    for (final BooleanExpression ridRangeCondition : queryPlanning.ridRangeConditions.getSubBlocks()) {
+//      if (ridRangeCondition instanceof BinaryCondition) {
+//        final BinaryCondition cond = (BinaryCondition) ridRangeCondition;
+//        final RID conditionRid;
+//
+//        final Object obj;
+//        if (((BinaryCondition) ridRangeCondition).getRight().getRid() != null) {
+//          obj = ((BinaryCondition) ridRangeCondition).getRight().getRid().toRecordId((Result) null, ctx);
+//        } else {
+//          obj = ((BinaryCondition) ridRangeCondition).getRight().execute((Result) null, ctx);
+//        }
+//
+//        conditionRid = ((Identifiable) obj).getIdentity();
+//        final BinaryCompareOperator operator = cond.getOperator();
+//        if (conditionRid != null) {
+//          if (conditionRid.getBucketId() != this.bucketId) {
+//            continue;
+//          }
+//          if (operator instanceof LtOperator || operator instanceof LeOperator) {
+//            minValue = Math.min(minValue, conditionRid.getPosition());
+//          }
+//        }
+//      }
+//    }
+//
+//    return minValue == Long.MAX_VALUE ? -1 : minValue;
+//  }
 
   @Override
   public String prettyPrint(final int depth, final int indent) {

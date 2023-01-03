@@ -62,20 +62,19 @@ public class Projection extends SimpleNode {
 
   @Override
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
-    if (items == null) {
+    if (items == null)
       return;
-    }
+
     boolean first = true;
 
-    if (distinct) {
+    if (distinct)
       builder.append("DISTINCT ");
-    }
+
     // print * before
     for (final ProjectionItem item : items) {
       if (item.isAll()) {
-        if (!first) {
+        if (!first)
           builder.append(", ");
-        }
 
         item.toString(params, builder);
         first = false;
@@ -85,9 +84,8 @@ public class Projection extends SimpleNode {
     // and then the rest of the projections
     for (final ProjectionItem item : items) {
       if (!item.isAll()) {
-        if (!first) {
+        if (!first)
           builder.append(", ");
-        }
 
         item.toString(params, builder);
         first = false;
@@ -96,20 +94,18 @@ public class Projection extends SimpleNode {
   }
 
   public Result calculateSingle(final CommandContext iContext, final Result iRecord) {
-    initExcludes(iContext);
-    if (isExpand()) {
+    initExcludes();
+    if (isExpand())
       throw new IllegalStateException("This is an expand projection, it cannot be calculated as a single result" + this);
-    }
 
-    if (items.size() == 0 || (items.size() == 1 && items.get(0).isAll()) && items.get(0).nestedProjection == null) {
+    if (items.size() == 0 || (items.size() == 1 && items.get(0).isAll()) && items.get(0).nestedProjection == null)
       return iRecord;
-    }
 
     final ResultInternal result = new ResultInternal();
     for (final ProjectionItem item : items) {
-      if (item.exclude) {
+      if (item.exclude)
         continue;
-      }
+
       if (item.isAll()) {
         for (final String alias : iRecord.getPropertyNames()) {
           if (this.excludes.contains(alias)) {
@@ -136,20 +132,18 @@ public class Projection extends SimpleNode {
     }
 
     for (final String key : iRecord.getMetadataKeys()) {
-      if (!result.getMetadataKeys().contains(key)) {
+      if (!result.getMetadataKeys().contains(key))
         result.setMetadata(key, iRecord.getMetadata(key));
-      }
     }
     return result;
   }
 
-  private void initExcludes(final CommandContext iContext) {
+  private void initExcludes() {
     if (excludes == null) {
       this.excludes = new HashSet<String>();
       for (final ProjectionItem item : items) {
-        if (item.exclude) {
+        if (item.exclude)
           this.excludes.add(item.getProjectionAliasAsString());
-        }
       }
     }
   }
@@ -161,9 +155,8 @@ public class Projection extends SimpleNode {
   public void validate() {
     if (items != null && items.size() > 1) {
       for (final ProjectionItem item : items) {
-        if (item.isExpand()) {
+        if (item.isExpand())
           throw new CommandSQLParsingException("Cannot execute a query with expand() together with other projections");
-        }
       }
     }
   }
@@ -181,9 +174,9 @@ public class Projection extends SimpleNode {
 
   public Projection copy() {
     final Projection result = new Projection(-1);
-    if (items != null) {
+    if (items != null)
       result.items = items.stream().map(x -> x.copy()).collect(Collectors.toList());
-    }
+
     result.distinct = distinct;
     return result;
   }
@@ -223,9 +216,8 @@ public class Projection extends SimpleNode {
 
   public boolean refersToParent() {
     for (final ProjectionItem item : items) {
-      if (item.refersToParent()) {
+      if (item.refersToParent())
         return true;
-      }
     }
     return false;
   }
@@ -233,9 +225,9 @@ public class Projection extends SimpleNode {
   public Result serialize() {
     final ResultInternal result = new ResultInternal();
     result.setProperty("distinct", distinct);
-    if (items != null) {
+    if (items != null)
       result.setProperty("items", items.stream().map(x -> x.serialize()).collect(Collectors.toList()));
-    }
+
     return result;
   }
 
@@ -256,9 +248,8 @@ public class Projection extends SimpleNode {
   public boolean isCacheable() {
     if (items != null) {
       for (final ProjectionItem item : items) {
-        if (!item.isCacheable()) {
+        if (!item.isCacheable())
           return false;
-        }
       }
     }
     return true;

@@ -60,15 +60,6 @@ public class TempIndexCursor implements IndexCursor {
   }
 
   @Override
-  public void close() {
-  }
-
-  @Override
-  public String dumpStats() {
-    return "no-stats";
-  }
-
-  @Override
   public BinaryComparator getComparator() {
     return null;
   }

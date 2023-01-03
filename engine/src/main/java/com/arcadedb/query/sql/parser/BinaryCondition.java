@@ -102,13 +102,6 @@ public class BinaryCondition extends BooleanExpression {
     return result;
   }
 
-  public BinaryCondition isIndexedFunctionCondition(final DocumentType iSchemaClass, final Database database) {
-    if (left.isIndexedFunctionCal()) {
-      return this;
-    }
-    return null;
-  }
-
   public long estimateIndexed(final FromClause target, final CommandContext context) {
     return left.estimateIndexedFunction(target, context, operator, right.execute((Result) null, context));
   }
@@ -278,14 +271,6 @@ public class BinaryCondition extends BooleanExpression {
     final List<String> result = new ArrayList<>();
     result.addAll(leftX);
     result.addAll(rightX);
-    return result;
-  }
-
-  private Expression identifierToStringExpr(final Identifier identifier) {
-    final BaseExpression bExp = new BaseExpression(identifier.getStringValue());
-
-    final Expression result = new Expression(-1);
-    result.mathExpression = bExp;
     return result;
   }
 

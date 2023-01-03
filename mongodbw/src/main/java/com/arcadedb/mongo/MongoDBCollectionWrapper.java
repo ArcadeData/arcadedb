@@ -117,26 +117,28 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
 
   @Override
   public void addIndex(final Index<Long> index) {
-
+    // TODO
   }
 
   @Override
   public void dropIndex(final String s) {
+    // TODO
 
   }
 
   @Override
   public void renameTo(final MongoDatabase mongoDatabase, final String s) {
+    // TODO
   }
 
   @Override
   public void addDocument(final Document document) {
-
+    // TODO
   }
 
   @Override
   public void removeDocument(final Document document) {
-
+    // TODO
   }
 
   @Override

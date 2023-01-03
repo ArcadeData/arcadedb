@@ -123,7 +123,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         final Document doc = super.next().getProperty("value");
 
         final Map<String, Object> values = new HashMap<>(doc.size());
-          values.putAll(doc);
+        values.putAll(doc);
 
         return new ResultInternal(values);
       }
@@ -178,16 +178,17 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
   @Override
   public void handleInsert(final MongoInsert mongoInsert, final Oplog opLog) {
-
+    // TODO
   }
 
   @Override
   public void handleDelete(final MongoDelete mongoDelete, final Oplog opLog) {
-
+    // TODO
   }
 
   @Override
   public void handleUpdate(final MongoUpdate mongoUpdate, final Oplog opLog) {
+    // TODO
   }
 
   private Document aggregateCollection(final String command, final Document document, final Oplog oplog) throws MongoServerException {
@@ -260,10 +261,11 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
   @Override
   public void unregisterCollection(final String collectionName) {
+    database.getSchema().dropBucket(collectionName);
   }
 
-  private Document commandChangeStreamPipeline(
-      final Document query, final Oplog oplog, final String collectionName, final Document changeStreamDocument, final Aggregation aggregation) {
+  private Document commandChangeStreamPipeline(final Document query, final Oplog oplog, final String collectionName, final Document changeStreamDocument,
+      final Aggregation aggregation) {
     final Document cursorDocument = (Document) query.get("cursor");
     final int batchSize = (int) cursorDocument.getOrDefault("batchSize", 0);
 
@@ -370,8 +372,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       // EMBEDDED CALL WITHOUT THE SERVER
       return;
 
-      final List<Document> results = this.lastResults.computeIfAbsent(channel, k -> new ArrayList<>(10));
-      results.add(null);
+    final List<Document> results = this.lastResults.computeIfAbsent(channel, k -> new ArrayList<>(10));
+    results.add(null);
   }
 
   private synchronized void putLastResult(final Channel channel, final Document result) {

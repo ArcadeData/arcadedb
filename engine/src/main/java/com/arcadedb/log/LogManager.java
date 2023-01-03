@@ -26,14 +26,13 @@ import java.util.logging.*;
  * @author Luca Garulli
  */
 public class LogManager {
-  private static final LogManager instance = new LogManager();
-  private final        boolean    debug    = false;
+  public static final  LogContext CONTEXT_INSTANCE = new LogContext();
+  private static final LogManager instance         = new LogManager();
+  private final        boolean    debug            = false;
   private              Logger     logger;
 
   static class LogContext extends ThreadLocal<String> {
   }
-
-  public static final LogContext CONTEXT_INSTANCE = new LogContext();
 
   protected LogManager() {
     logger = new DefaultLogger();

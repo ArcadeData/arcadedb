@@ -22,11 +22,9 @@ package com.arcadedb.server;
  * Mock implementation of server metrics.
  */
 public class NoServerMetrics implements ServerMetrics {
-  public NoServerMetrics() {
-  }
-
   @Override
   public void stop() {
+    // NO ACTIONS
   }
 
   @Override

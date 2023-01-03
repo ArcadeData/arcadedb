@@ -43,19 +43,14 @@ public class ExplainResultSet implements ResultSet {
 
   @Override
   public Result next() {
-    if (!hasNext) {
+    if (!hasNext)
       throw new IllegalStateException();
-    }
+
     final ResultInternal result = new ResultInternal();
     getExecutionPlan().ifPresent(x -> result.setProperty("executionPlan", x.toResult()));
     getExecutionPlan().ifPresent(x -> result.setProperty("executionPlanAsString", x.prettyPrint(0, 3)));
     hasNext = false;
     return result;
-  }
-
-  @Override
-  public void close() {
-
   }
 
   @Override

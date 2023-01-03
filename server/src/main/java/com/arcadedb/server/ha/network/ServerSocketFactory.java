@@ -25,9 +25,6 @@ public abstract class ServerSocketFactory {
 
   private static ServerSocketFactory theFactory;
 
-  public ServerSocketFactory() {
-  }
-
   public static ServerSocketFactory getDefault() {
     synchronized (ServerSocketFactory.class) {
       if (theFactory == null) {
@@ -37,10 +34,6 @@ public abstract class ServerSocketFactory {
 
     return theFactory;
   }
-
-  public abstract ServerSocket createServerSocket(int port) throws IOException;
-
-  public abstract ServerSocket createServerSocket(int port, int backlog) throws IOException;
 
   public abstract ServerSocket createServerSocket(int port, int backlog, InetAddress ifAddress) throws IOException;
 }

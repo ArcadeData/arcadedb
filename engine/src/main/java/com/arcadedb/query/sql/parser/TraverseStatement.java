@@ -137,6 +137,8 @@ public class TraverseStatement extends Statement {
       case DEPTH_FIRST:
         builder.append("depth_first");
         break;
+      default:
+        throw new IllegalArgumentException("Strategy " + strategy + " not supported");
       }
     }
 

@@ -142,7 +142,7 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
 
   @Override
   public void sendTimeout() {
-
+    // DO NOT PROPAGATE TIMEOUT
   }
 
   @Override

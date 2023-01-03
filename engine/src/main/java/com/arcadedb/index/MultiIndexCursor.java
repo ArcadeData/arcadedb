@@ -157,11 +157,6 @@ public class MultiIndexCursor implements IndexCursor {
   }
 
   @Override
-  public String dumpStats() {
-    return "no-stats";
-  }
-
-  @Override
   public long size() {
     long tot = 0;
     for (final IndexCursor cursor : cursors)
