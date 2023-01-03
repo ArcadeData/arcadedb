@@ -34,15 +34,25 @@ import java.util.*;
 public interface Result {
 
   /**
-   * returns a property from the result
+   * Returns the value for the property.
    *
    * @param name the property name
-   * @param <T>
    *
    * @return the property value. If the property value is a persistent record, it only returns the RID. See also  {@link
    * #getElementProperty(String)}
    */
   <T> T getProperty(String name);
+
+  /**
+   * Returns the value for the property. If the property does not exist, then the `defaultValue` is returned.
+   *
+   * @param name         the property name
+   * @param defaultValue default value to return in case the property is missing
+   *
+   * @return the property value. If the property value is a persistent record, it only returns the RID. See also  {@link
+   * #getElementProperty(String)}
+   */
+  <T> T getProperty(String name, T defaultValue);
 
   /**
    * returns an OElement property from the result

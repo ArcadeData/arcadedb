@@ -36,7 +36,7 @@ public class SQLDeleteEdgeTest extends TestHelper {
 
       database.command("sql", "DELETE FROM testFromToOneE unsafe");
       database.command("sql", "DELETE FROM testFromToTwoE unsafe");
-      final long deleted = (long) CollectionUtils.getFirstResultValue(database.command("sql", "DELETE VERTEX from testFromToV"), "count");
+      final long deleted = database.command("sql", "DELETE VERTEX from testFromToV").nextIfAvailable().getProperty("count", 0L);
     });
   }
 
@@ -65,7 +65,7 @@ public class SQLDeleteEdgeTest extends TestHelper {
 
       database.command("sql", "DELETE FROM testFromOneE unsafe");
       database.command("sql", "DELETE FROM testFromTwoE unsafe");
-      final long deleted = (long) CollectionUtils.getFirstResultValue(database.command("sql", "DELETE VERTEX from testFromV"), "count");
+      final long deleted = database.command("sql", "DELETE VERTEX from testFromV").nextIfAvailable().getProperty("count", 0L);
     });
   }
 
@@ -94,7 +94,7 @@ public class SQLDeleteEdgeTest extends TestHelper {
 
       database.command("sql", "DELETE FROM testToOneE unsafe");
       database.command("sql", "DELETE FROM testToTwoE unsafe");
-      final long deleted = (long) CollectionUtils.getFirstResultValue(database.command("sql", "DELETE VERTEX from testToV"), "count");
+      final long deleted = database.command("sql", "DELETE VERTEX from testToV").nextIfAvailable().getProperty("count", 0L);
     });
   }
 
@@ -164,7 +164,7 @@ public class SQLDeleteEdgeTest extends TestHelper {
         Assertions.assertTrue(true);
       }
 
-      final long deleted = (long) CollectionUtils.getFirstResultValue(database.command("sql", "DELETE FROM SuperV"), "count");
+      final long deleted = database.command("sql", "DELETE FROM SuperV").nextIfAvailable().getProperty("count", 0L);
 
       try {
         database.command("sql", "DROP TYPE SuperV");
@@ -212,7 +212,8 @@ public class SQLDeleteEdgeTest extends TestHelper {
       database.command("sql", "create vertex type V");
       final Identifiable v1 = CollectionUtils.getFirstResultAsDocument(database.command("sql", "create vertex V set returning = true"));
 
-      final List<Document> v2s = CollectionUtils.resultsetToListOfDocuments(database.command("sql", "delete vertex from V return before where returning = true"));
+      final List<Document> v2s = CollectionUtils.resultsetToListOfDocuments(
+          database.command("sql", "delete vertex from V return before where returning = true"));
 
       Assertions.assertEquals(v2s.size(), 1);
       Assertions.assertTrue(v2s.contains(v1));

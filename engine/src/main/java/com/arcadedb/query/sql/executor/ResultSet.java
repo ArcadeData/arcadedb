@@ -30,6 +30,7 @@ import java.util.stream.*;
  * Result set returned from queries. This class implements can be used as an Iterator of Result.
  */
 public interface ResultSet extends Spliterator<Result>, Iterator<Result>, AutoCloseable {
+  EmptyResult EMPTY_RESULT = new EmptyResult();
 
   @Override
   boolean hasNext();
@@ -43,6 +44,16 @@ public interface ResultSet extends Spliterator<Result>, Iterator<Result>, AutoCl
 
   default void close() {
     // NO ACTIONS
+  }
+
+  /**
+   * Returns the first element of the resultset if any, otherwise an empty Result object. This allows to write code without null check. Example:<br>
+   * <code>
+   * int updated = result.first().getProperty("count", 0);
+   * </code>
+   */
+  default Result nextIfAvailable() {
+    return hasNext() ? next() : EMPTY_RESULT;
   }
 
   default Optional<ExecutionPlan> getExecutionPlan() {

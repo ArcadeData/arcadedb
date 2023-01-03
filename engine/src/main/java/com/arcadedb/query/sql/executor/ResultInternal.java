@@ -106,6 +106,18 @@ public class ResultInternal implements Result {
     return result;
   }
 
+  public <T> T getProperty(final String name, final T defaultValue) {
+    T result = defaultValue;
+    if (content != null && content.containsKey(name))
+      result = (T) wrap(content.get(name));
+    else if (element != null && element.has(name))
+      result = (T) wrap(element.get(name));
+    if (!(result instanceof Record) && result instanceof Identifiable && ((Identifiable) result).getIdentity() != null)
+      result = (T) ((Identifiable) result).getIdentity();
+
+    return result;
+  }
+
   @Override
   public Record getElementProperty(final String name) {
     Object result = null;
