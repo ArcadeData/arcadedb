@@ -33,12 +33,8 @@ public abstract class SQLFunctionMoveFiltered extends SQLFunctionMove implements
 
   protected static int supernodeThreshold = 1000; // move to some configuration
 
-  public SQLFunctionMoveFiltered() {
-    super(NAME, 1, 2);
-  }
-
-  public SQLFunctionMoveFiltered(final String iName, final int iMin, final int iMax) {
-    super(iName, iMin, iMax);
+  protected SQLFunctionMoveFiltered(final String name) {
+    super(name);
   }
 
   @Override

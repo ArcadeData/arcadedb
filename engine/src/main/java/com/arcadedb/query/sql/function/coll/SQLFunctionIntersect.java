@@ -34,10 +34,10 @@ public class SQLFunctionIntersect extends SQLFunctionMultiValueAbstract<Object> 
   public static final String NAME = "intersect";
 
   public SQLFunctionIntersect() {
-    super(NAME, 1, -1);
+    super(NAME);
   }
 
-  public Object execute( final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
       final CommandContext iContext) {
     Object value = iParams[0];
 

@@ -28,7 +28,7 @@ public class SQLFunctionStandardDeviation extends SQLFunctionVariance {
   public static final String NAME = "stddev";
 
   public SQLFunctionStandardDeviation() {
-    super(NAME, 1, 1);
+    super(NAME);
   }
 
   @Override

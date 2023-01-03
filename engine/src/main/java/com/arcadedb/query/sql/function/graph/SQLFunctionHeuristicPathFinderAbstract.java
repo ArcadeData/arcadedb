@@ -59,8 +59,8 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
   protected              List<Vertex>   route = new LinkedList<Vertex>();
   protected static final float          MIN   = 0f;
 
-  public SQLFunctionHeuristicPathFinderAbstract(final String iName, final int iMinParams, final int iMaxParams) {
-    super(iName, iMinParams, iMaxParams);
+  public SQLFunctionHeuristicPathFinderAbstract(final String iName) {
+    super(iName);
   }
 
   // Approx Great-circle distance.  Args in degrees, result in kilometers
@@ -146,7 +146,8 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
   }
 
   // obtains from http://theory.stanford.edu/~amitp/GameProgramming/Heuristics.html
-  protected double getTieBreakingHeuristicCost(final double x, final double y, final double sx, final double sy, final double gx, final double gy, double heuristic) {
+  protected double getTieBreakingHeuristicCost(final double x, final double y, final double sx, final double sy, final double gx, final double gy,
+      double heuristic) {
     final double dx1 = x - gx;
     final double dy1 = y - gy;
     final double dx2 = sx - gx;
@@ -156,7 +157,8 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
     return heuristic;
   }
 
-  protected double getTieBreakingRandomHeuristicCost(final double x, final double y, final double sx, final double sy, final double gx, final double gy, double heuristic) {
+  protected double getTieBreakingRandomHeuristicCost(final double x, final double y, final double sx, final double sy, final double gx, final double gy,
+      double heuristic) {
     final double dx1 = x - gx;
     final double dy1 = y - gy;
     final double dx2 = sx - gx;

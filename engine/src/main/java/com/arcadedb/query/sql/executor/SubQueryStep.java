@@ -25,6 +25,7 @@ import com.arcadedb.exception.TimeoutException;
  */
 public class SubQueryStep extends AbstractExecutionStep {
   private final InternalExecutionPlan subExecutionPlan;
+  private       boolean               sameContextAsParent;
 
   /**
    * executes a sub-query
@@ -33,16 +34,44 @@ public class SubQueryStep extends AbstractExecutionStep {
    * @param ctx              the context of the current execution plan
    * @param subCtx           the context of the subquery execution plan
    */
-  public SubQueryStep(final InternalExecutionPlan subExecutionPlan, final CommandContext ctx, final CommandContext subCtx,
-      final boolean profilingEnabled) {
+  public SubQueryStep(final InternalExecutionPlan subExecutionPlan, final CommandContext ctx, final CommandContext subCtx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
     this.subExecutionPlan = subExecutionPlan;
+    this.sameContextAsParent = (ctx == subCtx);
   }
 
   @Override
   public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
     getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
-    return subExecutionPlan.fetchNext(nRecords);
+    ResultSet parentRs = subExecutionPlan.fetchNext(nRecords);
+    return new ResultSet() {
+      @Override
+      public boolean hasNext() {
+        return parentRs.hasNext();
+      }
+
+      @Override
+      public Result next() {
+        Result item = parentRs.next();
+        ctx.setVariable("$current", item);
+        return item;
+      }
+
+      @Override
+      public void close() {
+        parentRs.close();
+      }
+    };
+  }
+
+  @Override
+  public boolean canBeCached() {
+    return sameContextAsParent && subExecutionPlan.canBeCached();
+  }
+
+  @Override
+  public ExecutionStep copy(CommandContext ctx) {
+    return new SubQueryStep(subExecutionPlan.copy(ctx), ctx, ctx, profilingEnabled);
   }
 
   @Override

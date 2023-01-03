@@ -77,16 +77,6 @@ public abstract class AbstractSQLMethod implements SQLMethod {
     return sb.toString();
   }
 
-  @Override
-  public int getMinParams() {
-    return minparams;
-  }
-
-  @Override
-  public int getMaxParams() {
-    return maxparams;
-  }
-
   protected Object getParameterValue(final Identifiable iRecord, final String iValue) {
     if (iValue == null) {
       return null;

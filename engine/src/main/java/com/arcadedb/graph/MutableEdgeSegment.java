@@ -356,5 +356,6 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
 
   @Override
   public void unsetDirty() {
+    // IGNORE THIS FLAG
   }
 }

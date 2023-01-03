@@ -143,14 +143,14 @@ public class SelectExecutionPlanner {
 
     if (info.globalLetPresent)
       // do the raw fetch remotely, then do the rest on the coordinator
-      buildExecutionPlan(result, info, ctx, enableProfiling);
+      buildExecutionPlan(result, info);
 
     handleLet(result, info, ctx, enableProfiling);
 
     handleWhere(result, info, ctx, enableProfiling);
 
     // TODO optimization: in most cases the projections can be calculated on remote nodes
-    buildExecutionPlan(result, info, ctx, enableProfiling);
+    buildExecutionPlan(result, info);
 
     handleProjectionsBlock(result, info, ctx, enableProfiling);
 
@@ -200,7 +200,7 @@ public class SelectExecutionPlanner {
     }
   }
 
-  private void buildExecutionPlan(final SelectExecutionPlan result, final QueryPlanningInfo info, final CommandContext ctx, final boolean enableProfiling) {
+  private void buildExecutionPlan(final SelectExecutionPlan result, final QueryPlanningInfo info) {
     if (info.fetchExecutionPlan == null)
       return;
 
@@ -276,7 +276,8 @@ public class SelectExecutionPlanner {
     return handleHardwiredCountOnIndex(result, info, ctx, profilingEnabled) || handleHardwiredCountOnClass(result, info, ctx, profilingEnabled);
   }
 
-  private boolean handleHardwiredCountOnClass(final SelectExecutionPlan result, final QueryPlanningInfo info, final CommandContext ctx, final boolean profilingEnabled) {
+  private boolean handleHardwiredCountOnClass(final SelectExecutionPlan result, final QueryPlanningInfo info, final CommandContext ctx,
+      final boolean profilingEnabled) {
     final Identifier targetClass = info.target == null ? null : info.target.getItem().getIdentifier();
     if (targetClass == null) {
       return false;
@@ -297,7 +298,8 @@ public class SelectExecutionPlanner {
     return true;
   }
 
-  private boolean handleHardwiredCountOnIndex(final SelectExecutionPlan result, final QueryPlanningInfo info, final CommandContext ctx, final boolean profilingEnabled) {
+  private boolean handleHardwiredCountOnIndex(final SelectExecutionPlan result, final QueryPlanningInfo info, final CommandContext ctx,
+      final boolean profilingEnabled) {
     final IndexIdentifier targetIndex = info.target == null ? null : info.target.getItem().getIndex();
     if (targetIndex == null) {
       return false;
@@ -366,16 +368,19 @@ public class SelectExecutionPlanner {
   }
 
   private static void handleDistinct(final SelectExecutionPlan result, final QueryPlanningInfo info, final CommandContext ctx, final boolean profilingEnabled) {
-    result.chain(new DistinctExecutionStep(ctx, profilingEnabled));
+    if (info.distinct)
+      result.chain(new DistinctExecutionStep(ctx, profilingEnabled));
   }
 
-  private static void handleProjectionsBeforeOrderBy(final SelectExecutionPlan result, final QueryPlanningInfo info, final CommandContext ctx, final boolean profilingEnabled) {
+  private static void handleProjectionsBeforeOrderBy(final SelectExecutionPlan result, final QueryPlanningInfo info, final CommandContext ctx,
+      final boolean profilingEnabled) {
     if (info.orderBy != null) {
       handleProjections(result, info, ctx, profilingEnabled);
     }
   }
 
-  private static void handleProjections(final SelectExecutionPlan result, final QueryPlanningInfo info, final CommandContext ctx, final boolean profilingEnabled) {
+  private static void handleProjections(final SelectExecutionPlan result, final QueryPlanningInfo info, final CommandContext ctx,
+      final boolean profilingEnabled) {
     if (!info.projectionsCalculated && info.projection != null) {
       if (info.preAggregateProjection != null) {
         result.chain(new ProjectionCalculationStep(info.preAggregateProjection, ctx, profilingEnabled));
@@ -662,12 +667,12 @@ public class SelectExecutionPlanner {
       info.perRecordLetClause.extractSubQueries(collector);
 
     int i = 0;
-    final int j = 0;
+    int j = 0;
     for (final Map.Entry<Identifier, Statement> entry : collector.getSubQueries().entrySet()) {
       final Identifier alias = entry.getKey();
       final Statement query = entry.getValue();
       if (query.refersToParent()) {
-        addRecordLevelLet(info, alias, query);
+        addRecordLevelLet(info, alias, query, j++);
       } else {
         addGlobalLet(info, alias, query, i++);
       }
@@ -1519,8 +1524,8 @@ public class SelectExecutionPlanner {
     return result.size() == 0 ? null : result;
   }
 
-  private List<ExecutionStepInternal> handleClassAsTargetWithIndex(final String targetClass, final Set<String> filterClusters, final QueryPlanningInfo info, final CommandContext ctx,
-      final boolean profilingEnabled) {
+  private List<ExecutionStepInternal> handleClassAsTargetWithIndex(final String targetClass, final Set<String> filterClusters, final QueryPlanningInfo info,
+      final CommandContext ctx, final boolean profilingEnabled) {
     if (info.flattenedWhereClause == null || info.flattenedWhereClause.size() == 0) {
       return null;
     }
@@ -1677,9 +1682,8 @@ public class SelectExecutionPlanner {
     return result == null || result.equals(OrderByItem.ASC);
   }
 
-  private ExecutionStepInternal createParallelIndexFetch(
-      final List<IndexSearchDescriptor> indexSearchDescriptors, final Set<String> filterClusters, final CommandContext ctx,
-      final boolean profilingEnabled) {
+  private ExecutionStepInternal createParallelIndexFetch(final List<IndexSearchDescriptor> indexSearchDescriptors, final Set<String> filterClusters,
+      final CommandContext ctx, final boolean profilingEnabled) {
     final List<InternalExecutionPlan> subPlans = new ArrayList<>();
     for (final IndexSearchDescriptor desc : indexSearchDescriptors) {
       final SelectExecutionPlan subPlan = new SelectExecutionPlan(ctx);
@@ -1736,7 +1740,7 @@ public class SelectExecutionPlanner {
       final DocumentType typez) {
     final Iterator<IndexSearchDescriptor> it = indexes.stream()
         //.filter(index -> index.getInternal().canBeUsedInEqualityOperators())
-        .map(index -> buildIndexSearchDescriptor(ctx, index, block, typez)).filter(Objects::nonNull).filter(x -> x.keyCondition != null)
+        .map(index -> buildIndexSearchDescriptor(index, block)).filter(Objects::nonNull).filter(x -> x.keyCondition != null)
         .filter(x -> x.keyCondition.getSubBlocks().size() > 0).sorted(Comparator.comparing(x -> x.cost(ctx))).iterator();
 
     final List<IndexSearchDescriptor> list = new ArrayList<>();
@@ -1757,9 +1761,10 @@ public class SelectExecutionPlanner {
    *
    * @return
    */
-  private IndexSearchDescriptor findBestIndexFor(final CommandContext ctx, final Collection<TypeIndex> indexes, final AndBlock block, final DocumentType clazz) {
+  private IndexSearchDescriptor findBestIndexFor(final CommandContext ctx, final Collection<TypeIndex> indexes, final AndBlock block,
+      final DocumentType clazz) {
     // get all valid index descriptors
-    List<IndexSearchDescriptor> descriptors = indexes.stream().map(index -> buildIndexSearchDescriptor(ctx, index, block, clazz)).filter(Objects::nonNull)
+    List<IndexSearchDescriptor> descriptors = indexes.stream().map(index -> buildIndexSearchDescriptor(index, block)).filter(Objects::nonNull)
         .filter(x -> x.keyCondition != null).filter(x -> x.keyCondition.getSubBlocks().size() > 0).collect(Collectors.toList());
 
     final List<IndexSearchDescriptor> fullTextIndexDescriptors = indexes.stream().filter(idx -> idx.getType().equals(FULL_TEXT))
@@ -1873,7 +1878,8 @@ public class SelectExecutionPlanner {
    *
    * @return
    */
-  private IndexSearchDescriptor buildIndexSearchDescriptorForFulltext(final CommandContext ctx, final Index index, final AndBlock block, final DocumentType clazz) {
+  private IndexSearchDescriptor buildIndexSearchDescriptorForFulltext(final CommandContext ctx, final Index index, final AndBlock block,
+      final DocumentType clazz) {
     final List<String> indexFields = index.getPropertyNames();
     final BinaryCondition keyCondition = new BinaryCondition(-1);
     final Identifier key = new Identifier("key");
@@ -1931,14 +1937,12 @@ public class SelectExecutionPlanner {
    * given an index and a flat AND block, returns a descriptor on how to process it with an index (index, index key and additional
    * filters to apply after index fetch
    *
-   * @param ctx
    * @param index
    * @param block
-   * @param typez
    *
    * @return
    */
-  private IndexSearchDescriptor buildIndexSearchDescriptor(final CommandContext ctx, final Index index, final AndBlock block, final DocumentType typez) {
+  private IndexSearchDescriptor buildIndexSearchDescriptor(final Index index, final AndBlock block) {
     final List<String> indexFields = index.getPropertyNames();
     final BinaryCondition keyCondition = new BinaryCondition(-1);
     final Identifier key = new Identifier("key");

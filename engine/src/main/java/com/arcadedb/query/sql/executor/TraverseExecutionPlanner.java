@@ -32,7 +32,6 @@ import com.arcadedb.query.sql.parser.InputParameter;
 import com.arcadedb.query.sql.parser.Limit;
 import com.arcadedb.query.sql.parser.PInteger;
 import com.arcadedb.query.sql.parser.Rid;
-import com.arcadedb.query.sql.parser.SchemaIdentifier;
 import com.arcadedb.query.sql.parser.Skip;
 import com.arcadedb.query.sql.parser.Statement;
 import com.arcadedb.query.sql.parser.TraverseProjectionItem;
@@ -118,17 +117,15 @@ public class TraverseExecutionPlanner {
       handleInputParamAsTarget(result, target.getInputParam(), ctx, profilingEnabled);
     } else if (target.getIndex() != null) {
       handleIndexAsTarget(result, target.getIndex(), ctx, profilingEnabled);
-    } else if (target.getSchema() != null) {
-      handleMetadataAsTarget(result, target.getSchema(), ctx, profilingEnabled);
     } else if (target.getRids() != null && target.getRids().size() > 0) {
       handleRidsAsTarget(result, target.getRids(), ctx, profilingEnabled);
     } else {
       throw new UnsupportedOperationException();
     }
-
   }
 
-  private void handleInputParamAsTarget(final SelectExecutionPlan result, final InputParameter inputParam, final CommandContext ctx, final boolean profilingEnabled) {
+  private void handleInputParamAsTarget(final SelectExecutionPlan result, final InputParameter inputParam, final CommandContext ctx,
+      final boolean profilingEnabled) {
     final Object paramValue = inputParam.getValue(ctx.getInputParameters());
     if (paramValue == null) {
       result.chain(new EmptyStep(ctx, profilingEnabled));//nothing to return
@@ -187,7 +184,8 @@ public class TraverseExecutionPlanner {
     result.chain(new EmptyDataGeneratorStep(1, ctx, profilingEnabled));
   }
 
-  private void handleIndexAsTarget(final SelectExecutionPlan result, final IndexIdentifier indexIdentifier, final CommandContext ctx, final boolean profilingEnabled) {
+  private void handleIndexAsTarget(final SelectExecutionPlan result, final IndexIdentifier indexIdentifier, final CommandContext ctx,
+      final boolean profilingEnabled) {
     final String indexName = indexIdentifier.getIndexName();
     final RangeIndex index = (RangeIndex) ctx.getDatabase().getSchema().getIndexByName(indexName);
     if (index == null) {
@@ -218,22 +216,6 @@ public class TraverseExecutionPlanner {
       result.chain(new GetValueFromIndexEntryStep(ctx, null, profilingEnabled));
       break;
     }
-  }
-
-  private void handleMetadataAsTarget(final SelectExecutionPlan plan, final SchemaIdentifier metadata, final CommandContext ctx, final boolean profilingEnabled) {
-    throw new UnsupportedOperationException();
-//    final Database db = ctx.getDatabase();
-//    String schemaRecordIdAsString = null;
-//    if (metadata.getName().equalsIgnoreCase(OCommandExecutorSQLAbstract.METADATA_SCHEMA)) {
-//      schemaRecordIdAsString = db.getStorage().getConfiguration().getSchemaRecordId();
-//    } else if (metadata.getName().equalsIgnoreCase(OCommandExecutorSQLAbstract.METADATA_INDEXMGR)) {
-//      schemaRecordIdAsString = db.getStorage().getConfiguration().getIndexMgrRecordId();
-//    } else {
-//      throw new UnsupportedOperationException("Invalid metadata: " + metadata.getName());
-//    }
-//    ORecordId schemaRid = new ORecordId(schemaRecordIdAsString);
-//    plan.chain(new FetchFromRidsStep(Collections.singleton(schemaRid), ctx, profilingEnabled));
-
   }
 
   private void handleRidsAsTarget(final SelectExecutionPlan plan, final List<Rid> rids, final CommandContext ctx, final boolean profilingEnabled) {
@@ -292,5 +274,4 @@ public class TraverseExecutionPlanner {
     final InternalExecutionPlan subExecutionPlan = subQuery.createExecutionPlan(subCtx, profilingEnabled);
     plan.chain(new SubQueryStep(subExecutionPlan, ctx, subCtx, profilingEnabled));
   }
-
 }

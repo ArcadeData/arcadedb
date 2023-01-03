@@ -81,5 +81,4 @@ public abstract class AbstractExecutionStep implements ExecutionStepInternal {
     final long computedCost = getCost();
     return computedCost > -1 ? new DecimalFormat().format(computedCost / 1000) + "μs" : "";
   }
-
 }

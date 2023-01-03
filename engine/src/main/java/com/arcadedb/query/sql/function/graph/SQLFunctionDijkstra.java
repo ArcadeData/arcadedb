@@ -38,7 +38,7 @@ public class SQLFunctionDijkstra extends SQLFunctionPathFinder {
   public static final String NAME = "dijkstra";
 
   public SQLFunctionDijkstra() {
-    super(NAME, 3, 4);
+    super(NAME);
   }
 
   public LinkedList<Vertex> execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,

@@ -35,13 +35,13 @@ public class ScriptLineStep extends AbstractExecutionStep {
 
   boolean executed = false;
 
-  public ScriptLineStep(final InternalExecutionPlan nextPlan, final CommandContext ctx,final  boolean profilingEnabled) {
+  public ScriptLineStep(final InternalExecutionPlan nextPlan, final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
     this.plan = nextPlan;
   }
 
   @Override
-  public ResultSet syncPull(final CommandContext ctx,final  int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
     if (!executed) {
       if (plan instanceof InsertExecutionPlan) {
         ((InsertExecutionPlan) plan).executeInternal();
@@ -50,9 +50,9 @@ public class ScriptLineStep extends AbstractExecutionStep {
       } else if (plan instanceof UpdateExecutionPlan) {
         ((UpdateExecutionPlan) plan).executeInternal();
       } else if (plan instanceof DDLExecutionPlan) {
-        ((DDLExecutionPlan) plan).executeInternal((BasicCommandContext) ctx);
+        ((DDLExecutionPlan) plan).executeInternal();
       } else if (plan instanceof SingleOpExecutionPlan) {
-        ((SingleOpExecutionPlan) plan).executeInternal((BasicCommandContext) ctx);
+        ((SingleOpExecutionPlan) plan).executeInternal();
       }
       executed = true;
     }

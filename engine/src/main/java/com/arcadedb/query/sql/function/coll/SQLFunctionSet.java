@@ -35,10 +35,10 @@ public class SQLFunctionSet extends SQLFunctionMultiValueAbstract<Set<Object>> {
   public static final String NAME = "set";
 
   public SQLFunctionSet() {
-    super(NAME, 1, -1);
+    super(NAME);
   }
 
-  public Object execute( final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
       final CommandContext iContext) {
     if (iParams.length > 1)
       // IN LINE MODE

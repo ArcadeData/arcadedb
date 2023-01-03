@@ -37,8 +37,8 @@ public class SQLFunctionDistance extends SQLFunctionAbstract {
     super(NAME);
   }
 
-  public Object execute( final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult,
-      final Object[] iParams, final CommandContext iContext) {
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
+      final CommandContext iContext) {
     double distance;
 
     final double[] values = new double[4];
@@ -54,8 +54,7 @@ public class SQLFunctionDistance extends SQLFunctionAbstract {
     final double deltaLon = Math.toRadians(values[3] - values[1]);
 
     final double a =
-        Math.pow(Math.sin(deltaLat / 2), 2) + Math.cos(Math.toRadians(values[0])) * Math.cos(Math.toRadians(values[2])) * Math
-            .pow(Math.sin(deltaLon / 2), 2);
+        Math.pow(Math.sin(deltaLat / 2), 2) + Math.cos(Math.toRadians(values[0])) * Math.cos(Math.toRadians(values[2])) * Math.pow(Math.sin(deltaLon / 2), 2);
     distance = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)) * EARTH_RADIUS;
 
     if (iParams.length > 4) {

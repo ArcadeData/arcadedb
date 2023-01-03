@@ -33,10 +33,10 @@ public class SQLFunctionList extends SQLFunctionMultiValueAbstract<List<Object>>
   public static final String NAME = "list";
 
   public SQLFunctionList() {
-    super(NAME, 1, -1);
+    super(NAME);
   }
 
-  public Object execute( final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
       final CommandContext iContext) {
     if (iParams.length > 1)
       // IN LINE MODE

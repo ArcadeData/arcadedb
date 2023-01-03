@@ -29,7 +29,7 @@ public class SQLFunctionInE extends SQLFunctionMove {
   public static final String NAME = "inE";
 
   public SQLFunctionInE() {
-    super(NAME, 0, -1);
+    super(NAME);
   }
 
   @Override

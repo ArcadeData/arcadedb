@@ -44,7 +44,8 @@ public class SQLFunctionMode extends SQLFunctionAbstract {
   }
 
   @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams, final CommandContext iContext) {
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
+      final CommandContext iContext) {
 
     if (MultiValue.isMultiValue(iParams[0])) {
       for (final Object o : MultiValue.getMultiValueIterable(iParams[0])) {

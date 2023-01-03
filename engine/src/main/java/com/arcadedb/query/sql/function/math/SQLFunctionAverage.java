@@ -38,11 +38,11 @@ public class SQLFunctionAverage extends SQLFunctionMathAbstract {
   private int    total = 0;
 
   public SQLFunctionAverage() {
-    super(NAME, 1, -1);
+    super(NAME);
   }
 
-  public Object execute( final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult,
-      final Object[] iParams, final CommandContext iContext) {
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
+      final CommandContext iContext) {
     if (iParams.length == 1) {
       if (iParams[0] instanceof Number)
         sum((Number) iParams[0]);

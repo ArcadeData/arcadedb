@@ -42,8 +42,8 @@ public abstract class SQLFunctionPathFinder extends SQLFunctionMathAbstract {
 
   protected static final float MIN = 0f;
 
-  public SQLFunctionPathFinder(final String iName, final int iMinParams, final int iMaxParams) {
-    super(iName, iMinParams, iMaxParams);
+  public SQLFunctionPathFinder(final String iName) {
+    super(iName);
   }
 
   protected LinkedList<Vertex> execute(final CommandContext iContext) {

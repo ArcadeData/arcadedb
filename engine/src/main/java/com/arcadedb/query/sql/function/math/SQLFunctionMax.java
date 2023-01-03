@@ -36,11 +36,12 @@ public class SQLFunctionMax extends SQLFunctionMathAbstract {
   private Object context;
 
   public SQLFunctionMax() {
-    super(NAME, 1, -1);
+    super(NAME);
   }
 
   @SuppressWarnings({ "unchecked", "rawtypes" })
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams, final CommandContext iContext) {
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
+      final CommandContext iContext) {
     // calculate max value for current record
     // consider both collection of parameters and collection in each parameter
     Object max = null;
@@ -87,7 +88,7 @@ public class SQLFunctionMax extends SQLFunctionMathAbstract {
 
   public boolean aggregateResults() {
     // LET definitions (contain $current) does not require results aggregation
-    return  configuredParameters != null && ((configuredParameters.length == 1) && !configuredParameters[0].toString().contains("$current"));
+    return configuredParameters != null && ((configuredParameters.length == 1) && !configuredParameters[0].toString().contains("$current"));
   }
 
   public String getSyntax() {

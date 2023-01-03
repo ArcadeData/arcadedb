@@ -26,12 +26,11 @@ import com.arcadedb.query.sql.executor.SQLFunction;
  * {@literal OSQLParser.getInstance().registerStatefullFunction()} to being used by the SQL engine.
  *
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
- *
  */
 public abstract class SQLFunctionConfigurableAbstract extends SQLFunctionAbstract {
   protected Object[] configuredParameters;
 
-  protected SQLFunctionConfigurableAbstract(final String iName, final int iMinParams, final int iMaxParams) {
+  protected SQLFunctionConfigurableAbstract(final String iName) {
     super(iName);
   }
 

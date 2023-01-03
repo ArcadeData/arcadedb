@@ -37,11 +37,10 @@ public class SQLFunctionAbsoluteValue extends SQLFunctionMathAbstract {
   private             Object result;
 
   public SQLFunctionAbsoluteValue() {
-    super(NAME, 1, 1);
+    super(NAME);
   }
 
-  public Object execute( final Object iThis, final Identifiable iRecord, final Object iCurrentResult,
-      final Object[] iParams, final CommandContext iContext) {
+  public Object execute(final Object iThis, final Identifiable iRecord, final Object iCurrentResult, final Object[] iParams, final CommandContext iContext) {
     final Object inputValue = iParams[0];
 
     if (inputValue == null) {

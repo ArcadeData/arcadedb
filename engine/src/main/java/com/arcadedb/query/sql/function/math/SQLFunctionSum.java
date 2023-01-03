@@ -35,11 +35,11 @@ public class SQLFunctionSum extends SQLFunctionMathAbstract {
   private Number sum;
 
   public SQLFunctionSum() {
-    super(NAME, 1, -1);
+    super(NAME);
   }
 
-  public Object execute( final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult,
-      final Object[] iParams, final CommandContext iContext) {
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
+      final CommandContext iContext) {
     if (iParams.length == 1) {
       if (iParams[0] instanceof Number)
         sum((Number) iParams[0]);

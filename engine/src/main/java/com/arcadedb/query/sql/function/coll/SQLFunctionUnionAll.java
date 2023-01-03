@@ -36,11 +36,11 @@ public class SQLFunctionUnionAll extends SQLFunctionMultiValueAbstract<Collectio
   public static final String NAME = "unionAll";
 
   public SQLFunctionUnionAll() {
-    super(NAME, 1, -1);
+    super(NAME);
   }
 
-  public Object execute( final Object iThis, final Identifiable iCurrentRecord,
-      final Object iCurrentResult, final Object[] iParams, final CommandContext iContext) {
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
+      final CommandContext iContext) {
     if (iParams.length == 1) {
       // AGGREGATION MODE (STATEFUL)
       final Object value = iParams[0];

@@ -60,13 +60,13 @@ public class SQLFunctionVariance extends SQLFunctionAbstract {
     super(NAME);
   }
 
-  public SQLFunctionVariance(final String iName, final int iMinParams, final int iMaxParams) {
-    super(iName);
+  protected SQLFunctionVariance(final String name) {
+    super(name);
   }
 
   @Override
-  public Object execute( final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult,
-      final Object[] iParams, final CommandContext iContext) {
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
+      final CommandContext iContext) {
     if (iParams[0] instanceof Number) {
       addValue((Number) iParams[0]);
     } else if (MultiValue.isMultiValue(iParams[0])) {

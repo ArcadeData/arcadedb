@@ -42,18 +42,11 @@ public class ReturnMatchPatternsStep extends AbstractExecutionStep {
       public Result next() {
         return filter(upstream.next());
       }
-
-
-
-
-
-
     };
   }
 
   private Result filter(final Result next) {
-    next.getPropertyNames().stream().filter(s -> s.startsWith(MatchExecutionPlanner.DEFAULT_ALIAS_PREFIX))
-        .forEach(((ResultInternal) next)::removeProperty);
+    next.getPropertyNames().stream().filter(s -> s.startsWith(MatchExecutionPlanner.DEFAULT_ALIAS_PREFIX)).forEach(((ResultInternal) next)::removeProperty);
     return next;
   }
 

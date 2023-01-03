@@ -42,7 +42,7 @@ public abstract class DDLStatement extends Statement {
 
   public abstract ResultSet executeDDL(CommandContext ctx);
 
-  public ResultSet execute( final Database db, final  Object[] args,  final CommandContext parentCtx,  final boolean usePlanCache) {
+  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentCtx, final boolean usePlanCache) {
     final BasicCommandContext ctx = new BasicCommandContext();
     if (parentCtx != null)
       ctx.setParentWithoutOverridingChild(parentCtx);
@@ -50,7 +50,7 @@ public abstract class DDLStatement extends Statement {
     ctx.setDatabase(db);
     ctx.setInputParameters(args);
     final DDLExecutionPlan executionPlan = (DDLExecutionPlan) createExecutionPlan(ctx, false);
-    return executionPlan.executeInternal(ctx);
+    return executionPlan.executeInternal();
   }
 
   public ResultSet execute(final Database db, final Map params, final CommandContext parentCtx, final boolean usePlanCache) {
@@ -61,10 +61,10 @@ public abstract class DDLStatement extends Statement {
     ctx.setDatabase(db);
     ctx.setInputParameters(params);
     final DDLExecutionPlan executionPlan = (DDLExecutionPlan) createExecutionPlan(ctx, false);
-    return executionPlan.executeInternal(ctx);
+    return executionPlan.executeInternal();
   }
 
-  public InternalExecutionPlan createExecutionPlan( final CommandContext ctx,  final boolean enableProfiling) {
+  public InternalExecutionPlan createExecutionPlan(final CommandContext ctx, final boolean enableProfiling) {
     return new DDLExecutionPlan(ctx, this);
   }
 }

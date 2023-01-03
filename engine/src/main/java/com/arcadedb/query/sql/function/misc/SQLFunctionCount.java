@@ -34,10 +34,11 @@ public class SQLFunctionCount extends SQLFunctionMathAbstract {
   private long total = 0;
 
   public SQLFunctionCount() {
-    super(NAME, 1, 1);
+    super(NAME);
   }
 
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams, final CommandContext iContext) {
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
+      final CommandContext iContext) {
     if (iParams.length == 0 || iParams[0] != null)
       total++;
 

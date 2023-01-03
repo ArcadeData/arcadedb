@@ -26,15 +26,15 @@ import com.arcadedb.query.sql.parser.Limit;
  */
 public class LimitExecutionStep extends AbstractExecutionStep {
   private final Limit limit;
-
-  int loaded = 0;
+  private       int   loaded = 0;
 
   public LimitExecutionStep(final Limit limit, final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
     this.limit = limit;
   }
 
-  @Override public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
+  @Override
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
     final int limitVal = limit.getValue(ctx);
     if (limitVal == -1) {
       return getPrev().get().syncPull(ctx, nRecords);
@@ -48,15 +48,18 @@ public class LimitExecutionStep extends AbstractExecutionStep {
     return result;
   }
 
-  @Override public void sendTimeout() {
-
+  @Override
+  public void sendTimeout() {
+    // IGNORE THE TIMEOUT
   }
 
-  @Override public void close() {
+  @Override
+  public void close() {
     prev.ifPresent(x -> x.close());
   }
 
-  @Override public String prettyPrint(final int depth, final int indent) {
+  @Override
+  public String prettyPrint(final int depth, final int indent) {
     return ExecutionStepInternal.getIndent(depth, indent) + "+ LIMIT (" + limit.toString() + ")";
   }
 

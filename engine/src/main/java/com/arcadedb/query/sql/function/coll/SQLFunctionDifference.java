@@ -33,11 +33,11 @@ public class SQLFunctionDifference extends SQLFunctionMultiValueAbstract<Set<Obj
   public static final String NAME = "difference";
 
   public SQLFunctionDifference() {
-    super(NAME, 2, -1);
+    super(NAME);
   }
 
   @SuppressWarnings("unchecked")
-  public Object execute( final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
       final CommandContext iContext) {
     if (iParams[0] == null)
       return null;

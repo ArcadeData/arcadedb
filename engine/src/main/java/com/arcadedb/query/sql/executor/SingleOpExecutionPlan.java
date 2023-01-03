@@ -87,7 +87,7 @@ public class SingleOpExecutionPlan implements InternalExecutionPlan {
     return false;
   }
 
-  public ResultSet executeInternal(final BasicCommandContext ctx) throws CommandExecutionException {
+  public ResultSet executeInternal() throws CommandExecutionException {
     if (executed) {
       throw new CommandExecutionException("Trying to execute a result-set twice. Please use reset()");
     }

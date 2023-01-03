@@ -53,7 +53,7 @@ public abstract class SimpleExecStatement extends Statement {
     ctx.setDatabase(db);
     ctx.setInputParameters(args);
     final SingleOpExecutionPlan executionPlan = (SingleOpExecutionPlan) createExecutionPlan(ctx, false);
-    return executionPlan.executeInternal(ctx);
+    return executionPlan.executeInternal();
   }
 
   public ResultSet execute(final Database db, final Map<String, Object> params, final CommandContext parentContext, final boolean usePlanCache) {
@@ -64,7 +64,7 @@ public abstract class SimpleExecStatement extends Statement {
     ctx.setDatabase(db);
     ctx.setInputParameters(params);
     final SingleOpExecutionPlan executionPlan = (SingleOpExecutionPlan) createExecutionPlan(ctx, false);
-    return executionPlan.executeInternal(ctx);
+    return executionPlan.executeInternal();
   }
 
   public InternalExecutionPlan createExecutionPlan(final CommandContext ctx, final boolean enableProfiling) {

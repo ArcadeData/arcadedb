@@ -55,7 +55,7 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
   protected PriorityQueue<Vertex> open   = new PriorityQueue<Vertex>(1, (nodeA, nodeB) -> Double.compare(fScore.get(nodeA), fScore.get(nodeB)));
 
   public SQLFunctionAstar() {
-    super(NAME, 3, 4);
+    super(NAME);
   }
 
   public LinkedList<Vertex> execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,

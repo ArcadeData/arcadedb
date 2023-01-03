@@ -35,7 +35,7 @@ public class SQLFunctionSymmetricDifference extends SQLFunctionMultiValueAbstrac
   private Set<Object> rejected;
 
   public SQLFunctionSymmetricDifference() {
-    super(NAME, 1, -1);
+    super(NAME);
   }
 
   private static void addItemToResult(final Object o, final Set<Object> accepted, final Set<Object> rejected) {
@@ -54,7 +54,8 @@ public class SQLFunctionSymmetricDifference extends SQLFunctionMultiValueAbstrac
   }
 
   @SuppressWarnings("unchecked")
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams, final CommandContext iContext) {
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
+      final CommandContext iContext) {
     if (iParams[0] == null)
       return null;
 

@@ -43,10 +43,8 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
   public static final String NAME            = "shortestPath";
   public static final String PARAM_MAX_DEPTH = "maxDepth";
 
-  protected static final float DISTANCE = 1f;
-
   public SQLFunctionShortestPath() {
-    super(NAME, 2, 5);
+    super(NAME);
   }
 
   private static class OShortestPathContext {

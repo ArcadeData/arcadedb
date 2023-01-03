@@ -31,7 +31,7 @@ public class SQLFunctionOut extends SQLFunctionMoveFiltered {
   public static final String NAME = "out";
 
   public SQLFunctionOut() {
-    super(NAME, 0, -1);
+    super(NAME);
   }
 
   @Override

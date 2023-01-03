@@ -53,12 +53,11 @@ public class SkipExecutionStep extends AbstractExecutionStep {
     }
 
     return prev.get().syncPull(ctx, nRecords);
-
   }
 
   @Override
   public void sendTimeout() {
-
+    // IGNORE THE TIMEOUT
   }
 
   @Override
@@ -70,5 +69,4 @@ public class SkipExecutionStep extends AbstractExecutionStep {
   public String prettyPrint(final int depth, final int indent) {
     return ExecutionStepInternal.getIndent(depth, indent) + "+ SKIP (" + skip.toString() + ")";
   }
-
 }

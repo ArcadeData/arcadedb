@@ -35,14 +35,8 @@ import java.util.*;
  * Created by luigidellaquila on 03/01/17.
  */
 public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
-  public static final String NAME = "move";
-
-  public SQLFunctionMove() {
-    super(NAME, 1, 2);
-  }
-
-  public SQLFunctionMove(final String iName, final int iMin, final int iMax) {
-    super(iName, iMin, iMax);
+  protected SQLFunctionMove(final String iName) {
+    super(iName);
   }
 
   protected abstract Object move(final Database db, final Identifiable iRecord, final String[] iLabels);

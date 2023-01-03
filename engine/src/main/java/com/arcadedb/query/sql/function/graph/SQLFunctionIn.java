@@ -31,7 +31,7 @@ public class SQLFunctionIn extends SQLFunctionMoveFiltered {
   public static final String NAME = "in";
 
   public SQLFunctionIn() {
-    super(NAME, 0, -1);
+    super(NAME);
   }
 
   @Override

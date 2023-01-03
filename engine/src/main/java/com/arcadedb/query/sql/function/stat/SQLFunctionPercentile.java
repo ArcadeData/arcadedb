@@ -37,15 +37,16 @@ public class SQLFunctionPercentile extends SQLFunctionAbstract {
   private final List<Number> values    = new ArrayList<Number>();
 
   public SQLFunctionPercentile() {
-    this(NAME, 2, -1);
+    this(NAME);
   }
 
-  public SQLFunctionPercentile(final String iName, final int iMinParams, final int iMaxParams) {
+  public SQLFunctionPercentile(final String iName) {
     super(iName);
   }
 
   @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams, final CommandContext iContext) {
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
+      final CommandContext iContext) {
 
     if (quantiles.isEmpty()) { // set quantiles once
       for (int i = 1; i < iParams.length; ++i) {
@@ -100,9 +101,9 @@ public class SQLFunctionPercentile extends SQLFunctionAbstract {
 
   private Number evaluate(final List<Number> iValues, final double iQuantile) {
     iValues.sort((o1, o2) -> {
-        final double d1 = o1.doubleValue();
-        final double d2 = o2.doubleValue();
-        return Double.compare(d1, d2);
+      final double d1 = o1.doubleValue();
+      final double d2 = o2.doubleValue();
+      return Double.compare(d1, d2);
     });
 
     final double n = iValues.size();
