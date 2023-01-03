@@ -35,6 +35,7 @@ import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.RecordTableFormatter;
 import com.arcadedb.utility.TableFormatter;
+import com.arcadedb.utility.AnsiCode;
 import org.jline.reader.Completer;
 import org.jline.reader.EndOfFileException;
 import org.jline.reader.LineReader;
@@ -760,10 +761,10 @@ public class Console {
       try (final ByteArrayOutputStream out = new ByteArrayOutputStream(); final PrintWriter writer = new PrintWriter(out)) {
         e.printStackTrace(writer);
         writer.flush();
-        output("\nERROR:\n" + out + "\n");
+        output(AnsiCode.format("\n$ANSI{red ERROR:\n" + out + "}\n"));
       }
     } else
-      output("\nERROR: " + e.getMessage() + "\n");
+      output(AnsiCode.format("\n$ANSI{red ERROR: " + e.getMessage() + "}\n"));
   }
 
   private String getPrompt() {
