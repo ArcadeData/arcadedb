@@ -33,9 +33,7 @@ import com.arcadedb.schema.Property;
 import java.util.*;
 
 public class AlterPropertyStatement extends DDLStatement {
-
   public Expression settingValue;
-
   Identifier typeName;
   Identifier propertyName;
   Identifier customPropertyName;
@@ -55,9 +53,8 @@ public class AlterPropertyStatement extends DDLStatement {
     final Database db = ctx.getDatabase();
     final DocumentType typez = db.getSchema().getType(typeName.getStringValue());
 
-    if (typez == null) {
+    if (typez == null)
       throw new CommandExecutionException("Invalid type name or type not found: " + typez);
-    }
 
     final Property property = typez.getProperty(propertyName.getStringValue());
     if (property == null)
