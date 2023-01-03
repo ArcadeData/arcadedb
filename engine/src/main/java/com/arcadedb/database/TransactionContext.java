@@ -200,7 +200,7 @@ public class TransactionContext implements Transaction {
         final int dictionaryId = database.getSchema().getDictionary().getId();
         boolean reloadDictionary = false;
 
-        for (PageId pageId : modifiedPages.keySet()) {
+        for (final PageId pageId : modifiedPages.keySet()) {
           if (dictionaryId == pageId.getFileId()) {
             reloadDictionary = true;
             break;
@@ -210,7 +210,7 @@ public class TransactionContext implements Transaction {
         if (reloadDictionary) {
           try {
             database.getSchema().getDictionary().reload();
-          } catch (IOException e) {
+          } catch (final IOException e) {
             throw new SchemaException("Error on reloading schema dictionary");
           }
         }
@@ -222,10 +222,10 @@ public class TransactionContext implements Transaction {
 
     // RELOAD PREVIOUS VERSION OF MODIFIED RECORDS
     if (database.isOpen())
-      for (Record r : modifiedRecordsCache.values())
+      for (final Record r : modifiedRecordsCache.values())
         try {
           r.reload();
-        } catch (Exception e) {
+        } catch (final Exception e) {
           // IGNORE EXCEPTION (RECORD DELETED OR TYPE REMOVED)
         }
 
@@ -335,10 +335,10 @@ public class TransactionContext implements Transaction {
 
     final Set<Integer> involvedFiles = new LinkedHashSet<>();
     if (modifiedPages != null)
-      for (PageId pid : modifiedPages.keySet())
+      for (final PageId pid : modifiedPages.keySet())
         involvedFiles.add(pid.getFileId());
     if (newPages != null)
-      for (PageId pid : newPages.keySet())
+      for (final PageId pid : newPages.keySet())
         involvedFiles.add(pid.getFileId());
     involvedFiles.addAll(newPageCounters.keySet());
 
@@ -390,7 +390,7 @@ public class TransactionContext implements Transaction {
       // LOCK FILES (IN ORDER, SO TO AVOID DEADLOCK)
       final Set<Integer> modifiedFiles = new HashSet<>();
 
-      for (WALFile.WALPage p : buffer.pages)
+      for (final WALFile.WALPage p : buffer.pages)
         modifiedFiles.add(p.fileId);
 
       indexChanges.setKeys(keysTx);
@@ -399,7 +399,7 @@ public class TransactionContext implements Transaction {
       final int dictionaryFileId = database.getSchema().getDictionary().getId();
       boolean dictionaryModified = false;
 
-      for (WALFile.WALPage p : buffer.pages) {
+      for (final WALFile.WALPage p : buffer.pages) {
         final PaginatedFile file = database.getFileManager().getFile(p.fileId);
         final int pageSize = file.getPageSize();
 
@@ -428,10 +428,10 @@ public class TransactionContext implements Transaction {
       if (dictionaryModified)
         database.getSchema().getDictionary().reload();
 
-    } catch (ConcurrentModificationException e) {
+    } catch (final ConcurrentModificationException e) {
       rollback();
       throw e;
-    } catch (Exception e) {
+    } catch (final Exception e) {
       rollback();
       throw new TransactionException("Transaction error on commit", e);
     }
@@ -448,10 +448,10 @@ public class TransactionContext implements Transaction {
       throw new TransactionException("Transaction in phase " + status);
 
     if (updatedRecords != null) {
-      for (Record rec : updatedRecords.values())
+      for (final Record rec : updatedRecords.values())
         try {
           database.updateRecordNoLock(rec, false);
-        } catch (RecordNotFoundException e) {
+        } catch (final RecordNotFoundException e) {
           // DELETED IN TRANSACTION, THIS IS FULLY MANAGED TO NEVER HAPPEN, BUT IF IT DOES DUE TO THE INTRODUCTION OF A BUG, JUST LOG SOMETHING AND MOVE ON
           LogManager.instance().log(this, Level.WARNING, "Attempt to update the delete record %s in transaction", rec.getIdentity());
         }
@@ -496,7 +496,7 @@ public class TransactionContext implements Transaction {
       }
 
       if (newPages != null)
-        for (MutablePage p : newPages.values()) {
+        for (final MutablePage p : newPages.values()) {
           final int[] range = p.getModifiedRange();
           if (range[1] > 0) {
             pageManager.checkPageVersion(p, true);
@@ -514,10 +514,10 @@ public class TransactionContext implements Transaction {
 
       return new TransactionPhase1(result, pages);
 
-    } catch (DuplicatedKeyException | ConcurrentModificationException e) {
+    } catch (final DuplicatedKeyException | ConcurrentModificationException e) {
       rollback();
       throw e;
-    } catch (Exception e) {
+    } catch (final Exception e) {
       LogManager.instance().log(this, Level.FINE, "Unknown exception during commit (threadId=%d)", e, Thread.currentThread().getId());
       rollback();
       throw new TransactionException("Transaction error on commit", e);
@@ -551,26 +551,26 @@ public class TransactionContext implements Transaction {
       pageManager.updatePages(newPages, modifiedPages, asyncFlush);
 
       if (newPages != null) {
-        for (Map.Entry<Integer, Integer> entry : newPageCounters.entrySet()) {
+        for (final Map.Entry<Integer, Integer> entry : newPageCounters.entrySet()) {
           database.getSchema().getFileById(entry.getKey()).setPageCount(entry.getValue());
           database.getFileManager()
               .setVirtualFileSize(entry.getKey(), (long) entry.getValue() * database.getFileManager().getFile(entry.getKey()).getPageSize());
         }
       }
 
-      for (Record r : modifiedRecordsCache.values())
+      for (final Record r : modifiedRecordsCache.values())
         ((RecordInternal) r).unsetDirty();
 
-      for (int fileId : lockedFiles) {
+      for (final int fileId : lockedFiles) {
         final PaginatedComponent file = database.getSchema().getFileByIdIfExists(fileId);
         if (file != null)
           // THE FILE COULD BE NULL IN CASE OF INDEX COMPACTION
           file.onAfterCommit();
       }
 
-    } catch (ConcurrentModificationException e) {
+    } catch (final ConcurrentModificationException e) {
       throw e;
-    } catch (Exception e) {
+    } catch (final Exception e) {
       LogManager.instance().log(this, Level.FINE, "Unknown exception during commit (threadId=%d)", e, Thread.currentThread().getId());
       throw new TransactionException("Transaction error on commit", e);
     } finally {
@@ -649,10 +649,10 @@ public class TransactionContext implements Transaction {
   private List<Integer> lockFilesInOrder() {
     final Set<Integer> modifiedFiles = new HashSet<>();
 
-    for (PageId p : modifiedPages.keySet())
+    for (final PageId p : modifiedPages.keySet())
       modifiedFiles.add(p.getFileId());
     if (newPages != null)
-      for (PageId p : newPages.keySet())
+      for (final PageId p : newPages.keySet())
         modifiedFiles.add(p.getFileId());
 
     indexChanges.addFilesToLock(modifiedFiles);

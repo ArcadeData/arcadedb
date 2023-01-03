@@ -49,11 +49,11 @@ public interface InternalExecutionPlan extends ExecutionPlan {
     throw new UnsupportedOperationException();
   }
 
-  default void deserialize(Result serializedExecutionPlan) {
+  default void deserialize(final Result serializedExecutionPlan) {
     throw new UnsupportedOperationException();
   }
 
-  default InternalExecutionPlan copy(CommandContext ctx) {
+  default InternalExecutionPlan copy(final CommandContext ctx) {
     throw new UnsupportedOperationException();
   }
 
@@ -63,6 +63,6 @@ public interface InternalExecutionPlan extends ExecutionPlan {
     return null;
   }
 
-  default void setStatements(List<Statement> stm) {
+  default void setStatements(final List<Statement> stm) {
   }
 }

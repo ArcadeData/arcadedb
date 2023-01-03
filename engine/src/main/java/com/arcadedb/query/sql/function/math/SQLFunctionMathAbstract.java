@@ -29,7 +29,7 @@ import java.math.*;
  */
 public abstract class SQLFunctionMathAbstract extends SQLFunctionConfigurableAbstract {
 
-  public SQLFunctionMathAbstract(String iName, int iMinParams, int iMaxParams) {
+  public SQLFunctionMathAbstract(final String iName, final int iMinParams, final int iMaxParams) {
     super(iName, iMinParams, iMaxParams);
   }
 

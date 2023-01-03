@@ -34,7 +34,7 @@ public class MatchStep extends AbstractExecutionStep {
   private         MatchEdgeTraverser traverser;
   private         Result             nextResult;
 
-  public MatchStep(CommandContext context, EdgeTraversal edge, boolean profilingEnabled) {
+  public MatchStep(final CommandContext context, final EdgeTraversal edge, final boolean profilingEnabled) {
     super(context, profilingEnabled);
     this.edge = edge;
   }
@@ -48,7 +48,7 @@ public class MatchStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
     return new ResultSet() {
       int localCount = 0;
 
@@ -74,7 +74,7 @@ public class MatchStep extends AbstractExecutionStep {
         if (nextResult == null) {
           throw new NoSuchElementException();
         }
-        Result result = nextResult;
+        final Result result = nextResult;
         fetchNext(ctx, nRecords);
         localCount++;
         ctx.setVariable("matched", result);
@@ -92,7 +92,7 @@ public class MatchStep extends AbstractExecutionStep {
     };
   }
 
-  private void fetchNext(CommandContext ctx, int nRecords) {
+  private void fetchNext(final CommandContext ctx, final int nRecords) {
     nextResult = null;
     while (true) {
       if (traverser != null && traverser.hasNext(ctx)) {
@@ -125,7 +125,7 @@ public class MatchStep extends AbstractExecutionStep {
     }
   }
 
-  protected MatchEdgeTraverser createTraverser(Result lastUpstreamRecord) {
+  protected MatchEdgeTraverser createTraverser(final Result lastUpstreamRecord) {
     if (edge.edge.item instanceof MultiMatchPathItem) {
       return new MatchMultiEdgeTraverser(lastUpstreamRecord, edge);
     } else if (edge.edge.item instanceof FieldMatchPathItem) {
@@ -138,9 +138,9 @@ public class MatchStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    StringBuilder result = new StringBuilder();
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
+    final StringBuilder result = new StringBuilder();
     result.append(spaces);
     result.append("+ MATCH ");
     if (edge.out) {

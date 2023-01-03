@@ -98,7 +98,7 @@ public class OrientDBImporter {
 
   public OrientDBImporter(final String[] args) {
     String state = null;
-    for (String arg : args) {
+    for (final String arg : args) {
       if (arg.equals("-?"))
         printHelp();
       else if (arg.equals("-d"))
@@ -198,7 +198,7 @@ public class OrientDBImporter {
     logger.logLine(1, "Import of OrientDB database completed in %,d secs with %,d errors and %,d warnings.", elapsed, errors, warnings);
     logger.logLine(1, "\nSUMMARY\n");
     logger.logLine(1, "- Records..................................: %,d", totalRecordParsed);
-    for (Map.Entry<String, OrientDBClass> entry : classes.entrySet()) {
+    for (final Map.Entry<String, OrientDBClass> entry : classes.entrySet()) {
       final String className = entry.getKey();
       final Long recordsByClass = totalRecordByType.get(className);
       final long entries = recordsByClass != null ? recordsByClass : 0L;
@@ -290,7 +290,7 @@ public class OrientDBImporter {
       default:
         try {
           reader.skipValue();
-        } catch (EOFException e) {
+        } catch (final EOFException e) {
           return;
         }
       }
@@ -303,7 +303,7 @@ public class OrientDBImporter {
 
     final StringBuilder buffer = new StringBuilder();
 
-    for (Map<String, Object> u : parsedUsers) {
+    for (final Map<String, Object> u : parsedUsers) {
       final JSONObject user = new JSONObject();
 
       user.put("name", u.get("name"));
@@ -369,7 +369,7 @@ public class OrientDBImporter {
     reader.endArray();
   }
 
-  private void createEdges(long processedItems, Map<String, Object> attributes, String className) {
+  private void createEdges(final long processedItems, final Map<String, Object> attributes, final String className) {
     if (edgeClasses.contains(className)) {
       createEdges(attributes);
       if (processedItems > 0 && processedItems % 1_000_000 == 0) {
@@ -380,7 +380,7 @@ public class OrientDBImporter {
     }
   }
 
-  private void createRecords(long processedItems, Map<String, Object> attributes, String className) throws IOException {
+  private void createRecords(final long processedItems, final Map<String, Object> attributes, final String className) throws IOException {
     if (!edgeClasses.contains(className)) {
       createRecord(attributes);
     } else
@@ -449,7 +449,7 @@ public class OrientDBImporter {
             else
               record = database.newDocument(className);
 
-            for (Map.Entry<String, Object> entry : attributes.entrySet()) {
+            for (final Map.Entry<String, Object> entry : attributes.entrySet()) {
               final String attrName = entry.getKey();
               if (attrName.startsWith("@"))
                 continue;
@@ -517,12 +517,12 @@ public class OrientDBImporter {
 
       embedded = record.newEmbeddedDocument(className, propertyName);
 
-      for (Map.Entry<String, Object> entry : attributes.entrySet()) {
+      for (final Map.Entry<String, Object> entry : attributes.entrySet()) {
         final String attrName = entry.getKey();
         if (attrName.startsWith("@"))
           continue;
 
-        Object attrValue = entry.getValue();
+        final Object attrValue = entry.getValue();
 
         if (attrValue != null)
           embedded.set(attrName, attrValue);
@@ -554,8 +554,8 @@ public class OrientDBImporter {
     if (!checkForNullIndexes(attributes, type))
       return;
 
-    Map<String, Object> properties = Collections.EMPTY_MAP;
-    for (Map.Entry<String, Object> attr : attributes.entrySet())
+    Map<String, Object> properties = Collections.emptyMap();
+    for (final Map.Entry<String, Object> attr : attributes.entrySet())
       if (!attr.getKey().startsWith("@") && !attr.getKey().equals("out") && !attr.getKey().equals("in")) {
         if (properties == Collections.EMPTY_MAP)
           properties = new HashMap<>();
@@ -596,13 +596,13 @@ public class OrientDBImporter {
 
     context.createdEdges.incrementAndGet();
 
-    Long edgesByVertexType = totalEdgesByVertexType.computeIfAbsent(className, k -> 0L);
+    final Long edgesByVertexType = totalEdgesByVertexType.computeIfAbsent(className, k -> 0L);
     totalEdgesByVertexType.put(className, edgesByVertexType + 1);
 
     incrementRecordByClass(className);
   }
 
-  private Map<String, Object> parseRecord(JsonReader reader, final boolean ignore) throws IOException {
+  private Map<String, Object> parseRecord(final JsonReader reader, final boolean ignore) throws IOException {
     final Map<String, Object> attributes = ignore ? null : new LinkedHashMap<>();
 
     reader.beginObject();
@@ -647,7 +647,7 @@ public class OrientDBImporter {
     return attributes;
   }
 
-  private List<Object> parseArray(JsonReader reader, final boolean ignore) throws IOException {
+  private List<Object> parseArray(final JsonReader reader, final boolean ignore) throws IOException {
     final List<Object> list = ignore ? null : new ArrayList<>();
     reader.beginArray();
     while (reader.peek() != END_ARRAY) {
@@ -701,7 +701,7 @@ public class OrientDBImporter {
           reader.beginObject();
 
           String className = null;
-          OrientDBClass cls = new OrientDBClass();
+          final OrientDBClass cls = new OrientDBClass();
 
           while (reader.peek() != END_OBJECT) {
             switch (reader.nextName()) {
@@ -768,13 +768,13 @@ public class OrientDBImporter {
 
     reader.endObject();
 
-    for (String className : classes.keySet())
+    for (final String className : classes.keySet())
       createType(className);
   }
 
   private void parseIndexes(final Map<String, Object> attributes) throws IOException {
     final List<Map<String, Object>> parsedIndexes = (List<Map<String, Object>>) attributes.get("indexes");
-    for (Map<String, Object> parsedIndex : parsedIndexes) {
+    for (final Map<String, Object> parsedIndex : parsedIndexes) {
       parsedIndex.get("name");
       final boolean unique = parsedIndex.get("type").toString().startsWith("UNIQUE");
 
@@ -836,7 +836,7 @@ public class OrientDBImporter {
       type = 0;
 
     if (!classInfo.superClasses.isEmpty()) {
-      for (String c : classInfo.superClasses)
+      for (final String c : classInfo.superClasses)
         createType(c);
 
       type = getClassType(classInfo.superClasses);
@@ -868,7 +868,7 @@ public class OrientDBImporter {
     }
 
     // CREATE PROPERTIES
-    for (Map.Entry<String, String> entry : classInfo.properties.entrySet()) {
+    for (final Map.Entry<String, String> entry : classInfo.properties.entrySet()) {
       String orientdbType = entry.getValue();
 
       switch (orientdbType) {
@@ -886,7 +886,7 @@ public class OrientDBImporter {
 
       try {
         t.createProperty(entry.getKey(), Type.valueOf(orientdbType));
-      } catch (Exception e) {
+      } catch (final Exception e) {
         logger.logLine(1, "- Unknown type '%s', ignoring creation of property in the schema for '%s.%s'", orientdbType, t.getName(), entry.getKey());
         ++warnings;
       }
@@ -895,7 +895,7 @@ public class OrientDBImporter {
     logger.logLine(2, "- Created type '%s' with the following properties %s", className, classInfo.properties);
   }
 
-  private int getClassType(List<String> list) {
+  private int getClassType(final List<String> list) {
     int type = 0;
     for (int i = 0; type == 0 && i < list.size(); ++i) {
       final String su = list.get(i);
@@ -1010,7 +1010,7 @@ public class OrientDBImporter {
   private boolean checkForNullIndexes(final Map<String, Object> properties, final DocumentType type) {
     boolean valid = true;
     final Collection<TypeIndex> indexes = type.getAllIndexes(true);
-    for (Index index : indexes) {
+    for (final Index index : indexes) {
       if (index.getNullStrategy() == LSMTreeIndexAbstract.NULL_STRATEGY.ERROR) {
         final String indexedPropName = index.getPropertyNames().get(0);
         final Object value = properties.get(indexedPropName);
@@ -1033,7 +1033,7 @@ public class OrientDBImporter {
   }
 
   private void incrementRecordByClass(final String className) {
-    Long recordsByClass = totalRecordByType.computeIfAbsent(className, k -> 0L);
+    final Long recordsByClass = totalRecordByType.computeIfAbsent(className, k -> 0L);
     totalRecordByType.put(className, recordsByClass + 1);
   }
 }

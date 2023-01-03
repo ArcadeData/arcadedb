@@ -55,7 +55,7 @@ public class TxGraphTest extends TestHelper {
       ResultSet result = database.query("sql", "select expand( in().include('name') ) from Good");
       Assertions.assertTrue(result.hasNext());
       while (result.hasNext()) {
-        Result next = result.next();
+        final Result next = result.next();
         Assertions.assertNotNull(next.getProperty("name"));
         Assertions.assertNull(next.getProperty("date"));
       }
@@ -63,7 +63,7 @@ public class TxGraphTest extends TestHelper {
       result = database.query("sql", "select expand( in().include('date') ) from Good");
       Assertions.assertTrue(result.hasNext());
       while (result.hasNext()) {
-        Result next = result.next();
+        final Result next = result.next();
         Assertions.assertNotNull(next.getProperty("date"));
         Assertions.assertNull(next.getProperty("name"));
       }
@@ -71,7 +71,7 @@ public class TxGraphTest extends TestHelper {
       result = database.query("sql", "select expand( in().exclude('name') ) from Good");
       Assertions.assertTrue(result.hasNext());
       while (result.hasNext()) {
-        Result next = result.next();
+        final Result next = result.next();
         Assertions.assertNotNull(next.getProperty("date"));
         Assertions.assertNull(next.getProperty("name"));
       }
@@ -79,7 +79,7 @@ public class TxGraphTest extends TestHelper {
       result = database.query("sql", "select expand( in().exclude('date') ) from Good");
       Assertions.assertTrue(result.hasNext());
       while (result.hasNext()) {
-        Result next = result.next();
+        final Result next = result.next();
         Assertions.assertNotNull(next.getProperty("name"));
         Assertions.assertNull(next.getProperty("date"));
       }

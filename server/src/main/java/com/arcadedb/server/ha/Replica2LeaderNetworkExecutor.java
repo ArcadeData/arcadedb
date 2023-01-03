@@ -142,9 +142,9 @@ public class Replica2LeaderNetworkExecutor extends Thread {
           sendCommandToLeader(buffer, response, reqId);
         reqId = -1;
 
-      } catch (SocketTimeoutException e) {
+      } catch (final SocketTimeoutException e) {
         // IGNORE IT
-      } catch (Exception e) {
+      } catch (final Exception e) {
         LogManager.instance().log(this, Level.INFO, "Exception during execution of request %d (shutdown=%s name=%s error=%s)", reqId, shutdown, getName(), e.toString());
         reconnect(e);
       }
@@ -182,13 +182,13 @@ public class Replica2LeaderNetworkExecutor extends Thread {
       if (!shutdown) {
         try {
           connect();
-        } catch (Exception e1) {
+        } catch (final Exception e1) {
           LogManager.instance().log(this, Level.SEVERE, "Error on re-connecting to the Leader ('%s') (error=%s)", getRemoteServerName(), e1);
 
           HashSet<String> serverAddressListCopy = new HashSet<>(Arrays.asList(server.getServerAddressList().split(",")));
 
           for (int retry = 0; retry < 3 && !shutdown && !serverAddressListCopy.isEmpty(); ++retry) {
-            for (String serverAddress : serverAddressListCopy) {
+            for (final String serverAddress : serverAddressListCopy) {
               try {
                 if (server.isCurrentServer(serverAddress))
                   // SKIP LOCAL SERVER
@@ -201,14 +201,14 @@ public class Replica2LeaderNetworkExecutor extends Thread {
 
                 connect();
                 return;
-              } catch (Exception e2) {
+              } catch (final Exception e2) {
                 LogManager.instance().log(this, Level.SEVERE, "Error on re-connecting to the server '%s' (error=%s)", getRemoteAddress(), e2);
               }
             }
 
             try {
               Thread.sleep(2000);
-            } catch (InterruptedException interruptedException) {
+            } catch (final InterruptedException interruptedException) {
               Thread.currentThread().interrupt();
               shutdown = true;
               return;
@@ -254,7 +254,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
     // WAIT THE THREAD IS DEAD
     try {
       join();
-    } catch (InterruptedException e) {
+    } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
     }
   }
@@ -296,7 +296,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
       synchronized (channelInputLock) {
         final boolean connectionAccepted = channel.readBoolean();
         if (!connectionAccepted) {
-          byte reasonCode = channel.readByte();
+          final byte reasonCode = channel.readByte();
 
           final String reason = channel.readString();
 
@@ -353,7 +353,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
 
       installDatabases();
 
-    } catch (Exception e) {
+    } catch (final Exception e) {
       LogManager.instance().log(this, Level.FINE, "Error on connecting to the server %s:%d (cause=%s)", host, port, e.toString());
 
       //shutdown();
@@ -366,7 +366,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
     buffer.setAllocationChunkSize(1024);
 
     final ReplicationMessage lastMessage = server.getReplicationLogFile().getLastMessage();
-    long lastLogNumber = lastMessage != null ? lastMessage.messageNumber - 1 : -1;
+    final long lastLogNumber = lastMessage != null ? lastMessage.messageNumber - 1 : -1;
 
     LogManager.instance().log(this, Level.INFO, "Requesting install of databases...");
 
@@ -384,7 +384,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
 
         final Set<String> databases = fullSync.getDatabases();
 
-        for (String db : databases) {
+        for (final String db : databases) {
           sendCommandToLeader(buffer, new DatabaseStructureRequest(db), -1);
           final DatabaseStructureResponse dbStructure = (DatabaseStructureResponse) receiveCommandFromLeaderDuringJoin(buffer);
 
@@ -404,7 +404,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
 
       sendCommandToLeader(buffer, new ReplicaReadyRequest(), -1);
 
-    } catch (Exception e) {
+    } catch (final Exception e) {
       shutdown();
       LogManager.instance().log(this, Level.SEVERE, "Error starting HA service (error=%s)", e);
       throw new ServerException("Cannot start HA service", e);
@@ -421,7 +421,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
     }
 
     // WRITE ALL THE FILES
-    for (Map.Entry<Integer, String> f : dbStructure.getFileNames().entrySet()) {
+    for (final Map.Entry<Integer, String> f : dbStructure.getFileNames().entrySet()) {
       installFile(buffer, db, f.getKey(), f.getValue(), 0, -1);
     }
 
@@ -439,7 +439,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
     LogManager.instance().log(this, Level.FINE, "Installing file '%s'...", fileName);
 
     int pagesWritten = 0;
-    long fileSize = 0;
+    final long fileSize = 0;
     while (true) {
       sendCommandToLeader(buffer, new FileContentRequest(db, fileId, from, pageToInclusive), -1);
       final FileContentResponse fileChunk = (FileContentResponse) receiveCommandFromLeaderDuringJoin(buffer);

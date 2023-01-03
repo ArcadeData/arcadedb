@@ -105,7 +105,7 @@ public class ArcadeDBServer {
 
     try {
       lifecycleEvent(TestCallback.TYPE.SERVER_STARTING, null);
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new ServerException("Error on starting the server '" + serverName + "'");
     }
 
@@ -152,7 +152,7 @@ public class ArcadeDBServer {
 
     try {
       lifecycleEvent(TestCallback.TYPE.SERVER_UP, null);
-    } catch (Exception e) {
+    } catch (final Exception e) {
       stop();
       throw new ServerException("Error on starting the server '" + serverName + "'");
     }
@@ -163,7 +163,7 @@ public class ArcadeDBServer {
     final String registeredPlugins = configuration.getValueAsString(GlobalConfiguration.SERVER_PLUGINS);
     if (registeredPlugins != null && !registeredPlugins.isEmpty()) {
       final String[] pluginEntries = registeredPlugins.split(",");
-      for (String p : pluginEntries) {
+      for (final String p : pluginEntries) {
         final String[] pluginPair = p.split(":");
         final String pluginName = pluginPair[0];
         result.add(pluginName);
@@ -176,7 +176,7 @@ public class ArcadeDBServer {
     final String registeredPlugins = configuration.getValueAsString(GlobalConfiguration.SERVER_PLUGINS);
     if (registeredPlugins != null && !registeredPlugins.isEmpty()) {
       final String[] pluginEntries = registeredPlugins.split(",");
-      for (String p : pluginEntries) {
+      for (final String p : pluginEntries) {
         try {
           final String[] pluginPair = p.split(":");
 
@@ -193,7 +193,7 @@ public class ArcadeDBServer {
 
           LogManager.instance().log(this, Level.INFO, "- %s plugin started", pluginName);
 
-        } catch (Exception e) {
+        } catch (final Exception e) {
           throw new ServerException("Error on loading plugin from class '" + p + ";", e);
         }
       }
@@ -206,7 +206,7 @@ public class ArcadeDBServer {
 
     try {
       lifecycleEvent(TestCallback.TYPE.SERVER_SHUTTING_DOWN, null);
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new ServerException("Error on stopping the server '" + serverName + "'");
     }
 
@@ -214,7 +214,7 @@ public class ArcadeDBServer {
 
     status = STATUS.SHUTTING_DOWN;
 
-    for (Map.Entry<String, ServerPlugin> pEntry : plugins.entrySet()) {
+    for (final Map.Entry<String, ServerPlugin> pEntry : plugins.entrySet()) {
       LogManager.instance().log(this, Level.INFO, "- Stop %s plugin", pEntry.getKey());
       CodeUtils.executeIgnoringExceptions(() -> pEntry.getValue().stopService(), "Error on halting '" + pEntry.getKey() + "' plugin");
     }
@@ -228,7 +228,7 @@ public class ArcadeDBServer {
     if (security != null)
       CodeUtils.executeIgnoringExceptions(security::stopService, "Error on stopping Security service");
 
-    for (Database db : databases.values())
+    for (final Database db : databases.values())
       CodeUtils.executeIgnoringExceptions(db::close, "Error closing database '" + db.getName() + "'");
     databases.clear();
 
@@ -242,7 +242,7 @@ public class ArcadeDBServer {
 
     try {
       lifecycleEvent(TestCallback.TYPE.SERVER_DOWN, null);
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new ServerException("Error on stopping the server '" + serverName + "'");
     }
 
@@ -330,7 +330,7 @@ public class ArcadeDBServer {
 
   public void lifecycleEvent(final TestCallback.TYPE type, final Object object) throws Exception {
     if (testEnabled)
-      for (TestCallback c : testEventListeners)
+      for (final TestCallback c : testEventListeners)
         c.onEvent(type, object, this);
   }
 
@@ -391,7 +391,7 @@ public class ArcadeDBServer {
 
       if (configuration.getValueAsBoolean(GlobalConfiguration.SERVER_DATABASE_LOADATSTARTUP)) {
         final File[] databaseDirectories = databaseDir.listFiles(File::isDirectory);
-        for (File f : databaseDirectories)
+        for (final File f : databaseDirectories)
           getDatabase(f.getName());
       }
     }
@@ -406,7 +406,7 @@ public class ArcadeDBServer {
 
       // CREATE DEFAULT DATABASES
       final String[] dbs = defaultDatabases.split(";");
-      for (String db : dbs) {
+      for (final String db : dbs) {
         final int credentialBegin = db.indexOf('[');
         if (credentialBegin < 0) {
           LogManager.instance().log(this, Level.WARNING, "Error in default databases format: '%s'", defaultDatabases);
@@ -426,7 +426,7 @@ public class ArcadeDBServer {
           final String commands = db.substring(credentialEnd + 2, db.length() - 1);
 
           final String[] commandParts = commands.split(",");
-          for (String command : commandParts) {
+          for (final String command : commandParts) {
             final int commandSeparator = command.indexOf(":");
             if (commandSeparator < 0) {
               LogManager.instance().log(this, Level.WARNING, "Error in startup command configuration format: '%s'", commands);
@@ -442,7 +442,7 @@ public class ArcadeDBServer {
                 ((DatabaseInternal) database).getEmbedded().drop();
                 databases.remove(dbName);
               }
-              String dbPath = configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + File.separator + dbName;
+              final String dbPath = configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY) + File.separator + dbName;
 //              new Restore(commandParams, dbPath).restoreDatabase();
 
               try {
@@ -451,9 +451,9 @@ public class ArcadeDBServer {
 
                 clazz.getMethod("restoreDatabase").invoke(restorer);
 
-              } catch (ClassNotFoundException | NoSuchMethodException | IllegalAccessException | InstantiationException e) {
+              } catch (final ClassNotFoundException | NoSuchMethodException | IllegalAccessException | InstantiationException e) {
                 throw new CommandExecutionException("Error on restoring database, restore libs not found in classpath", e);
-              } catch (InvocationTargetException e) {
+              } catch (final InvocationTargetException e) {
                 throw new CommandExecutionException("Error on restoring database", e.getTargetException());
               }
 
@@ -486,7 +486,7 @@ public class ArcadeDBServer {
 
   private void parseCredentials(final String dbName, final String credentials) {
     final String[] credentialPairs = credentials.split(",");
-    for (String credential : credentialPairs) {
+    for (final String credential : credentialPairs) {
 
       final String[] credentialParts = credential.split(":");
 
@@ -511,7 +511,7 @@ public class ArcadeDBServer {
               security.saveUsers();
             }
 
-          } catch (ServerSecurityException e) {
+          } catch (final ServerSecurityException e) {
             LogManager.instance()
                 .log(this, Level.WARNING, "Cannot create database '%s' because the user '%s' already exists with a different password", null, dbName, userName);
           }
@@ -533,7 +533,7 @@ public class ArcadeDBServer {
         configuration.reset();
         configuration.fromJSON(content);
 
-      } catch (IOException e) {
+      } catch (final IOException e) {
         LogManager.instance().log(this, Level.SEVERE, "Error on loading configuration from file '%s'", e, file);
       }
     }

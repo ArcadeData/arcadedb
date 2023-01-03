@@ -60,11 +60,11 @@ public class IsNotDefinedCondition extends BooleanExpression {
 
   @Override
   protected List<Object> getExternalCalculationConditions() {
-    return Collections.EMPTY_LIST;
+    return Collections.emptyList();
   }
 
   @Override
-  public boolean needsAliases(Set<String> aliases) {
+  public boolean needsAliases(final Set<String> aliases) {
     return expression.needsAliases(aliases);
   }
 
@@ -76,7 +76,7 @@ public class IsNotDefinedCondition extends BooleanExpression {
   }
 
   @Override
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
     this.expression.extractSubQueries(collector);
   }
 

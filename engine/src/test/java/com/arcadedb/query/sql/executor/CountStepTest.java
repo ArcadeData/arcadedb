@@ -31,19 +31,19 @@ public class CountStepTest {
 
   @Test
   public void shouldCountRecords() {
-    CommandContext context = new BasicCommandContext();
-    CountStep step = new CountStep(context, false);
+    final CommandContext context = new BasicCommandContext();
+    final CountStep step = new CountStep(context, false);
 
-    AbstractExecutionStep previous =
+    final AbstractExecutionStep previous =
         new AbstractExecutionStep(context, false) {
           boolean done = false;
 
           @Override
-          public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-            InternalResultSet result = new InternalResultSet();
+          public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
+            final InternalResultSet result = new InternalResultSet();
             if (!done) {
               for (int i = 0; i < 100; i++) {
-                ResultInternal item = new ResultInternal();
+                final ResultInternal item = new ResultInternal();
                 item.setProperty(PROPERTY_NAME, PROPERTY_VALUE);
                 result.add(item);
               }
@@ -54,7 +54,7 @@ public class CountStepTest {
         };
 
     step.setPrevious(previous);
-    ResultSet result = step.syncPull(context, 100);
+    final ResultSet result = step.syncPull(context, 100);
     Assertions.assertEquals(100, (long) result.next().getProperty(COUNT_PROPERTY_NAME));
     Assertions.assertFalse(result.hasNext());
   }

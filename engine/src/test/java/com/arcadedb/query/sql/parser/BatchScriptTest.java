@@ -83,18 +83,18 @@ public class BatchScriptTest {
     checkRightSyntax(s);
   }
 
-  protected List<Statement> checkRightSyntax(String query) {
+  protected List<Statement> checkRightSyntax(final String query) {
     return checkSyntax(query, true);
   }
 
-  protected List<Statement> checkWrongSyntax(String query) {
+  protected List<Statement> checkWrongSyntax(final String query) {
     return checkSyntax(query, false);
   }
 
-  protected List<Statement> checkSyntax(String query, boolean isCorrect) {
-    SqlParser osql = getParserFor(query);
+  protected List<Statement> checkSyntax(final String query, final boolean isCorrect) {
+    final SqlParser osql = getParserFor(query);
     try {
-      List<Statement> result = osql.ParseScript();
+      final List<Statement> result = osql.ParseScript();
       //      for(Statement stm:result){
       //        System.out.println(stm.toString()+";");
       //      }
@@ -103,7 +103,7 @@ public class BatchScriptTest {
       }
 
       return result;
-    } catch (Exception e) {
+    } catch (final Exception e) {
       if (isCorrect) {
         e.printStackTrace();
         fail();
@@ -112,9 +112,9 @@ public class BatchScriptTest {
     return null;
   }
 
-  protected SqlParser getParserFor(String string) {
-    InputStream is = new ByteArrayInputStream(string.getBytes());
-    SqlParser osql = new SqlParser(null, is);
+  protected SqlParser getParserFor(final String string) {
+    final InputStream is = new ByteArrayInputStream(string.getBytes());
+    final SqlParser osql = new SqlParser(null, is);
     return osql;
   }
 }

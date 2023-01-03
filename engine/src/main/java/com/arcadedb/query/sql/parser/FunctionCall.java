@@ -75,7 +75,7 @@ public class FunctionCall extends SimpleNode {
     name.toString(params, builder);
     builder.append("(");
     boolean first = true;
-    for (Expression expr : this.params) {
+    for (final Expression expr : this.params) {
       if (!first) {
         builder.append(", ");
       }
@@ -104,7 +104,7 @@ public class FunctionCall extends SimpleNode {
       }
     }
     if (record == null) {
-      Object current = ctx == null ? null : ctx.getVariable("current");
+      final Object current = ctx == null ? null : ctx.getVariable("current");
       if (current != null) {
         if (current instanceof Identifiable) {
           record = current;
@@ -115,7 +115,7 @@ public class FunctionCall extends SimpleNode {
         }
       }
     }
-    for (Expression expr : this.params) {
+    for (final Expression expr : this.params) {
       if (record instanceof Identifiable) {
         paramValues.add(expr.execute((Identifiable) record, ctx));
       } else if (record instanceof Result) {
@@ -158,7 +158,7 @@ public class FunctionCall extends SimpleNode {
    *
    * @return
    */
-  public Iterable<Record> executeIndexedFunction(FromClause target, CommandContext ctx, BinaryCompareOperator operator, Object rightValue) {
+  public Iterable<Record> executeIndexedFunction(final FromClause target, final CommandContext ctx, final BinaryCompareOperator operator, final Object rightValue) {
     final SQLFunction function = getFunction();
     if (function instanceof IndexableSQLFunction)
       return ((IndexableSQLFunction) function).searchFromTarget(target, operator, rightValue, ctx, this.getParams().toArray(new Expression[] {}));
@@ -174,7 +174,7 @@ public class FunctionCall extends SimpleNode {
    *
    * @return the approximate number of items returned by the condition execution, -1 if the estimation cannot be executed
    */
-  public long estimateIndexedFunction(FromClause target, CommandContext ctx, BinaryCompareOperator operator, Object rightValue) {
+  public long estimateIndexedFunction(final FromClause target, final CommandContext ctx, final BinaryCompareOperator operator, final Object rightValue) {
     final SQLFunction function = getFunction();
     if (function instanceof IndexableSQLFunction)
       return ((IndexableSQLFunction) function).estimate(target, operator, rightValue, ctx, this.getParams().toArray(new Expression[] {}));
@@ -193,7 +193,7 @@ public class FunctionCall extends SimpleNode {
    * @return true if current function is an indexed function AND that function can also be executed without using the index, false
    * otherwise
    */
-  public boolean canExecuteIndexedFunctionWithoutIndex(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {
+  public boolean canExecuteIndexedFunctionWithoutIndex(final FromClause target, final CommandContext context, final BinaryCompareOperator operator, final Object right) {
     final SQLFunction function = getCachedFunction();
     if (function instanceof IndexableSQLFunction)
       return ((IndexableSQLFunction) function).canExecuteInline(target, operator, right, context, this.getParams().toArray(new Expression[] {}));
@@ -211,7 +211,8 @@ public class FunctionCall extends SimpleNode {
    *
    * @return true if current function is an indexed function AND that function can be used on this target, false otherwise
    */
-  public boolean allowsIndexedFunctionExecutionOnTarget(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {
+  public boolean allowsIndexedFunctionExecutionOnTarget(
+      final FromClause target, final CommandContext context, final BinaryCompareOperator operator, final Object right) {
     final SQLFunction function = getCachedFunction();
     if (function instanceof IndexableSQLFunction)
       return ((IndexableSQLFunction) function).allowsIndexedExecution(target, operator, right, context, this.getParams().toArray(new Expression[] {}));
@@ -243,7 +244,7 @@ public class FunctionCall extends SimpleNode {
   }
 
   public boolean needsAliases(final Set<String> aliases) {
-    for (Expression param : params) {
+    for (final Expression param : params) {
       if (param.needsAliases(aliases)) {
         return true;
       }
@@ -256,7 +257,7 @@ public class FunctionCall extends SimpleNode {
       return true;
     }
 
-    for (Expression exp : params) {
+    for (final Expression exp : params) {
       if (exp.isAggregate()) {
         return true;
       }
@@ -269,15 +270,15 @@ public class FunctionCall extends SimpleNode {
     if (isAggregate()) {
       final FunctionCall newFunct = new FunctionCall(parser, -1);
       newFunct.name = this.name;
-      Identifier functionResultAlias = aggregateProj.getNextAlias();
+      final Identifier functionResultAlias = aggregateProj.getNextAlias();
 
       if (isAggregateFunction()) {
         if (isStar()) {
-          for (Expression param : params) {
+          for (final Expression param : params) {
             newFunct.getParams().add(param);
           }
         } else {
-          for (Expression param : params) {
+          for (final Expression param : params) {
             if (param.isAggregate()) {
               throw new CommandExecutionException("Cannot calculate an aggregate function of another aggregate function " + this);
             }
@@ -294,11 +295,11 @@ public class FunctionCall extends SimpleNode {
         return new Expression(functionResultAlias);
       } else {
         if (isStar()) {
-          for (Expression param : params) {
+          for (final Expression param : params) {
             newFunct.getParams().add(param);
           }
         } else {
-          for (Expression param : params) {
+          for (final Expression param : params) {
             newFunct.getParams().add(param.splitForAggregation(aggregateProj));
           }
         }
@@ -328,7 +329,7 @@ public class FunctionCall extends SimpleNode {
   }
 
   public boolean isEarlyCalculated() {
-    for (Expression param : params) {
+    for (final Expression param : params) {
       if (!param.isEarlyCalculated()) {
         return false;
       }
@@ -370,7 +371,7 @@ public class FunctionCall extends SimpleNode {
 
   public boolean refersToParent() {
     if (params != null) {
-      for (Expression param : params) {
+      for (final Expression param : params) {
         if (param != null && param.refersToParent()) {
           return true;
         }
@@ -409,8 +410,8 @@ public class FunctionCall extends SimpleNode {
     if (fromResult.getProperty("params") != null) {
       params = new ArrayList<>();
       final List<Result> ser = fromResult.getProperty("params");
-      for (Result item : ser) {
-        Expression exp = new Expression(-1);
+      for (final Result item : ser) {
+        final Expression exp = new Expression(-1);
         exp.deserialize(item);
         params.add(exp);
       }
@@ -418,13 +419,13 @@ public class FunctionCall extends SimpleNode {
   }
 
   public void extractSubQueries(final Identifier letAlias, final SubQueryCollector collector) {
-    for (Expression param : this.params) {
+    for (final Expression param : this.params) {
       param.extractSubQueries(letAlias, collector);
     }
   }
 
   public void extractSubQueries(final SubQueryCollector collector) {
-    for (Expression param : this.params)
+    for (final Expression param : this.params)
       param.extractSubQueries(collector);
   }
 

@@ -43,11 +43,11 @@ public class InCondition extends BooleanExpression {
   private static final Object UNSET           = new Object();
   private final        Object inputFinalValue = UNSET;
 
-  public InCondition(int id) {
+  public InCondition(final int id) {
     super(id);
   }
 
-  public InCondition(SqlParser p, int id) {
+  public InCondition(final SqlParser p, final int id) {
     super(p, id);
   }
 

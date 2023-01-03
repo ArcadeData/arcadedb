@@ -29,12 +29,12 @@ import com.arcadedb.query.sql.parser.WhileStep;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class ForEachExecutionPlan extends UpdateExecutionPlan {
-    public ForEachExecutionPlan(CommandContext ctx) {
+    public ForEachExecutionPlan(final CommandContext ctx) {
         super(ctx);
     }
 
     public boolean containsReturn() {
-        for (ExecutionStep step : getSteps()) {
+        for (final ExecutionStep step : getSteps()) {
             if (step instanceof ForEachStep) {
                 return ((ForEachStep) step).containsReturn();
             }

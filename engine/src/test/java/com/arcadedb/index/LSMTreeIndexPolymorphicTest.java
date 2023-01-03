@@ -41,7 +41,7 @@ public class LSMTreeIndexPolymorphicTest extends TestHelper {
     populate(Schema.INDEX_TYPE.LSM_TREE);
 
     try {
-      MutableDocument docChildDuplicated = database.newDocument("TestChild");
+      final MutableDocument docChildDuplicated = database.newDocument("TestChild");
       database.transaction(() -> {
         docChildDuplicated.set("name", "Root");
         Assertions.assertEquals("Root", docChildDuplicated.get("name"));
@@ -50,7 +50,7 @@ public class LSMTreeIndexPolymorphicTest extends TestHelper {
 
       Assertions.fail("Duplicated shouldn't be allowed by unique index on sub type");
 
-    } catch (DuplicatedKeyException e) {
+    } catch (final DuplicatedKeyException e) {
       // EXPECTED
     }
 
@@ -66,22 +66,22 @@ public class LSMTreeIndexPolymorphicTest extends TestHelper {
   // https://github.com/ArcadeData/arcadedb/issues/152
   @Test
   public void testDocumentAfterCreation2() {
-    DocumentType typeRoot2 = database.getSchema().getOrCreateDocumentType("TestRoot2");
+    final DocumentType typeRoot2 = database.getSchema().getOrCreateDocumentType("TestRoot2");
     typeRoot2.getOrCreateProperty("name", String.class);
     typeRoot2.getOrCreateProperty("parent", Type.LINK);
     typeRoot2.getOrCreateTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "name", "parent");
     database.command("sql", "delete from TestRoot2");
     database.begin();
-    DocumentType testChild2 = database.getSchema().getOrCreateDocumentType("TestChild2");
+    final DocumentType testChild2 = database.getSchema().getOrCreateDocumentType("TestChild2");
     testChild2.setSuperTypes(Arrays.asList(typeRoot2));
-    MutableDocument doc = database.newDocument("TestChild2");
+    final MutableDocument doc = database.newDocument("TestChild2");
     doc.set("name", "Document Name");
     Assertions.assertEquals("Document Name", doc.get("name"));
     doc.save();
     Assertions.assertEquals("Document Name", doc.get("name"));
-    try (ResultSet rs = database.query("sql", "select from TestChild2 where name = :name", Map.of("arg0", "Test2", "name", "Document Name"))) {
+    try (final ResultSet rs = database.query("sql", "select from TestChild2 where name = :name", Map.of("arg0", "Test2", "name", "Document Name"))) {
       Assertions.assertTrue(rs.hasNext());
-      Document docRetrieved = rs.next().getElement().orElse(null);
+      final Document docRetrieved = rs.next().getElement().orElse(null);
       Assertions.assertEquals("Document Name", docRetrieved.get("name"));
       Assertions.assertFalse(rs.hasNext());
     }
@@ -91,29 +91,29 @@ public class LSMTreeIndexPolymorphicTest extends TestHelper {
   // https://github.com/ArcadeData/arcadedb/issues/152
   @Test
   public void testDocumentAfterCreation2AutoTx() {
-    DocumentType typeRoot2 = database.getSchema().getOrCreateDocumentType("TestRoot2");
+    final DocumentType typeRoot2 = database.getSchema().getOrCreateDocumentType("TestRoot2");
     typeRoot2.getOrCreateProperty("name", String.class);
     typeRoot2.getOrCreateProperty("parent", Type.LINK);
     typeRoot2.getOrCreateTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "name", "parent");
     database.command("sql", "delete from TestRoot2");
-    DocumentType typeChild2 = database.getSchema().getOrCreateDocumentType("TestChild2");
+    final DocumentType typeChild2 = database.getSchema().getOrCreateDocumentType("TestChild2");
     typeChild2.setSuperTypes(Arrays.asList(typeRoot2));
 
     database.setAutoTransaction(true);
-    MutableDocument doc = database.newDocument("TestChild2");
+    final MutableDocument doc = database.newDocument("TestChild2");
     doc.set("name", "Document Name");
     Assertions.assertEquals("Document Name", doc.get("name"));
     doc.save();
     Assertions.assertEquals("Document Name", doc.get("name"));
-    try (ResultSet rs = database.query("sql", "select from TestChild2 where name = :name", Map.of("arg0", "Test2", "name", "Document Name"))) {
+    try (final ResultSet rs = database.query("sql", "select from TestChild2 where name = :name", Map.of("arg0", "Test2", "name", "Document Name"))) {
       Assertions.assertTrue(rs.hasNext());  //<<<<<<----------FAILING HERE
-      Document docRetrieved = rs.next().getElement().orElse(null);
+      final Document docRetrieved = rs.next().getElement().orElse(null);
       Assertions.assertEquals("Document Name", docRetrieved.get("name"));
       Assertions.assertFalse(rs.hasNext());
     }
   }
 
-  private void populate(Schema.INDEX_TYPE indexType) {
+  private void populate(final Schema.INDEX_TYPE indexType) {
     typeRoot = database.getSchema().getOrCreateDocumentType("TestRoot");
     typeRoot.getOrCreateProperty("name", String.class);
     typeRoot.getOrCreateTypeIndex(indexType, true, "name");
@@ -122,7 +122,7 @@ public class LSMTreeIndexPolymorphicTest extends TestHelper {
     typeChild = database.getSchema().getOrCreateDocumentType("TestChild");
     typeChild.setSuperTypes(Arrays.asList(typeRoot));
 
-    MutableDocument docRoot = database.newDocument("TestRoot");
+    final MutableDocument docRoot = database.newDocument("TestRoot");
     database.transaction(() -> {
       docRoot.set("name", "Root");
       Assertions.assertEquals("Root", docRoot.get("name"));
@@ -130,7 +130,7 @@ public class LSMTreeIndexPolymorphicTest extends TestHelper {
     });
     Assertions.assertEquals("Root", docRoot.get("name"));
 
-    MutableDocument docChild = database.newDocument("TestChild");
+    final MutableDocument docChild = database.newDocument("TestChild");
     database.transaction(() -> {
       docChild.set("name", "Child");
       Assertions.assertEquals("Child", docChild.get("name"));
@@ -140,11 +140,11 @@ public class LSMTreeIndexPolymorphicTest extends TestHelper {
   }
 
   private void checkQueries() {
-    try (ResultSet rs = database.query("sql", "select from TestRoot where name <> :name", Map.of("arg0", "Test2", "name", "Nonsense"))) {
+    try (final ResultSet rs = database.query("sql", "select from TestRoot where name <> :name", Map.of("arg0", "Test2", "name", "Nonsense"))) {
       Assertions.assertTrue(rs.hasNext());
-      Document doc1Retrieved = rs.next().getElement().orElse(null);
+      final Document doc1Retrieved = rs.next().getElement().orElse(null);
       Assertions.assertTrue(rs.hasNext());
-      Document doc2Retrieved = rs.next().getElement().orElse(null);
+      final Document doc2Retrieved = rs.next().getElement().orElse(null);
 
       if (doc1Retrieved.getTypeName().equals("TestRoot"))
         Assertions.assertEquals("Root", doc1Retrieved.get("name"));
@@ -156,25 +156,25 @@ public class LSMTreeIndexPolymorphicTest extends TestHelper {
       Assertions.assertFalse(rs.hasNext());
     }
 
-    try (ResultSet rs = database.query("sql", "select from TestChild where name = :name", Map.of("arg0", "Test2", "name", "Child"))) {
+    try (final ResultSet rs = database.query("sql", "select from TestChild where name = :name", Map.of("arg0", "Test2", "name", "Child"))) {
       Assertions.assertTrue(rs.hasNext());
-      Document doc1Retrieved = rs.next().getElement().orElse(null);
+      final Document doc1Retrieved = rs.next().getElement().orElse(null);
       Assertions.assertEquals("Child", doc1Retrieved.get("name"));
       Assertions.assertFalse(rs.hasNext());
     }
 
     typeChild.removeSuperType(typeRoot);
 
-    try (ResultSet rs = database.query("sql", "select from TestChild where name = :name", Map.of("arg0", "Test2", "name", "Child"))) {
+    try (final ResultSet rs = database.query("sql", "select from TestChild where name = :name", Map.of("arg0", "Test2", "name", "Child"))) {
       Assertions.assertTrue(rs.hasNext());
-      Document doc1Retrieved = rs.next().getElement().orElse(null);
+      final Document doc1Retrieved = rs.next().getElement().orElse(null);
       Assertions.assertEquals("Child", doc1Retrieved.get("name"));
       Assertions.assertFalse(rs.hasNext());
     }
 
-    try (ResultSet rs = database.query("sql", "select from TestRoot where name <> :name", Map.of("arg0", "Test2", "name", "Nonsense"))) {
+    try (final ResultSet rs = database.query("sql", "select from TestRoot where name <> :name", Map.of("arg0", "Test2", "name", "Nonsense"))) {
       Assertions.assertTrue(rs.hasNext());
-      Document doc1Retrieved = rs.next().getElement().orElse(null);
+      final Document doc1Retrieved = rs.next().getElement().orElse(null);
       Assertions.assertEquals("Root", doc1Retrieved.get("name"));
       Assertions.assertFalse(rs.hasNext());
     }

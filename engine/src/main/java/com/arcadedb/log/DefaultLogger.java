@@ -44,7 +44,7 @@ public class DefaultLogger implements Logger {
       if (!logDir.exists() || !logDir.isDirectory())
         // TRY TO CREATE LOG DIRECTORY
         logDir.mkdirs();
-    } catch (Exception e) {
+    } catch (final Exception e) {
       // IGNORE
     }
 
@@ -60,7 +60,7 @@ public class DefaultLogger implements Logger {
     if (stream == null) {
       try {
         stream = new FileInputStream(FILE_LOG_PROPERTIES);
-      } catch (FileNotFoundException e) {
+      } catch (final FileNotFoundException e) {
         // USE DEFAULT SETTINGS
       }
     }
@@ -68,7 +68,7 @@ public class DefaultLogger implements Logger {
     if (stream != null)
       try {
         LogManager.getLogManager().readConfiguration(stream);
-      } catch (IOException e) {
+      } catch (final IOException e) {
         // NOT FOUND, APPLY DEFAULTS
         System.err.println("Cannot find ArcadeDB log file `arcadedb-log.properties`. Using default settings");
       }
@@ -91,17 +91,17 @@ public class DefaultLogger implements Logger {
         h.setFormatter(new AnsiLogFormatter());
         log.addHandler(h);
       } else {
-        for (Handler h : log.getHandlers()) {
+        for (final Handler h : log.getHandlers()) {
           if (h instanceof ConsoleHandler && !h.getFormatter().getClass().equals(AnsiLogFormatter.class))
             h.setFormatter(new AnsiLogFormatter());
         }
       }
-    } catch (Exception e) {
+    } catch (final Exception e) {
       System.err.println("Error while installing custom formatter. Logging could be disabled. Cause: " + e);
     }
   }
 
-  public void log(final Object requester, Level level, String message, final Throwable exception, final String context, final Object arg1, final Object arg2,
+  public void log(final Object requester, final Level level, String message, final Throwable exception, final String context, final Object arg1, final Object arg2,
       final Object arg3, final Object arg4, final Object arg5, final Object arg6, final Object arg7, final Object arg8, final Object arg9, final Object arg10,
       final Object arg11, final Object arg12, final Object arg13, final Object arg14, final Object arg15, final Object arg16, final Object arg17) {
     if (message == null)
@@ -124,7 +124,7 @@ public class DefaultLogger implements Logger {
       log = java.util.logging.Logger.getLogger(requesterName);
 
       if (log != null) {
-        java.util.logging.Logger oldLogger = loggersCache.putIfAbsent(requesterName, log);
+        final java.util.logging.Logger oldLogger = loggersCache.putIfAbsent(requesterName, log);
 
         if (oldLogger != null)
           log = oldLogger;
@@ -144,7 +144,7 @@ public class DefaultLogger implements Logger {
 
         System.err.println(msg);
 
-      } catch (Exception e) {
+      } catch (final Exception e) {
         System.err.print(String.format("Error on formatting message '%s'. Exception: %s", message, e));
       } finally {
         if (level == Level.SEVERE)
@@ -169,7 +169,7 @@ public class DefaultLogger implements Logger {
         if (level == Level.SEVERE)
           flush();
 
-      } catch (Exception e) {
+      } catch (final Exception e) {
         System.err.print(String.format("Error on formatting message '%s'. Exception: %s", message, e));
         System.err.flush();
       }
@@ -193,7 +193,7 @@ public class DefaultLogger implements Logger {
         log = java.util.logging.Logger.getLogger(requesterName);
 
         if (log != null) {
-          java.util.logging.Logger oldLogger = loggersCache.putIfAbsent(requesterName, log);
+          final java.util.logging.Logger oldLogger = loggersCache.putIfAbsent(requesterName, log);
 
           if (oldLogger != null)
             log = oldLogger;
@@ -211,7 +211,7 @@ public class DefaultLogger implements Logger {
             msg = String.format(message, args);
           System.err.println(msg);
 
-        } catch (Exception e) {
+        } catch (final Exception e) {
           System.err.print(String.format("Error on formatting message '%s'. Exception: %s", message, e));
         }
       } else if (log.isLoggable(level)) {
@@ -228,7 +228,7 @@ public class DefaultLogger implements Logger {
             log.log(level, msg, exception);
           else
             log.log(level, msg);
-        } catch (Exception e) {
+        } catch (final Exception e) {
           System.err.print(String.format("Error on formatting message '%s'. Exception: %s", message, e));
         }
       }
@@ -237,7 +237,7 @@ public class DefaultLogger implements Logger {
 
   @Override
   public void flush() {
-    for (Handler h : java.util.logging.Logger.getLogger(java.util.logging.Logger.GLOBAL_LOGGER_NAME).getHandlers())
+    for (final Handler h : java.util.logging.Logger.getLogger(java.util.logging.Logger.GLOBAL_LOGGER_NAME).getHandlers())
       h.flush();
   }
 }

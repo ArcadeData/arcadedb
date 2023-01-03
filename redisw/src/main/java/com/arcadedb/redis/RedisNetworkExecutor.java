@@ -69,12 +69,12 @@ public class RedisNetworkExecutor extends Thread {
 
         replyToClient(value);
 
-      } catch (EOFException | SocketException e) {
+      } catch (final EOFException | SocketException e) {
         LogManager.instance().log(this, Level.FINE, "Redis wrapper: Error on reading request", e);
         close();
-      } catch (SocketTimeoutException e) {
+      } catch (final SocketTimeoutException e) {
         // IGNORE IT
-      } catch (IOException e) {
+      } catch (final IOException e) {
         LogManager.instance().log(this, Level.SEVERE, "Redis wrapper: Error on reading request", e);
       }
     }
@@ -186,7 +186,7 @@ public class RedisNetworkExecutor extends Thread {
           value.append("-Command not found");
         }
 
-      } catch (Exception e) {
+      } catch (final Exception e) {
         value.append("-");
         value.append(e.getMessage());
       }
@@ -493,7 +493,7 @@ public class RedisNetworkExecutor extends Thread {
   }
 
   private Record getRecord(final String bucketName, final String key) {
-    Record record;
+    final Record record;
     final int pos = bucketName.indexOf(".");
     if (pos < 0) {
       // BY RID
@@ -534,7 +534,7 @@ public class RedisNetworkExecutor extends Thread {
       // BY RID
       final Database database = server.getDatabase(bucketName);
 
-      for (Object key : keys) {
+      for (final Object key : keys) {
         final String k = key.toString();
         if (k.startsWith("#"))
           records.add(new RID(database, k).asDocument());
@@ -550,7 +550,7 @@ public class RedisNetworkExecutor extends Thread {
 
       final Index index = database.getSchema().getIndexByName(keyType);
 
-      for (Object key : keys) {
+      for (final Object key : keys) {
         final String k = key.toString();
         final Object[] compositeKey;
         if (k.startsWith("[")) {

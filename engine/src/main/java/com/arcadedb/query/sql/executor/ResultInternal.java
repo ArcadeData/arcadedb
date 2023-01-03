@@ -51,7 +51,7 @@ public class ResultInternal implements Result {
     this.element = (Document) ident.getRecord();
   }
 
-  public void setTemporaryProperty(String name, Object value) {
+  public void setTemporaryProperty(final String name, Object value) {
     if (temporaryContent == null) {
       temporaryContent = new HashMap<>();
     }
@@ -65,7 +65,7 @@ public class ResultInternal implements Result {
     }
   }
 
-  public Object getTemporaryProperty(String name) {
+  public Object getTemporaryProperty(final String name) {
     if (name == null || temporaryContent == null) {
       return null;
     }
@@ -125,9 +125,9 @@ public class ResultInternal implements Result {
 
   private Object wrap(final Object input) {
     if (input instanceof Document && ((Document) input).getIdentity() == null) {
-      ResultInternal result = new ResultInternal();
-      Document elem = (Document) input;
-      for (String prop : elem.getPropertyNames()) {
+      final ResultInternal result = new ResultInternal();
+      final Document elem = (Document) input;
+      for (final String prop : elem.getPropertyNames()) {
         result.setProperty(prop, elem.get(prop));
       }
       if (elem.getTypeName() != null)
@@ -139,8 +139,8 @@ public class ResultInternal implements Result {
     } else if (isEmbeddedSet(input)) {
       return ((Set) input).stream().map(this::wrap).collect(Collectors.toSet());
     } else if (isEmbeddedMap(input)) {
-      Map result = new HashMap();
-      for (Map.Entry<String, Object> o : ((Map<String, Object>) input).entrySet()) {
+      final Map result = new HashMap();
+      for (final Map.Entry<String, Object> o : ((Map<String, Object>) input).entrySet()) {
         result.put(o.getKey(), wrap(o.getValue()));
       }
       return result;
@@ -150,7 +150,7 @@ public class ResultInternal implements Result {
 
   private boolean isEmbeddedSet(final Object input) {
     if (input instanceof Set) {
-      for (Object o : (Set) input) {
+      for (final Object o : (Set) input) {
         if (o instanceof Record)
           return false;
 
@@ -167,7 +167,7 @@ public class ResultInternal implements Result {
 
   private boolean isEmbeddedMap(final Object input) {
     if (input instanceof Map) {
-      for (Object o : ((Map) input).values()) {
+      for (final Object o : ((Map) input).values()) {
         if (o instanceof Record)
           return false;//TODO
         else if (isEmbeddedList(o))
@@ -183,7 +183,7 @@ public class ResultInternal implements Result {
 
   private boolean isEmbeddedList(final Object input) {
     if (input instanceof List) {
-      for (Object o : (List) input) {
+      for (final Object o : (List) input) {
         if (o instanceof Record)
           return false;
         else if (isEmbeddedList(o))

@@ -23,7 +23,6 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
-import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -43,18 +42,18 @@ public class AlterPropertyStatement extends DDLStatement {
   Expression customPropertyValue;
   Identifier settingName;
 
-  public AlterPropertyStatement(int id) {
+  public AlterPropertyStatement(final int id) {
     super(id);
   }
 
-  public AlterPropertyStatement(SqlParser p, int id) {
+  public AlterPropertyStatement(final SqlParser p, final int id) {
     super(p, id);
   }
 
   @Override
-  public ResultSet executeDDL(CommandContext ctx) {
-    Database db = ctx.getDatabase();
-    DocumentType typez = db.getSchema().getType(typeName.getStringValue());
+  public ResultSet executeDDL(final CommandContext ctx) {
+    final Database db = ctx.getDatabase();
+    final DocumentType typez = db.getSchema().getType(typeName.getStringValue());
 
     if (typez == null) {
       throw new CommandExecutionException("Invalid type name or type not found: " + typez);
@@ -64,14 +63,14 @@ public class AlterPropertyStatement extends DDLStatement {
     if (property == null)
       throw new CommandExecutionException("Property '" + property + "' not found on type " + typez);
 
-    ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal();
     result.setProperty("type", typeName.getStringValue());
     result.setProperty("property", propertyName.getStringValue());
 
     if (customPropertyName != null) {
-      String customName = customPropertyName.getStringValue();
-      Object oldValue = property.getCustomValue(customName);
-      Object finalValue = customPropertyValue.execute((Identifiable) null, ctx);
+      final String customName = customPropertyName.getStringValue();
+      final Object oldValue = property.getCustomValue(customName);
+      final Object finalValue = customPropertyValue.execute((Identifiable) null, ctx);
       property.setCustomValue(customName, finalValue);
 
       result.setProperty("operation", "alter property custom");
@@ -103,12 +102,7 @@ public class AlterPropertyStatement extends DDLStatement {
   }
 
   @Override
-  public void validate() throws CommandSQLParsingException {
-    super.validate();//TODO
-  }
-
-  @Override
-  public void toString( final Map<String, Object> params, final StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("ALTER PROPERTY ");
     typeName.toString(params, builder);
     builder.append(".");
@@ -139,7 +133,7 @@ public class AlterPropertyStatement extends DDLStatement {
   }
 
   @Override
-  public boolean equals( final Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())

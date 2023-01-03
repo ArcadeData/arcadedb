@@ -25,11 +25,11 @@ public class ObjectFieldWithValue extends SimpleNode {
   protected Name              name;
   protected ValueWithVariable value;
 
-  public ObjectFieldWithValue(int id) {
+  public ObjectFieldWithValue(final int id) {
     super(id);
   }
 
-  public ObjectFieldWithValue(GraphQLParser p, int id) {
+  public ObjectFieldWithValue(final GraphQLParser p, final int id) {
     super(p, id);
   }
 
@@ -40,7 +40,7 @@ public class ObjectFieldWithValue extends SimpleNode {
   /**
    * Accept the visitor.
    **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
+  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
     return visitor.visit(this, data);
   }
 }

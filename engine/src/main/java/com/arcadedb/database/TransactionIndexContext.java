@@ -112,14 +112,14 @@ public class TransactionIndexContext {
           return CollectionUtils.compare((List) v1, (List) v2);
 
         } else if (v1 instanceof List) {
-          List l1 = (List) v1;
+          final List l1 = (List) v1;
           for (int j = 0; j < l1.size(); j++) {
             cmp = j > 0 ? 1 : BinaryComparator.compareTo(l1.get(j), v2);
             if (cmp != 0)
               return cmp;
           }
         } else if (v2 instanceof List) {
-          List l2 = (List) v2;
+          final List l2 = (List) v2;
           for (int j = 0; j < l2.size(); j++) {
             cmp = j > 0 ? -1 : BinaryComparator.compareTo(v1, l2.get(j));
             if (cmp != 0)
@@ -145,7 +145,7 @@ public class TransactionIndexContext {
 
   public int getTotalEntries() {
     int total = 0;
-    for (Map<ComparableKey, Map<IndexKey, IndexKey>> entry : indexEntries.values()) {
+    for (final Map<ComparableKey, Map<IndexKey, IndexKey>> entry : indexEntries.values()) {
       total += entry.values().size();
     }
     return total;
@@ -161,18 +161,18 @@ public class TransactionIndexContext {
   public void commit() {
     checkUniqueIndexKeys();
 
-    for (Map.Entry<String, TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> entry : indexEntries.entrySet()) {
+    for (final Map.Entry<String, TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> entry : indexEntries.entrySet()) {
       final Index index = database.getSchema().getIndexByName(entry.getKey());
       final Map<ComparableKey, Map<IndexKey, IndexKey>> keys = entry.getValue();
 
-      for (Map.Entry<ComparableKey, Map<IndexKey, IndexKey>> keyValueEntries : keys.entrySet()) {
+      for (final Map.Entry<ComparableKey, Map<IndexKey, IndexKey>> keyValueEntries : keys.entrySet()) {
         final Collection<IndexKey> values = keyValueEntries.getValue().values();
 
         if (values.size() > 1) {
           // BATCH MODE. USE SET TO SKIP DUPLICATES
           final Set<RID> rids2Insert = new LinkedHashSet<>(values.size());
 
-          for (IndexKey key : values) {
+          for (final IndexKey key : values) {
             if (key.addOperation)
               rids2Insert.add(key.rid);
             else
@@ -186,7 +186,7 @@ public class TransactionIndexContext {
           }
 
         } else {
-          for (IndexKey key : values) {
+          for (final IndexKey key : values) {
             if (key.addOperation)
               index.put(key.keyValues, new RID[] { key.rid });
             else
@@ -204,7 +204,7 @@ public class TransactionIndexContext {
 
     final Set<Index> lockedIndexes = new HashSet<>();
 
-    for (String indexName : indexEntries.keySet()) {
+    for (final String indexName : indexEntries.keySet()) {
       final IndexInternal index = (IndexInternal) schema.getIndexByName(indexName);
 
       if (lockedIndexes.contains(index))
@@ -218,11 +218,11 @@ public class TransactionIndexContext {
         // LOCK ALL THE FILES IMPACTED BY THE INDEX KEYS TO CHECK FOR UNIQUE CONSTRAINT
         final DocumentType type = schema.getType(index.getTypeName());
         final List<Bucket> buckets = type.getBuckets(false);
-        for (Bucket b : buckets)
+        for (final Bucket b : buckets)
           modifiedFiles.add(b.getId());
 
-        for (Index typeIndex : type.getAllIndexes(true))
-          for (Index idx : ((TypeIndex) typeIndex).getIndexesOnBuckets())
+        for (final Index typeIndex : type.getAllIndexes(true))
+          for (final Index idx : ((TypeIndex) typeIndex).getIndexesOnBuckets())
             modifiedFiles.add(((IndexInternal) idx).getFileId());
       } else
         modifiedFiles.add(index.getAssociatedBucketId());
@@ -282,7 +282,7 @@ public class TransactionIndexContext {
       // CHECK FOR UNIQUE ON OTHER SUB-INDEXES
       final TypeIndex typeIndex = index.getTypeIndex();
       if (typeIndex != null) {
-        for (IndexInternal idx : typeIndex.getIndexesOnBuckets()) {
+        for (final IndexInternal idx : typeIndex.getIndexesOnBuckets()) {
           if (index.equals(idx))
             // ALREADY CHECKED ABOVE
             continue;
@@ -291,7 +291,7 @@ public class TransactionIndexContext {
           if (entries != null) {
             final Map<IndexKey, IndexKey> otherIndexValues = entries.get(k);
             if (otherIndexValues != null)
-              for (IndexKey e : otherIndexValues.values()) {
+              for (final IndexKey e : otherIndexValues.values()) {
                 if (e.addOperation)
                   throw new DuplicatedKeyException(indexName, Arrays.toString(keysValues), e.rid);
               }
@@ -333,7 +333,7 @@ public class TransactionIndexContext {
             // NO EXCEPTION = FOUND
             throw new DuplicatedKeyException(idx.getName(), Arrays.toString(key.keyValues), firstEntry.getIdentity());
 
-          } catch (RecordNotFoundException e) {
+          } catch (final RecordNotFoundException e) {
             // INDEX DIRTY, THE RECORD WA DELETED, REMOVE THE ENTRY IN THE INDEX TO FIX IT
             LogManager.instance()
                 .log(this, Level.WARNING, "Found entry in index '%s' with key %s pointing to the deleted record %s. Overriding it.", idx.getName(),
@@ -353,16 +353,16 @@ public class TransactionIndexContext {
   private void checkUniqueIndexKeys() {
     final Map<TypeIndex, Map<ComparableKey, RID>> deletedKeys = getTxDeletedEntries();
 
-    for (Map.Entry<String, TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> indexEntries : indexEntries.entrySet()) {
+    for (final Map.Entry<String, TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> indexEntries : indexEntries.entrySet()) {
       final IndexInternal index = (IndexInternal) database.getSchema().getIndexByName(indexEntries.getKey());
       if (index.isUnique()) {
         final TypeIndex typeIndex = index.getTypeIndex();
 
         final Map<ComparableKey, Map<IndexKey, IndexKey>> txEntriesPerIndex = indexEntries.getValue();
-        for (Map.Entry<ComparableKey, Map<IndexKey, IndexKey>> txEntriesPerKey : txEntriesPerIndex.entrySet()) {
+        for (final Map.Entry<ComparableKey, Map<IndexKey, IndexKey>> txEntriesPerKey : txEntriesPerIndex.entrySet()) {
           final Map<IndexKey, IndexKey> valuesPerKey = txEntriesPerKey.getValue();
 
-          for (IndexKey entry : valuesPerKey.values()) {
+          for (final IndexKey entry : valuesPerKey.values()) {
             if (entry.addOperation) {
               final Map<ComparableKey, RID> entries = deletedKeys.get(typeIndex);
               final RID deleted = entries != null ? entries.get(new ComparableKey(entry.keyValues)) : null;
@@ -378,14 +378,14 @@ public class TransactionIndexContext {
     // GET ANY DELETED OPERATION FIRST
     final Map<TypeIndex, Map<ComparableKey, RID>> deletedKeys = new HashMap<>();
 
-    for (Map.Entry<String, TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> indexEntries : indexEntries.entrySet()) {
+    for (final Map.Entry<String, TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> indexEntries : indexEntries.entrySet()) {
       final IndexInternal index = (IndexInternal) database.getSchema().getIndexByName(indexEntries.getKey());
       if (index.isUnique()) {
         final Map<ComparableKey, Map<IndexKey, IndexKey>> txEntriesPerIndex = indexEntries.getValue();
-        for (Map.Entry<ComparableKey, Map<IndexKey, IndexKey>> txEntriesPerKey : txEntriesPerIndex.entrySet()) {
+        for (final Map.Entry<ComparableKey, Map<IndexKey, IndexKey>> txEntriesPerKey : txEntriesPerIndex.entrySet()) {
           final Map<IndexKey, IndexKey> valuesPerKey = txEntriesPerKey.getValue();
 
-          for (IndexKey entry : valuesPerKey.values()) {
+          for (final IndexKey entry : valuesPerKey.values()) {
             if (!entry.addOperation) {
               final TypeIndex typeIndex = index.getTypeIndex();
               Map<ComparableKey, RID> entries = deletedKeys.get(typeIndex);

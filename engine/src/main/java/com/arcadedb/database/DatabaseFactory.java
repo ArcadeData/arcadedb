@@ -117,7 +117,7 @@ public class DatabaseFactory implements AutoCloseable {
   /**
    * Test only API
    */
-  public void registerCallback(final DatabaseInternal.CALLBACK_EVENT event, Callable<Void> callback) {
+  public void registerCallback(final DatabaseInternal.CALLBACK_EVENT event, final Callable<Void> callback) {
     List<Callable<Void>> callbacks = this.callbacks.get(event);
     if (callbacks == null) {
       callbacks = new ArrayList<>();

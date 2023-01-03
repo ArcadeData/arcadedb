@@ -56,7 +56,7 @@ public class RecordTableFormatter extends TableFormatter {
 
   public void writeRecords(final List<Result> records, final int limit) {
     final List<TableRow> rows = new ArrayList<>();
-    for (Result record : records)
+    for (final Result record : records)
       rows.add(new TableRecordRow(record));
 
     super.writeRows(rows, limit);

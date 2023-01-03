@@ -3,12 +3,14 @@
 package com.arcadedb.graphql.parser;
 
 import java.io.*;
+import java.util.ArrayList;
+import java.util.List;
 
 public class GraphQLParser/*@bgen(jjtree)*/implements GraphQLParserTreeConstants, GraphQLParserConstants {/*@bgen(jjtree)*/
   protected JJTGraphQLParserState jjtree = new JJTGraphQLParserState();private int tokenId = 0;
 
 
-    public static Document parse(String query) throws ParseException {
+    public static Document parse(final String query) throws ParseException {
       return new GraphQLParser(new SimpleCharStream(new StringReader(query))).Document();
     }
 
@@ -27,12 +29,13 @@ public class GraphQLParser/*@bgen(jjtree)*/implements GraphQLParserTreeConstants
 
 // Document structure
   final public Document Document() throws ParseException {/*@bgen(jjtree) Document */
-    Document jjtn000 = new Document(JJTDOCUMENT);
+    final Document jjtn000 = new Document(JJTDOCUMENT);
     boolean jjtc000 = true;
     jjtree.openNodeScope(jjtn000);
-    jjtn000.jjtSetFirstToken(getToken(1));int tokenId = tokenId();
-    int line = line();
-    int column = column();
+    jjtn000.jjtSetFirstToken(getToken(1));
+    final int tokenId = tokenId();
+    final int line = line();
+    final int column = column();
     Definition lastDef;
     try {
       label_1:
@@ -64,7 +67,7 @@ jjtree.closeNodeScope(jjtn000, true);
       jjtc000 = false;
       jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -88,10 +91,11 @@ if (jjtc000) {
 }
 
   final public Definition Definition() throws ParseException {/*@bgen(jjtree) Definition */
-  Definition jjtn000 = new Definition(JJTDEFINITION);
+  final Definition jjtn000 = new Definition(JJTDEFINITION);
   boolean jjtc000 = true;
   jjtree.openNodeScope(jjtn000);
-  jjtn000.jjtSetFirstToken(getToken(1));Definition def;
+  jjtn000.jjtSetFirstToken(getToken(1));
+    final Definition def;
     try {
       switch (jj_ntk == -1 ? jj_ntk_f() : jj_ntk) {
       case OCBR:
@@ -125,7 +129,7 @@ jjtree.closeNodeScope(jjtn000, true);
       jjtc000 = false;
       jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return def;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -149,12 +153,13 @@ if (jjtc000) {
 }
 
   final public OperationDefinition OperationDefinition() throws ParseException {/*@bgen(jjtree) OperationDefinition */
-    OperationDefinition jjtn000 = new OperationDefinition(JJTOPERATIONDEFINITION);
+    final OperationDefinition jjtn000 = new OperationDefinition(JJTOPERATIONDEFINITION);
     boolean jjtc000 = true;
     jjtree.openNodeScope(jjtn000);
-    jjtn000.jjtSetFirstToken(getToken(1));int tokenId = tokenId();
-    int line = line();
-    int column = column();
+    jjtn000.jjtSetFirstToken(getToken(1));
+    final int tokenId = tokenId();
+    final int line = line();
+    final int column = column();
     try {
       switch (jj_ntk == -1 ? jj_ntk_f() : jj_ntk) {
       case OCBR:{
@@ -216,7 +221,7 @@ jjtree.closeNodeScope(jjtn000, true);
         jjtc000 = false;
         jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -240,12 +245,13 @@ if (jjtc000) {
 }
 
   final public VariableDefinitions VariableDefinitions() throws ParseException {/*@bgen(jjtree) VariableDefinitions */
-    VariableDefinitions jjtn000 = new VariableDefinitions(JJTVARIABLEDEFINITIONS);
+    final VariableDefinitions jjtn000 = new VariableDefinitions(JJTVARIABLEDEFINITIONS);
     boolean jjtc000 = true;
     jjtree.openNodeScope(jjtn000);
-    jjtn000.jjtSetFirstToken(getToken(1));int tokenId = tokenId();
-    int line = line();
-    int column = column();
+    jjtn000.jjtSetFirstToken(getToken(1));
+    final int tokenId = tokenId();
+    final int line = line();
+    final int column = column();
     VariableDefinition lastDef;
     try {
       jj_consume_token(OPAR);
@@ -267,7 +273,7 @@ jjtree.closeNodeScope(jjtn000, true);
       jjtc000 = false;
       jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -291,12 +297,13 @@ if (jjtc000) {
 }
 
   final public VariableDefinition VariableDefinition() throws ParseException {/*@bgen(jjtree) VariableDefinition */
-    VariableDefinition jjtn000 = new VariableDefinition(JJTVARIABLEDEFINITION);
+    final VariableDefinition jjtn000 = new VariableDefinition(JJTVARIABLEDEFINITION);
     boolean jjtc000 = true;
     jjtree.openNodeScope(jjtn000);
-    jjtn000.jjtSetFirstToken(getToken(1));int tokenId = tokenId();
-    int line = line();
-    int column = column();
+    jjtn000.jjtSetFirstToken(getToken(1));
+    final int tokenId = tokenId();
+    final int line = line();
+    final int column = column();
     try {
       jjtn000.variableLiteral = VariableLiteral();
       jj_consume_token(COLON);
@@ -314,7 +321,7 @@ jjtree.closeNodeScope(jjtn000, true);
       jjtc000 = false;
       jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -338,12 +345,13 @@ if (jjtc000) {
 }
 
   final public VariableLiteral VariableLiteral() throws ParseException {/*@bgen(jjtree) VariableLiteral */
-    VariableLiteral jjtn000 = new VariableLiteral(JJTVARIABLELITERAL);
+    final VariableLiteral jjtn000 = new VariableLiteral(JJTVARIABLELITERAL);
     boolean jjtc000 = true;
     jjtree.openNodeScope(jjtn000);
-    jjtn000.jjtSetFirstToken(getToken(1));int tokenId = tokenId();
-    int line = line();
-    int column = column();
+    jjtn000.jjtSetFirstToken(getToken(1));
+    final int tokenId = tokenId();
+    final int line = line();
+    final int column = column();
     try {
       jj_consume_token(DOLLAR);
       jjtn000.name = Name();
@@ -351,7 +359,7 @@ jjtree.closeNodeScope(jjtn000, true);
       jjtc000 = false;
       jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -375,12 +383,13 @@ if (jjtc000) {
 }
 
   final public DefaultValue DefaultValue() throws ParseException {/*@bgen(jjtree) DefaultValue */
-    DefaultValue jjtn000 = new DefaultValue(JJTDEFAULTVALUE);
+    final DefaultValue jjtn000 = new DefaultValue(JJTDEFAULTVALUE);
     boolean jjtc000 = true;
     jjtree.openNodeScope(jjtn000);
-    jjtn000.jjtSetFirstToken(getToken(1));int tokenId = tokenId();
-    int line = line();
-    int column = column();
+    jjtn000.jjtSetFirstToken(getToken(1));
+    final int tokenId = tokenId();
+    final int line = line();
+    final int column = column();
     try {
       jj_consume_token(EQ);
       jjtn000.value = Value();
@@ -388,7 +397,7 @@ jjtree.closeNodeScope(jjtn000, true);
       jjtc000 = false;
       jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -413,12 +422,13 @@ if (jjtc000) {
 
 // Operations
   final public SelectionSet SelectionSet() throws ParseException {/*@bgen(jjtree) SelectionSet */
-    SelectionSet jjtn000 = new SelectionSet(JJTSELECTIONSET);
+    final SelectionSet jjtn000 = new SelectionSet(JJTSELECTIONSET);
     boolean jjtc000 = true;
     jjtree.openNodeScope(jjtn000);
-    jjtn000.jjtSetFirstToken(getToken(1));int tokenId = tokenId();
-    int line = line();
-    int column = column();
+    jjtn000.jjtSetFirstToken(getToken(1));
+    final int tokenId = tokenId();
+    final int line = line();
+    final int column = column();
 
     Selection lastSelection;
     try {
@@ -455,7 +465,7 @@ jjtree.closeNodeScope(jjtn000, true);
       jjtc000 = false;
       jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -479,12 +489,13 @@ if (jjtc000) {
 }
 
   final public Selection Selection() throws ParseException {/*@bgen(jjtree) Selection */
-    Selection jjtn000 = new Selection(JJTSELECTION);
+    final Selection jjtn000 = new Selection(JJTSELECTION);
     boolean jjtc000 = true;
     jjtree.openNodeScope(jjtn000);
-    jjtn000.jjtSetFirstToken(getToken(1));int tokenId = tokenId();
-    int line = line();
-    int column = column();
+    jjtn000.jjtSetFirstToken(getToken(1));
+    final int tokenId = tokenId();
+    final int line = line();
+    final int column = column();
     try {
       switch (jj_ntk == -1 ? jj_ntk_f() : jj_ntk) {
       case FRAGMENT:
@@ -556,7 +567,7 @@ jjtree.closeNodeScope(jjtn000, true);
         jjtc000 = false;
         jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -579,8 +590,8 @@ if (jjtc000) {
     throw new IllegalStateException ("Missing return statement in function");
 }
 
-  final public Field Field(Name name, int line, int column, int tokenId) throws ParseException {/*@bgen(jjtree) Field */
-  Field jjtn000 = new Field(JJTFIELD);
+  final public Field Field(final Name name, final int line, final int column, final int tokenId) throws ParseException {/*@bgen(jjtree) Field */
+  final Field jjtn000 = new Field(JJTFIELD);
   boolean jjtc000 = true;
   jjtree.openNodeScope(jjtn000);
   jjtn000.jjtSetFirstToken(getToken(1));
@@ -616,7 +627,7 @@ jjtree.closeNodeScope(jjtn000, true);
       jjtc000 = false;
       jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -639,8 +650,8 @@ if (jjtc000) {
     throw new IllegalStateException ("Missing return statement in function");
 }
 
-  final public FieldWithAlias FieldWithAlias(Name alias, int line, int column, int tokenId) throws ParseException {/*@bgen(jjtree) FieldWithAlias */
-  FieldWithAlias jjtn000 = new FieldWithAlias(JJTFIELDWITHALIAS);
+  final public FieldWithAlias FieldWithAlias(final Name alias, final int line, final int column, final int tokenId) throws ParseException {/*@bgen(jjtree) FieldWithAlias */
+  final FieldWithAlias jjtn000 = new FieldWithAlias(JJTFIELDWITHALIAS);
   boolean jjtc000 = true;
   jjtree.openNodeScope(jjtn000);
   jjtn000.jjtSetFirstToken(getToken(1));
@@ -678,7 +689,7 @@ jjtree.closeNodeScope(jjtn000, true);
        jjtc000 = false;
        jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -702,12 +713,13 @@ if (jjtc000) {
 }
 
   final public Arguments Arguments() throws ParseException {/*@bgen(jjtree) Arguments */
-    Arguments jjtn000 = new Arguments(JJTARGUMENTS);
+    final Arguments jjtn000 = new Arguments(JJTARGUMENTS);
     boolean jjtc000 = true;
     jjtree.openNodeScope(jjtn000);
-    jjtn000.jjtSetFirstToken(getToken(1));int tokenId = tokenId();
-    int line = line();
-    int column = column();
+    jjtn000.jjtSetFirstToken(getToken(1));
+    final int tokenId = tokenId();
+    final int line = line();
+    final int column = column();
     Argument lastArg;
     try {
       jj_consume_token(OPAR);
@@ -732,7 +744,7 @@ jjtree.closeNodeScope(jjtn000, true);
       jjtc000 = false;
       jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -756,12 +768,13 @@ if (jjtc000) {
 }
 
   final public Argument Argument() throws ParseException {/*@bgen(jjtree) Argument */
-    Argument jjtn000 = new Argument(JJTARGUMENT);
+    final Argument jjtn000 = new Argument(JJTARGUMENT);
     boolean jjtc000 = true;
     jjtree.openNodeScope(jjtn000);
-    jjtn000.jjtSetFirstToken(getToken(1));int tokenId = tokenId();
-    int line = line();
-    int column = column();
+    jjtn000.jjtSetFirstToken(getToken(1));
+    final int tokenId = tokenId();
+    final int line = line();
+    final int column = column();
     try {
       jjtn000.name = Name();
       jj_consume_token(COLON);
@@ -770,7 +783,7 @@ jjtree.closeNodeScope(jjtn000, true);
       jjtc000 = false;
       jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -794,8 +807,8 @@ if (jjtc000) {
 }
 
 // Fragments
-  final public FragmentSpread FragmentSpread(int line, int column, int tokenId) throws ParseException {/*@bgen(jjtree) FragmentSpread */
-  FragmentSpread jjtn000 = new FragmentSpread(JJTFRAGMENTSPREAD);
+  final public FragmentSpread FragmentSpread(final int line, final int column, final int tokenId) throws ParseException {/*@bgen(jjtree) FragmentSpread */
+  final FragmentSpread jjtn000 = new FragmentSpread(JJTFRAGMENTSPREAD);
   boolean jjtc000 = true;
   jjtree.openNodeScope(jjtn000);
   jjtn000.jjtSetFirstToken(getToken(1));
@@ -814,7 +827,7 @@ jjtree.closeNodeScope(jjtn000, true);
        jjtc000 = false;
        jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -837,8 +850,8 @@ if (jjtc000) {
     throw new IllegalStateException ("Missing return statement in function");
 }
 
-  final public InlineFragment InlineFragment(int line, int column, int tokenId) throws ParseException {/*@bgen(jjtree) InlineFragment */
-  InlineFragment jjtn000 = new InlineFragment(JJTINLINEFRAGMENT);
+  final public InlineFragment InlineFragment(final int line, final int column, final int tokenId) throws ParseException {/*@bgen(jjtree) InlineFragment */
+  final InlineFragment jjtn000 = new InlineFragment(JJTINLINEFRAGMENT);
   boolean jjtc000 = true;
   jjtree.openNodeScope(jjtn000);
   jjtn000.jjtSetFirstToken(getToken(1));
@@ -866,7 +879,7 @@ jjtree.closeNodeScope(jjtn000, true);
        jjtc000 = false;
        jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -890,12 +903,13 @@ if (jjtc000) {
 }
 
   final public FragmentDefinition FragmentDefinition() throws ParseException {/*@bgen(jjtree) FragmentDefinition */
-    FragmentDefinition jjtn000 = new FragmentDefinition(JJTFRAGMENTDEFINITION);
+    final FragmentDefinition jjtn000 = new FragmentDefinition(JJTFRAGMENTDEFINITION);
     boolean jjtc000 = true;
     jjtree.openNodeScope(jjtn000);
-    jjtn000.jjtSetFirstToken(getToken(1));int tokenId = tokenId();
-    int line = line();
-    int column = column();
+    jjtn000.jjtSetFirstToken(getToken(1));
+    final int tokenId = tokenId();
+    final int line = line();
+    final int column = column();
     try {
       jj_consume_token(FRAGMENT);
       jjtn000.name = FragmentName();
@@ -914,7 +928,7 @@ jjtree.closeNodeScope(jjtn000, true);
       jjtc000 = false;
       jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -938,7 +952,7 @@ if (jjtc000) {
 }
 
   final public FragmentName FragmentName() throws ParseException {/*@bgen(jjtree) FragmentName */
-  FragmentName jjtn000 = new FragmentName(JJTFRAGMENTNAME);
+  final FragmentName jjtn000 = new FragmentName(JJTFRAGMENTNAME);
   boolean jjtc000 = true;
   jjtree.openNodeScope(jjtn000);
   jjtn000.jjtSetFirstToken(getToken(1));
@@ -949,7 +963,7 @@ jjtree.closeNodeScope(jjtn000, true);
       jjtn000.jjtSetLastToken(getToken(0));
 // TODO if ("on".equals(name.image)) throw new ParseException("on is not allowed at a name");
         {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -973,7 +987,7 @@ if (jjtc000) {
 }
 
   final public TypeCondition TypeCondition() throws ParseException {/*@bgen(jjtree) TypeCondition */
-  TypeCondition jjtn000 = new TypeCondition(JJTTYPECONDITION);
+  final TypeCondition jjtn000 = new TypeCondition(JJTTYPECONDITION);
   boolean jjtc000 = true;
   jjtree.openNodeScope(jjtn000);
   jjtn000.jjtSetFirstToken(getToken(1));
@@ -984,7 +998,7 @@ jjtree.closeNodeScope(jjtn000, true);
                                 jjtc000 = false;
                                 jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -1009,10 +1023,11 @@ if (jjtc000) {
 
 // Values
   final public Name Name() throws ParseException {/*@bgen(jjtree) Name */
-    Name jjtn000 = new Name(JJTNAME);
+    final Name jjtn000 = new Name(JJTNAME);
     boolean jjtc000 = true;
     jjtree.openNodeScope(jjtn000);
-    jjtn000.jjtSetFirstToken(getToken(1));Token t;
+    jjtn000.jjtSetFirstToken(getToken(1));
+    final Token t;
     try {
       switch (jj_ntk == -1 ? jj_ntk_f() : jj_ntk) {
       case NAME_LITERAL:{
@@ -1091,7 +1106,7 @@ if (jjtc000) {
 }
 
   final public Value Value() throws ParseException {/*@bgen(jjtree) Value */
-  Value jjtn000 = new Value(JJTVALUE);
+  final Value jjtn000 = new Value(JJTVALUE);
   boolean jjtc000 = true;
   jjtree.openNodeScope(jjtn000);
   jjtn000.jjtSetFirstToken(getToken(1));
@@ -1150,7 +1165,7 @@ jjtree.closeNodeScope(jjtn000, true);
       jjtc000 = false;
       jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -1174,7 +1189,7 @@ if (jjtc000) {
 }
 
   final public ValueWithVariable ValueWithVariable() throws ParseException {/*@bgen(jjtree) ValueWithVariable */
-  ValueWithVariable jjtn000 = new ValueWithVariable(JJTVALUEWITHVARIABLE);
+  final ValueWithVariable jjtn000 = new ValueWithVariable(JJTVALUEWITHVARIABLE);
   boolean jjtc000 = true;
   jjtree.openNodeScope(jjtn000);
   jjtn000.jjtSetFirstToken(getToken(1));
@@ -1235,7 +1250,7 @@ jjtree.closeNodeScope(jjtn000, true);
       jjtc000 = false;
       jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -1259,12 +1274,13 @@ if (jjtc000) {
 }
 
   final public EnumValue EnumValue() throws ParseException {/*@bgen(jjtree) EnumValue */
-    EnumValue jjtn000 = new EnumValue(JJTENUMVALUE);
+    final EnumValue jjtn000 = new EnumValue(JJTENUMVALUE);
     boolean jjtc000 = true;
     jjtree.openNodeScope(jjtn000);
-    jjtn000.jjtSetFirstToken(getToken(1));int tokenId = tokenId();
-    int line = line();
-    int column = column();
+    jjtn000.jjtSetFirstToken(getToken(1));
+    final int tokenId = tokenId();
+    final int line = line();
+    final int column = column();
     try {
       jjtn000.name = Name();
 jjtree.closeNodeScope(jjtn000, true);
@@ -1275,7 +1291,7 @@ jjtree.closeNodeScope(jjtn000, true);
         //TODO      || "null".equals(name.image)) throw new ParseException("true, false, null are not allowed as names");
 
         {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -1300,12 +1316,13 @@ if (jjtc000) {
 
 // List Value
   final public ListValue ListValue() throws ParseException {/*@bgen(jjtree) ListValue */
-    ListValue jjtn000 = new ListValue(JJTLISTVALUE);
+    final ListValue jjtn000 = new ListValue(JJTLISTVALUE);
     boolean jjtc000 = true;
     jjtree.openNodeScope(jjtn000);
-    jjtn000.jjtSetFirstToken(getToken(1));int tokenId = tokenId();
-    int line = line();
-    int column = column();
+    jjtn000.jjtSetFirstToken(getToken(1));
+    final int tokenId = tokenId();
+    final int line = line();
+    final int column = column();
 
     Value lastVal;
     try {
@@ -1348,7 +1365,7 @@ jjtree.closeNodeScope(jjtn000, true);
              jjtc000 = false;
              jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -1372,12 +1389,13 @@ if (jjtc000) {
 }
 
   final public ListValueWithVariable ListValueWithVariable() throws ParseException {/*@bgen(jjtree) ListValueWithVariable */
-    ListValueWithVariable jjtn000 = new ListValueWithVariable(JJTLISTVALUEWITHVARIABLE);
+    final ListValueWithVariable jjtn000 = new ListValueWithVariable(JJTLISTVALUEWITHVARIABLE);
     boolean jjtc000 = true;
     jjtree.openNodeScope(jjtn000);
-    jjtn000.jjtSetFirstToken(getToken(1));int tokenId = tokenId();
-    int line = line();
-    int column = column();
+    jjtn000.jjtSetFirstToken(getToken(1));
+    final int tokenId = tokenId();
+    final int line = line();
+    final int column = column();
 
     ValueWithVariable lastVal;
     try {
@@ -1421,7 +1439,7 @@ jjtree.closeNodeScope(jjtn000, true);
              jjtc000 = false;
              jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -1446,12 +1464,13 @@ if (jjtc000) {
 
 // Object Value
   final public ObjectValue ObjectValue() throws ParseException {/*@bgen(jjtree) ObjectValue */
-    ObjectValue jjtn000 = new ObjectValue(JJTOBJECTVALUE);
+    final ObjectValue jjtn000 = new ObjectValue(JJTOBJECTVALUE);
     boolean jjtc000 = true;
     jjtree.openNodeScope(jjtn000);
-    jjtn000.jjtSetFirstToken(getToken(1));int tokenId = tokenId();
-    int line = line();
-    int column = column();
+    jjtn000.jjtSetFirstToken(getToken(1));
+    final int tokenId = tokenId();
+    final int line = line();
+    final int column = column();
 
     ObjectField lastVal;
     try {
@@ -1487,7 +1506,7 @@ jjtree.closeNodeScope(jjtn000, true);
              jjtc000 = false;
              jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -1511,12 +1530,13 @@ if (jjtc000) {
 }
 
   final public ObjectValueWithVariable ObjectValueWithVariable() throws ParseException {/*@bgen(jjtree) ObjectValueWithVariable */
-    ObjectValueWithVariable jjtn000 = new ObjectValueWithVariable(JJTOBJECTVALUEWITHVARIABLE);
+    final ObjectValueWithVariable jjtn000 = new ObjectValueWithVariable(JJTOBJECTVALUEWITHVARIABLE);
     boolean jjtc000 = true;
     jjtree.openNodeScope(jjtn000);
-    jjtn000.jjtSetFirstToken(getToken(1));int tokenId = tokenId();
-    int line = line();
-    int column = column();
+    jjtn000.jjtSetFirstToken(getToken(1));
+    final int tokenId = tokenId();
+    final int line = line();
+    final int column = column();
 
     ObjectFieldWithValue lastVal;
     try {
@@ -1552,7 +1572,7 @@ jjtree.closeNodeScope(jjtn000, true);
              jjtc000 = false;
              jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -1576,12 +1596,13 @@ if (jjtc000) {
 }
 
   final public ObjectField ObjectField() throws ParseException {/*@bgen(jjtree) ObjectField */
-    ObjectField jjtn000 = new ObjectField(JJTOBJECTFIELD);
+    final ObjectField jjtn000 = new ObjectField(JJTOBJECTFIELD);
     boolean jjtc000 = true;
     jjtree.openNodeScope(jjtn000);
-    jjtn000.jjtSetFirstToken(getToken(1));int tokenId = tokenId();
-    int line = line();
-    int column = column();
+    jjtn000.jjtSetFirstToken(getToken(1));
+    final int tokenId = tokenId();
+    final int line = line();
+    final int column = column();
     try {
       jjtn000.name = Name();
       jj_consume_token(COLON);
@@ -1590,7 +1611,7 @@ jjtree.closeNodeScope(jjtn000, true);
       jjtc000 = false;
       jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -1614,12 +1635,13 @@ if (jjtc000) {
 }
 
   final public ObjectFieldWithValue ObjectFieldWithValue() throws ParseException {/*@bgen(jjtree) ObjectFieldWithValue */
-    ObjectFieldWithValue jjtn000 = new ObjectFieldWithValue(JJTOBJECTFIELDWITHVALUE);
+    final ObjectFieldWithValue jjtn000 = new ObjectFieldWithValue(JJTOBJECTFIELDWITHVALUE);
     boolean jjtc000 = true;
     jjtree.openNodeScope(jjtn000);
-    jjtn000.jjtSetFirstToken(getToken(1));int tokenId = tokenId();
-    int line = line();
-    int column = column();
+    jjtn000.jjtSetFirstToken(getToken(1));
+    final int tokenId = tokenId();
+    final int line = line();
+    final int column = column();
     try {
       jjtn000.name = Name();
       jj_consume_token(COLON);
@@ -1628,7 +1650,7 @@ jjtree.closeNodeScope(jjtn000, true);
       jjtc000 = false;
       jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -1653,12 +1675,13 @@ if (jjtc000) {
 
 // Directives
   final public Directives Directives() throws ParseException {/*@bgen(jjtree) Directives */
-    Directives jjtn000 = new Directives(JJTDIRECTIVES);
+    final Directives jjtn000 = new Directives(JJTDIRECTIVES);
     boolean jjtc000 = true;
     jjtree.openNodeScope(jjtn000);
-    jjtn000.jjtSetFirstToken(getToken(1));int tokenId = tokenId();
-    int line = line();
-    int column = column();
+    jjtn000.jjtSetFirstToken(getToken(1));
+    final int tokenId = tokenId();
+    final int line = line();
+    final int column = column();
 
     Directive lastDirective;
     try {
@@ -1684,7 +1707,7 @@ jjtree.closeNodeScope(jjtn000, true);
       jjtc000 = false;
       jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -1708,12 +1731,13 @@ if (jjtc000) {
 }
 
   final public Directive Directive() throws ParseException {/*@bgen(jjtree) Directive */
-    Directive jjtn000 = new Directive(JJTDIRECTIVE);
+    final Directive jjtn000 = new Directive(JJTDIRECTIVE);
     boolean jjtc000 = true;
     jjtree.openNodeScope(jjtn000);
-    jjtn000.jjtSetFirstToken(getToken(1));int tokenId = tokenId();
-    int line = line();
-    int column = column();
+    jjtn000.jjtSetFirstToken(getToken(1));
+    final int tokenId = tokenId();
+    final int line = line();
+    final int column = column();
     try {
       jjtn000.name = Name();
       switch (jj_ntk == -1 ? jj_ntk_f() : jj_ntk) {
@@ -1729,7 +1753,7 @@ jjtree.closeNodeScope(jjtn000, true);
       jjtc000 = false;
       jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -1754,12 +1778,13 @@ if (jjtc000) {
 
 // Types
   final public Type Type() throws ParseException {/*@bgen(jjtree) Type */
-    Type jjtn000 = new Type(JJTTYPE);
+    final Type jjtn000 = new Type(JJTTYPE);
     boolean jjtc000 = true;
     jjtree.openNodeScope(jjtn000);
-    jjtn000.jjtSetFirstToken(getToken(1));int tokenId = tokenId();
-    int line = line();
-    int column = column();
+    jjtn000.jjtSetFirstToken(getToken(1));
+    final int tokenId = tokenId();
+    final int line = line();
+    final int column = column();
     try {
       switch (jj_ntk == -1 ? jj_ntk_f() : jj_ntk) {
       case FRAGMENT:
@@ -1802,7 +1827,7 @@ jjtree.closeNodeScope(jjtn000, true);
       jjtc000 = false;
       jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -1826,7 +1851,7 @@ if (jjtc000) {
 }
 
   final public TypeName TypeName() throws ParseException {/*@bgen(jjtree) TypeName */
-  TypeName jjtn000 = new TypeName(JJTTYPENAME);
+  final TypeName jjtn000 = new TypeName(JJTTYPENAME);
   boolean jjtc000 = true;
   jjtree.openNodeScope(jjtn000);
   jjtn000.jjtSetFirstToken(getToken(1));
@@ -1836,7 +1861,7 @@ jjtree.closeNodeScope(jjtn000, true);
                             jjtc000 = false;
                             jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -1860,12 +1885,13 @@ if (jjtc000) {
 }
 
   final public ListType ListType() throws ParseException {/*@bgen(jjtree) ListType */
-    ListType jjtn000 = new ListType(JJTLISTTYPE);
+    final ListType jjtn000 = new ListType(JJTLISTTYPE);
     boolean jjtc000 = true;
     jjtree.openNodeScope(jjtn000);
-    jjtn000.jjtSetFirstToken(getToken(1));int tokenId = tokenId();
-    int line = line();
-    int column = column();
+    jjtn000.jjtSetFirstToken(getToken(1));
+    final int tokenId = tokenId();
+    final int line = line();
+    final int column = column();
     try {
       jj_consume_token(OBRA);
       jjtn000.type = Type();
@@ -1884,7 +1910,7 @@ jjtree.closeNodeScope(jjtn000, true);
       jjtc000 = false;
       jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -1909,7 +1935,7 @@ if (jjtc000) {
 
 // Type System
   final public TypeSystemDefinition TypeSystemDefinition() throws ParseException {/*@bgen(jjtree) TypeSystemDefinition */
-  TypeSystemDefinition jjtn000 = new TypeSystemDefinition(JJTTYPESYSTEMDEFINITION);
+  final TypeSystemDefinition jjtn000 = new TypeSystemDefinition(JJTTYPESYSTEMDEFINITION);
   boolean jjtc000 = true;
   jjtree.openNodeScope(jjtn000);
   jjtn000.jjtSetFirstToken(getToken(1));
@@ -1945,7 +1971,7 @@ jjtree.closeNodeScope(jjtn000, true);
       jjtc000 = false;
       jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -1969,12 +1995,13 @@ if (jjtc000) {
 }
 
   final public SchemaDefinition SchemaDefinition() throws ParseException {/*@bgen(jjtree) SchemaDefinition */
-    SchemaDefinition jjtn000 = new SchemaDefinition(JJTSCHEMADEFINITION);
+    final SchemaDefinition jjtn000 = new SchemaDefinition(JJTSCHEMADEFINITION);
     boolean jjtc000 = true;
     jjtree.openNodeScope(jjtn000);
-    jjtn000.jjtSetFirstToken(getToken(1));int tokenId = tokenId();
-    int line = line();
-    int column = column();
+    jjtn000.jjtSetFirstToken(getToken(1));
+    final int tokenId = tokenId();
+    final int line = line();
+    final int column = column();
     OperationTypeDefinition lastOpTypeDef;
     try {
       jj_consume_token(SCHEMA);
@@ -2007,7 +2034,7 @@ jjtree.closeNodeScope(jjtn000, true);
       jjtc000 = false;
       jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -2031,12 +2058,13 @@ if (jjtc000) {
 }
 
   final public OperationTypeDefinition OperationTypeDefinition() throws ParseException {/*@bgen(jjtree) OperationTypeDefinition */
-    OperationTypeDefinition jjtn000 = new OperationTypeDefinition(JJTOPERATIONTYPEDEFINITION);
+    final OperationTypeDefinition jjtn000 = new OperationTypeDefinition(JJTOPERATIONTYPEDEFINITION);
     boolean jjtc000 = true;
     jjtree.openNodeScope(jjtn000);
-    jjtn000.jjtSetFirstToken(getToken(1));int tokenId = tokenId();
-    int line = line();
-    int column = column();
+    jjtn000.jjtSetFirstToken(getToken(1));
+    final int tokenId = tokenId();
+    final int line = line();
+    final int column = column();
     try {
       jjtn000.operationType = OperationType();
       jj_consume_token(COLON);
@@ -2045,7 +2073,7 @@ jjtree.closeNodeScope(jjtn000, true);
       jjtc000 = false;
       jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -2069,10 +2097,11 @@ if (jjtc000) {
 }
 
   final public TypeDefinition TypeDefinition() throws ParseException {/*@bgen(jjtree) TypeDefinition */
-    TypeDefinition jjtn000 = new TypeDefinition(JJTTYPEDEFINITION);
+    final TypeDefinition jjtn000 = new TypeDefinition(JJTTYPEDEFINITION);
     boolean jjtc000 = true;
     jjtree.openNodeScope(jjtn000);
-    jjtn000.jjtSetFirstToken(getToken(1));TypeDefinition result;
+    jjtn000.jjtSetFirstToken(getToken(1));
+    final TypeDefinition result;
     try {
       switch (jj_ntk == -1 ? jj_ntk_f() : jj_ntk) {
       case SCALAR:{
@@ -2108,7 +2137,7 @@ jjtree.closeNodeScope(jjtn000, true);
       jjtc000 = false;
       jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return result;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -2132,12 +2161,13 @@ if (jjtc000) {
 }
 
   final public ScalarTypeDefinition ScalarTypeDefinition() throws ParseException {/*@bgen(jjtree) ScalarTypeDefinition */
-    ScalarTypeDefinition jjtn000 = new ScalarTypeDefinition(JJTSCALARTYPEDEFINITION);
+    final ScalarTypeDefinition jjtn000 = new ScalarTypeDefinition(JJTSCALARTYPEDEFINITION);
     boolean jjtc000 = true;
     jjtree.openNodeScope(jjtn000);
-    jjtn000.jjtSetFirstToken(getToken(1));int tokenId = tokenId();
-    int line = line();
-    int column = column();
+    jjtn000.jjtSetFirstToken(getToken(1));
+    final int tokenId = tokenId();
+    final int line = line();
+    final int column = column();
     try {
       jj_consume_token(SCALAR);
       jjtn000.name = Name();
@@ -2154,7 +2184,7 @@ jjtree.closeNodeScope(jjtn000, true);
       jjtc000 = false;
       jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -2178,12 +2208,13 @@ if (jjtc000) {
 }
 
   final public ObjectTypeDefinition ObjectTypeDefinition() throws ParseException {/*@bgen(jjtree) ObjectTypeDefinition */
-    ObjectTypeDefinition jjtn000 = new ObjectTypeDefinition(JJTOBJECTTYPEDEFINITION);
+    final ObjectTypeDefinition jjtn000 = new ObjectTypeDefinition(JJTOBJECTTYPEDEFINITION);
     boolean jjtc000 = true;
     jjtree.openNodeScope(jjtn000);
-    jjtn000.jjtSetFirstToken(getToken(1));int tokenId = tokenId();
-    int line = line();
-    int column = column();
+    jjtn000.jjtSetFirstToken(getToken(1));
+    final int tokenId = tokenId();
+    final int line = line();
+    final int column = column();
     FieldDefinition lastFieldDef;
     try {
       jj_consume_token(TYPE);
@@ -2239,7 +2270,7 @@ jjtree.closeNodeScope(jjtn000, true);
       jjtc000 = false;
       jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -2263,7 +2294,7 @@ if (jjtc000) {
 }
 
   final public ImplementsInterface ImplementsInterface() throws ParseException {/*@bgen(jjtree) ImplementsInterface */
-    ImplementsInterface jjtn000 = new ImplementsInterface(JJTIMPLEMENTSINTERFACE);
+    final ImplementsInterface jjtn000 = new ImplementsInterface(JJTIMPLEMENTSINTERFACE);
     boolean jjtc000 = true;
     jjtree.openNodeScope(jjtn000);
     jjtn000.jjtSetFirstToken(getToken(1));TypeName lastTypeName;
@@ -2299,7 +2330,7 @@ jjtree.closeNodeScope(jjtn000, true);
       jjtc000 = false;
       jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -2323,12 +2354,13 @@ if (jjtc000) {
 }
 
   final public FieldDefinition FieldDefinition() throws ParseException {/*@bgen(jjtree) FieldDefinition */
-    FieldDefinition jjtn000 = new FieldDefinition(JJTFIELDDEFINITION);
+    final FieldDefinition jjtn000 = new FieldDefinition(JJTFIELDDEFINITION);
     boolean jjtc000 = true;
     jjtree.openNodeScope(jjtn000);
-    jjtn000.jjtSetFirstToken(getToken(1));int tokenId = tokenId();
-    int line = line();
-    int column = column();
+    jjtn000.jjtSetFirstToken(getToken(1));
+    final int tokenId = tokenId();
+    final int line = line();
+    final int column = column();
     try {
       jjtn000.name = Name();
       switch (jj_ntk == -1 ? jj_ntk_f() : jj_ntk) {
@@ -2355,7 +2387,7 @@ jjtree.closeNodeScope(jjtn000, true);
       jjtc000 = false;
       jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -2379,12 +2411,13 @@ if (jjtc000) {
 }
 
   final public ArgumentsDefinition ArgumentsDefinition() throws ParseException {/*@bgen(jjtree) ArgumentsDefinition */
-    ArgumentsDefinition jjtn000 = new ArgumentsDefinition(JJTARGUMENTSDEFINITION);
+    final ArgumentsDefinition jjtn000 = new ArgumentsDefinition(JJTARGUMENTSDEFINITION);
     boolean jjtc000 = true;
     jjtree.openNodeScope(jjtn000);
-    jjtn000.jjtSetFirstToken(getToken(1));int tokenId = tokenId();
-    int line = line();
-    int column = column();
+    jjtn000.jjtSetFirstToken(getToken(1));
+    final int tokenId = tokenId();
+    final int line = line();
+    final int column = column();
 
     InputValueDefinition lastVal;
     try {
@@ -2420,7 +2453,7 @@ jjtree.closeNodeScope(jjtn000, true);
       jjtc000 = false;
       jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -2444,12 +2477,13 @@ if (jjtc000) {
 }
 
   final public InputValueDefinition InputValueDefinition() throws ParseException {/*@bgen(jjtree) InputValueDefinition */
-    InputValueDefinition jjtn000 = new InputValueDefinition(JJTINPUTVALUEDEFINITION);
+    final InputValueDefinition jjtn000 = new InputValueDefinition(JJTINPUTVALUEDEFINITION);
     boolean jjtc000 = true;
     jjtree.openNodeScope(jjtn000);
-    jjtn000.jjtSetFirstToken(getToken(1));int tokenId = tokenId();
-    int line = line();
-    int column = column();
+    jjtn000.jjtSetFirstToken(getToken(1));
+    final int tokenId = tokenId();
+    final int line = line();
+    final int column = column();
     try {
       jjtn000.name = Name();
       jj_consume_token(COLON);
@@ -2476,7 +2510,7 @@ jjtree.closeNodeScope(jjtn000, true);
       jjtc000 = false;
       jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -2500,12 +2534,13 @@ if (jjtc000) {
 }
 
   final public InterfaceTypeDefinition InterfaceTypeDefinition() throws ParseException {/*@bgen(jjtree) InterfaceTypeDefinition */
-    InterfaceTypeDefinition jjtn000 = new InterfaceTypeDefinition(JJTINTERFACETYPEDEFINITION);
+    final InterfaceTypeDefinition jjtn000 = new InterfaceTypeDefinition(JJTINTERFACETYPEDEFINITION);
     boolean jjtc000 = true;
     jjtree.openNodeScope(jjtn000);
-    jjtn000.jjtSetFirstToken(getToken(1));int tokenId = tokenId();
-    int line = line();
-    int column = column();
+    jjtn000.jjtSetFirstToken(getToken(1));
+    final int tokenId = tokenId();
+    final int line = line();
+    final int column = column();
     FieldDefinition lastFieldDef;
     try {
       jj_consume_token(INTERFACE);
@@ -2551,7 +2586,7 @@ jjtree.closeNodeScope(jjtn000, true);
       jjtc000 = false;
       jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -2575,12 +2610,13 @@ if (jjtc000) {
 }
 
   final public UnionTypeDefinition UnionTypeDefinition() throws ParseException {/*@bgen(jjtree) UnionTypeDefinition */
-    UnionTypeDefinition jjtn000 = new UnionTypeDefinition(JJTUNIONTYPEDEFINITION);
+    final UnionTypeDefinition jjtn000 = new UnionTypeDefinition(JJTUNIONTYPEDEFINITION);
     boolean jjtc000 = true;
     jjtree.openNodeScope(jjtn000);
-    jjtn000.jjtSetFirstToken(getToken(1));int tokenId = tokenId();
-    int line = line();
-    int column = column();
+    jjtn000.jjtSetFirstToken(getToken(1));
+    final int tokenId = tokenId();
+    final int line = line();
+    final int column = column();
     try {
       jj_consume_token(UNION);
       jjtn000.name = Name();
@@ -2599,7 +2635,7 @@ jjtree.closeNodeScope(jjtn000, true);
       jjtc000 = false;
       jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -2623,12 +2659,13 @@ if (jjtc000) {
 }
 
   final public UnionMembers UnionMembers() throws ParseException {/*@bgen(jjtree) UnionMembers */
-    UnionMembers jjtn000 = new UnionMembers(JJTUNIONMEMBERS);
+    final UnionMembers jjtn000 = new UnionMembers(JJTUNIONMEMBERS);
     boolean jjtc000 = true;
     jjtree.openNodeScope(jjtn000);
-    jjtn000.jjtSetFirstToken(getToken(1));int tokenId = tokenId();
-    int line = line();
-    int column = column();
+    jjtn000.jjtSetFirstToken(getToken(1));
+    final int tokenId = tokenId();
+    final int line = line();
+    final int column = column();
 
     TypeName lastTypeName;
     try {
@@ -2648,7 +2685,7 @@ jjtn000.typeNames.add(lastTypeName);
         lastTypeName = TypeName();
 jjtn000.typeNames.add(lastTypeName);
       }
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -2672,12 +2709,13 @@ if (jjtc000) {
 }
 
   final public EnumTypeDefinition EnumTypeDefinition() throws ParseException {/*@bgen(jjtree) EnumTypeDefinition */
-    EnumTypeDefinition jjtn000 = new EnumTypeDefinition(JJTENUMTYPEDEFINITION);
+    final EnumTypeDefinition jjtn000 = new EnumTypeDefinition(JJTENUMTYPEDEFINITION);
     boolean jjtc000 = true;
     jjtree.openNodeScope(jjtn000);
-    jjtn000.jjtSetFirstToken(getToken(1));int tokenId = tokenId();
-    int line = line();
-    int column = column();
+    jjtn000.jjtSetFirstToken(getToken(1));
+    final int tokenId = tokenId();
+    final int line = line();
+    final int column = column();
     EnumValueDefinition lastEnumValDef;
     try {
       jj_consume_token(ENUM);
@@ -2724,7 +2762,7 @@ jjtree.closeNodeScope(jjtn000, true);
       jjtc000 = false;
       jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -2748,12 +2786,13 @@ if (jjtc000) {
 }
 
   final public EnumValueDefinition EnumValueDefinition() throws ParseException {/*@bgen(jjtree) EnumValueDefinition */
-    EnumValueDefinition jjtn000 = new EnumValueDefinition(JJTENUMVALUEDEFINITION);
+    final EnumValueDefinition jjtn000 = new EnumValueDefinition(JJTENUMVALUEDEFINITION);
     boolean jjtc000 = true;
     jjtree.openNodeScope(jjtn000);
-    jjtn000.jjtSetFirstToken(getToken(1));int tokenId = tokenId();
-    int line = line();
-    int column = column();
+    jjtn000.jjtSetFirstToken(getToken(1));
+    final int tokenId = tokenId();
+    final int line = line();
+    final int column = column();
     try {
       jjtn000.enumValue = EnumValue();
       switch (jj_ntk == -1 ? jj_ntk_f() : jj_ntk) {
@@ -2769,7 +2808,7 @@ jjtree.closeNodeScope(jjtn000, true);
       jjtc000 = false;
       jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -2793,12 +2832,13 @@ if (jjtc000) {
 }
 
   final public InputObjectTypeDefinition InputObjectTypeDefinition() throws ParseException {/*@bgen(jjtree) InputObjectTypeDefinition */
-    InputObjectTypeDefinition jjtn000 = new InputObjectTypeDefinition(JJTINPUTOBJECTTYPEDEFINITION);
+    final InputObjectTypeDefinition jjtn000 = new InputObjectTypeDefinition(JJTINPUTOBJECTTYPEDEFINITION);
     boolean jjtc000 = true;
     jjtree.openNodeScope(jjtn000);
-    jjtn000.jjtSetFirstToken(getToken(1));int tokenId = tokenId();
-    int line = line();
-    int column = column();
+    jjtn000.jjtSetFirstToken(getToken(1));
+    final int tokenId = tokenId();
+    final int line = line();
+    final int column = column();
 
     InputValueDefinition lastInputValDef;
     try {
@@ -2845,7 +2885,7 @@ jjtree.closeNodeScope(jjtn000, true);
       jjtc000 = false;
       jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -2869,12 +2909,13 @@ if (jjtc000) {
 }
 
   final public TypeExtensionDefinition TypeExtensionDefinition() throws ParseException {/*@bgen(jjtree) TypeExtensionDefinition */
-    TypeExtensionDefinition jjtn000 = new TypeExtensionDefinition(JJTTYPEEXTENSIONDEFINITION);
+    final TypeExtensionDefinition jjtn000 = new TypeExtensionDefinition(JJTTYPEEXTENSIONDEFINITION);
     boolean jjtc000 = true;
     jjtree.openNodeScope(jjtn000);
-    jjtn000.jjtSetFirstToken(getToken(1));int tokenId = tokenId();
-    int line = line();
-    int column = column();
+    jjtn000.jjtSetFirstToken(getToken(1));
+    final int tokenId = tokenId();
+    final int line = line();
+    final int column = column();
     try {
       jj_consume_token(EXTEND);
       jjtn000.objectTypeDefinition = ObjectTypeDefinition();
@@ -2882,7 +2923,7 @@ jjtree.closeNodeScope(jjtn000, true);
       jjtc000 = false;
       jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -2906,12 +2947,13 @@ if (jjtc000) {
 }
 
   final public DirectiveDefinition DirectiveDefinition() throws ParseException {/*@bgen(jjtree) DirectiveDefinition */
-    DirectiveDefinition jjtn000 = new DirectiveDefinition(JJTDIRECTIVEDEFINITION);
+    final DirectiveDefinition jjtn000 = new DirectiveDefinition(JJTDIRECTIVEDEFINITION);
     boolean jjtc000 = true;
     jjtree.openNodeScope(jjtn000);
-    jjtn000.jjtSetFirstToken(getToken(1));int tokenId = tokenId();
-    int line = line();
-    int column = column();
+    jjtn000.jjtSetFirstToken(getToken(1));
+    final int tokenId = tokenId();
+    final int line = line();
+    final int column = column();
     try {
       jj_consume_token(DIRECTIVE);
       jj_consume_token(AT);
@@ -2931,7 +2973,7 @@ jjtree.closeNodeScope(jjtn000, true);
       jjtc000 = false;
       jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -2955,19 +2997,20 @@ if (jjtc000) {
 }
 
   final public DirectiveLocation DirectiveLocation() throws ParseException {/*@bgen(jjtree) DirectiveLocation */
-    DirectiveLocation jjtn000 = new DirectiveLocation(JJTDIRECTIVELOCATION);
+    final DirectiveLocation jjtn000 = new DirectiveLocation(JJTDIRECTIVELOCATION);
     boolean jjtc000 = true;
     jjtree.openNodeScope(jjtn000);
-    jjtn000.jjtSetFirstToken(getToken(1));int tokenId = tokenId();
-    int line = line();
-    int column = column();
+    jjtn000.jjtSetFirstToken(getToken(1));
+    final int tokenId = tokenId();
+    final int line = line();
+    final int column = column();
     try {
       jjtn000.name = Name();
 jjtree.closeNodeScope(jjtn000, true);
       jjtc000 = false;
       jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -2991,12 +3034,13 @@ if (jjtc000) {
 }
 
   final public DirectiveLocations DirectiveLocations() throws ParseException {/*@bgen(jjtree) DirectiveLocations */
-    DirectiveLocations jjtn000 = new DirectiveLocations(JJTDIRECTIVELOCATIONS);
+    final DirectiveLocations jjtn000 = new DirectiveLocations(JJTDIRECTIVELOCATIONS);
     boolean jjtc000 = true;
     jjtree.openNodeScope(jjtn000);
-    jjtn000.jjtSetFirstToken(getToken(1));int tokenId = tokenId();
-    int line = line();
-    int column = column();
+    jjtn000.jjtSetFirstToken(getToken(1));
+    final int tokenId = tokenId();
+    final int line = line();
+    final int column = column();
     DirectiveLocation lastDirLocation;
     try {
       lastDirLocation = DirectiveLocation();
@@ -3019,7 +3063,7 @@ jjtree.closeNodeScope(jjtn000, true);
       jjtc000 = false;
       jjtn000.jjtSetLastToken(getToken(0));
 {if ("" != null) return jjtn000;}
-    } catch (Throwable jjte000) {
+    } catch (final Throwable jjte000) {
 if (jjtc000) {
         jjtree.clearNodeScope(jjtn000);
         jjtc000 = false;
@@ -3044,12 +3088,13 @@ if (jjtc000) {
 
 // Tokens
   final public BooleanValue BooleanValue() throws ParseException {/*@bgen(jjtree) BooleanValue */
-    BooleanValue jjtn000 = new BooleanValue(JJTBOOLEANVALUE);
+    final BooleanValue jjtn000 = new BooleanValue(JJTBOOLEANVALUE);
     boolean jjtc000 = true;
     jjtree.openNodeScope(jjtn000);
-    jjtn000.jjtSetFirstToken(getToken(1));int tokenId = tokenId();
-    int line = line();
-    int column = column();
+    jjtn000.jjtSetFirstToken(getToken(1));
+    final int tokenId = tokenId();
+    final int line = line();
+    final int column = column();
     try {
       switch (jj_ntk == -1 ? jj_ntk_f() : jj_ntk) {
       case TRUE:{
@@ -3081,13 +3126,14 @@ if (jjtc000) {
 }
 
   final public IntValue IntValue() throws ParseException {/*@bgen(jjtree) IntValue */
-    IntValue jjtn000 = new IntValue(JJTINTVALUE);
+    final IntValue jjtn000 = new IntValue(JJTINTVALUE);
     boolean jjtc000 = true;
     jjtree.openNodeScope(jjtn000);
-    jjtn000.jjtSetFirstToken(getToken(1));int tokenId = tokenId();
-    int line = line();
-    int column = column();
-    Token literal;
+    jjtn000.jjtSetFirstToken(getToken(1));
+    final int tokenId = tokenId();
+    final int line = line();
+    final int column = column();
+    final Token literal;
     try {
       literal = jj_consume_token(INTEGER_LITERAL);
 jjtree.closeNodeScope(jjtn000, true);
@@ -3105,13 +3151,14 @@ if (jjtc000) {
 }
 
   final public FloatValue FloatValue() throws ParseException {/*@bgen(jjtree) FloatValue */
-    FloatValue jjtn000 = new FloatValue(JJTFLOATVALUE);
+    final FloatValue jjtn000 = new FloatValue(JJTFLOATVALUE);
     boolean jjtc000 = true;
     jjtree.openNodeScope(jjtn000);
-    jjtn000.jjtSetFirstToken(getToken(1));int tokenId = tokenId();
-    int line = line();
-    int column = column();
-    Token literal;
+    jjtn000.jjtSetFirstToken(getToken(1));
+    final int tokenId = tokenId();
+    final int line = line();
+    final int column = column();
+    final Token literal;
     try {
       literal = jj_consume_token(FLOAT_LITERAL);
 jjtree.closeNodeScope(jjtn000, true);
@@ -3130,13 +3177,14 @@ if (jjtc000) {
 }
 
   final public StringValue StringValue() throws ParseException {/*@bgen(jjtree) StringValue */
-    StringValue jjtn000 = new StringValue(JJTSTRINGVALUE);
+    final StringValue jjtn000 = new StringValue(JJTSTRINGVALUE);
     boolean jjtc000 = true;
     jjtree.openNodeScope(jjtn000);
-    jjtn000.jjtSetFirstToken(getToken(1));int tokenId = tokenId();
-    int line = line();
-    int column = column();
-    Token literal;
+    jjtn000.jjtSetFirstToken(getToken(1));
+    final int tokenId = tokenId();
+    final int line = line();
+    final int column = column();
+    final Token literal;
     try {
       literal = jj_consume_token(STRING_LITERAL);
 jjtree.closeNodeScope(jjtn000, true);
@@ -3154,7 +3202,7 @@ if (jjtc000) {
 }
 
   final public OperationType OperationType() throws ParseException {/*@bgen(jjtree) OperationType */
-  OperationType jjtn000 = new OperationType(JJTOPERATIONTYPE);
+  final OperationType jjtn000 = new OperationType(JJTOPERATIONTYPE);
   boolean jjtc000 = true;
   jjtree.openNodeScope(jjtn000);
   jjtn000.jjtSetFirstToken(getToken(1));
@@ -3317,8 +3365,8 @@ if (jjtc000) {
     return ret;
   }
 
-  private java.util.List<int[]> jj_expentries = new java.util.ArrayList<>();
-  private int[] jj_expentry;
+  private final List<int[]> jj_expentries = new ArrayList<>();
+  private       int[]       jj_expentry;
   private int jj_kind = -1;
 
   /**
@@ -3327,7 +3375,7 @@ if (jjtc000) {
    */
   public ParseException generateParseException() {
     jj_expentries.clear();
-    boolean[] la1tokens = new boolean[55];
+    final boolean[] la1tokens = new boolean[55];
     if (jj_kind >= 0) {
       la1tokens[jj_kind] = true;
       jj_kind = -1;
@@ -3351,7 +3399,7 @@ if (jjtc000) {
         jj_expentries.add(jj_expentry);
       }
     }
-    int[][] exptokseq = new int[jj_expentries.size()][];
+    final int[][] exptokseq = new int[jj_expentries.size()][];
     for (int i = 0; i < jj_expentries.size(); i++) {
       exptokseq[i] = jj_expentries.get(i);
     }

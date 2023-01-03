@@ -13,15 +13,16 @@ class JavaMethods {
   public JavaMethods() {
   }
 
-  public int sum(int a, int b) {
+  public int sum(final int a, final int b) {
     return a + b;
   }
 
-  public static int SUM(int a, int b) {
+  public static int SUM(final int a, final int b) {
     return a + b;
   }
 
   public static void hello() {
+    // EMPTY METHOD
   }
 }
 
@@ -32,7 +33,7 @@ public class JavaQueryTest extends TestHelper {
 
     database.getQueryEngine("java").registerFunctions("com.arcadedb.query.java.JavaMethods::sum");
 
-    ResultSet result = database.command("java", "com.arcadedb.query.java.JavaMethods::sum", 5, 3);
+    final ResultSet result = database.command("java", "com.arcadedb.query.java.JavaMethods::sum", 5, 3);
     Assertions.assertTrue(result.hasNext());
     Assertions.assertEquals(8, (Integer) result.next().getProperty("value"));
   }
@@ -73,7 +74,7 @@ public class JavaQueryTest extends TestHelper {
     try {
       database.command("java", "com.arcadedb.query.java.JavaMethods::sum", 5, 3);
       Assertions.fail();
-    } catch (CommandExecutionException e) {
+    } catch (final CommandExecutionException e) {
       // EXPECTED
       Assertions.assertTrue(e.getCause() instanceof SecurityException);
     }
@@ -85,7 +86,7 @@ public class JavaQueryTest extends TestHelper {
     try {
       database.command("java", "com.arcadedb.query.java.JavaMethods::totallyInvented", 5, 3);
       Assertions.fail();
-    } catch (CommandExecutionException e) {
+    } catch (final CommandExecutionException e) {
       // EXPECTED
       Assertions.assertTrue(e.getCause() instanceof NoSuchMethodException);
     }
@@ -94,7 +95,7 @@ public class JavaQueryTest extends TestHelper {
   @Test
   public void testAnalyzeQuery() {
     database.getQueryEngine("java").registerFunctions("com.arcadedb.query.java.JavaMethods");
-    QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine("java").analyze("com.arcadedb.query.java.JavaMethods::totallyInvented");
+    final QueryEngine.AnalyzedQuery analyzed = database.getQueryEngine("java").analyze("com.arcadedb.query.java.JavaMethods::totallyInvented");
     Assertions.assertFalse(analyzed.isDDL());
     Assertions.assertFalse(analyzed.isIdempotent());
   }
@@ -105,7 +106,7 @@ public class JavaQueryTest extends TestHelper {
     try {
       database.query("java", "com.arcadedb.query.java.JavaMethods::sum", 5, 3);
       Assertions.fail();
-    } catch (UnsupportedOperationException e) {
+    } catch (final UnsupportedOperationException e) {
       // EXPECTED
     }
 
@@ -115,7 +116,7 @@ public class JavaQueryTest extends TestHelper {
       map.put("name", 1);
       database.getQueryEngine("java").command("com.arcadedb.query.java.JavaMethods::hello", map);
       Assertions.fail();
-    } catch (UnsupportedOperationException e) {
+    } catch (final UnsupportedOperationException e) {
       // EXPECTED
     }
 
@@ -123,7 +124,7 @@ public class JavaQueryTest extends TestHelper {
     try {
       database.getQueryEngine("java").query("com.arcadedb.query.java.JavaMethods::sum", new HashMap<>());
       Assertions.fail();
-    } catch (UnsupportedOperationException e) {
+    } catch (final UnsupportedOperationException e) {
       // EXPECTED
     }
   }

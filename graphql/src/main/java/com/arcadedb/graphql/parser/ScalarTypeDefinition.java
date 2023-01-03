@@ -25,11 +25,11 @@ public class ScalarTypeDefinition extends TypeDefinition {
   protected Name       name;
   protected Directives directives;
 
-  public ScalarTypeDefinition(int id) {
+  public ScalarTypeDefinition(final int id) {
     super(id);
   }
 
-  public ScalarTypeDefinition(GraphQLParser p, int id) {
+  public ScalarTypeDefinition(final GraphQLParser p, final int id) {
     super(p, id);
   }
 
@@ -40,7 +40,7 @@ public class ScalarTypeDefinition extends TypeDefinition {
   /**
    * Accept the visitor.
    **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
+  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
     return visitor.visit(this, data);
   }
 }

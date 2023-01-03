@@ -60,7 +60,7 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
         declaration += " }";
 
         return polyglotEngine.eval(declaration);
-      } catch (IOException e) {
+      } catch (final IOException e) {
         throw new FunctionExecutionException("Error on definition of function '" + functionName + "'");
       }
     });
@@ -114,7 +114,7 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
         // UNKNOWN OR NOT SUPPORTED
         return null;
 
-      } catch (IOException e) {
+      } catch (final IOException e) {
         throw new FunctionExecutionException("Error on definition of function '" + functionName + "'");
       }
     });

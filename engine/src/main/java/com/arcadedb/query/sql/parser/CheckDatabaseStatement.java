@@ -43,7 +43,7 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
   }
 
   @Override
-  public ResultSet executeSimple(CommandContext ctx) {
+  public ResultSet executeSimple(final CommandContext ctx) {
     final ResultInternal result = new ResultInternal();
     result.setProperty("operation", "check database");
 

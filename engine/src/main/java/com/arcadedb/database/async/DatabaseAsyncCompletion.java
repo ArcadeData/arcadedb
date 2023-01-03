@@ -27,7 +27,7 @@ public class DatabaseAsyncCompletion extends DatabaseAsyncAbstractCallbackTask {
       if (database.isTransactionActive())
         database.commit();
       async.onOk();
-    } catch (Exception e) {
+    } catch (final Exception e) {
       async.onError(e);
     }
   }

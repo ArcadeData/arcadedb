@@ -131,7 +131,7 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
     return allocationChunkSize;
   }
 
-  public void setAllocationChunkSize(int allocationChunkSize) {
+  public void setAllocationChunkSize(final int allocationChunkSize) {
     this.allocationChunkSize = allocationChunkSize;
   }
 
@@ -153,7 +153,7 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
   public void position(final int index) {
     try {
       buffer.position(index);
-    } catch (IllegalArgumentException e) {
+    } catch (final IllegalArgumentException e) {
       throw new IllegalArgumentException("Invalid position " + index + " (size=" + buffer.limit() + ")");
     }
   }
@@ -395,8 +395,8 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
   @Override
   public short getUnsignedShort() {
     checkForFetching(2);
-    int firstByte = (0x000000FF & ((int) buffer.get()));
-    int secondByte = (0x000000FF & ((int) buffer.get()));
+    final int firstByte = (0x000000FF & ((int) buffer.get()));
+    final int secondByte = (0x000000FF & ((int) buffer.get()));
     return (short) (firstByte << 8 | secondByte);
   }
 
@@ -684,7 +684,7 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
         content = newBuffer.content;
         size = newBuffer.size;
 
-      } catch (Exception e) {
+      } catch (final Exception e) {
         LogManager.instance().log(this, Level.SEVERE, "Error on fetching", e);
       }
     }

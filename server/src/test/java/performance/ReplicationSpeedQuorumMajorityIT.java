@@ -81,7 +81,7 @@ public class ReplicationSpeedQuorumMajorityIT extends BasePerformanceTest {
 
     startServers();
 
-    Database db = getServerDatabase(0, getDatabaseName());
+    final Database db = getServerDatabase(0, getDatabaseName());
 
 //    db.begin();
 //    db.setWALFlush(WALFile.FLUSH_TYPE.YES_NO_METADATA);
@@ -160,7 +160,7 @@ public class ReplicationSpeedQuorumMajorityIT extends BasePerformanceTest {
   protected void populateDatabase(final int parallel, final Database database) {
     Assertions.assertFalse(database.getSchema().existsType("Device"));
 
-    VertexType v = database.getSchema().createVertexType("Device", parallel);
+    final VertexType v = database.getSchema().createVertexType("Device", parallel);
 
     v.createProperty("id", String.class);
     v.createProperty("lastModifiedUserId", String.class);

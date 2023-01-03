@@ -37,7 +37,7 @@ public class JSONSerializer {
 
   public JSONObject map2json(final Map<String, Object> map) {
     final JSONObject json = new JSONObject();
-    for (Map.Entry<String, Object> entry : map.entrySet()) {
+    for (final Map.Entry<String, Object> entry : map.entrySet()) {
       final Object value = convertToJSONType(entry.getValue());
 
       if (value instanceof Number && !Float.isFinite(((Number) value).floatValue())) {
@@ -53,7 +53,7 @@ public class JSONSerializer {
 
   public Map<String, Object> json2map(final JSONObject json) {
     final Map<String, Object> map = new HashMap<>();
-    for (String k : json.keySet()) {
+    for (final String k : json.keySet()) {
       final Object value = convertFromJSONType(json.get(k));
       map.put(k, value);
     }
@@ -67,7 +67,7 @@ public class JSONSerializer {
     } else if (value instanceof Collection) {
       final Collection c = (Collection) value;
       final JSONArray array = new JSONArray();
-      for (Iterator it = c.iterator(); it.hasNext(); )
+      for (final Iterator it = c.iterator(); it.hasNext(); )
         array.put(convertToJSONType(it.next()));
       value = array;
     } else if (value instanceof Date)
@@ -75,7 +75,7 @@ public class JSONSerializer {
     else if (value instanceof Map) {
       final Map<String, Object> m = (Map<String, Object>) value;
       final JSONObject map = new JSONObject();
-      for (Map.Entry<String, Object> entry : m.entrySet())
+      for (final Map.Entry<String, Object> entry : m.entrySet())
         map.put(entry.getKey(), convertToJSONType(entry.getValue()));
       value = map;
     }

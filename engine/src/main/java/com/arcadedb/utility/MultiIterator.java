@@ -166,7 +166,7 @@ public class MultiIterator<T> implements ResettableIterator<T>, Iterable<T> {
     this.limit = limit;
   }
 
-  public void setTimeout(long readTimeout) {
+  public void setTimeout(final long readTimeout) {
     this.timeout = readTimeout;
   }
 
@@ -181,7 +181,7 @@ public class MultiIterator<T> implements ResettableIterator<T>, Iterable<T> {
   public boolean contains(final Object value) {
     final int totSources = sources.size();
     for (int i = 0; i < totSources; ++i) {
-      Object o = sources.get(i);
+      final Object o = sources.get(i);
 
       if (o != null) {
         if (o instanceof Collection<?>) {

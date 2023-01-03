@@ -33,15 +33,15 @@ public class ArrayNumberSelector extends SimpleNode {
 
   Integer integer;
 
-  public ArrayNumberSelector(int id) {
+  public ArrayNumberSelector(final int id) {
     super(id);
   }
 
-  public ArrayNumberSelector(SqlParser p, int id) {
+  public ArrayNumberSelector(final SqlParser p, final int id) {
     super(p, id);
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (inputValue != null) {
       inputValue.toString(params, builder);
     } else if (expressionValue != null) {
@@ -51,7 +51,7 @@ public class ArrayNumberSelector extends SimpleNode {
     }
   }
 
-  public Integer getValue(Identifiable iCurrentRecord, Object iResult, CommandContext ctx) {
+  public Integer getValue(final Identifiable iCurrentRecord, final Object iResult, final CommandContext ctx) {
     Object result = null;
     if (inputValue != null) {
       result = inputValue.getValue(ctx.getInputParameters());
@@ -70,7 +70,7 @@ public class ArrayNumberSelector extends SimpleNode {
     return null;
   }
 
-  public Integer getValue(Result iCurrentRecord, Object iResult, CommandContext ctx) {
+  public Integer getValue(final Result iCurrentRecord, final Object iResult, final CommandContext ctx) {
     Object result = null;
     if (inputValue != null) {
       result = inputValue.getValue(ctx.getInputParameters());
@@ -89,7 +89,7 @@ public class ArrayNumberSelector extends SimpleNode {
     return null;
   }
 
-  public boolean needsAliases(Set<String> aliases) {
+  public boolean needsAliases(final Set<String> aliases) {
     if (expressionValue != null) {
       return expressionValue.needsAliases(aliases);
     }
@@ -97,7 +97,7 @@ public class ArrayNumberSelector extends SimpleNode {
   }
 
   public ArrayNumberSelector copy() {
-    ArrayNumberSelector result = new ArrayNumberSelector(-1);
+    final ArrayNumberSelector result = new ArrayNumberSelector(-1);
     result.inputValue = inputValue == null ? null : inputValue.copy();
     result.expressionValue = expressionValue == null ? null : expressionValue.copy();
     result.integer = integer;
@@ -105,13 +105,13 @@ public class ArrayNumberSelector extends SimpleNode {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    ArrayNumberSelector that = (ArrayNumberSelector) o;
+    final ArrayNumberSelector that = (ArrayNumberSelector) o;
 
     if (!Objects.equals(inputValue, that.inputValue))
       return false;
@@ -128,7 +128,7 @@ public class ArrayNumberSelector extends SimpleNode {
     return result;
   }
 
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
     if (expressionValue != null) {
       expressionValue.extractSubQueries(collector);
     }
@@ -139,7 +139,7 @@ public class ArrayNumberSelector extends SimpleNode {
   }
 
   public Result serialize() {
-    ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal();
     if (inputValue != null) {
       result.setProperty("inputValue", inputValue.serialize());
     }
@@ -150,7 +150,7 @@ public class ArrayNumberSelector extends SimpleNode {
     return result;
   }
 
-  public void deserialize(Result fromResult) {
+  public void deserialize(final Result fromResult) {
     if (fromResult.getProperty("inputValue") != null) {
       inputValue = InputParameter.deserializeFromOResult(fromResult.getProperty("inputValue"));
     }

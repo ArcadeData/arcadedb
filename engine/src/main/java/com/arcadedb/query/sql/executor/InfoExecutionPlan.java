@@ -36,7 +36,7 @@ public class InfoExecutionPlan implements ExecutionPlan {
     return steps;
   }
 
-  @Override public String prettyPrint(int depth, int indent) {
+  @Override public String prettyPrint(final int depth, final int indent) {
     return prettyPrint;
   }
 
@@ -44,7 +44,7 @@ public class InfoExecutionPlan implements ExecutionPlan {
     return null;
   }
 
-  public void setSteps(List<ExecutionStep> steps) {
+  public void setSteps(final List<ExecutionStep> steps) {
     this.steps = steps;
   }
 
@@ -52,7 +52,7 @@ public class InfoExecutionPlan implements ExecutionPlan {
     return prettyPrint;
   }
 
-  public void setPrettyPrint(String prettyPrint) {
+  public void setPrettyPrint(final String prettyPrint) {
     this.prettyPrint = prettyPrint;
   }
 
@@ -60,7 +60,7 @@ public class InfoExecutionPlan implements ExecutionPlan {
     return type;
   }
 
-  public void setType(String type) {
+  public void setType(final String type) {
     this.type = type;
   }
 
@@ -68,7 +68,7 @@ public class InfoExecutionPlan implements ExecutionPlan {
     return javaType;
   }
 
-  public void setJavaType(String javaType) {
+  public void setJavaType(final String javaType) {
     this.javaType = javaType;
   }
 
@@ -76,7 +76,7 @@ public class InfoExecutionPlan implements ExecutionPlan {
     return cost;
   }
 
-  public void setCost(Integer cost) {
+  public void setCost(final Integer cost) {
     this.cost = cost;
   }
 
@@ -84,7 +84,7 @@ public class InfoExecutionPlan implements ExecutionPlan {
     return stmText;
   }
 
-  public void setStmText(String stmText) {
+  public void setStmText(final String stmText) {
     this.stmText = stmText;
   }
 

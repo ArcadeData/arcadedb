@@ -40,8 +40,8 @@ public abstract class AbstractTraverseStep extends AbstractExecutionStep {
 
   final Set<RID> traversed = new RidSet();
 
-  public AbstractTraverseStep(List<TraverseProjectionItem> projections, WhereClause whileClause, PInteger maxDepth, CommandContext ctx,
-      boolean profilingEnabled) {
+  public AbstractTraverseStep(final List<TraverseProjectionItem> projections, final WhereClause whileClause, final PInteger maxDepth, final CommandContext ctx,
+      final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
     this.whileClause = whileClause;
     this.maxDepth = maxDepth;
@@ -49,7 +49,7 @@ public abstract class AbstractTraverseStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) {
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) {
     //TODO
 
     return new ResultSet() {
@@ -78,7 +78,7 @@ public abstract class AbstractTraverseStep extends AbstractExecutionStep {
           }
         }
         localFetched++;
-        Result result = results.remove(0);
+        final Result result = results.remove(0);
         if (result.isElement()) {
           traversed.add(result.getElement().get().getIdentity());
         }
@@ -88,7 +88,7 @@ public abstract class AbstractTraverseStep extends AbstractExecutionStep {
     };
   }
 
-  private void fetchNextBlock(CommandContext ctx, int nRecords) {
+  private void fetchNextBlock(final CommandContext ctx, final int nRecords) {
     if (this.entryPoints == null) {
       this.entryPoints = new ArrayList<>();
     }
@@ -100,7 +100,7 @@ public abstract class AbstractTraverseStep extends AbstractExecutionStep {
       if (this.entryPoints.isEmpty()) {
         return;
       }
-      long begin = profilingEnabled ? System.nanoTime() : 0;
+      final long begin = profilingEnabled ? System.nanoTime() : 0;
       fetchNextResults(ctx, nRecords);
       if (profilingEnabled) {
         cost += (System.nanoTime() - begin);

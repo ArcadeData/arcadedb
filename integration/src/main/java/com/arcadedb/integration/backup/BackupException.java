@@ -25,7 +25,7 @@ public class BackupException extends ArcadeDBException {
     super(s);
   }
 
-  public BackupException(String s, Throwable e) {
+  public BackupException(final String s, final Throwable e) {
     super(s, e);
   }
 }

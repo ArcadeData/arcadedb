@@ -47,11 +47,11 @@ public class LetStatement extends SimpleExecStatement {
     if (expression != null) {
       result = expression.execute((Result) null, ctx);
     } else {
-      Map<String, Object> params = ctx.getInputParameters();
+      final Map<String, Object> params = ctx.getInputParameters();
       result = statement.execute(ctx.getDatabase(), params, ctx);
     }
     if (result instanceof ResultSet) {
-      InternalResultSet rs = new InternalResultSet();
+      final InternalResultSet rs = new InternalResultSet();
       ((ResultSet) result).stream().forEach(x -> rs.add(x));
       rs.setPlan(((ResultSet) result).getExecutionPlan().orElse(null));
       ((ResultSet) result).close();

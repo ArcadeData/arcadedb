@@ -123,10 +123,10 @@ public class ReplicatedDatabase implements DatabaseInternal {
           } else {
             tx.reset();
           }
-        } catch (NeedRetryException | TransactionException e) {
+        } catch (final NeedRetryException | TransactionException e) {
           rollback();
           throw e;
-        } catch (Exception e) {
+        } catch (final Exception e) {
           rollback();
           throw new TransactionException("Error on commit distributed transaction", e);
         }
@@ -204,7 +204,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
-  public void setWrapper(String name, Object instance) {
+  public void setWrapper(final String name, final Object instance) {
     proxied.setWrapper(name, instance);
   }
 
@@ -299,7 +299,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
-  public void updateRecordNoLock(final Record record, boolean discardRecordAfter) {
+  public void updateRecordNoLock(final Record record, final boolean discardRecordAfter) {
     proxied.updateRecordNoLock(record, discardRecordAfter);
   }
 
@@ -334,7 +334,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
-  public int getNewEdgeListSize(int previousSize) {
+  public int getNewEdgeListSize(final int previousSize) {
     return proxied.getNewEdgeListSize(previousSize);
   }
 
@@ -379,7 +379,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
-  public boolean checkTransactionIsActive(boolean createTx) {
+  public boolean checkTransactionIsActive(final boolean createTx) {
     return proxied.checkTransactionIsActive(createTx);
   }
 
@@ -419,7 +419,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
-  public void scanType(String typeName, boolean polymorphic, DocumentCallback callback, ErrorRecordCallback errorRecordCallback) {
+  public void scanType(final String typeName, final boolean polymorphic, final DocumentCallback callback, final ErrorRecordCallback errorRecordCallback) {
     proxied.scanType(typeName, polymorphic, callback, errorRecordCallback);
   }
 
@@ -429,7 +429,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
-  public void scanBucket(String bucketName, RecordCallback callback, ErrorRecordCallback errorRecordCallback) {
+  public void scanBucket(final String bucketName, final RecordCallback callback, final ErrorRecordCallback errorRecordCallback) {
     proxied.scanBucket(bucketName, callback, errorRecordCallback);
   }
 
@@ -484,7 +484,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
-  public MutableVertex newVertex(String typeName) {
+  public MutableVertex newVertex(final String typeName) {
     return proxied.newVertex(typeName);
   }
 
@@ -612,12 +612,12 @@ public class ReplicatedDatabase implements DatabaseInternal {
   }
 
   @Override
-  public ResultSet execute(String language, String script, Object... args) {
+  public ResultSet execute(final String language, final String script, final Object... args) {
     return proxied.execute(language, script, args);
   }
 
   @Override
-  public ResultSet execute(String language, String script, Map<String, Object> args) {
+  public ResultSet execute(final String language, final String script, final Map<String, Object> args) {
     return proxied.execute(language, script, args);
   }
 
@@ -761,9 +761,9 @@ public class ReplicatedDatabase implements DatabaseInternal {
       try {
         final List<PaginatedFile> files = proxied.getFileManager().getFiles();
 
-        for (PaginatedFile paginatedFile : files)
+        for (final PaginatedFile paginatedFile : files)
           if (paginatedFile != null) {
-            long fileChecksum = paginatedFile.calculateChecksum();
+            final long fileChecksum = paginatedFile.calculateChecksum();
             fileChecksums.put(paginatedFile.getFileId(), fileChecksum);
             fileSizes.put(paginatedFile.getFileId(), paginatedFile.getSize());
           }
@@ -772,7 +772,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
         final List<Object> responsePayloads = ha.sendCommandToReplicasWithQuorum(request, quorum, 120_000);
 
         if (responsePayloads != null) {
-          for (Object o : responsePayloads) {
+          for (final Object o : responsePayloads) {
             final DatabaseAlignResponse response = (DatabaseAlignResponse) o;
             result.put(response.getRemoteServerName(), response.getAlignedPages());
           }
@@ -800,7 +800,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
 
     final Map<Integer, String> addFiles = new HashMap<>();
     final Map<Integer, String> removeFiles = new HashMap<>();
-    for (FileManager.FileChange c : fileChanges) {
+    for (final FileManager.FileChange c : fileChanges) {
       if (c.create)
         addFiles.put(c.fileId, c.fileName);
       else

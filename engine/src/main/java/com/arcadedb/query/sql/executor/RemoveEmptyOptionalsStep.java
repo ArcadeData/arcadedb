@@ -26,18 +26,18 @@ import com.arcadedb.query.sql.parser.Identifier;
  */
 public class RemoveEmptyOptionalsStep extends AbstractExecutionStep {
 
-  public RemoveEmptyOptionalsStep(CommandContext ctx, Identifier bucket, boolean profilingEnabled) {
+  public RemoveEmptyOptionalsStep(final CommandContext ctx, final Identifier bucket, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
 
   }
 
-  public RemoveEmptyOptionalsStep(CommandContext ctx, boolean profilingEnabled) {
+  public RemoveEmptyOptionalsStep(final CommandContext ctx, final boolean profilingEnabled) {
     this(ctx, null, profilingEnabled);
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    ResultSet upstream = getPrev().get().syncPull(ctx, nRecords);
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
+    final ResultSet upstream = getPrev().get().syncPull(ctx, nRecords);
     return new ResultSet() {
       @Override
       public boolean hasNext() {
@@ -46,8 +46,8 @@ public class RemoveEmptyOptionalsStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        ResultInternal result = (ResultInternal) upstream.next();
-        for (String s : result.getPropertyNames()) {
+        final ResultInternal result = (ResultInternal) upstream.next();
+        for (final String s : result.getPropertyNames()) {
           if (OptionalMatchEdgeTraverser.isEmptyOptional(result.getProperty(s))) {
             result.setProperty(s, null);
           }
@@ -67,9 +67,9 @@ public class RemoveEmptyOptionalsStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    String result = spaces + "+ REMOVE EMPTY OPTIONALS";
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
+    final String result = spaces + "+ REMOVE EMPTY OPTIONALS";
     return result;
   }
 }

@@ -55,7 +55,7 @@ public class AlterDatabaseStatement extends DDLStatement {
     return result;
   }
 
-  private Result executeSimpleAlter(Identifier settingName, Expression settingValue, CommandContext ctx) {
+  private Result executeSimpleAlter(final Identifier settingName, final Expression settingValue, final CommandContext ctx) {
     final DatabaseInternal db = ctx.getDatabase();
     db.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_DATABASE_SETTINGS);
 
@@ -69,7 +69,7 @@ public class AlterDatabaseStatement extends DDLStatement {
     db.getConfiguration().setValue(cfg, finalValue);
     try {
       db.saveConfiguration();
-    } catch (IOException e) {
+    } catch (final IOException e) {
       throw new CommandExecutionException("Error on saving database configuration");
     }
 

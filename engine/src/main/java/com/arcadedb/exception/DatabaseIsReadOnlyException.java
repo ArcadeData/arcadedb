@@ -25,7 +25,7 @@ public class DatabaseIsReadOnlyException extends ArcadeDBException {
     super(s);
   }
 
-  public DatabaseIsReadOnlyException(String s, IOException e) {
+  public DatabaseIsReadOnlyException(final String s, final IOException e) {
     super(s, e);
   }
 }

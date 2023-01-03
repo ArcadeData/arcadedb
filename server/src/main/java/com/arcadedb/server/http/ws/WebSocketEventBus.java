@@ -115,7 +115,7 @@ public class WebSocketEventBus {
   }
 
   private void stopDatabaseWatcher(final String database) {
-    var watcher = this.databaseWatchers.remove(database);
+    final var watcher = this.databaseWatchers.remove(database);
     if (watcher != null)
       watcher.shutdown();
   }

@@ -20,6 +20,8 @@
 /* ParserGeneratorCCOptions:SUPPORT_CLASS_VISIBILITY_PUBLIC=true */
 package com.arcadedb.graphql.parser;
 
+import java.io.IOException;
+
 /**
  * An implementation of interface CharStream, where the stream is assumed to
  * contain only ASCII characters (without unicode processing).
@@ -31,7 +33,7 @@ public abstract class AbstractCharStream implements CharStream {
    */
   public static final int DEFAULT_BUF_SIZE = 4096;
 
-  static final int hexval(final char c) throws java.io.IOException {
+  static final int hexval(final char c) throws IOException {
     switch (c) {
     case '0':
       return 0;
@@ -72,7 +74,7 @@ public abstract class AbstractCharStream implements CharStream {
     case 'F':
       return 15;
     default:
-      throw new java.io.IOException("Invalid hex char '" + c + "' (=" + (int) c + ") provided!");
+      throw new IOException("Invalid hex char '" + c + "' (=" + (int) c + ") provided!");
     }
   }
 
@@ -165,14 +167,14 @@ public abstract class AbstractCharStream implements CharStream {
    *
    * @return Number of effective chars read, or -1 on error.
    */
-  protected abstract int streamRead(char[] aBuf, int nOfs, int nLen) throws java.io.IOException;
+  protected abstract int streamRead(char[] aBuf, int nOfs, int nLen) throws IOException;
 
   /**
    * Close the underlying stream.
    *
-   * @throws java.io.IOException If closing fails.
+   * @throws IOException If closing fails.
    */
-  protected abstract void streamClose() throws java.io.IOException;
+  protected abstract void streamClose() throws IOException;
 
   // Override this method if you need more aggressive buffer size expansion
   protected int getBufSizeAfterExpansion() {
@@ -268,7 +270,7 @@ public abstract class AbstractCharStream implements CharStream {
     }
   }
 
-  protected void fillBuff() throws java.io.IOException {
+  protected void fillBuff() throws IOException {
     if (maxNextCharInd == available)
       internalAdjustBuffSize();
 
@@ -280,10 +282,10 @@ public abstract class AbstractCharStream implements CharStream {
         streamClose();
 
         // Caught down below and re-thrown
-        throw new java.io.IOException("PGCC end of stream");
+        throw new IOException("PGCC end of stream");
       }
       maxNextCharInd += nCharsRead;
-    } catch (final java.io.IOException ex) {
+    } catch (final IOException ex) {
       --bufpos;
       // ?What is the reason of this? Backup of 0 does nothing
       backup(0);
@@ -337,7 +339,7 @@ public abstract class AbstractCharStream implements CharStream {
     internalSetBufLineColumn(m_nLineNo, m_nColumnNo);
   }
 
-  public char readChar() throws java.io.IOException {
+  public char readChar() throws IOException {
     if (inBuf > 0) {
       // Something is left from last backup
       --inBuf;
@@ -362,7 +364,7 @@ public abstract class AbstractCharStream implements CharStream {
     return c;
   }
 
-  public char beginToken() throws java.io.IOException {
+  public char beginToken() throws IOException {
     tokenBegin = -1;
     final char c = readChar();
     tokenBegin = bufpos;
@@ -408,7 +410,7 @@ public abstract class AbstractCharStream implements CharStream {
   }
 
   public char[] getSuffix(final int len) {
-    char[] ret = new char[len];
+    final char[] ret = new char[len];
     if ((bufpos + 1) >= len) {
       // one piece
       System.arraycopy(buffer, bufpos - len + 1, ret, 0, len);
@@ -443,7 +445,7 @@ public abstract class AbstractCharStream implements CharStream {
     int start = tokenBegin;
     int newLine = nNewLine;
 
-    int len;
+    final int len;
     if (bufpos >= tokenBegin) {
       len = bufpos - tokenBegin + inBuf + 1;
     } else {

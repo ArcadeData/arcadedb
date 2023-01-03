@@ -95,14 +95,14 @@ public class ArcadeEdge extends ArcadeElement<com.arcadedb.graph.Edge> implement
     if (propertyKeys == null || propertyKeys.length == 0) {
       final Set<String> propNames = baseElement.getPropertyNames();
       props = new ArrayList<>(propNames.size());
-      for (String p : propNames) {
+      for (final String p : propNames) {
         final V value = (V) baseElement.get(p);
         if (value != null)
           props.add(new ArcadeProperty<>(this, p, value));
       }
     } else {
       props = new ArrayList<>(propertyKeys.length);
-      for (String p : propertyKeys) {
+      for (final String p : propertyKeys) {
         final V value = (V) baseElement.get(p);
         if (value != null)
           props.add(new ArcadeProperty<>(this, p, value));

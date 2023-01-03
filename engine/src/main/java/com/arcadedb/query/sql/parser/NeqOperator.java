@@ -24,16 +24,16 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.sql.executor.QueryOperatorEquals;
 
 public class NeqOperator extends SimpleNode implements BinaryCompareOperator {
-  public NeqOperator(int id) {
+  public NeqOperator(final int id) {
     super(id);
   }
 
-  public NeqOperator(SqlParser p, int id) {
+  public NeqOperator(final SqlParser p, final int id) {
     super(p, id);
   }
 
   @Override
-  public boolean execute(DatabaseInternal database, Object left, Object right) {
+  public boolean execute(final DatabaseInternal database, final Object left, final Object right) {
     return !QueryOperatorEquals.equals(left, right);
   }
 
@@ -53,7 +53,7 @@ public class NeqOperator extends SimpleNode implements BinaryCompareOperator {
   }
 
   @Override
-  public boolean equals(Object obj) {
+  public boolean equals(final Object obj) {
     return obj != null && obj.getClass().equals(this.getClass());
   }
 

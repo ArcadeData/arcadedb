@@ -43,7 +43,7 @@ public class PerformanceVertexIndexTest {
   private static final int    COMPACTION_RAM_MB = 1024; // 1GB
   private static final String TYPE_NAME         = "Device";
 
-  public static void main(String[] args) throws IOException {
+  public static void main(final String[] args) throws IOException {
     new PerformanceVertexIndexTest().run();
   }
 
@@ -58,7 +58,7 @@ public class PerformanceVertexIndexTest {
       public void run() {
         try {
           compaction();
-        } catch (Exception e) {
+        } catch (final Exception e) {
           Assertions.fail(e);
         }
       }
@@ -68,8 +68,8 @@ public class PerformanceVertexIndexTest {
   }
 
   private void compaction() throws IOException, InterruptedException {
-    try (Database database = new DatabaseFactory(PerformanceTest.DATABASE_PATH).open()) {
-      for (Index index : database.getSchema().getIndexes())
+    try (final Database database = new DatabaseFactory(PerformanceTest.DATABASE_PATH).open()) {
+      for (final Index index : database.getSchema().getIndexes())
         Assertions.assertTrue(((IndexInternal) index).compact());
     }
   }
@@ -84,7 +84,7 @@ public class PerformanceVertexIndexTest {
       if (!database.getSchema().existsType(TYPE_NAME)) {
         database.begin();
 
-        DocumentType v = database.getSchema().createDocumentType(TYPE_NAME, parallel);
+        final DocumentType v = database.getSchema().createDocumentType(TYPE_NAME, parallel);
 
         v.createProperty("id", String.class);
         v.createProperty("number", String.class);
@@ -118,7 +118,7 @@ public class PerformanceVertexIndexTest {
 
     database = new DatabaseFactory(PerformanceTest.DATABASE_PATH).open();
 
-    long begin = System.currentTimeMillis();
+    final long begin = System.currentTimeMillis();
 
     try {
 
@@ -130,7 +130,7 @@ public class PerformanceVertexIndexTest {
 
       database.async().onError(new ErrorCallback() {
         @Override
-        public void call(Throwable exception) {
+        public void call(final Throwable exception) {
           LogManager.instance().log(this, Level.INFO, "TEST: ERROR: " + exception);
           exception.printStackTrace();
           Assertions.fail(exception);
@@ -186,7 +186,7 @@ public class PerformanceVertexIndexTest {
   }
 
   private void checkLookups(final int step) {
-    Database database = new DatabaseFactory(PerformanceTest.DATABASE_PATH).open(PaginatedFile.MODE.READ_ONLY);
+    final Database database = new DatabaseFactory(PerformanceTest.DATABASE_PATH).open(PaginatedFile.MODE.READ_ONLY);
     long begin = System.currentTimeMillis();
 
     try {

@@ -46,7 +46,7 @@ public class GraphMLImporterIT {
   public void testImportCompressedOK() {
     final URL inputFile = GraphMLImporterIT.class.getClassLoader().getResource(FILE);
 
-    try (Database database = new DatabaseFactory(DATABASE_PATH).create()) {
+    try (final Database database = new DatabaseFactory(DATABASE_PATH).create()) {
 
       final Importer importer = new Importer(database, inputFile.getFile());
       importer.load();
@@ -57,7 +57,7 @@ public class GraphMLImporterIT {
           new HashSet<>(Arrays.asList("Friend", "Person")),//
           database.getSchema().getTypes().stream().map(DocumentType::getName).collect(Collectors.toSet()));
 
-      for (DocumentType type : database.getSchema().getTypes()) {
+      for (final DocumentType type : database.getSchema().getTypes()) {
         Assertions.assertTrue(database.countType(type.getName(), true) > 0);
       }
     }
@@ -76,7 +76,7 @@ public class GraphMLImporterIT {
       }
     }
 
-    try (Database database = new DatabaseFactory(DATABASE_PATH).create()) {
+    try (final Database database = new DatabaseFactory(DATABASE_PATH).create()) {
 
       final Importer importer = new Importer(database, UNCOMPRESSED_FILE);
       importer.load();
@@ -87,7 +87,7 @@ public class GraphMLImporterIT {
           new HashSet<>(Arrays.asList("Friend", "Person")),//
           database.getSchema().getTypes().stream().map(DocumentType::getName).collect(Collectors.toSet()));
 
-      for (DocumentType type : database.getSchema().getTypes()) {
+      for (final DocumentType type : database.getSchema().getTypes()) {
         Assertions.assertTrue(database.countType(type.getName(), true) > 0);
       }
     }
@@ -97,7 +97,7 @@ public class GraphMLImporterIT {
   public void testImportFromSQL() {
     final URL inputFile = GraphMLImporterIT.class.getClassLoader().getResource(FILE);
 
-    try (Database database = new DatabaseFactory(DATABASE_PATH).create()) {
+    try (final Database database = new DatabaseFactory(DATABASE_PATH).create()) {
 
       database.command("sql", "import database file://" + inputFile.getFile() + " WITH commitEvery = 1000");
 
@@ -107,7 +107,7 @@ public class GraphMLImporterIT {
           new HashSet<>(Arrays.asList("Friend", "Person")),//
           database.getSchema().getTypes().stream().map(DocumentType::getName).collect(Collectors.toSet()));
 
-      for (DocumentType type : database.getSchema().getTypes()) {
+      for (final DocumentType type : database.getSchema().getTypes()) {
         Assertions.assertTrue(database.countType(type.getName(), true) > 0);
       }
     }

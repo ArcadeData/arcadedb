@@ -76,7 +76,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
     this.serializedToKeys = index.convertKeys(this.toKeys, keyTypes);
     this.toKeysInclusive = endKeysInclusive;
 
-    BinarySerializer serializer = index.getDatabase().getSerializer();
+    final BinarySerializer serializer = index.getDatabase().getSerializer();
     this.comparator = serializer.getComparator();
 
     final LSMTreeIndexCompacted compacted = index.getSubIndex();
@@ -123,7 +123,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
         final int count = index.getCount(currentPage);
 
         if (count > 0) {
-          LSMTreeIndexMutable.LookupResult lookupResult = index.lookupInPage(currentPage.getPageId().getPageNumber(), count, currentPageBuffer,
+          final LSMTreeIndexMutable.LookupResult lookupResult = index.lookupInPage(currentPage.getPageId().getPageNumber(), count, currentPageBuffer,
               serializedFromKeys, ascendingOrder ? 2 : 3);
 
           if (!lookupResult.outside) {
@@ -196,7 +196,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
         if (pageCursors[i] != null) {
           final RID[] rids = pageCursors[i].getValue();
           if (rids != null && rids.length > 0) {
-            for (RID r : rids) {
+            for (final RID r : rids) {
               if (r.getBucketId() < 0) {
                 final RID originalRID = index.getOriginalRID(r);
                 if (!validRIDs.contains(originalRID))
@@ -493,7 +493,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
 
   @Override
   public void close() {
-    for (LSMTreeIndexUnderlyingAbstractCursor it : pageCursors)
+    for (final LSMTreeIndexUnderlyingAbstractCursor it : pageCursors)
       if (it != null)
         it.close();
     Arrays.fill(pageCursors, null);

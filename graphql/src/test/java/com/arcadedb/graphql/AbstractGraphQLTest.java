@@ -39,31 +39,31 @@ public class AbstractGraphQLTest {
     }
 
     protected void executeTest(final Callable<Void, Database> callback) {
-        try (DatabaseFactory factory = new DatabaseFactory(DB_PATH)) {
+        try (final DatabaseFactory factory = new DatabaseFactory(DB_PATH)) {
             if (factory.exists())
                 factory.open().drop();
 
             final Database database = factory.create();
             try {
                 database.transaction(() -> {
-                    Schema schema = database.getSchema();
+                    final Schema schema = database.getSchema();
                     schema.getOrCreateVertexType("Book");
                     schema.getOrCreateVertexType("Author");
                     schema.getOrCreateEdgeType("IS_AUTHOR_OF");
 
-                    MutableVertex author1 = database.newVertex("Author");
+                    final MutableVertex author1 = database.newVertex("Author");
                     author1.set("id", "author-1");
                     author1.set("firstName", "Joanne");
                     author1.set("lastName", "Rowling");
                     author1.save();
 
-                    MutableVertex book1 = database.newVertex("Book");
+                    final MutableVertex book1 = database.newVertex("Book");
                     book1.set("id", "book-1");
                     book1.set("name", "Harry Potter and the Philosopher's Stone");
                     book1.set("pageCount", 223);
                     book1.save();
 
-                    MutableVertex book2 = database.newVertex("Book");
+                    final MutableVertex book2 = database.newVertex("Book");
                     book2.set("id", "book-2");
                     book2.set("name", "Mr. brain");
                     book2.set("pageCount", 422);
@@ -82,9 +82,9 @@ public class AbstractGraphQLTest {
         }
     }
 
-    protected int countIterable(Iterable<?> iter) {
+    protected int countIterable(final Iterable<?> iter) {
         int count = 0;
-        for (Object o : iter)
+        for (final Object o : iter)
             ++count;
 
         return count;

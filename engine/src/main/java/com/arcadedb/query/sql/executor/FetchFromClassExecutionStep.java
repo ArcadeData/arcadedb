@@ -77,14 +77,14 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
     }
 
     final int[] typeBuckets = type.getBuckets(true).stream().mapToInt(x -> x.getId()).distinct().sorted().toArray();
-    List<Integer> filteredTypeBuckets = new ArrayList<>();
-    for (int bucketId : typeBuckets) {
-      String bucketName = ctx.getDatabase().getSchema().getBucketById(bucketId).getName();
+    final List<Integer> filteredTypeBuckets = new ArrayList<>();
+    for (final int bucketId : typeBuckets) {
+      final String bucketName = ctx.getDatabase().getSchema().getBucketById(bucketId).getName();
       if (clusters == null || clusters.contains(bucketName) || clusters.contains("*")) {
         filteredTypeBuckets.add(bucketId);
       }
     }
-    int[] bucketIds = new int[filteredTypeBuckets.size() + 1];
+    final int[] bucketIds = new int[filteredTypeBuckets.size() + 1];
     for (int i = 0; i < filteredTypeBuckets.size(); i++) {
       bucketIds[i] = filteredTypeBuckets.get(i);
     }
@@ -97,7 +97,7 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
         if (f != null) {
           try {
             typeFileSize += f.getSize();
-          } catch (IOException e) {
+          } catch (final IOException e) {
             // IGNORE IT
           }
         }
@@ -111,9 +111,9 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
     }
 
     sortBuckets(bucketIds);
-    for (int bucketId : bucketIds) {
+    for (final int bucketId : bucketIds) {
       if (bucketId > 0) {
-        FetchFromClusterExecutionStep step = new FetchFromClusterExecutionStep(bucketId, planningInfo, ctx, profilingEnabled);
+        final FetchFromClusterExecutionStep step = new FetchFromClusterExecutionStep(bucketId, planningInfo, ctx, profilingEnabled);
         if (orderByRidAsc) {
           step.setOrder(FetchFromClusterExecutionStep.ORDER_ASC);
         } else if (orderByRidDesc) {
@@ -173,7 +173,7 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
           }
           if (currentResultSet != null && currentResultSet.hasNext()) {
             totDispatched++;
-            Result result = currentResultSet.next();
+            final Result result = currentResultSet.next();
             ctx.setVariable("current", result);
             return result;
           } else {
@@ -190,7 +190,7 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
 
       @Override
       public void close() {
-        for (ExecutionStep step : getSubSteps()) {
+        for (final ExecutionStep step : getSubSteps()) {
           ((AbstractExecutionStep) step).close();
         }
       }
@@ -205,7 +205,7 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
 
   @Override
   public void sendTimeout() {
-    for (ExecutionStep step : getSubSteps()) {
+    for (final ExecutionStep step : getSubSteps()) {
       ((AbstractExecutionStep) step).sendTimeout();
     }
     prev.ifPresent(p -> p.sendTimeout());
@@ -213,16 +213,16 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
 
   @Override
   public void close() {
-    for (ExecutionStep step : getSubSteps()) {
+    for (final ExecutionStep step : getSubSteps()) {
       ((AbstractExecutionStep) step).close();
     }
     prev.ifPresent(p -> p.close());
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    StringBuilder builder = new StringBuilder();
-    String ind = ExecutionStepInternal.getIndent(depth, indent);
+  public String prettyPrint(final int depth, final int indent) {
+    final StringBuilder builder = new StringBuilder();
+    final String ind = ExecutionStepInternal.getIndent(depth, indent);
     builder.append(ind);
     builder.append("+ FETCH FROM TYPE ").append(className);
     if (profilingEnabled) {
@@ -230,7 +230,7 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
     }
     builder.append("\n");
     for (int i = 0; i < getSubSteps().size(); i++) {
-      ExecutionStepInternal step = (ExecutionStepInternal) getSubSteps().get(i);
+      final ExecutionStepInternal step = (ExecutionStepInternal) getSubSteps().get(i);
       builder.append(step.prettyPrint(depth + 1, indent));
       if (i < getSubSteps().size() - 1) {
         builder.append("\n");
@@ -246,7 +246,7 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
 
   @Override
   public Result serialize() {
-    ResultInternal result = ExecutionStepInternal.basicSerialize(this);
+    final ResultInternal result = ExecutionStepInternal.basicSerialize(this);
     result.setProperty("typeName", className);
     result.setProperty("orderByRidAsc", orderByRidAsc);
     result.setProperty("orderByRidDesc", orderByRidDesc);
@@ -254,13 +254,13 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
   }
 
   @Override
-  public void deserialize(Result fromResult) {
+  public void deserialize(final Result fromResult) {
     try {
       ExecutionStepInternal.basicDeserialize(fromResult, this);
       this.className = fromResult.getProperty("typeName");
       this.orderByRidAsc = fromResult.getProperty("orderByRidAsc");
       this.orderByRidDesc = fromResult.getProperty("orderByRidDesc");
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new CommandExecutionException("", e);
     }
   }
@@ -276,8 +276,8 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ExecutionStep copy(CommandContext ctx) {
-    FetchFromClassExecutionStep result = new FetchFromClassExecutionStep(ctx, profilingEnabled);
+  public ExecutionStep copy(final CommandContext ctx) {
+    final FetchFromClassExecutionStep result = new FetchFromClassExecutionStep(ctx, profilingEnabled);
     result.className = this.className;
     result.orderByRidAsc = this.orderByRidAsc;
     result.orderByRidDesc = this.orderByRidDesc;

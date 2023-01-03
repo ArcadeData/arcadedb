@@ -28,7 +28,7 @@ import java.util.*;
 public class MongoDBToSqlTranslator {
 
   protected static void buildExpression(final StringBuilder buffer, final Document query) {
-    for (Map.Entry<String, Object> entry : query.entrySet()) {
+    for (final Map.Entry<String, Object> entry : query.entrySet()) {
       final Object key = entry.getKey();
       final Object value = entry.getValue();
 
@@ -55,14 +55,14 @@ public class MongoDBToSqlTranslator {
     sql.append("(");
 
     if (value instanceof List) {
-      for (Document o : (List<Document>) value) {
+      for (final Document o : (List<Document>) value) {
         if (expressionCount++ > 0)
           sql.append(" AND ");
 
         buildExpression(sql, o);
       }
     } else if (value instanceof Document) {
-      for (Map.Entry<String, Object> subEntry : ((Document) value).entrySet()) {
+      for (final Map.Entry<String, Object> subEntry : ((Document) value).entrySet()) {
         final String subKey = subEntry.getKey();
         final Object subValue = subEntry.getValue();
 
@@ -131,7 +131,7 @@ public class MongoDBToSqlTranslator {
     buffer.append("(");
 
     int i = 0;
-    for (Object o : list) {
+    for (final Object o : list) {
       if (i++ > 0)
         buffer.append(" OR ");
 
@@ -146,7 +146,7 @@ public class MongoDBToSqlTranslator {
   protected static void buildCollection(final StringBuilder buffer, final Collection coll) {
     int i = 0;
     buffer.append('[');
-    for (Iterator it = coll.iterator(); it.hasNext(); ) {
+    for (final Iterator it = coll.iterator(); it.hasNext(); ) {
       if (i++ > 0)
         buffer.append(',');
 
@@ -186,7 +186,7 @@ public class MongoDBToSqlTranslator {
   protected static Document convertDocumentToMongoDB(final com.arcadedb.database.Document doc) {
     final Document result = new Document();
 
-    for (String p : doc.getPropertyNames()) {
+    for (final String p : doc.getPropertyNames()) {
       final Object value = doc.get(p);
 
       if ("_id".equals(p)) {
@@ -201,7 +201,7 @@ public class MongoDBToSqlTranslator {
   protected static Document convertDocumentToMongoDB(final Result doc) {
     final Document result = new Document();
 
-    for (String p : doc.getPropertyNames()) {
+    for (final String p : doc.getPropertyNames()) {
       final Object value = doc.getProperty(p);
 
       if ("_id".equals(p)) {
@@ -221,12 +221,12 @@ public class MongoDBToSqlTranslator {
     return new ObjectId(buffer);
   }
 
-  protected static Document projectDocument(Document document, Document fields, String idField) {
+  protected static Document projectDocument(final Document document, final Document fields, final String idField) {
     if (document == null) {
       return null;
     } else {
-      Document newDocument = new Document();
-      Iterator var4;
+      final Document newDocument = new Document();
+      final Iterator var4;
       String key;
       if (onlyExclusions(fields)) {
         newDocument.putAll(document);
@@ -274,9 +274,9 @@ public class MongoDBToSqlTranslator {
     if (document != null) {
       final int dotPos = key.indexOf(46);
       if (dotPos > 0) {
-        String mainKey = key.substring(0, dotPos);
-        String subKey = key.substring(dotPos + 1);
-        Object object = document.get(mainKey);
+        final String mainKey = key.substring(0, dotPos);
+        final String subKey = key.substring(dotPos + 1);
+        final Object object = document.get(mainKey);
         if (object instanceof Document) {
           if (!newDocument.containsKey(mainKey)) {
             newDocument.put(mainKey, new Document());

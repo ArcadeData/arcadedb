@@ -37,7 +37,7 @@ public class PostCreateDatabaseHandler extends DatabaseAbstractHandler {
   }
 
   @Override
-  public void execute(final HttpServerExchange exchange, ServerSecurityUser user, final Database database) {
+  public void execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database) {
     final Deque<String> databaseNamePar = exchange.getQueryParameters().get("database");
     String databaseName = databaseNamePar.isEmpty() ? null : databaseNamePar.getFirst().trim();
     if (databaseName.isEmpty())

@@ -40,8 +40,8 @@ public class SQLFunctionUUID extends SQLFunctionAbstract {
     super(NAME);
   }
 
-  public Object execute( Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
-      CommandContext iContext) {
+  public Object execute( final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
+      final CommandContext iContext) {
     return UUID.randomUUID().toString();
   }
 

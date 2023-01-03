@@ -31,7 +31,7 @@ public abstract class AbstractGraphQLNativeLanguageDirectivesTest extends Abstra
     executeTest((database) -> {
       defineTypes(database);
 
-      try (ResultSet resultSet = database.query("graphql", "{ bookByName(bookNameParameter: \"Harry Potter and the Philosopher's Stone\")}")) {
+      try (final ResultSet resultSet = database.query("graphql", "{ bookByName(bookNameParameter: \"Harry Potter and the Philosopher's Stone\")}")) {
         Assertions.assertTrue(resultSet.hasNext());
         final Result record = resultSet.next();
         Assertions.assertEquals(4, record.getPropertyNames().size());
@@ -40,7 +40,7 @@ public abstract class AbstractGraphQLNativeLanguageDirectivesTest extends Abstra
         Assertions.assertFalse(resultSet.hasNext());
       }
 
-      try (ResultSet resultSet = database.query("graphql", "{ bookByName(bookNameParameter: \"Mr. brain\") }")) {
+      try (final ResultSet resultSet = database.query("graphql", "{ bookByName(bookNameParameter: \"Mr. brain\") }")) {
         Assertions.assertTrue(resultSet.hasNext());
         final Result record = resultSet.next();
         Assertions.assertEquals(4, record.getPropertyNames().size());
@@ -58,7 +58,7 @@ public abstract class AbstractGraphQLNativeLanguageDirectivesTest extends Abstra
     executeTest((database) -> {
       defineTypes(database);
 
-      try (ResultSet resultSet = database.query("graphql",
+      try (final ResultSet resultSet = database.query("graphql",
           "{ bookByName(bookNameParameter: \"Harry Potter and the Philosopher's Stone\"){ id name pageCount } }")) {
         Assertions.assertTrue(resultSet.hasNext());
         final Result record = resultSet.next();
@@ -67,7 +67,7 @@ public abstract class AbstractGraphQLNativeLanguageDirectivesTest extends Abstra
         Assertions.assertFalse(resultSet.hasNext());
       }
 
-      try (ResultSet resultSet = database.query("graphql", "{ bookByName(bookNameParameter: \"Mr. brain\"){ id name pageCount } }")) {
+      try (final ResultSet resultSet = database.query("graphql", "{ bookByName(bookNameParameter: \"Mr. brain\"){ id name pageCount } }")) {
         Assertions.assertTrue(resultSet.hasNext());
         final Result record = resultSet.next();
         Assertions.assertEquals(3, record.getPropertyNames().size());

@@ -38,23 +38,23 @@ class SQLMethodRemoveAllTest {
 
     @Test
     void testNull() {
-        Object result = method.execute(null, null, null, null, null);
+        final Object result = method.execute(null, null, null, null, null);
         assertThat(result).isNull();
     }
 
     @Test
     void testRemoveMultipleValuesFromList() {
-        List<String> numbers = new ArrayList<>(List.of("one", "one", "two", "three", "one"));
-        List<String> result = (List<String>) method.execute(null, null, null, numbers, new Object[]{"one"});
+        final List<String> numbers = new ArrayList<>(List.of("one", "one", "two", "three", "one"));
+        final List<String> result = (List<String>) method.execute(null, null, null, numbers, new Object[]{"one"});
         assertThat(result).contains("two", "three");
     }
 
     @Test
     void testRemoveMultipleValuesWithVariableInContext() {
-        List<String> numbers = new ArrayList<>(List.of("one", "one", "two", "three", "one"));
-        CommandContext context = new BasicCommandContext();
+        final List<String> numbers = new ArrayList<>(List.of("one", "one", "two", "three", "one"));
+        final CommandContext context = new BasicCommandContext();
         context.setVariable("name", "one");
-        List<String> result = (List<String>) method.execute(null, null, context, numbers, new Object[]{"$name"});
+        final List<String> result = (List<String>) method.execute(null, null, context, numbers, new Object[]{"$name"});
         assertThat(result).contains("two", "three");
     }
 

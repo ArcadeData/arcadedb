@@ -37,19 +37,19 @@ public class TruncateTypeStatement extends DDLStatement {
   protected boolean    polymorphic = false;
   protected boolean    unsafe      = false;
 
-  public TruncateTypeStatement(int id) {
+  public TruncateTypeStatement(final int id) {
     super(id);
   }
 
-  public TruncateTypeStatement(SqlParser p, int id) {
+  public TruncateTypeStatement(final SqlParser p, final int id) {
     super(p, id);
   }
 
   @Override
-  public ResultSet executeDDL(CommandContext ctx) {
-    Database db = ctx.getDatabase();
-    Schema schema = db.getSchema();
-    DocumentType typez = schema.getType(typeName.getStringValue());
+  public ResultSet executeDDL(final CommandContext ctx) {
+    final Database db = ctx.getDatabase();
+    final Schema schema = db.getSchema();
+    final DocumentType typez = schema.getType(typeName.getStringValue());
     if (typez == null) {
       throw new CommandExecutionException("Schema Class not found: " + typeName);
     }
@@ -65,11 +65,11 @@ public class TruncateTypeStatement extends DDLStatement {
       }
     }
 
-    InternalResultSet rs = new InternalResultSet();
-    Collection<DocumentType> subTypes = typez.getSubTypes();
+    final InternalResultSet rs = new InternalResultSet();
+    final Collection<DocumentType> subTypes = typez.getSubTypes();
     if (polymorphic && !unsafe) {// for multiple inheritance
-      for (DocumentType subType : subTypes) {
-        long subTypeRecs = ctx.getDatabase().countType(typeName.getStringValue(), false);
+      for (final DocumentType subType : subTypes) {
+        final long subTypeRecs = ctx.getDatabase().countType(typeName.getStringValue(), false);
         if (subTypeRecs > 0) {
           if (subType.isSubTypeOf("V")) {
             throw new CommandExecutionException("'TRUNCATE TYPE' command cannot be used on not empty vertex classes (" + subType.getName()
@@ -87,7 +87,7 @@ public class TruncateTypeStatement extends DDLStatement {
       return true;
     });
 
-    ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal();
     result.setProperty("operation", "truncate type");
     result.setProperty("typeName", typeName.getStringValue());
     rs.add(result);
@@ -96,7 +96,7 @@ public class TruncateTypeStatement extends DDLStatement {
   }
 
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("TRUNCATE TYPE " + typeName.toString());
     if (polymorphic) {
       builder.append(" POLYMORPHIC");
@@ -108,7 +108,7 @@ public class TruncateTypeStatement extends DDLStatement {
 
   @Override
   public TruncateTypeStatement copy() {
-    TruncateTypeStatement result = new TruncateTypeStatement(-1);
+    final TruncateTypeStatement result = new TruncateTypeStatement(-1);
     result.typeName = typeName == null ? null : typeName.copy();
     result.polymorphic = polymorphic;
     result.unsafe = unsafe;
@@ -116,13 +116,13 @@ public class TruncateTypeStatement extends DDLStatement {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    TruncateTypeStatement that = (TruncateTypeStatement) o;
+    final TruncateTypeStatement that = (TruncateTypeStatement) o;
 
     if (polymorphic != that.polymorphic)
       return false;

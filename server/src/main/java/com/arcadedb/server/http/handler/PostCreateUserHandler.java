@@ -30,7 +30,7 @@ public class PostCreateUserHandler extends AbstractHandler {
   }
 
   @Override
-  public void execute(final HttpServerExchange exchange, ServerSecurityUser user) {
+  public void execute(final HttpServerExchange exchange, final ServerSecurityUser user) {
     final String payload = parseRequestPayload(exchange);
     if (payload == null || payload.isEmpty()) {
       exchange.setStatusCode(400);

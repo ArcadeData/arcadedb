@@ -178,11 +178,11 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
               Thread.sleep(500);
             }
 
-          } catch (IOException e) {
+          } catch (final IOException e) {
             LogManager.instance().log(this, Level.INFO, "Error on sending replication message to remote server '%s' (error=%s)", remoteServerName, e);
             shutdownCommunication = true;
             return;
-          } catch (InterruptedException e) {
+          } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();
             break;
           }
@@ -215,11 +215,11 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
 
             executeMessage(buffer, lastMessage);
 
-          } catch (IOException e) {
+          } catch (final IOException e) {
             LogManager.instance().log(this, Level.INFO, "Error on sending replication message to remote server '%s' (error=%s)", remoteServerName, e);
             shutdownCommunication = true;
             return;
-          } catch (InterruptedException e) {
+          } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();
             break;
           }
@@ -255,13 +255,13 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
         else
           executeMessage(buffer, request);
 
-      } catch (TimeoutException e) {
+      } catch (final TimeoutException e) {
         LogManager.instance().log(this, Level.FINE, "Request %s in timeout (cause=%s)", request, e.getCause());
-      } catch (IOException e) {
+      } catch (final IOException e) {
         LogManager.instance().log(this, Level.FINE, "IO Error from reading requests (cause=%s)", e.getCause());
         server.setReplicaStatus(remoteServerName, false);
         close();
-      } catch (Exception e) {
+      } catch (final Exception e) {
         LogManager.instance().log(this, Level.SEVERE, "Generic error during applying of request from Leader (cause=%s)", e.toString());
         server.setReplicaStatus(remoteServerName, false);
         close();
@@ -316,7 +316,7 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
           try {
             qt.join(5000);
             senderThread = null;
-          } catch (InterruptedException e) {
+          } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();
             // IGNORE IT
           }
@@ -327,7 +327,7 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
           try {
             ft.join(5000);
             forwarderThread = null;
-          } catch (InterruptedException e) {
+          } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();
             // IGNORE IT
           }
@@ -335,7 +335,7 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
 
         closeChannel();
 
-      } catch (Exception e) {
+      } catch (final Exception e) {
         // IGNORE IT
       }
       return null;
@@ -348,7 +348,7 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
 
     return (boolean) executeInLock(new Callable<>() {
       @Override
-      public Object call(Object iArgument) {
+      public Object call(final Object iArgument) {
         // WRITE DIRECTLY TO THE MESSAGE QUEUE
         if (senderQueue.size() > 1)
           LogManager.instance().log(this, Level.FINE, "Buffering request to server '%s' (status=%s buffered=%d)", remoteServerName, status, senderQueue.size());
@@ -362,7 +362,7 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
                   getLatencyStats(), senderQueue.size());
           try {
             Thread.sleep(1000);
-          } catch (InterruptedException e) {
+          } catch (final InterruptedException e) {
             // IGNORE IT
             Thread.currentThread().interrupt();
             throw new ReplicationException("Error on replicating to server '" + remoteServerName + "'");
@@ -398,7 +398,7 @@ public class Leader2ReplicaNetworkExecutor extends Thread {
 
     executeInLock(new Callable<>() {
       @Override
-      public Object call(Object iArgument) {
+      public Object call(final Object iArgument) {
         Leader2ReplicaNetworkExecutor.this.status = status;
         LogManager.instance().log(this, Level.INFO, "Replica server '%s' is %s", remoteServerName, status);
 

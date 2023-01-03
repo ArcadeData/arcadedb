@@ -72,12 +72,12 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
   }
 
   @Override
-  public synchronized MutableVertex fromMap(Map<String, Object> map) {
+  public synchronized MutableVertex fromMap(final Map<String, Object> map) {
     return (MutableVertex) super.fromMap(map);
   }
 
   @Override
-  public synchronized MutableVertex fromJSON(JSONObject json) {
+  public synchronized MutableVertex fromJSON(final JSONObject json) {
     return (MutableVertex) super.fromJSON(json);
   }
 
@@ -135,7 +135,7 @@ public class MutableVertex extends MutableDocument implements VertexInternal {
   }
 
   @Override
-  public long countEdges(DIRECTION direction, String edgeType) {
+  public long countEdges(final DIRECTION direction, final String edgeType) {
     return database.getGraphEngine().countEdges(this, direction, edgeType);
   }
 

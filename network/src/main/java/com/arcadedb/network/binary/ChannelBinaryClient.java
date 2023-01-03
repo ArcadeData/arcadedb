@@ -47,7 +47,7 @@ public class ChannelBinaryClient extends ChannelBinary {
         }
         setReadResponseTimeout();
 
-      } catch (SocketTimeoutException e) {
+      } catch (final SocketTimeoutException e) {
         throw new IOException("Cannot connect to host " + remoteHost + ":" + remotePort + " (timeout=" + socketTimeout + ")", e);
       }
       try {
@@ -57,11 +57,11 @@ public class ChannelBinaryClient extends ChannelBinary {
         in = new DataInputStream(inStream);
         out = new DataOutputStream(outStream);
 
-      } catch (IOException e) {
+      } catch (final IOException e) {
         throw new NetworkProtocolException("Error on reading data from remote server " + socket.getRemoteSocketAddress() + ": ", e);
       }
 
-    } catch (RuntimeException e) {
+    } catch (final RuntimeException e) {
       if (socket.isConnected())
         socket.close();
       throw e;

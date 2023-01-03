@@ -21,17 +21,12 @@
 package com.arcadedb.query.sql.parser;
 
 public class SelectWithoutTargetStatement extends SelectStatement {
-  public SelectWithoutTargetStatement(int id) {
+  public SelectWithoutTargetStatement(final int id) {
     super(id);
   }
 
-  public SelectWithoutTargetStatement(SqlParser p, int id) {
+  public SelectWithoutTargetStatement(final SqlParser p, final int id) {
     super(p, id);
-  }
-
-  @Override
-  public SelectStatement copy() {
-    return super.copy();
   }
 }
 /* JavaCC - OriginalChecksum=2b0c73e32d84e559188b75251a4d262c (do not edit this line) */

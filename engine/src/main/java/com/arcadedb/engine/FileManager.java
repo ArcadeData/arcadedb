@@ -71,11 +71,11 @@ public class FileManager {
   public FileManager(final String path, final PaginatedFile.MODE mode, final Set<String> supportedFileExt) {
     this.mode = mode;
 
-    File dbDirectory = new File(path);
+    final File dbDirectory = new File(path);
     if (!dbDirectory.exists()) {
       dbDirectory.mkdirs();
     } else {
-      for (File f : dbDirectory.listFiles()) {
+      for (final File f : dbDirectory.listFiles()) {
         final String filePath = f.getAbsolutePath();
         final String fileExt = filePath.substring(filePath.lastIndexOf(".") + 1);
 
@@ -84,7 +84,7 @@ public class FileManager {
             final PaginatedFile file = new PaginatedFile(f.getAbsolutePath(), mode);
             registerFile(file);
 
-          } catch (FileNotFoundException e) {
+          } catch (final FileNotFoundException e) {
             LogManager.instance().log(this, Level.WARNING, "Cannot load file '%s'", null, f);
           }
       }
@@ -113,7 +113,7 @@ public class FileManager {
   }
 
   public void close() {
-    for (PaginatedFile f : fileNameMap.values())
+    for (final PaginatedFile f : fileNameMap.values())
       f.close();
 
     files.clear();
@@ -123,7 +123,7 @@ public class FileManager {
   }
 
   public void dropFile(final int fileId) throws IOException {
-    PaginatedFile file = fileIdMap.remove(fileId);
+    final PaginatedFile file = fileIdMap.remove(fileId);
     if (file != null) {
       fileNameMap.remove(file.getComponentName());
       files.set(fileId, null);
@@ -167,7 +167,7 @@ public class FileManager {
   }
 
   public PaginatedFile getFile(final int fileId) {
-    PaginatedFile f = fileIdMap.get(fileId);
+    final PaginatedFile f = fileIdMap.get(fileId);
     if (f == null)
       throw new IllegalArgumentException("File with id " + fileId + " was not found");
 

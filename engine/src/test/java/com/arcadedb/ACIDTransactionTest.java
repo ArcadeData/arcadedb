@@ -84,12 +84,12 @@ public class ACIDTransactionTest extends TestHelper {
 
       try {
         Thread.sleep(500);
-      } catch (InterruptedException e) {
+      } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
         // IGNORE IT
       }
 
-    } catch (TransactionException e) {
+    } catch (final TransactionException e) {
       Assertions.assertTrue(e.getCause() instanceof IOException);
     }
 
@@ -150,7 +150,7 @@ public class ACIDTransactionTest extends TestHelper {
 
       Assertions.fail("Expected commit to fail");
 
-    } catch (TransactionException e) {
+    } catch (final TransactionException e) {
       Assertions.assertTrue(e.getCause() instanceof WALException);
     }
     ((DatabaseInternal) db).kill();
@@ -205,14 +205,14 @@ public class ACIDTransactionTest extends TestHelper {
 
       try {
         Thread.sleep(500);
-      } catch (InterruptedException e) {
+      } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
         // IGNORE IT
       }
 
       Assertions.assertEquals(1, errors.get());
 
-    } catch (TransactionException e) {
+    } catch (final TransactionException e) {
       Assertions.assertTrue(e.getCause() instanceof IOException);
     }
     ((DatabaseInternal) db).kill();
@@ -267,7 +267,7 @@ public class ACIDTransactionTest extends TestHelper {
 
       Assertions.assertTrue(errors.get() > 0);
 
-    } catch (TransactionException e) {
+    } catch (final TransactionException e) {
       Assertions.assertTrue(e.getCause() instanceof IOException);
     }
     ((DatabaseInternal) db).kill();
@@ -329,7 +329,7 @@ public class ACIDTransactionTest extends TestHelper {
             now.add(Calendar.DAY_OF_YEAR, +1);
           }
 
-        } catch (Exception e) {
+        } catch (final Exception e) {
           errors.incrementAndGet();
           LogManager.instance().log(this, Level.SEVERE, "Error on saving stockId=%d", e, id);
         }
@@ -426,10 +426,10 @@ public class ACIDTransactionTest extends TestHelper {
   }
 
   private void verifyWALFilesAreStillPresent() {
-    File dbDir = new File(getDatabasePath());
+    final File dbDir = new File(getDatabasePath());
     Assertions.assertTrue(dbDir.exists());
     Assertions.assertTrue(dbDir.isDirectory());
-    File[] files = dbDir.listFiles((dir, name) -> name.endsWith("wal"));
+    final File[] files = dbDir.listFiles((dir, name) -> name.endsWith("wal"));
     Assertions.assertTrue(files.length > 0);
   }
 }

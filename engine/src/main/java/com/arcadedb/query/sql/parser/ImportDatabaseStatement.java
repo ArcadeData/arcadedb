@@ -37,18 +37,18 @@ public class ImportDatabaseStatement extends SimpleExecStatement {
   protected Expression                  value;
   protected Map<Expression, Expression> settings = new HashMap<>();
 
-  public ImportDatabaseStatement(int id) {
+  public ImportDatabaseStatement(final int id) {
     super(id);
   }
 
-  public ImportDatabaseStatement(SqlParser p, int id) {
+  public ImportDatabaseStatement(final SqlParser p, final int id) {
     super(p, id);
   }
 
   @Override
-  public ResultSet executeSimple(CommandContext ctx) {
-    String targetUrl = this.url.getUrlString();
-    ResultInternal result = new ResultInternal();
+  public ResultSet executeSimple(final CommandContext ctx) {
+    final String targetUrl = this.url.getUrlString();
+    final ResultInternal result = new ResultInternal();
     result.setProperty("operation", "import database");
     result.setProperty("fromUrl", targetUrl);
 
@@ -58,38 +58,38 @@ public class ImportDatabaseStatement extends SimpleExecStatement {
 
       // TRANSFORM SETTINGS
       final Map<String, String> settingsToString = new HashMap<>();
-      for (Map.Entry<Expression, Expression> entry : settings.entrySet())
+      for (final Map.Entry<Expression, Expression> entry : settings.entrySet())
         settingsToString.put(entry.getKey().value.toString(), entry.getValue().value.toString());
 
       clazz.getMethod("setSettings", Map.class).invoke(importer, settingsToString);
       clazz.getMethod("load").invoke(importer);
 
-    } catch (ClassNotFoundException | NoSuchMethodException | IllegalAccessException | InstantiationException e) {
+    } catch (final ClassNotFoundException | NoSuchMethodException | IllegalAccessException | InstantiationException e) {
       throw new CommandExecutionException("Error on importing database, importer libs not found in classpath", e);
-    } catch (InvocationTargetException e) {
+    } catch (final InvocationTargetException e) {
       throw new CommandExecutionException("Error on importing database", e.getTargetException());
     }
 
     result.setProperty("result", "OK");
 
-    InternalResultSet rs = new InternalResultSet();
+    final InternalResultSet rs = new InternalResultSet();
     rs.add(result);
     return rs;
   }
 
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("IMPORT DATABASE ");
     url.toString(params, builder);
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
-    ImportDatabaseStatement that = (ImportDatabaseStatement) o;
+    final ImportDatabaseStatement that = (ImportDatabaseStatement) o;
     return Objects.equals(url, that.url);
   }
 
@@ -100,7 +100,7 @@ public class ImportDatabaseStatement extends SimpleExecStatement {
 
   @Override
   public Statement copy() {
-    ImportDatabaseStatement result = new ImportDatabaseStatement(-1);
+    final ImportDatabaseStatement result = new ImportDatabaseStatement(-1);
     result.url = this.url;
     return result;
   }

@@ -83,17 +83,17 @@ public class GremlinServerAuthenticator implements org.apache.tinkerpop.gremlin.
         throw new AuthenticationException("SASL negotiation not complete");
       } else {
         try {
-          Map<String, String> credentials = new HashMap();
+          final Map<String, String> credentials = new HashMap();
           credentials.put("username", this.username);
           credentials.put("password", this.password);
           return GremlinServerAuthenticator.this.authenticate(credentials);
-        } catch (Exception e) {
+        } catch (final Exception e) {
           throw new AuthenticationException(e);
         }
       }
     }
 
-    private void decodeCredentials(byte[] bytes) throws AuthenticationException {
+    private void decodeCredentials(final byte[] bytes) throws AuthenticationException {
       byte[] user = null;
       byte[] pass = null;
       int end = bytes.length;

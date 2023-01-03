@@ -86,10 +86,10 @@ public class DepthFirstTraverseStep extends AbstractTraverseStep {
       }
     } else {
       res = new TraverseResult();
-      for (String key : item.getPropertyNames())
+      for (final String key : item.getPropertyNames())
         res.setProperty(key, item.getProperty(key));
 
-      for (String md : item.getMetadataKeys())
+      for (final String md : item.getMetadataKeys())
         res.setMetadata(md, item.getMetadata(md));
     }
 
@@ -101,7 +101,7 @@ public class DepthFirstTraverseStep extends AbstractTraverseStep {
     if (!this.entryPoints.isEmpty()) {
       final TraverseResult item = (TraverseResult) this.entryPoints.remove(0);
       this.results.add(item);
-      for (TraverseProjectionItem proj : projections) {
+      for (final TraverseProjectionItem proj : projections) {
         final Object nextStep = proj.execute(item, ctx);
         final Integer depth = item.depth != null ? item.depth : (Integer) item.getMetadata("$depth");
         if (this.maxDepth == null || this.maxDepth.getValue().intValue() > depth)
@@ -153,7 +153,7 @@ public class DepthFirstTraverseStep extends AbstractTraverseStep {
     tryAddEntryPoint(res, ctx);
   }
 
-  private void addNextEntryPoint(final Result nextStep, int depth, final List<Identifiable> path, final List<Identifiable> stack, final CommandContext ctx) {
+  private void addNextEntryPoint(final Result nextStep, final int depth, final List<Identifiable> path, final List<Identifiable> stack, final CommandContext ctx) {
     if (!nextStep.isElement())
       return;
 

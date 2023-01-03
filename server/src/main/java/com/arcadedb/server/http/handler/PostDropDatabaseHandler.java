@@ -30,7 +30,7 @@ public class PostDropDatabaseHandler extends DatabaseAbstractHandler {
   }
 
   @Override
-  public void execute(final HttpServerExchange exchange, ServerSecurityUser user, final Database database) {
+  public void execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database) {
     ((DatabaseInternal) database).getEmbedded().drop();
 
     httpServer.getServer().getServerMetrics().meter("http.drop-database").mark();

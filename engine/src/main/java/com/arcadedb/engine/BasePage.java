@@ -58,9 +58,9 @@ public abstract class BasePage {
     try {
       return (ImmutablePage) content.executeInLock(
           () -> new ImmutablePage(manager, pageId, getPhysicalSize(), content.getByteBuffer().array(), version, content.size()));
-    } catch (RuntimeException e) {
+    } catch (final RuntimeException e) {
       throw e;
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new ArcadeDBException("Cannot create an immutable copy of page " + this, e);
     }
   }
@@ -210,7 +210,7 @@ public abstract class BasePage {
     return this.content.position() - PAGE_HEADER_SIZE;
   }
 
-  public void setBufferPosition(int newPos) {
+  public void setBufferPosition(final int newPos) {
     this.content.position(PAGE_HEADER_SIZE + newPos);
   }
 

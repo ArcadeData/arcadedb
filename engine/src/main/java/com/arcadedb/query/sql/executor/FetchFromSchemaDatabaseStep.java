@@ -48,7 +48,7 @@ public class FetchFromSchemaDatabaseStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        long begin = profilingEnabled ? System.nanoTime() : 0;
+        final long begin = profilingEnabled ? System.nanoTime() : 0;
         try {
 
           if (!served) {
@@ -92,8 +92,8 @@ public class FetchFromSchemaDatabaseStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     String result = spaces + "+ FETCH DATABASE METADATA";
     if (profilingEnabled) {
       result += " (" + getCostFormatted() + ")";

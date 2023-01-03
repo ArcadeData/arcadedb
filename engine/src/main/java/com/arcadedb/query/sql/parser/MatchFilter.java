@@ -38,7 +38,7 @@ public class MatchFilter extends SimpleNode {
   }
 
   public String getAlias() {
-    for (MatchFilterItem item : items) {
+    for (final MatchFilterItem item : items) {
       if (item.alias != null) {
         return item.alias.getStringValue();
       }
@@ -48,7 +48,7 @@ public class MatchFilter extends SimpleNode {
 
   public void setAlias(final String alias) {
     boolean found = false;
-    for (MatchFilterItem item : items) {
+    for (final MatchFilterItem item : items) {
       if (item.alias != null) {
         item.alias = new Identifier(alias);
         found = true;
@@ -63,7 +63,7 @@ public class MatchFilter extends SimpleNode {
   }
 
   public WhereClause getFilter() {
-    for (MatchFilterItem item : items) {
+    for (final MatchFilterItem item : items) {
       if (item.filter != null) {
         return item.filter;
       }
@@ -73,7 +73,7 @@ public class MatchFilter extends SimpleNode {
 
   public void setFilter(final WhereClause filter) {
     boolean found = false;
-    for (MatchFilterItem item : items) {
+    for (final MatchFilterItem item : items) {
       if (item.filter != null) {
         item.filter = filter;
         found = true;
@@ -88,7 +88,7 @@ public class MatchFilter extends SimpleNode {
   }
 
   public WhereClause getWhileCondition() {
-    for (MatchFilterItem item : items) {
+    for (final MatchFilterItem item : items) {
       if (item.whileCondition != null) {
         return item.whileCondition;
       }
@@ -97,7 +97,7 @@ public class MatchFilter extends SimpleNode {
   }
 
   public String getTypeName(final CommandContext context) {
-    for (MatchFilterItem item : items) {
+    for (final MatchFilterItem item : items) {
       if (item.typeName != null) {
         if (item.typeName.value instanceof String)
           return (String) item.typeName.value;
@@ -116,12 +116,12 @@ public class MatchFilter extends SimpleNode {
   }
 
   public String getBucketName(final CommandContext context) {
-    for (MatchFilterItem item : items) {
+    for (final MatchFilterItem item : items) {
       if (item.bucketName != null) {
         return item.bucketName.getStringValue();
       } else if (item.bucketId != null) {
-        int cid = item.bucketId.value.intValue();
-        String bucketName = context.getDatabase().getSchema().getBucketById(cid).getName();
+        final int cid = item.bucketId.value.intValue();
+        final String bucketName = context.getDatabase().getSchema().getBucketById(cid).getName();
         if (bucketName != null) {
           return bucketName;
         }
@@ -130,8 +130,8 @@ public class MatchFilter extends SimpleNode {
     return null;
   }
 
-  public Rid getRid(CommandContext context) {
-    for (MatchFilterItem item : items) {
+  public Rid getRid(final CommandContext context) {
+    for (final MatchFilterItem item : items) {
       if (item.rid != null) {
         return item.rid;
       }
@@ -140,7 +140,7 @@ public class MatchFilter extends SimpleNode {
   }
 
   public Integer getMaxDepth() {
-    for (MatchFilterItem item : items) {
+    for (final MatchFilterItem item : items) {
       if (item.maxDepth != null) {
         return item.maxDepth.value.intValue();
       }
@@ -149,7 +149,7 @@ public class MatchFilter extends SimpleNode {
   }
 
   public boolean isOptional() {
-    for (MatchFilterItem item : items) {
+    for (final MatchFilterItem item : items) {
       if (Boolean.TRUE.equals(item.optional)) {
         return true;
       }
@@ -158,7 +158,7 @@ public class MatchFilter extends SimpleNode {
   }
 
   public String getDepthAlias() {
-    for (MatchFilterItem item : items) {
+    for (final MatchFilterItem item : items) {
       if (item.depthAlias != null) {
         return item.depthAlias.getStringValue();
       }
@@ -167,7 +167,7 @@ public class MatchFilter extends SimpleNode {
   }
 
   public String getPathAlias() {
-    for (MatchFilterItem item : items) {
+    for (final MatchFilterItem item : items) {
       if (item.pathAlias != null) {
         return item.pathAlias.getStringValue();
       }
@@ -175,10 +175,10 @@ public class MatchFilter extends SimpleNode {
     return null;
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("{");
     boolean first = true;
-    for (MatchFilterItem item : items) {
+    for (final MatchFilterItem item : items) {
       if (!first) {
         builder.append(", ");
       }

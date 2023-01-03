@@ -32,14 +32,14 @@ import com.arcadedb.query.sql.parser.Identifier;
 public class SetDocumentClassStep extends AbstractExecutionStep {
   private final String targetClass;
 
-  public SetDocumentClassStep(Identifier targetClass, CommandContext ctx, boolean profilingEnabled) {
+  public SetDocumentClassStep(final Identifier targetClass, final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
     this.targetClass = targetClass.getStringValue();
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    ResultSet upstream = getPrev().get().syncPull(ctx, nRecords);
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
+    final ResultSet upstream = getPrev().get().syncPull(ctx, nRecords);
     return new ResultSet() {
       @Override
       public boolean hasNext() {
@@ -51,7 +51,7 @@ public class SetDocumentClassStep extends AbstractExecutionStep {
         Result result = upstream.next();
 
         if (result.isElement()) {
-          Record element = result.getElement().get().getRecord();
+          final Record element = result.getElement().get().getRecord();
           if (!(result instanceof ResultInternal)) {
             result = new UpdatableResult((MutableDocument) element);
           } else {
@@ -73,9 +73,9 @@ public class SetDocumentClassStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    String result = spaces + "+ SET TYPE\n" + spaces + "  " + this.targetClass;
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
+    final String result = spaces + "+ SET TYPE\n" + spaces + "  " + this.targetClass;
     return result;
   }
 }

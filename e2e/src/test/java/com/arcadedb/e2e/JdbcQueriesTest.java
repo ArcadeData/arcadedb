@@ -39,7 +39,7 @@ public class JdbcQueriesTest extends ArcadeContainerTemplate {
 
   @BeforeEach
   void setUp() throws Exception {
-    Properties props = new Properties();
+    final Properties props = new Properties();
     props.setProperty("user", "root");
     props.setProperty("password", "playwithdata");
     props.setProperty("ssl", "false");
@@ -55,9 +55,9 @@ public class JdbcQueriesTest extends ArcadeContainerTemplate {
   @Test
   void simpleSQLQuery() throws Exception {
 
-    try (Statement st = conn.createStatement()) {
+    try (final Statement st = conn.createStatement()) {
 
-      try (java.sql.ResultSet rs = st.executeQuery("SELECT * FROM Beer limit 1")) {
+      try (final ResultSet rs = st.executeQuery("SELECT * FROM Beer limit 1")) {
         assertThat(rs.next()).isTrue();
 
         assertThat(rs.getString("name")).isNotBlank();
@@ -69,9 +69,9 @@ public class JdbcQueriesTest extends ArcadeContainerTemplate {
 
   @Test
   void simpleGremlinQuery() throws Exception {
-    try (Statement st = conn.createStatement()) {
+    try (final Statement st = conn.createStatement()) {
 
-      try (java.sql.ResultSet rs = st.executeQuery("{gremlin}g.V().limit(1)")) {
+      try (final ResultSet rs = st.executeQuery("{gremlin}g.V().limit(1)")) {
         assertThat(rs.next()).isTrue();
 
         assertThat(rs.getString("name")).isNotBlank();
@@ -83,9 +83,9 @@ public class JdbcQueriesTest extends ArcadeContainerTemplate {
 
   @Test
   void simpleCypherQuery() throws Exception {
-    try (Statement st = conn.createStatement()) {
+    try (final Statement st = conn.createStatement()) {
 
-      try (java.sql.ResultSet rs = st.executeQuery("{cypher}MATCH(p:Beer) RETURN * LIMIT 1")) {
+      try (final ResultSet rs = st.executeQuery("{cypher}MATCH(p:Beer) RETURN * LIMIT 1")) {
         assertThat(rs.next()).isTrue();
 
         assertThat(rs.getString("name")).isNotBlank();

@@ -75,12 +75,12 @@ public class GroupBy extends SimpleNode {
   }
 
   public void extractSubQueries(final SubQueryCollector collector) {
-    for (Expression item : items)
+    for (final Expression item : items)
       item.extractSubQueries(collector);
   }
 
   public boolean refersToParent() {
-    for (Expression item : items) {
+    for (final Expression item : items) {
       if (item.refersToParent())
         return true;
     }
@@ -97,9 +97,9 @@ public class GroupBy extends SimpleNode {
 
   public void deserialize(final Result fromResult) {
     if (fromResult.getProperty("items") != null) {
-      List<Result> ser = fromResult.getProperty("items");
+      final List<Result> ser = fromResult.getProperty("items");
       items = new ArrayList<>();
-      for (Result r : ser) {
+      for (final Result r : ser) {
         final Expression exp = new Expression(-1);
         exp.deserialize(r);
         items.add(exp);

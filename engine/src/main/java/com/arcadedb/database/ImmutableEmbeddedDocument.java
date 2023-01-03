@@ -47,7 +47,7 @@ public class ImmutableEmbeddedDocument extends ImmutableDocument implements Embe
       // CURRENT RECORD IS THE MOST RECENT IN TX, CREATE A MUTABLE DOC, REPLACE ITSELF IN THE OWNER DOCUMENT AND RETURN IT
       checkForLazyLoading();
       buffer.rewind();
-      MutableEmbeddedDocument newRecord = new MutableEmbeddedDocument(database, type, buffer.copy(), modifier);
+      final MutableEmbeddedDocument newRecord = new MutableEmbeddedDocument(database, type, buffer.copy(), modifier);
       modifier.setEmbeddedDocument(newRecord);
       return newRecord;
     } else if (mostRecent instanceof MutableEmbeddedDocument) {
@@ -80,7 +80,7 @@ public class ImmutableEmbeddedDocument extends ImmutableDocument implements Embe
     if (!props.equals(that.getPropertyNames()))
       return false;
 
-    for (String prop : props) {
+    for (final String prop : props) {
       final Object v1 = me.get(prop);
       final Object v2 = that.get(prop);
 
@@ -96,7 +96,7 @@ public class ImmutableEmbeddedDocument extends ImmutableDocument implements Embe
   static int hashCode(final EmbeddedDocument me) {
     int hash = 0;
     final Set<String> props = me.getPropertyNames();
-    for (String prop : props) {
+    for (final String prop : props) {
       final Object value = me.get(prop);
       hash += value != null ? value.hashCode() : 0;
     }

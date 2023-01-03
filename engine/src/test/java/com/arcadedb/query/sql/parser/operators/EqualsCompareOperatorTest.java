@@ -31,7 +31,7 @@ import java.math.*;
 public class EqualsCompareOperatorTest {
   @Test
   public void test() {
-    EqualsCompareOperator op = new EqualsCompareOperator(-1);
+    final EqualsCompareOperator op = new EqualsCompareOperator(-1);
 
     Assertions.assertFalse(op.execute(null, null, 1));
     Assertions.assertFalse(op.execute(null, 1, null));

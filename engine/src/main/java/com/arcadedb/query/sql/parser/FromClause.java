@@ -29,15 +29,15 @@ public class FromClause extends SimpleNode {
 
   FromItem item;
 
-  public FromClause(int id) {
+  public FromClause(final int id) {
     super(id);
   }
 
-  public FromClause(SqlParser p, int id) {
+  public FromClause(final SqlParser p, final int id) {
     super(p, id);
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (item != null) {
       item.toString(params, builder);
     }
@@ -47,12 +47,12 @@ public class FromClause extends SimpleNode {
     return item;
   }
 
-  public void setItem(FromItem item) {
+  public void setItem(final FromItem item) {
     this.item = item;
   }
 
   public FromClause copy() {
-    FromClause result = new FromClause(-1);
+    final FromClause result = new FromClause(-1);
     result.item = item.copy();
     return result;
   }
@@ -75,12 +75,12 @@ public class FromClause extends SimpleNode {
   }
 
   public Result serialize() {
-    ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal();
     result.setProperty("item", item.serialize());
     return result;
   }
 
-  public void deserialize(Result fromResult) {
+  public void deserialize(final Result fromResult) {
     item = new FromItem(-1);
     item.deserialize(fromResult.getProperty("item"));
   }

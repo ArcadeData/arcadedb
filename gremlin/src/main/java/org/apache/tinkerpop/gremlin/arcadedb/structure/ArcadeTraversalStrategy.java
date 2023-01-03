@@ -64,7 +64,7 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
           final Set<HasContainer> containersToRemove = new HashSet<>();
 
           int totalLabels = 0;
-          for (HasContainer c : hasContainers) {
+          for (final HasContainer c : hasContainers) {
             final String key = c.getKey();
             if (BinaryComparator.equalsString(key, LABEL_KEY)) {
               ++totalLabels;
@@ -82,7 +82,7 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
             }
           }
 
-          for (HasContainer c : containersToRemove)
+          for (final HasContainer c : containersToRemove)
             ((HasStep<?>) step).removeHasContainer(c);
 
           if (totalLabels == 1 && typeNameToMatch != null) {
@@ -92,7 +92,7 @@ public class ArcadeTraversalStrategy extends AbstractTraversalStrategy<Traversal
 
             final List<IndexCursor> indexCursors = new ArrayList<>();
 
-            for (HasContainer c : hasContainers) {
+            for (final HasContainer c : hasContainers) {
               final String key = c.getKey();
               if (!key.startsWith("~")) {
                 if (graph.database.getSchema().existsType(typeNameToMatch)) {

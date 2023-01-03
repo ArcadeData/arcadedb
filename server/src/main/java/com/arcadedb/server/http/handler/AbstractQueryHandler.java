@@ -132,17 +132,17 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
       }
 
       // FILTER OUT NOT CONNECTED EDGES
-      for (Identifiable entry : includedVertices) {
+      for (final Identifiable entry : includedVertices) {
         final Vertex vertex = entry.asVertex(true);
 
         final Iterable<Edge> vEdgesOut = vertex.getEdges(Vertex.DIRECTION.OUT);
-        for (Edge e : vEdgesOut) {
+        for (final Edge e : vEdgesOut) {
           if (includedVertices.contains(e.getIn()) && !includedRecords.contains(e.getIdentity()))
             edges.put(serializerImpl.serializeGraphElement(e));
         }
 
         final Iterable<Edge> vEdgesIn = vertex.getEdges(Vertex.DIRECTION.IN);
-        for (Edge e : vEdgesIn) {
+        for (final Edge e : vEdgesIn) {
           if (includedVertices.contains(e.getOut()) && !includedRecords.contains(e.getIdentity()))
             edges.put(serializerImpl.serializeGraphElement(e));
         }
@@ -169,7 +169,7 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
 
   protected void analyzeResultContent(final Database database, final JsonGraphSerializer serializerImpl, final Set<Identifiable> includedVertices,
       final JSONArray vertices, final JSONArray edges, final Result row) {
-    for (String prop : row.getPropertyNames()) {
+    for (final String prop : row.getPropertyNames()) {
       final Object value = row.getProperty(prop);
       if (value == null)
         continue;
@@ -209,7 +209,7 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
     } else if (value instanceof Result) {
       analyzeResultContent(database, serializerImpl, includedVertices, vertices, edges, (Result) value);
     } else if (value instanceof Collection) {
-      for (Iterator<?> it = ((Collection<?>) value).iterator(); it.hasNext(); ) {
+      for (final Iterator<?> it = ((Collection<?>) value).iterator(); it.hasNext(); ) {
         analyzePropertyValue(database, serializerImpl, includedVertices, vertices, edges, it.next());
       }
     }
@@ -226,7 +226,7 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
         return array;
       }
     } else
-      paramMap = Collections.EMPTY_MAP;
+      paramMap = Collections.emptyMap();
     return paramMap;
   }
 }

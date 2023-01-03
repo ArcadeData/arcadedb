@@ -27,15 +27,15 @@ public class UpdateIncrementItem extends SimpleNode {
   protected Modifier   leftModifier;
   protected Expression right;
 
-  public UpdateIncrementItem(int id) {
+  public UpdateIncrementItem(final int id) {
     super(id);
   }
 
-  public UpdateIncrementItem(SqlParser p, int id) {
+  public UpdateIncrementItem(final SqlParser p, final int id) {
     super(p, id);
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     left.toString(params, builder);
     if (leftModifier != null) {
       leftModifier.toString(params, builder);
@@ -45,7 +45,7 @@ public class UpdateIncrementItem extends SimpleNode {
   }
 
   public UpdateIncrementItem copy() {
-    UpdateIncrementItem result = new UpdateIncrementItem(-1);
+    final UpdateIncrementItem result = new UpdateIncrementItem(-1);
     result.left = left == null ? null : left.copy();
     result.leftModifier = leftModifier == null ? null : leftModifier.copy();
     result.right = right == null ? null : right.copy();
@@ -53,13 +53,13 @@ public class UpdateIncrementItem extends SimpleNode {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    UpdateIncrementItem that = (UpdateIncrementItem) o;
+    final UpdateIncrementItem that = (UpdateIncrementItem) o;
 
     if (!Objects.equals(left, that.left))
       return false;

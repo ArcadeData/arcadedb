@@ -60,7 +60,7 @@ public class PartitionedBucketSelectionStrategy extends RoundRobinBucketSelectio
 
       int hash = 0;
       for (int i = 0; i < propertyNames.length; i++) {
-        Object value = record.get(propertyNames[i]);
+        final Object value = record.get(propertyNames[i]);
         if (value != null)
           hash += value.hashCode();
       }
@@ -75,7 +75,7 @@ public class PartitionedBucketSelectionStrategy extends RoundRobinBucketSelectio
     if (propertyNames != null) {
       int hash = 0;
       for (int i = 0; i < keyValues.length; i++) {
-        Object value = keyValues[i];
+        final Object value = keyValues[i];
         if (value != null)
           hash += value.hashCode();
       }

@@ -28,11 +28,11 @@ public class InterfaceTypeDefinition extends TypeDefinition {
   protected Directives            directives;
   protected List<FieldDefinition> fieldDefinitions = new ArrayList<>();
 
-  public InterfaceTypeDefinition(int id) {
+  public InterfaceTypeDefinition(final int id) {
     super(id);
   }
 
-  public InterfaceTypeDefinition(GraphQLParser p, int id) {
+  public InterfaceTypeDefinition(final GraphQLParser p, final int id) {
     super(p, id);
   }
 
@@ -43,7 +43,7 @@ public class InterfaceTypeDefinition extends TypeDefinition {
   /**
    * Accept the visitor.
    **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
+  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
     return visitor.visit(this, data);
   }
 }

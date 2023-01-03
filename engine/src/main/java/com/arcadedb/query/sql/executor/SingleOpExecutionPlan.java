@@ -36,7 +36,7 @@ public class SingleOpExecutionPlan implements InternalExecutionPlan {
 
   private ResultSet result;
 
-  public SingleOpExecutionPlan(CommandContext ctx, SimpleExecStatement stm) {
+  public SingleOpExecutionPlan(final CommandContext ctx, final SimpleExecStatement stm) {
     this.ctx = ctx;
     this.statement = stm;
   }
@@ -47,7 +47,7 @@ public class SingleOpExecutionPlan implements InternalExecutionPlan {
   }
 
   @Override
-  public ResultSet fetchNext(int n) {
+  public ResultSet fetchNext(final int n) {
 
     if (executed && result == null) {
       return new InternalResultSet();
@@ -87,7 +87,7 @@ public class SingleOpExecutionPlan implements InternalExecutionPlan {
     };
   }
 
-  public void reset(CommandContext ctx) {
+  public void reset(final CommandContext ctx) {
     executed = false;
   }
 
@@ -101,7 +101,7 @@ public class SingleOpExecutionPlan implements InternalExecutionPlan {
     return false;
   }
 
-  public ResultSet executeInternal(BasicCommandContext ctx) throws CommandExecutionException {
+  public ResultSet executeInternal(final BasicCommandContext ctx) throws CommandExecutionException {
     if (executed) {
       throw new CommandExecutionException("Trying to execute a result-set twice. Please use reset()");
     }
@@ -119,15 +119,15 @@ public class SingleOpExecutionPlan implements InternalExecutionPlan {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    String result = spaces + "+ " + statement.toString();
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
+    final String result = spaces + "+ " + statement.toString();
     return result;
   }
 
   @Override
   public Result toResult() {
-    ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal();
     result.setProperty("type", "QueryExecutionPlan");
     result.setProperty("javaType", getClass().getName());
     result.setProperty("stmText", statement.toString());

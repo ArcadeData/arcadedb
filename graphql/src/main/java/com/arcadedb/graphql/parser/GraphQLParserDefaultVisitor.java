@@ -27,178 +27,178 @@ public class GraphQLParserDefaultVisitor implements GraphQLParserVisitor{
   public Object visit(final SimpleNode node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(Document node, Object data){
+  public Object visit(final Document node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(Definition node, Object data){
+  public Object visit(final Definition node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(OperationDefinition node, Object data){
+  public Object visit(final OperationDefinition node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(VariableDefinitions node, Object data){
+  public Object visit(final VariableDefinitions node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(VariableDefinition node, Object data){
+  public Object visit(final VariableDefinition node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(VariableLiteral node, Object data){
+  public Object visit(final VariableLiteral node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(DefaultValue node, Object data){
+  public Object visit(final DefaultValue node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(SelectionSet node, Object data){
+  public Object visit(final SelectionSet node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(Selection node, Object data){
+  public Object visit(final Selection node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(Field node, Object data){
+  public Object visit(final Field node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(FieldWithAlias node, Object data){
+  public Object visit(final FieldWithAlias node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(Arguments node, Object data){
+  public Object visit(final Arguments node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(Argument node, Object data){
+  public Object visit(final Argument node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(FragmentSpread node, Object data){
+  public Object visit(final FragmentSpread node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(InlineFragment node, Object data){
+  public Object visit(final InlineFragment node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(FragmentDefinition node, Object data){
+  public Object visit(final FragmentDefinition node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(FragmentName node, Object data){
+  public Object visit(final FragmentName node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(TypeCondition node, Object data){
+  public Object visit(final TypeCondition node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(Name node, Object data){
+  public Object visit(final Name node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(Value node, Object data){
+  public Object visit(final Value node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(ValueWithVariable node, Object data){
+  public Object visit(final ValueWithVariable node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(EnumValue node, Object data){
+  public Object visit(final EnumValue node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(ListValue node, Object data){
+  public Object visit(final ListValue node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(ListValueWithVariable node, Object data){
+  public Object visit(final ListValueWithVariable node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(ObjectValue node, Object data){
+  public Object visit(final ObjectValue node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(ObjectValueWithVariable node, Object data){
+  public Object visit(final ObjectValueWithVariable node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(ObjectField node, Object data){
+  public Object visit(final ObjectField node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(ObjectFieldWithValue node, Object data){
+  public Object visit(final ObjectFieldWithValue node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(Directives node, Object data){
+  public Object visit(final Directives node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(Directive node, Object data){
+  public Object visit(final Directive node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(Type node, Object data){
+  public Object visit(final Type node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(TypeName node, Object data){
+  public Object visit(final TypeName node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(ListType node, Object data){
+  public Object visit(final ListType node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(TypeSystemDefinition node, Object data){
+  public Object visit(final TypeSystemDefinition node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(SchemaDefinition node, Object data){
+  public Object visit(final SchemaDefinition node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(OperationTypeDefinition node, Object data){
+  public Object visit(final OperationTypeDefinition node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(TypeDefinition node, Object data){
+  public Object visit(final TypeDefinition node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(ScalarTypeDefinition node, Object data){
+  public Object visit(final ScalarTypeDefinition node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(ObjectTypeDefinition node, Object data){
+  public Object visit(final ObjectTypeDefinition node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(ImplementsInterface node, Object data){
+  public Object visit(final ImplementsInterface node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(FieldDefinition node, Object data){
+  public Object visit(final FieldDefinition node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(ArgumentsDefinition node, Object data){
+  public Object visit(final ArgumentsDefinition node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(InputValueDefinition node, Object data){
+  public Object visit(final InputValueDefinition node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(InterfaceTypeDefinition node, Object data){
+  public Object visit(final InterfaceTypeDefinition node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(UnionTypeDefinition node, Object data){
+  public Object visit(final UnionTypeDefinition node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(UnionMembers node, Object data){
+  public Object visit(final UnionMembers node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(EnumTypeDefinition node, Object data){
+  public Object visit(final EnumTypeDefinition node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(EnumValueDefinition node, Object data){
+  public Object visit(final EnumValueDefinition node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(InputObjectTypeDefinition node, Object data){
+  public Object visit(final InputObjectTypeDefinition node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(TypeExtensionDefinition node, Object data){
+  public Object visit(final TypeExtensionDefinition node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(DirectiveDefinition node, Object data){
+  public Object visit(final DirectiveDefinition node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(DirectiveLocation node, Object data){
+  public Object visit(final DirectiveLocation node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(DirectiveLocations node, Object data){
+  public Object visit(final DirectiveLocations node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(BooleanValue node, Object data){
+  public Object visit(final BooleanValue node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(IntValue node, Object data){
+  public Object visit(final IntValue node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(FloatValue node, Object data){
+  public Object visit(final FloatValue node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(StringValue node, Object data){
+  public Object visit(final StringValue node, final Object data){
     return defaultVisit(node, data);
   }
-  public Object visit(OperationType node, Object data){
+  public Object visit(final OperationType node, final Object data){
     return defaultVisit(node, data);
   }
 }

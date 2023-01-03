@@ -34,11 +34,11 @@ public class SQLMethodAsBoolean extends AbstractSQLMethod {
     }
 
     @Override
-    public Object execute(Object self,
-                          Identifiable currentRecord,
-                          CommandContext context,
+    public Object execute(final Object self,
+                          final Identifiable currentRecord,
+                          final CommandContext context,
                           Object result,
-                          Object[] params) {
+                          final Object[] params) {
         if (result != null) {
             if (result instanceof String) {
                 result = Boolean.valueOf(((String) result).trim());

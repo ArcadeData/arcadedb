@@ -27,7 +27,7 @@ public class PerformanceComparator {
   private static final int REPEAT_TEST  = 3;
   private static final int ARRAY_LENGTH = 10000;
 
-  public static void main(String[] args) throws Exception {
+  public static void main(final String[] args) throws Exception {
     new PerformanceComparator().run();
   }
 
@@ -43,7 +43,7 @@ public class PerformanceComparator {
       test(array);
   }
 
-  private void test(String[] array) {
+  private void test(final String[] array) {
     System.out.println("Starting comparison matrix for Java Std...");
 
     long beginTime = System.currentTimeMillis();

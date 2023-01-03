@@ -101,7 +101,7 @@ public class DictionaryTest extends TestHelper {
         database.getSchema().getDictionary().updateName("V", "V2");
       });
       Assertions.fail();
-    } catch (Exception e) {
+    } catch (final Exception e) {
     }
   }
 
@@ -110,7 +110,7 @@ public class DictionaryTest extends TestHelper {
     database.getSchema().getOrCreateVertexType("Babylonia");
 
     for (int i = 0; i < 10; i++) {
-      int finalI = i;
+      final int finalI = i;
       database.transaction(() -> {
         final MutableVertex v = database.newVertex("Babylonia");
         for (int k = 0; k < 10; k++) {
@@ -121,7 +121,7 @@ public class DictionaryTest extends TestHelper {
       });
     }
 
-    for (Iterator<Record> iterator = database.iterateType("Babylonia", true); iterator.hasNext(); ) {
+    for (final Iterator<Record> iterator = database.iterateType("Babylonia", true); iterator.hasNext(); ) {
       final Vertex v = iterator.next().asVertex();
       Assertions.assertEquals(11, v.getPropertyNames().size());
 
@@ -139,7 +139,7 @@ public class DictionaryTest extends TestHelper {
     final VertexType babylonia = database.getSchema().getOrCreateVertexType("Babylonia");
 
     for (int i = 0; i < 10; i++) {
-      int finalI = i;
+      final int finalI = i;
 
       for (int k = 1; k < 10; k++)
         babylonia.createProperty("p" + ((finalI * 10) + k), Type.INTEGER);
@@ -154,7 +154,7 @@ public class DictionaryTest extends TestHelper {
       });
     }
 
-    for (Iterator<Record> iterator = database.iterateType("Babylonia", true); iterator.hasNext(); ) {
+    for (final Iterator<Record> iterator = database.iterateType("Babylonia", true); iterator.hasNext(); ) {
       final Vertex v = iterator.next().asVertex();
       Assertions.assertEquals(11, v.getPropertyNames().size());
 
@@ -172,7 +172,7 @@ public class DictionaryTest extends TestHelper {
     final VertexType babylonia = database.getSchema().getOrCreateVertexType("Babylonia");
 
     for (int i = 0; i < 10; i++) {
-      int finalI = i;
+      final int finalI = i;
 
       database.transaction(() -> {
         for (int k = 1; k < 10; k++)
@@ -187,7 +187,7 @@ public class DictionaryTest extends TestHelper {
       });
     }
 
-    for (Iterator<Record> iterator = database.iterateType("Babylonia", true); iterator.hasNext(); ) {
+    for (final Iterator<Record> iterator = database.iterateType("Babylonia", true); iterator.hasNext(); ) {
       final Vertex v = iterator.next().asVertex();
       Assertions.assertEquals(11, v.getPropertyNames().size());
 
@@ -205,7 +205,7 @@ public class DictionaryTest extends TestHelper {
     final VertexType babylonia = database.getSchema().getOrCreateVertexType("Babylonia");
 
     for (int i = 0; i < 10; i++) {
-      int finalI = i;
+      final int finalI = i;
 
       database.transaction(() -> {
         for (int k = 1; k < 10; k++)
@@ -222,7 +222,7 @@ public class DictionaryTest extends TestHelper {
       });
     }
 
-    for (Iterator<Record> iterator = database.iterateType("Babylonia", true); iterator.hasNext(); ) {
+    for (final Iterator<Record> iterator = database.iterateType("Babylonia", true); iterator.hasNext(); ) {
       final Vertex v = iterator.next().asVertex();
       Assertions.assertEquals(11, v.getPropertyNames().size());
 

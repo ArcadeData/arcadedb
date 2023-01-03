@@ -66,8 +66,8 @@ public class TokenMgrException extends RuntimeException {
    * Replaces unprintable characters by their escaped (or unicode escaped)
    * equivalents in the given string
    */
-  protected static final String addEscapes(String str) {
-    StringBuilder retval = new StringBuilder();
+  protected static final String addEscapes(final String str) {
+    final StringBuilder retval = new StringBuilder();
     for (int i = 0; i < str.length(); i++) {
       final char ch = str.charAt(i);
       switch (ch) {
@@ -97,7 +97,7 @@ public class TokenMgrException extends RuntimeException {
         continue;
       default:
         if (ch < 0x20 || ch > 0x7e) {
-          String s = "0000" + Integer.toString(ch, 16);
+          final String s = "0000" + Integer.toString(ch, 16);
           retval.append("\\u").append(s.substring(s.length() - 4));
         } else {
           retval.append(ch);
@@ -120,8 +120,8 @@ public class TokenMgrException extends RuntimeException {
    * curchar     : the offending character
    * Note: You can customize the lexical error message by modifying this method.
    */
-  protected static String LexicalErr(boolean EOFSeen, int lexState, int errorLine, int errorColumn, String errorAfter, int curChar) {
-    char curChar1 = (char) curChar;
+  protected static String LexicalErr(final boolean EOFSeen, final int lexState, final int errorLine, final int errorColumn, final String errorAfter, final int curChar) {
+    final char curChar1 = (char) curChar;
     return ("Lexical error at line " + errorLine + ", column " + errorColumn + ".  Encountered: " + (EOFSeen ?
         "<EOF> " :
         ("\"" + addEscapes(String.valueOf(curChar1)) + "\"") + " (" + curChar + "), ") + "after : \"" + addEscapes(errorAfter) + "\"");
@@ -154,7 +154,7 @@ public class TokenMgrException extends RuntimeException {
   /**
    * Constructor with message and reason.
    */
-  public TokenMgrException(String message, int reason) {
+  public TokenMgrException(final String message, final int reason) {
     super(message);
     errorCode = reason;
   }
@@ -162,7 +162,7 @@ public class TokenMgrException extends RuntimeException {
   /**
    * Full Constructor.
    */
-  public TokenMgrException(boolean EOFSeen, int lexState, int errorLine, int errorColumn, String errorAfter, int curChar, int reason) {
+  public TokenMgrException(final boolean EOFSeen, final int lexState, final int errorLine, final int errorColumn, final String errorAfter, final int curChar, final int reason) {
     this(LexicalErr(EOFSeen, lexState, errorLine, errorColumn, errorAfter, curChar), reason);
   }
 }

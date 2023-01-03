@@ -80,7 +80,7 @@ public class AlterTypeExecutionTest extends TestHelper {
     Assertions.assertEquals(3, database.getSchema().getType("Suv").getCustomValue("age"));
 
     final JSONObject cfg = database.getSchema().getEmbedded().toJSON();
-    JSONObject customMap = cfg.getJSONObject("types").getJSONObject("Suv").getJSONObject("custom");
+    final JSONObject customMap = cfg.getJSONObject("types").getJSONObject("Suv").getJSONObject("custom");
     Assertions.assertEquals("test", customMap.getString("description"));
     Assertions.assertEquals(3, customMap.getInt("age"));
 

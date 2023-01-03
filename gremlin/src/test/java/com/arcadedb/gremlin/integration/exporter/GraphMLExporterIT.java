@@ -60,19 +60,19 @@ public class GraphMLExporterIT {
     Assertions.assertTrue(file.exists());
     Assertions.assertTrue(file.length() > 0);
 
-    try (ArcadeGraph graph = ArcadeGraph.open(importedDatabaseDirectory.getAbsolutePath())) {
-      try (GZIPInputStream is = new GZIPInputStream(new FileInputStream(file))) {
+    try (final ArcadeGraph graph = ArcadeGraph.open(importedDatabaseDirectory.getAbsolutePath())) {
+      try (final GZIPInputStream is = new GZIPInputStream(new FileInputStream(file))) {
         graph.io(IoCore.graphml()).reader().create().readGraph(is, graph);
       }
 
       Assertions.assertTrue(importedDatabaseDirectory.exists());
 
-      try (Database originalDatabase = new DatabaseFactory(DATABASE_PATH).open(PaginatedFile.MODE.READ_ONLY)) {
+      try (final Database originalDatabase = new DatabaseFactory(DATABASE_PATH).open(PaginatedFile.MODE.READ_ONLY)) {
         Assertions.assertEquals(//
             originalDatabase.getSchema().getTypes().stream().map(DocumentType::getName).collect(Collectors.toSet()),//
             graph.getDatabase().getSchema().getTypes().stream().map(DocumentType::getName).collect(Collectors.toSet()));
 
-        for (DocumentType type : originalDatabase.getSchema().getTypes()) {
+        for (final DocumentType type : originalDatabase.getSchema().getTypes()) {
           Assertions.assertEquals(//
               originalDatabase.countType(type.getName(), true),//
               graph.getDatabase().countType(type.getName(), true));

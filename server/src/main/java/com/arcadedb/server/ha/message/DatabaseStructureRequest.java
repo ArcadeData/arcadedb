@@ -48,20 +48,20 @@ public class DatabaseStructureRequest extends HAAbstractCommand {
     try {
       final String schemaJson;
       if (file.exists()) {
-        try (FileInputStream fis = new FileInputStream(file)) {
+        try (final FileInputStream fis = new FileInputStream(file)) {
           schemaJson = FileUtils.readStreamAsString(fis, db.getSchema().getEncoding());
         }
       } else
         schemaJson = "{}";
 
       final Map<Integer, String> fileNames = new HashMap<>();
-      for (PaginatedFile f : db.getFileManager().getFiles())
+      for (final PaginatedFile f : db.getFileManager().getFiles())
         if (f != null)
           fileNames.put(f.getFileId(), f.getFileName());
 
       return new DatabaseStructureResponse(schemaJson, fileNames);
 
-    } catch (IOException e) {
+    } catch (final IOException e) {
       throw new NetworkProtocolException("Error on reading schema json file", e);
     }
   }
@@ -72,7 +72,7 @@ public class DatabaseStructureRequest extends HAAbstractCommand {
   }
 
   @Override
-  public void fromStream(ArcadeDBServer server, final Binary stream) {
+  public void fromStream(final ArcadeDBServer server, final Binary stream) {
     databaseName = stream.getString();
   }
 

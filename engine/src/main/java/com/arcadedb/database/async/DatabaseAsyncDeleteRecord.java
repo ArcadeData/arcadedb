@@ -38,7 +38,7 @@ public class DatabaseAsyncDeleteRecord implements DatabaseAsyncTask {
   }
 
   @Override
-  public void execute(DatabaseAsyncExecutorImpl.AsyncThread async, DatabaseInternal database) {
+  public void execute(final DatabaseAsyncExecutorImpl.AsyncThread async, final DatabaseInternal database) {
     try {
       // INVOKE EVENT CALLBACKS
       if (!((RecordEventsRegistry) database.getEvents()).onBeforeDelete(record))
@@ -57,7 +57,7 @@ public class DatabaseAsyncDeleteRecord implements DatabaseAsyncTask {
       if (onOkCallback != null)
         onOkCallback.call(record);
 
-    } catch (Exception e) {
+    } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on executing async delete record operation (threadId=%d)", e, Thread.currentThread().getId());
 
       async.onError(e);

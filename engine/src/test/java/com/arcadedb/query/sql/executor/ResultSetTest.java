@@ -29,38 +29,38 @@ import java.util.*;
 public class ResultSetTest {
   @Test
   public void testResultStream() {
-    InternalResultSet rs = new InternalResultSet();
+    final InternalResultSet rs = new InternalResultSet();
     for (int i = 0; i < 10; i++) {
-      ResultInternal item = new ResultInternal();
+      final ResultInternal item = new ResultInternal();
       item.setProperty("i", i);
       rs.add(item);
     }
-    Optional<Integer> result = rs.stream().map(x -> (int) x.getProperty("i")).reduce((a, b) -> a + b);
+    final Optional<Integer> result = rs.stream().map(x -> (int) x.getProperty("i")).reduce((a, b) -> a + b);
     Assertions.assertTrue(result.isPresent());
     Assertions.assertEquals(45, result.get().intValue());
   }
 
   @Test
   public void testResultEmptyVertexStream() {
-    InternalResultSet rs = new InternalResultSet();
+    final InternalResultSet rs = new InternalResultSet();
     for (int i = 0; i < 10; i++) {
-      ResultInternal item = new ResultInternal();
+      final ResultInternal item = new ResultInternal();
       item.setProperty("i", i);
       rs.add(item);
     }
-    Optional<Integer> result = rs.vertexStream().map(x -> (int) x.get("i")).reduce((a, b) -> a + b);
+    final Optional<Integer> result = rs.vertexStream().map(x -> (int) x.get("i")).reduce((a, b) -> a + b);
     Assertions.assertFalse(result.isPresent());
   }
 
   @Test
   public void testResultEdgeVertexStream() {
-    InternalResultSet rs = new InternalResultSet();
+    final InternalResultSet rs = new InternalResultSet();
     for (int i = 0; i < 10; i++) {
-      ResultInternal item = new ResultInternal();
+      final ResultInternal item = new ResultInternal();
       item.setProperty("i", i);
       rs.add(item);
     }
-    Optional<Integer> result = rs.vertexStream().map(x -> (int) x.get("i")).reduce((a, b) -> a + b);
+    final Optional<Integer> result = rs.vertexStream().map(x -> (int) x.get("i")).reduce((a, b) -> a + b);
     Assertions.assertFalse(result.isPresent());
   }
 }

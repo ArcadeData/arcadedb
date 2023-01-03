@@ -68,7 +68,7 @@ public class PaginatedFile {
         file = null;
       }
 
-    } catch (IOException e) {
+    } catch (final IOException e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on closing file %s (id=%d)", e, filePath, fileId);
     }
     this.open = false;
@@ -138,7 +138,7 @@ public class PaginatedFile {
     buffer.rewind();
     try {
       channel.write(buffer, (page.getPhysicalSize() * (long) page.getPageId().getPageNumber()));
-    } catch (ClosedChannelException e) {
+    } catch (final ClosedChannelException e) {
       LogManager.instance().log(this, Level.SEVERE, "File '%s' was closed on write. Reopen it and retry...", null, fileName);
       open(filePath, mode);
       channel.write(buffer, (page.getPhysicalSize() * (long) page.getPageId().getPageNumber()));
@@ -177,7 +177,7 @@ public class PaginatedFile {
 
     try {
       channel.read(buffer, page.getPhysicalSize() * (long) page.getPageId().getPageNumber());
-    } catch (ClosedChannelException e) {
+    } catch (final ClosedChannelException e) {
       LogManager.instance().log(this, Level.SEVERE, "File '%s' was closed on read. Reopen it and retry...", null, fileName);
       open(filePath, mode);
       channel.read(buffer, page.getPhysicalSize() * (long) page.getPageId().getPageNumber());
@@ -245,11 +245,11 @@ public class PaginatedFile {
     final int fileIdPos = filePrefix.lastIndexOf(".");
     if (fileIdPos > -1) {
       fileId = Integer.parseInt(filePrefix.substring(fileIdPos + 1));
-      int pos = filePrefix.lastIndexOf(File.separator);
+      final int pos = filePrefix.lastIndexOf(File.separator);
       componentName = filePrefix.substring(pos + 1, filePrefix.lastIndexOf("."));
     } else {
       fileId = -1;
-      int pos = filePrefix.lastIndexOf(File.separator);
+      final int pos = filePrefix.lastIndexOf(File.separator);
       componentName = filePrefix.substring(pos + 1);
     }
 

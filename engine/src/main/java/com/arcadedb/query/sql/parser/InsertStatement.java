@@ -42,11 +42,11 @@ public class InsertStatement extends Statement {
   boolean         selectWithFrom      = false;
   boolean         unsafe              = false;
 
-  public InsertStatement(int id) {
+  public InsertStatement(final int id) {
     super(id);
   }
 
-  public InsertStatement(SqlParser p, int id) {
+  public InsertStatement(final SqlParser p, final int id) {
     super(p, id);
   }
 

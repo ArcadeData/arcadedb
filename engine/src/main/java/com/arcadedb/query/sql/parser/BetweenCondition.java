@@ -33,16 +33,16 @@ public class BetweenCondition extends BooleanExpression {
   protected Expression second;
   protected Expression third;
 
-  public BetweenCondition(int id) {
+  public BetweenCondition(final int id) {
     super(id);
   }
 
-  public BetweenCondition(SqlParser p, int id) {
+  public BetweenCondition(final SqlParser p, final int id) {
     super(p, id);
   }
 
   @Override
-  public boolean evaluate(Identifiable currentRecord, CommandContext ctx) {
+  public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
     final Object firstValue = first.execute(currentRecord, ctx);
     if (firstValue == null) {
       return false;
@@ -69,7 +69,7 @@ public class BetweenCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(Result currentRecord, CommandContext ctx) {
+  public boolean evaluate(final Result currentRecord, final CommandContext ctx) {
     final Object firstValue = first.execute(currentRecord, ctx);
     if (firstValue == null) {
       return false;
@@ -98,7 +98,7 @@ public class BetweenCondition extends BooleanExpression {
     return first;
   }
 
-  public void setFirst(Expression first) {
+  public void setFirst(final Expression first) {
     this.first = first;
   }
 
@@ -106,7 +106,7 @@ public class BetweenCondition extends BooleanExpression {
     return second;
   }
 
-  public void setSecond(Expression second) {
+  public void setSecond(final Expression second) {
     this.second = second;
   }
 
@@ -114,11 +114,11 @@ public class BetweenCondition extends BooleanExpression {
     return third;
   }
 
-  public void setThird(Expression third) {
+  public void setThird(final Expression third) {
     this.third = third;
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     first.toString(params, builder);
     builder.append(" BETWEEN ");
     second.toString(params, builder);
@@ -138,11 +138,11 @@ public class BetweenCondition extends BooleanExpression {
 
   @Override
   protected List<Object> getExternalCalculationConditions() {
-    return Collections.EMPTY_LIST;
+    return Collections.emptyList();
   }
 
   @Override
-  public boolean needsAliases(Set<String> aliases) {
+  public boolean needsAliases(final Set<String> aliases) {
     if (first.needsAliases(aliases)) {
       return true;
     }
@@ -154,7 +154,7 @@ public class BetweenCondition extends BooleanExpression {
 
   @Override
   public BooleanExpression copy() {
-    BetweenCondition result = new BetweenCondition(-1);
+    final BetweenCondition result = new BetweenCondition(-1);
     result.first = first.copy();
     result.second = second.copy();
     result.third = third.copy();
@@ -162,7 +162,7 @@ public class BetweenCondition extends BooleanExpression {
   }
 
   @Override
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
     first.extractSubQueries(collector);
     second.extractSubQueries(collector);
     third.extractSubQueries(collector);

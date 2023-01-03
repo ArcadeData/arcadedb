@@ -33,11 +33,11 @@ public class MatchPathItem extends SimpleNode {
   protected MethodCall  method;
   protected MatchFilter filter;
 
-  public MatchPathItem(int id) {
+  public MatchPathItem(final int id) {
     super(id);
   }
 
-  public MatchPathItem(SqlParser p, int id) {
+  public MatchPathItem(final SqlParser p, final int id) {
     super(p, id);
   }
 
@@ -54,15 +54,15 @@ public class MatchPathItem extends SimpleNode {
     return method.isBidirectional();
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     method.toString(params, builder);
     if (filter != null) {
       filter.toString(params, builder);
     }
   }
 
-  public Iterable<Identifiable> executeTraversal(MatchStatement.MatchContext matchContext, CommandContext iCommandContext, Identifiable startingPoint,
-      int depth) {
+  public Iterable<Identifiable> executeTraversal(final MatchStatement.MatchContext matchContext, final CommandContext iCommandContext, final Identifiable startingPoint,
+      final int depth) {
 
     WhereClause filter = null;
     WhereClause whileCondition = null;
@@ -72,22 +72,22 @@ public class MatchPathItem extends SimpleNode {
       filter = this.filter.getFilter();
       whileCondition = this.filter.getWhileCondition();
       maxDepth = this.filter.getMaxDepth();
-      String className = this.filter.getTypeName(iCommandContext);
+      final String className = this.filter.getTypeName(iCommandContext);
       oClass = iCommandContext.getDatabase().getSchema().getType(className);
     }
 
-    Set<Identifiable> result = new HashSet<Identifiable>();
+    final Set<Identifiable> result = new HashSet<Identifiable>();
 
     if (whileCondition == null && maxDepth == null) {// in this case starting point is not returned and only one level depth is
       // evaluated
-      Iterable<Identifiable> queryResult = traversePatternEdge(matchContext, startingPoint, iCommandContext);
+      final Iterable<Identifiable> queryResult = traversePatternEdge(matchContext, startingPoint, iCommandContext);
 
       if (this.filter == null || this.filter.getFilter() == null) {
         return queryResult;
       }
 
-      for (Identifiable origin : queryResult) {
-        Object previousMatch = iCommandContext.getVariable("currentMatch");
+      for (final Identifiable origin : queryResult) {
+        final Object previousMatch = iCommandContext.getVariable("currentMatch");
         iCommandContext.setVariable("currentMatch", origin);
         if ((oClass == null || matchesClass(origin, oClass)) && (filter == null || filter.matchesFilters(origin, iCommandContext))) {
           result.add(origin);
@@ -96,7 +96,7 @@ public class MatchPathItem extends SimpleNode {
       }
     } else {// in this case also zero level (starting point) is considered and traversal depth is given by the while condition
       iCommandContext.setVariable("depth", depth);
-      Object previousMatch = iCommandContext.getVariable("currentMatch");
+      final Object previousMatch = iCommandContext.getVariable("currentMatch");
       iCommandContext.setVariable("currentMatch", startingPoint);
       if ((oClass == null || matchesClass(startingPoint, oClass)) && (filter == null || filter.matchesFilters(startingPoint, iCommandContext))) {
         result.add(startingPoint);
@@ -104,15 +104,15 @@ public class MatchPathItem extends SimpleNode {
 
       if ((maxDepth == null || depth < maxDepth) && (whileCondition == null || whileCondition.matchesFilters(startingPoint, iCommandContext))) {
 
-        Iterable<Identifiable> queryResult = traversePatternEdge(matchContext, startingPoint, iCommandContext);
+        final Iterable<Identifiable> queryResult = traversePatternEdge(matchContext, startingPoint, iCommandContext);
 
-        for (Identifiable origin : queryResult) {
+        for (final Identifiable origin : queryResult) {
           // TODO consider break strategies (eg. re-traverse nodes)
-          Iterable<Identifiable> subResult = executeTraversal(matchContext, iCommandContext, origin, depth + 1);
-          if (subResult instanceof java.util.Collection) {
-            result.addAll((java.util.Collection<? extends Identifiable>) subResult);
+          final Iterable<Identifiable> subResult = executeTraversal(matchContext, iCommandContext, origin, depth + 1);
+          if (subResult instanceof Collection) {
+            result.addAll((Collection<? extends Identifiable>) subResult);
           } else {
-            for (Identifiable i : subResult) {
+            for (final Identifiable i : subResult) {
               result.add(i);
             }
           }
@@ -123,11 +123,11 @@ public class MatchPathItem extends SimpleNode {
     return result;
   }
 
-  private boolean matchesClass(Identifiable identifiable, DocumentType oClass) {
+  private boolean matchesClass(final Identifiable identifiable, final DocumentType oClass) {
     if (identifiable == null) {
       return false;
     }
-    Record record = identifiable.getRecord();
+    final Record record = identifiable.getRecord();
     if (record == null) {
       return false;
     }
@@ -137,11 +137,11 @@ public class MatchPathItem extends SimpleNode {
     return false;
   }
 
-  protected Iterable<Identifiable> traversePatternEdge(MatchStatement.MatchContext matchContext, Identifiable startingPoint, CommandContext iCommandContext) {
+  protected Iterable<Identifiable> traversePatternEdge(final MatchStatement.MatchContext matchContext, final Identifiable startingPoint, final CommandContext iCommandContext) {
 
     Iterable possibleResults = null;
     if (filter != null) {
-      Identifiable matchedNode = matchContext.matched.get(filter.getAlias());
+      final Identifiable matchedNode = matchContext.matched.get(filter.getAlias());
       if (matchedNode != null) {
         possibleResults = Collections.singleton(matchedNode);
       } else if (matchContext.matched.containsKey(filter.getAlias())) {
@@ -178,10 +178,10 @@ public class MatchPathItem extends SimpleNode {
 
   @Override
   public MatchPathItem copy() {
-    MatchPathItem result;
+    final MatchPathItem result;
     try {
       result = getClass().getConstructor(Integer.TYPE).newInstance(-1);
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new ArcadeDBException(e);
     }
     result.method = method == null ? null : method.copy();
@@ -193,7 +193,7 @@ public class MatchPathItem extends SimpleNode {
     return method;
   }
 
-  public void setMethod(MethodCall method) {
+  public void setMethod(final MethodCall method) {
     this.method = method;
   }
 
@@ -201,7 +201,7 @@ public class MatchPathItem extends SimpleNode {
     return filter;
   }
 
-  public void setFilter(MatchFilter filter) {
+  public void setFilter(final MatchFilter filter) {
     this.filter = filter;
   }
 }

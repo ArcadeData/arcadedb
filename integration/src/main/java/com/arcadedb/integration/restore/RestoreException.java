@@ -25,7 +25,7 @@ public class RestoreException extends ArcadeDBException {
     super(s);
   }
 
-  public RestoreException(String s, Throwable e) {
+  public RestoreException(final String s, final Throwable e) {
     super(s, e);
   }
 }

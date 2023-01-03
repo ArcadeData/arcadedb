@@ -40,12 +40,12 @@ public class GraphQLQueryEngineFactory implements QueryEngine.QueryEngineFactory
       return (QueryEngine) database.getWrappers().get(ENGINE_NAME);
 
     try {
-      GraphQLSchema schema = new GraphQLSchema(database);
-      QueryEngine engine = new GraphQLQueryEngine(schema);
+      final GraphQLSchema schema = new GraphQLSchema(database);
+      final QueryEngine engine = new GraphQLQueryEngine(schema);
       database.setWrapper(ENGINE_NAME, engine);
       return engine;
 
-    } catch (Throwable e) {
+    } catch (final Throwable e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on initializing GraphQL query engine", e);
       throw new QueryParsingException("Error on initializing GraphQL query engine", e);
     }

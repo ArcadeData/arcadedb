@@ -26,17 +26,17 @@ public
 class UnionMembers extends SimpleNode {
   protected List<TypeName> typeNames = new ArrayList<>();
 
-  public UnionMembers(int id) {
+  public UnionMembers(final int id) {
     super(id);
   }
 
-  public UnionMembers(GraphQLParser p, int id) {
+  public UnionMembers(final GraphQLParser p, final int id) {
     super(p, id);
   }
 
 
   /** Accept the visitor. **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
+  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
     return
     visitor.visit(this, data);
   }

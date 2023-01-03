@@ -29,7 +29,7 @@ import org.junit.jupiter.api.Test;
 public class LikeOperatorTest {
   @Test
   public void test() {
-    LikeOperator op = new LikeOperator(-1);
+    final LikeOperator op = new LikeOperator(-1);
     Assertions.assertTrue(op.execute(null, "foobar", "%ooba%"));
     Assertions.assertTrue(op.execute(null, "foobar", "%oo%"));
     Assertions.assertFalse(op.execute(null, "foobar", "oo%"));

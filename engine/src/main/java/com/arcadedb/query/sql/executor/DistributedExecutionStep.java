@@ -32,15 +32,15 @@ public class DistributedExecutionStep extends AbstractExecutionStep {
 
   private ResultSet remoteResultSet;
 
-  public DistributedExecutionStep(SelectExecutionPlan subExecutionPlan, String nodeName, CommandContext ctx,
-      boolean profilingEnabled) {
+  public DistributedExecutionStep(final SelectExecutionPlan subExecutionPlan, final String nodeName, final CommandContext ctx,
+      final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
     this.subExecutionPlan = subExecutionPlan;
     this.nodeName = nodeName;
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
     init(ctx);
     getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
     return new ResultSet() {
@@ -65,14 +65,14 @@ public class DistributedExecutionStep extends AbstractExecutionStep {
     };
   }
 
-  public void init(CommandContext ctx) {
+  public void init(final CommandContext ctx) {
     if (!inited) {
       inited = true;
       this.remoteResultSet = sendSerializedExecutionPlan(nodeName, subExecutionPlan, ctx);
     }
   }
 
-  private ResultSet sendSerializedExecutionPlan(String nodeName, ExecutionPlan serializedExecutionPlan, CommandContext ctx) {
+  private ResultSet sendSerializedExecutionPlan(final String nodeName, final ExecutionPlan serializedExecutionPlan, final CommandContext ctx) {
 //    Database db = ctx.getDatabase();
     throw new UnsupportedOperationException();
 //    return db.queryOnNode(nodeName, serializedExecutionPlan, ctx.getInputParameters());
@@ -87,9 +87,9 @@ public class DistributedExecutionStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    StringBuilder builder = new StringBuilder();
-    String ind = ExecutionStepInternal.getIndent(depth, indent);
+  public String prettyPrint(final int depth, final int indent) {
+    final StringBuilder builder = new StringBuilder();
+    final String ind = ExecutionStepInternal.getIndent(depth, indent);
     builder.append(ind);
     builder.append("+ EXECUTE ON NODE ").append(nodeName).append("----------- \n");
     builder.append(subExecutionPlan.prettyPrint(depth + 1, indent));

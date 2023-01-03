@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.mongodb.MongoClient;
 import com.mongodb.ServerAddress;
+import com.mongodb.client.MongoCollection;
 import com.mongodb.client.MongoCursor;
 import org.bson.BsonDocument;
 import org.bson.Document;
@@ -40,9 +41,9 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 
 public class MongoDBServerTest extends BaseGraphServerTest {
 
-  private static final int                                                   DEF_PORT = 27017;
-  private              com.mongodb.client.MongoCollection<org.bson.Document> collection;
-  private              MongoClient                                           client;
+  private static final int                       DEF_PORT = 27017;
+  private              MongoCollection<Document> collection;
+  private              MongoClient               client;
   private              Document                                              obj;
 
   @Override
@@ -103,7 +104,7 @@ public class MongoDBServerTest extends BaseGraphServerTest {
   @Test
   public void testOrderBy() {
     int i = 0;
-    for (MongoCursor<Document> it = collection.find(BsonDocument.parse(
+    for (final MongoCursor<Document> it = collection.find(BsonDocument.parse(
             "{ $and: [ { name: { $eq: 'Jay' } }, { lastName: { $exists: true } }, { lastName: { $eq: 'Miner' } }, { lastName: { $ne: 'Miner22' } } ], $orderBy: { id: 1 } }"))
         .iterator(); it.hasNext(); ++i) {
       final Document doc = it.next();
@@ -111,7 +112,7 @@ public class MongoDBServerTest extends BaseGraphServerTest {
     }
 
     i = 9;
-    for (MongoCursor<Document> it = collection.find(BsonDocument.parse(
+    for (final MongoCursor<Document> it = collection.find(BsonDocument.parse(
             "{ $and: [ { name: { $eq: 'Jay' } }, { lastName: { $exists: true } }, { lastName: { $eq: 'Miner' } }, { lastName: { $ne: 'Miner22' } } ], $orderBy: { id: -1 } }"))
         .iterator(); it.hasNext(); --i) {
       final Document doc = it.next();

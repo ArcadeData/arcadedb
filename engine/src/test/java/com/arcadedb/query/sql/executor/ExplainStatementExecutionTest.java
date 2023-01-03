@@ -30,13 +30,13 @@ import java.util.*;
 public class ExplainStatementExecutionTest extends TestHelper {
   @Test
   public void testExplainSelectNoTarget() {
-    ResultSet result = database.query("sql", "explain select 1 as one, 2 as two, 2+3");
+    final ResultSet result = database.query("sql", "explain select 1 as one, 2 as two, 2+3");
     Assertions.assertTrue(result.hasNext());
-    Result next = result.next();
+    final Result next = result.next();
     Assertions.assertNotNull(next.getProperty("executionPlan"));
     Assertions.assertNotNull(next.getProperty("executionPlanAsString"));
 
-    Optional<ExecutionPlan> plan = result.getExecutionPlan();
+    final Optional<ExecutionPlan> plan = result.getExecutionPlan();
     Assertions.assertTrue(plan.isPresent());
     Assertions.assertTrue(plan.get() instanceof SelectExecutionPlan);
 

@@ -35,7 +35,7 @@ public class SQLMethodSize extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute( Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult,
+  public Object execute( final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult,
       final Object[] iParams) {
 
     final Number size;

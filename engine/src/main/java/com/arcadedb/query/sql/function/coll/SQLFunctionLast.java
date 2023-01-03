@@ -35,7 +35,7 @@ public class SQLFunctionLast extends SQLFunctionConfigurableAbstract {
     super(NAME, 1, 1);
   }
 
-  public Object execute( Object iThis, final Identifiable iCurrentRecord, Object iCurrentResult, final Object[] iParams,
+  public Object execute( final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
       final CommandContext iContext) {
     final Object value = iParams[0];
 

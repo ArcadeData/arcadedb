@@ -37,7 +37,7 @@ public class ReplicationServerWriteAgainstReplicaIT extends ReplicationServerIT 
     // WAIT THE LEADERSHIP HAS BEEN DETERMINED
     try {
       Thread.sleep(3000);
-    } catch (InterruptedException e) {
+    } catch (final InterruptedException e) {
       e.printStackTrace();
     }
 

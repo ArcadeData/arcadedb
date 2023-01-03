@@ -76,7 +76,7 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
     public Boolean edge;
   }
 
-  public List<RID> execute(Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
+  public List<RID> execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
       final CommandContext iContext) {
 
     final OShortestPathContext ctx = new OShortestPathContext();
@@ -116,7 +116,7 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
     //    dest = record.get((String) dest);
 
     if (dest instanceof Identifiable) {
-      Document elem = (Document) ((Identifiable) dest).getRecord();
+      final Document elem = (Document) ((Identifiable) dest).getRecord();
       if (!(elem instanceof Vertex))
         throw new IllegalArgumentException("The destinationVertex must be a vertex record");
 
@@ -230,7 +230,7 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
 
     if (mapParams != null) {
       ctx.maxDepth = integer(mapParams.get("maxDepth"));
-      Boolean withEdge = toBoolean(mapParams.get("edge"));
+      final Boolean withEdge = toBoolean(mapParams.get("edge"));
       ctx.edge = Boolean.TRUE.equals(withEdge) ? Boolean.TRUE : Boolean.FALSE;
     }
   }
@@ -245,7 +245,7 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
     if (fromObject instanceof String) {
       try {
         return Integer.parseInt(fromObject.toString());
-      } catch (NumberFormatException ignore) {
+      } catch (final NumberFormatException ignore) {
       }
     }
     return null;
@@ -266,7 +266,7 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
     if (fromObject instanceof String) {
       try {
         return Boolean.parseBoolean(fromObject.toString());
-      } catch (NumberFormatException ignore) {
+      } catch (final NumberFormatException ignore) {
       }
     }
     return null;
@@ -325,13 +325,13 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
       while (!ctx.queueLeft.isEmpty()) {
         ctx.current = ctx.queueLeft.poll();
 
-        Iterable<Vertex> neighbors;
+        final Iterable<Vertex> neighbors;
         if (ctx.edgeType == null) {
           neighbors = ctx.current.getVertices(ctx.directionLeft);
         } else {
           neighbors = ctx.current.getVertices(ctx.directionLeft, ctx.edgeTypeParam);
         }
-        for (Vertex neighbor : neighbors) {
+        for (final Vertex neighbor : neighbors) {
           final Vertex v = neighbor;
           final RID neighborIdentity = v.getIdentity();
 
@@ -358,8 +358,8 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
         } else {
           neighbors = getVerticesAndEdges(ctx.current, ctx.directionLeft, ctx.edgeTypeParam);
         }
-        Iterator<Vertex> vertexIterator = neighbors.getFirst().iterator();
-        Iterator<Edge> edgeIterator = neighbors.getSecond().iterator();
+        final Iterator<Vertex> vertexIterator = neighbors.getFirst().iterator();
+        final Iterator<Edge> edgeIterator = neighbors.getSecond().iterator();
         while (vertexIterator.hasNext() && edgeIterator.hasNext()) {
           final Vertex v = vertexIterator.next();
           final RID neighborVertexIdentity = v.getIdentity();
@@ -396,7 +396,7 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
         } else {
           neighbors = ctx.currentRight.getVertices(ctx.directionRight, ctx.edgeTypeParam);
         }
-        for (Vertex neighbor : neighbors) {
+        for (final Vertex neighbor : neighbors) {
           final Vertex v = neighbor;
           final RID neighborIdentity = v.getIdentity();
 
@@ -425,8 +425,8 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
           neighbors = getVerticesAndEdges(ctx.currentRight, ctx.directionRight, ctx.edgeTypeParam);
         }
 
-        Iterator<Vertex> vertexIterator = neighbors.getFirst().iterator();
-        Iterator<Edge> edgeIterator = neighbors.getSecond().iterator();
+        final Iterator<Vertex> vertexIterator = neighbors.getFirst().iterator();
+        final Iterator<Edge> edgeIterator = neighbors.getSecond().iterator();
         while (vertexIterator.hasNext() && edgeIterator.hasNext()) {
           final Vertex v = vertexIterator.next();
           final RID neighborVertexIdentity = v.getIdentity();

@@ -163,7 +163,7 @@ public class ProjectionItem extends SimpleNode {
     if (alias != null) {
       return alias;
     }
-    Identifier result;
+    final Identifier result;
     if (all) {
       result = new Identifier("*");
     } else {
@@ -203,9 +203,9 @@ public class ProjectionItem extends SimpleNode {
    *
    * @param aggregateSplit
    */
-  public ProjectionItem splitForAggregation(AggregateProjectionSplit aggregateSplit) {
+  public ProjectionItem splitForAggregation(final AggregateProjectionSplit aggregateSplit) {
     if (isAggregate()) {
-      ProjectionItem result = new ProjectionItem(-1);
+      final ProjectionItem result = new ProjectionItem(-1);
       result.alias = getProjectionAlias();
       result.expression = expression.splitForAggregation(aggregateSplit);
       result.nestedProjection = nestedProjection;

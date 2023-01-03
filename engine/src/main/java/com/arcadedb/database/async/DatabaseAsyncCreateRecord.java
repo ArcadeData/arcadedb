@@ -39,14 +39,14 @@ public class DatabaseAsyncCreateRecord implements DatabaseAsyncTask {
   }
 
   @Override
-  public void execute(DatabaseAsyncExecutorImpl.AsyncThread async, DatabaseInternal database) {
+  public void execute(final DatabaseAsyncExecutorImpl.AsyncThread async, final DatabaseInternal database) {
     try {
       database.createRecordNoLock(record, bucket.getName(), onOkCallback == null);
 
       if (onOkCallback != null)
         onOkCallback.call(record);
 
-    } catch (Exception e) {
+    } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on executing async create record operation (threadId=%d)", e, Thread.currentThread().getId());
 
       async.onError(e);

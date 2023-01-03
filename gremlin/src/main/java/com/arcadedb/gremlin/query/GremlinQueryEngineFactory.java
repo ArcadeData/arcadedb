@@ -44,7 +44,7 @@ public class GremlinQueryEngineFactory implements QueryEngine.QueryEngineFactory
       database.setWrapper(GremlinQueryEngine.ENGINE_NAME, engine);
       return (GremlinQueryEngine) engine;
 
-    } catch (Throwable e) {
+    } catch (final Throwable e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on initializing Gremlin query engine", e);
       throw new QueryParsingException("Error on initializing Gremlin query engine", e);
     }

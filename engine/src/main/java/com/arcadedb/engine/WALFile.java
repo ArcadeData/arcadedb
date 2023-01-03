@@ -130,9 +130,9 @@ public class WALFile extends LockContext {
 
     try {
       callable.call();
-    } catch (RuntimeException e) {
+    } catch (final RuntimeException e) {
       throw e;
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new WALException("Error on writing to WAL file " + filePath, e);
     }
 
@@ -214,7 +214,7 @@ public class WALFile extends LockContext {
       tx.endPositionInLog = pos + Binary.INT_SERIALIZED_SIZE + Binary.LONG_SERIALIZED_SIZE;
 
       return tx;
-    } catch (Exception e) {
+    } catch (final Exception e) {
       return null;
     }
   }
@@ -222,7 +222,7 @@ public class WALFile extends LockContext {
   public static Binary writeTransactionToBuffer(final List<MutablePage> pages, final long txId) {
     // COMPUTE TOTAL TXLOG SEGMENT SIZE
     int segmentSize = 0;
-    for (MutablePage newPage : pages) {
+    for (final MutablePage newPage : pages) {
       final int[] deltaRange = newPage.getModifiedRange();
       final int deltaSize = deltaRange[1] - deltaRange[0] + 1;
 
@@ -246,7 +246,7 @@ public class WALFile extends LockContext {
     assert bufferChanges.position() == TX_HEADER_SIZE;
 
     // WRITE ALL PAGES SEGMENTS
-    for (MutablePage newPage : pages) {
+    for (final MutablePage newPage : pages) {
       final int[] deltaRange = newPage.getModifiedRange();
 
       assert deltaRange[0] > -1 && deltaRange[1] < newPage.getPhysicalSize();
@@ -289,7 +289,7 @@ public class WALFile extends LockContext {
     file.append(buffer.getByteBuffer());
 
     // WRITE ALL PAGES SEGMENTS
-    for (MutablePage newPage : pages) {
+    for (final MutablePage newPage : pages) {
       // SET THE WAL FILE TO NOTIFY LATER WHEN THE PAGE HAS BEEN FLUSHED
       newPage.setWALFile(file);
 

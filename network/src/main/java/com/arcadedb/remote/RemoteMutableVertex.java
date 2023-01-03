@@ -107,7 +107,7 @@ public class RemoteMutableVertex extends MutableVertex {
   }
 
   @Override
-  public synchronized void setBuffer(Binary buffer) {
+  public synchronized void setBuffer(final Binary buffer) {
     throw new UnsupportedOperationException("Raw buffer API not supported in remote database");
   }
 

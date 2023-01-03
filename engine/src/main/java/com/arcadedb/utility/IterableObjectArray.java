@@ -29,7 +29,7 @@ public class IterableObjectArray<T> implements Iterable<T> {
   private final Object object;
   private final int    length;
 
-  public IterableObjectArray(Object o) {
+  public IterableObjectArray(final Object o) {
     object = o;
     length = Array.getLength(o);
   }

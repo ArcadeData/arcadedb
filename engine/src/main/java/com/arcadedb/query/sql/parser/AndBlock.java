@@ -44,7 +44,7 @@ public class AndBlock extends BooleanExpression {
     if (getSubBlocks() == null)
       return true;
 
-    for (BooleanExpression block : subBlocks) {
+    for (final BooleanExpression block : subBlocks) {
       if (!block.evaluate(currentRecord, ctx)) {
         return false;
       }
@@ -57,7 +57,7 @@ public class AndBlock extends BooleanExpression {
     if (getSubBlocks() == null)
       return true;
 
-    for (BooleanExpression block : subBlocks) {
+    for (final BooleanExpression block : subBlocks) {
       if (!block.evaluate(currentRecord, ctx)) {
         return false;
       }
@@ -78,7 +78,7 @@ public class AndBlock extends BooleanExpression {
     // }
 
     boolean first = true;
-    for (BooleanExpression expr : subBlocks) {
+    for (final BooleanExpression expr : subBlocks) {
       if (!first) {
         builder.append(" AND ");
       }
@@ -89,7 +89,7 @@ public class AndBlock extends BooleanExpression {
 
   @Override
   protected boolean supportsBasicCalculation() {
-    for (BooleanExpression expr : subBlocks) {
+    for (final BooleanExpression expr : subBlocks) {
       if (!expr.supportsBasicCalculation()) {
         return false;
       }
@@ -100,7 +100,7 @@ public class AndBlock extends BooleanExpression {
   @Override
   protected int getNumberOfExternalCalculations() {
     int result = 0;
-    for (BooleanExpression expr : subBlocks) {
+    for (final BooleanExpression expr : subBlocks) {
       result += expr.getNumberOfExternalCalculations();
     }
     return result;
@@ -109,7 +109,7 @@ public class AndBlock extends BooleanExpression {
   @Override
   protected List<Object> getExternalCalculationConditions() {
     final List<Object> result = new ArrayList<>();
-    for (BooleanExpression expr : subBlocks) {
+    for (final BooleanExpression expr : subBlocks) {
       result.addAll(expr.getExternalCalculationConditions());
     }
     return result;
@@ -120,7 +120,7 @@ public class AndBlock extends BooleanExpression {
       return null;
     }
     final List<BinaryCondition> result = new ArrayList<>();
-    for (BooleanExpression exp : subBlocks) {
+    for (final BooleanExpression exp : subBlocks) {
       final List<BinaryCondition> sub = exp.getIndexedFunctionConditions(iSchemaClass, database);
       if (sub != null && sub.size() > 0) {
         result.addAll(sub);
@@ -132,18 +132,18 @@ public class AndBlock extends BooleanExpression {
   public List<AndBlock> flatten() {
     List<AndBlock> result = new ArrayList<>();
     boolean first = true;
-    for (BooleanExpression sub : subBlocks) {
+    for (final BooleanExpression sub : subBlocks) {
       final List<AndBlock> subFlattened = sub.flatten();
-      List<AndBlock> oldResult = result;
+      final List<AndBlock> oldResult = result;
       result = new ArrayList<>();
-      for (AndBlock subAndItem : subFlattened) {
+      for (final AndBlock subAndItem : subFlattened) {
         if (first) {
           result.add(subAndItem);
         } else {
-          for (AndBlock oldResultItem : oldResult) {
+          for (final AndBlock oldResultItem : oldResult) {
             final AndBlock block = new AndBlock(-1);
             block.subBlocks.addAll(oldResultItem.subBlocks);
-            for (BooleanExpression resultItem : subAndItem.subBlocks) {
+            for (final BooleanExpression resultItem : subAndItem.subBlocks) {
               block.subBlocks.add(resultItem);
             }
             result.add(block);
@@ -166,7 +166,7 @@ public class AndBlock extends BooleanExpression {
 
   @Override
   public boolean needsAliases(final Set<String> aliases) {
-    for (BooleanExpression block : subBlocks) {
+    for (final BooleanExpression block : subBlocks) {
       if (block.needsAliases(aliases)) {
         return true;
       }
@@ -176,7 +176,7 @@ public class AndBlock extends BooleanExpression {
 
   public AndBlock copy() {
     final AndBlock result = new AndBlock(-1);
-    for (BooleanExpression exp : subBlocks) {
+    for (final BooleanExpression exp : subBlocks) {
       result.subBlocks.add(exp.copy());
     }
     return result;
@@ -204,7 +204,7 @@ public class AndBlock extends BooleanExpression {
     if (subBlocks.isEmpty()) {
       return true;
     }
-    for (BooleanExpression block : subBlocks) {
+    for (final BooleanExpression block : subBlocks) {
       if (!block.isEmpty()) {
         return false;
       }
@@ -214,14 +214,14 @@ public class AndBlock extends BooleanExpression {
 
   @Override
   public void extractSubQueries(final SubQueryCollector collector) {
-    for (BooleanExpression exp : subBlocks) {
+    for (final BooleanExpression exp : subBlocks) {
       exp.extractSubQueries(collector);
     }
   }
 
   @Override
   public boolean refersToParent() {
-    for (BooleanExpression exp : subBlocks) {
+    for (final BooleanExpression exp : subBlocks) {
       if (exp.refersToParent()) {
         return true;
       }
@@ -232,7 +232,7 @@ public class AndBlock extends BooleanExpression {
   @Override
   public List<String> getMatchPatternInvolvedAliases() {
     final List<String> result = new ArrayList<>();
-    for (BooleanExpression exp : subBlocks) {
+    for (final BooleanExpression exp : subBlocks) {
       final List<String> x = exp.getMatchPatternInvolvedAliases();
       if (x != null) {
         result.addAll(x);
@@ -243,7 +243,7 @@ public class AndBlock extends BooleanExpression {
 
   @Override
   public boolean isCacheable() {
-    for (BooleanExpression exp : subBlocks) {
+    for (final BooleanExpression exp : subBlocks) {
       if (!exp.isCacheable()) {
         return false;
       }

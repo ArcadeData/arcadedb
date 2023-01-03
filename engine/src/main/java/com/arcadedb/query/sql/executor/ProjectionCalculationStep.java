@@ -49,7 +49,7 @@ public class ProjectionCalculationStep extends AbstractExecutionStep {
       @Override
       public Result next() {
         final Result item = parentRs.next();
-        Object oldCurrent = ctx.getVariable("current");
+        final Object oldCurrent = ctx.getVariable("current");
         ctx.setVariable("current", item);
         final Result result = calculateProjections(ctx, item);
         ctx.setVariable("current", oldCurrent);
@@ -75,7 +75,7 @@ public class ProjectionCalculationStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
+  public String prettyPrint(final int depth, final int indent) {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     String result = spaces + "+ CALCULATE PROJECTIONS";
     if (profilingEnabled) {

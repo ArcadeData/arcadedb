@@ -38,7 +38,7 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
   public void propagationOfSchema() throws Exception {
     testEachServer((serverIndex) -> {
       // CREATE THE SCHEMA ON BOTH SERVER, ONE TYPE PER SERVER
-      String response = command(serverIndex, "create vertex type VertexType" + serverIndex);
+      final String response = command(serverIndex, "create vertex type VertexType" + serverIndex);
       Assertions.assertTrue(response.contains("VertexType" + serverIndex), "Type " + (("VertexType" + serverIndex) + " not found on server " + serverIndex));
     });
 
@@ -51,7 +51,7 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
   @Test
   public void checkQuery() throws Exception {
     testEachServer((serverIndex) -> {
-      HttpURLConnection connection = (HttpURLConnection) new URL(
+      final HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://127.0.0.1:248" + serverIndex + "/api/v1/query/graph/sql/select%20from%20V1%20limit%201").openConnection();
 
       connection.setRequestMethod("GET");
@@ -75,7 +75,7 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
   @Test
   public void checkRecordLoading() throws Exception {
     testEachServer((serverIndex) -> {
-      HttpURLConnection connection = (HttpURLConnection) new URL(
+      final HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://127.0.0.1:248" + serverIndex + "/api/v1/document/graph/" + BaseGraphServerTest.root.getIdentity().toString().substring(1)).openConnection();
 
       connection.setRequestMethod("GET");
@@ -106,7 +106,7 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
     testEachServer((serverIndex) -> {
       LogManager.instance().log(this, Level.FINE, "TESTS SERVER " + serverIndex);
 
-      String v1 = new JSONObject(createRecord(serverIndex, "{\"@type\":\"V1\",\"name\":\"Jay\",\"surname\":\"Miner\",\"age\":69}")).getString("result");
+      final String v1 = new JSONObject(createRecord(serverIndex, "{\"@type\":\"V1\",\"name\":\"Jay\",\"surname\":\"Miner\",\"age\":69}")).getString("result");
 
       if (!getServer(serverIndex).getHA().isLeader())
         Thread.sleep(300);
@@ -114,13 +114,13 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
       testEachServer((checkServer) -> {
         try {
           Assertions.assertFalse(new JSONObject(command(checkServer, "select from " + v1)).getJSONArray("result").isEmpty(), "server " + serverIndex);
-        } catch (Exception e) {
+        } catch (final Exception e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on checking for V1 on server " + checkServer);
           throw e;
         }
       });
 
-      String v2 = new JSONObject(createRecord(serverIndex, "{\"@type\":\"V1\",\"name\":\"Elon\",\"surname\":\"Musk\",\"age\":50}")).getString("result");
+      final String v2 = new JSONObject(createRecord(serverIndex, "{\"@type\":\"V1\",\"name\":\"Elon\",\"surname\":\"Musk\",\"age\":50}")).getString("result");
 
       if (!getServer(serverIndex).getHA().isLeader())
         Thread.sleep(300);
@@ -128,13 +128,13 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
       testEachServer((checkServer) -> {
         try {
           Assertions.assertFalse(new JSONObject(command(checkServer, "select from " + v2)).getJSONArray("result").isEmpty(), "server " + serverIndex);
-        } catch (Exception e) {
+        } catch (final Exception e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on checking for V2 on server " + checkServer);
           throw e;
         }
       });
 
-      String e1 = new JSONObject(command(serverIndex, "create edge E1 from " + v1 + " to " + v2)).getJSONArray("result").getJSONObject(0).getString("@rid");
+      final String e1 = new JSONObject(command(serverIndex, "create edge E1 from " + v1 + " to " + v2)).getJSONArray("result").getJSONObject(0).getString("@rid");
 
       if (!getServer(serverIndex).getHA().isLeader())
         Thread.sleep(300);
@@ -142,13 +142,13 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
       testEachServer((checkServer) -> {
         try {
           Assertions.assertFalse(new JSONObject(command(checkServer, "select from " + e1)).getJSONArray("result").isEmpty(), "server " + serverIndex);
-        } catch (Exception e) {
+        } catch (final Exception e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on checking on E1 on server " + checkServer);
           throw e;
         }
       });
 
-      String v3 = new JSONObject(createRecord(serverIndex, "{\"@type\":\"V1\",\"name\":\"Nikola\",\"surname\":\"Tesla\",\"age\":150}")).getString("result");
+      final String v3 = new JSONObject(createRecord(serverIndex, "{\"@type\":\"V1\",\"name\":\"Nikola\",\"surname\":\"Tesla\",\"age\":150}")).getString("result");
 
       if (!getServer(serverIndex).getHA().isLeader())
         Thread.sleep(300);
@@ -156,13 +156,13 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
       testEachServer((checkServer) -> {
         try {
           Assertions.assertFalse(new JSONObject(command(checkServer, "select from " + v3)).getJSONArray("result").isEmpty(), "server " + serverIndex);
-        } catch (Exception e) {
+        } catch (final Exception e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on checking for V3 on server " + checkServer);
           throw e;
         }
       });
 
-      String e2 = new JSONObject(command(serverIndex, "create edge E2 from " + v2 + " to " + v3)).getJSONArray("result").getJSONObject(0).getString("@rid");
+      final String e2 = new JSONObject(command(serverIndex, "create edge E2 from " + v2 + " to " + v3)).getJSONArray("result").getJSONObject(0).getString("@rid");
 
       if (!getServer(serverIndex).getHA().isLeader())
         Thread.sleep(300);
@@ -170,7 +170,7 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
       testEachServer((checkServer) -> {
         try {
           Assertions.assertFalse(new JSONObject(command(checkServer, "select from " + e2)).getJSONArray("result").isEmpty(), "server " + serverIndex);
-        } catch (Exception e) {
+        } catch (final Exception e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on checking for E2 on server " + checkServer);
           throw e;
         }
@@ -185,7 +185,7 @@ public class HTTP2ServersIT extends BaseGraphServerTest {
         try {
           Assertions.assertTrue(new JSONObject(command(checkServer, "select from " + v1)).getJSONArray("result").isEmpty(), "server " + serverIndex);
           Assertions.assertTrue(new JSONObject(command(checkServer, "select from " + e1)).getJSONArray("result").isEmpty(), "server " + serverIndex);
-        } catch (Exception e) {
+        } catch (final Exception e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on checking for right deletion on server " + checkServer);
           throw e;
         }

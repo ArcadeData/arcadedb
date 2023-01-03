@@ -64,19 +64,19 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
       result.setProperty("result", "OK");
       result.setProperty("backupFile", backupFile);
 
-      InternalResultSet rs = new InternalResultSet();
+      final InternalResultSet rs = new InternalResultSet();
       rs.add(result);
       return rs;
 
-    } catch (ClassNotFoundException | NoSuchMethodException | IllegalAccessException | InstantiationException e) {
+    } catch (final ClassNotFoundException | NoSuchMethodException | IllegalAccessException | InstantiationException e) {
       throw new CommandExecutionException("Error on backing up database, backup libs not found in classpath", e);
-    } catch (InvocationTargetException e) {
+    } catch (final InvocationTargetException e) {
       throw new CommandExecutionException("Error on backing up database", e.getTargetException());
     }
   }
 
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("BACKUP DATABASE");
     if (url != null) {
       builder.append(' ');

@@ -42,7 +42,7 @@ public class JsonlExporterIT {
   public void testExportOK() throws IOException {
     final File databaseDirectory = new File(DATABASE_PATH);
 
-    File file = new File(FILE);
+    final File file = new File(FILE);
 
     try {
       final URL inputFile = OrientDBImporterIT.class.getClassLoader().getResource("orientdb-export-small.gz");
@@ -59,7 +59,7 @@ public class JsonlExporterIT {
       Assertions.assertTrue(file.length() > 0);
 
       int lines = 0;
-      try (BufferedReader in = new BufferedReader(new InputStreamReader(new GZIPInputStream(new FileInputStream(file))))) {
+      try (final BufferedReader in = new BufferedReader(new InputStreamReader(new GZIPInputStream(new FileInputStream(file))))) {
         while (in.ready()) {
           final String line = in.readLine();
           new JSONObject(line);
@@ -81,7 +81,7 @@ public class JsonlExporterIT {
       emptyDatabase().close();
       new Exporter(("-f " + FILE + " -d " + DATABASE_PATH + " -o -format unknown").split(" ")).exportDatabase();
       Assertions.fail();
-    } catch (ExportException e) {
+    } catch (final ExportException e) {
       // EXPECTED
     }
   }
@@ -93,7 +93,7 @@ public class JsonlExporterIT {
       new File(FILE).createNewFile();
       new Exporter(("-f " + FILE + " -d " + DATABASE_PATH + " -format jsonl").split(" ")).exportDatabase();
       Assertions.fail();
-    } catch (ExportException e) {
+    } catch (final ExportException e) {
       // EXPECTED
     }
   }

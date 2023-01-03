@@ -23,7 +23,7 @@ public class SchemaException extends ArcadeDBException {
     super(s);
   }
 
-  public SchemaException(String s, Exception e) {
+  public SchemaException(final String s, final Exception e) {
     super(s, e);
   }
 }

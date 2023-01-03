@@ -56,7 +56,7 @@ public abstract class AbstractImporter {
 
   public void setSettings(final Map<String, String> parameters) {
     if (parameters != null)
-      for (Map.Entry<String, String> entry : parameters.entrySet())
+      for (final Map.Entry<String, String> entry : parameters.entrySet())
         settings.parseParameter(entry.getKey(), entry.getValue());
   }
 
@@ -98,7 +98,7 @@ public abstract class AbstractImporter {
       context.lastEdges = context.createdEdges.get();
       context.lastLinkedEdges = context.linkedEdges.get();
 
-    } catch (Exception e) {
+    } catch (final Exception e) {
       logger.errorLine("Error on print statistics: " + e.getMessage());
     }
   }
@@ -236,7 +236,7 @@ public abstract class AbstractImporter {
 
     LogManager.instance().log(this, Level.INFO, "Checking schema...");
 
-    for (AnalyzedEntity entity : schema.getEntities()) {
+    for (final AnalyzedEntity entity : schema.getEntities()) {
       final DocumentType type;
       switch (entity.getType()) {
       case VERTEX:
@@ -252,7 +252,7 @@ public abstract class AbstractImporter {
         throw new IllegalArgumentException("Record type '" + entity.getType() + "' is not supported");
       }
 
-      for (AnalyzedProperty propValue : entity.getProperties()) {
+      for (final AnalyzedProperty propValue : entity.getProperties()) {
         final String propName = propValue.getName();
 
         if (type.existsProperty(propName)) {
@@ -269,7 +269,7 @@ public abstract class AbstractImporter {
           type.createProperty(propName, propValue.getType());
         }
 
-        for (String sample : propValue.getContents()) {
+        for (final String sample : propValue.getContents()) {
           dictionary.getIdByName(sample, true);
         }
       }
@@ -281,11 +281,11 @@ public abstract class AbstractImporter {
   protected void dumpSchema(final AnalyzedSchema schema, final long parsedObjects) {
     LogManager.instance().log(this, Level.INFO, "---------------------------------------------------------------");
     LogManager.instance().log(this, Level.INFO, "Objects found %d", parsedObjects);
-    for (AnalyzedEntity entity : schema.getEntities()) {
+    for (final AnalyzedEntity entity : schema.getEntities()) {
       LogManager.instance().log(this, Level.INFO, "---------------------------------------------------------------");
       LogManager.instance().log(this, Level.INFO, "Entity '%s':", entity);
 
-      for (AnalyzedProperty p : entity.getProperties()) {
+      for (final AnalyzedProperty p : entity.getProperties()) {
         LogManager.instance().log(this, Level.INFO, "- %s (%s)", p.getName(), p.getType());
         if (p.isCollectingSamples())
           LogManager.instance().log(this, Level.INFO, "    contents (%d items): %s", p.getContents().size(), p.getContents());

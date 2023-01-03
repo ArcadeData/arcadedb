@@ -91,7 +91,7 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
       return;
 
     JSONArray access = null;
-    for (String groupName : groups) {
+    for (final String groupName : groups) {
       if (!configuredGroups.has(groupName))
         // GROUP NOT DEFINED
         continue;
@@ -101,14 +101,14 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
         access = group.getJSONArray("access");
 
       if (group.has("resultSetLimit")) {
-        long value = group.getLong("resultSetLimit");
+        final long value = group.getLong("resultSetLimit");
         if (value > -1 && (resultSetLimit == -1 || value < resultSetLimit))
           // SET THE MOST RESTRICTIVE TIMEOUT IN CASE OF MULTIPLE GROUP SETTINGS
           resultSetLimit = value;
       }
 
       if (group.has("readTimeout")) {
-        long value = group.getLong("readTimeout");
+        final long value = group.getLong("readTimeout");
         if (value > -1 && (readTimeout == -1 || value < readTimeout))
           // SET THE MOST RESTRICTIVE TIMEOUT IN CASE OF MULTIPLE GROUP SETTINGS
           readTimeout = value;
@@ -122,14 +122,14 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
         access = defaultGroup.getJSONArray("access");
 
       if (defaultGroup.has("resultSetLimit")) {
-        long value = defaultGroup.getLong("resultSetLimit");
+        final long value = defaultGroup.getLong("resultSetLimit");
         if (value > -1 && (resultSetLimit == -1 || value < resultSetLimit))
           // SET THE MOST RESTRICTIVE TIMEOUT IN CASE OF MULTIPLE GROUP SETTINGS
           resultSetLimit = value;
       }
 
       if (defaultGroup.has("readTimeout")) {
-        long value = defaultGroup.getLong("readTimeout");
+        final long value = defaultGroup.getLong("readTimeout");
         if (value > -1 && (readTimeout == -1 || value < readTimeout))
           // SET THE MOST RESTRICTIVE TIMEOUT IN CASE OF MULTIPLE GROUP SETTINGS
           readTimeout = value;
@@ -161,7 +161,7 @@ public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
 
       final String typeName = type.getName();
 
-      for (String groupName : groups) {
+      for (final String groupName : groups) {
         if (!configuredGroups.has(groupName))
           // GROUP NOT DEFINED
           continue;

@@ -55,7 +55,7 @@ public class SQLStaticReflectiveFunction extends SQLFunctionAbstract {
   private static final Map<Class<?>, Class<?>> WRAPPER_TO_PRIMITIVE = new HashMap<>();
 
   static {
-    for (Map.Entry<Class<?>, Class<?>> entry : PRIMITIVE_TO_WRAPPER.entrySet()) {
+    for (final Map.Entry<Class<?>, Class<?>> entry : PRIMITIVE_TO_WRAPPER.entrySet()) {
       if (!entry.getKey().equals(entry.getValue())) {
         WRAPPER_TO_PRIMITIVE.put(entry.getValue(), entry.getKey());
       }
@@ -78,13 +78,13 @@ public class SQLStaticReflectiveFunction extends SQLFunctionAbstract {
 
   private final Method[] methods;
 
-  public SQLStaticReflectiveFunction(String name, int minParams, int maxParams, Method... methods) {
+  public SQLStaticReflectiveFunction(final String name, final int minParams, final int maxParams, final Method... methods) {
     super(name);
     this.methods = methods;
     // we need to sort the methods by parameters type to return the closest overloaded method
     Arrays.sort(methods, (m1, m2) -> {
-      Class<?>[] m1Params = m1.getParameterTypes();
-      Class<?>[] m2Params = m2.getParameterTypes();
+      final Class<?>[] m1Params = m1.getParameterTypes();
+      final Class<?>[] m2Params = m2.getParameterTypes();
 
       int c = m1Params.length - m2Params.length;
       if (c == 0) {
@@ -100,12 +100,12 @@ public class SQLStaticReflectiveFunction extends SQLFunctionAbstract {
   }
 
   @Override
-  public Object execute(Object iThis, Identifiable iCurrentRecord, Object iCurrentResult, Object[] iParams, CommandContext iContext) {
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams, final CommandContext iContext) {
 
     final Supplier<String> paramsPrettyPrint = () -> Arrays.stream(iParams).map(p -> p + " [ " + p.getClass().getName() + " ]")
         .collect(Collectors.joining(", ", "(", ")"));
 
-    Method method = pickMethod(iParams);
+    final Method method = pickMethod(iParams);
 
     if (method == null) {
       throw new QueryParsingException("Unable to find a function for " + name + paramsPrettyPrint.get());
@@ -113,9 +113,9 @@ public class SQLStaticReflectiveFunction extends SQLFunctionAbstract {
 
     try {
       return method.invoke(null, iParams);
-    } catch (ReflectiveOperationException e) {
+    } catch (final ReflectiveOperationException e) {
       throw new QueryParsingException("Error executing function " + name + paramsPrettyPrint.get(), e);
-    } catch (IllegalArgumentException x) {
+    } catch (final IllegalArgumentException x) {
       LogManager.instance().log(this, Level.SEVERE, "Error executing function %s", x, name);
 
       return null; //if a function fails for given input, just return null to avoid breaking the query execution
@@ -128,9 +128,9 @@ public class SQLStaticReflectiveFunction extends SQLFunctionAbstract {
     return this.getName();
   }
 
-  private Method pickMethod(Object[] iParams) {
-    for (Method m : methods) {
-      Class<?>[] parameterTypes = m.getParameterTypes();
+  private Method pickMethod(final Object[] iParams) {
+    for (final Method m : methods) {
+      final Class<?>[] parameterTypes = m.getParameterTypes();
       if (iParams.length == parameterTypes.length) {
         boolean match = true;
         for (int i = 0; i < parameterTypes.length; i++) {

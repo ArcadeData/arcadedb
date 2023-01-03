@@ -47,7 +47,7 @@ public class OrientDBImporterFormat extends AbstractImporterFormat {
         }
       }.setContext(context).run();
 
-    } catch (IOException e) {
+    } catch (final IOException e) {
       throw new ImportException("Error on importing OrientDB database", e);
     }
   }

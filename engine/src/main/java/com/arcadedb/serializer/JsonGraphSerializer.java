@@ -56,7 +56,7 @@ public class JsonGraphSerializer extends JsonSerializer {
       object.put("r", rid.toString());
     object.put("t", document.getTypeName());
 
-    for (String p : document.getPropertyNames()) {
+    for (final String p : document.getPropertyNames()) {
       Object value = document.get(p);
 
       if (value instanceof Document)
@@ -93,12 +93,12 @@ public class JsonGraphSerializer extends JsonSerializer {
 
       if (expandVertexEdges) {
         final JSONArray outEdges = new JSONArray();
-        for (Edge e : vertex.getEdges(Vertex.DIRECTION.OUT))
+        for (final Edge e : vertex.getEdges(Vertex.DIRECTION.OUT))
           outEdges.put(e.getIdentity().toString());
         object.put("o", outEdges);
 
         final JSONArray inEdges = new JSONArray();
-        for (Edge e : vertex.getEdges(Vertex.DIRECTION.IN))
+        for (final Edge e : vertex.getEdges(Vertex.DIRECTION.IN))
           inEdges.put(e.getIdentity().toString());
         object.put("i", inEdges);
       } else {

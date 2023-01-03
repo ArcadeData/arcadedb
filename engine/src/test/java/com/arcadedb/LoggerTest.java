@@ -35,14 +35,14 @@ public class LoggerTest extends TestHelper {
     try {
       LogManager.instance().setLogger(new Logger() {
         @Override
-        public void log(Object requester, Level level, String message, Throwable exception, String context, Object arg1, Object arg2,
-            Object arg3, Object arg4, Object arg5, Object arg6, Object arg7, Object arg8, Object arg9, Object arg10, Object arg11,
-            Object arg12, Object arg13, Object arg14, Object arg15, Object arg16, Object arg17) {
+        public void log(final Object requester, final Level level, final String message, final Throwable exception, final String context, final Object arg1, final Object arg2,
+            final Object arg3, final Object arg4, final Object arg5, final Object arg6, final Object arg7, final Object arg8, final Object arg9, final Object arg10, final Object arg11,
+            final Object arg12, final Object arg13, final Object arg14, final Object arg15, final Object arg16, final Object arg17) {
           logged = true;
         }
 
         @Override
-        public void log(Object requester, Level level, String message, Throwable exception, String context, Object... args) {
+        public void log(final Object requester, final Level level, final String message, final Throwable exception, final String context, final Object... args) {
           logged = true;
         }
 

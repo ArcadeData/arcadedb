@@ -39,7 +39,7 @@ public class RedisWTest extends BaseGraphServerTest {
 
   @Test
   public void testRAMCommands() {
-    Jedis jedis = new Jedis("localhost", DEF_PORT);
+    final Jedis jedis = new Jedis("localhost", DEF_PORT);
 
     // PING
     Assertions.assertEquals("PONG", jedis.ping());
@@ -66,7 +66,7 @@ public class RedisWTest extends BaseGraphServerTest {
       final String[] keyChunk = new String[10];
       for (int k = 0; k < 10; ++k)
         keyChunk[k] = "foo" + (i + k);
-      Long result = jedis.exists(keyChunk);
+      final Long result = jedis.exists(keyChunk);
       Assertions.assertEquals(10, result);
     }
     System.out.println(
@@ -120,9 +120,9 @@ public class RedisWTest extends BaseGraphServerTest {
 
   @Test
   public void testPersistentCommands() {
-    Jedis jedis = new Jedis("localhost", DEF_PORT);
+    final Jedis jedis = new Jedis("localhost", DEF_PORT);
 
-    Database database = getServerDatabase(0, getDatabaseName());
+    final Database database = getServerDatabase(0, getDatabaseName());
 
     database.execute("sql", "CREATE DOCUMENT TYPE Account;" +//
         "CREATE PROPERTY Account.id LONG;" +//
@@ -147,7 +147,7 @@ public class RedisWTest extends BaseGraphServerTest {
 
     // HGET
     beginTime = System.currentTimeMillis();
-    JSONObject expectedJson = new JSONObject("{'firstName':'Jay','lastName':'Miner'}");
+    final JSONObject expectedJson = new JSONObject("{'firstName':'Jay','lastName':'Miner'}");
 
     final List<RID> rids = new ArrayList<>();
 
@@ -233,11 +233,11 @@ public class RedisWTest extends BaseGraphServerTest {
 
   @Test
   public void testCommandNotSupported() {
-    Jedis jedis = new Jedis("localhost", DEF_PORT);
+    final Jedis jedis = new Jedis("localhost", DEF_PORT);
     try {
       jedis.aclList();
       Assertions.fail();
-    } catch (JedisDataException e) {
+    } catch (final JedisDataException e) {
       // EXPECTED
       Assertions.assertEquals("Command not found", e.getMessage());
     }

@@ -34,18 +34,18 @@ public class Json extends SimpleNode {
 
   protected List<JsonItem> items = new ArrayList<JsonItem>();
 
-  public Json(int id) {
+  public Json(final int id) {
     super(id);
   }
 
-  public Json(SqlParser p, int id) {
+  public Json(final SqlParser p, final int id) {
     super(p, id);
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("{");
     boolean first = true;
-    for (JsonItem item : items) {
+    for (final JsonItem item : items) {
       if (!first) {
         builder.append(", ");
       }
@@ -64,12 +64,12 @@ public class Json extends SimpleNode {
     } else {
       doc = ctx.getDatabase().newDocument(null);
     }
-    for (JsonItem item : items) {
-      String name = item.getLeftValue();
+    for (final JsonItem item : items) {
+      final String name = item.getLeftValue();
       if (name == null) {
         continue;
       }
-      Object value;
+      final Object value;
       if (item.right.value instanceof Json) {
         value = ((Json) item.right.value).toDocument(source, ctx);
       } else {
@@ -83,7 +83,7 @@ public class Json extends SimpleNode {
 
   public Map<String, Object> toMap(final Identifiable source, final CommandContext ctx) {
     final Map<String, Object> doc = new HashMap<String, Object>();
-    for (JsonItem item : items) {
+    for (final JsonItem item : items) {
       final String name = item.getLeftValue();
       if (name == null) {
         continue;
@@ -97,7 +97,7 @@ public class Json extends SimpleNode {
 
   public Map<String, Object> toMap(final Result source, final CommandContext ctx) {
     final Map<String, Object> doc = new HashMap<String, Object>();
-    for (JsonItem item : items) {
+    for (final JsonItem item : items) {
       final String name = item.getLeftValue();
       if (name == null) {
         continue;
@@ -116,7 +116,7 @@ public class Json extends SimpleNode {
         return doc.getTypeName();
     }
 
-    for (JsonItem item : items) {
+    for (final JsonItem item : items) {
       final String left = item.getLeftValue();
       if (left != null && left.toLowerCase(Locale.ENGLISH).equals("@type")) {
         return "" + item.right.execute((Result) null, ctx);
@@ -127,7 +127,7 @@ public class Json extends SimpleNode {
   }
 
   public boolean needsAliases(final Set<String> aliases) {
-    for (JsonItem item : items) {
+    for (final JsonItem item : items) {
       if (item.needsAliases(aliases)) {
         return true;
       }
@@ -136,7 +136,7 @@ public class Json extends SimpleNode {
   }
 
   public boolean isAggregate() {
-    for (JsonItem item : items) {
+    for (final JsonItem item : items) {
       if (item.isAggregate()) {
         return true;
       }
@@ -144,10 +144,10 @@ public class Json extends SimpleNode {
     return false;
   }
 
-  public Json splitForAggregation(AggregateProjectionSplit aggregateSplit) {
+  public Json splitForAggregation(final AggregateProjectionSplit aggregateSplit) {
     if (isAggregate()) {
-      Json result = new Json(-1);
-      for (JsonItem item : items) {
+      final Json result = new Json(-1);
+      for (final JsonItem item : items) {
         result.items.add(item.splitForAggregation(aggregateSplit));
       }
       return result;
@@ -180,13 +180,13 @@ public class Json extends SimpleNode {
   }
 
   public void extractSubQueries( final SubQueryCollector collector) {
-    for (JsonItem item : items) {
+    for (final JsonItem item : items) {
       item.extractSubQueries(collector);
     }
   }
 
   public boolean refersToParent() {
-    for (JsonItem item : items) {
+    for (final JsonItem item : items) {
       if (item.refersToParent()) {
         return true;
       }
@@ -195,20 +195,20 @@ public class Json extends SimpleNode {
   }
 
   public Result serialize() {
-    ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal();
     if (items != null) {
       result.setProperty("items", items.stream().map(x -> x.serialize()).collect(Collectors.toList()));
     }
     return result;
   }
 
-  public void deserialize(Result fromResult) {
+  public void deserialize(final Result fromResult) {
 
     if (fromResult.getProperty("items") != null) {
-      List<Result> ser = fromResult.getProperty("items");
+      final List<Result> ser = fromResult.getProperty("items");
       items = new ArrayList<>();
-      for (Result r : ser) {
-        JsonItem exp = new JsonItem();
+      for (final Result r : ser) {
+        final JsonItem exp = new JsonItem();
         exp.deserialize(r);
         items.add(exp);
       }

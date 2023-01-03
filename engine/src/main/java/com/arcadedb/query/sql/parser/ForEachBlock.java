@@ -40,47 +40,47 @@ public class ForEachBlock extends Statement {
   protected        Expression      loopValues;
   protected        List<Statement> statements             = new ArrayList<>();
 
-  public ForEachBlock(int id) {
+  public ForEachBlock(final int id) {
     super(id);
   }
 
-  public ForEachBlock(SqlParser p, int id) {
+  public ForEachBlock(final SqlParser p, final int id) {
     super(p, id);
   }
 
   @Override
-  public ResultSet execute(Database db, Object[] args, CommandContext parentCtx, boolean usePlanCache) {
-    BasicCommandContext ctx = new BasicCommandContext();
+  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentCtx, final boolean usePlanCache) {
+    final BasicCommandContext ctx = new BasicCommandContext();
     if (parentCtx != null) {
       ctx.setParentWithoutOverridingChild(parentCtx);
     }
     ctx.setDatabase(db);
     ctx.setInputParameters(args);
-    UpdateExecutionPlan executionPlan = createExecutionPlan(ctx, false);
+    final UpdateExecutionPlan executionPlan = createExecutionPlan(ctx, false);
     executionPlan.executeInternal();
     return new LocalResultSet(executionPlan);
   }
 
   @Override
-  public ResultSet execute(Database db, Map params, CommandContext parentCtx, boolean usePlanCache) {
-    BasicCommandContext ctx = new BasicCommandContext();
+  public ResultSet execute(final Database db, final Map params, final CommandContext parentCtx, final boolean usePlanCache) {
+    final BasicCommandContext ctx = new BasicCommandContext();
     if (parentCtx != null) {
       ctx.setParentWithoutOverridingChild(parentCtx);
     }
     ctx.setDatabase(db);
     ctx.setInputParameters(params);
-    UpdateExecutionPlan executionPlan = createExecutionPlan(ctx, false);
+    final UpdateExecutionPlan executionPlan = createExecutionPlan(ctx, false);
     executionPlan.executeInternal();
     return new LocalResultSet(executionPlan);
   }
 
-  public UpdateExecutionPlan createExecutionPlan(CommandContext ctx, boolean enableProfiling) {
-    UpdateExecutionPlan plan = new UpdateExecutionPlan(ctx);
-    int nextProg = FOREACH_VARIABLE_PROGR.incrementAndGet();
+  public UpdateExecutionPlan createExecutionPlan(final CommandContext ctx, final boolean enableProfiling) {
+    final UpdateExecutionPlan plan = new UpdateExecutionPlan(ctx);
+    final int nextProg = FOREACH_VARIABLE_PROGR.incrementAndGet();
     if (FOREACH_VARIABLE_PROGR.get() < 0) {
       FOREACH_VARIABLE_PROGR.set(0);
     }
-    Identifier varName = new Identifier("__ARCADEDB_FOREACH_VAR_" + nextProg);
+    final Identifier varName = new Identifier("__ARCADEDB_FOREACH_VAR_" + nextProg);
     plan.chain(new LetExpressionStep(varName, loopValues, ctx, enableProfiling));
 //    ForEachStep step = new ForEachStep(loopVariable, new OExpression(varName), ctx);//TODO
     return plan;
@@ -88,7 +88,7 @@ public class ForEachBlock extends Statement {
 
   @Override
   public Statement copy() {
-    ForEachBlock result = new ForEachBlock(-1);
+    final ForEachBlock result = new ForEachBlock(-1);
     result.loopVariable = loopVariable.copy();
     result.loopValues = loopValues.copy();
     result.statements = statements.stream().map(x -> x.copy()).collect(Collectors.toList());
@@ -121,7 +121,7 @@ public class ForEachBlock extends Statement {
   }
 
   public boolean containsReturn() {
-    for (Statement stm : this.statements) {
+    for (final Statement stm : this.statements) {
       if (stm instanceof ReturnStatement) {
         return true;
       }

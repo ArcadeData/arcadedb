@@ -31,11 +31,11 @@ public class CreatePropertyAttributeStatement extends SimpleNode {
   public Identifier settingName;
   public Expression settingValue;
 
-  public CreatePropertyAttributeStatement(int id) {
+  public CreatePropertyAttributeStatement(final int id) {
     super(id);
   }
 
-  public CreatePropertyAttributeStatement(SqlParser p, int id) {
+  public CreatePropertyAttributeStatement(final SqlParser p, final int id) {
     super(p, id);
   }
 
@@ -78,7 +78,7 @@ public class CreatePropertyAttributeStatement extends SimpleNode {
 
   public Object setOnProperty(final Property internalProp, final CommandContext ctx) {
     final String attrName = settingName.getStringValue();
-    Object attrValue = this.settingValue == null ? true : this.settingValue.execute((Identifiable) null, ctx);
+    final Object attrValue = this.settingValue == null ? true : this.settingValue.execute((Identifiable) null, ctx);
     try {
       if (attrName.equalsIgnoreCase("readonly")) {
         internalProp.setReadonly((boolean) attrValue);
@@ -100,7 +100,7 @@ public class CreatePropertyAttributeStatement extends SimpleNode {
       } else {
         throw new CommandExecutionException("Invalid attribute definition: '" + attrName + "'");
       }
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new CommandExecutionException("Cannot set attribute on property " + settingName.getStringValue() + " " + attrValue, e);
     }
     return attrValue;

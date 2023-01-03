@@ -69,7 +69,7 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
   public Object execute(final Object... parameters) {
     try {
       return method.invoke(instance, parameters);
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new FunctionExecutionException("Error on executing function '" + method + "'", e);
     }
   }

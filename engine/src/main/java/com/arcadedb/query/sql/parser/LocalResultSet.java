@@ -40,7 +40,7 @@ public class LocalResultSet implements ResultSet {
   }
 
   private boolean fetchNext() {
-    long begin = System.currentTimeMillis();
+    final long begin = System.currentTimeMillis();
     try {
       lastFetch = executionPlan.fetchNext(100);
       if (!lastFetch.hasNext()) {

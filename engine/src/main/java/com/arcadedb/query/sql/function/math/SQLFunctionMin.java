@@ -40,20 +40,20 @@ public class SQLFunctionMin extends SQLFunctionMathAbstract {
   }
 
   @SuppressWarnings({ "unchecked", "rawtypes" })
-  public Object execute(Object iThis, final Identifiable iCurrentRecord, Object iCurrentResult, final Object[] iParams, CommandContext iContext) {
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams, final CommandContext iContext) {
 
     // calculate min value for current record
     // consider both collection of parameters and collection in each parameter
     Object min = null;
     for (Object item : iParams) {
       if (item instanceof Collection<?>) {
-        for (Object subitem : ((Collection<?>) item)) {
+        for (final Object subitem : ((Collection<?>) item)) {
           if (min == null || subitem != null && ((Comparable) subitem).compareTo(min) < 0)
             min = subitem;
         }
       } else {
         if ((item instanceof Number) && (min instanceof Number)) {
-          Number[] converted = Type.castComparableNumber((Number) item, (Number) min);
+          final Number[] converted = Type.castComparableNumber((Number) item, (Number) min);
           item = converted[0];
           min = converted[1];
         }

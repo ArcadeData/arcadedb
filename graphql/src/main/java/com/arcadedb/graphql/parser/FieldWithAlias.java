@@ -28,16 +28,16 @@ public class FieldWithAlias extends SimpleNode {
   protected Directives   directives;
   protected SelectionSet selectionSet;
 
-  public FieldWithAlias(Name alias, int line, int column, int tokenId) {
+  public FieldWithAlias(final Name alias, final int line, final int column, final int tokenId) {
     this(-1);
     this.alias = alias;
   }
 
-  public FieldWithAlias(int id) {
+  public FieldWithAlias(final int id) {
     super(id);
   }
 
-  public FieldWithAlias(GraphQLParser p, int id) {
+  public FieldWithAlias(final GraphQLParser p, final int id) {
     super(p, id);
   }
 
@@ -48,7 +48,7 @@ public class FieldWithAlias extends SimpleNode {
   /**
    * Accept the visitor.
    **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
+  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
     return visitor.visit(this, data);
   }
 }

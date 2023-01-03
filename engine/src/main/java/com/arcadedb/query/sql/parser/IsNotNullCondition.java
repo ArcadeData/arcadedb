@@ -30,25 +30,25 @@ public class IsNotNullCondition extends BooleanExpression {
 
   protected Expression expression;
 
-  public IsNotNullCondition(int id) {
+  public IsNotNullCondition(final int id) {
     super(id);
   }
 
-  public IsNotNullCondition(SqlParser p, int id) {
+  public IsNotNullCondition(final SqlParser p, final int id) {
     super(p, id);
   }
 
   @Override
-  public boolean evaluate(Identifiable currentRecord, CommandContext ctx) {
+  public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
     return expression.execute(currentRecord, ctx) != null;
   }
 
   @Override
-  public boolean evaluate(Result currentRecord, CommandContext ctx) {
+  public boolean evaluate(final Result currentRecord, final CommandContext ctx) {
     return expression.execute(currentRecord, ctx) != null;
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     expression.toString(params, builder);
     builder.append(" IS NOT NULL");
   }
@@ -71,23 +71,23 @@ public class IsNotNullCondition extends BooleanExpression {
     if (!expression.supportsBasicCalculation()) {
       return Collections.singletonList(expression);
     }
-    return Collections.EMPTY_LIST;
+    return Collections.emptyList();
   }
 
   @Override
-  public boolean needsAliases(Set<String> aliases) {
+  public boolean needsAliases(final Set<String> aliases) {
     return expression.needsAliases(aliases);
   }
 
   @Override
   public BooleanExpression copy() {
-    IsNotNullCondition result = new IsNotNullCondition(-1);
+    final IsNotNullCondition result = new IsNotNullCondition(-1);
     result.expression = expression.copy();
     return result;
   }
 
   @Override
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
     this.expression.extractSubQueries(collector);
   }
 
@@ -97,13 +97,13 @@ public class IsNotNullCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    IsNotNullCondition that = (IsNotNullCondition) o;
+    final IsNotNullCondition that = (IsNotNullCondition) o;
 
     return Objects.equals(expression, that.expression);
   }

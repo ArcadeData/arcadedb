@@ -61,7 +61,7 @@ public class SimpleNode implements Node {
     if (children == null) {
       children = new Node[i + 1];
     } else if (i >= children.length) {
-      Node[] c = new Node[i + 1];
+      final Node[] c = new Node[i + 1];
       System.arraycopy(children, 0, c, 0, children.length);
       children = c;
     }
@@ -100,7 +100,7 @@ public class SimpleNode implements Node {
       final Set<Class> set = Arrays.stream(excludes).collect(Collectors.toSet());
 
       for (int i = 0; i < children.length; ++i) {
-        SimpleNode n = (SimpleNode) children[i];
+        final SimpleNode n = (SimpleNode) children[i];
         if (set.contains(n.getClass()))
           continue;
 
@@ -115,15 +115,15 @@ public class SimpleNode implements Node {
     return id;
   }
 
-  public void jjtSetFirstToken(Token token) {
+  public void jjtSetFirstToken(final Token token) {
     this.firstToken = token;
   }
 
-  public void jjtSetLastToken(Token token) {
+  public void jjtSetLastToken(final Token token) {
     this.lastToken = token;
   }
 
-  public Object childrenAccept(SqlParserVisitor visitor, Object data) {
+  public Object childrenAccept(final SqlParserVisitor visitor, final Object data) {
     if (children != null) {
       for (int i = 0; i < children.length; ++i) {
 //        children[i].jjtAccept(visitor, data);//TODO fix

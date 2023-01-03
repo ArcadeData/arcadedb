@@ -31,26 +31,26 @@ import java.util.*;
  */
 public class BreadthFirstTraverseStep extends AbstractTraverseStep {
 
-  public BreadthFirstTraverseStep(List<TraverseProjectionItem> projections, WhereClause whileClause, PInteger maxDepth, CommandContext ctx,
-      boolean profilingEnabled) {
+  public BreadthFirstTraverseStep(final List<TraverseProjectionItem> projections, final WhereClause whileClause, final PInteger maxDepth, final CommandContext ctx,
+      final boolean profilingEnabled) {
     super(projections, whileClause, maxDepth, ctx, profilingEnabled);
   }
 
   @Override
-  protected void fetchNextEntryPoints(CommandContext ctx, int nRecords) {
-    ResultSet nextN = getPrev().get().syncPull(ctx, nRecords);
+  protected void fetchNextEntryPoints(final CommandContext ctx, final int nRecords) {
+    final ResultSet nextN = getPrev().get().syncPull(ctx, nRecords);
     while (nextN.hasNext()) {
-      Result item = toTraverseResult(nextN.next());
+      final Result item = toTraverseResult(nextN.next());
       if (item == null) {
         continue;
       }
       ((ResultInternal) item).setMetadata("$depth", 0);
 
-      List stack = new ArrayList();
+      final List stack = new ArrayList();
       item.getIdentity().ifPresent(x -> stack.add(x));
       ((ResultInternal) item).setMetadata("$stack", stack);
 
-      List<Identifiable> path = new ArrayList<>();
+      final List<Identifiable> path = new ArrayList<>();
       if (item.getIdentity().isPresent()) {
         path.add(item.getIdentity().get());
       } else if (item.getProperty("@rid") != null) {
@@ -68,7 +68,7 @@ public class BreadthFirstTraverseStep extends AbstractTraverseStep {
     }
   }
 
-  private Result toTraverseResult(Result item) {
+  private Result toTraverseResult(final Result item) {
     TraverseResult res = null;
     if (item instanceof TraverseResult) {
       res = (TraverseResult) item;
@@ -77,7 +77,7 @@ public class BreadthFirstTraverseStep extends AbstractTraverseStep {
       res.setElement(item.getElement().get());
       res.depth = 0;
     } else if (item.getPropertyNames().size() == 1) {
-      Object val = item.getProperty(item.getPropertyNames().iterator().next());
+      final Object val = item.getProperty(item.getPropertyNames().iterator().next());
       if (val instanceof Document) {
         res = new TraverseResult();
         res.setElement((Document) val);
@@ -86,10 +86,10 @@ public class BreadthFirstTraverseStep extends AbstractTraverseStep {
       }
     } else {
       res = new TraverseResult();
-      for (String key : item.getPropertyNames()) {
+      for (final String key : item.getPropertyNames()) {
         res.setProperty(key, item.getProperty(key));
       }
-      for (String md : item.getMetadataKeys()) {
+      for (final String md : item.getMetadataKeys()) {
         res.setMetadata(md, item.getMetadata(md));
       }
     }
@@ -98,13 +98,13 @@ public class BreadthFirstTraverseStep extends AbstractTraverseStep {
   }
 
   @Override
-  protected void fetchNextResults(CommandContext ctx, int nRecords) {
+  protected void fetchNextResults(final CommandContext ctx, final int nRecords) {
     if (!this.entryPoints.isEmpty()) {
-      TraverseResult item = (TraverseResult) this.entryPoints.remove(0);
+      final TraverseResult item = (TraverseResult) this.entryPoints.remove(0);
       this.results.add(item);
-      for (TraverseProjectionItem proj : projections) {
-        Object nextStep = proj.execute(item, ctx);
-        Integer depth = item.depth != null ? item.depth : (Integer) item.getMetadata("$depth");
+      for (final TraverseProjectionItem proj : projections) {
+        final Object nextStep = proj.execute(item, ctx);
+        final Integer depth = item.depth != null ? item.depth : (Integer) item.getMetadata("$depth");
         if (this.maxDepth == null || this.maxDepth.getValue().intValue() > depth) {
           addNextEntryPoints(nextStep, depth + 1, (List) item.getMetadata("$path"), (List) item.getMetadata("$stack"), ctx);
         }
@@ -112,7 +112,7 @@ public class BreadthFirstTraverseStep extends AbstractTraverseStep {
     }
   }
 
-  private void addNextEntryPoints(Object nextStep, int depth, List<Identifiable> path, List<Identifiable> stack, CommandContext ctx) {
+  private void addNextEntryPoints(final Object nextStep, final int depth, final List<Identifiable> path, final List<Identifiable> stack, final CommandContext ctx) {
     if (nextStep instanceof Identifiable) {
       addNextEntryPoint(((Identifiable) nextStep), depth, path, stack, ctx);
     } else if (nextStep instanceof Iterable) {
@@ -124,26 +124,27 @@ public class BreadthFirstTraverseStep extends AbstractTraverseStep {
     }
   }
 
-  private void addNextEntryPoints(Iterator nextStep, int depth, List<Identifiable> path, List<Identifiable> stack, CommandContext ctx) {
+  private void addNextEntryPoints(final Iterator nextStep, final int depth, final List<Identifiable> path, final List<Identifiable> stack, final CommandContext ctx) {
     while (nextStep.hasNext()) {
       addNextEntryPoints(nextStep.next(), depth, path, stack, ctx);
     }
   }
 
-  private void addNextEntryPoint(Identifiable nextStep, int depth, List<Identifiable> path, List<Identifiable> stack, CommandContext ctx) {
+  private void addNextEntryPoint(
+      final Identifiable nextStep, final int depth, final List<Identifiable> path, final List<Identifiable> stack, final CommandContext ctx) {
     if (this.traversed.contains(nextStep.getIdentity())) {
       return;
     }
-    TraverseResult res = new TraverseResult();
+    final TraverseResult res = new TraverseResult();
     res.setElement((Document) nextStep.getRecord());
     res.depth = depth;
     res.setMetadata("$depth", depth);
 
-    List<Identifiable> newPath = new ArrayList<>(path);
+    final List<Identifiable> newPath = new ArrayList<>(path);
     newPath.add(res.getIdentity().get());
     res.setMetadata("$path", newPath);
 
-    List newStack = new ArrayList();
+    final List newStack = new ArrayList();
     newStack.add(res.getIdentity().get());
     newStack.addAll(stack);
     //    for (int i = 0; i < newPath.size(); i++) {
@@ -180,19 +181,19 @@ public class BreadthFirstTraverseStep extends AbstractTraverseStep {
       res.setElement(nextStep.getElement().get());
       res.depth = depth;
       res.setMetadata("$depth", depth);
-      List<Identifiable> newPath = new ArrayList<>(path);
+      final List<Identifiable> newPath = new ArrayList<>(path);
       nextStep.getIdentity().ifPresent(x -> newPath.add(x.getIdentity()));
       res.setMetadata("$path", newPath);
 
-      List reverseStack = new ArrayList(newPath);
+      final List reverseStack = new ArrayList(newPath);
       Collections.reverse(reverseStack);
-      List newStack = new ArrayList(reverseStack);
+      final List newStack = new ArrayList(reverseStack);
       res.setMetadata("$stack", newStack);
       tryAddEntryPoint(res, ctx);
     }
   }
 
-  private void tryAddEntryPoint(Result res, CommandContext ctx) {
+  private void tryAddEntryPoint(final Result res, final CommandContext ctx) {
     if (whileClause == null || whileClause.matchesFilters(res, ctx)) {
       this.entryPoints.add(0, res);
     }
@@ -204,7 +205,7 @@ public class BreadthFirstTraverseStep extends AbstractTraverseStep {
     }
   }
 
-  private void tryAddEntryPointAtTheEnd(Result res, CommandContext ctx) {
+  private void tryAddEntryPointAtTheEnd(final Result res, final CommandContext ctx) {
     if (whileClause == null || whileClause.matchesFilters(res, ctx)) {
       this.entryPoints.add(res);
     }
@@ -217,9 +218,9 @@ public class BreadthFirstTraverseStep extends AbstractTraverseStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    StringBuilder result = new StringBuilder();
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
+    final StringBuilder result = new StringBuilder();
     result.append(spaces);
     result.append("+ DEPTH-FIRST TRAVERSE \n");
     result.append(spaces);

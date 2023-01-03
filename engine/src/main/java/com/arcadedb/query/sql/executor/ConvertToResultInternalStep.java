@@ -37,16 +37,16 @@ public class ConvertToResultInternalStep extends AbstractExecutionStep {
 
   ResultSet prevResult = null;
 
-  public ConvertToResultInternalStep(CommandContext ctx, boolean profilingEnabled) {
+  public ConvertToResultInternalStep(final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
     if (prev.isEmpty()) {
       throw new IllegalStateException("filter step requires a previous step");
     }
-    ExecutionStepInternal prevStep = prev.get();
+    final ExecutionStepInternal prevStep = prev.get();
 
     return new ResultSet() {
       public boolean finished = false;
@@ -75,10 +75,10 @@ public class ConvertToResultInternalStep extends AbstractExecutionStep {
             }
           }
           nextItem = prevResult.next();
-          long begin = profilingEnabled ? System.nanoTime() : 0;
+          final long begin = profilingEnabled ? System.nanoTime() : 0;
           try {
             if (nextItem instanceof UpdatableResult) {
-              Document element = nextItem.getElement().get();
+              final Document element = nextItem.getElement().get();
               if (element != null) {
                 nextItem = new ResultInternal();
                 ((ResultInternal) nextItem).setElement(element);
@@ -118,7 +118,7 @@ public class ConvertToResultInternalStep extends AbstractExecutionStep {
         if (nextItem == null) {
           throw new NoSuchElementException();
         }
-        Result result = nextItem;
+        final Result result = nextItem;
         nextItem = null;
         fetched++;
         return result;
@@ -137,7 +137,7 @@ public class ConvertToResultInternalStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
+  public String prettyPrint(final int depth, final int indent) {
     String result = ExecutionStepInternal.getIndent(depth, indent) + "+ CONVERT TO REGULAR RESULT ITEM";
     if (profilingEnabled) {
       result += " (" + getCostFormatted() + ")";

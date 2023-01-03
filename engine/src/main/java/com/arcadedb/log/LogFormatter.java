@@ -55,8 +55,8 @@ public class LogFormatter extends Formatter {
     if (current != null) {
       buffer.append(EOL);
 
-      StringWriter writer = new StringWriter();
-      PrintWriter printWriter = new PrintWriter(writer);
+      final StringWriter writer = new StringWriter();
+      final PrintWriter printWriter = new PrintWriter(writer);
 
       current.printStackTrace(printWriter);
       printWriter.flush();
@@ -94,7 +94,7 @@ public class LogFormatter extends Formatter {
         buffer.append(String.format(message, additionalArgs));
       else
         buffer.append(message);
-    } catch (IllegalFormatException ignore) {
+    } catch (final IllegalFormatException ignore) {
       buffer.append(message);
     }
 

@@ -50,16 +50,16 @@ public class CheckClassTypeStep extends AbstractExecutionStep {
    * @param ctx              execution context
    * @param profilingEnabled true to collect execution stats
    */
-  public CheckClassTypeStep(String targetClass, String parentClass, CommandContext ctx, boolean profilingEnabled) {
+  public CheckClassTypeStep(final String targetClass, final String parentClass, final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
     this.targetClass = targetClass;
     this.parentClass = parentClass;
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
     getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
-    long begin = profilingEnabled ? System.nanoTime() : 0;
+    final long begin = profilingEnabled ? System.nanoTime() : 0;
     try {
       if (found) {
         return new InternalResultSet();
@@ -67,14 +67,14 @@ public class CheckClassTypeStep extends AbstractExecutionStep {
       if (this.targetClass.equals(this.parentClass)) {
         return new InternalResultSet();
       }
-      Database db = ctx.getDatabase();
+      final Database db = ctx.getDatabase();
 
-      Schema schema = db.getSchema();
-      DocumentType parentClazz = schema.getType(this.parentClass);
+      final Schema schema = db.getSchema();
+      final DocumentType parentClazz = schema.getType(this.parentClass);
       if (parentClazz == null) {
         throw new CommandExecutionException("Class not found: " + this.parentClass);
       }
-      DocumentType targetClazz = schema.getType(this.targetClass);
+      final DocumentType targetClazz = schema.getType(this.targetClass);
       if (targetClazz == null) {
         throw new CommandExecutionException("Class not found: " + this.targetClass);
       }
@@ -82,7 +82,7 @@ public class CheckClassTypeStep extends AbstractExecutionStep {
       if (parentClazz.equals(targetClazz)) {
         found = true;
       } else {
-        for (DocumentType subclass : parentClazz.getSubTypes()) {
+        for (final DocumentType subclass : parentClazz.getSubTypes()) {
           if (subclass.equals(targetClazz)) {
             this.found = true;
             break;
@@ -101,9 +101,9 @@ public class CheckClassTypeStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    StringBuilder result = new StringBuilder();
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
+    final StringBuilder result = new StringBuilder();
     result.append(spaces);
     result.append("+ CHECK TYPE HIERARCHY");
     if (profilingEnabled) {

@@ -149,7 +149,7 @@ public class GetDynamicContentHandler extends AbstractHandler {
           include = include.substring(0, sep);
 
           final String[] parameterPairs = params.split(" ");
-          for (String pair : parameterPairs) {
+          for (final String pair : parameterPairs) {
             final String[] kv = pair.split("=");
             variables.put(kv[0].trim(), kv[1].trim());
           }
@@ -193,7 +193,7 @@ public class GetDynamicContentHandler extends AbstractHandler {
 
         final Set<String> currentUserRoles = exchange.getSecurityContext().getAuthenticatedAccount().getRoles();
 
-        for (String role : protect.split(","))
+        for (final String role : protect.split(","))
           if (currentUserRoles.contains(role)) {
             final String subContent = file.substring(pos, beginTokenPos);
             buffer.append(templating(exchange, subContent, variables));

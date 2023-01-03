@@ -121,7 +121,7 @@ public class OrderByItem {
     } else if (aVal instanceof Comparable && bVal instanceof Comparable) {
       try {
         result = BinaryComparator.compareTo(aVal, bVal);
-      } catch (Exception e) {
+      } catch (final Exception e) {
         LogManager.instance().log(this, Level.SEVERE, "Error during comparison", e);
         result = 0;
       }

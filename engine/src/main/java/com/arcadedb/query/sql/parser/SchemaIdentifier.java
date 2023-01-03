@@ -28,15 +28,15 @@ import java.util.*;
 public class SchemaIdentifier extends SimpleNode {
   protected String name;
 
-  public SchemaIdentifier(int id) {
+  public SchemaIdentifier(final int id) {
     super(id);
   }
 
-  public SchemaIdentifier(SqlParser p, int id) {
+  public SchemaIdentifier(final SqlParser p, final int id) {
     super(p, id);
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("schema:");
     builder.append(name);
   }
@@ -52,7 +52,7 @@ public class SchemaIdentifier extends SimpleNode {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
@@ -69,12 +69,12 @@ public class SchemaIdentifier extends SimpleNode {
   }
 
   public Result serialize() {
-    ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal();
     result.setProperty("name", name);
     return result;
   }
 
-  public void deserialize(Result fromResult) {
+  public void deserialize(final Result fromResult) {
     name = fromResult.getProperty("name");
   }
 }

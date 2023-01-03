@@ -42,8 +42,8 @@ public class SQLMethodRight extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute( final Object iThis, Identifiable iCurrentRecord, CommandContext iContext,
-      Object ioResult, Object[] iParams) {
+  public Object execute( final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext,
+      final Object ioResult, final Object[] iParams) {
     if (iThis == null || iParams[0] == null) {
       return null;
     }

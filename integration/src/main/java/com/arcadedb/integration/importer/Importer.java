@@ -58,7 +58,7 @@ public class Importer extends AbstractImporter {
       if (database.isTransactionActive())
         database.commit();
 
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new ImportException("Error on parsing source '" + source + "'", e);
     } finally {
       if (database != null) {

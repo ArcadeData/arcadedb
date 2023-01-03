@@ -58,7 +58,7 @@ public class ReplicationServerReplicaHotResyncIT extends ReplicationServerIT {
               try {
                 LogManager.instance().log(this, Level.FINE, "TEST: Slowing down response from replica server 2...");
                 Thread.sleep(10000);
-              } catch (InterruptedException e) {
+              } catch (final InterruptedException e) {
                 Thread.currentThread().interrupt();
                 // IGNORE IT
               }

@@ -29,12 +29,12 @@ public class InsertIntoIndexStep extends AbstractExecutionStep {
 
   boolean executed = false;
 
-  public InsertIntoIndexStep(IndexIdentifier targetIndex, InsertBody insertBody, CommandContext ctx, boolean profilingEnabled) {
+  public InsertIntoIndexStep(final IndexIdentifier targetIndex, final InsertBody insertBody, final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
     getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
     throw new UnsupportedOperationException();
 //    return new OResultSet() {

@@ -132,8 +132,8 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   private              RandomAccessFile                          lockFileIO;
   private              FileChannel                               lockFileIOChannel;
   private              FileLock                                  lockFileLock;
-  private final        RecordEventsRegistry                      events                               = new RecordEventsRegistry();
-  private              ConcurrentHashMap<String, QueryEngine>    reusableQueryEngines                 = new ConcurrentHashMap<>();
+  private final RecordEventsRegistry                   events               = new RecordEventsRegistry();
+  private final ConcurrentHashMap<String, QueryEngine> reusableQueryEngines = new ConcurrentHashMap<>();
 
   protected EmbeddedDatabase(final String path, final PaginatedFile.MODE mode, final ContextConfiguration configuration, final SecurityManager security,
       final Map<CALLBACK_EVENT, List<Callable<Void>>> callbacks) {
@@ -165,7 +165,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
       queryEngineManager = new QueryEngineManager();
       graphEngine = new GraphEngine(this);
 
-    } catch (Exception e) {
+    } catch (final Exception e) {
       if (e instanceof DatabaseOperationException)
         throw (DatabaseOperationException) e;
 
@@ -182,7 +182,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
         final String content = FileUtils.readFileAsString(configurationFile, "UTF8");
         configuration.reset();
         configuration.fromJSON(content);
-      } catch (IOException e) {
+      } catch (final IOException e) {
         LogManager.instance().log(this, Level.SEVERE, "Error on loading configuration from file '%s'", e, configurationFile);
       }
     }
@@ -204,7 +204,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
     try {
       saveConfiguration();
-    } catch (IOException e) {
+    } catch (final IOException e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on saving configuration to file '%s'", e, configurationFile);
     }
   }
@@ -259,7 +259,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
             lockFileIOChannel.close();
           if (lockFileIO != null)
             lockFileIO.close();
-        } catch (IOException e) {
+        } catch (final IOException e) {
           // IGNORE IT
         }
       }
@@ -317,7 +317,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
         if (txDb.getEmbedded() != this) {
           try {
             DatabaseContext.INSTANCE.init(this);
-          } catch (Exception e) {
+          } catch (final Exception e) {
             // IGNORE IT
           }
           throw new InvalidDatabaseInstanceException("Invalid transactional context (different db)");
@@ -381,7 +381,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
         final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(EmbeddedDatabase.this.getDatabasePath());
         current.popIfNotLastTransaction().rollback();
 
-      } catch (TransactionException e) {
+      } catch (final TransactionException e) {
         // ALREADY ROLLBACKED
       }
       return null;
@@ -406,9 +406,9 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
           else
             break;
 
-        } catch (InvalidDatabaseInstanceException e) {
+        } catch (final InvalidDatabaseInstanceException e) {
           current.popIfNotLastTransaction().rollback();
-        } catch (TransactionException e) {
+        } catch (final TransactionException e) {
           // ALREADY ROLLED BACK
         }
       }
@@ -431,7 +431,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
       final DocumentType type = schema.getType(typeName);
 
       long total = 0;
-      for (Bucket b : type.getBuckets(polymorphic))
+      for (final Bucket b : type.getBuckets(polymorphic))
         total += b.count();
 
       return total;
@@ -455,7 +455,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
         final AtomicBoolean continueScan = new AtomicBoolean(true);
 
-        for (Bucket b : type.getBuckets(polymorphic)) {
+        for (final Bucket b : type.getBuckets(polymorphic)) {
           b.scan((rid, view) -> {
             final Document record = (Document) recordFactory.newImmutableRecord(wrappedDatabaseInstance, type, rid, view, null);
             continueScan.set(callback.onRecord(record));
@@ -514,7 +514,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
       iter.setLimit(getResultSetLimit());
       iter.setTimeout(getReadTimeout());
 
-      for (Bucket b : type.getBuckets(polymorphic))
+      for (final Bucket b : type.getBuckets(polymorphic))
         iter.addIterator(b.iterator());
       return iter;
     });
@@ -531,7 +531,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
       try {
         final Bucket bucket = schema.getBucketByName(bucketName);
         return bucket.iterator();
-      } catch (Exception e) {
+      } catch (final Exception e) {
         throw new DatabaseOperationException("Error on executing scan of bucket '" + bucketName + "'", e);
       }
 
@@ -665,13 +665,13 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
   @Override
   public void registerCallback(final CALLBACK_EVENT event, final Callable<Void> callback) {
-    List<Callable<Void>> callbacks = this.callbacks.computeIfAbsent(event, k -> new ArrayList<>());
+    final List<Callable<Void>> callbacks = this.callbacks.computeIfAbsent(event, k -> new ArrayList<>());
     callbacks.add(callback);
   }
 
   @Override
   public void unregisterCallback(final CALLBACK_EVENT event, final Callable<Void> callback) {
-    List<Callable<Void>> callbacks = this.callbacks.get(event);
+    final List<Callable<Void>> callbacks = this.callbacks.get(event);
     if (callbacks != null) {
       callbacks.remove(callback);
       if (callbacks.isEmpty())
@@ -837,7 +837,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
               indexer.updateDocument(originalRecord, (Document) record, indexes);
             }
           }
-        } catch (IOException e) {
+        } catch (final IOException e) {
           throw new DatabaseOperationException("Error on update the record " + record.getIdentity() + " in transaction", e);
         }
       } else
@@ -969,7 +969,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   }
 
   @Override
-  public boolean transaction(final TransactionScope txBlock, final boolean joinCurrentTx, int retries) {
+  public boolean transaction(final TransactionScope txBlock, final boolean joinCurrentTx, final int retries) {
     return transaction(txBlock, joinCurrentTx, retries, null, null);
   }
 
@@ -1003,12 +1003,12 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
         // OK
         return createdNewTx;
 
-      } catch (NeedRetryException | DuplicatedKeyException e) {
+      } catch (final NeedRetryException | DuplicatedKeyException e) {
         // RETRY
         lastException = e;
         if (wrappedDatabaseInstance.isTransactionActive())
           wrappedDatabaseInstance.rollback();
-      } catch (Exception e) {
+      } catch (final Exception e) {
         final TransactionContext tx = getTransaction();
         if (tx != null && tx.isActive())
           rollback();
@@ -1105,7 +1105,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
     final Iterator<Identifiable> v1Result = lookupByKey(sourceVertexType, sourceVertexKeyNames, sourceVertexKeyValues);
 
-    Vertex sourceVertex;
+    final Vertex sourceVertex;
     if (!v1Result.hasNext()) {
       if (createVertexIfNotExist) {
         sourceVertex = newVertex(sourceVertexType);
@@ -1119,7 +1119,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
       sourceVertex = v1Result.next().getIdentity().asVertex();
 
     final Iterator<Identifiable> v2Result = lookupByKey(destinationVertexType, destinationVertexKeyNames, destinationVertexKeyValues);
-    Vertex destinationVertex;
+    final Vertex destinationVertex;
     if (!v2Result.hasNext()) {
       if (createVertexIfNotExist) {
         destinationVertex = newVertex(destinationVertexType);
@@ -1150,7 +1150,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
       throw new IllegalArgumentException("Destination vertex key and value arrays have different sizes");
 
     final Iterator<Identifiable> v2Result = lookupByKey(destinationVertexType, destinationVertexKeyNames, destinationVertexKeyValues);
-    Vertex destinationVertex;
+    final Vertex destinationVertex;
     if (!v2Result.hasNext()) {
       if (createVertexIfNotExist) {
         destinationVertex = newVertex(destinationVertexType);
@@ -1195,7 +1195,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   }
 
   @Override
-  public boolean checkTransactionIsActive(boolean createTx) {
+  public boolean checkTransactionIsActive(final boolean createTx) {
     checkDatabaseIsOpen();
 
     if (!isTransactionActive()) {
@@ -1251,7 +1251,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   public ResultSet execute(final String language, final String script, final Map<String, Object> params) {
     checkDatabaseIsOpen();
 
-    BasicCommandContext context = new BasicCommandContext();
+    final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(getWrappedDatabaseInstance());
     context.setInputParameters(params);
 
@@ -1263,7 +1263,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   public ResultSet execute(final String language, final String script, final Object... args) {
     checkDatabaseIsOpen();
 
-    BasicCommandContext context = new BasicCommandContext();
+    final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(getWrappedDatabaseInstance());
     context.setInputParameters(args);
 
@@ -1316,15 +1316,15 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
       return callable.call();
 
-    } catch (ClosedChannelException e) {
+    } catch (final ClosedChannelException e) {
       LogManager.instance().log(this, Level.SEVERE, "Database '%s' has some files that are closed", e, name);
       close();
       throw new DatabaseOperationException("Database '" + name + "' has some files that are closed", e);
 
-    } catch (RuntimeException e) {
+    } catch (final RuntimeException e) {
       throw e;
 
-    } catch (Throwable e) {
+    } catch (final Throwable e) {
       throw new DatabaseOperationException("Error during read lock", e);
 
     } finally {
@@ -1342,15 +1342,15 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
       return callable.call();
 
-    } catch (ClosedChannelException e) {
+    } catch (final ClosedChannelException e) {
       LogManager.instance().log(this, Level.SEVERE, "Database '%s' has some files that are closed", e, name);
       close();
       throw new DatabaseOperationException("Database '" + name + "' has some files that are closed", e);
 
-    } catch (RuntimeException e) {
+    } catch (final RuntimeException e) {
       throw e;
 
-    } catch (Throwable e) {
+    } catch (final Throwable e) {
       throw new DatabaseOperationException("Error during write lock", e);
 
     } finally {
@@ -1387,12 +1387,12 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   public void executeCallbacks(final CALLBACK_EVENT event) throws IOException {
     final List<Callable<Void>> callbacks = this.callbacks.get(event);
     if (callbacks != null && !callbacks.isEmpty()) {
-      for (Callable<Void> cb : callbacks) {
+      for (final Callable<Void> cb : callbacks) {
         try {
           cb.call();
-        } catch (RuntimeException | IOException e) {
+        } catch (final RuntimeException | IOException e) {
           throw e;
-        } catch (Exception e) {
+        } catch (final Exception e) {
           throw new IOException("Error on executing test callback EVENT=" + event, e);
         }
       }
@@ -1495,13 +1495,13 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
       //LogManager.instance().log(this, Level.INFO, "LOCKED DATABASE FILE '%s' (thread=%s)", null, lockFile, Thread.currentThread().getId());
 
-    } catch (Exception e) {
+    } catch (final Exception e) {
       try {
         if (lockFileIOChannel != null)
           lockFileIOChannel.close();
         if (lockFileIO != null)
           lockFileIO.close();
-      } catch (Exception e2) {
+      } catch (final Exception e2) {
         // IGNORE
       }
 
@@ -1520,7 +1520,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
         // EXECUTE OUTSIDE LOCK
         async.waitCompletion();
         async.close();
-      } catch (Throwable e) {
+      } catch (final Throwable e) {
         LogManager.instance().log(this, Level.WARNING, "Error on stopping asynchronous manager during closing operation for database '%s'", e, name);
       }
     }
@@ -1534,7 +1534,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
       try {
         if (async != null)
           async.close();
-      } catch (Throwable e) {
+      } catch (final Throwable e) {
         LogManager.instance().log(this, Level.WARNING, "Error on stopping asynchronous manager during closing operation for database '%s'", e, name);
       }
 
@@ -1550,7 +1550,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
           }
           dbContext.transactions.clear();
         }
-      } catch (Throwable e) {
+      } catch (final Throwable e) {
         LogManager.instance().log(this, Level.WARNING, "Error on clearing transaction status during closing operation for database '%s'", e, name);
       }
 
@@ -1561,7 +1561,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
         transactionManager.close(drop);
         statementCache.clear();
         reusableQueryEngines.clear();
-      } catch (Throwable e) {
+      } catch (final Throwable e) {
         LogManager.instance().log(this, Level.WARNING, "Error on closing internal components during closing operation for database '%s'", e, name);
       } finally {
         Profiler.INSTANCE.unregisterDatabase(EmbeddedDatabase.this);
@@ -1583,7 +1583,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
           if (lockFile.exists() && !lockFile.delete())
             LogManager.instance().log(this, Level.WARNING, "Error on deleting lock file '%s'", lockFile);
 
-        } catch (IOException e) {
+        } catch (final IOException e) {
           // IGNORE IT
           LogManager.instance().log(this, Level.WARNING, "Error on deleting lock file '%s'", e, lockFile);
         }
@@ -1645,16 +1645,16 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
         Profiler.INSTANCE.registerDatabase(this);
 
-      } catch (RuntimeException e) {
+      } catch (final RuntimeException e) {
         open = false;
         pageManager.close();
         throw e;
-      } catch (Exception e) {
+      } catch (final Exception e) {
         open = false;
         pageManager.close();
         throw new DatabaseOperationException("Error on creating new database instance", e);
       }
-    } catch (Exception e) {
+    } catch (final Exception e) {
       open = false;
 
       if (e instanceof DatabaseOperationException)
@@ -1672,14 +1672,14 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
       DatabaseContext.INSTANCE.init(this);
   }
 
-  private void setDefaultValues(Record record) {
+  private void setDefaultValues(final Record record) {
     if (record instanceof MutableDocument) {
       final MutableDocument doc = (MutableDocument) record;
       final DocumentType type = doc.getType();
 
       final Set<String> propertiesWithDefaultDefined = type.getPolymorphicPropertiesWithDefaultDefined();
 
-      for (String pName : propertiesWithDefaultDefined) {
+      for (final String pName : propertiesWithDefaultDefined) {
         final Object pValue = doc.get(pName);
         if (pValue == null) {
           final Property p = type.getPolymorphicProperty(pName);
@@ -1692,21 +1692,21 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   }
 
   private ResultSet executeInternal(final List<Statement> statements, final CommandContext scriptContext) {
-    ScriptExecutionPlan plan = new ScriptExecutionPlan(scriptContext);
+    final ScriptExecutionPlan plan = new ScriptExecutionPlan(scriptContext);
 
     plan.setStatements(statements);
 
     List<Statement> lastRetryBlock = new ArrayList<>();
     int nestedTxLevel = 0;
 
-    for (Statement stm : statements) {
+    for (final Statement stm : statements) {
       stm.setOriginalStatement(stm);
 
       if (stm instanceof BeginStatement)
         nestedTxLevel++;
 
       if (nestedTxLevel <= 0) {
-        InternalExecutionPlan sub = stm.createExecutionPlan(scriptContext);
+        final InternalExecutionPlan sub = stm.createExecutionPlan(scriptContext);
         plan.chain(sub, false);
       } else
         lastRetryBlock.add(stm);
@@ -1715,8 +1715,8 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
         nestedTxLevel--;
         if (nestedTxLevel == 0) {
 
-          for (Statement statement : lastRetryBlock) {
-            InternalExecutionPlan sub = statement.createExecutionPlan(scriptContext);
+          for (final Statement statement : lastRetryBlock) {
+            final InternalExecutionPlan sub = statement.createExecutionPlan(scriptContext);
             plan.chain(sub, false);
           }
           lastRetryBlock = new ArrayList<>();

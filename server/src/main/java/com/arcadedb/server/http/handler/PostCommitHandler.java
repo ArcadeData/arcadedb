@@ -33,7 +33,7 @@ public class PostCommitHandler extends DatabaseAbstractHandler {
   }
 
   @Override
-  public void execute(final HttpServerExchange exchange, ServerSecurityUser user, final Database database) throws IOException {
+  public void execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database) throws IOException {
     database.commit();
 
     exchange.getResponseHeaders().remove(HttpSessionManager.ARCADEDB_SESSION_ID);

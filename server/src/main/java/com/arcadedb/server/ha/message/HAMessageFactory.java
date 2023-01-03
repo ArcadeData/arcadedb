@@ -98,7 +98,7 @@ public class HAMessageFactory {
 
     try {
       return commands.get(type).newInstance();
-    } catch (Exception e) {
+    } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on creating replication command", e);
       throw new ConfigurationException("Error on creating replication command", e);
     }

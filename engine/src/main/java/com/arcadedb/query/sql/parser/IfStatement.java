@@ -39,22 +39,22 @@ public class IfStatement extends Statement {
   protected List<Statement>   statements     = new ArrayList<Statement>();
   protected List<Statement>   elseStatements = new ArrayList<Statement>();//TODO support ELSE in the SQL syntax
 
-  public IfStatement(int id) {
+  public IfStatement(final int id) {
     super(id);
   }
 
-  public IfStatement(SqlParser p, int id) {
+  public IfStatement(final SqlParser p, final int id) {
     super(p, id);
   }
 
   @Override
   public boolean isIdempotent() {
-    for (Statement stm : statements) {
+    for (final Statement stm : statements) {
       if (!stm.isIdempotent()) {
         return false;
       }
     }
-    for (Statement stm : elseStatements) {
+    for (final Statement stm : elseStatements) {
       if (!stm.isIdempotent()) {
         return false;
       }
@@ -63,14 +63,14 @@ public class IfStatement extends Statement {
   }
 
   @Override
-  public ResultSet execute(Database db, Object[] args, CommandContext parentCtx, boolean usePlanCache) {
-    BasicCommandContext ctx = new BasicCommandContext();
+  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentCtx, final boolean usePlanCache) {
+    final BasicCommandContext ctx = new BasicCommandContext();
     if (parentCtx != null) {
       ctx.setParentWithoutOverridingChild(parentCtx);
     }
     ctx.setDatabase(db);
     ctx.setInputParameters(args);
-    IfExecutionPlan executionPlan;
+    final IfExecutionPlan executionPlan;
     if (usePlanCache) {
       executionPlan = createExecutionPlan(ctx, false);
     } else {
@@ -82,11 +82,11 @@ public class IfStatement extends Statement {
       last = new EmptyStep(ctx, false);
     }
     if (isIdempotent()) {
-      SelectExecutionPlan finalPlan = new SelectExecutionPlan(ctx);
+      final SelectExecutionPlan finalPlan = new SelectExecutionPlan(ctx);
       finalPlan.chain(last);
       return new LocalResultSet(finalPlan);
     } else {
-      UpdateExecutionPlan finalPlan = new UpdateExecutionPlan(ctx);
+      final UpdateExecutionPlan finalPlan = new UpdateExecutionPlan(ctx);
       finalPlan.chain(last);
       finalPlan.executeInternal();
       return new LocalResultSet(finalPlan);
@@ -94,15 +94,15 @@ public class IfStatement extends Statement {
   }
 
   @Override
-  public ResultSet execute(Database db, Map params, CommandContext parentCtx, boolean usePlanCache) {
-    BasicCommandContext ctx = new BasicCommandContext();
+  public ResultSet execute(final Database db, final Map params, final CommandContext parentCtx, final boolean usePlanCache) {
+    final BasicCommandContext ctx = new BasicCommandContext();
     if (parentCtx != null) {
       ctx.setParentWithoutOverridingChild(parentCtx);
     }
     ctx.setDatabase(db);
     ctx.setInputParameters(params);
 
-    IfExecutionPlan executionPlan;
+    final IfExecutionPlan executionPlan;
     if (usePlanCache) {
       executionPlan = createExecutionPlan(ctx, false);
     } else {
@@ -114,11 +114,11 @@ public class IfStatement extends Statement {
       last = new EmptyStep(ctx, false);
     }
     if (isIdempotent()) {
-      SelectExecutionPlan finalPlan = new SelectExecutionPlan(ctx);
+      final SelectExecutionPlan finalPlan = new SelectExecutionPlan(ctx);
       finalPlan.chain(last);
       return new LocalResultSet(finalPlan);
     } else {
-      UpdateExecutionPlan finalPlan = new UpdateExecutionPlan(ctx);
+      final UpdateExecutionPlan finalPlan = new UpdateExecutionPlan(ctx);
       finalPlan.chain(last);
       finalPlan.executeInternal();
       return new LocalResultSet(finalPlan);
@@ -126,11 +126,11 @@ public class IfStatement extends Statement {
   }
 
   @Override
-  public IfExecutionPlan createExecutionPlan(CommandContext ctx, boolean enableProfiling) {
+  public IfExecutionPlan createExecutionPlan(final CommandContext ctx, final boolean enableProfiling) {
 
-    IfExecutionPlan plan = new IfExecutionPlan(ctx);
+    final IfExecutionPlan plan = new IfExecutionPlan(ctx);
 
-    IfStep step = new IfStep(ctx, enableProfiling);
+    final IfStep step = new IfStep(ctx, enableProfiling);
     step.setCondition(this.expression);
     plan.chain(step);
 
@@ -140,18 +140,18 @@ public class IfStatement extends Statement {
   }
 
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("IF(");
     expression.toString(params, builder);
     builder.append("){\n");
-    for (Statement stm : statements) {
+    for (final Statement stm : statements) {
       stm.toString(params, builder);
       builder.append(";\n");
     }
     builder.append("}");
     if (elseStatements.size() > 0) {
       builder.append("\nELSE {\n");
-      for (Statement stm : elseStatements) {
+      for (final Statement stm : elseStatements) {
         stm.toString(params, builder);
         builder.append(";\n");
       }
@@ -161,7 +161,7 @@ public class IfStatement extends Statement {
 
   @Override
   public IfStatement copy() {
-    IfStatement result = new IfStatement(-1);
+    final IfStatement result = new IfStatement(-1);
     result.expression = expression == null ? null : expression.copy();
     result.statements = statements == null ? null : statements.stream().map(Statement::copy).collect(Collectors.toList());
     result.elseStatements = elseStatements == null ? null : elseStatements.stream().map(Statement::copy).collect(Collectors.toList());
@@ -197,7 +197,7 @@ public class IfStatement extends Statement {
   }
 
   public boolean containsReturn() {
-    for (Statement stm : this.statements) {
+    for (final Statement stm : this.statements) {
       if (stm instanceof ReturnStatement) {
         return true;
       }
@@ -210,7 +210,7 @@ public class IfStatement extends Statement {
     }
 
     if (elseStatements != null) {
-      for (Statement stm : this.elseStatements) {
+      for (final Statement stm : this.elseStatements) {
         if (stm instanceof ReturnStatement) {
           return true;
         }

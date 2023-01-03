@@ -37,18 +37,18 @@ public class ExportDatabaseStatement extends SimpleExecStatement {
   protected Identifier        format    = new Identifier("jsonl");
   protected BooleanExpression overwrite = BooleanExpression.FALSE;
 
-  public ExportDatabaseStatement(int id) {
+  public ExportDatabaseStatement(final int id) {
     super(id);
   }
 
-  public ExportDatabaseStatement(SqlParser p, int id) {
+  public ExportDatabaseStatement(final SqlParser p, final int id) {
     super(p, id);
   }
 
   @Override
-  public ResultSet executeSimple(CommandContext ctx) {
-    String targetUrl = this.url.getUrlString();
-    ResultInternal result = new ResultInternal();
+  public ResultSet executeSimple(final CommandContext ctx) {
+    final String targetUrl = this.url.getUrlString();
+    final ResultInternal result = new ResultInternal();
     result.setProperty("operation", "export database");
     result.setProperty("toUrl", targetUrl);
 
@@ -72,21 +72,21 @@ public class ExportDatabaseStatement extends SimpleExecStatement {
       clazz.getMethod("setFormat", String.class).invoke(exporter, formatExport);
       clazz.getMethod("exportDatabase").invoke(exporter);
 
-    } catch (ClassNotFoundException | NoSuchMethodException | IllegalAccessException | InstantiationException e) {
+    } catch (final ClassNotFoundException | NoSuchMethodException | IllegalAccessException | InstantiationException e) {
       throw new CommandExecutionException("Error on exporting database, exporter libs not found in classpath", e);
-    } catch (InvocationTargetException e) {
+    } catch (final InvocationTargetException e) {
       throw new CommandExecutionException("Error on exporting database", e.getTargetException());
     }
 
     result.setProperty("result", "OK");
 
-    InternalResultSet rs = new InternalResultSet();
+    final InternalResultSet rs = new InternalResultSet();
     rs.add(result);
     return rs;
   }
 
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("EXPORT DATABASE ");
     url.toString(params, builder);
   }
@@ -108,7 +108,7 @@ public class ExportDatabaseStatement extends SimpleExecStatement {
 
   @Override
   public Statement copy() {
-    ExportDatabaseStatement result = new ExportDatabaseStatement(-1);
+    final ExportDatabaseStatement result = new ExportDatabaseStatement(-1);
     result.url = this.url;
     return result;
   }

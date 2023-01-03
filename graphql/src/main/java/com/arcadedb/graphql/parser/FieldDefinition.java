@@ -24,11 +24,11 @@ public class FieldDefinition extends AbstractField {
   protected ArgumentsDefinition argumentsDefinition;
   protected Type                type;
 
-  public FieldDefinition(int id) {
+  public FieldDefinition(final int id) {
     super(id);
   }
 
-  public FieldDefinition(GraphQLParser p, int id) {
+  public FieldDefinition(final GraphQLParser p, final int id) {
     super(p, id);
   }
 
@@ -46,7 +46,7 @@ public class FieldDefinition extends AbstractField {
   }
 
   @Override
-  public String treeToString(String prefix, final Class... excludes) {
+  public String treeToString(final String prefix, final Class... excludes) {
     return prefix + this;
   }
 }

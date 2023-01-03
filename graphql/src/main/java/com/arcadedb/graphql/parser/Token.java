@@ -20,12 +20,14 @@
 /* ParserGeneratorCCOptions:TOKEN_EXTENDS=,KEEP_LINE_COLUMN=true,SUPPORT_CLASS_VISIBILITY_PUBLIC=true */
 package com.arcadedb.graphql.parser;
 
+import java.io.Serializable;
+
 /**
  * Describes the input token stream.
  */
 
 public class Token
-implements java.io.Serializable {
+implements Serializable {
   /**
    * The version identifier for this Serializable class.
    * Increment only if the <i>serialized</i> form of the
@@ -133,7 +135,7 @@ implements java.io.Serializable {
    * to the following switch statement. Then you can cast matchedToken
    * variable to the appropriate type and use sit in your lexical actions.
    */
-  public static Token newToken(int ofKind, String image)
+  public static Token newToken(final int ofKind, final String image)
   {
     switch(ofKind)
     {
@@ -141,7 +143,7 @@ implements java.io.Serializable {
     }
   }
 
-  public static Token newToken(int ofKind)
+  public static Token newToken(final int ofKind)
   {
     return newToken(ofKind, null);
   }

@@ -47,7 +47,7 @@ public class AlterPropertyExecutionTest extends TestHelper {
     Assertions.assertEquals(3, database.getSchema().getType("Car").getProperty("name").getCustomValue("age"));
 
     final JSONObject cfg = database.getSchema().getEmbedded().toJSON();
-    JSONObject customMap = cfg.getJSONObject("types").getJSONObject("Car").getJSONObject("properties").getJSONObject("name").getJSONObject("custom");
+    final JSONObject customMap = cfg.getJSONObject("types").getJSONObject("Car").getJSONObject("properties").getJSONObject("name").getJSONObject("custom");
     Assertions.assertEquals("test", customMap.getString("description"));
     Assertions.assertEquals(3, customMap.getInt("age"));
 
@@ -92,14 +92,14 @@ public class AlterPropertyExecutionTest extends TestHelper {
     Assertions.assertEquals(1, database.getSchema().getType("Suv").getProperty("weight").getDefaultValue());
 
     final JSONObject cfg = database.getSchema().getEmbedded().toJSON();
-    String def1 = cfg.getJSONObject("types").getJSONObject("Car").getJSONObject("properties").getJSONObject("name").getString("default");
+    final String def1 = cfg.getJSONObject("types").getJSONObject("Car").getJSONObject("properties").getJSONObject("name").getString("default");
     Assertions.assertEquals("test", def1);
-    Float def2 = cfg.getJSONObject("types").getJSONObject("Suv").getJSONObject("properties").getJSONObject("weight").getFloat("default");
+    final Float def2 = cfg.getJSONObject("types").getJSONObject("Suv").getJSONObject("properties").getJSONObject("weight").getFloat("default");
     Assertions.assertEquals(1, def2);
 
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX Car");
-      ResultSet result = database.command("sql", "SELECT FROM Car");
+      final ResultSet result = database.command("sql", "SELECT FROM Car");
       Assertions.assertTrue(result.hasNext());
 
       final Vertex v = result.next().getVertex().get();
@@ -108,7 +108,7 @@ public class AlterPropertyExecutionTest extends TestHelper {
 
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX Suv");
-      ResultSet result = database.command("sql", "SELECT FROM Suv");
+      final ResultSet result = database.command("sql", "SELECT FROM Suv");
       Assertions.assertTrue(result.hasNext());
 
       final Vertex v = result.next().getVertex().get();

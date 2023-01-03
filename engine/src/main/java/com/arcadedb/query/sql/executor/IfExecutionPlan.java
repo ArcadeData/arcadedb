@@ -33,11 +33,11 @@ public class IfExecutionPlan implements InternalExecutionPlan {
 
   protected IfStep step;
 
-  public IfExecutionPlan(CommandContext ctx) {
+  public IfExecutionPlan(final CommandContext ctx) {
     this.ctx = ctx;
   }
 
-  @Override public void reset(CommandContext ctx) {
+  @Override public void reset(final CommandContext ctx) {
     //TODO
     throw new UnsupportedOperationException();
   }
@@ -46,15 +46,15 @@ public class IfExecutionPlan implements InternalExecutionPlan {
     step.close();
   }
 
-  @Override public ResultSet fetchNext(int n) {
+  @Override public ResultSet fetchNext(final int n) {
     return step.syncPull(ctx, n);
   }
 
-  @Override public String prettyPrint(int depth, int indent) {
+  @Override public String prettyPrint(final int depth, final int indent) {
     return step.prettyPrint(depth, indent);
   }
 
-  public void chain(IfStep step) {
+  public void chain(final IfStep step) {
     this.step = step;
   }
 
@@ -63,12 +63,12 @@ public class IfExecutionPlan implements InternalExecutionPlan {
     return Collections.singletonList(step);
   }
 
-  public void setSteps(List<ExecutionStepInternal> steps) {
+  public void setSteps(final List<ExecutionStepInternal> steps) {
     this.step = (IfStep) steps.get(0);
   }
 
   @Override public Result toResult() {
-    ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal();
     result.setProperty("type", "IfExecutionPlan");
     result.setProperty("javaType", getClass().getName());
     result.setProperty("cost", getCost());

@@ -41,7 +41,7 @@ public class JsonSerializer {
       object.put("@rid", document.getIdentity().toString());
     object.put("@type", document.getTypeName());
 
-    for (String p : document.getPropertyNames()) {
+    for (final String p : document.getPropertyNames()) {
       Object value = document.get(p);
 
       if (value == null)
@@ -65,7 +65,7 @@ public class JsonSerializer {
           value = ((Map) value).size();
         } else {
           final JSONObject map = new JSONObject();
-          for (Map.Entry<Object, Object> entry : ((Map<Object, Object>) value).entrySet()) {
+          for (final Map.Entry<Object, Object> entry : ((Map<Object, Object>) value).entrySet()) {
             Object o = entry.getValue();
             if (entry.getValue() instanceof Document)
               o = serializeDocument((Document) o);
@@ -96,7 +96,7 @@ public class JsonSerializer {
       setMetadata(document, object);
     }
 
-    for (String p : result.getPropertyNames()) {
+    for (final String p : result.getPropertyNames()) {
       Object value = result.getProperty(p);
 
       if (value == null)
@@ -138,7 +138,7 @@ public class JsonSerializer {
           value = ((Map) value).size();
         } else {
           final JSONObject map = new JSONObject();
-          for (Map.Entry<Object, Object> entry : ((Map<Object, Object>) value).entrySet()) {
+          for (final Map.Entry<Object, Object> entry : ((Map<Object, Object>) value).entrySet()) {
             Object o = entry.getValue();
             if (entry.getValue() instanceof Document)
               o = serializeDocument((Document) o);
@@ -204,12 +204,12 @@ public class JsonSerializer {
 
         } else {
           final JSONArray outEdges = new JSONArray();
-          for (Edge e : vertex.getEdges(Vertex.DIRECTION.OUT))
+          for (final Edge e : vertex.getEdges(Vertex.DIRECTION.OUT))
             outEdges.put(e.getIdentity().toString());
           object.put("@out", outEdges);
 
           final JSONArray inEdges = new JSONArray();
-          for (Edge e : vertex.getEdges(Vertex.DIRECTION.IN))
+          for (final Edge e : vertex.getEdges(Vertex.DIRECTION.IN))
             inEdges.put(e.getIdentity().toString());
           object.put("@in", inEdges);
         }

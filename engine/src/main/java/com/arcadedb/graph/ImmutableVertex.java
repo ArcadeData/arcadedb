@@ -114,7 +114,7 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
   }
 
   @Override
-  public long countEdges(DIRECTION direction, String edgeType) {
+  public long countEdges(final DIRECTION direction, final String edgeType) {
     return database.getGraphEngine().countEdges(getMostUpdatedVertex(this), direction, edgeType);
   }
 
@@ -154,7 +154,7 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
   }
 
   @Override
-  public Vertex asVertex(boolean loadContent) {
+  public Vertex asVertex(final boolean loadContent) {
     return this;
   }
 

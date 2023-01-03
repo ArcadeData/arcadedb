@@ -49,11 +49,11 @@ public class HARandomCrashIT extends ReplicationServerIT {
   public void testReplication() {
     checkDatabases();
 
-    Timer timer = new Timer();
+    final Timer timer = new Timer();
     timer.schedule(new TimerTask() {
       @Override
       public void run() {
-        int serverId = new Random().nextInt(getServerCount());
+        final int serverId = new Random().nextInt(getServerCount());
 
         if (!areAllServersOnline())
           return;
@@ -75,7 +75,7 @@ public class HARandomCrashIT extends ReplicationServerIT {
                     getTxs() * getVerticesPerTx());
                 return;
               }
-            } catch (Exception e) {
+            } catch (final Exception e) {
               // GENERIC ERROR, SKIP STOP
               LogManager.instance().log(this, Level.SEVERE, "TEST: Skip stop of server for generic error", e);
               continue;
@@ -91,7 +91,7 @@ public class HARandomCrashIT extends ReplicationServerIT {
             while (getServer(serverId).getStatus() == ArcadeDBServer.STATUS.SHUTTING_DOWN) {
               try {
                 Thread.sleep(1000);
-              } catch (InterruptedException e) {
+              } catch (final InterruptedException e) {
                 e.printStackTrace();
               }
             }
@@ -138,7 +138,7 @@ public class HARandomCrashIT extends ReplicationServerIT {
 
           for (int i = 0; i < getVerticesPerTx(); ++i) {
 
-            ResultSet resultSet = db.command("SQL", "CREATE VERTEX " + VERTEX1_TYPE_NAME + " SET id = ?, name = ?", ++counter, "distributed-test");
+            final ResultSet resultSet = db.command("SQL", "CREATE VERTEX " + VERTEX1_TYPE_NAME + " SET id = ?, name = ?", ++counter, "distributed-test");
 
             Assertions.assertTrue(resultSet.hasNext());
             final Result result = resultSet.next();
@@ -154,17 +154,17 @@ public class HARandomCrashIT extends ReplicationServerIT {
           if (delay > 0) {
             try {
               Thread.sleep(delay);
-            } catch (Exception e) {
+            } catch (final Exception e) {
             }
           }
           break;
 
-        } catch (TransactionException | NeedRetryException | RemoteException e) {
+        } catch (final TransactionException | NeedRetryException | RemoteException e) {
           LogManager.instance().log(this, Level.FINE, "TEST: - RECEIVED ERROR: %s (RETRY %d/%d)", null, e.toString(), retry, getMaxRetry());
           if (retry >= getMaxRetry() - 1)
             throw e;
           counter = lastGoodCounter;
-        } catch (Exception e) {
+        } catch (final Exception e) {
           LogManager.instance().log(this, Level.SEVERE, "TEST: - RECEIVED UNKNOWN ERROR: %s", e, e.toString());
           throw e;
         }
@@ -179,7 +179,7 @@ public class HARandomCrashIT extends ReplicationServerIT {
           try {
             final long tot = database.countType(VERTEX1_TYPE_NAME, false);
             LogManager.instance().log(this, Level.FINE, "TEST: -- SERVER %d - %d records", null, i, tot);
-          } catch (Exception e) {
+          } catch (final Exception e) {
             LogManager.instance().log(this, Level.SEVERE, "TEST: -- ERROR ON RETRIEVING COUNT FROM DATABASE '%s'", e, database);
           } finally {
             database.rollback();
@@ -199,12 +199,12 @@ public class HARandomCrashIT extends ReplicationServerIT {
 
     try {
       Thread.sleep(5000);
-    } catch (InterruptedException e) {
+    } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
     }
 
     // CHECK INDEXES ARE REPLICATED CORRECTLY
-    for (int s : getServerToCheck()) {
+    for (final int s : getServerToCheck()) {
       checkEntriesOnServer(s);
     }
 

@@ -39,7 +39,7 @@ public class GetDocumentHandler extends DatabaseAbstractHandler {
   }
 
   @Override
-  public void execute(final HttpServerExchange exchange, ServerSecurityUser user, final Database database) {
+  public void execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database) {
     final Deque<String> rid = exchange.getQueryParameters().get("rid");
     if (rid == null || rid.isEmpty()) {
       exchange.setStatusCode(400);

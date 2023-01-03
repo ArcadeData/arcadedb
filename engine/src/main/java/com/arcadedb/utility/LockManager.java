@@ -69,7 +69,7 @@ public class LockManager<RESOURCE, REQUESTER> {
 
             currentLock = lockManager.putIfAbsent(resource, lock);
 
-          } catch (InterruptedException e) {
+          } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();
             break;
           }
@@ -95,7 +95,7 @@ public class LockManager<RESOURCE, REQUESTER> {
   }
 
   public void close() {
-    for (Iterator<Map.Entry<RESOURCE, ODistributedLock>> it = lockManager.entrySet().iterator(); it.hasNext(); ) {
+    for (final Iterator<Map.Entry<RESOURCE, ODistributedLock>> it = lockManager.entrySet().iterator(); it.hasNext(); ) {
       final Map.Entry<RESOURCE, ODistributedLock> entry = it.next();
       final ODistributedLock lock = entry.getValue();
 

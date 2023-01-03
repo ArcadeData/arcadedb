@@ -39,7 +39,7 @@ public class PostBeginHandler extends DatabaseAbstractHandler {
   }
 
   @Override
-  public void execute(final HttpServerExchange exchange, ServerSecurityUser user, final Database database) throws IOException {
+  public void execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database) throws IOException {
     final HeaderValues txId = exchange.getRequestHeaders().get(HttpSessionManager.ARCADEDB_SESSION_ID);
     if (txId != null && !txId.isEmpty()) {
       final HttpSession tx = httpServer.getSessionManager().getSessionById(user, txId.getFirst());

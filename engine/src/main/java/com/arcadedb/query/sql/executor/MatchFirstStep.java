@@ -33,11 +33,11 @@ public class MatchFirstStep extends AbstractExecutionStep {
   Iterator<Result> iterator;
   ResultSet        subResultSet;
 
-  public MatchFirstStep(CommandContext context, PatternNode node, boolean profilingEnabled) {
+  public MatchFirstStep(final CommandContext context, final PatternNode node, final boolean profilingEnabled) {
     this(context, node, null, profilingEnabled);
   }
 
-  public MatchFirstStep(CommandContext context, PatternNode node, InternalExecutionPlan subPlan, boolean profilingEnabled) {
+  public MatchFirstStep(final CommandContext context, final PatternNode node, final InternalExecutionPlan subPlan, final boolean profilingEnabled) {
     super(context, profilingEnabled);
     this.node = node;
     this.executionPlan = subPlan;
@@ -53,7 +53,7 @@ public class MatchFirstStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
     getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
     init(ctx);
     return new ResultSet() {
@@ -77,7 +77,7 @@ public class MatchFirstStep extends AbstractExecutionStep {
         if (currentCount >= nRecords) {
           throw new NoSuchElementException();
         }
-        ResultInternal result = new ResultInternal();
+        final ResultInternal result = new ResultInternal();
         if (iterator != null) {
           result.setProperty(getAlias(), iterator.next());
         } else {
@@ -105,10 +105,10 @@ public class MatchFirstStep extends AbstractExecutionStep {
 //    return result;
 //  }
 
-  private void init(CommandContext ctx) {
+  private void init(final CommandContext ctx) {
     if (iterator == null && subResultSet == null) {
-      String alias = getAlias();
-      Object matchedNodes = ctx.getVariable(MatchPrefetchStep.PREFETCHED_MATCH_ALIAS_PREFIX + alias);
+      final String alias = getAlias();
+      final Object matchedNodes = ctx.getVariable(MatchPrefetchStep.PREFETCHED_MATCH_ALIAS_PREFIX + alias);
       if (matchedNodes != null) {
         initFromPrefetch(matchedNodes);
       } else {
@@ -117,12 +117,12 @@ public class MatchFirstStep extends AbstractExecutionStep {
     }
   }
 
-  private void initFromExecutionPlan(CommandContext ctx) {
+  private void initFromExecutionPlan(final CommandContext ctx) {
     this.subResultSet = new LocalResultSet(executionPlan);
   }
 
-  private void initFromPrefetch(Object matchedNodes) {
-    Iterable possibleResults;
+  private void initFromPrefetch(final Object matchedNodes) {
+    final Iterable possibleResults;
     if (matchedNodes instanceof Iterable) {
       possibleResults = (Iterable) matchedNodes;
     } else {
@@ -132,9 +132,9 @@ public class MatchFirstStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    StringBuilder result = new StringBuilder();
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
+    final StringBuilder result = new StringBuilder();
     result.append(spaces);
     result.append("+ SET \n");
     result.append(spaces);

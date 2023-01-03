@@ -24,12 +24,12 @@ import com.arcadedb.exception.TimeoutException;
  * Created by luigidellaquila on 08/07/16.
  */
 public class EmptyStep extends AbstractExecutionStep {
-  public EmptyStep(CommandContext ctx, boolean profilingEnabled) {
+  public EmptyStep(final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
     getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
     return new InternalResultSet();
   }

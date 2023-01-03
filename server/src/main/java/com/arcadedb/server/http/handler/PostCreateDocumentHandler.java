@@ -43,7 +43,7 @@ public class PostCreateDocumentHandler extends DatabaseAbstractHandler {
   }
 
   @Override
-  public void execute(final HttpServerExchange exchange, ServerSecurityUser user, final Database database) throws IOException {
+  public void execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database) throws IOException {
     final String payload = parseRequestPayload(exchange);
 
     final JSONObject json = new JSONObject(payload);

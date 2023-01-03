@@ -83,7 +83,7 @@ public class AnsiLogFormatter extends LogFormatter {
         buffer.append(String.format(message, additionalArgs));
       else
         buffer.append(message);
-    } catch (IllegalFormatException ignore) {
+    } catch (final IllegalFormatException ignore) {
       buffer.append(message);
     }
 

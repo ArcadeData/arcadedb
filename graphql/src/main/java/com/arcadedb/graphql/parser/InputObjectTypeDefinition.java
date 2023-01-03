@@ -28,11 +28,11 @@ public class InputObjectTypeDefinition extends TypeDefinition {
   protected Directives                 directives;
   protected List<InputValueDefinition> inputValueDefinitions = new ArrayList<>();
 
-  public InputObjectTypeDefinition(int id) {
+  public InputObjectTypeDefinition(final int id) {
     super(id);
   }
 
-  public InputObjectTypeDefinition(GraphQLParser p, int id) {
+  public InputObjectTypeDefinition(final GraphQLParser p, final int id) {
     super(p, id);
   }
 
@@ -43,7 +43,7 @@ public class InputObjectTypeDefinition extends TypeDefinition {
   /**
    * Accept the visitor.
    **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
+  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
     return visitor.visit(this, data);
   }
 }

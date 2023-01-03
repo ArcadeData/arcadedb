@@ -45,7 +45,7 @@ public class CreateVertexExecutionPlanner extends InsertExecutionPlanner {
     final InsertExecutionPlan result = new InsertExecutionPlan(ctx);
 
     handleCheckType(result, ctx, enableProfiling);
-    for (ExecutionStep step : steps)
+    for (final ExecutionStep step : steps)
       result.chain((ExecutionStepInternal) step);
 
     return result;

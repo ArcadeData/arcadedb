@@ -45,15 +45,15 @@ public class UpdateItem extends SimpleNode {
   protected int        operator;
   protected Expression right;
 
-  public UpdateItem(int id) {
+  public UpdateItem(final int id) {
     super(id);
   }
 
-  public UpdateItem(SqlParser p, int id) {
+  public UpdateItem(final SqlParser p, final int id) {
     super(p, id);
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     left.toString(params, builder);
     if (leftModifier != null) {
       leftModifier.toString(params, builder);
@@ -80,7 +80,7 @@ public class UpdateItem extends SimpleNode {
   }
 
   public UpdateItem copy() {
-    UpdateItem result = new UpdateItem(-1);
+    final UpdateItem result = new UpdateItem(-1);
     result.left = left == null ? null : left.copy();
     result.leftModifier = leftModifier == null ? null : leftModifier.copy();
     result.operator = operator;
@@ -89,13 +89,13 @@ public class UpdateItem extends SimpleNode {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    UpdateItem that = (UpdateItem) o;
+    final UpdateItem that = (UpdateItem) o;
 
     if (operator != that.operator)
       return false;
@@ -115,12 +115,12 @@ public class UpdateItem extends SimpleNode {
     return result;
   }
 
-  public void applyUpdate(ResultInternal doc, CommandContext ctx) {
+  public void applyUpdate(final ResultInternal doc, final CommandContext ctx) {
     final Object rightValue = right.execute(doc, ctx);
     if (leftModifier == null) {
       applyOperation(doc, left, rightValue, ctx);
     } else {
-      Object val = doc.getProperty(left.getStringValue());
+      final Object val = doc.getProperty(left.getStringValue());
       leftModifier.setValue(doc, val, rightValue, ctx);
     }
   }
@@ -196,7 +196,7 @@ public class UpdateItem extends SimpleNode {
     return value.stream().anyMatch(x -> x instanceof Result);
   }
 
-  private Object calculateNewValue(ResultInternal doc, CommandContext ctx, MathExpression.Operator explicitOperator) {
+  private Object calculateNewValue(final ResultInternal doc, final CommandContext ctx, final MathExpression.Operator explicitOperator) {
     final Expression leftEx = new Expression(left.copy());
     if (leftModifier != null) {
       ((BaseExpression) leftEx.mathExpression).modifier = leftModifier.copy();
@@ -212,7 +212,7 @@ public class UpdateItem extends SimpleNode {
     return left;
   }
 
-  public void setLeft(Identifier left) {
+  public void setLeft(final Identifier left) {
     this.left = left;
   }
 
@@ -220,7 +220,7 @@ public class UpdateItem extends SimpleNode {
     return leftModifier;
   }
 
-  public void setLeftModifier(Modifier leftModifier) {
+  public void setLeftModifier(final Modifier leftModifier) {
     this.leftModifier = leftModifier;
   }
 
@@ -228,7 +228,7 @@ public class UpdateItem extends SimpleNode {
     return operator;
   }
 
-  public void setOperator(int operator) {
+  public void setOperator(final int operator) {
     this.operator = operator;
   }
 
@@ -236,7 +236,7 @@ public class UpdateItem extends SimpleNode {
     return right;
   }
 
-  public void setRight(Expression right) {
+  public void setRight(final Expression right) {
     this.right = right;
   }
 }

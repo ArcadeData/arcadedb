@@ -25,7 +25,7 @@ import java.util.concurrent.atomic.*;
 
 public abstract class ResettableIteratorBase<T> implements ResettableIterator<T> {
   protected final DatabaseInternal database;
-  private         EdgeSegment      initialContainer;
+  private final   EdgeSegment      initialContainer;
   protected       EdgeSegment      currentContainer;
   protected final AtomicInteger    currentPosition = new AtomicInteger(MutableEdgeSegment.CONTENT_START_POSITION);
   protected       int              browsed         = 0;

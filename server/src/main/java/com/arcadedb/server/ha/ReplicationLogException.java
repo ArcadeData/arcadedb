@@ -23,7 +23,7 @@ public class ReplicationLogException extends ReplicationException {
     super(s);
   }
 
-  public ReplicationLogException(String s, Throwable e) {
+  public ReplicationLogException(final String s, final Throwable e) {
     super(s, e);
   }
 }

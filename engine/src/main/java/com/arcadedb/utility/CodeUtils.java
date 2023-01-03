@@ -30,7 +30,7 @@ public class CodeUtils {
   public static void executeIgnoringExceptions(final CallableNoReturn callback, final String errorMessage) {
     try {
       callback.call();
-    } catch (Throwable e) {
+    } catch (final Throwable e) {
       // IGNORE IT
       LogManager.instance().log(CodeUtils.class, Level.SEVERE, errorMessage);
     }
@@ -39,7 +39,7 @@ public class CodeUtils {
   public static void executeIgnoringExceptions(final CallableNoReturn callback) {
     try {
       callback.call();
-    } catch (Throwable e) {
+    } catch (final Throwable e) {
       // IGNORE IT
     }
   }

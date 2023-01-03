@@ -26,11 +26,11 @@ public class UnionTypeDefinition extends TypeDefinition {
   protected Directives   directives;
   protected UnionMembers unionMembers;
 
-  public UnionTypeDefinition(int id) {
+  public UnionTypeDefinition(final int id) {
     super(id);
   }
 
-  public UnionTypeDefinition(GraphQLParser p, int id) {
+  public UnionTypeDefinition(final GraphQLParser p, final int id) {
     super(p, id);
   }
 
@@ -41,7 +41,7 @@ public class UnionTypeDefinition extends TypeDefinition {
   /**
    * Accept the visitor.
    **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
+  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
     return visitor.visit(this, data);
   }
 }

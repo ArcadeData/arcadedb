@@ -30,25 +30,25 @@ public class ParenthesisBlock extends BooleanExpression {
 
   BooleanExpression subElement;
 
-  public ParenthesisBlock(int id) {
+  public ParenthesisBlock(final int id) {
     super(id);
   }
 
-  public ParenthesisBlock(SqlParser p, int id) {
+  public ParenthesisBlock(final SqlParser p, final int id) {
     super(p, id);
   }
 
   @Override
-  public boolean evaluate(Identifiable currentRecord, CommandContext ctx) {
+  public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
     return subElement.evaluate(currentRecord, ctx);
   }
 
   @Override
-  public boolean evaluate(Result currentRecord, CommandContext ctx) {
+  public boolean evaluate(final Result currentRecord, final CommandContext ctx) {
     return subElement.evaluate(currentRecord, ctx);
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("(");
     subElement.toString(params, builder);
     builder.append(" )");
@@ -75,19 +75,19 @@ public class ParenthesisBlock extends BooleanExpression {
   }
 
   @Override
-  public boolean needsAliases(Set<String> aliases) {
+  public boolean needsAliases(final Set<String> aliases) {
     return subElement.needsAliases(aliases);
   }
 
   @Override
   public ParenthesisBlock copy() {
-    ParenthesisBlock result = new ParenthesisBlock(-1);
+    final ParenthesisBlock result = new ParenthesisBlock(-1);
     result.subElement = subElement.copy();
     return result;
   }
 
   @Override
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
     this.subElement.extractSubQueries(collector);
   }
 
@@ -97,13 +97,13 @@ public class ParenthesisBlock extends BooleanExpression {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    ParenthesisBlock that = (ParenthesisBlock) o;
+    final ParenthesisBlock that = (ParenthesisBlock) o;
 
     return Objects.equals(subElement, that.subElement);
   }

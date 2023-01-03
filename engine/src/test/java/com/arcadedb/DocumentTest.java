@@ -34,7 +34,7 @@ public class DocumentTest extends TestHelper {
   @Override
   public void beginTest() {
     database.transaction(() -> {
-      DocumentType type = database.getSchema().createDocumentType("ConversionTest");
+      final DocumentType type = database.getSchema().createDocumentType("ConversionTest");
 
       type.createProperty("string", Type.STRING);
       type.createProperty("int", Type.INTEGER);
@@ -140,7 +140,7 @@ public class DocumentTest extends TestHelper {
       Assertions.assertEquals(embeddedMap, detached.get("embeddedMap"));
       Assertions.assertNull(detached.getString("lastname"));
 
-      Set<String> props = detached.getPropertyNames();
+      final Set<String> props = detached.getPropertyNames();
       Assertions.assertEquals(4, props.size());
       Assertions.assertTrue(props.contains("name"));
       Assertions.assertTrue(props.contains("embeddedObj"));
@@ -165,7 +165,7 @@ public class DocumentTest extends TestHelper {
       try {
         detached.modify();
         Assertions.fail("modify");
-      } catch (UnsupportedOperationException e) {
+      } catch (final UnsupportedOperationException e) {
       }
 
       detached.reload();
@@ -173,7 +173,7 @@ public class DocumentTest extends TestHelper {
       try {
         detached.setBuffer(null);
         Assertions.fail("setBuffer");
-      } catch (UnsupportedOperationException e) {
+      } catch (final UnsupportedOperationException e) {
       }
 
       Assertions.assertNull(detached.getString("name"));

@@ -50,7 +50,7 @@ public class JavaBinarySerializer {
     // PROPERTY COUNT
     final Set<String> properties = document.getPropertyNames();
     out.writeInt(properties.size());
-    for (String propName : properties) {
+    for (final String propName : properties) {
       // PROPERTY NAME
       out.writeUTF(propName);
 
@@ -111,7 +111,7 @@ public class JavaBinarySerializer {
       final byte[] array = new byte[propertySize];
       in.read(array);
 
-      Binary buffer = new Binary(array);
+      final Binary buffer = new Binary(array);
       final byte propType = buffer.getByte();
       final Object propValue = db.getSerializer().deserializeValue(db, buffer, propType, null);
 

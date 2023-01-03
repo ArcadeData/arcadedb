@@ -30,11 +30,11 @@ public class NamedParameter extends InputParameter {
   protected int    paramNumber;
   protected String paramName;
 
-  public NamedParameter(int id) {
+  public NamedParameter(final int id) {
     super(id);
   }
 
-  public NamedParameter(SqlParser p, int id) {
+  public NamedParameter(final SqlParser p, final int id) {
     super(p, id);
   }
 
@@ -43,8 +43,8 @@ public class NamedParameter extends InputParameter {
     return ":" + paramName;
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
-    Object finalValue = bindFromInputParams(params);
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
+    final Object finalValue = bindFromInputParams(params);
     if (finalValue == this) {
       builder.append(":" + paramName);
     } else if (finalValue instanceof String) {
@@ -58,10 +58,10 @@ public class NamedParameter extends InputParameter {
     }
   }
 
-  public Object getValue(Map<String, Object> params) {
+  public Object getValue(final Map<String, Object> params) {
     Object result = null;
     if (params != null) {
-      String key = paramName;
+      final String key = paramName;
       if (params.containsKey(":" + key)) {
         result = params.get(":" + key);
       } else if (params.containsKey(key)) {
@@ -73,9 +73,9 @@ public class NamedParameter extends InputParameter {
     return result;
   }
 
-  public Object bindFromInputParams(Map<String, Object> params) {
+  public Object bindFromInputParams(final Map<String, Object> params) {
     if (params != null) {
-      String key = paramName;
+      final String key = paramName;
       if (params.containsKey(key)) {
         return toParsedTree(params.get(key));
       }
@@ -86,7 +86,7 @@ public class NamedParameter extends InputParameter {
 
   @Override
   public NamedParameter copy() {
-    NamedParameter result = new NamedParameter(-1);
+    final NamedParameter result = new NamedParameter(-1);
     result.paramName = paramName;
     result.paramNumber = paramNumber;
     return result;
@@ -114,13 +114,13 @@ public class NamedParameter extends InputParameter {
   }
 
   public Result serialize() {
-    ResultInternal result = (ResultInternal) super.serialize();
+    final ResultInternal result = (ResultInternal) super.serialize();
     result.setProperty("paramNumber", paramNumber);
     result.setProperty("paramName", paramName);
     return result;
   }
 
-  public void deserialize(Result fromResult) {
+  public void deserialize(final Result fromResult) {
     paramNumber = fromResult.getProperty("paramNumber");
     paramName = fromResult.getProperty("paramName");
   }

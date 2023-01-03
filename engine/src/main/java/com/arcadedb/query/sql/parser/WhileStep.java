@@ -52,8 +52,8 @@ public class WhileStep extends AbstractExecutionStep {
 
     while (condition.evaluate(new ResultInternal(), ctx)) {
 
-      ScriptExecutionPlan plan = initPlan(ctx);
-      ExecutionStepInternal result = plan.executeFull();
+      final ScriptExecutionPlan plan = initPlan(ctx);
+      final ExecutionStepInternal result = plan.executeFull();
       if (result != null) {
         this.finalResult = result;
         return result.syncPull(ctx, nRecords);
@@ -68,18 +68,18 @@ public class WhileStep extends AbstractExecutionStep {
     final BasicCommandContext subCtx1 = new BasicCommandContext();
     subCtx1.setParent(ctx);
     final ScriptExecutionPlan plan = new ScriptExecutionPlan(subCtx1);
-    for (Statement stm : statements) {
+    for (final Statement stm : statements) {
       if (stm.originalStatement == null) {
         stm.originalStatement = stm;
       }
-      InternalExecutionPlan subPlan = stm.createExecutionPlan(subCtx1, profilingEnabled);
+      final InternalExecutionPlan subPlan = stm.createExecutionPlan(subCtx1, profilingEnabled);
       plan.chain(subPlan, profilingEnabled);
     }
     return plan;
   }
 
   public boolean containsReturn() {
-    for (Statement stm : this.statements) {
+    for (final Statement stm : this.statements) {
       if (stm instanceof ReturnStatement) {
         return true;
       }

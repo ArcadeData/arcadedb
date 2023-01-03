@@ -35,7 +35,7 @@ public class DocumentValidator {
   public static void validate(final MutableDocument document) throws ValidationException {
     document.checkForLazyLoadingProperties();
     final DocumentType type = document.getType();
-    for (String pName : type.getPropertyNames())
+    for (final String pName : type.getPropertyNames())
       validateField(document, type.getProperty(pName));
   }
 
@@ -69,7 +69,7 @@ public class DocumentValidator {
           if (!(fieldValue instanceof List))
             throwValidationException(p, "has been declared as LIST but an incompatible type is used. Value: " + fieldValue);
 
-          for (Object item : ((List<?>) fieldValue)) {
+          for (final Object item : ((List<?>) fieldValue)) {
             if (item instanceof MutableEmbeddedDocument)
               ((MutableEmbeddedDocument) item).validate();
           }
@@ -79,7 +79,7 @@ public class DocumentValidator {
           if (!(fieldValue instanceof Map))
             throwValidationException(p, "has been declared as MAP but an incompatible type is used. Value: " + fieldValue);
 
-          for (Object item : ((Map<?, ?>) fieldValue).values()) {
+          for (final Object item : ((Map<?, ?>) fieldValue).values()) {
             if (item instanceof MutableEmbeddedDocument)
               ((MutableEmbeddedDocument) item).validate();
           }

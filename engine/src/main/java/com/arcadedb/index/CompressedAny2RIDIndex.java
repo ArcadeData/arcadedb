@@ -160,7 +160,7 @@ public class CompressedAny2RIDIndex<K> {
     // SLOT OCCUPIED, CHECK FOR THE KEY
     threadBuffer.position(pos);
     while (true) {
-      Object slotKey = serializer.deserializeValue(database, threadBuffer, keyBinaryType, null);
+      final Object slotKey = serializer.deserializeValue(database, threadBuffer, keyBinaryType, null);
 
       if (BinaryComparator.equals(slotKey, key)) {
         threadBuffer.position(threadBuffer.position() + Binary.INT_SERIALIZED_SIZE);
@@ -209,7 +209,7 @@ public class CompressedAny2RIDIndex<K> {
         chunk.position(pos);
         int lastNextPos;
         while (true) {
-          Object slotKey = serializer.deserializeValue(database, chunk, keyBinaryType, null);
+          final Object slotKey = serializer.deserializeValue(database, chunk, keyBinaryType, null);
 
           if (BinaryComparator.equals(slotKey, key))
             throw new IllegalArgumentException("Key '" + key + "' is already present in the map");

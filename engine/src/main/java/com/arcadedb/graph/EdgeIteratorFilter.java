@@ -64,7 +64,7 @@ public class EdgeIteratorFilter extends IteratorFilterBase<Edge> {
       }
 
       return next.asEdge();
-    } catch (RecordNotFoundException e) {
+    } catch (final RecordNotFoundException e) {
       LogManager.instance().log(this, Level.WARNING, "Error on loading edge %s from vertex %s direction %s", e, next, vertex, direction);
 
       next = null;
@@ -73,7 +73,7 @@ public class EdgeIteratorFilter extends IteratorFilterBase<Edge> {
 
       throw e;
 
-    } catch (SchemaException e) {
+    } catch (final SchemaException e) {
       LogManager.instance().log(this, Level.WARNING, "Error on loading edge %s from vertex %s direction %s", e, next, vertex, direction);
       throw e;
     } finally {

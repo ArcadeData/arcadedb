@@ -63,7 +63,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     this.database = database;
     this.backend = backend;
 
-    for (DocumentType dt : database.getSchema().getTypes()) {
+    for (final DocumentType dt : database.getSchema().getTypes()) {
       collections.put(dt.getName(), new MongoDBCollectionWrapper(database, dt.getName()));
     }
   }
@@ -78,12 +78,12 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   }
 
   @Override
-  public void handleClose(Channel channel) {
+  public void handleClose(final Channel channel) {
     database.close();
   }
 
   @Override
-  public Document handleCommand(Channel channel, String command, Document document, final Oplog opLog) throws MongoServerException {
+  public Document handleCommand(final Channel channel, final String command, final Document document, final Oplog opLog) throws MongoServerException {
     try {
       if (command.equalsIgnoreCase("create"))
         return createCollection(document);
@@ -97,7 +97,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         LogManager.instance().log(this, Level.SEVERE, "Received unsupported command from MongoDB client '%s', (document=%s)", null, command, document);
         throw new UnsupportedOperationException(String.format("Received unsupported command from MongoDB client '%s', (document=%s)", command, document));
       }
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new MongoServerException("Error on executing MongoDB '" + command + "' command", e);
     }
   }
@@ -135,7 +135,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   private Document json2Document(final JSONObject map) {
     final Document doc = new Document();
 
-    for (String k : map.keySet()) {
+    for (final String k : map.keySet()) {
       Object v = map.get(k);
       if (v instanceof JSONObject)
         v = json2Document((JSONObject) v);
@@ -167,11 +167,11 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       if (collection == null) {
         return new QueryResult();
       } else {
-        int numSkip = query.getNumberToSkip();
-        int numReturn = query.getNumberToReturn();
+        final int numSkip = query.getNumberToSkip();
+        final int numReturn = query.getNumberToReturn();
         return collection.handleQuery(query.getQuery(), numSkip, numReturn);
       }
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new MongoServerException("Error on executing MongoDB query", e);
     }
   }
@@ -196,17 +196,17 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
     final MongoCollection<Long> collection = collections.get(collectionName);
 
-    Object pipelineObject = Aggregation.parse(document.get("pipeline"));
-    List<Document> pipeline = Aggregation.parse(pipelineObject);
+    final Object pipelineObject = Aggregation.parse(document.get("pipeline"));
+    final List<Document> pipeline = Aggregation.parse(pipelineObject);
     if (!pipeline.isEmpty()) {
-      Document changeStream = (Document) pipeline.get(0).get("$changeStream");
+      final Document changeStream = (Document) pipeline.get(0).get("$changeStream");
       if (changeStream != null) {
-        Aggregation aggregation = Aggregation.fromPipeline(pipeline.subList(1, pipeline.size()), this, collection, oplog);
+        final Aggregation aggregation = Aggregation.fromPipeline(pipeline.subList(1, pipeline.size()), this, collection, oplog);
         aggregation.validate(document);
         return commandChangeStreamPipeline(document, oplog, collectionName, changeStream, aggregation);
       }
     }
-    Aggregation aggregation = Aggregation.fromPipeline(pipeline, this, collection, oplog);
+    final Aggregation aggregation = Aggregation.fromPipeline(pipeline, this, collection, oplog);
     aggregation.validate(document);
 
     return firstBatchCursorResponse(collectionName, "firstBatch", aggregation.computeResult(), 0);
@@ -234,7 +234,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   }
 
   @Override
-  public MongoCollection<?> createCollectionOrThrowIfExists(String s, CollectionOptions collectionOptions) {
+  public MongoCollection<?> createCollectionOrThrowIfExists(final String s, final CollectionOptions collectionOptions) {
     return null;
   }
 
@@ -254,7 +254,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   }
 
   @Override
-  public void moveCollection(MongoDatabase mongoDatabase, MongoCollection<?> mongoCollection, String s) {
+  public void moveCollection(final MongoDatabase mongoDatabase, final MongoCollection<?> mongoCollection, final String s) {
     throw new UnsupportedOperationException();
   }
 
@@ -262,12 +262,13 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   public void unregisterCollection(final String collectionName) {
   }
 
-  private Document commandChangeStreamPipeline(Document query, Oplog oplog, String collectionName, Document changeStreamDocument, Aggregation aggregation) {
-    Document cursorDocument = (Document) query.get("cursor");
-    int batchSize = (int) cursorDocument.getOrDefault("batchSize", 0);
+  private Document commandChangeStreamPipeline(
+      final Document query, final Oplog oplog, final String collectionName, final Document changeStreamDocument, final Aggregation aggregation) {
+    final Document cursorDocument = (Document) query.get("cursor");
+    final int batchSize = (int) cursorDocument.getOrDefault("batchSize", 0);
 
-    String namespace = getFullCollectionNamespace(collectionName);
-    Cursor cursor = oplog.createCursor(changeStreamDocument, namespace, aggregation);
+    final String namespace = getFullCollectionNamespace(collectionName);
+    final Cursor cursor = oplog.createCursor(changeStreamDocument, namespace, aggregation);
     return firstBatchCursorResponse(namespace, "firstBatch", cursor.takeDocuments(batchSize), cursor.getId());
   }
 
@@ -288,9 +289,9 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       response.put("missing", Boolean.TRUE);
       response.put("n", 0);
     } else {
-      Document queryObject = (Document) document.get("query");
-      int limit = this.getOptionalNumber(document, "limit", -1);
-      int skip = this.getOptionalNumber(document, "skip", 0);
+      final Document queryObject = (Document) document.get("query");
+      final int limit = this.getOptionalNumber(document, "limit", -1);
+      final int skip = this.getOptionalNumber(document, "skip", 0);
       response.put("n", collection.count(queryObject, skip, limit));
     }
 
@@ -298,10 +299,10 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   }
 
   private Document insertDocument(final Channel channel, final Document query) throws MongoServerException {
-    String collectionName = query.get("insert").toString();
-    boolean isOrdered = Utils.isTrue(query.get("ordered"));
-    List<Document> documents = (List) query.get("documents");
-    List<Document> writeErrors = new ArrayList();
+    final String collectionName = query.get("insert").toString();
+    final boolean isOrdered = Utils.isTrue(query.get("ordered"));
+    final List<Document> documents = (List) query.get("documents");
+    final List<Document> writeErrors = new ArrayList();
 
     int n = 0;
     try {
@@ -311,22 +312,22 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         if (collectionName.startsWith("system.")) {
           throw new MongoServerError(16459, "attempt to insert in system namespace");
         } else {
-          MongoCollection<Long> collection = getOrCreateCollection(collectionName);
+          final MongoCollection<Long> collection = getOrCreateCollection(collectionName);
           n = collection.insertDocuments(documents).size();
 
           assert n == documents.size();
 
-          Document result = new Document("n", n);
+          final Document result = new Document("n", n);
           this.putLastResult(channel, result);
         }
-      } catch (MongoServerError var7) {
+      } catch (final MongoServerError var7) {
         this.putLastError(channel, var7);
         throw var7;
       }
 
       ++n;
-    } catch (MongoServerError e) {
-      Document error = new Document();
+    } catch (final MongoServerError e) {
+      final Document error = new Document();
       error.put("index", n);
       error.put("errmsg", e.getMessage());
       error.put("code", e.getCode());
@@ -334,7 +335,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       writeErrors.add(error);
     }
 
-    Document result = new Document();
+    final Document result = new Document();
     result.put("n", n);
     if (!writeErrors.isEmpty()) {
       result.put("writeErrors", writeErrors);
@@ -354,7 +355,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   }
 
   private Document responseOk() {
-    Document response = new Document();
+    final Document response = new Document();
     markOkay(response);
     return response;
   }
@@ -369,7 +370,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       // EMBEDDED CALL WITHOUT THE SERVER
       return;
 
-      List<Document> results = this.lastResults.computeIfAbsent(channel, k -> new ArrayList<>(10));
+      final List<Document> results = this.lastResults.computeIfAbsent(channel, k -> new ArrayList<>(10));
       results.add(null);
   }
 

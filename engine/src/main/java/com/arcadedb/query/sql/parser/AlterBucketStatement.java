@@ -32,16 +32,16 @@ public class AlterBucketStatement extends DDLStatement {
   protected Identifier attributeName;
   protected Expression attributeValue;
 
-  public AlterBucketStatement(int id) {
+  public AlterBucketStatement(final int id) {
     super(id);
   }
 
-  public AlterBucketStatement(SqlParser p, int id) {
+  public AlterBucketStatement(final SqlParser p, final int id) {
     super(p, id);
   }
 
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("ALTER BUCKET ");
     name.toString(params, builder);
     if (starred) {
@@ -55,7 +55,7 @@ public class AlterBucketStatement extends DDLStatement {
 
   @Override
   public AlterBucketStatement copy() {
-    AlterBucketStatement result = new AlterBucketStatement(-1);
+    final AlterBucketStatement result = new AlterBucketStatement(-1);
     result.name = name == null ? null : name.copy();
     result.attributeName = attributeName == null ? null : attributeName.copy();
     result.starred = starred;
@@ -64,7 +64,7 @@ public class AlterBucketStatement extends DDLStatement {
   }
 
   @Override
-  public ResultSet executeDDL(CommandContext ctx) {
+  public ResultSet executeDDL(final CommandContext ctx) {
 //    InternalResultSet result = new InternalResultSet();
 //    List<com.orientechnologies.orient.core.storage.OCluster> clustersToUpdate = getClusters(ctx);
 //    Object finalValue = attributeValue.execute((PIdentifiable) null, ctx);
@@ -121,13 +121,13 @@ public class AlterBucketStatement extends DDLStatement {
 //  }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    AlterBucketStatement that = (AlterBucketStatement) o;
+    final AlterBucketStatement that = (AlterBucketStatement) o;
 
     if (starred != that.starred)
       return false;

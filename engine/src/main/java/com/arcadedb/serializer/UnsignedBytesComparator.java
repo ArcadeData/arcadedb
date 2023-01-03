@@ -129,7 +129,7 @@ public final class UnsignedBytesComparator {
   public static class PureJavaComparator implements ByteArrayComparator {
     @Override
     public int compare(final byte[] left, final byte[] right) {
-      int minLength = Math.min(left.length, right.length);
+      final int minLength = Math.min(left.length, right.length);
       for (int i = 0; i < minLength; i++) {
         final int result = UnsignedBytesComparator.compare(left[i], right[i]);
         if (result != 0) {
@@ -176,16 +176,16 @@ public final class UnsignedBytesComparator {
    *
    * @return a sun.misc.Unsafe
    */
-  private static sun.misc.Unsafe getUnsafe() {
+  private static Unsafe getUnsafe() {
     try {
-      return sun.misc.Unsafe.getUnsafe();
-    } catch (SecurityException e) {
+      return Unsafe.getUnsafe();
+    } catch (final SecurityException e) {
       // that's okay; try reflection instead
     }
     try {
-      return java.security.AccessController.doPrivileged((PrivilegedExceptionAction<Unsafe>) () -> {
+      return AccessController.doPrivileged((PrivilegedExceptionAction<Unsafe>) () -> {
         final Class<Unsafe> k = Unsafe.class;
-        for (Field f : k.getDeclaredFields()) {
+        for (final Field f : k.getDeclaredFields()) {
           f.setAccessible(true);
           final Object x = f.get(null);
           if (k.isInstance(x)) {
@@ -194,7 +194,7 @@ public final class UnsignedBytesComparator {
         }
         throw new NoSuchFieldError("the Unsafe");
       });
-    } catch (java.security.PrivilegedActionException e) {
+    } catch (final PrivilegedActionException e) {
       throw new ArcadeDBException("Could not initialize intrinsics", e.getCause());
     }
   }

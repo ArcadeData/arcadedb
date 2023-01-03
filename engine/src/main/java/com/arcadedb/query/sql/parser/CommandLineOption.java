@@ -26,34 +26,34 @@ public class CommandLineOption extends SimpleNode {
 
   protected Identifier name;
 
-  public CommandLineOption(int id) {
+  public CommandLineOption(final int id) {
     super(id);
   }
 
-  public CommandLineOption(SqlParser p, int id) {
+  public CommandLineOption(final SqlParser p, final int id) {
     super(p, id);
   }
 
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("-");
     name.toString(params, builder);
   }
 
   public CommandLineOption copy() {
-    CommandLineOption result = new CommandLineOption(-1);
+    final CommandLineOption result = new CommandLineOption(-1);
     result.name = name == null ? null : name.copy();
     return result;
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    CommandLineOption that = (CommandLineOption) o;
+    final CommandLineOption that = (CommandLineOption) o;
 
     return Objects.equals(name, that.name);
   }

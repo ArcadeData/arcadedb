@@ -37,7 +37,7 @@ public class SQLFunctionCount extends SQLFunctionMathAbstract {
     super(NAME, 1, 1);
   }
 
-  public Object execute(Object iThis, Identifiable iCurrentRecord, Object iCurrentResult, final Object[] iParams, CommandContext iContext) {
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams, final CommandContext iContext) {
     if (iParams.length == 0 || iParams[0] != null)
       total++;
 

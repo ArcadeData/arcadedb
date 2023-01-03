@@ -39,46 +39,46 @@ public class CreateEdgeStatement extends Statement {
   protected Number     wait;
   protected boolean    ifNotExists;
 
-  public CreateEdgeStatement(int id) {
+  public CreateEdgeStatement(final int id) {
     super(id);
   }
 
-  public CreateEdgeStatement(SqlParser p, int id) {
+  public CreateEdgeStatement(final SqlParser p, final int id) {
     super(p, id);
   }
 
   @Override
-  public ResultSet execute(Database db, Object[] args, CommandContext parentCtx, boolean usePlanCache) {
-    BasicCommandContext ctx = new BasicCommandContext();
+  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentCtx, final boolean usePlanCache) {
+    final BasicCommandContext ctx = new BasicCommandContext();
     if (parentCtx != null) {
       ctx.setParentWithoutOverridingChild(parentCtx);
     }
     ctx.setDatabase(db);
     ctx.setInputParameters(args);
-    InsertExecutionPlan executionPlan = createExecutionPlan(ctx, false);
+    final InsertExecutionPlan executionPlan = createExecutionPlan(ctx, false);
     executionPlan.executeInternal();
     return new LocalResultSet(executionPlan);
   }
 
   @Override
-  public ResultSet execute(Database db, Map params, CommandContext parentCtx, boolean usePlanCache) {
-    BasicCommandContext ctx = new BasicCommandContext();
+  public ResultSet execute(final Database db, final Map params, final CommandContext parentCtx, final boolean usePlanCache) {
+    final BasicCommandContext ctx = new BasicCommandContext();
     if (parentCtx != null) {
       ctx.setParentWithoutOverridingChild(parentCtx);
     }
     ctx.setDatabase(db);
     ctx.setInputParameters(params);
-    InsertExecutionPlan executionPlan = createExecutionPlan(ctx, false);
+    final InsertExecutionPlan executionPlan = createExecutionPlan(ctx, false);
     executionPlan.executeInternal();
     return new LocalResultSet(executionPlan);
   }
 
-  public InsertExecutionPlan createExecutionPlan(CommandContext ctx, boolean enableProfiling) {
-    CreateEdgeExecutionPlanner planner = new CreateEdgeExecutionPlanner(this);
+  public InsertExecutionPlan createExecutionPlan(final CommandContext ctx, final boolean enableProfiling) {
+    final CreateEdgeExecutionPlanner planner = new CreateEdgeExecutionPlanner(this);
     return planner.createExecutionPlan(ctx, enableProfiling);
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("CREATE EDGE");
     if (targetType != null) {
       builder.append(" ");
@@ -126,7 +126,7 @@ public class CreateEdgeStatement extends Statement {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())

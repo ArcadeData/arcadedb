@@ -54,7 +54,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   public long countEntries() {
     checkIsValid();
     long total = 0;
-    for (IndexInternal index : indexesOnBuckets)
+    for (final IndexInternal index : indexesOnBuckets)
       total += index.countEntries();
     return total;
   }
@@ -79,13 +79,13 @@ public class TypeIndex implements RangeIndex, IndexInternal {
 
   @Override
   public IndexCursor range(final boolean ascending, final Object[] beginKeys, final boolean beginKeysInclusive, final Object[] endKeys,
-      boolean endKeysInclusive) {
+      final boolean endKeysInclusive) {
     checkIsValid();
     if (!supportsOrderedIterations())
       throw new UnsupportedOperationException("Index '" + getName() + "' does not support ordered iterations");
 
     final List<IndexCursor> cursors = new ArrayList<>(indexesOnBuckets.size());
-    for (Index index : indexesOnBuckets)
+    for (final Index index : indexesOnBuckets)
       cursors.add(((RangeIndex) index).range(ascending, beginKeys, beginKeysInclusive, endKeys, endKeysInclusive));
 
     return new MultiIndexCursor(cursors, -1, ascending);
@@ -96,7 +96,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     checkIsValid();
     Set<Identifiable> result = null;
 
-    for (Index index : getIndexesByKeys(keys)) {
+    for (final Index index : getIndexesByKeys(keys)) {
       final boolean unique = index.isUnique();
 
       final IndexCursor cursor = index.get(keys, unique ? 1 : -1);
@@ -119,7 +119,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     checkIsValid();
     Set<Identifiable> result = null;
 
-    for (Index index : getIndexesByKeys(keys)) {
+    for (final Index index : getIndexesByKeys(keys)) {
       final IndexCursor cursor = index.get(keys, limit > -1 ? (result != null ? result.size() : 0) - limit : -1);
       while (cursor.hasNext()) {
         if (result == null)
@@ -142,14 +142,14 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   @Override
   public void remove(final Object[] keys) {
     checkIsValid();
-    for (Index index : getIndexesByKeys(keys))
+    for (final Index index : getIndexesByKeys(keys))
       index.remove(keys);
   }
 
   @Override
   public void remove(final Object[] keys, final Identifiable rid) {
     checkIsValid();
-    for (Index index : getIndexesByKeys(keys))
+    for (final Index index : getIndexesByKeys(keys))
       index.remove(keys, rid);
   }
 
@@ -157,7 +157,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   public boolean compact() throws IOException, InterruptedException {
     checkIsValid();
     boolean result = false;
-    for (IndexInternal index : indexesOnBuckets)
+    for (final IndexInternal index : indexesOnBuckets)
       if (index.compact())
         result = true;
     return result;
@@ -166,7 +166,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   @Override
   public boolean isCompacting() {
     checkIsValid();
-    for (Index index : indexesOnBuckets)
+    for (final Index index : indexesOnBuckets)
       if (index.isCompacting())
         return true;
     return false;
@@ -175,7 +175,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   @Override
   public boolean scheduleCompaction() {
     checkIsValid();
-    for (Index index : indexesOnBuckets)
+    for (final Index index : indexesOnBuckets)
       if (!index.scheduleCompaction())
         return false;
 
@@ -204,7 +204,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   @Override
   public void close() {
     checkIsValid();
-    for (IndexInternal index : indexesOnBuckets)
+    for (final IndexInternal index : indexesOnBuckets)
       index.close();
   }
 
@@ -219,7 +219,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
 
     final DocumentType t = type.getSchema().getType(getTypeName());
 
-    for (Index index : new ArrayList<>(indexesOnBuckets))
+    for (final Index index : new ArrayList<>(indexesOnBuckets))
       type.getSchema().dropIndex(index.getName());
     indexesOnBuckets.clear();
 
@@ -235,7 +235,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   public Map<String, Long> getStats() {
     checkIsValid();
     final Map<String, Long> stats = new HashMap<>();
-    for (Index index : indexesOnBuckets)
+    for (final Index index : indexesOnBuckets)
       stats.putAll(((IndexInternal) index).getStats());
     return stats;
   }
@@ -279,7 +279,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   public long build(final BuildIndexCallback callback) {
     checkIsValid();
     long total = 0;
-    for (IndexInternal index : indexesOnBuckets)
+    for (final IndexInternal index : indexesOnBuckets)
       total += index.build(callback);
     return total;
   }
@@ -367,7 +367,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   public List<Integer> getFileIds() {
     checkIsValid();
     final List<Integer> ids = new ArrayList<>(indexesOnBuckets.size() * 2);
-    for (IndexInternal idx : indexesOnBuckets)
+    for (final IndexInternal idx : indexesOnBuckets)
       ids.addAll(idx.getFileIds());
     return ids;
   }

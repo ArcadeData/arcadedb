@@ -23,8 +23,6 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ServerPlugin;
-import com.arcadedb.server.http.HttpServer;
-import io.undertow.server.handlers.PathHandler;
 import org.apache.tinkerpop.gremlin.server.GremlinServer;
 import org.apache.tinkerpop.gremlin.server.Settings;
 
@@ -50,9 +48,9 @@ public class GremlinServerPlugin implements ServerPlugin {
     Settings settings = null;
     final File confFile = new File(server.getRootPath() + CONFIG_GREMLIN_SERVER_YAML);
     if (confFile.exists()) {
-      try (FileInputStream is = new FileInputStream(confFile.getAbsolutePath())) {
+      try (final FileInputStream is = new FileInputStream(confFile.getAbsolutePath())) {
         settings = Settings.read(is);
-      } catch (Exception e) {
+      } catch (final Exception e) {
         LogManager.instance()
             .log(this, Level.INFO, "Error on loading Gremlin Server configuration file '%s'. Using default configuration", CONFIG_GREMLIN_SERVER_YAML);
       }
@@ -70,7 +68,7 @@ public class GremlinServerPlugin implements ServerPlugin {
     settings.authentication.config = new HashMap<>(1);
     settings.authentication.config.put("server", server);
 
-    for (String key : configuration.getContextKeys()) {
+    for (final String key : configuration.getContextKeys()) {
       if (key.startsWith("gremlin.")) {
         final Object value = configuration.getValue(key, null);
         final String gremlinConfigKey = key.substring("gremlin.".length());
@@ -78,7 +76,7 @@ public class GremlinServerPlugin implements ServerPlugin {
         try {
           final Field field = settings.getClass().getField(gremlinConfigKey);
           field.set(settings, value);
-        } catch (NoSuchFieldException | IllegalAccessException e) {
+        } catch (final NoSuchFieldException | IllegalAccessException e) {
           // IGNORE IT
         }
       }
@@ -87,7 +85,7 @@ public class GremlinServerPlugin implements ServerPlugin {
     gremlinServer = new GremlinServer(settings);
     try {
       gremlinServer.start();
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new ServerException("Error on starting GremlinServer plugin", e);
     }
   }
@@ -96,9 +94,5 @@ public class GremlinServerPlugin implements ServerPlugin {
   public void stopService() {
     if (gremlinServer != null)
       gremlinServer.stop();
-  }
-
-  @Override
-  public void registerAPI(HttpServer httpServer, final PathHandler routes) {
   }
 }

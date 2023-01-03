@@ -24,7 +24,7 @@ import com.arcadedb.graph.Vertex;
  * Created by luigidellaquila on 20/02/17.
  */
 public class CastToVertexStep extends CastToStepAbstract {
-  public CastToVertexStep(CommandContext ctx, boolean profilingEnabled) {
+  public CastToVertexStep(final CommandContext ctx, final boolean profilingEnabled) {
     super(Vertex.class, "vertex", ctx, profilingEnabled);
   }
 }

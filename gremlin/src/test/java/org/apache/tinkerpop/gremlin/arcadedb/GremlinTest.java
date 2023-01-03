@@ -62,7 +62,7 @@ public class GremlinTest {
           graph.getDatabase().newVertex("Person").set("name", "Jay").set("age", i).save();
       });
 
-      ResultSet result = graph.gremlin(
+      final ResultSet result = graph.gremlin(
               "g.V().as('p').hasLabel('Person').where(__.choose(__.constant(p1), __.constant(p1), __.constant('  cypher.null')).is(neq('  cypher.null')).as('  GENERATED1').select('p').values('age').where(gte('  GENERATED1'))).select('p').project('p.name', 'p.age').by(__.choose(neq('  cypher.null'), __.choose(__.values('name'), __.values('name'), __.constant('  cypher.null')))).by(__.choose(neq('  cypher.null'), __.choose(__.values('age'), __.values('age'), __.constant('  cypher.null')))).order().by(__.select('p.age'), asc)")//
           .setParameter("p1", 25).execute();
 
@@ -125,7 +125,7 @@ public class GremlinTest {
           database.newVertex("Person").set("name", "Jay").set("age", i).save();
       });
 
-      ResultSet result = database.query("gremlin",
+      final ResultSet result = database.query("gremlin",
           "g.V().as('p').hasLabel('Person').where(__.choose(__.constant(p1), __.constant(p1), __.constant('  cypher.null')).is(neq('  cypher.null')).as('  GENERATED1').select('p').values('age').where(gte('  GENERATED1'))).select('p').project('p.name', 'p.age').by(__.choose(neq('  cypher.null'), __.choose(__.values('name'), __.values('name'), __.constant('  cypher.null')))).by(__.choose(neq('  cypher.null'), __.choose(__.values('age'), __.values('age'), __.constant('  cypher.null')))).order().by(__.select('p.age'), asc)",
           "p1", 25);
 
@@ -164,7 +164,7 @@ public class GremlinTest {
             "g.V().as('p').hasLabel22222('Person').where(__.choose(__.constant(p1), __.constant(p1), __.constant('  cypher.null')).is(neq('  cypher.null')).as('  GENERATED1').select('p').values('age').where(gte('  GENERATED1'))).select('p').project('p.name', 'p.age').by(__.choose(neq('  cypher.null'), __.choose(__.values('name'), __.values('name'), __.constant('  cypher.null')))).by(__.choose(neq('  cypher.null'), __.choose(__.values('age'), __.values('age'), __.constant('  cypher.null')))).order().by(__.select('p.age'), asc)",
             "p1", 25);
         Assertions.fail();
-      } catch (QueryParsingException e) {
+      } catch (final QueryParsingException e) {
         // EXPECTED
       }
 
@@ -248,10 +248,10 @@ public class GremlinTest {
   public void infinityValue() throws ExecutionException, InterruptedException {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testInfinite");
     try {
-      Vertex alice = graph.addVertex("person");
+      final Vertex alice = graph.addVertex("person");
       alice.property("hair", Double.POSITIVE_INFINITY);
 
-      Vertex bob = graph.addVertex("person");
+      final Vertex bob = graph.addVertex("person");
       bob.property("hair", 500);
 
       final ArcadeGremlin gremlinReadOnly = graph.gremlin("g.V().has('hair', 500.00)");
@@ -291,9 +291,9 @@ public class GremlinTest {
       graph.getDatabase().getSchema().getOrCreateVertexType("Person");
       graph.getDatabase().getSchema().getOrCreateEdgeType("FriendOf");
 
-      Vertex alice = graph.addVertex("label", "Person", "name", "Alice");
-      Vertex bob = graph.addVertex("label", "Person", "name", "Bob");
-      Vertex steve = graph.addVertex("label", "Person", "name", "Steve");
+      final Vertex alice = graph.addVertex("label", "Person", "name", "Alice");
+      final Vertex bob = graph.addVertex("label", "Person", "name", "Bob");
+      final Vertex steve = graph.addVertex("label", "Person", "name", "Steve");
 
       alice.addEdge("FriendOf", bob);
       alice.addEdge("FriendOf", steve);

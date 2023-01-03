@@ -47,7 +47,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   }
 
   public synchronized void merge(final Map<String, Object> other) {
-    for (Map.Entry<String, Object> entry : other.entrySet())
+    for (final Map.Entry<String, Object> entry : other.entrySet())
       set(entry.getKey(), entry.getValue());
   }
 
@@ -70,7 +70,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
 
   public synchronized MutableDocument fromMap(final Map<String, Object> map) {
     this.map = new LinkedHashMap<>(map.size());
-    for (Map.Entry<String, Object> entry : map.entrySet()) {
+    for (final Map.Entry<String, Object> entry : map.entrySet()) {
       final String key = entry.getKey();
       if (key.startsWith("@"))
         // SKIP METADATA
@@ -128,7 +128,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   }
 
   @Override
-  public synchronized boolean has(String propertyName) {
+  public synchronized boolean has(final String propertyName) {
     checkForLazyLoadingProperties();
     return map.containsKey(propertyName);
   }
@@ -259,7 +259,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     checkForLazyLoadingProperties();
     dirty = true;
 
-    for (Map.Entry<String, Object> entry : properties.entrySet()) {
+    for (final Map.Entry<String, Object> entry : properties.entrySet()) {
       final String propertyName = entry.getKey();
       if (propertyName.startsWith("@"))
         // SKIP METADATA
@@ -320,7 +320,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
       result.append('?');
     } else {
       int i = 0;
-      for (Map.Entry<String, Object> entry : map.entrySet()) {
+      for (final Map.Entry<String, Object> entry : map.entrySet()) {
         if (i > 0)
           result.append(',');
 
@@ -377,7 +377,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     if (prop != null)
       try {
         return Type.convert(database, value, prop.getType().getDefaultJavaType());
-      } catch (Exception e) {
+      } catch (final Exception e) {
         throw new IllegalArgumentException("Cannot convert type '" + value.getClass() + "' to '" + prop.getType().name() + "' found in property '" + name + "'",
             e);
       }
@@ -400,9 +400,9 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
         return newRecord;
       }
     } else if (value instanceof List) {
-      List<Object> list = (List<Object>) value;
+      final List<Object> list = (List<Object>) value;
       for (int i = 0; i < list.size(); i++) {
-        Object v = list.get(i);
+        final Object v = list.get(i);
         if (v instanceof Document && !((Document) v).getDatabase().getName().equals(database.getName())) {
           ((BaseDocument) v).buffer.rewind();
           final MutableDocument newRecord = (MutableDocument) database.getRecordFactory()
@@ -416,7 +416,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
       }
     } else if (value instanceof Map) {
       final Map<Object, Object> map = (Map<Object, Object>) value;
-      for (Map.Entry<Object, Object> entry : map.entrySet()) {
+      for (final Map.Entry<Object, Object> entry : map.entrySet()) {
         final Object v = entry.getValue();
         if (v instanceof Document && !((Document) v).getDatabase().getName().equals(database.getName())) {
           ((BaseDocument) v).buffer.rewind();

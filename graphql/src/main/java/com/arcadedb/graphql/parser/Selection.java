@@ -29,18 +29,18 @@ public class Selection extends SimpleNode {
   protected FragmentSpread fragmentSpread;
   protected InlineFragment inlineFragment;
 
-  public Selection(int id) {
+  public Selection(final int id) {
     super(id);
   }
 
-  public Selection(GraphQLParser p, int id) {
+  public Selection(final GraphQLParser p, final int id) {
     super(p, id);
   }
 
   /**
    * Accept the visitor.
    **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
+  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
     return visitor.visit(this, data);
   }
 

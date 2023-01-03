@@ -38,14 +38,14 @@ public class SQLMethodAsSet extends AbstractSQLMethod {
 
   @SuppressWarnings("unchecked")
   @Override
-  public Object execute( Object iThis, Identifiable iCurrentRecord, CommandContext iContext, Object ioResult, Object[] iParams) {
+  public Object execute( final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, Object ioResult, final Object[] iParams) {
     if (ioResult instanceof Set)
       // ALREADY A SET
       return ioResult;
 
     if (ioResult == null)
       // NULL VALUE, RETURN AN EMPTY SET
-      return Collections.EMPTY_SET;
+      return Collections.emptySet();
 
     if (ioResult instanceof Collection<?>) {
       return new HashSet<>((Collection<Object>) ioResult);
@@ -56,7 +56,7 @@ public class SQLMethodAsSet extends AbstractSQLMethod {
     if (ioResult instanceof Iterator<?>) {
       final Set<Object> set = new HashSet<>();
 
-      for (Iterator<Object> iter = (Iterator<Object>) ioResult; iter.hasNext(); )
+      for (final Iterator<Object> iter = (Iterator<Object>) ioResult; iter.hasNext(); )
         set.add(iter.next());
 
       return set;

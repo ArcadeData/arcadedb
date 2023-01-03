@@ -99,7 +99,7 @@ public class Profiler {
     long indexCompactions = 0;
 
     try {
-      for (DatabaseInternal db : databases) {
+      for (final DatabaseInternal db : databases) {
         final Map<String, Object> dbStats = db.getStats();
         txCommits += (long) dbStats.get("txCommits");
         txRollbacks += (long) dbStats.get("txRollbacks");
@@ -156,8 +156,8 @@ public class Profiler {
 
       boolean dumpWithJmx = false;
       try {
-        MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
-        ObjectName osMBeanName = ObjectName.getInstance(ManagementFactory.OPERATING_SYSTEM_MXBEAN_NAME);
+        final MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
+        final ObjectName osMBeanName = ObjectName.getInstance(ManagementFactory.OPERATING_SYSTEM_MXBEAN_NAME);
 
         if (mbs.isInstanceOf(osMBeanName, "com.sun.management.OperatingSystemMXBean")) {
           final long osTotalMem = ((Number) mbs.getAttribute(osMBeanName, "TotalPhysicalMemorySize")).longValue();
@@ -168,7 +168,7 @@ public class Profiler {
 
           dumpWithJmx = true;
         }
-      } catch (Exception e) {
+      } catch (final Exception e) {
         // JMX NOT AVAILABLE, AVOID OS DATA
       }
 
@@ -200,14 +200,14 @@ public class Profiler {
           FileUtils.getSizeAsString(totalSpaceInMB), totalOpenFiles, maxOpenFiles));
 
       out.println(buffer);
-    } catch (Exception e) {
+    } catch (final Exception e) {
       out.println("Error on displaying metrics (" + e + ")");
     }
   }
 
   private static long getGarbageCollectionTime() {
     long collectionTime = 0;
-    for (GarbageCollectorMXBean garbageCollectorMXBean : ManagementFactory.getGarbageCollectorMXBeans()) {
+    for (final GarbageCollectorMXBean garbageCollectorMXBean : ManagementFactory.getGarbageCollectorMXBeans()) {
       collectionTime += garbageCollectorMXBean.getCollectionTime();
     }
     return collectionTime;

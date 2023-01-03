@@ -169,7 +169,7 @@ public class ReplicationLogFile extends LockContext {
 
         return true;
 
-      } catch (Exception e) {
+      } catch (final Exception e) {
         throw new ReplicationLogException("Error on writing message " + message.messageNumber + " to the replication log", e);
       }
     });
@@ -364,7 +364,7 @@ public class ReplicationLogFile extends LockContext {
       public Object call() {
         try {
           return lastChunkChannel.size() + (chunkNumber * CHUNK_SIZE);
-        } catch (IOException e) {
+        } catch (final IOException e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on computing file size for last chunk (%d) in replication log '%s'", e, chunkNumber, filePath);
           return 0L;
         }
@@ -439,7 +439,7 @@ public class ReplicationLogFile extends LockContext {
       final File archivedFile = new File(filePath + "." + chunkNumber);
       try {
         archiveChunkCallback.archiveChunk(archivedFile, (int) chunkNumber);
-      } catch (Exception e) {
+      } catch (final Exception e) {
         LogManager.instance().log(this, Level.WARNING, "Error in replication log archive callback invoked on file '%s'", e, archivedFile);
       }
     }

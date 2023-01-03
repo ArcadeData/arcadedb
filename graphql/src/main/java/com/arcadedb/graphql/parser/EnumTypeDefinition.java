@@ -28,18 +28,18 @@ public class EnumTypeDefinition extends TypeDefinition {
   protected Directives                directives;
   protected List<EnumValueDefinition> enumValueDefinitions = new ArrayList<>();
 
-  public EnumTypeDefinition(int id) {
+  public EnumTypeDefinition(final int id) {
     super(id);
   }
 
-  public EnumTypeDefinition(GraphQLParser p, int id) {
+  public EnumTypeDefinition(final GraphQLParser p, final int id) {
     super(p, id);
   }
 
   /**
    * Accept the visitor.
    **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
+  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
     return visitor.visit(this, data);
   }
 

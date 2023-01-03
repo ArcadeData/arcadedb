@@ -79,7 +79,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   public static class PaginatedComponentFactoryHandlerNotUnique implements PaginatedComponentFactory.PaginatedComponentFactoryHandler {
     @Override
     public PaginatedComponent createOnLoad(final DatabaseInternal database, final String name, final String filePath, final int id,
-        final PaginatedFile.MODE mode, final int pageSize, int version) throws IOException {
+        final PaginatedFile.MODE mode, final int pageSize, final int version) throws IOException {
       final LSMTreeFullTextIndex mainIndex = new LSMTreeFullTextIndex(database, name, filePath, id, mode, pageSize, version);
       return mainIndex.underlyingIndex.mutable;
     }
@@ -101,7 +101,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
       final int pageSize, final int version) {
     try {
       underlyingIndex = new LSMTreeIndex(database, name, false, filePath, fileId, mode, pageSize, version);
-    } catch (IOException e) {
+    } catch (final IOException e) {
       throw new IndexException("Cannot create search engine (error=" + e + ")", e);
     }
     analyzer = new StandardAnalyzer();
@@ -118,13 +118,13 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
 
     final HashMap<RID, AtomicInteger> scoreMap = new HashMap<>();
 
-    for (String k : keywords) {
+    for (final String k : keywords) {
       final IndexCursor rids = underlyingIndex.get(new String[] { k });
 
       while (rids.hasNext()) {
         final RID rid = rids.next().getIdentity();
 
-        AtomicInteger score = scoreMap.get(rid);
+        final AtomicInteger score = scoreMap.get(rid);
         if (score == null)
           scoreMap.put(rid, new AtomicInteger(1));
         else
@@ -135,7 +135,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     final int maxElements = limit > -1 ? limit : scoreMap.size();
 
     final ArrayList<IndexCursorEntry> list = new ArrayList<>(maxElements);
-    for (Map.Entry<RID, AtomicInteger> entry : scoreMap.entrySet())
+    for (final Map.Entry<RID, AtomicInteger> entry : scoreMap.entrySet())
       list.add(new IndexCursorEntry(keys, entry.getKey(), entry.getValue().get()));
 
     if (list.size() > 1)
@@ -151,21 +151,21 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   @Override
   public void put(final Object[] keys, final RID[] rids) {
     final List<String> keywords = analyzeText(analyzer, keys);
-    for (String k : keywords)
+    for (final String k : keywords)
       underlyingIndex.put(new String[] { k }, rids);
   }
 
   @Override
   public void remove(final Object[] keys) {
     final List<String> keywords = analyzeText(analyzer, keys);
-    for (String k : keywords)
+    for (final String k : keywords)
       underlyingIndex.remove(new String[] { k });
   }
 
   @Override
   public void remove(final Object[] keys, final Identifiable rid) {
     final List<String> keywords = analyzeText(analyzer, keys);
-    for (String k : keywords)
+    for (final String k : keywords)
       underlyingIndex.remove(new String[] { k }, rid);
   }
 
@@ -239,7 +239,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   }
 
   @Override
-  public void setNullStrategy(LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy) {
+  public void setNullStrategy(final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy) {
     if (nullStrategy != LSMTreeIndexAbstract.NULL_STRATEGY.ERROR)
       throw new IllegalArgumentException("Unsupported null strategy '" + nullStrategy + "'");
   }
@@ -305,7 +305,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   }
 
   @Override
-  public long build(BuildIndexCallback callback) {
+  public long build(final BuildIndexCallback callback) {
     return underlyingIndex.build(callback);
   }
 
@@ -321,7 +321,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   public List<String> analyzeText(final Analyzer analyzer, final Object[] text) {
     final List<String> tokens = new ArrayList<>();
 
-    for (Object t : text) {
+    for (final Object t : text) {
       final TokenStream tokenizer = analyzer.tokenStream("contents", t.toString());
       try {
         tokenizer.reset();
@@ -329,19 +329,19 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
 
         try {
           while (tokenizer.incrementToken()) {
-            String token = termAttribute.toString();
+            final String token = termAttribute.toString();
             tokens.add(token);
           }
 
-        } catch (IOException e) {
+        } catch (final IOException e) {
           throw new IndexException("Error on analyzing text", e);
         }
-      } catch (IOException e) {
+      } catch (final IOException e) {
         throw new IndexException("Error on tokenizer", e);
       } finally {
         try {
           tokenizer.close();
-        } catch (IOException e) {
+        } catch (final IOException e) {
           // IGNORE IT
         }
       }

@@ -39,7 +39,7 @@ public class CreateBucketStatement extends DDLStatement {
     super(id);
   }
 
-  public CreateBucketStatement(final SqlParser p, int id) {
+  public CreateBucketStatement(final SqlParser p, final int id) {
     super(p, id);
   }
 

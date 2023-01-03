@@ -34,27 +34,27 @@ public class FilterByClustersStep extends AbstractExecutionStep {
 
   ResultSet prevResult = null;
 
-  public FilterByClustersStep(Set<String> filterClusters, CommandContext ctx, boolean profilingEnabled) {
+  public FilterByClustersStep(final Set<String> filterClusters, final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
     this.clusters = filterClusters;
-    Database db = ctx.getDatabase();
+    final Database db = ctx.getDatabase();
     init(db);
 
   }
 
-  private void init(Database db) {
+  private void init(final Database db) {
     if (this.bucketIds == null) {
       this.bucketIds = clusters.stream().filter(x -> x != null).map(x -> db.getSchema().getBucketByName(x).getId()).collect(Collectors.toSet());
     }
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
     init(ctx.getDatabase());
     if (prev.isEmpty()) {
       throw new IllegalStateException("filter step requires a previous step");
     }
-    ExecutionStepInternal prevStep = prev.get();
+    final ExecutionStepInternal prevStep = prev.get();
 
     return new ResultSet() {
       public boolean finished = false;
@@ -84,7 +84,7 @@ public class FilterByClustersStep extends AbstractExecutionStep {
           }
           nextItem = prevResult.next();
           if (nextItem.isElement()) {
-            int bucketId = nextItem.getIdentity().get().getBucketId();
+            final int bucketId = nextItem.getIdentity().get().getBucketId();
             if (bucketId < 0) {
               // this record comes from a TX, it still doesn't have a bucket assigned
               break;
@@ -122,7 +122,7 @@ public class FilterByClustersStep extends AbstractExecutionStep {
         if (nextItem == null) {
           throw new NoSuchElementException();
         }
-        Result result = nextItem;
+        final Result result = nextItem;
         nextItem = null;
         fetched++;
         return result;
@@ -141,14 +141,14 @@ public class FilterByClustersStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
+  public String prettyPrint(final int depth, final int indent) {
     return ExecutionStepInternal.getIndent(depth, indent) + "+ FILTER ITEMS BY CLUSTERS \n" + ExecutionStepInternal.getIndent(depth, indent) + "  "
         + String.join(", ", clusters);
   }
 
   @Override
   public Result serialize() {
-    ResultInternal result = ExecutionStepInternal.basicSerialize(this);
+    final ResultInternal result = ExecutionStepInternal.basicSerialize(this);
     if (clusters != null) {
       result.setProperty("clusters", clusters);
     }
@@ -157,11 +157,11 @@ public class FilterByClustersStep extends AbstractExecutionStep {
   }
 
   @Override
-  public void deserialize(Result fromResult) {
+  public void deserialize(final Result fromResult) {
     try {
       ExecutionStepInternal.basicDeserialize(fromResult, this);
       clusters = fromResult.getProperty("clusters");
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new CommandExecutionException(e);
     }
   }

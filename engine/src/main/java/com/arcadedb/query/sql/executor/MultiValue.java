@@ -89,7 +89,7 @@ public class MultiValue {
       return (int) ((ResettableIterator<?>) object).countEntries();
     else if ((object instanceof Iterable)) {
       int i = 0;
-      for (Object o : (Iterable) object) {
+      for (final Object o : (Iterable) object) {
         i++;
       }
       return i;
@@ -143,7 +143,7 @@ public class MultiValue {
         return ((Map<?, Object>) object).values().iterator().next();
       else if (object.getClass().isArray())
         return Array.get(object, 0);
-    } catch (RuntimeException e) {
+    } catch (final RuntimeException e) {
       // IGNORE IT
       LogManager.instance().log(object, Level.FINE, "Error on reading the first item of the Multi-value field '%s'", null, object, e);
     }
@@ -173,17 +173,17 @@ public class MultiValue {
         return ((List<Object>) object).get(((List<Object>) object).size() - 1);
       else if (object instanceof Iterable<?>) {
         Object last = null;
-        for (Object o : (Iterable<Object>) object)
+        for (final Object o : (Iterable<Object>) object)
           last = o;
         return last;
       } else if (object instanceof Map<?, ?>) {
         Object last = null;
-        for (Object o : ((Map<?, Object>) object).values())
+        for (final Object o : ((Map<?, Object>) object).values())
           last = o;
         return last;
       } else if (object.getClass().isArray())
         return Array.get(object, Array.getLength(object) - 1);
-    } catch (RuntimeException e) {
+    } catch (final RuntimeException e) {
       // IGNORE IT
       LogManager.instance().log(object, Level.FINE, "Error on reading the last item of the Multi-value field '%s'", null, object, e);
     }
@@ -216,14 +216,14 @@ public class MultiValue {
         return ((List<?>) iObject).get(iIndex);
       else if (iObject instanceof Set<?>) {
         int i = 0;
-        for (Object o : ((Set<?>) iObject)) {
+        for (final Object o : ((Set<?>) iObject)) {
           if (i++ == iIndex) {
             return o;
           }
         }
       } else if (iObject instanceof Map<?, ?>) {
         int i = 0;
-        for (Object o : ((Map<?, ?>) iObject).values()) {
+        for (final Object o : ((Map<?, ?>) iObject).values()) {
           if (i++ == iIndex) {
             return o;
           }
@@ -240,7 +240,7 @@ public class MultiValue {
           }
         }
       }
-    } catch (RuntimeException e) {
+    } catch (final RuntimeException e) {
       // IGNORE IT
       LogManager.instance().log(iObject, Level.FINE, "Error on reading the first item of the Multi-value field '%s'", null, iObject, e);
     }
@@ -283,7 +283,7 @@ public class MultiValue {
       return new IterableObjectArray<>(iObject);
     else if (iObject instanceof Iterator<?>) {
       final List<Object> temp = new ArrayList<>();
-      for (Iterator<Object> it = (Iterator<Object>) iObject; it.hasNext(); )
+      for (final Iterator<Object> it = (Iterator<Object>) iObject; it.hasNext(); )
         temp.add(it.next());
       return temp;
     }
@@ -311,7 +311,7 @@ public class MultiValue {
       return new IterableObjectArray<>(iObject);
     else if (iObject instanceof Iterator<?>) {
       final List<Object> temp = new ArrayList<>();
-      for (Iterator<Object> it = (Iterator<Object>) iObject; it.hasNext(); )
+      for (final Iterator<Object> it = (Iterator<Object>) iObject; it.hasNext(); )
         temp.add(it.next());
       return temp;
     }
@@ -382,11 +382,11 @@ public class MultiValue {
       sb.append('[');
       for (final Iterator<Object> it = coll.iterator(); it.hasNext(); ) {
         try {
-          Object e = it.next();
+          final Object e = it.next();
           sb.append(e == iObject ? "(this Collection)" : e);
           if (it.hasNext())
             sb.append(", ");
-        } catch (NoSuchElementException ignore) {
+        } catch (final NoSuchElementException ignore) {
           // IGNORE THIS
         }
       }
@@ -406,7 +406,7 @@ public class MultiValue {
           sb.append(e.getValue() == iObject ? "(this Map)" : e.getValue());
           if (it.hasNext())
             sb.append(", ");
-        } catch (NoSuchElementException ignore) {
+        } catch (final NoSuchElementException ignore) {
           // IGNORE THIS
         }
       }
@@ -431,7 +431,7 @@ public class MultiValue {
 
         if (!(iToAdd instanceof Map) && isMultiValue(iToAdd)) {
           // COLLECTION - COLLECTION
-          for (Object o : getMultiValueIterable(iToAdd, false)) {
+          for (final Object o : getMultiValueIterable(iToAdd, false)) {
             if (!(o instanceof Map) && isMultiValue(o))
               add(coll, o);
             else
@@ -440,7 +440,7 @@ public class MultiValue {
         } else if (iToAdd != null && iToAdd.getClass().isArray()) {
           // ARRAY - COLLECTION
           for (int i = 0; i < Array.getLength(iToAdd); ++i) {
-            Object o = Array.get(iToAdd, i);
+            final Object o = Array.get(iToAdd, i);
             if (!(o instanceof Map) && isMultiValue(o))
               add(coll, o);
             else
@@ -452,7 +452,7 @@ public class MultiValue {
           coll.add(iToAdd);
         } else if (iToAdd instanceof Iterator<?>) {
           // ITERATOR
-          for (Iterator<?> it = (Iterator<?>) iToAdd; it.hasNext(); )
+          for (final Iterator<?> it = (Iterator<?>) iToAdd; it.hasNext(); )
             coll.add(it.next());
         } else
           coll.add(iToAdd);
@@ -500,7 +500,7 @@ public class MultiValue {
     if (iObject != null) {
       if (iObject instanceof MultiIterator<?>) {
         final Collection<Object> list = new LinkedList<>();
-        for (Object o : ((MultiIterator<?>) iObject))
+        for (final Object o : ((MultiIterator<?>) iObject))
           list.add(o);
         iObject = list;
       }
@@ -508,7 +508,7 @@ public class MultiValue {
       if (iToRemove instanceof MultiIterator<?>) {
         // TRANSFORM IN SET ONCE TO OPTIMIZE LOOPS DURING REMOVE
         final Set<Object> set = new HashSet<>();
-        for (Object o : ((MultiIterator<?>) iToRemove))
+        for (final Object o : ((MultiIterator<?>) iToRemove))
           set.add(o);
         iToRemove = set;
       }
@@ -518,7 +518,7 @@ public class MultiValue {
 
         if (iToRemove instanceof Collection<?>) {
           // COLLECTION - COLLECTION
-          for (Object o : (Collection<Object>) iToRemove) {
+          for (final Object o : (Collection<Object>) iToRemove) {
             if (isMultiValue(o))
               remove(coll, o, iAllOccurrences);
             else
@@ -527,7 +527,7 @@ public class MultiValue {
         } else if (iToRemove != null && iToRemove.getClass().isArray()) {
           // ARRAY - COLLECTION
           for (int i = 0; i < Array.getLength(iToRemove); ++i) {
-            Object o = Array.get(iToRemove, i);
+            final Object o = Array.get(iToRemove, i);
             if (isMultiValue(o))
               remove(coll, o, iAllOccurrences);
             else
@@ -536,7 +536,7 @@ public class MultiValue {
 
         } else if (iToRemove instanceof Map<?, ?>) {
           // MAP
-          for (Map.Entry<Object, Object> entry : ((Map<Object, Object>) iToRemove).entrySet())
+          for (final Map.Entry<Object, Object> entry : ((Map<Object, Object>) iToRemove).entrySet())
             coll.remove(entry.getKey());
         } else if (iToRemove instanceof Iterator<?>) {
           // ITERATOR
@@ -545,10 +545,10 @@ public class MultiValue {
 
           if (iAllOccurrences) {
             final Collection<Object> collection = (Collection) iObject;
-            MultiIterator<?> it = (MultiIterator<?>) iToRemove;
+            final MultiIterator<?> it = (MultiIterator<?>) iToRemove;
             batchRemove(collection, it);
           } else {
-            Iterator<?> it = (Iterator<?>) iToRemove;
+            final Iterator<?> it = (Iterator<?>) iToRemove;
             if (it.hasNext()) {
               final Object itemToRemove = it.next();
               coll.remove(itemToRemove);
@@ -569,10 +569,10 @@ public class MultiValue {
 
           int k = 0;
           for (int i = 0; i < sourceTot; ++i) {
-            Object o = Array.get(iObject, i);
+            final Object o = Array.get(iObject, i);
             if (o != null) {
               boolean found = false;
-              for (Object toRemove : (Collection<Object>) iToRemove) {
+              for (final Object toRemove : (Collection<Object>) iToRemove) {
                 if (o.equals(toRemove)) {
                   // SKIP
                   found = true;
@@ -611,17 +611,17 @@ public class MultiValue {
 
   }
 
-  private static void batchRemove(Collection<Object> coll, Iterator<?> it) {
+  private static void batchRemove(final Collection<Object> coll, final Iterator<?> it) {
     int approximateRemainingSize = -1;
 
     while (it.hasNext()) {
-      Set<?> batch = prepareBatch(it, approximateRemainingSize);
+      final Set<?> batch = prepareBatch(it, approximateRemainingSize);
       coll.removeAll(batch);
       approximateRemainingSize -= batch.size();
     }
   }
 
-  private static Set<?> prepareBatch(Iterator<?> it, int approximateRemainingSize) {
+  private static Set<?> prepareBatch(final Iterator<?> it, final int approximateRemainingSize) {
     final HashSet<Object> batch;
     if (approximateRemainingSize > -1) {
       if (approximateRemainingSize > 10000)
@@ -659,12 +659,12 @@ public class MultiValue {
       // CREATE STATIC ARRAY AND FILL IT
       result = (T[]) Array.newInstance(iClass, getSize(iValue));
       int i = 0;
-      for (Iterator<T> it = (Iterator<T>) getMultiValueIterator(iValue, false); it.hasNext(); ++i)
+      for (final Iterator<T> it = (Iterator<T>) getMultiValueIterator(iValue, false); it.hasNext(); ++i)
         result[i] = (T) convert(it.next(), iCallback);
     } else if (isIterable(iValue)) {
       // SIZE UNKNOWN: USE A LIST AS TEMPORARY OBJECT
       final List<T> temp = new ArrayList<>();
-      for (Iterator<T> it = (Iterator<T>) getMultiValueIterator(iValue, false); it.hasNext(); )
+      for (final Iterator<T> it = (Iterator<T>) getMultiValueIterator(iValue, false); it.hasNext(); )
         temp.add((T) convert(it.next(), iCallback));
 
       if (iClass.equals(Object.class))
@@ -739,7 +739,7 @@ public class MultiValue {
       return values instanceof Set ? values : new HashSet(values);
     } else if (o.getClass().isArray()) {
       final HashSet set = new HashSet();
-      int tot = Array.getLength(o);
+      final int tot = Array.getLength(o);
       for (int i = 0; i < tot; ++i) {
         set.add(Array.get(o, i));
       }
@@ -753,8 +753,8 @@ public class MultiValue {
 
       return set;
     } else if (o instanceof Iterable && !(o instanceof Identifiable)) {
-      Iterator iterator = ((Iterable) o).iterator();
-      Set result = new HashSet();
+      final Iterator iterator = ((Iterable) o).iterator();
+      final Set result = new HashSet();
       while (iterator.hasNext()) {
         result.add(iterator.next());
       }

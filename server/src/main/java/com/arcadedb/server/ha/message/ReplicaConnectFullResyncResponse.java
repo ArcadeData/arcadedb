@@ -44,12 +44,12 @@ public class ReplicaConnectFullResyncResponse extends HAAbstractCommand {
   public void toStream(final Binary stream) {
     stream.putLong(lastMessageNumber);
     stream.putUnsignedNumber(databases.size());
-    for (String db : databases)
+    for (final String db : databases)
       stream.putString(db);
   }
 
   @Override
-  public void fromStream(ArcadeDBServer server, final Binary stream) {
+  public void fromStream(final ArcadeDBServer server, final Binary stream) {
     lastMessageNumber = stream.getLong();
     databases = new HashSet<>();
     final int fileCount = (int) stream.getUnsignedNumber();

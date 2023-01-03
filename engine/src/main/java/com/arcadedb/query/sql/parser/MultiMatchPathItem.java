@@ -29,11 +29,11 @@ import java.util.stream.*;
 public class MultiMatchPathItem extends MatchPathItem {
   protected List<MatchPathItem> items = new ArrayList<MatchPathItem>();
 
-  public MultiMatchPathItem(int id) {
+  public MultiMatchPathItem(final int id) {
     super(id);
   }
 
-  public MultiMatchPathItem(SqlParser p, int id) {
+  public MultiMatchPathItem(final SqlParser p, final int id) {
     super(p, id);
   }
 
@@ -41,9 +41,9 @@ public class MultiMatchPathItem extends MatchPathItem {
     return false;
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append(".(");
-    for (MatchPathItem item : items) {
+    for (final MatchPathItem item : items) {
       item.toString(params, builder);
     }
     builder.append(")");
@@ -52,18 +52,18 @@ public class MultiMatchPathItem extends MatchPathItem {
     }
   }
 
-  protected Iterable<Identifiable> traversePatternEdge(MatchStatement.MatchContext matchContext, Identifiable startingPoint, CommandContext iCommandContext) {
+  protected Iterable<Identifiable> traversePatternEdge(final MatchStatement.MatchContext matchContext, final Identifiable startingPoint, final CommandContext iCommandContext) {
     Set<Identifiable> result = new HashSet<Identifiable>();
     result.add(startingPoint);
-    for (MatchPathItem subItem : items) {
-      Set<Identifiable> startingPoints = result;
+    for (final MatchPathItem subItem : items) {
+      final Set<Identifiable> startingPoints = result;
       result = new HashSet<Identifiable>();
-      for (Identifiable sp : startingPoints) {
-        Iterable<Identifiable> subResult = subItem.executeTraversal(matchContext, iCommandContext, sp, 0);
+      for (final Identifiable sp : startingPoints) {
+        final Iterable<Identifiable> subResult = subItem.executeTraversal(matchContext, iCommandContext, sp, 0);
         if (subResult instanceof Collection) {
           result.addAll((Collection) subResult);
         } else {
-          for (Identifiable id : subResult) {
+          for (final Identifiable id : subResult) {
             result.add(id);
           }
         }
@@ -74,7 +74,7 @@ public class MultiMatchPathItem extends MatchPathItem {
 
   @Override
   public MultiMatchPathItem copy() {
-    MultiMatchPathItem result = (MultiMatchPathItem) super.copy();
+    final MultiMatchPathItem result = (MultiMatchPathItem) super.copy();
     result.items = items == null ? null : items.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;
   }
@@ -104,7 +104,7 @@ public class MultiMatchPathItem extends MatchPathItem {
     return items;
   }
 
-  public void setItems(List<MatchPathItem> items) {
+  public void setItems(final List<MatchPathItem> items) {
     this.items = items;
   }
 }

@@ -54,7 +54,7 @@ public class UpdateStatement extends Statement {
       target.toString(params, builder);
     }
 
-    for (UpdateOperations ops : this.operations) {
+    for (final UpdateOperations ops : this.operations) {
       builder.append(" ");
       ops.toString(params, builder);
     }
@@ -129,7 +129,7 @@ public class UpdateStatement extends Statement {
     }
     ctx.setDatabase(db);
     ctx.setInputParameters(params);
-    UpdateExecutionPlan executionPlan = createExecutionPlan(ctx, false);
+    final UpdateExecutionPlan executionPlan = createExecutionPlan(ctx, false);
     executionPlan.executeInternal();
     return new LocalResultSet(executionPlan);
   }

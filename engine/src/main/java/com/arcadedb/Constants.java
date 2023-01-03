@@ -35,13 +35,13 @@ public class Constants {
     final InputStream inputStream = Constants.class.getResourceAsStream("/com/arcadedb/arcadedb.properties");
     try {
       properties.load(inputStream);
-    } catch (IOException e) {
+    } catch (final IOException e) {
       LogManager.instance().log(Constants.class, Level.SEVERE, "Failed to load ArcadeDB properties", e);
     } finally {
       if (inputStream != null) {
         try {
           inputStream.close();
-        } catch (IOException ignore) {
+        } catch (final IOException ignore) {
           // Ignore
         }
       }
@@ -61,7 +61,7 @@ public class Constants {
 
     try {
       return Integer.parseInt(versions[0]);
-    } catch (NumberFormatException nfe) {
+    } catch (final NumberFormatException nfe) {
       LogManager.instance().log(Constants.class, Level.SEVERE, "Can not retrieve major version information for this build", nfe);
       return -1;
     }
@@ -79,7 +79,7 @@ public class Constants {
 
     try {
       return Integer.parseInt(versions[1]);
-    } catch (NumberFormatException nfe) {
+    } catch (final NumberFormatException nfe) {
       LogManager.instance().log(Constants.class, Level.SEVERE, "Can not retrieve minor version information for this build", nfe);
       return -1;
     }
@@ -97,14 +97,14 @@ public class Constants {
 
     try {
       String hotfix = versions[2];
-      int snapshotIndex = hotfix.indexOf("-SNAPSHOT");
+      final int snapshotIndex = hotfix.indexOf("-SNAPSHOT");
 
       if (snapshotIndex != -1) {
         hotfix = hotfix.substring(0, snapshotIndex);
       }
 
       return Integer.parseInt(hotfix);
-    } catch (NumberFormatException nfe) {
+    } catch (final NumberFormatException nfe) {
       LogManager.instance().log(Constants.class, Level.SEVERE, "Can not retrieve hotfix version information for this build", nfe);
       return -1;
     }
@@ -150,7 +150,7 @@ public class Constants {
    * @return the build number if any.
    */
   public static String getBuildNumber() {
-    String b = properties.getProperty("buildNumber");
+    final String b = properties.getProperty("buildNumber");
     return "${buildNumber}".equals(b) ? null : b;
   }
 

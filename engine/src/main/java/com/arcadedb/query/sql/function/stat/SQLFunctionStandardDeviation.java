@@ -41,7 +41,7 @@ public class SQLFunctionStandardDeviation extends SQLFunctionVariance {
     return NAME + "(<field>)";
   }
 
-  private Double evaluate(Object variance) {
+  private Double evaluate(final Object variance) {
     Double result = null;
     if (variance != null) {
       result = Math.sqrt((Double) variance);

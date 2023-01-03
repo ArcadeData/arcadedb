@@ -26,17 +26,17 @@ public
 class ListValue extends SimpleNode {
   protected List<Value> values = new ArrayList<>();
 
-  public ListValue(int id) {
+  public ListValue(final int id) {
     super(id);
   }
 
-  public ListValue(GraphQLParser p, int id) {
+  public ListValue(final GraphQLParser p, final int id) {
     super(p, id);
   }
 
 
   /** Accept the visitor. **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
+  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
     return
     visitor.visit(this, data);
   }

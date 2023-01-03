@@ -80,7 +80,7 @@ public class ArcadeGremlin extends ArcadeQuery {
     final DefaultGraphTraversal resultSet = (DefaultGraphTraversal) evalResult.get();
 
     boolean idempotent = true;
-    for (Object step : resultSet.getSteps()) {
+    for (final Object step : resultSet.getSteps()) {
       if (step instanceof Mutating) {
         idempotent = false;
         break;

@@ -89,7 +89,7 @@ public class SQLMethodSubStringTest {
   @Test
   public void testNull() {
 
-    Object result = function.execute(null, null, null, null, null);
+    final Object result = function.execute(null, null, null, null, null);
     Assertions.assertNull(result);
   }
 }

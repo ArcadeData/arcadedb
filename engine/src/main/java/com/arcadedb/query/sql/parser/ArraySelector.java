@@ -35,15 +35,15 @@ public class ArraySelector extends SimpleNode {
   protected Expression     expression;
   protected PInteger       integer;
 
-  public ArraySelector(int id) {
+  public ArraySelector(final int id) {
     super(id);
   }
 
-  public ArraySelector(SqlParser p, int id) {
+  public ArraySelector(final SqlParser p, final int id) {
     super(p, id);
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (rid != null) {
       rid.toString(params, builder);
     } else if (inputParam != null) {
@@ -55,7 +55,7 @@ public class ArraySelector extends SimpleNode {
     }
   }
 
-  public java.lang.Integer getValue(Identifiable iCurrentRecord, Object iResult, CommandContext ctx) {
+  public Integer getValue(final Identifiable iCurrentRecord, final Object iResult, final CommandContext ctx) {
     Object result = null;
     if (inputParam != null) {
       result = inputParam.getValue(ctx.getInputParameters());
@@ -74,7 +74,7 @@ public class ArraySelector extends SimpleNode {
     return null;
   }
 
-  public Object getValue(Result iCurrentRecord, Object iResult, CommandContext ctx) {
+  public Object getValue(final Result iCurrentRecord, final Object iResult, final CommandContext ctx) {
     Object result = null;
     if (inputParam != null) {
       result = inputParam.getValue(ctx.getInputParameters());
@@ -93,7 +93,7 @@ public class ArraySelector extends SimpleNode {
     return result;
   }
 
-  public boolean needsAliases(Set<String> aliases) {
+  public boolean needsAliases(final Set<String> aliases) {
     if (expression != null) {
       return expression.needsAliases(aliases);
     }
@@ -101,7 +101,7 @@ public class ArraySelector extends SimpleNode {
   }
 
   public ArraySelector copy() {
-    ArraySelector result = new ArraySelector(-1);
+    final ArraySelector result = new ArraySelector(-1);
 
     result.rid = rid == null ? null : rid.copy();
     result.inputParam = inputParam == null ? null : inputParam.copy();
@@ -112,13 +112,13 @@ public class ArraySelector extends SimpleNode {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    ArraySelector that = (ArraySelector) o;
+    final ArraySelector that = (ArraySelector) o;
 
     if (!Objects.equals(rid, that.rid))
       return false;
@@ -138,7 +138,7 @@ public class ArraySelector extends SimpleNode {
     return result;
   }
 
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
     if (expression != null) {
       expression.extractSubQueries(collector);
     }
@@ -148,7 +148,7 @@ public class ArraySelector extends SimpleNode {
     return expression != null && expression.refersToParent();
   }
 
-  public void setValue(Result currentRecord, Object target, Object value, CommandContext ctx) {
+  public void setValue(final Result currentRecord, final Object target, final Object value, final CommandContext ctx) {
     Object idx = null;
     if (this.rid != null) {
       idx = this.rid.toRecordId(currentRecord, ctx);
@@ -171,8 +171,8 @@ public class ArraySelector extends SimpleNode {
     }
   }
 
-  public void setValue(List target, int idx, Object value, CommandContext ctx) {
-    int originalSize = target.size();
+  public void setValue(final List target, final int idx, final Object value, final CommandContext ctx) {
+    final int originalSize = target.size();
     for (int i = originalSize; i <= idx; i++) {
       if (i >= originalSize) {
         target.add(null);
@@ -181,11 +181,11 @@ public class ArraySelector extends SimpleNode {
     target.set(idx, value);
   }
 
-  public void setValue(Set target, int idx, Object value, CommandContext ctx) {
-    Set result = new LinkedHashSet<>();
-    int originalSize = target.size();
-    int max = Math.max(idx, originalSize - 1);
-    Iterator targetIterator = target.iterator();
+  public void setValue(final Set target, final int idx, final Object value, final CommandContext ctx) {
+    final Set result = new LinkedHashSet<>();
+    final int originalSize = target.size();
+    final int max = Math.max(idx, originalSize - 1);
+    final Iterator targetIterator = target.iterator();
     for (int i = 0; i <= max; i++) {
       Object next = null;
       if (targetIterator.hasNext()) {
@@ -203,18 +203,18 @@ public class ArraySelector extends SimpleNode {
     }
   }
 
-  public void setValue(Map target, Object idx, Object value, CommandContext ctx) {
+  public void setValue(final Map target, final Object idx, final Object value, final CommandContext ctx) {
     target.put(idx, value);
   }
 
-  private void setArrayValue(Object target, int idx, Object value, CommandContext ctx) {
+  private void setArrayValue(final Object target, final int idx, final Object value, final CommandContext ctx) {
     if (idx >= 0 && idx < Array.getLength(target)) {
       Array.set(target, idx, value);
     }
   }
 
   public Result serialize() {
-    ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal();
     if (rid != null) {
       result.setProperty("rid", rid.serialize());
     }
@@ -230,7 +230,7 @@ public class ArraySelector extends SimpleNode {
     return result;
   }
 
-  public void deserialize(Result fromResult) {
+  public void deserialize(final Result fromResult) {
     if (fromResult.getProperty("rid") != null) {
       rid = new Rid(-1);
       rid.deserialize(fromResult.getProperty("rid"));

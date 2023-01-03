@@ -30,13 +30,13 @@ public class NoServerMetrics implements ServerMetrics {
   }
 
   @Override
-  public MetricTimer timer(String s) {
+  public MetricTimer timer(final String s) {
     return () -> {
     };
   }
 
   @Override
-  public MetricMeter meter(String name) {
+  public MetricMeter meter(final String name) {
     return () -> {
     };
   }

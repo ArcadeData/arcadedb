@@ -130,7 +130,7 @@ public class RID implements Identifiable, Comparable<Identifiable>, Serializable
   public Vertex asVertex(final boolean loadContent) {
     try {
       return (Vertex) database.lookupByRID(this, loadContent);
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new RecordNotFoundException("Record " + this + " not found", this, e);
     }
   }

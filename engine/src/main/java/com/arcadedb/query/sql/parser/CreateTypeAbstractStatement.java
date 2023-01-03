@@ -54,11 +54,11 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
    */
   protected PInteger totalBucketNo;
 
-  public CreateTypeAbstractStatement(int id) {
+  public CreateTypeAbstractStatement(final int id) {
     super(id);
   }
 
-  public CreateTypeAbstractStatement(SqlParser p, int id) {
+  public CreateTypeAbstractStatement(final SqlParser p, final int id) {
     super(p, id);
   }
 
@@ -87,22 +87,22 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
 
     final DocumentType type = createType(schema);
 
-    for (DocumentType c : superclasses)
+    for (final DocumentType c : superclasses)
       type.addSuperType(c);
 
     return new InternalResultSet(result);
   }
 
-  protected DocumentType[] getSuperTypes(Schema schema) {
+  protected DocumentType[] getSuperTypes(final Schema schema) {
     if (supertypes == null) {
       return new DocumentType[] {};
     }
     return supertypes.stream().map(x -> schema.getType(x.getStringValue())).filter(x -> x != null).collect(Collectors.toList()).toArray(new DocumentType[] {});
   }
 
-  protected void checkSuperTypes(Schema schema, CommandContext ctx) {
+  protected void checkSuperTypes(final Schema schema, final CommandContext ctx) {
     if (supertypes != null) {
-      for (Identifier superType : supertypes) {
+      for (final Identifier superType : supertypes) {
         if (!schema.existsType(superType.getStringValue())) {
           throw new CommandExecutionException("Supertype '" + superType + "' not found");
         }
@@ -111,7 +111,7 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
   }
 
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append(commandType());
     builder.append(" ");
     name.toString(params, builder);
@@ -121,7 +121,7 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
     if (supertypes != null && supertypes.size() > 0) {
       builder.append(" EXTENDS ");
       boolean first = true;
-      for (Identifier sup : supertypes) {
+      for (final Identifier sup : supertypes) {
         if (!first) {
           builder.append(", ");
         }
@@ -132,7 +132,7 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
     if (buckets != null && buckets.size() > 0) {
       builder.append(" BUCKET ");
       boolean first = true;
-      for (BucketIdentifier bucket : buckets) {
+      for (final BucketIdentifier bucket : buckets) {
         if (!first) {
           builder.append(",");
         }

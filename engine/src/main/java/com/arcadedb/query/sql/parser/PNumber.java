@@ -25,24 +25,24 @@ import com.arcadedb.query.sql.executor.Result;
 import java.util.*;
 
 public class PNumber extends SimpleNode {
-  public PNumber(int id) {
+  public PNumber(final int id) {
     super(id);
   }
 
-  public PNumber(SqlParser p, int id) {
+  public PNumber(final SqlParser p, final int id) {
     super(p, id);
   }
 
-  public java.lang.Number getValue() {
+  public Number getValue() {
     return null;
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append(value);
   }
 
   public PNumber copy() {
-    PNumber result = new PNumber(-1);
+    final PNumber result = new PNumber(-1);
     result.value = value;
     return result;
   }
@@ -51,7 +51,7 @@ public class PNumber extends SimpleNode {
     throw new UnsupportedOperationException();
   }
 
-  public void deserialize(Result fromResult) {
+  public void deserialize(final Result fromResult) {
     throw new UnsupportedOperationException();
   }
 }

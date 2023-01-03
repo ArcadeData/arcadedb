@@ -44,7 +44,7 @@ public class CreateEdgeExecutionPlanner {
   protected final Number     retry;
   protected final Number     wait;
 
-  public CreateEdgeExecutionPlanner(CreateEdgeStatement statement) {
+  public CreateEdgeExecutionPlanner(final CreateEdgeStatement statement) {
     this.targetClass = statement.getTargetType() == null ? null : statement.getTargetType().copy();
     this.targetClusterName = statement.getTargetBucketName() == null ? null : statement.getTargetBucketName().copy();
     this.leftExpression = statement.getLeftExpression() == null ? null : statement.getLeftExpression().copy();
@@ -55,14 +55,14 @@ public class CreateEdgeExecutionPlanner {
     this.wait = statement.getWait();
   }
 
-  public InsertExecutionPlan createExecutionPlan(CommandContext ctx, boolean enableProfiling) {
+  public InsertExecutionPlan createExecutionPlan(final CommandContext ctx, final boolean enableProfiling) {
 
     if (targetClass == null) {
       if (targetClusterName == null) {
         throw new CommandSQLParsingException("Missing target");
       } else {
         final Database db = ctx.getDatabase();
-        DocumentType typez = db.getSchema().getTypeByBucketId((db.getSchema().getBucketByName(targetClusterName.getStringValue()).getId()));
+        final DocumentType typez = db.getSchema().getTypeByBucketId((db.getSchema().getBucketByName(targetClusterName.getStringValue()).getId()));
         if (typez != null) {
           targetClass = new Identifier(typez.getName());
         } else {
@@ -71,7 +71,7 @@ public class CreateEdgeExecutionPlanner {
       }
     }
 
-    InsertExecutionPlan result = new InsertExecutionPlan(ctx);
+    final InsertExecutionPlan result = new InsertExecutionPlan(ctx);
 
     handleCheckType(result, ctx, enableProfiling);
 
@@ -96,21 +96,21 @@ public class CreateEdgeExecutionPlanner {
     return result;
   }
 
-  private void handleGlobalLet(InsertExecutionPlan result, Identifier name, Expression expression, CommandContext ctx, boolean profilingEnabled) {
+  private void handleGlobalLet(final InsertExecutionPlan result, final Identifier name, final Expression expression, final CommandContext ctx, final boolean profilingEnabled) {
     result.chain(new GlobalLetExpressionStep(name, expression, ctx, profilingEnabled));
   }
 
-  private void handleCheckType(InsertExecutionPlan result, CommandContext ctx, boolean profilingEnabled) {
+  private void handleCheckType(final InsertExecutionPlan result, final CommandContext ctx, final boolean profilingEnabled) {
     if (targetClass != null) {
       result.chain(new CheckIsEdgeTypeStep(targetClass.getStringValue(), ctx, profilingEnabled));
     }
   }
 
-  private void handleSave(InsertExecutionPlan result, Identifier targetClusterName, CommandContext ctx, boolean profilingEnabled) {
+  private void handleSave(final InsertExecutionPlan result, final Identifier targetClusterName, final CommandContext ctx, final boolean profilingEnabled) {
     result.chain(new SaveElementStep(ctx, targetClusterName, profilingEnabled));
   }
 
-  private void handleSetFields(InsertExecutionPlan result, InsertBody insertBody, CommandContext ctx, boolean profilingEnabled) {
+  private void handleSetFields(final InsertExecutionPlan result, final InsertBody insertBody, final CommandContext ctx, final boolean profilingEnabled) {
     if (insertBody == null) {
       return;
     }
@@ -121,9 +121,9 @@ public class CreateEdgeExecutionPlanner {
     } else if (insertBody.getContentInputParam() != null) {
       result.chain(new UpdateContentStep(insertBody.getContentInputParam(), ctx, profilingEnabled));
     } else if (insertBody.getSetExpressions() != null) {
-      List<UpdateItem> items = new ArrayList<>();
-      for (InsertSetExpression exp : insertBody.getSetExpressions()) {
-        UpdateItem item = new UpdateItem(-1);
+      final List<UpdateItem> items = new ArrayList<>();
+      for (final InsertSetExpression exp : insertBody.getSetExpressions()) {
+        final UpdateItem item = new UpdateItem(-1);
         item.setOperator(UpdateItem.OPERATOR_EQ);
         item.setLeft(exp.getLeft().copy());
         item.setRight(exp.getRight().copy());

@@ -24,15 +24,15 @@ import java.util.*;
 
 public class MultExpression extends MathExpression {
 
-  public MultExpression(int id) {
+  public MultExpression(final int id) {
     super(id);
   }
 
-  public MultExpression(SqlParser p, int id) {
+  public MultExpression(final SqlParser p, final int id) {
     super(p, id);
   }
 
-  public boolean needsAliases(Set<String> aliases) {
+  public boolean needsAliases(final Set<String> aliases) {
     return super.needsAliases(aliases);
   }
 }

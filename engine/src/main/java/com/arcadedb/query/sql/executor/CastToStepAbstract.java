@@ -37,8 +37,8 @@ public abstract class CastToStepAbstract extends AbstractExecutionStep {
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    ResultSet upstream = getPrev().get().syncPull(ctx, nRecords);
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
+    final ResultSet upstream = getPrev().get().syncPull(ctx, nRecords);
     return new ResultSet() {
 
       @Override
@@ -49,7 +49,7 @@ public abstract class CastToStepAbstract extends AbstractExecutionStep {
       @Override
       public Result next() {
         Result result = upstream.next();
-        long begin = profilingEnabled ? System.nanoTime() : 0;
+        final long begin = profilingEnabled ? System.nanoTime() : 0;
         try {
           final Document element = result.getElement().orElse(null);
           if (element != null && cls.isAssignableFrom(element.getClass()))
@@ -59,7 +59,7 @@ public abstract class CastToStepAbstract extends AbstractExecutionStep {
             if (result instanceof ResultInternal) {
               ((ResultInternal) result).setElement(result.getElement().get());
             } else {
-              ResultInternal r = new ResultInternal();
+              final ResultInternal r = new ResultInternal();
               r.setElement(result.getElement().get());
               result = r;
             }
@@ -86,7 +86,7 @@ public abstract class CastToStepAbstract extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
+  public String prettyPrint(final int depth, final int indent) {
     String result = ExecutionStepInternal.getIndent(depth, indent) + "+ CAST TO " + clsName.toUpperCase();
     if (profilingEnabled) {
       result += " (" + getCostFormatted() + ")";

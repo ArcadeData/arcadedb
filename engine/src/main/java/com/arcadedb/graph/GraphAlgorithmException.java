@@ -27,7 +27,7 @@ public class GraphAlgorithmException extends ArcadeDBException {
     super(s);
   }
 
-  public GraphAlgorithmException(String s, IOException e) {
+  public GraphAlgorithmException(final String s, final IOException e) {
     super(s, e);
   }
 }

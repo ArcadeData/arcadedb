@@ -39,7 +39,7 @@ public abstract class ArcadeElement<T extends Document> implements Element {
   protected       T           baseElement;
   protected final ArcadeGraph graph;
 
-  protected ArcadeElement(final ArcadeGraph graph, final T baseElement, Object... keyValues) {
+  protected ArcadeElement(final ArcadeGraph graph, final T baseElement, final Object... keyValues) {
     this.baseElement = baseElement;
     this.graph = graph;
     attachProperties(keyValues);
@@ -64,14 +64,14 @@ public abstract class ArcadeElement<T extends Document> implements Element {
     if (propertyKeys == null || propertyKeys.length == 0) {
       final Set<String> propNames = baseElement.getPropertyNames();
       props = new ArrayList<>(propNames.size());
-      for (String p : propNames) {
+      for (final String p : propNames) {
         final V value = (V) baseElement.get(p);
         if (value != null)
           props.add(value);
       }
     } else {
       props = new ArrayList<>(propertyKeys.length);
-      for (String p : propertyKeys) {
+      for (final String p : propertyKeys) {
         final V value = (V) baseElement.get(p);
         if (value != null)
           props.add(value);

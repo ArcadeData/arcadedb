@@ -43,29 +43,29 @@ class RecordFactoryTest extends TestHelper {
     final RID EMPTY_RID = new RID(database, 0, 0);
 
     final DocumentType documentType = database.getSchema().createDocumentType("Document");
-    Record document = ((DatabaseInternal) database).getRecordFactory().newImmutableRecord(database, documentType, EMPTY_RID, Document.RECORD_TYPE);
+    final Record document = ((DatabaseInternal) database).getRecordFactory().newImmutableRecord(database, documentType, EMPTY_RID, Document.RECORD_TYPE);
     Assertions.assertTrue(document instanceof Document);
 
     final VertexType vertexType = database.getSchema().createVertexType("Vertex");
-    Record vertex = ((DatabaseInternal) database).getRecordFactory().newImmutableRecord(database, vertexType, EMPTY_RID, Vertex.RECORD_TYPE);
+    final Record vertex = ((DatabaseInternal) database).getRecordFactory().newImmutableRecord(database, vertexType, EMPTY_RID, Vertex.RECORD_TYPE);
     Assertions.assertTrue(vertex instanceof Vertex);
 
     final EdgeType edgeType = database.getSchema().createEdgeType("Edge");
-    Record edge = ((DatabaseInternal) database).getRecordFactory().newImmutableRecord(database, edgeType, EMPTY_RID, Edge.RECORD_TYPE);
+    final Record edge = ((DatabaseInternal) database).getRecordFactory().newImmutableRecord(database, edgeType, EMPTY_RID, Edge.RECORD_TYPE);
     Assertions.assertTrue(edge instanceof Edge);
 
     final Record edgeSegment = ((DatabaseInternal) database).getRecordFactory().newImmutableRecord(database, null, EMPTY_RID, EdgeSegment.RECORD_TYPE);
     Assertions.assertTrue(edgeSegment instanceof EdgeSegment);
 
     final DocumentType embeddedDocumentType = database.getSchema().createDocumentType("EmbeddedDocument");
-    Record embeddedDocument = ((DatabaseInternal) database).getRecordFactory()
+    final Record embeddedDocument = ((DatabaseInternal) database).getRecordFactory()
         .newImmutableRecord(database, embeddedDocumentType, EMPTY_RID, EmbeddedDocument.RECORD_TYPE);
     Assertions.assertTrue(embeddedDocument instanceof EmbeddedDocument);
 
     try {
       ((DatabaseInternal) database).getRecordFactory().newImmutableRecord(database, embeddedDocumentType, EMPTY_RID, (byte) 'Z');
       Assertions.fail();
-    } catch (DatabaseMetadataException e) {
+    } catch (final DatabaseMetadataException e) {
       // EXPECTED
     }
   }
@@ -79,7 +79,7 @@ class RecordFactoryTest extends TestHelper {
     binary.flip();
 
     final DocumentType documentType = database.getSchema().createDocumentType("Document");
-    Record document = ((DatabaseInternal) database).getRecordFactory().newImmutableRecord(database, documentType, EMPTY_RID, binary, null);
+    final Record document = ((DatabaseInternal) database).getRecordFactory().newImmutableRecord(database, documentType, EMPTY_RID, binary, null);
     Assertions.assertTrue(document instanceof Document);
 
     binary.clear();
@@ -91,7 +91,7 @@ class RecordFactoryTest extends TestHelper {
     binary.flip();
 
     final VertexType vertexType = database.getSchema().createVertexType("Vertex");
-    Record vertex = ((DatabaseInternal) database).getRecordFactory().newImmutableRecord(database, vertexType, EMPTY_RID, binary, null);
+    final Record vertex = ((DatabaseInternal) database).getRecordFactory().newImmutableRecord(database, vertexType, EMPTY_RID, binary, null);
     Assertions.assertTrue(vertex instanceof Vertex);
 
     binary.clear();
@@ -101,7 +101,7 @@ class RecordFactoryTest extends TestHelper {
     binary.flip();
 
     final EdgeType edgeType = database.getSchema().createEdgeType("Edge");
-    Record edge = ((DatabaseInternal) database).getRecordFactory().newImmutableRecord(database, edgeType, EMPTY_RID, binary, null);
+    final Record edge = ((DatabaseInternal) database).getRecordFactory().newImmutableRecord(database, edgeType, EMPTY_RID, binary, null);
     Assertions.assertTrue(edge instanceof Edge);
 
     binary.clear();
@@ -116,7 +116,7 @@ class RecordFactoryTest extends TestHelper {
     binary.flip();
 
     final DocumentType embeddedDocumentType = database.getSchema().createDocumentType("EmbeddedDocument");
-    Record embeddedDocument = ((DatabaseInternal) database).getRecordFactory().newImmutableRecord(database, embeddedDocumentType, EMPTY_RID, binary, null);
+    final Record embeddedDocument = ((DatabaseInternal) database).getRecordFactory().newImmutableRecord(database, embeddedDocumentType, EMPTY_RID, binary, null);
     Assertions.assertTrue(embeddedDocument instanceof EmbeddedDocument);
 
     binary.clear();
@@ -126,7 +126,7 @@ class RecordFactoryTest extends TestHelper {
     try {
       ((DatabaseInternal) database).getRecordFactory().newImmutableRecord(database, embeddedDocumentType, EMPTY_RID, binary, null);
       Assertions.fail();
-    } catch (DatabaseMetadataException e) {
+    } catch (final DatabaseMetadataException e) {
       // EXPECTED
     }
   }
@@ -140,7 +140,7 @@ class RecordFactoryTest extends TestHelper {
     binary.flip();
 
     final DocumentType documentType = database.getSchema().createDocumentType("Document");
-    Record document = ((DatabaseInternal) database).getRecordFactory().newMutableRecord(database, documentType, EMPTY_RID, binary, null);
+    final Record document = ((DatabaseInternal) database).getRecordFactory().newMutableRecord(database, documentType, EMPTY_RID, binary, null);
     Assertions.assertTrue(document instanceof MutableDocument);
 
     binary.clear();
@@ -152,7 +152,7 @@ class RecordFactoryTest extends TestHelper {
     binary.flip();
 
     final VertexType vertexType = database.getSchema().createVertexType("Vertex");
-    Record vertex = ((DatabaseInternal) database).getRecordFactory().newMutableRecord(database, vertexType, EMPTY_RID, binary, null);
+    final Record vertex = ((DatabaseInternal) database).getRecordFactory().newMutableRecord(database, vertexType, EMPTY_RID, binary, null);
     Assertions.assertTrue(vertex instanceof MutableVertex);
 
     binary.clear();
@@ -162,7 +162,7 @@ class RecordFactoryTest extends TestHelper {
     binary.flip();
 
     final EdgeType edgeType = database.getSchema().createEdgeType("Edge");
-    Record edge = ((DatabaseInternal) database).getRecordFactory().newMutableRecord(database, edgeType, EMPTY_RID, binary, null);
+    final Record edge = ((DatabaseInternal) database).getRecordFactory().newMutableRecord(database, edgeType, EMPTY_RID, binary, null);
     Assertions.assertTrue(edge instanceof MutableEdge);
 
     binary.clear();
@@ -177,7 +177,7 @@ class RecordFactoryTest extends TestHelper {
     binary.flip();
 
     final DocumentType embeddedDocumentType = database.getSchema().createDocumentType("EmbeddedDocument");
-    Record embeddedDocument = ((DatabaseInternal) database).getRecordFactory().newMutableRecord(database, embeddedDocumentType, EMPTY_RID, binary, null);
+    final Record embeddedDocument = ((DatabaseInternal) database).getRecordFactory().newMutableRecord(database, embeddedDocumentType, EMPTY_RID, binary, null);
     Assertions.assertTrue(embeddedDocument instanceof MutableEmbeddedDocument);
 
     binary.clear();
@@ -187,7 +187,7 @@ class RecordFactoryTest extends TestHelper {
     try {
       ((DatabaseInternal) database).getRecordFactory().newMutableRecord(database, embeddedDocumentType, EMPTY_RID, binary, null);
       Assertions.fail();
-    } catch (DatabaseMetadataException e) {
+    } catch (final DatabaseMetadataException e) {
       // EXPECTED
     }
   }

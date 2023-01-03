@@ -31,8 +31,8 @@ public class SQLFunctionConcat extends SQLFunctionConfigurableAbstract {
   }
 
   @Override
-  public Object execute( final Object iThis, Identifiable iCurrentRecord, Object iCurrentResult,
-      Object[] iParams, CommandContext iContext) {
+  public Object execute( final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult,
+      final Object[] iParams, final CommandContext iContext) {
     if (sb == null) {
       sb = new StringBuilder();
     } else {

@@ -129,7 +129,7 @@ public class CRUDTest extends TestHelper {
       });
 
       db.transaction(() -> {
-        MutableDocument doc = rid.get().getRecord(true).asDocument().modify().set("id", "this is an update");
+        final MutableDocument doc = rid.get().getRecord(true).asDocument().modify().set("id", "this is an update");
         doc.save();
 
         database.deleteRecord(doc);
@@ -205,7 +205,7 @@ public class CRUDTest extends TestHelper {
     });
   }
 
-  private void updateAll(String largeField) {
+  private void updateAll(final String largeField) {
     database.scanType("V", true, record -> {
       final MutableDocument document = record.modify();
       document.set("update", true);

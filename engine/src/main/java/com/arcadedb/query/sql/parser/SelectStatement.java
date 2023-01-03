@@ -172,7 +172,7 @@ public class SelectStatement extends Statement {
   }
 
   @Override
-  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentCtx, boolean usePlanCache) {
+  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentCtx, final boolean usePlanCache) {
     final BasicCommandContext ctx = new BasicCommandContext();
     if (parentCtx != null) {
       ctx.setParentWithoutOverridingChild(parentCtx);
@@ -194,7 +194,7 @@ public class SelectStatement extends Statement {
   }
 
   @Override
-  public ResultSet execute(final Database db, final Map<String, Object> params, final CommandContext parentCtx, boolean usePlanCache) {
+  public ResultSet execute(final Database db, final Map<String, Object> params, final CommandContext parentCtx, final boolean usePlanCache) {
     final BasicCommandContext ctx = new BasicCommandContext();
     if (parentCtx != null) {
       ctx.setParentWithoutOverridingChild(parentCtx);
@@ -214,8 +214,8 @@ public class SelectStatement extends Statement {
     return result;
   }
 
-  public InternalExecutionPlan createExecutionPlan(CommandContext ctx, boolean enableProfiling) {
-    SelectExecutionPlanner planner = new SelectExecutionPlanner(this);
+  public InternalExecutionPlan createExecutionPlan(final CommandContext ctx, final boolean enableProfiling) {
+    final SelectExecutionPlanner planner = new SelectExecutionPlanner(this);
     return planner.createExecutionPlan(ctx, enableProfiling);
   }
 
@@ -235,19 +235,19 @@ public class SelectStatement extends Statement {
       result.letClause = letClause == null ? null : letClause.copy();
       result.timeout = timeout == null ? null : timeout.copy();
       return result;
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new ArcadeDBException(e);
     }
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    SelectStatement that = (SelectStatement) o;
+    final SelectStatement that = (SelectStatement) o;
 
     if (!Objects.equals(target, that.target))
       return false;
@@ -313,12 +313,12 @@ public class SelectStatement extends Statement {
     return true;
   }
 
-  public void setUnwind(Unwind unwind) {
+  public void setUnwind(final Unwind unwind) {
     this.unwind = unwind;
   }
 
   public Result serialize() {
-    ResultInternal result = (ResultInternal) super.serialize();
+    final ResultInternal result = (ResultInternal) super.serialize();
     if (target != null) {
       result.setProperty("target", target.serialize());
     }
@@ -352,7 +352,7 @@ public class SelectStatement extends Statement {
     return result;
   }
 
-  public void deserialize(Result fromResult) {
+  public void deserialize(final Result fromResult) {
     if (fromResult.getProperty("target") != null) {
       target = new FromClause(-1);
       target.deserialize(fromResult.getProperty("target"));

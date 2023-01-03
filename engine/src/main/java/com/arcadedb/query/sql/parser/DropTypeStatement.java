@@ -39,11 +39,11 @@ public class DropTypeStatement extends DDLStatement {
   public boolean        ifExists = false;
   public boolean        unsafe   = false;
 
-  public DropTypeStatement(int id) {
+  public DropTypeStatement(final int id) {
     super(id);
   }
 
-  public DropTypeStatement(SqlParser p, int id) {
+  public DropTypeStatement(final SqlParser p, final int id) {
     super(p, id);
   }
 
@@ -51,7 +51,7 @@ public class DropTypeStatement extends DDLStatement {
   public ResultSet executeDDL(final CommandContext ctx) {
     final Schema schema = ctx.getDatabase().getSchema();
 
-    String typeName;
+    final String typeName;
     if (name != null) {
       typeName = name.getStringValue();
     } else {
@@ -89,7 +89,7 @@ public class DropTypeStatement extends DDLStatement {
   }
 
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("DROP TYPE ");
     if (name != null) {
       name.toString(params, builder);
@@ -106,7 +106,7 @@ public class DropTypeStatement extends DDLStatement {
 
   @Override
   public DropTypeStatement copy() {
-    DropTypeStatement result = new DropTypeStatement(-1);
+    final DropTypeStatement result = new DropTypeStatement(-1);
     result.name = name == null ? null : name.copy();
     result.nameParam = nameParam == null ? null : nameParam.copy();
     result.ifExists = ifExists;

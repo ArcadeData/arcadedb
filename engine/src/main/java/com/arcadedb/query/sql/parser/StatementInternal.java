@@ -21,11 +21,11 @@
 package com.arcadedb.query.sql.parser;
 
 public class StatementInternal extends SimpleNode {
-  public StatementInternal(int id) {
+  public StatementInternal(final int id) {
     super(id);
   }
 
-  public StatementInternal(SqlParser p, int id) {
+  public StatementInternal(final SqlParser p, final int id) {
     super(p, id);
   }
 }

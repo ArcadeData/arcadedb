@@ -47,7 +47,7 @@ public class GraphQLSchema {
   private final Map<String, ObjectTypeDefinition> objectTypeDefinitionMap = new HashMap<>();
   private ObjectTypeDefinition              queryDefinition;
 
-  public GraphQLSchema(Database database) {
+  public GraphQLSchema(final Database database) {
     this.database = database;
   }
 
@@ -56,9 +56,9 @@ public class GraphQLSchema {
 
     final List<Definition> definitions = ast.getDefinitions();
     if (!definitions.isEmpty()) {
-      for (Definition definition : definitions) {
+      for (final Definition definition : definitions) {
         if (definition instanceof TypeSystemDefinition) {
-          TypeSystemDefinition typeSystemDefinition = (TypeSystemDefinition) definition;
+          final TypeSystemDefinition typeSystemDefinition = (TypeSystemDefinition) definition;
 
           final TypeDefinition type = typeSystemDefinition.getTypeDefinition();
           if (type instanceof ObjectTypeDefinition) {
@@ -95,17 +95,17 @@ public class GraphQLSchema {
       throw new QueryParsingException("Error on executing multiple queries");
 
     String queryName = null;
-    Map<String, Object> arguments = null;
+    final Map<String, Object> arguments = null;
 
     try {
-      Selection selection = op.getSelectionSet().getSelections().get(0);
+      final Selection selection = op.getSelectionSet().getSelections().get(0);
       queryName = selection.getName();
       if (queryDefinition != null) {
-        for (FieldDefinition f : queryDefinition.getFieldDefinitions()) {
+        for (final FieldDefinition f : queryDefinition.getFieldDefinitions()) {
           if (queryName.equals(f.getName())) {
             typeDefinition = f;
             returnType = getTypeFromField(f);
-            for (InputValueDefinition d : f.getArgumentsDefinition().getInputValueDefinitions())
+            for (final InputValueDefinition d : f.getArgumentsDefinition().getInputValueDefinitions())
               typeArgumentNames.add(d.getName().getValue());
             if (returnType != null)
               from = returnType.getName();
@@ -119,7 +119,7 @@ public class GraphQLSchema {
       if (typeDefinition != null) {
         final Directives directives = typeDefinition.getDirectives();
         if (directives != null) {
-          for (Directive directive : directives.getDirectives()) {
+          for (final Directive directive : directives.getDirectives()) {
             final String directiveName = directive.getName();
 
             // TODO: REFACTOR THIS IN MULTIPLE PLUGGABLE CLASSES
@@ -136,7 +136,7 @@ public class GraphQLSchema {
       if (field != null) {
         final Arguments queryArguments = field.getArguments();
         if (queryArguments != null)
-          for (Argument queryArgument : queryArguments.getList()) {
+          for (final Argument queryArgument : queryArguments.getList()) {
             final String argName = queryArgument.getName();
             if (!typeArgumentNames.contains(argName))
               throw new QueryParsingException("Parameter '" + argName + "' not defined in query");
@@ -173,9 +173,9 @@ public class GraphQLSchema {
 
       return new GraphQLResultSet(this, resultSet, projection != null ? projection.getSelections() : null, returnType);
 
-    } catch (QueryParsingException e) {
+    } catch (final QueryParsingException e) {
       throw e;
-    } catch (Exception e) {
+    } catch (final Exception e) {
       if (queryName != null)
         throw new QueryParsingException("Error on executing GraphQL query '" + queryName + "'", e);
       throw new QueryParsingException("Error on executing GraphQL query", e);
@@ -183,7 +183,7 @@ public class GraphQLSchema {
 
   }
 
-  private GraphQLResultSet parseNativeQueryDirective(final String language, Directive directive, Selection selection, ObjectTypeDefinition returnType) {
+  private GraphQLResultSet parseNativeQueryDirective(final String language, final Directive directive, final Selection selection, final ObjectTypeDefinition returnType) {
     if (directive.getArguments() == null)
       throw new QueryParsingException(language.toUpperCase() + " directive has no `statement` argument");
 
@@ -191,7 +191,7 @@ public class GraphQLSchema {
     Map<String, Object> arguments = null;
     SelectionSet projection = null;
 
-    for (Argument argument : directive.getArguments().getList()) {
+    for (final Argument argument : directive.getArguments().getList()) {
       if ("statement".equals(argument.getName())) {
         statement = argument.getValueWithVariable().getValue().getValue().toString();
 
@@ -215,7 +215,7 @@ public class GraphQLSchema {
     Map<String, Object> arguments = null;
 
     if (queryArguments != null) {
-      for (Argument queryArgument : queryArguments.getList()) {
+      for (final Argument queryArgument : queryArguments.getList()) {
         final String argName = queryArgument.getName();
         final Object argValue = queryArgument.getValueWithVariable().getValue().getValue();
 

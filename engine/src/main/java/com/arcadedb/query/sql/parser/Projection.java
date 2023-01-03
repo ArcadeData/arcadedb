@@ -37,18 +37,18 @@ public class Projection extends SimpleNode {
   // runtime
   private Set<String> excludes;
 
-  public Projection(List<ProjectionItem> items, boolean distinct) {
+  public Projection(final List<ProjectionItem> items, final boolean distinct) {
     super(-1);
     this.items = items;
     this.distinct = distinct;
     //TODO make the whole class immutable!
   }
 
-  public Projection(int id) {
+  public Projection(final int id) {
     super(id);
   }
 
-  public Projection(SqlParser p, int id) {
+  public Projection(final SqlParser p, final int id) {
     super(p, id);
   }
 
@@ -56,12 +56,12 @@ public class Projection extends SimpleNode {
     return items;
   }
 
-  public void setItems(List<ProjectionItem> items) {
+  public void setItems(final List<ProjectionItem> items) {
     this.items = items;
   }
 
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (items == null) {
       return;
     }
@@ -71,7 +71,7 @@ public class Projection extends SimpleNode {
       builder.append("DISTINCT ");
     }
     // print * before
-    for (ProjectionItem item : items) {
+    for (final ProjectionItem item : items) {
       if (item.isAll()) {
         if (!first) {
           builder.append(", ");
@@ -83,7 +83,7 @@ public class Projection extends SimpleNode {
     }
 
     // and then the rest of the projections
-    for (ProjectionItem item : items) {
+    for (final ProjectionItem item : items) {
       if (!item.isAll()) {
         if (!first) {
           builder.append(", ");
@@ -95,7 +95,7 @@ public class Projection extends SimpleNode {
     }
   }
 
-  public Result calculateSingle(CommandContext iContext, Result iRecord) {
+  public Result calculateSingle(final CommandContext iContext, final Result iRecord) {
     initExcludes(iContext);
     if (isExpand()) {
       throw new IllegalStateException("This is an expand projection, it cannot be calculated as a single result" + this);
@@ -105,13 +105,13 @@ public class Projection extends SimpleNode {
       return iRecord;
     }
 
-    ResultInternal result = new ResultInternal();
-    for (ProjectionItem item : items) {
+    final ResultInternal result = new ResultInternal();
+    for (final ProjectionItem item : items) {
       if (item.exclude) {
         continue;
       }
       if (item.isAll()) {
-        for (String alias : iRecord.getPropertyNames()) {
+        for (final String alias : iRecord.getPropertyNames()) {
           if (this.excludes.contains(alias)) {
             continue;
           }
@@ -122,7 +122,7 @@ public class Projection extends SimpleNode {
           result.setProperty(alias, val);
         }
         if (iRecord.getElement().isPresent()) {
-          Document x = iRecord.getElement().get();
+          final Document x = iRecord.getElement().get();
           if (!this.excludes.contains("@rid")) {
             result.setProperty("@rid", x.getIdentity());
           }
@@ -135,7 +135,7 @@ public class Projection extends SimpleNode {
       }
     }
 
-    for (String key : iRecord.getMetadataKeys()) {
+    for (final String key : iRecord.getMetadataKeys()) {
       if (!result.getMetadataKeys().contains(key)) {
         result.setMetadata(key, iRecord.getMetadata(key));
       }
@@ -143,10 +143,10 @@ public class Projection extends SimpleNode {
     return result;
   }
 
-  private void initExcludes(CommandContext iContext) {
+  private void initExcludes(final CommandContext iContext) {
     if (excludes == null) {
       this.excludes = new HashSet<String>();
-      for (ProjectionItem item : items) {
+      for (final ProjectionItem item : items) {
         if (item.exclude) {
           this.excludes.add(item.getProjectionAliasAsString());
         }
@@ -160,7 +160,7 @@ public class Projection extends SimpleNode {
 
   public void validate() {
     if (items != null && items.size() > 1) {
-      for (ProjectionItem item : items) {
+      for (final ProjectionItem item : items) {
         if (item.isExpand()) {
           throw new CommandSQLParsingException("Cannot execute a query with expand() together with other projections");
         }
@@ -169,7 +169,7 @@ public class Projection extends SimpleNode {
   }
 
   public Projection getExpandContent() {
-    Projection result = new Projection(-1);
+    final Projection result = new Projection(-1);
     result.setItems(new ArrayList<>());
     result.getItems().add(this.getItems().get(0).getExpandContent());
     return result;
@@ -180,7 +180,7 @@ public class Projection extends SimpleNode {
   }
 
   public Projection copy() {
-    Projection result = new Projection(-1);
+    final Projection result = new Projection(-1);
     if (items != null) {
       result.items = items.stream().map(x -> x.copy()).collect(Collectors.toList());
     }
@@ -189,13 +189,13 @@ public class Projection extends SimpleNode {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    Projection that = (Projection) o;
+    final Projection that = (Projection) o;
 
     return Objects.equals(items, that.items);
   }
@@ -209,20 +209,20 @@ public class Projection extends SimpleNode {
     return distinct;
   }
 
-  public void setDistinct(boolean distinct) {
+  public void setDistinct(final boolean distinct) {
     this.distinct = distinct;
   }
 
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
     if (items != null) {
-      for (ProjectionItem item : items) {
+      for (final ProjectionItem item : items) {
         item.extractSubQueries(collector);
       }
     }
   }
 
   public boolean refersToParent() {
-    for (ProjectionItem item : items) {
+    for (final ProjectionItem item : items) {
       if (item.refersToParent()) {
         return true;
       }
@@ -231,7 +231,7 @@ public class Projection extends SimpleNode {
   }
 
   public Result serialize() {
-    ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal();
     result.setProperty("distinct", distinct);
     if (items != null) {
       result.setProperty("items", items.stream().map(x -> x.serialize()).collect(Collectors.toList()));
@@ -239,14 +239,14 @@ public class Projection extends SimpleNode {
     return result;
   }
 
-  public void deserialize(Result fromResult) {
+  public void deserialize(final Result fromResult) {
     distinct = fromResult.getProperty("distinct");
     if (fromResult.getProperty("items") != null) {
       items = new ArrayList<>();
 
-      List<Result> ser = fromResult.getProperty("items");
-      for (Result x : ser) {
-        ProjectionItem item = new ProjectionItem(-1);
+      final List<Result> ser = fromResult.getProperty("items");
+      for (final Result x : ser) {
+        final ProjectionItem item = new ProjectionItem(-1);
         item.deserialize(x);
         items.add(item);
       }
@@ -255,7 +255,7 @@ public class Projection extends SimpleNode {
 
   public boolean isCacheable() {
     if (items != null) {
-      for (ProjectionItem item : items) {
+      for (final ProjectionItem item : items) {
         if (!item.isCacheable()) {
           return false;
         }

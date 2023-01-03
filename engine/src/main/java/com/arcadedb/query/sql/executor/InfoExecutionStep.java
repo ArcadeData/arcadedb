@@ -61,23 +61,23 @@ public class InfoExecutionStep implements ExecutionStep {
     return null;
   }
 
-  public void setName(String name) {
+  public void setName(final String name) {
     this.name = name;
   }
 
-  public void setType(String type) {
+  public void setType(final String type) {
     this.type = type;
   }
 
-  public void setTargetNode(String targetNode) {
+  public void setTargetNode(final String targetNode) {
     this.targetNode = targetNode;
   }
 
-  public void setDescription(String description) {
+  public void setDescription(final String description) {
     this.description = description;
   }
 
-  public void setCost(long cost) {
+  public void setCost(final long cost) {
     this.cost = cost;
   }
 
@@ -85,7 +85,7 @@ public class InfoExecutionStep implements ExecutionStep {
     return javaType;
   }
 
-  public void setJavaType(String javaType) {
+  public void setJavaType(final String javaType) {
     this.javaType = javaType;
   }
 }

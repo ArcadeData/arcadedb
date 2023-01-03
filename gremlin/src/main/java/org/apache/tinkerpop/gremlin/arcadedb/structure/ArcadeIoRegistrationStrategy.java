@@ -31,9 +31,9 @@ public class ArcadeIoRegistrationStrategy extends AbstractTraversalStrategy<Trav
   private static final ArcadeIoRegistrationStrategy INSTANCE = new ArcadeIoRegistrationStrategy();
 
   @Override
-  public void apply(Traversal.Admin<?, ?> traversal) {
+  public void apply(final Traversal.Admin<?, ?> traversal) {
     if (traversal.getStartStep() instanceof IoStep) {
-      IoStep ioStep = (IoStep) traversal.getStartStep();
+      final IoStep ioStep = (IoStep) traversal.getStartStep();
       ioStep.configure(IO.registry, new ArcadeIoRegistry());
     }
   }

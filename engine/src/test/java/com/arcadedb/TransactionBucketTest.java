@@ -37,6 +37,7 @@ public class TransactionBucketTest extends TestHelper {
 
   @Test
   public void testPopulate() {
+    // EMPTY METHOD
   }
 
   @Test
@@ -50,7 +51,7 @@ public class TransactionBucketTest extends TestHelper {
     database.scanBucket("V_0", record -> {
       Assertions.assertNotNull(record);
 
-      Set<String> prop = new HashSet<String>();
+      final Set<String> prop = new HashSet<String>();
         prop.addAll(((Document) record).getPropertyNames());
 
       Assertions.assertEquals(3, ((Document) record).getPropertyNames().size(), 9);
@@ -73,13 +74,13 @@ public class TransactionBucketTest extends TestHelper {
 
     database.begin();
 
-    Iterator<Record> iterator = database.iterateBucket("V_0");
+    final Iterator<Record> iterator = database.iterateBucket("V_0");
 
     while (iterator.hasNext()) {
-      Document record = (Document) iterator.next();
+      final Document record = (Document) iterator.next();
       Assertions.assertNotNull(record);
 
-      Set<String> prop = new HashSet<String>();
+      final Set<String> prop = new HashSet<String>();
         prop.addAll(record.getPropertyNames());
 
       Assertions.assertEquals(3, record.getPropertyNames().size(), 9);
@@ -107,7 +108,7 @@ public class TransactionBucketTest extends TestHelper {
       Assertions.assertNotNull(record2);
       Assertions.assertEquals(record, record2);
 
-      Set<String> prop = new HashSet<String>();
+      final Set<String> prop = new HashSet<String>();
         prop.addAll(record2.getPropertyNames());
 
       Assertions.assertEquals(record2.getPropertyNames().size(), 3);
@@ -178,13 +179,13 @@ public class TransactionBucketTest extends TestHelper {
     database.getSchema().createVertexType("testIteratorOnEdges_Vertex");
     database.getSchema().createEdgeType("testIteratorOnEdges_Edge");
 
-    MutableVertex v1 = database.newVertex("testIteratorOnEdges_Vertex").save();
-    MutableVertex v2 = database.newVertex("testIteratorOnEdges_Vertex").save();
-    MutableEdge e = v1.newEdge("testIteratorOnEdges_Edge", v2, true).save();
+    final MutableVertex v1 = database.newVertex("testIteratorOnEdges_Vertex").save();
+    final MutableVertex v2 = database.newVertex("testIteratorOnEdges_Vertex").save();
+    final MutableEdge e = v1.newEdge("testIteratorOnEdges_Edge", v2, true).save();
 
     database.scanType("testIteratorOnEdges_Edge", true, record -> {
 
-      Edge e1 = (Edge) record;
+      final Edge e1 = (Edge) record;
       Assertions.assertEquals(v1.getIdentity(), e1.getOut());
       Assertions.assertEquals(v2.getIdentity(), e1.getIn());
 
@@ -204,9 +205,9 @@ public class TransactionBucketTest extends TestHelper {
     database.getSchema().createVertexType("testIteratorOnEdges_Vertex");
     database.getSchema().createEdgeType("testIteratorOnEdges_Edge");
 
-    MutableVertex v1 = database.newVertex("testIteratorOnEdges_Vertex").save();
-    MutableVertex v2 = database.newVertex("testIteratorOnEdges_Vertex").save();
-    MutableEdge e = v1.newEdge("testIteratorOnEdges_Edge", v2, true).save();
+    final MutableVertex v1 = database.newVertex("testIteratorOnEdges_Vertex").save();
+    final MutableVertex v2 = database.newVertex("testIteratorOnEdges_Vertex").save();
+    final MutableEdge e = v1.newEdge("testIteratorOnEdges_Edge", v2, true).save();
 
     final ResultSet result = database.query("sql", "select from testIteratorOnEdges_Edge");
 
@@ -216,7 +217,7 @@ public class TransactionBucketTest extends TestHelper {
 
     Assertions.assertNotNull(record);
 
-    Edge e2 = (Edge) record;
+    final Edge e2 = (Edge) record;
     Assertions.assertEquals(v1.getIdentity(), e2.getOut());
     Assertions.assertEquals(v2.getIdentity(), e2.getIn());
 
@@ -229,9 +230,9 @@ public class TransactionBucketTest extends TestHelper {
       database.getSchema().createVertexType("testIteratorOnEdges_Vertex");
       database.getSchema().createEdgeType("testIteratorOnEdges_Edge");
 
-      MutableVertex v1 = database.newVertex("testIteratorOnEdges_Vertex").save();
-      MutableVertex v2 = database.newVertex("testIteratorOnEdges_Vertex").save();
-      MutableEdge e = v1.newEdge("testIteratorOnEdges_Edge", v2, true).save();
+      final MutableVertex v1 = database.newVertex("testIteratorOnEdges_Vertex").save();
+      final MutableVertex v2 = database.newVertex("testIteratorOnEdges_Vertex").save();
+      final MutableEdge e = v1.newEdge("testIteratorOnEdges_Edge", v2, true).save();
     });
 
     database.transaction(() -> {
@@ -243,7 +244,7 @@ public class TransactionBucketTest extends TestHelper {
 
       Assertions.assertNotNull(record);
 
-      Edge e2 = (Edge) record;
+      final Edge e2 = (Edge) record;
       Assertions.assertNotNull(e2.getOutVertex());
       Assertions.assertNotNull(e2.getInVertex());
     });

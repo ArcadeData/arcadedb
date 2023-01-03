@@ -27,18 +27,18 @@ public class SchemaDefinition extends SimpleNode {
   protected Directives directives;
   List<OperationTypeDefinition> operationTypeDefinitions = new ArrayList<>();
 
-  public SchemaDefinition(int id) {
+  public SchemaDefinition(final int id) {
     super(id);
   }
 
-  public SchemaDefinition(GraphQLParser p, int id) {
+  public SchemaDefinition(final GraphQLParser p, final int id) {
     super(p, id);
   }
 
   /**
    * Accept the visitor.
    **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
+  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
     return visitor.visit(this, data);
   }
 }

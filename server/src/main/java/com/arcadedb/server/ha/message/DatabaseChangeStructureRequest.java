@@ -66,7 +66,7 @@ public class DatabaseChangeStructureRequest extends HAAbstractCommand {
     stream.putString(schemaJson);
 
     stream.putUnsignedNumber(filesToAdd.size());
-    for (Map.Entry<Integer, String> file : filesToAdd.entrySet()) {
+    for (final Map.Entry<Integer, String> file : filesToAdd.entrySet()) {
       stream.putInt(file.getKey());
       stream.putByte((byte) (file.getValue() != null ? 1 : 0));
       if (file.getValue() != null)
@@ -74,7 +74,7 @@ public class DatabaseChangeStructureRequest extends HAAbstractCommand {
     }
 
     stream.putUnsignedNumber(filesToRemove.size());
-    for (Map.Entry<Integer, String> file : filesToRemove.entrySet()) {
+    for (final Map.Entry<Integer, String> file : filesToRemove.entrySet()) {
       stream.putInt(file.getKey());
       stream.putByte((byte) (file.getValue() != null ? 1 : 0));
       if (file.getValue() != null)
@@ -121,7 +121,7 @@ public class DatabaseChangeStructureRequest extends HAAbstractCommand {
       db.getSchema().getEmbedded().load(PaginatedFile.MODE.READ_WRITE, true);
       return new DatabaseChangeStructureResponse();
 
-    } catch (Exception e) {
+    } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on changing database structure request from the leader node", e);
       throw new ReplicationException("Error on changing database structure request from the leader node", e);
     }
@@ -131,11 +131,11 @@ public class DatabaseChangeStructureRequest extends HAAbstractCommand {
     final String databasePath = db.getDatabasePath();
 
     // ADD FILES
-    for (Map.Entry<Integer, String> entry : filesToAdd.entrySet())
+    for (final Map.Entry<Integer, String> entry : filesToAdd.entrySet())
       db.getFileManager().getOrCreateFile(entry.getKey(), databasePath + File.separator + entry.getValue());
 
     // REMOVE FILES
-    for (Map.Entry<Integer, String> entry : filesToRemove.entrySet()) {
+    for (final Map.Entry<Integer, String> entry : filesToRemove.entrySet()) {
       db.getPageManager().deleteFile(entry.getKey());
       db.getFileManager().dropFile(entry.getKey());
       db.getSchema().getEmbedded().removeFile(entry.getKey());

@@ -198,7 +198,7 @@ public class CompressedRID2RIDsIndex {
     // SLOT OCCUPIED, CHECK FOR THE KEY
     chunk.position(pos);
     while (true) {
-      Object slotKey = serializer.deserializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, null);
+      final Object slotKey = serializer.deserializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, null);
 
       if (BinaryComparator.equals(slotKey, key)) {
         // FOUND KEY, COLLECT ALL THE VALUE IN THE LINKED LIST

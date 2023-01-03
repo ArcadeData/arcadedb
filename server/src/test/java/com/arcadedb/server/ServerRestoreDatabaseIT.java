@@ -56,7 +56,7 @@ public class ServerRestoreDatabaseIT extends BaseGraphServerTest {
     if (backupFile.exists())
       backupFile.delete();
 
-    Database database = new DatabaseFactory("./target/databases/" + getDatabaseName()).create();
+    final Database database = new DatabaseFactory("./target/databases/" + getDatabaseName()).create();
 
     database.getSchema().createDocumentType("testDoc");
     database.transaction(() -> database.newDocument("testDoc").set("prop", "value").save());
@@ -74,7 +74,7 @@ public class ServerRestoreDatabaseIT extends BaseGraphServerTest {
   @Test
   public void defaultDatabases() {
     getServer(0).getSecurity().authenticate("elon", "musk", "graph");
-    Database database = getServer(0).getDatabase("graph");
+    final Database database = getServer(0).getDatabase("graph");
     Assertions.assertEquals(1, database.countType("testDoc", true));
     FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_DATABASE_DIRECTORY.getValueAsString() + "0/Movies"));
   }

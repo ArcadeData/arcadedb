@@ -32,40 +32,40 @@ public class MatchesCondition extends BooleanExpression {
   public    Expression     rightExpression;
   protected InputParameter rightParam;
 
-  public MatchesCondition(int id) {
+  public MatchesCondition(final int id) {
     super(id);
   }
 
-  public MatchesCondition(SqlParser p, int id) {
+  public MatchesCondition(final SqlParser p, final int id) {
     super(p, id);
   }
 
   @Override
-  public boolean evaluate(Identifiable currentRecord, CommandContext ctx) {
+  public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
     String regex = right;
     if (regex != null) {
       regex = regex.substring(1, regex.length() - 1);
     } else if (rightExpression != null) {
-      Object val = rightExpression.execute(currentRecord, ctx);
+      final Object val = rightExpression.execute(currentRecord, ctx);
       if (val instanceof String) {
         regex = (String) val;
       } else {
         return false;
       }
     } else {
-      Object paramVal = rightParam.getValue(ctx.getInputParameters());
+      final Object paramVal = rightParam.getValue(ctx.getInputParameters());
       if (paramVal instanceof String) {
         regex = (String) paramVal;
       } else {
         return false;
       }
     }
-    Object value = expression.execute(currentRecord, ctx);
+    final Object value = expression.execute(currentRecord, ctx);
 
     return matches(value, regex, ctx);
   }
 
-  private boolean matches(Object value, String regex, CommandContext ctx) {
+  private boolean matches(final Object value, final String regex, final CommandContext ctx) {
     final String key = "MATCHES_" + regex.hashCode();
     java.util.regex.Pattern p = (java.util.regex.Pattern) ctx.getVariable(key);
     if (p == null) {
@@ -81,31 +81,31 @@ public class MatchesCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(Result currentRecord, CommandContext ctx) {
+  public boolean evaluate(final Result currentRecord, final CommandContext ctx) {
     String regex = right;
     if (regex != null) {
       regex = regex.substring(1, regex.length() - 1);
     } else if (rightExpression != null) {
-      Object val = rightExpression.execute(currentRecord, ctx);
+      final Object val = rightExpression.execute(currentRecord, ctx);
       if (val instanceof String) {
         regex = (String) val;
       } else {
         return false;
       }
     } else {
-      Object paramVal = rightParam.getValue(ctx.getInputParameters());
+      final Object paramVal = rightParam.getValue(ctx.getInputParameters());
       if (paramVal instanceof String) {
         regex = (String) paramVal;
       } else {
         return false;
       }
     }
-    Object value = expression.execute(currentRecord, ctx);
+    final Object value = expression.execute(currentRecord, ctx);
 
     return matches(value, regex, ctx);
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     expression.toString(params, builder);
     builder.append(" MATCHES ");
     if (right != null) {
@@ -139,7 +139,7 @@ public class MatchesCondition extends BooleanExpression {
 
   @Override
   protected List<Object> getExternalCalculationConditions() {
-    List<Object> result = new ArrayList<>();
+    final List<Object> result = new ArrayList<>();
     if (expression != null && !expression.supportsBasicCalculation()) {
       result.add(expression);
     }
@@ -150,7 +150,7 @@ public class MatchesCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean needsAliases(Set<String> aliases) {
+  public boolean needsAliases(final Set<String> aliases) {
     if (expression.needsAliases(aliases)) {
       return true;
     }
@@ -159,7 +159,7 @@ public class MatchesCondition extends BooleanExpression {
 
   @Override
   public MatchesCondition copy() {
-    MatchesCondition result = new MatchesCondition(-1);
+    final MatchesCondition result = new MatchesCondition(-1);
     result.expression = expression == null ? null : expression.copy();
     result.right = right;
     result.rightParam = rightParam == null ? null : rightParam.copy();
@@ -168,7 +168,7 @@ public class MatchesCondition extends BooleanExpression {
   }
 
   @Override
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
     expression.extractSubQueries(collector);
     if (rightExpression != null) {
       rightExpression.extractSubQueries(collector);
@@ -212,7 +212,7 @@ public class MatchesCondition extends BooleanExpression {
 
   @Override
   public List<String> getMatchPatternInvolvedAliases() {
-      List<String> result = new ArrayList<>(expression.getMatchPatternInvolvedAliases());
+      final List<String> result = new ArrayList<>(expression.getMatchPatternInvolvedAliases());
     if (rightExpression != null) {
       result.addAll(rightExpression.getMatchPatternInvolvedAliases());
     }

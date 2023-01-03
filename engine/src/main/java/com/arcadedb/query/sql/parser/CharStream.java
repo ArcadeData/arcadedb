@@ -20,6 +20,8 @@
 /* JavaCCOptions:STATIC=false,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import java.io.IOException;
+
 /**
  * This interface describes a character stream that maintains line and
  * column number positions of the characters.  It also has the capability
@@ -42,7 +44,7 @@ public interface CharStream {
    * of selecting the input is the responsibility of the class
    * implementing this interface.  Can throw any java.io.IOException.
    */
-  char readChar() throws java.io.IOException;
+  char readChar() throws IOException;
 
   @Deprecated
   /**
@@ -97,7 +99,7 @@ public interface CharStream {
    * All characters must remain in the buffer between two successive calls
    * to this method to implement backup correctly.
    */
-  char BeginToken() throws java.io.IOException;
+  char BeginToken() throws IOException;
 
   /**
    * Returns a string made up of characters from the marked token beginning

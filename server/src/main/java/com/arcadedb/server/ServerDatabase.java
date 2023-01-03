@@ -269,7 +269,7 @@ public class ServerDatabase implements DatabaseInternal {
     wrapped.createRecord(record, bucketName);
   }
 
-  public void createRecordNoLock(final Record record, final String bucketName, boolean discardRecordAfter) {
+  public void createRecordNoLock(final Record record, final String bucketName, final boolean discardRecordAfter) {
     wrapped.createRecordNoLock(record, bucketName, false);
   }
 
@@ -277,7 +277,7 @@ public class ServerDatabase implements DatabaseInternal {
     wrapped.updateRecord(record);
   }
 
-  public void updateRecordNoLock(final Record record, boolean discardRecordAfter) {
+  public void updateRecordNoLock(final Record record, final boolean discardRecordAfter) {
     wrapped.updateRecordNoLock(record, discardRecordAfter);
   }
 
@@ -343,7 +343,7 @@ public class ServerDatabase implements DatabaseInternal {
     return wrapped.newDocument(typeName);
   }
 
-  public MutableEmbeddedDocument newEmbeddedDocument(EmbeddedModifier modifier, String typeName) {
+  public MutableEmbeddedDocument newEmbeddedDocument(final EmbeddedModifier modifier, final String typeName) {
     return wrapped.newEmbeddedDocument(modifier, typeName);
   }
 
@@ -510,7 +510,7 @@ public class ServerDatabase implements DatabaseInternal {
     return this;
   }
 
-  public int getNewEdgeListSize(int previousSize) {
+  public int getNewEdgeListSize(final int previousSize) {
     return wrapped.getNewEdgeListSize(previousSize);
   }
 

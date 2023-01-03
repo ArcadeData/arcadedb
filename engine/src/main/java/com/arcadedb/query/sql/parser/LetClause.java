@@ -41,7 +41,7 @@ public class LetClause extends SimpleNode {
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("LET ");
     boolean first = true;
-    for (LetItem item : items) {
+    for (final LetItem item : items) {
       if (!first) {
         builder.append(", ");
       }
@@ -82,7 +82,7 @@ public class LetClause extends SimpleNode {
   }
 
   public boolean refersToParent() {
-    for (LetItem item : items) {
+    for (final LetItem item : items) {
       if (item.refersToParent()) {
         return true;
       }
@@ -91,13 +91,13 @@ public class LetClause extends SimpleNode {
   }
 
   public void extractSubQueries(final SubQueryCollector collector) {
-    for (LetItem item : items) {
+    for (final LetItem item : items) {
       item.extractSubQueries(collector);
     }
   }
 
   public Result serialize() {
-    ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal();
     if (items != null) {
       result.setProperty("items", items.stream().map(x -> x.serialize()).collect(Collectors.toList()));
     }
@@ -108,8 +108,8 @@ public class LetClause extends SimpleNode {
     if (fromResult.getProperty("items") != null) {
       final List<Result> ser = fromResult.getProperty("items");
       items = new ArrayList<>();
-      for (Result r : ser) {
-        LetItem exp = new LetItem(-1);
+      for (final Result r : ser) {
+        final LetItem exp = new LetItem(-1);
         exp.deserialize(r);
         items.add(exp);
       }
@@ -117,7 +117,7 @@ public class LetClause extends SimpleNode {
   }
 
   public boolean isCacheable() {
-    for (LetItem item : items) {
+    for (final LetItem item : items) {
       if (!item.isCacheable()) {
         return false;
       }

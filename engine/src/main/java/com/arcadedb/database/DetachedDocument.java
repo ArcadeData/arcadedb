@@ -33,7 +33,7 @@ public class DetachedDocument extends ImmutableDocument {
   private void init(final Document sourceDocument) {
     this.map = new LinkedHashMap<>();
     final Map<String, Object> sourceMap = sourceDocument.propertiesAsMap();
-    for (Map.Entry<String, Object> entry : sourceMap.entrySet()) {
+    for (final Map.Entry<String, Object> entry : sourceMap.entrySet()) {
       Object value = entry.getValue();
 
       if (value instanceof List) {
@@ -43,9 +43,9 @@ public class DetachedDocument extends ImmutableDocument {
             ((List) value).set(i, ((EmbeddedDocument) embValue).detach());
         }
       } else if (value instanceof Map) {
-        Map<String, Object> map = (Map<String, Object>) value;
+        final Map<String, Object> map = (Map<String, Object>) value;
 
-        for (String propName : map.keySet()) {
+        for (final String propName : map.keySet()) {
           final Object embValue = map.get(propName);
           if (embValue instanceof EmbeddedDocument)
             map.put(propName, ((EmbeddedDocument) embValue).detach());
@@ -84,7 +84,7 @@ public class DetachedDocument extends ImmutableDocument {
   }
 
   @Override
-  public synchronized boolean has(String propertyName) {
+  public synchronized boolean has(final String propertyName) {
     return map.containsKey(propertyName);
   }
 
@@ -93,7 +93,7 @@ public class DetachedDocument extends ImmutableDocument {
   }
 
   @Override
-  public void setBuffer(Binary buffer) {
+  public void setBuffer(final Binary buffer) {
     throw new UnsupportedOperationException("setBuffer");
   }
 
@@ -111,7 +111,7 @@ public class DetachedDocument extends ImmutableDocument {
       result.append('?');
     } else {
       int i = 0;
-      for (Map.Entry<String, Object> entry : map.entrySet()) {
+      for (final Map.Entry<String, Object> entry : map.entrySet()) {
         if (i > 0)
           result.append(',');
 

@@ -21,11 +21,11 @@
 package com.arcadedb.query.sql.parser;
 
 public class ConditionBlock extends SimpleNode {
-  public ConditionBlock(int id) {
+  public ConditionBlock(final int id) {
     super(id);
   }
 
-  public ConditionBlock(SqlParser p, int id) {
+  public ConditionBlock(final SqlParser p, final int id) {
     super(p, id);
   }
 

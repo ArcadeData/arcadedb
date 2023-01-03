@@ -33,18 +33,18 @@ public abstract class AbstractExecutionStep implements ExecutionStepInternal {
 
   protected boolean profilingEnabled;
 
-  public AbstractExecutionStep(CommandContext ctx, boolean profilingEnabled) {
+  public AbstractExecutionStep(final CommandContext ctx, final boolean profilingEnabled) {
     this.ctx = ctx;
     this.profilingEnabled = profilingEnabled;
   }
 
   @Override
-  public void setPrevious(ExecutionStepInternal step) {
+  public void setPrevious(final ExecutionStepInternal step) {
     this.prev = Optional.ofNullable(step);
   }
 
   @Override
-  public void setNext(ExecutionStepInternal step) {
+  public void setNext(final ExecutionStepInternal step) {
     this.next = Optional.ofNullable(step);
   }
 
@@ -79,7 +79,7 @@ public abstract class AbstractExecutionStep implements ExecutionStepInternal {
     return profilingEnabled;
   }
 
-  public void setProfilingEnabled(boolean profilingEnabled) {
+  public void setProfilingEnabled(final boolean profilingEnabled) {
     this.profilingEnabled = profilingEnabled;
   }
 

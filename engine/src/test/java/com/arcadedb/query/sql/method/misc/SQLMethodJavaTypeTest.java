@@ -36,7 +36,7 @@ class SQLMethodJavaTypeTest {
 
   @Test
   void testNulIsReturnedAsNull() {
-    Object result = method.execute(null, null, null, null, null);
+    final Object result = method.execute(null, null, null, null, null);
     assertThat(result).isNull();
   }
 

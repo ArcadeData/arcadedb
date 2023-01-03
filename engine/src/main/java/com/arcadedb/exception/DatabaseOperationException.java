@@ -23,7 +23,7 @@ public class DatabaseOperationException extends ArcadeDBException {
     super(s);
   }
 
-  public DatabaseOperationException(String s, Throwable e) {
+  public DatabaseOperationException(final String s, final Throwable e) {
     super(s, e);
   }
 }

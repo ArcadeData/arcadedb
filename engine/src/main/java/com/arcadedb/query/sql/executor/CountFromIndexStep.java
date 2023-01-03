@@ -43,14 +43,14 @@ public class CountFromIndexStep extends AbstractExecutionStep {
    * @param ctx              the query context
    * @param profilingEnabled true to enable the profiling of the execution (for SQL PROFILE)
    */
-  public CountFromIndexStep(IndexIdentifier targetIndex, String alias, CommandContext ctx, boolean profilingEnabled) {
+  public CountFromIndexStep(final IndexIdentifier targetIndex, final String alias, final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
     this.target = targetIndex;
     this.alias = alias;
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
     getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
 
     return new ResultSet() {
@@ -64,12 +64,12 @@ public class CountFromIndexStep extends AbstractExecutionStep {
         if (executed) {
           throw new NoSuchElementException();
         }
-        long begin = profilingEnabled ? System.nanoTime() : 0;
+        final long begin = profilingEnabled ? System.nanoTime() : 0;
         try {
-          Index idx = ctx.getDatabase().getSchema().getIndexByName(target.getIndexName());
-          long size = idx.countEntries();
+          final Index idx = ctx.getDatabase().getSchema().getIndexByName(target.getIndexName());
+          final long size = idx.countEntries();
           executed = true;
-          ResultInternal result = new ResultInternal();
+          final ResultInternal result = new ResultInternal();
           result.setProperty(alias, size);
           return result;
         } finally {
@@ -99,8 +99,8 @@ public class CountFromIndexStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     return spaces + "+ CALCULATE INDEX SIZE: " + target;
   }
 }

@@ -29,7 +29,7 @@ public class Bucket extends SimpleNode {
   protected String  bucketName;
   protected Integer bucketNumber;
 
-  public Bucket(String bucketName) {
+  public Bucket(final String bucketName) {
     super(-1);
     this.bucketName = bucketName;
   }
@@ -43,11 +43,11 @@ public class Bucket extends SimpleNode {
   }
 
   @Override
-  public String toString(String prefix) {
+  public String toString(final String prefix) {
     return super.toString(prefix);
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (bucketName != null) {
       builder.append("bucket:" + bucketName);
     } else {
@@ -98,7 +98,7 @@ public class Bucket extends SimpleNode {
     return result;
   }
 
-  public void deserialize(Result fromResult) {
+  public void deserialize(final Result fromResult) {
     bucketName = fromResult.getProperty("bucketName");
     bucketNumber = fromResult.getProperty("bucketNumber");
   }

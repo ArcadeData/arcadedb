@@ -34,13 +34,13 @@ class SQLMethodAsByteTest {
 
   @Test
   void testNulIsReturnedAsNull() {
-    Object result = method.execute(null, null, null, null, null);
+    final Object result = method.execute(null, null, null, null, null);
     assertThat(result).isNull();
   }
 
   @Test
   void testStringToShort() {
-    Object result = method.execute(null, null, null, "10", null);
+    final Object result = method.execute(null, null, null, "10", null);
     assertThat(result).isInstanceOf(Byte.class);
     assertThat(result).isEqualTo((byte) 10);
   }

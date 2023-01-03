@@ -34,13 +34,13 @@ import com.arcadedb.exception.TimeoutException;
 public class CopyRecordContentBeforeUpdateStep extends AbstractExecutionStep {
   private long cost = 0;
 
-  public CopyRecordContentBeforeUpdateStep(CommandContext ctx, boolean profilingEnabled) {
+  public CopyRecordContentBeforeUpdateStep(final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    ResultSet lastFetched = getPrev().get().syncPull(ctx, nRecords);
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
+    final ResultSet lastFetched = getPrev().get().syncPull(ctx, nRecords);
     return new ResultSet() {
       @Override
       public boolean hasNext() {
@@ -49,18 +49,18 @@ public class CopyRecordContentBeforeUpdateStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        Result result = lastFetched.next();
-        long begin = profilingEnabled ? System.nanoTime() : 0;
+        final Result result = lastFetched.next();
+        final long begin = profilingEnabled ? System.nanoTime() : 0;
         try {
 
           if (result instanceof UpdatableResult) {
-            ResultInternal prevValue = new ResultInternal();
-            Record rec = result.getElement().get().getRecord();
+            final ResultInternal prevValue = new ResultInternal();
+            final Record rec = result.getElement().get().getRecord();
             prevValue.setProperty("@rid", rec.getIdentity());
             if (rec instanceof Document) {
               prevValue.setProperty("@type", ((Document) rec).getTypeName());
             }
-            for (String propName : result.getPropertyNames()) {
+            for (final String propName : result.getPropertyNames()) {
               prevValue.setProperty(propName, result.getProperty(propName));
             }
             ((UpdatableResult) result).previousValue = prevValue;
@@ -87,9 +87,9 @@ public class CopyRecordContentBeforeUpdateStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    StringBuilder result = new StringBuilder();
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
+    final StringBuilder result = new StringBuilder();
     result.append(spaces);
     result.append("+ COPY RECORD CONTENT BEFORE UPDATE");
     if (profilingEnabled) {

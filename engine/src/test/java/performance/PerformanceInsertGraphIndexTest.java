@@ -55,7 +55,7 @@ public class PerformanceInsertGraphIndexTest extends TestHelper {
   private static final boolean USE_WAL          = true;
   private static final boolean EDGE_IDS         = true;
 
-  public static void main(String[] args) {
+  public static void main(final String[] args) {
     final long begin = System.currentTimeMillis();
 
     if (CREATEDB)
@@ -191,7 +191,7 @@ public class PerformanceInsertGraphIndexTest extends TestHelper {
   private void createVertices() {
     System.out.println("Start inserting " + VERTICES + " vertices...");
 
-    long startOfTest = System.currentTimeMillis();
+    final long startOfTest = System.currentTimeMillis();
 
     try {
       //database.setEdgeListSize(256);
@@ -203,7 +203,7 @@ public class PerformanceInsertGraphIndexTest extends TestHelper {
       database.async().setCommitEvery(5000);
       database.async().onError(new ErrorCallback() {
         @Override
-        public void call(Throwable exception) {
+        public void call(final Throwable exception) {
           LogManager.instance().log(this, Level.SEVERE, "ERROR: " + exception, exception);
           System.exit(1);
         }
@@ -259,7 +259,7 @@ public class PerformanceInsertGraphIndexTest extends TestHelper {
 
       int j = 0;
       for (; j < expectedTotalEdges; j++) {
-        IndexCursor edgeCursor = index.get(new Object[] { j });
+        final IndexCursor edgeCursor = index.get(new Object[] { j });
         Assertions.assertTrue(edgeCursor.hasNext());
         final Edge e = edgeCursor.next().asEdge(true);
         Assertions.assertNotNull(e);
@@ -280,7 +280,7 @@ public class PerformanceInsertGraphIndexTest extends TestHelper {
     }
   }
 
-  private void countEdges(Vertex[] cachedVertices) {
+  private void countEdges(final Vertex[] cachedVertices) {
     System.out.println("Checking graph with " + VERTICES + " vertices");
 
     database.begin();
@@ -291,13 +291,13 @@ public class PerformanceInsertGraphIndexTest extends TestHelper {
       int outEdges = 0;
       int inEdges = 0;
       for (; i < VERTICES; ++i) {
-        for (Edge e : cachedVertices[i].getEdges(Vertex.DIRECTION.OUT, EDGE_TYPE_NAME)) {
+        for (final Edge e : cachedVertices[i].getEdges(Vertex.DIRECTION.OUT, EDGE_TYPE_NAME)) {
           if (EDGE_IDS)
             Assertions.assertNotNull(e.get("id"));
           ++outEdges;
         }
 
-        for (Edge e : cachedVertices[i].getEdges(Vertex.DIRECTION.IN, EDGE_TYPE_NAME)) {
+        for (final Edge e : cachedVertices[i].getEdges(Vertex.DIRECTION.IN, EDGE_TYPE_NAME)) {
           if (EDGE_IDS)
             Assertions.assertNotNull(e.get("id"));
           ++inEdges;

@@ -38,17 +38,17 @@ public class NestedProjectionItem extends SimpleNode {
   protected NestedProjection expansion;
   protected Identifier       alias;
 
-  public NestedProjectionItem(int id) {
+  public NestedProjectionItem(final int id) {
     super(id);
   }
 
-  public NestedProjectionItem(SqlParser p, int id) {
+  public NestedProjectionItem(final SqlParser p, final int id) {
     super(p, id);
   }
 
   @Override
   public NestedProjectionItem copy() {
-    NestedProjectionItem result = new NestedProjectionItem(-1);
+    final NestedProjectionItem result = new NestedProjectionItem(-1);
     result.exclude = exclude;
     result.star = star;
     result.expression = expression == null ? null : expression.copy();
@@ -70,12 +70,12 @@ public class NestedProjectionItem extends SimpleNode {
    *
    * @return
    */
-  public boolean matches(String propertyName) {
+  public boolean matches(final String propertyName) {
     if (star) {
       return true;
     }
     if (expression != null) {
-      String fieldString = expression.getDefaultAlias().getStringValue();
+      final String fieldString = expression.getDefaultAlias().getStringValue();
       if (fieldString.equals(propertyName)) {
         return true;
       }
@@ -85,7 +85,7 @@ public class NestedProjectionItem extends SimpleNode {
   }
 
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (exclude) {
       builder.append("!");
     }
@@ -140,12 +140,12 @@ public class NestedProjectionItem extends SimpleNode {
     return result;
   }
 
-  public Object expand(Expression expression, String name, Object value, CommandContext ctx, int recursion) {
+  public Object expand(final Expression expression, final String name, final Object value, final CommandContext ctx, final int recursion) {
     return expansion.apply(expression, value, ctx);
   }
 
   public Result serialize() {
-    ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal();
     result.setProperty("exclude", exclude);
     result.setProperty("star", star);
     if (expression != null) {
@@ -161,7 +161,7 @@ public class NestedProjectionItem extends SimpleNode {
     return result;
   }
 
-  public void deserialize(Result fromResult) {
+  public void deserialize(final Result fromResult) {
     exclude = fromResult.getProperty("exclude");
     star = fromResult.getProperty("star");
     if (fromResult.getProperty("field") != null) {

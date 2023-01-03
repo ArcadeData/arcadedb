@@ -30,15 +30,15 @@ public class WhileMatchStep extends AbstractUnrollStep {
   private final InternalExecutionPlan body;
   private final WhereClause           condition;
 
-  public WhileMatchStep(CommandContext ctx, WhereClause condition, InternalExecutionPlan body, boolean profilingEnabled) {
+  public WhileMatchStep(final CommandContext ctx, final WhereClause condition, final InternalExecutionPlan body, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
     this.body = body;
     this.condition = condition;
   }
 
-  @Override protected Collection<Result> unroll(Result doc, CommandContext iContext) {
+  @Override protected Collection<Result> unroll(final Result doc, final CommandContext iContext) {
     body.reset(iContext);
-    List<Result> result = new ArrayList<>();
+    final List<Result> result = new ArrayList<>();
     ResultSet block = body.fetchNext(100);
     while(block.hasNext()){
       while(block.hasNext()){
@@ -49,11 +49,11 @@ public class WhileMatchStep extends AbstractUnrollStep {
     return result;
   }
 
-  @Override public String prettyPrint(int depth, int indent) {
-    String indentStep = ExecutionStepInternal.getIndent(1, indent);
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
+  @Override public String prettyPrint(final int depth, final int indent) {
+    final String indentStep = ExecutionStepInternal.getIndent(1, indent);
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
 
-    String result =
+    final String result =
         spaces + "+ WHILE\n" + spaces + indentStep + condition.toString() + "\n" + spaces + "  DO\n" + body.prettyPrint(depth + 1, indent) + "\n" + spaces
             + "  END\n";
 

@@ -35,7 +35,7 @@ public class GetQueryHandler extends AbstractQueryHandler {
   }
 
   @Override
-  public void execute(final HttpServerExchange exchange, ServerSecurityUser user, final Database database) throws UnsupportedEncodingException {
+  public void execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database) throws UnsupportedEncodingException {
     final Deque<String> textPar = exchange.getQueryParameters().get("command");
     if (textPar == null || textPar.isEmpty()) {
       exchange.setStatusCode(400);
@@ -53,7 +53,7 @@ public class GetQueryHandler extends AbstractQueryHandler {
     final String language = languagePar.getFirst();
 
     final String serializer;
-    Deque<String> serializerPar = exchange.getQueryParameters().get("serializer");
+    final Deque<String> serializerPar = exchange.getQueryParameters().get("serializer");
     if (serializerPar == null || serializerPar.isEmpty())
       serializer = "record";
     else

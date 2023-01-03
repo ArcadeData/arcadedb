@@ -31,7 +31,7 @@ import java.math.*;
 public class NeqOperatorTest {
   @Test
   public void test() {
-    NeqOperator op = new NeqOperator(-1);
+    final NeqOperator op = new NeqOperator(-1);
     Assertions.assertTrue(op.execute(null, null, 1));
     Assertions.assertTrue(op.execute(null, 1, null));
     Assertions.assertTrue(op.execute(null, null, null));

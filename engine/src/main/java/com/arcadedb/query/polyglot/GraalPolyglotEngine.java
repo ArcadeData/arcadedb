@@ -56,7 +56,7 @@ public class GraalPolyglotEngine implements AutoCloseable {
       // IGNORE THE OUTPUT
       builder.out(new OutputStream() {
         @Override
-        public void write(int b) {
+        public void write(final int b) {
         }
       });
     }
@@ -79,7 +79,7 @@ public class GraalPolyglotEngine implements AutoCloseable {
   public void close() {
     try {
       context.close(true);
-    } catch (Exception e) {
+    } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING, "Error on closing scrpit context", e);
     }
   }
@@ -186,7 +186,7 @@ public class GraalPolyglotEngine implements AutoCloseable {
       // STRIP SRC.JS
 
       final int pos = msg.indexOf(" ", posSrc + "src.js:".length());
-      String lineCol = msg.substring(posSrc + "src.js:".length(), pos);
+      final String lineCol = msg.substring(posSrc + "src.js:".length(), pos);
 
       final String[] lineColPair = lineCol.split(":");
 

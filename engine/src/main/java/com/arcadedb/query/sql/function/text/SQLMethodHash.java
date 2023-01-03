@@ -57,9 +57,9 @@ public class SQLMethodHash extends AbstractSQLMethod {
     try {
       return createHash(iThis.toString(), algorithm);
 
-    } catch (NoSuchAlgorithmException e) {
+    } catch (final NoSuchAlgorithmException e) {
       throw new CommandExecutionException("hash(): algorithm '" + algorithm + "' is not supported", e);
-    } catch (UnsupportedEncodingException e) {
+    } catch (final UnsupportedEncodingException e) {
       throw new CommandExecutionException("hash(): encoding 'UTF-8' is not supported", e);
     }
   }

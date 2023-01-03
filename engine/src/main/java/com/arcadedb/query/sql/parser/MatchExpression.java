@@ -27,24 +27,24 @@ public class MatchExpression extends SimpleNode {
   protected MatchFilter         origin;
   protected List<MatchPathItem> items = new ArrayList<MatchPathItem>();
 
-  public MatchExpression(int id) {
+  public MatchExpression(final int id) {
     super(id);
   }
 
-  public MatchExpression(SqlParser p, int id) {
+  public MatchExpression(final SqlParser p, final int id) {
     super(p, id);
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     origin.toString(params, builder);
-    for (MatchPathItem item : items) {
+    for (final MatchPathItem item : items) {
       item.toString(params, builder);
     }
   }
 
   @Override
   public MatchExpression copy() {
-    MatchExpression result = new MatchExpression(-1);
+    final MatchExpression result = new MatchExpression(-1);
     result.origin = origin == null ? null : origin.copy();
     result.items = items == null ? null : items.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;
@@ -75,7 +75,7 @@ public class MatchExpression extends SimpleNode {
     return origin;
   }
 
-  public void setOrigin(MatchFilter origin) {
+  public void setOrigin(final MatchFilter origin) {
     this.origin = origin;
   }
 
@@ -83,7 +83,7 @@ public class MatchExpression extends SimpleNode {
     return items;
   }
 
-  public void setItems(List<MatchPathItem> items) {
+  public void setItems(final List<MatchPathItem> items) {
     this.items = items;
   }
 }

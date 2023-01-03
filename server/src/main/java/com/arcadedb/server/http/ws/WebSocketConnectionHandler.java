@@ -36,8 +36,8 @@ public class WebSocketConnectionHandler extends AbstractHandler {
   }
 
   @Override
-  protected void execute(HttpServerExchange exchange, ServerSecurityUser user) throws Exception {
-    var handler = new WebSocketProtocolHandshakeHandler((WebSocketConnectionCallback) (webSocketHttpExchange, channel) -> {
+  protected void execute(final HttpServerExchange exchange, final ServerSecurityUser user) throws Exception {
+    final var handler = new WebSocketProtocolHandshakeHandler((WebSocketConnectionCallback) (webSocketHttpExchange, channel) -> {
       channel.getReceiveSetter().set(new WebSocketReceiveListener(this.httpServer, webSocketEventBus));
       channel.setAttribute(WebSocketEventBus.CHANNEL_ID, UUID.randomUUID());
       channel.resumeReceives();

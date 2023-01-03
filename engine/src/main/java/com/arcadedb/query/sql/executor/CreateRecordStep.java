@@ -58,7 +58,7 @@ public class CreateRecordStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        long begin = profilingEnabled ? System.nanoTime() : 0;
+        final long begin = profilingEnabled ? System.nanoTime() : 0;
         try {
           if (!hasNext()) {
             throw new NoSuchElementException();

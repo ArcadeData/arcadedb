@@ -31,15 +31,15 @@ public class LetItem extends SimpleNode {
   Expression expression;
   Statement  query;
 
-  public LetItem(int id) {
+  public LetItem(final int id) {
     super(id);
   }
 
-  public LetItem(SqlParser p, int id) {
+  public LetItem(final SqlParser p, final int id) {
     super(p, id);
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     varName.toString(params, builder);
     builder.append(" = ");
     if (expression != null) {
@@ -52,22 +52,22 @@ public class LetItem extends SimpleNode {
   }
 
   public LetItem copy() {
-    LetItem result = new LetItem(-1);
+    final LetItem result = new LetItem(-1);
     result.varName = varName.copy();
     result.expression = expression == null ? null : expression.copy();
     result.query = query == null ? null : query.copy();
     return result;
   }
 
-  public void setVarName(Identifier varName) {
+  public void setVarName(final Identifier varName) {
     this.varName = varName;
   }
 
-  public void setExpression(Expression expression) {
+  public void setExpression(final Expression expression) {
     this.expression = expression;
   }
 
-  public void setQuery(Statement query) {
+  public void setQuery(final Statement query) {
     this.query = query;
   }
 
@@ -114,7 +114,7 @@ public class LetItem extends SimpleNode {
     return query;
   }
 
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
     //this is to transform LET expressions with subqueries in simple LET, plus LET with query only, so the direct query is ignored
     if (expression != null) {
       expression.extractSubQueries(varName, collector);
@@ -122,7 +122,7 @@ public class LetItem extends SimpleNode {
   }
 
   public Result serialize() {
-    ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal();
     if (varName != null) {
       result.setProperty("varName", varName.serialize());
     }
@@ -136,7 +136,7 @@ public class LetItem extends SimpleNode {
     return result;
   }
 
-  public void deserialize(Result fromResult) {
+  public void deserialize(final Result fromResult) {
     if (fromResult.getProperty("varName") != null) {
       varName = new Identifier(-1);
       Identifier.deserialize(fromResult.getProperty("varName"));

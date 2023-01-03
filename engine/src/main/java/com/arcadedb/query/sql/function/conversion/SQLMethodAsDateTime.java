@@ -47,7 +47,7 @@ public class SQLMethodAsDateTime extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute(Object iThis, Identifiable iCurrentRecord, CommandContext iContext, Object ioResult, Object[] iParams) {
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult, final Object[] iParams) {
     if (iThis != null) {
       if (iThis instanceof Date) {
         return iThis;
@@ -57,7 +57,7 @@ public class SQLMethodAsDateTime extends AbstractSQLMethod {
         try {
           final String format = iParams.length > 0 ? iParams[0].toString() : iContext.getDatabase().getSchema().getDateTimeFormat();
           return new SimpleDateFormat(format).parse(iThis.toString());
-        } catch (ParseException e) {
+        } catch (final ParseException e) {
           LogManager.instance().log(this, Level.SEVERE, "Error during %s method execution", e, NAME);
           // IGNORE IT: RETURN NULL
         }

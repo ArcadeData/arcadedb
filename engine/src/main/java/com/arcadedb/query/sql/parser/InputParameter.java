@@ -34,36 +34,36 @@ public class InputParameter extends SimpleNode {
 
   protected static final String dateFormatString = "yyyy-MM-dd HH:mm:ss.SSS";
 
-  public InputParameter(int id) {
+  public InputParameter(final int id) {
     super(id);
   }
 
-  public InputParameter(SqlParser p, int id) {
+  public InputParameter(final SqlParser p, final int id) {
     super(p, id);
   }
 
-  public Object bindFromInputParams(Map<String, Object> params) {
+  public Object bindFromInputParams(final Map<String, Object> params) {
     return null;
   }
 
-  public Object getValue(Map<String, Object> params) {
+  public Object getValue(final Map<String, Object> params) {
     return null;
   }
 
   protected Object toParsedTree(final Object value) {
     if (value == null) {
-      Expression result = new Expression(-1);
+      final Expression result = new Expression(-1);
       result.isNull = true;
       return result;
     }
     if (value instanceof Boolean) {
-      Expression result = new Expression(-1);
+      final Expression result = new Expression(-1);
       result.booleanValue = (Boolean) value;
       return result;
     }
-    if (value instanceof java.lang.Integer) {
-      PInteger result = new PInteger(-1);
-      result.setValue((java.lang.Integer) value);
+    if (value instanceof Integer) {
+      final PInteger result = new PInteger(-1);
+      result.setValue((Integer) value);
       return result;
     }
     if (value instanceof BigDecimal) {
@@ -107,7 +107,7 @@ public class InputParameter extends SimpleNode {
     if (value instanceof Map) {
       final Json json = new Json(-1);
       json.items = new ArrayList<JsonItem>();
-      for (Object entry : ((Map) value).entrySet()) {
+      for (final Object entry : ((Map) value).entrySet()) {
         final JsonItem item = new JsonItem();
         item.leftString = "" + ((Map.Entry) entry).getKey();
         final Expression exp = new Expression(-1);
@@ -123,10 +123,10 @@ public class InputParameter extends SimpleNode {
       final String stringVal = ((Identifiable) value).getIdentity().toString().substring(1);
       final String[] splitted = stringVal.split(":");
       final PInteger c = new PInteger(-1);
-      c.setValue(java.lang.Integer.parseInt(splitted[0]));
+      c.setValue(Integer.parseInt(splitted[0]));
       rid.bucket = c;
       final PInteger p = new PInteger(-1);
-      p.setValue(java.lang.Integer.parseInt(splitted[1]));
+      p.setValue(Integer.parseInt(splitted[1]));
       rid.position = p;
       rid.setLegacy(true);
       return rid;
@@ -162,9 +162,9 @@ public class InputParameter extends SimpleNode {
 
   public static InputParameter deserializeFromOResult(final Result doc) {
     try {
-      final InputParameter result = (InputParameter) Class.forName(doc.getProperty("__class")).getConstructor(java.lang.Integer.class).newInstance(-1);
+      final InputParameter result = (InputParameter) Class.forName(doc.getProperty("__class")).getConstructor(Integer.class).newInstance(-1);
       result.deserialize(doc);
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new CommandExecutionException(e);
     }
     return null;

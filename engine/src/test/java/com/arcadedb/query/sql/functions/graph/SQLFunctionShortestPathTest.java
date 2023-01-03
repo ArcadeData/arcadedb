@@ -122,7 +122,7 @@ public class SQLFunctionShortestPathTest {
       setUpDatabase(graph);
       function = new SQLFunctionShortestPath();
 
-      Map<String, Object> additionalParams = new HashMap<String, Object>();
+      final Map<String, Object> additionalParams = new HashMap<String, Object>();
       additionalParams.put(SQLFunctionShortestPath.PARAM_MAX_DEPTH, 11);
       final List<RID> result = function
           .execute(null, null, null, new Object[] { vertices.get(1), vertices.get(20), null, null, additionalParams }, new BasicCommandContext());
@@ -137,7 +137,7 @@ public class SQLFunctionShortestPathTest {
       setUpDatabase(graph);
       function = new SQLFunctionShortestPath();
 
-      Map<String, Object> additionalParams = new HashMap<String, Object>();
+      final Map<String, Object> additionalParams = new HashMap<String, Object>();
       additionalParams.put(SQLFunctionShortestPath.PARAM_MAX_DEPTH, 12);
       final List<RID> result = function
           .execute(null, null, null, new Object[] { vertices.get(1), vertices.get(20), null, null, additionalParams }, new BasicCommandContext());
@@ -152,7 +152,7 @@ public class SQLFunctionShortestPathTest {
       setUpDatabase(graph);
       function = new SQLFunctionShortestPath();
 
-      Map<String, Object> additionalParams = new HashMap<String, Object>();
+      final Map<String, Object> additionalParams = new HashMap<String, Object>();
       additionalParams.put(SQLFunctionShortestPath.PARAM_MAX_DEPTH, 10);
       final List<RID> result = function
           .execute(null, null, null, new Object[] { vertices.get(1), vertices.get(20), null, null, additionalParams }, new BasicCommandContext());
@@ -167,7 +167,7 @@ public class SQLFunctionShortestPathTest {
       setUpDatabase(graph);
       function = new SQLFunctionShortestPath();
 
-      Map<String, Object> additionalParams = new HashMap<String, Object>();
+      final Map<String, Object> additionalParams = new HashMap<String, Object>();
       additionalParams.put(SQLFunctionShortestPath.PARAM_MAX_DEPTH, 3);
       final List<RID> result = function
           .execute(null, null, null, new Object[] { vertices.get(1), vertices.get(20), null, null, additionalParams }, new BasicCommandContext());

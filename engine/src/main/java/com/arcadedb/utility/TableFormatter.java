@@ -138,7 +138,7 @@ public class TableFormatter {
     }
 
     int fetched = 0;
-    for (TableRow record : rows) {
+    for (final TableRow record : rows) {
       dumpRecordInTable(fetched++, record, columns);
 
       if (limit > -1 && fetched >= limit) {
@@ -206,7 +206,7 @@ public class TableFormatter {
       printHeader(iColumns);
 
     // FORMAT THE LINE DYNAMICALLY
-    List<String> vargs = new ArrayList<String>();
+    final List<String> vargs = new ArrayList<String>();
     try {
       final StringBuilder format = new StringBuilder(maxWidthSize);
 
@@ -214,7 +214,7 @@ public class TableFormatter {
         format.append('|');
 
       int i = 0;
-      for (Entry<String, Integer> col : iColumns.entrySet()) {
+      for (final Entry<String, Integer> col : iColumns.entrySet()) {
         final String columnName = col.getKey();
         final int columnWidth = col.getValue();
 
@@ -223,7 +223,7 @@ public class TableFormatter {
 
         format.append("%-" + columnWidth + "s");
 
-        Object value = getFieldValue(iIndex, iRecord, columnName);
+        final Object value = getFieldValue(iIndex, iRecord, columnName);
         String valueAsString = null;
         String strippedValue = null;
 
@@ -246,7 +246,7 @@ public class TableFormatter {
 
       out.onMessage("\n" + format, vargs.toArray());
 
-    } catch (Exception t) {
+    } catch (final Exception t) {
       out.onMessage("%3d|%9s|%s\n", iIndex, iRecord, "Error on loading record due to: " + t);
     }
   }
@@ -378,8 +378,8 @@ public class TableFormatter {
     // INIT METADATA
     final LinkedHashSet<String> allMetadataNames = new LinkedHashSet<String>();
 
-    for (Entry<String, Map<String, String>> entry : columnMetadata.entrySet()) {
-      for (Entry<String, String> entry2 : entry.getValue().entrySet()) {
+    for (final Entry<String, Map<String, String>> entry : columnMetadata.entrySet()) {
+      for (final Entry<String, String> entry2 : entry.getValue().entrySet()) {
         allMetadataNames.add(entry2.getKey());
 
         StringBuilder metadataRow = metadataRows.get(entry2.getKey());
@@ -396,12 +396,12 @@ public class TableFormatter {
     if (leftBorder) {
       columnRow.append('|');
       if (!metadataRows.isEmpty()) {
-        for (StringBuilder buffer : metadataRows.values())
+        for (final StringBuilder buffer : metadataRows.values())
           buffer.append('|');
       }
     }
 
-    for (Entry<String, Integer> column : iColumns.entrySet()) {
+    for (final Entry<String, Integer> column : iColumns.entrySet()) {
       String colName = column.getKey();
 
       if (columnHidden.contains(colName))
@@ -410,7 +410,7 @@ public class TableFormatter {
       if (i > 0) {
         columnRow.append('|');
         if (!metadataRows.isEmpty()) {
-          for (StringBuilder buffer : metadataRows.values())
+          for (final StringBuilder buffer : metadataRows.values())
             buffer.append('|');
         }
       }
@@ -421,7 +421,7 @@ public class TableFormatter {
 
       if (!metadataRows.isEmpty()) {
         // METADATA VALUE
-        for (String metadataName : allMetadataNames) {
+        for (final String metadataName : allMetadataNames) {
           final StringBuilder buffer = metadataRows.get(metadataName);
           final Map<String, String> metadataColumn = columnMetadata.get(column.getKey());
           String metadataValue = metadataColumn != null ? metadataColumn.get(metadataName) : null;
@@ -440,14 +440,14 @@ public class TableFormatter {
     if (rightBorder) {
       columnRow.append('|');
       if (!metadataRows.isEmpty()) {
-        for (StringBuilder buffer : metadataRows.values())
+        for (final StringBuilder buffer : metadataRows.values())
           buffer.append('|');
       }
     }
 
     if (!metadataRows.isEmpty()) {
       // PRINT METADATA IF ANY
-      for (StringBuilder buffer : metadataRows.values())
+      for (final StringBuilder buffer : metadataRows.values())
         out.onMessage(buffer.toString());
       printHeaderLine(iColumns);
     }
@@ -465,7 +465,7 @@ public class TableFormatter {
         buffer.append('+');
 
       int i = 0;
-      for (Entry<String, Integer> column : iColumns.entrySet()) {
+      for (final Entry<String, Integer> column : iColumns.entrySet()) {
         final String colName = column.getKey();
         if (columnHidden.contains(colName))
           continue;
@@ -495,19 +495,19 @@ public class TableFormatter {
   private Map<String, Integer> parseColumns(final List<? extends TableRow> rows, final int limit) {
     final Map<String, Integer> columns = new LinkedHashMap<>();
 
-    for (String c : prefixedColumns)
+    for (final String c : prefixedColumns)
       columns.put(c, minColumnSize);
 
     boolean tempRids = false;
     boolean hasClass = false;
 
     int fetched = 0;
-    for (TableRow row : rows) {
-      for (String c : prefixedColumns)
+    for (final TableRow row : rows) {
+      for (final String c : prefixedColumns)
         columns.put(c, getColumnSize(fetched, row, c, columns.get(c)));
 
       // PARSE ALL THE DOCUMENT'S FIELDS
-      for (String fieldName : row.getFields()) {
+      for (final String fieldName : row.getFields()) {
         if (fieldName.equals(RID_PROPERTY) || fieldName.equals(TYPE_PROPERTY))
           continue;
 
@@ -532,14 +532,14 @@ public class TableFormatter {
 
     if (footer != null) {
       // PARSE ALL THE DOCUMENT'S FIELDS
-      for (String fieldName : footer.getFields()) {
+      for (final String fieldName : footer.getFields()) {
         columns.put(fieldName, getColumnSize(fetched, footer, fieldName, columns.get(fieldName)));
       }
     }
 
     // COMPUTE MAXIMUM WIDTH
     int width = 0;
-    for (Entry<String, Integer> col : columns.entrySet())
+    for (final Entry<String, Integer> col : columns.entrySet())
       width += col.getValue();
 
     lastResultShrunk = false;
@@ -553,9 +553,9 @@ public class TableFormatter {
       // START CUTTING THE BIGGEST ONES
       Collections.reverse(orderedColumns);
       while (width > maxWidthSize) {
-        int oldWidth = width;
+        final int oldWidth = width;
 
-        for (Entry<String, Integer> entry : orderedColumns) {
+        for (final Entry<String, Integer> entry : orderedColumns) {
           final int redux = entry.getValue() * 10 / 100;
 
           if (entry.getValue() - redux < minColumnSize)
@@ -575,10 +575,10 @@ public class TableFormatter {
       }
 
       // POPULATE THE COLUMNS WITH THE REDUXED VALUES
-      for (String c : prefixedColumns)
+      for (final String c : prefixedColumns)
         columns.put(c, minColumnSize);
       Collections.reverse(orderedColumns);
-      for (Entry<String, Integer> col : orderedColumns)
+      for (final Entry<String, Integer> col : orderedColumns)
         // if (!col.getKey().equals("#") && !col.getKey().equals("@RID"))
         columns.put(col.getKey(), col.getValue());
     }
@@ -588,7 +588,7 @@ public class TableFormatter {
     if (!hasClass)
       columns.remove(TYPE_COLUMN);
 
-    for (String c : columnHidden)
+    for (final String c : columnHidden)
       columns.remove(c);
 
     return columns;
@@ -605,7 +605,7 @@ public class TableFormatter {
     final Map<String, String> metadata = columnMetadata.get(fieldName);
     if (metadata != null) {
       // UPDATE WIDTH WITH METADATA VALUES
-      for (String v : metadata.values()) {
+      for (final String v : metadata.values()) {
         if (v != null) {
           if (v.length() > newColumnSize)
             newColumnSize = v.length();
@@ -636,7 +636,7 @@ public class TableFormatter {
 
     int lastPos = 0;
     while (true) {
-      int pos = fieldValueAsString.indexOf("$ANSI{", lastPos);
+      final int pos = fieldValueAsString.indexOf("$ANSI{", lastPos);
       if (pos < 0) {
         formattedString.append(fieldValueAsString.substring(lastPos));
         break;

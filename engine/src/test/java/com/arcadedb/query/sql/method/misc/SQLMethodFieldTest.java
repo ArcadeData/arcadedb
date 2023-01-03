@@ -39,16 +39,16 @@ class SQLMethodFieldTest {
 
   @Test
   void testNulIParamsReturnedAsNull() {
-    Object result = method.execute(null, null, null, null, new Object[] { null });
+    final Object result = method.execute(null, null, null, null, new Object[] { null });
     assertThat(result).isNull();
   }
 
   @Test
   void testFieldValue() {
 
-    Database database = Mockito.mock(Database.class);
+    final Database database = Mockito.mock(Database.class);
 
-    DocumentType type = Mockito.mock(DocumentType.class);
+    final DocumentType type = Mockito.mock(DocumentType.class);
 
 //        MutableDocument doc = new MutableDocument(database, type, null);
 //        doc.set("name", "Foo");

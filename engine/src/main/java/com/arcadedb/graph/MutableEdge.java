@@ -40,13 +40,13 @@ public class MutableEdge extends MutableDocument implements Edge {
   protected RID out;
   protected RID in;
 
-  public MutableEdge(final Database graph, final EdgeType type, final RID out, RID in) {
+  public MutableEdge(final Database graph, final EdgeType type, final RID out, final RID in) {
     super(graph, type, null);
     this.out = out;
     this.in = in;
   }
 
-  public MutableEdge(final Database graph, final EdgeType type, final RID edgeRID, final RID out, RID in) {
+  public MutableEdge(final Database graph, final EdgeType type, final RID edgeRID, final RID out, final RID in) {
     super(graph, type, edgeRID);
     this.out = out;
     this.in = in;

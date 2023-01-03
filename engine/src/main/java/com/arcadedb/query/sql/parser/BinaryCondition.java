@@ -36,11 +36,11 @@ public class BinaryCondition extends BooleanExpression {
   protected BinaryCompareOperator operator;
   protected Expression            right;
 
-  public BinaryCondition(int id) {
+  public BinaryCondition(final int id) {
     super(id);
   }
 
-  public BinaryCondition(SqlParser p, int id) {
+  public BinaryCondition(final SqlParser p, final int id) {
     super(p, id);
   }
 
@@ -56,7 +56,7 @@ public class BinaryCondition extends BooleanExpression {
     return operator.execute(ctx.getDatabase(), leftVal, rightVal);
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     left.toString(params, builder);
     builder.append(" ");
     builder.append(operator.toString());
@@ -197,7 +197,7 @@ public class BinaryCondition extends BooleanExpression {
       return Optional.empty();
     }
     if (operator instanceof EqualsCompareOperator) {
-      UpdateItem result = new UpdateItem(-1);
+      final UpdateItem result = new UpdateItem(-1);
       result.operator = UpdateItem.OPERATOR_EQ;
       final BaseExpression baseExp = ((BaseExpression) left.mathExpression);
       result.left = baseExp.identifier.suffix.identifier.copy();
@@ -228,15 +228,15 @@ public class BinaryCondition extends BooleanExpression {
     return right;
   }
 
-  public void setLeft(Expression left) {
+  public void setLeft(final Expression left) {
     this.left = left;
   }
 
-  public void setOperator(BinaryCompareOperator operator) {
+  public void setOperator(final BinaryCompareOperator operator) {
     this.operator = operator;
   }
 
-  public void setRight(Expression right) {
+  public void setRight(final Expression right) {
     this.right = right;
   }
 
@@ -281,7 +281,7 @@ public class BinaryCondition extends BooleanExpression {
     return result;
   }
 
-  private Expression identifierToStringExpr(Identifier identifier) {
+  private Expression identifierToStringExpr(final Identifier identifier) {
     final BaseExpression bExp = new BaseExpression(identifier.getStringValue());
 
     final Expression result = new Expression(-1);
@@ -297,12 +297,12 @@ public class BinaryCondition extends BooleanExpression {
     return result;
   }
 
-  public void deserialize(Result fromResult) {
+  public void deserialize(final Result fromResult) {
     left = new Expression(-1);
     left.deserialize(fromResult.getProperty("left"));
     try {
       operator = (BinaryCompareOperator) Class.forName(String.valueOf(fromResult.getProperty("operator"))).getConstructor().newInstance();
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new CommandExecutionException(e);
     }
     right = new Expression(-1);

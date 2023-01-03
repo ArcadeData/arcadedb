@@ -209,7 +209,7 @@ public class BinarySerializer {
       if (fieldIds.length > 0) {
         boolean found = false;
         // FILTER BY FIELD
-        for (int f : fieldIds)
+        for (final int f : fieldIds)
           if (f == nameId) {
             found = true;
             break;
@@ -245,7 +245,7 @@ public class BinarySerializer {
     return values;
   }
 
-  public void serializeValue(final Database database, Binary content, final byte type, Object value) {
+  public void serializeValue(final Database database, final Binary content, final byte type, Object value) {
     if( value==null)
       return;
 
@@ -324,7 +324,7 @@ public class BinarySerializer {
       if (value instanceof Collection) {
         final Collection list = (Collection) value;
         content.putUnsignedNumber(list.size());
-        for (Iterator it = list.iterator(); it.hasNext(); ) {
+        for (final Iterator it = list.iterator(); it.hasNext(); ) {
           final Object entryValue = it.next();
           final byte entryType = BinaryTypes.getTypeFromValue(entryValue);
           content.putByte(entryType);
@@ -334,7 +334,7 @@ public class BinarySerializer {
         // ARRAY
         final Object[] array = (Object[]) value;
         content.putUnsignedNumber(array.length);
-        for (Object entryValue : array) {
+        for (final Object entryValue : array) {
           final byte entryType = BinaryTypes.getTypeFromValue(entryValue);
           content.putByte(entryType);
           serializeValue(database, content, entryType, entryValue);
@@ -343,11 +343,11 @@ public class BinarySerializer {
         final Iterable iter = (Iterable) value;
 
         final List list = new ArrayList();
-        for (Iterator it = iter.iterator(); it.hasNext(); )
+        for (final Iterator it = iter.iterator(); it.hasNext(); )
           list.add(it.next());
 
         content.putUnsignedNumber(list.size());
-        for (Iterator it = list.iterator(); it.hasNext(); ) {
+        for (final Iterator it = list.iterator(); it.hasNext(); ) {
           final Object entryValue = it.next();
           final byte entryType = BinaryTypes.getTypeFromValue(entryValue);
           content.putByte(entryType);
@@ -369,7 +369,7 @@ public class BinarySerializer {
     case BinaryTypes.TYPE_MAP: {
       final Map<Object, Object> map = (Map<Object, Object>) value;
       content.putUnsignedNumber(map.size());
-      for (Map.Entry<Object, Object> entry : map.entrySet()) {
+      for (final Map.Entry<Object, Object> entry : map.entrySet()) {
         // WRITE THE KEY
         final Object entryKey = entry.getKey();
         final byte entryKeyType = BinaryTypes.getTypeFromValue(entryKey);
@@ -410,7 +410,7 @@ public class BinarySerializer {
   }
 
   public Object deserializeValue(final Database database, final Binary content, final byte type, final EmbeddedModifier embeddedModifier) {
-    Object value;
+    final Object value;
     switch (type) {
     case BinaryTypes.TYPE_NULL:
       value = null;
@@ -518,7 +518,7 @@ public class BinarySerializer {
 
     final Dictionary dictionary = database.getSchema().getDictionary();
 
-    for (Map.Entry<String, Object> entry : properties.entrySet()) {
+    for (final Map.Entry<String, Object> entry : properties.entrySet()) {
       // WRITE PROPERTY ID FROM THE DICTIONARY
       header.putUnsignedNumber(dictionary.getIdByName(entry.getKey(), true));
 
@@ -566,7 +566,7 @@ public class BinarySerializer {
 
     final Dictionary dictionary = database.getSchema().getDictionary();
 
-    for (Map.Entry<String, Object> entry : properties.entrySet()) {
+    for (final Map.Entry<String, Object> entry : properties.entrySet()) {
       // WRITE PROPERTY ID FROM THE DICTIONARY
       header.putUnsignedNumber(dictionary.getIdByName(entry.getKey(), true));
 

@@ -186,7 +186,7 @@ public class BaseIdentifier extends SimpleNode {
     if (isAggregate()) {
       final BaseIdentifier result = new BaseIdentifier(-1);
       if (levelZero != null) {
-        SimpleNode splitResult = levelZero.splitForAggregation(aggregateProj);
+        final SimpleNode splitResult = levelZero.splitForAggregation(aggregateProj);
         if (splitResult instanceof LevelZeroIdentifier) {
           result.levelZero = (LevelZeroIdentifier) splitResult;
         } else {
@@ -278,7 +278,7 @@ public class BaseIdentifier extends SimpleNode {
     return result;
   }
 
-  public void deserialize(Result fromResult) {
+  public void deserialize(final Result fromResult) {
     if (fromResult.getProperty("levelZero") != null) {
       levelZero = new LevelZeroIdentifier(-1);
       levelZero.deserialize(fromResult.getProperty("levelZero"));

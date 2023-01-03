@@ -23,11 +23,11 @@ package com.arcadedb.graphql.parser;
 public class TypeName extends SimpleNode {
   protected Name name;
 
-  public TypeName(int id) {
+  public TypeName(final int id) {
     super(id);
   }
 
-  public TypeName(GraphQLParser p, int id) {
+  public TypeName(final GraphQLParser p, final int id) {
     super(p, id);
   }
 
@@ -38,7 +38,7 @@ public class TypeName extends SimpleNode {
   /**
    * Accept the visitor.
    **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
+  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
     return visitor.visit(this, data);
   }
 }

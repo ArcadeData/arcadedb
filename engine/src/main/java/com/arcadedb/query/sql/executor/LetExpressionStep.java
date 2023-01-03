@@ -30,14 +30,14 @@ public class LetExpressionStep extends AbstractExecutionStep {
   private Identifier varname;
   private Expression expression;
 
-  public LetExpressionStep(Identifier varName, Expression expression, CommandContext ctx, boolean profilingEnabled) {
+  public LetExpressionStep(final Identifier varName, final Expression expression, final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
     this.varname = varName;
     this.expression = expression;
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
     if (getPrev().isEmpty()) {
       throw new CommandExecutionException("Cannot execute a local LET on a query without a target");
     }
@@ -51,8 +51,8 @@ public class LetExpressionStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        ResultInternal result = (ResultInternal) source.next();
-        Object value = expression.execute(result, ctx);
+        final ResultInternal result = (ResultInternal) source.next();
+        final Object value = expression.execute(result, ctx);
         result.setMetadata(varname.getStringValue(), value);
         ctx.setVariable(varname.getStringValue(), value);
         return result;
@@ -70,14 +70,14 @@ public class LetExpressionStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     return spaces + "+ LET (for each record)\n" + spaces + "  " + varname + " = " + expression;
   }
 
   @Override
   public Result serialize() {
-    ResultInternal result = ExecutionStepInternal.basicSerialize(this);
+    final ResultInternal result = ExecutionStepInternal.basicSerialize(this);
     if (varname != null) {
       result.setProperty("varname", varname.serialize());
     }
@@ -88,7 +88,7 @@ public class LetExpressionStep extends AbstractExecutionStep {
   }
 
   @Override
-  public void deserialize(Result fromResult) {
+  public void deserialize(final Result fromResult) {
     try {
       ExecutionStepInternal.basicDeserialize(fromResult, this);
       if (fromResult.getProperty("varname") != null) {
@@ -99,7 +99,7 @@ public class LetExpressionStep extends AbstractExecutionStep {
         expression.deserialize(fromResult.getProperty("expression"));
       }
       reset();
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new CommandExecutionException(e);
     }
   }

@@ -33,7 +33,7 @@ public class DDLExecutionPlan implements InternalExecutionPlan {
 
   boolean executed = false;
 
-  public DDLExecutionPlan(CommandContext ctx, DDLStatement stm) {
+  public DDLExecutionPlan(final CommandContext ctx, final DDLStatement stm) {
     this.ctx = ctx;
     this.statement = stm;
   }
@@ -43,11 +43,11 @@ public class DDLExecutionPlan implements InternalExecutionPlan {
   }
 
   @Override
-  public ResultSet fetchNext(int n) {
+  public ResultSet fetchNext(final int n) {
     return new InternalResultSet();
   }
 
-  public void reset(CommandContext ctx) {
+  public void reset(final CommandContext ctx) {
     executed = false;
   }
 
@@ -61,12 +61,12 @@ public class DDLExecutionPlan implements InternalExecutionPlan {
     return false;
   }
 
-  public ResultSet executeInternal(BasicCommandContext ctx) throws CommandExecutionException {
+  public ResultSet executeInternal(final BasicCommandContext ctx) throws CommandExecutionException {
     if (executed) {
       throw new CommandExecutionException("Trying to execute a result-set twice. Please use reset()");
     }
     executed = true;
-    ResultSet result = statement.executeDDL(this.ctx);
+    final ResultSet result = statement.executeDDL(this.ctx);
     if (result instanceof InternalResultSet) {
       ((InternalResultSet) result).plan = this;
     }
@@ -79,15 +79,15 @@ public class DDLExecutionPlan implements InternalExecutionPlan {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    String result = spaces + "+ DDL\n" + "  " + statement.toString();
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
+    final String result = spaces + "+ DDL\n" + "  " + statement.toString();
     return result;
   }
 
   @Override
   public Result toResult() {
-    ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal();
     result.setProperty("type", "DDLExecutionPlan");
     result.setProperty(JAVA_TYPE, getClass().getName());
     result.setProperty("stmText", statement.toString());

@@ -50,13 +50,13 @@ public class DatabaseAlignRequest extends HAAbstractCommand {
     stream.putString(schemaJson);
 
     stream.putUnsignedNumber(fileChecksums.size());
-    for (Map.Entry<Integer, Long> file : fileChecksums.entrySet()) {
+    for (final Map.Entry<Integer, Long> file : fileChecksums.entrySet()) {
       stream.putInt(file.getKey());
       stream.putLong(file.getValue());
     }
 
     stream.putUnsignedNumber(fileSizes.size());
-    for (Map.Entry<Integer, Long> file : fileSizes.entrySet()) {
+    for (final Map.Entry<Integer, Long> file : fileSizes.entrySet()) {
       stream.putInt(file.getKey());
       stream.putLong(file.getValue());
     }
@@ -94,7 +94,7 @@ public class DatabaseAlignRequest extends HAAbstractCommand {
       database.getPageManager().suspendPageFlushing(true);
 
       try {
-        for (Map.Entry<Integer, Long> entry : fileSizes.entrySet()) {
+        for (final Map.Entry<Integer, Long> entry : fileSizes.entrySet()) {
           final Integer fileId = entry.getKey();
           final PaginatedFile file = database.getFileManager().getFile(fileId);
 
@@ -125,7 +125,7 @@ public class DatabaseAlignRequest extends HAAbstractCommand {
 
         // ASK FOR FILES
         final Binary buffer = new Binary();
-        for (int[] entry : pagesToAlign) {
+        for (final int[] entry : pagesToAlign) {
           final FileContentRequest fileAlign = new FileContentRequest(databaseName, entry[0], entry[1], entry[2]);
           server.getLeader().sendCommandToLeader(buffer, fileAlign, -1);
         }

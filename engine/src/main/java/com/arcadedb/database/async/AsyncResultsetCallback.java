@@ -39,7 +39,7 @@ public interface AsyncResultsetCallback {
    *
    * @param resultset result set to fetch
    */
-  default void onStart(ResultSet resultset) {
+  default void onStart(final ResultSet resultset) {
     // NO ACTION BY DEFAULT
   }
 
@@ -48,7 +48,7 @@ public interface AsyncResultsetCallback {
    *
    * @return true to continue fetching otherwise false. If false is returned, the fetching stops and the {@link #onComplete()} method is never invoked.
    */
-  default boolean onNext(Result result) {
+  default boolean onNext(final Result result) {
     return true;
   }
 
@@ -64,7 +64,7 @@ public interface AsyncResultsetCallback {
    *
    * @param exception The exception caught
    */
-  default void onError(Exception exception) {
+  default void onError(final Exception exception) {
     // NO ACTION BY DEFAULT
   }
 }

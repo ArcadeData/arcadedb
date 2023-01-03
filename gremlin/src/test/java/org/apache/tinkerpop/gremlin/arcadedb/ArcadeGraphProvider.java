@@ -77,7 +77,7 @@ public class ArcadeGraphProvider extends AbstractGraphProvider {
   }};
 
   @Override
-  public Map<String, Object> getBaseConfiguration(String graphName, Class<?> test, String testMethodName, LoadGraphWith.GraphData loadGraphWith) {
+  public Map<String, Object> getBaseConfiguration(final String graphName, final Class<?> test, final String testMethodName, final LoadGraphWith.GraphData loadGraphWith) {
     if (IGNORED_TESTS.containsKey(test) && IGNORED_TESTS.get(test).contains(testMethodName))
       throw new AssumptionViolatedException("Ignored Test");
 
@@ -96,7 +96,7 @@ public class ArcadeGraphProvider extends AbstractGraphProvider {
   }
 
   @Override
-  public void clear(Graph graph, Configuration configuration) throws Exception {
+  public void clear(final Graph graph, final Configuration configuration) throws Exception {
     if (graph != null)
       ((ArcadeGraph) graph).drop();
 
@@ -120,7 +120,7 @@ public class ArcadeGraphProvider extends AbstractGraphProvider {
   }
 
   public static String cleanPathSegment(final String toClean) {
-    String cleaned = toClean.replaceAll("[.\\\\/,{}:*?\"<>|\\[\\]\\(\\)]", "");
+    final String cleaned = toClean.replaceAll("[.\\\\/,{}:*?\"<>|\\[\\]\\(\\)]", "");
     if (cleaned.length() == 0) {
       throw new IllegalStateException("Path segment " + toClean + " has not valid characters and is thus empty");
     } else {

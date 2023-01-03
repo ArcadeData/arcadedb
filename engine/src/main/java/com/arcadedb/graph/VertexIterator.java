@@ -58,7 +58,7 @@ public class VertexIterator extends ResettableIteratorBase<Vertex> {
 
       try {
         return rid.asVertex();
-      } catch (RecordNotFoundException e) {
+      } catch (final RecordNotFoundException e) {
         // SKIP
       }
     }

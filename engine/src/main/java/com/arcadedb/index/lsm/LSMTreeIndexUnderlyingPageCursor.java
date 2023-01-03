@@ -64,7 +64,7 @@ public class LSMTreeIndexUnderlyingPageCursor extends LSMTreeIndexUnderlyingAbst
     if (currentEntryIndex < 0)
       throw new IllegalStateException("Invalid page cursor index " + currentEntryIndex);
 
-    int contentPos = buffer.getInt(keyStartPosition + (currentEntryIndex * INT_SERIALIZED_SIZE));
+    final int contentPos = buffer.getInt(keyStartPosition + (currentEntryIndex * INT_SERIALIZED_SIZE));
     buffer.position(contentPos);
 
     nextKeys = new Object[keyTypes.length];

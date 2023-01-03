@@ -36,17 +36,17 @@ public abstract class PaginatedComponent {
   protected final int              version;
   protected final AtomicInteger    pageCount = new AtomicInteger();
 
-  protected PaginatedComponent(final DatabaseInternal database, final String name, String filePath, final String ext, final PaginatedFile.MODE mode,
+  protected PaginatedComponent(final DatabaseInternal database, final String name, final String filePath, final String ext, final PaginatedFile.MODE mode,
       final int pageSize, final int version) throws IOException {
     this(database, name, filePath, ext, database.getFileManager().newFileId(), mode, pageSize, version);
   }
 
-  private PaginatedComponent(final DatabaseInternal database, final String name, String filePath, final String ext, final int id, final PaginatedFile.MODE mode,
+  private PaginatedComponent(final DatabaseInternal database, final String name, final String filePath, final String ext, final int id, final PaginatedFile.MODE mode,
       final int pageSize, final int version) throws IOException {
     this(database, name, filePath + "." + id + "." + pageSize + ".v" + version + "." + ext, id, mode, pageSize, version);
   }
 
-  protected PaginatedComponent(final DatabaseInternal database, final String name, String filePath, final int id, final PaginatedFile.MODE mode,
+  protected PaginatedComponent(final DatabaseInternal database, final String name, final String filePath, final int id, final PaginatedFile.MODE mode,
       final int pageSize, final int version) throws IOException {
     if (pageSize <= 0)
       throw new IllegalArgumentException("Invalid page size " + pageSize);

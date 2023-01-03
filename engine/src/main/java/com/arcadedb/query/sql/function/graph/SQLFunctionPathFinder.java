@@ -55,7 +55,7 @@ public abstract class SQLFunctionPathFinder extends SQLFunctionMathAbstract {
     unSettledNodes.add(paramSourceVertex);
 
     int maxDistances = 0;
-    int maxSettled = 0;
+    final int maxSettled = 0;
     int maxUnSettled = 0;
     int maxPredecessors = 0;
 
@@ -120,7 +120,7 @@ public abstract class SQLFunctionPathFinder extends SQLFunctionMathAbstract {
   }
 
   protected void findMinimalDistances(final Vertex node) {
-    for (Vertex neighbor : getNeighbors(node)) {
+    for (final Vertex neighbor : getNeighbors(node)) {
       final float d = sumDistances(getShortestDistance(node), getDistance(node, neighbor));
 
       if (getShortestDistance(neighbor) > d) {
@@ -137,7 +137,7 @@ public abstract class SQLFunctionPathFinder extends SQLFunctionMathAbstract {
 
     final Set<Vertex> neighbors = new HashSet<Vertex>();
     if (node != null) {
-      for (Vertex v : node.getVertices(paramDirection)) {
+      for (final Vertex v : node.getVertices(paramDirection)) {
         final Vertex ov = v;
         if (ov != null && isNotSettled(ov))
           neighbors.add(ov);
@@ -149,7 +149,7 @@ public abstract class SQLFunctionPathFinder extends SQLFunctionMathAbstract {
   protected Vertex getMinimum(final Set<Vertex> vertexes) {
     Vertex minimum = null;
     Float minimumDistance = null;
-    for (Vertex vertex : vertexes) {
+    for (final Vertex vertex : vertexes) {
       if (minimum == null || getShortestDistance(vertex) < minimumDistance) {
         minimum = vertex;
         minimumDistance = getShortestDistance(minimum);

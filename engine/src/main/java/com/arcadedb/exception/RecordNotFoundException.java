@@ -23,12 +23,12 @@ import com.arcadedb.database.RID;
 public class RecordNotFoundException extends ArcadeDBException {
   private final RID rid;
 
-  public RecordNotFoundException(final String s, RID rid) {
+  public RecordNotFoundException(final String s, final RID rid) {
     super(s);
     this.rid = rid;
   }
 
-  public RecordNotFoundException(String s, RID rid, Exception e) {
+  public RecordNotFoundException(final String s, final RID rid, final Exception e) {
     super(s, e);
     this.rid = rid;
   }

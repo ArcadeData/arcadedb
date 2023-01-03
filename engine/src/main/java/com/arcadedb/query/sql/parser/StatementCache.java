@@ -87,7 +87,7 @@ public class StatementCache {
   protected Statement parse(final String statement) throws CommandSQLParsingException {
     try {
 
-      InputStream is;
+      final InputStream is;
 
       if (db == null) {
         is = new ByteArrayInputStream(statement.getBytes(DatabaseFactory.getDefaultCharset()));
@@ -102,7 +102,7 @@ public class StatementCache {
         try {
 //          osql = new SqlParser(is, db.getStorage().getConfiguration().getCharset());
           osql = new SqlParser(db, is, "UTF-8");
-        } catch (UnsupportedEncodingException e2) {
+        } catch (final UnsupportedEncodingException e2) {
           LogManager.instance().log(this, Level.WARNING, "Unsupported charset for database " + db);
           osql = new SqlParser(db, is);
         }
@@ -112,11 +112,11 @@ public class StatementCache {
       result.originalStatementAsString = statement;
       return result;
 
-    } catch (ParseException e) {
+    } catch (final ParseException e) {
       throwParsingException(e, statement);
-    } catch (TokenMgrError e2) {
+    } catch (final TokenMgrError e2) {
       throwParsingException(e2, statement);
-    } catch (Throwable e3) {
+    } catch (final Throwable e3) {
       throwParsingException(e3, statement);
     }
     return null;

@@ -34,7 +34,7 @@ public class ContainsKeyOperator extends SimpleNode implements BinaryCompareOper
   }
 
   @Override
-  public boolean execute(final DatabaseInternal database, Object left, final Object right) {
+  public boolean execute(final DatabaseInternal database, final Object left, final Object right) {
     if (left == null)
       return false;
 

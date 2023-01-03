@@ -45,7 +45,7 @@ public class JavaClassFunctionLibraryDefinition implements FunctionLibraryDefini
     this.libraryName = libraryName;
 
     Object instance = null;
-    for (Method m : impl.getDeclaredMethods()) {
+    for (final Method m : impl.getDeclaredMethods()) {
       if (!Modifier.isPublic(m.getModifiers()))
         continue;
 
@@ -79,12 +79,12 @@ public class JavaClassFunctionLibraryDefinition implements FunctionLibraryDefini
   }
 
   @Override
-  public JavaClassFunctionLibraryDefinition registerFunction(JavaMethodFunctionDefinition registerFunction) {
+  public JavaClassFunctionLibraryDefinition registerFunction(final JavaMethodFunctionDefinition registerFunction) {
     throw new UnsupportedOperationException("Cannot register additional methods to a class");
   }
 
   @Override
-  public JavaClassFunctionLibraryDefinition unregisterFunction(String functionName) {
+  public JavaClassFunctionLibraryDefinition unregisterFunction(final String functionName) {
     throw new UnsupportedOperationException("Cannot unregister additional methods to a class");
   }
 }

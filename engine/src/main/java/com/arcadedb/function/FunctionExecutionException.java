@@ -23,15 +23,15 @@ import com.arcadedb.exception.ArcadeDBException;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class FunctionExecutionException extends ArcadeDBException {
-  public FunctionExecutionException(String message) {
+  public FunctionExecutionException(final String message) {
     super(message);
   }
 
-  public FunctionExecutionException(String message, Throwable cause) {
+  public FunctionExecutionException(final String message, final Throwable cause) {
     super(message, cause);
   }
 
-  public FunctionExecutionException(Throwable cause) {
+  public FunctionExecutionException(final Throwable cause) {
     super(cause);
   }
 }

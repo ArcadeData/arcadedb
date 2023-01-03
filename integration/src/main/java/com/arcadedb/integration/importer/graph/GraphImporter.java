@@ -60,7 +60,7 @@ public class GraphImporter {
     }
   }
 
-  public GraphImporter(final DatabaseInternal database, final int expectedVertices, final int expectedEdges, Type idType) {
+  public GraphImporter(final DatabaseInternal database, final int expectedVertices, final int expectedEdges, final Type idType) {
     this.database = database;
 
     final int parallel = database.async().getParallelLevel();
@@ -108,7 +108,7 @@ public class GraphImporter {
     final Object transformedVertexId = verticesIndex.getKeyBinaryType().newInstance(vertexId);
 
     final MutableVertex sourceVertex;
-    RID sourceVertexRID = verticesIndex.get(transformedVertexId);
+    final RID sourceVertexRID = verticesIndex.get(transformedVertexId);
     if (sourceVertexRID == null) {
       // CREATE THE VERTEX
       sourceVertex = database.newVertex(vertexTypeName);

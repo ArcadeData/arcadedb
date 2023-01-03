@@ -47,11 +47,11 @@ public class PostgresWTest extends BaseGraphServerTest {
   @Test
   public void testTypeNotExistsErrorManagement() throws Exception {
     try (final Connection conn = getConnection()) {
-      try (Statement st = conn.createStatement()) {
+      try (final Statement st = conn.createStatement()) {
         try {
           st.executeQuery("SELECT * FROM V");
           Assertions.fail("The query should go in error");
-        } catch (PSQLException e) {
+        } catch (final PSQLException e) {
         }
       }
     }
@@ -60,11 +60,11 @@ public class PostgresWTest extends BaseGraphServerTest {
   @Test
   public void testParsingErrorMgmt() throws Exception {
     try (final Connection conn = getConnection()) {
-      try (Statement st = conn.createStatement()) {
+      try (final Statement st = conn.createStatement()) {
         try {
           st.executeQuery("SELECT 'abc \\u30 def';");
           Assertions.fail("The query should go in error");
-        } catch (PSQLException e) {
+        } catch (final PSQLException e) {
           Assertions.assertTrue(e.toString().contains("Syntax error"));
         }
       }
@@ -75,13 +75,13 @@ public class PostgresWTest extends BaseGraphServerTest {
   void testGremlinQuery() throws Exception {
     try (final Connection conn = getConnection()) {
       conn.setAutoCommit(false);
-      try (Statement st = conn.createStatement()) {
+      try (final Statement st = conn.createStatement()) {
         st.execute("create vertex type V");
         for (int i = 0; i < 11; i++) {
           st.execute("create vertex V set id = " + i + ", name = 'Jay', lastName = 'Miner'");
         }
 
-        ResultSet rs = st.executeQuery("{gremlin}g.V().limit(10)");
+        final ResultSet rs = st.executeQuery("{gremlin}g.V().limit(10)");
       }
     }
   }
@@ -90,13 +90,13 @@ public class PostgresWTest extends BaseGraphServerTest {
   public void queryVertices() throws Exception {
     final int TOTAL = 1000;
     try (final Connection conn = getConnection()) {
-      try (Statement st = conn.createStatement()) {
+      try (final Statement st = conn.createStatement()) {
         st.execute("create vertex type V");
         for (int i = 0; i < TOTAL; i++) {
           st.execute("create vertex V set id = " + i + ", name = 'Jay', lastName = 'Miner'");
         }
 
-        PreparedStatement pst = conn.prepareStatement(
+        final PreparedStatement pst = conn.prepareStatement(
             "create vertex V set name = ?, lastName = ?, short = ?, int = ?, long = ?, float = ?, double = ?, boolean = ?");
         pst.setString(1, "Rocky");
         pst.setString(2, "Balboa");
@@ -109,7 +109,7 @@ public class PostgresWTest extends BaseGraphServerTest {
         pst.execute();
         pst.close();
 
-        ResultSet rs = st.executeQuery("SELECT name, lastName, short, int, long, float, double, boolean FROM V order by id");
+        final ResultSet rs = st.executeQuery("SELECT name, lastName, short, int, long, float, double, boolean FROM V order by id");
 
         Assertions.assertTrue(!rs.isAfterLast());
 
@@ -143,18 +143,18 @@ public class PostgresWTest extends BaseGraphServerTest {
   public void queryTransaction() throws Exception {
     try (final Connection conn = getConnection()) {
       conn.setAutoCommit(false);
-      try (Statement st = conn.createStatement()) {
+      try (final Statement st = conn.createStatement()) {
         st.execute("begin");
         st.execute("create vertex type V");
         st.execute("create vertex V set name = 'Jay', lastName = 'Miner'");
 
-        PreparedStatement pst = conn.prepareStatement("create vertex V set name = ?, lastName = ?");
+        final PreparedStatement pst = conn.prepareStatement("create vertex V set name = ?, lastName = ?");
         pst.setString(1, "Rocky");
         pst.setString(2, "Balboa");
         pst.execute();
         pst.close();
 
-        ResultSet rs = st.executeQuery("SELECT * FROM V");
+        final ResultSet rs = st.executeQuery("SELECT * FROM V");
 
         Assertions.assertTrue(!rs.isAfterLast());
 
@@ -190,12 +190,12 @@ public class PostgresWTest extends BaseGraphServerTest {
   private Connection getConnection() throws ClassNotFoundException, SQLException {
     Class.forName("org.postgresql.Driver");
 
-    String url = "jdbc:postgresql://localhost/" + getDatabaseName();
-    Properties props = new Properties();
+    final String url = "jdbc:postgresql://localhost/" + getDatabaseName();
+    final Properties props = new Properties();
     props.setProperty("user", "root");
     props.setProperty("password", DEFAULT_PASSWORD_FOR_TESTS);
     props.setProperty("ssl", "false");
-    Connection conn = DriverManager.getConnection(url, props);
+    final Connection conn = DriverManager.getConnection(url, props);
     return conn;
   }
 

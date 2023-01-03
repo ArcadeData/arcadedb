@@ -37,7 +37,7 @@ public class PostQueryHandler extends DatabaseAbstractHandler {
   }
 
   @Override
-  public void execute(final HttpServerExchange exchange, ServerSecurityUser user, final Database database) throws IOException {
+  public void execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database) throws IOException {
 
     final String payload = parseRequestPayload(exchange);
     if (payload == null || payload.isEmpty()) {
@@ -74,8 +74,8 @@ public class PostQueryHandler extends DatabaseAbstractHandler {
     }
   }
 
-  private ResultSet command(Database database, String language, String command, Map<String, Object> paramMap) {
-    Object params = mapParams(paramMap);
+  private ResultSet command(final Database database, final String language, final String command, final Map<String, Object> paramMap) {
+    final Object params = mapParams(paramMap);
 
     if (params instanceof Object[])
       return database.query(language, command, (Object[]) params);
@@ -83,7 +83,7 @@ public class PostQueryHandler extends DatabaseAbstractHandler {
     return database.query(language, command, (Map<String, Object>) params);
   }
 
-  private Object mapParams(Map<String, Object> paramMap) {
+  private Object mapParams(final Map<String, Object> paramMap) {
     if (paramMap != null) {
       if (!paramMap.isEmpty() && paramMap.containsKey("0")) {
         // ORDINAL

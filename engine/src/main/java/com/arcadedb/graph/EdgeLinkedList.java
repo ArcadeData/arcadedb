@@ -120,7 +120,7 @@ public class EdgeLinkedList {
       final DocumentType type = vertex.getDatabase().getSchema().getType(edgeType);
       final List<Bucket> buckets = type.getBuckets(true);
       fileIdToFilter = new HashSet<>(buckets.size());
-      for (Bucket b : buckets)
+      for (final Bucket b : buckets)
         fileIdToFilter.add(b.getId());
     } else
       fileIdToFilter = null;
@@ -139,7 +139,7 @@ public class EdgeLinkedList {
       ((DatabaseInternal) vertex.getDatabase()).updateRecord(lastSegment);
     else {
       // CHUNK FULL, ALLOCATE A NEW ONE
-      DatabaseInternal database = (DatabaseInternal) vertex.getDatabase();
+      final DatabaseInternal database = (DatabaseInternal) vertex.getDatabase();
 
       final MutableEdgeSegment newChunk = new MutableEdgeSegment(database, computeBestSize());
 
@@ -199,14 +199,14 @@ public class EdgeLinkedList {
       }
     }
 
-    for (Record r : recordsToUpdate)
+    for (final Record r : recordsToUpdate)
       database.updateRecord(r);
   }
 
   public void removeEdge(final Edge edge) {
     EdgeSegment current = lastSegment;
     while (current != null) {
-      RID rid = edge.getIdentity();
+      final RID rid = edge.getIdentity();
 
       int deleted = 0;
       if (rid.getPosition() > -1)

@@ -34,23 +34,23 @@ public class UpdateExecutionPlan extends SelectExecutionPlan {
   final List<Result> result = new ArrayList<>();
   int          next   = 0;
 
-  public UpdateExecutionPlan(CommandContext ctx) {
+  public UpdateExecutionPlan(final CommandContext ctx) {
     super(ctx);
   }
 
   @Override
-  public ResultSet fetchNext(int n) {
+  public ResultSet fetchNext(final int n) {
     if (next >= result.size()) {
       return new InternalResultSet();//empty
     }
 
-    IteratorResultSet nextBlock = new IteratorResultSet(result.subList(next, Math.min(next + n, result.size())).iterator());
+    final IteratorResultSet nextBlock = new IteratorResultSet(result.subList(next, Math.min(next + n, result.size())).iterator());
     next += n;
     return nextBlock;
   }
 
   @Override
-  public void reset(CommandContext ctx) {
+  public void reset(final CommandContext ctx) {
     result.clear();
     next = 0;
     super.reset(ctx);
@@ -59,7 +59,7 @@ public class UpdateExecutionPlan extends SelectExecutionPlan {
 
   public void executeInternal() throws CommandExecutionException {
     while (true) {
-      ResultSet nextBlock = super.fetchNext(100);
+      final ResultSet nextBlock = super.fetchNext(100);
       if (!nextBlock.hasNext()) {
         return;
       }
@@ -71,7 +71,7 @@ public class UpdateExecutionPlan extends SelectExecutionPlan {
 
   @Override
   public Result toResult() {
-    ResultInternal res = (ResultInternal) super.toResult();
+    final ResultInternal res = (ResultInternal) super.toResult();
     res.setProperty("type", "UpdateExecutionPlan");
     return res;
   }

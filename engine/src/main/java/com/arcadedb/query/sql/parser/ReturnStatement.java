@@ -56,7 +56,7 @@ public class ReturnStatement extends SimpleExecStatement {
       if (!((ResultSet) result).hasNext()) {
         try {
           ((ResultSet) result).reset();
-        } catch (UnsupportedOperationException ignore) {
+        } catch (final UnsupportedOperationException ignore) {
           // just try to reset the RS, in case it was already used during the script execution
           // already
           // You can have two cases here:

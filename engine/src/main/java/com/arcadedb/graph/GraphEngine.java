@@ -63,7 +63,7 @@ public class GraphEngine {
   }
 
   public void createVertexType(final VertexType type) {
-    for (Bucket b : type.getBuckets(false)) {
+    for (final Bucket b : type.getBuckets(false)) {
       if (!database.getSchema().existsBucket(b.getName() + OUT_EDGES_SUFFIX))
         database.getSchema().createBucket(b.getName() + OUT_EDGES_SUFFIX);
       if (!database.getSchema().existsBucket(b.getName() + IN_EDGES_SUFFIX))
@@ -72,7 +72,7 @@ public class GraphEngine {
   }
 
   public void dropVertexType(final VertexType type) {
-    for (Bucket b : type.getBuckets(false)) {
+    for (final Bucket b : type.getBuckets(false)) {
       if (database.getSchema().existsBucket(b.getName() + OUT_EDGES_SUFFIX))
         database.getSchema().dropBucket(b.getName() + OUT_EDGES_SUFFIX);
       if (database.getSchema().existsBucket(b.getName() + IN_EDGES_SUFFIX))
@@ -80,7 +80,7 @@ public class GraphEngine {
     }
   }
 
-  public ImmutableLightEdge newLightEdge(VertexInternal fromVertex, final String edgeTypeName, Identifiable toVertex, final boolean bidirectional) {
+  public ImmutableLightEdge newLightEdge(final VertexInternal fromVertex, final String edgeTypeName, final Identifiable toVertex, final boolean bidirectional) {
     if (toVertex == null)
       throw new IllegalArgumentException("Destination vertex is null");
 
@@ -103,7 +103,7 @@ public class GraphEngine {
     return edge;
   }
 
-  public MutableEdge newEdge(final VertexInternal fromVertex, final String edgeTypeName, Identifiable toVertex, final boolean bidirectional,
+  public MutableEdge newEdge(final VertexInternal fromVertex, final String edgeTypeName, final Identifiable toVertex, final boolean bidirectional,
       final Object... edgeProperties) {
     if (toVertex == null)
       throw new IllegalArgumentException("Destination vertex is null");
@@ -146,7 +146,7 @@ public class GraphEngine {
   public List<Edge> newEdges(VertexInternal sourceVertex, final List<CreateEdgeOperation> connections, final boolean bidirectional) {
 
     if (connections == null || connections.isEmpty())
-      return Collections.EMPTY_LIST;
+      return Collections.emptyList();
 
     final RID sourceVertexRID = sourceVertex.getIdentity();
 
@@ -207,7 +207,7 @@ public class GraphEngine {
     if (inEdgesHeadChunk != null)
       try {
         inChunk = (EdgeSegment) database.lookupByRID(inEdgesHeadChunk, true);
-      } catch (RecordNotFoundException e) {
+      } catch (final RecordNotFoundException e) {
         LogManager.instance().log(this, Level.WARNING, "Record %s (inEdgesHeadChunk) not found on vertex %s. Creating a new one", inEdgesHeadChunk, toVertex);
         inEdgesHeadChunk = null;
       }
@@ -231,7 +231,7 @@ public class GraphEngine {
     if (outEdgesHeadChunk != null)
       try {
         outChunk = (EdgeSegment) database.lookupByRID(outEdgesHeadChunk, true);
-      } catch (RecordNotFoundException e) {
+      } catch (final RecordNotFoundException e) {
         LogManager.instance()
             .log(this, Level.WARNING, "Record %s (outEdgesHeadChunk) not found on vertex %s. Creating a new one", outEdgesHeadChunk, fromVertex.getIdentity());
         outEdgesHeadChunk = null;
@@ -294,7 +294,7 @@ public class GraphEngine {
         if (outEdges != null)
           outEdges.removeEdge(edge);
       }
-    } catch (SchemaException | RecordNotFoundException e) {
+    } catch (final SchemaException | RecordNotFoundException e) {
       LogManager.instance().log(this, Level.FINE, "Error on loading outgoing vertex %s from edge %s", e, edge.getOut(), edge.getIdentity());
     }
 
@@ -305,7 +305,7 @@ public class GraphEngine {
         if (inEdges != null)
           inEdges.removeEdge(edge);
       }
-    } catch (SchemaException | RecordNotFoundException e) {
+    } catch (final SchemaException | RecordNotFoundException e) {
       LogManager.instance().log(this, Level.FINE, "Error on loading incoming vertex %s from edge %s", e, edge.getIn(), edge.getIdentity());
     }
 
@@ -314,7 +314,7 @@ public class GraphEngine {
       // DELETE EDGE RECORD TOO
       try {
         database.getSchema().getBucketById(edge.getIdentity().getBucketId()).deleteRecord(edge.getIdentity());
-      } catch (RecordNotFoundException e) {
+      } catch (final RecordNotFoundException e) {
         // ALREADY DELETED: IGNORE IT
       }
   }
@@ -331,7 +331,7 @@ public class GraphEngine {
 
           inV = nextEdge.getIn();
 
-          VertexInternal nextVertex = (VertexInternal) nextEdge.getInVertex();
+          final VertexInternal nextVertex = (VertexInternal) nextEdge.getInVertex();
 
           final EdgeLinkedList inEdges2 = getEdgeHeadChunk(nextVertex, Vertex.DIRECTION.IN);
           if (inEdges2 != null) {
@@ -341,7 +341,7 @@ public class GraphEngine {
               // NON LIGHTWEIGHT
               nextEdge.delete();
           }
-        } catch (RecordNotFoundException e) {
+        } catch (final RecordNotFoundException e) {
           // ALREADY DELETED, IGNORE THIS
           LogManager.instance()
               .log(this, Level.FINE, "Error on deleting outgoing vertex %s connected from vertex %s (record not found)", inV, vertex.getIdentity());
@@ -363,7 +363,7 @@ public class GraphEngine {
 
           outV = nextEdge.getOut();
 
-          VertexInternal nextVertex = (VertexInternal) nextEdge.getOutVertex();
+          final VertexInternal nextVertex = (VertexInternal) nextEdge.getOutVertex();
 
           final EdgeLinkedList outEdges2 = getEdgeHeadChunk(nextVertex, Vertex.DIRECTION.OUT);
           if (outEdges2 != null) {
@@ -373,7 +373,7 @@ public class GraphEngine {
               // NON LIGHTWEIGHT
               nextEdge.delete();
           }
-        } catch (RecordNotFoundException e) {
+        } catch (final RecordNotFoundException e) {
           // ALREADY DELETED, IGNORE THIS
           LogManager.instance().log(this, Level.WARNING, "Error on deleting incoming vertex %s connected to vertex %s", outV, vertex.getIdentity());
         }
@@ -434,7 +434,7 @@ public class GraphEngine {
     default:
       throw new IllegalArgumentException("Invalid direction " + direction);
     }
-    return Collections.EMPTY_LIST;
+    return Collections.emptyList();
   }
 
   /**
@@ -497,7 +497,7 @@ public class GraphEngine {
     default:
       throw new IllegalArgumentException("Invalid direction " + direction);
     }
-    return Collections.EMPTY_LIST;
+    return Collections.emptyList();
   }
 
   public boolean isVertexConnectedTo(final VertexInternal vertex, final Identifiable toVertex) {
@@ -575,7 +575,7 @@ public class GraphEngine {
       if (properties.length == 1 && properties[0] instanceof Map) {
         // GET PROPERTIES FROM THE MAP
         final Map<String, Object> map = (Map<String, Object>) properties[0];
-        for (Map.Entry<String, Object> entry : map.entrySet())
+        for (final Map.Entry<String, Object> entry : map.entrySet())
           edge.set(entry.getKey(), entry.getValue());
       } else {
         if (properties.length % 2 != 0)
@@ -591,7 +591,7 @@ public class GraphEngine {
       if (rid != null) {
         try {
           return new EdgeLinkedList(vertex, Vertex.DIRECTION.OUT, (EdgeSegment) vertex.getDatabase().lookupByRID(rid, true));
-        } catch (RecordNotFoundException e) {
+        } catch (final RecordNotFoundException e) {
           LogManager.instance().log(this, Level.WARNING, "Cannot load OUT edge list chunk (%s) for vertex %s", e, rid, vertex.getIdentity());
         }
       }
@@ -600,7 +600,7 @@ public class GraphEngine {
       if (rid != null) {
         try {
           return new EdgeLinkedList(vertex, Vertex.DIRECTION.IN, (EdgeSegment) vertex.getDatabase().lookupByRID(rid, true));
-        } catch (RecordNotFoundException e) {
+        } catch (final RecordNotFoundException e) {
           LogManager.instance().log(this, Level.WARNING, "Cannot load IN edge list chunk (%s) for vertex %s", e, rid, vertex.getIdentity());
         }
       }
@@ -659,13 +659,13 @@ public class GraphEngine {
                   } else {
                     try {
                       edge.getInVertex().asVertex(true);
-                    } catch (RecordNotFoundException e) {
+                    } catch (final RecordNotFoundException e) {
                       warnings.add("edge " + edgeRID + " points to the incoming vertex " + edge.getIn() + " that is not found (deleted?)");
                       corruptedRecords.add(edgeRID);
                       removeEntry = true;
                       corruptedRecords.add(edge.getIn());
                       invalidLinks.incrementAndGet();
-                    } catch (Exception e) {
+                    } catch (final Exception e) {
                       // UNKNOWN ERROR ON LOADING
                       warnings.add(
                           "edge " + edgeRID + " points to the incoming vertex " + edge.getIn() + " which cannot be loaded (error: " + e.getMessage() + ")");
@@ -687,12 +687,12 @@ public class GraphEngine {
                     invalidLinks.incrementAndGet();
                   }
 
-                } catch (RecordNotFoundException e) {
+                } catch (final RecordNotFoundException e) {
                   warnings.add("edge " + edgeRID + " not found");
                   corruptedRecords.add(edgeRID);
                   removeEntry = true;
                   invalidLinks.incrementAndGet();
-                } catch (Exception e) {
+                } catch (final Exception e) {
                   // UNKNOWN ERROR ON LOADING
                   warnings.add("edge " + edgeRID + " error on loading (error: " + e.getMessage() + ")");
                   corruptedRecords.add(edgeRID);
@@ -740,13 +740,13 @@ public class GraphEngine {
                   } else {
                     try {
                       edge.getOutVertex().asVertex(true);
-                    } catch (RecordNotFoundException e) {
+                    } catch (final RecordNotFoundException e) {
                       warnings.add("edge " + edgeRID + " points to the outgoing vertex " + edge.getOut() + " that is not found (deleted?)");
                       corruptedRecords.add(edgeRID);
                       removeEntry = true;
                       corruptedRecords.add(edge.getOut());
                       invalidLinks.incrementAndGet();
-                    } catch (Exception e) {
+                    } catch (final Exception e) {
                       // UNKNOWN ERROR ON LOADING
                       warnings.add(
                           "edge " + edgeRID + " points to the outgoing vertex " + edge.getOut() + " which cannot be loaded (error: " + e.getMessage() + ")");
@@ -767,12 +767,12 @@ public class GraphEngine {
                     removeEntry = true;
                     invalidLinks.incrementAndGet();
                   }
-                } catch (RecordNotFoundException e) {
+                } catch (final RecordNotFoundException e) {
                   warnings.add("edge " + edgeRID + " not found");
                   corruptedRecords.add(edgeRID);
                   removeEntry = true;
                   invalidLinks.incrementAndGet();
-                } catch (Exception e) {
+                } catch (final Exception e) {
                   // UNKNOWN ERROR ON LOADING
                   warnings.add("edge " + edgeRID + " error on loading (error: " + e.getMessage() + ")");
                   corruptedRecords.add(edgeRID);
@@ -785,7 +785,7 @@ public class GraphEngine {
             }
           }
 
-        } catch (Throwable e) {
+        } catch (final Throwable e) {
           warnings.add("vertex " + record.getIdentity() + " cannot be loaded (error: " + e.getMessage() + ")");
           corruptedRecords.add(record.getIdentity());
         }
@@ -798,20 +798,20 @@ public class GraphEngine {
       });
 
       if (fix) {
-        for (RID rid : corruptedRecords) {
+        for (final RID rid : corruptedRecords) {
           autoFix.incrementAndGet();
           try {
             database.getSchema().getBucketById(rid.getBucketId()).deleteRecord(rid);
-          } catch (RecordNotFoundException e) {
+          } catch (final RecordNotFoundException e) {
             // IGNORE IT
-          } catch (Throwable e) {
+          } catch (final Throwable e) {
             warnings.add("Cannot fix the record " + rid + ": error on delete (error: " + e.getMessage() + ")");
           }
         }
       }
 
       if (verboseLevel > 0)
-        for (String warning : warnings)
+        for (final String warning : warnings)
           LogManager.instance().log(this, Level.WARNING, "- " + warning);
 
       database.commit();
@@ -867,12 +867,12 @@ public class GraphEngine {
                 // UNI DIRECTIONAL EDGE
                 missingReferenceBack.incrementAndGet();
 
-            } catch (RecordNotFoundException e) {
+            } catch (final RecordNotFoundException e) {
               warnings.add("edge " + edgeRID + " points to the incoming vertex " + edge.getIn() + " that is not found (deleted?)");
               corruptedRecords.add(edgeRID);
               corruptedRecords.add(edge.getIn());
               invalidLinks.incrementAndGet();
-            } catch (Exception e) {
+            } catch (final Exception e) {
               // UNKNOWN ERROR ON LOADING
               warnings.add("edge " + edgeRID + " points to the incoming vertex " + edge.getIn() + " which cannot be loaded (error: " + e.getMessage() + ")");
               corruptedRecords.add(edgeRID);
@@ -887,11 +887,11 @@ public class GraphEngine {
                 // UNI DIRECTIONAL EDGE
                 missingReferenceBack.incrementAndGet();
 
-            } catch (RecordNotFoundException e) {
+            } catch (final RecordNotFoundException e) {
               warnings.add("edge " + edgeRID + " points to the outgoing vertex " + edge.getOut() + " that is not found (deleted?)");
               corruptedRecords.add(edgeRID);
               invalidLinks.incrementAndGet();
-            } catch (Exception e) {
+            } catch (final Exception e) {
               // UNKNOWN ERROR ON LOADING
               warnings.add("edge " + edgeRID + " points to the outgoing vertex " + edge.getOut() + " which cannot be loaded (error: " + e.getMessage() + ")");
               corruptedRecords.add(edgeRID);
@@ -899,7 +899,7 @@ public class GraphEngine {
             }
           }
 
-        } catch (Throwable e) {
+        } catch (final Throwable e) {
           warnings.add("edge " + record.getIdentity() + " cannot be loaded (error: " + e.getMessage() + ")");
           corruptedRecords.add(edgeRID);
         }
@@ -912,20 +912,20 @@ public class GraphEngine {
       });
 
       if (fix) {
-        for (RID rid : corruptedRecords) {
+        for (final RID rid : corruptedRecords) {
           autoFix.incrementAndGet();
           try {
             database.getSchema().getBucketById(rid.getBucketId()).deleteRecord(rid);
-          } catch (RecordNotFoundException e) {
+          } catch (final RecordNotFoundException e) {
             // IGNORE IT
-          } catch (Throwable e) {
+          } catch (final Throwable e) {
             warnings.add("Cannot fix the record " + rid + ": error on delete (error: " + e.getMessage() + ")");
           }
         }
       }
 
       if (verboseLevel > 0)
-        for (String warning : warnings)
+        for (final String warning : warnings)
           LogManager.instance().log(this, Level.WARNING, "- " + warning);
 
       database.commit();

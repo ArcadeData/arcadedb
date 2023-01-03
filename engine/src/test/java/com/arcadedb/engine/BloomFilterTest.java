@@ -30,7 +30,7 @@ public class BloomFilterTest {
     testValidity(new BufferBloomFilter(new Binary(1024 * 1024), 8 * 8, 23), 100000);
   }
 
-  private void testValidity(BufferBloomFilter bf, final int count) {
+  private void testValidity(final BufferBloomFilter bf, final int count) {
     int might = 0;
     for (int i = 0; i < count; i++)
       if (bf.mightContain(i))

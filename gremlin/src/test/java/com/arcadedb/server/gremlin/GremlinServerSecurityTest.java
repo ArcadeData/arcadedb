@@ -41,11 +41,11 @@ public class GremlinServerSecurityTest extends BaseGraphServerTest {
   public void getAllVertices() {
     try {
       final GraphTraversalSource g = traversal();
-      var vertices = g.V().limit(3).toList();
+      final var vertices = g.V().limit(3).toList();
       Assertions.assertEquals(3, vertices.size());
 
       Assertions.fail("Expected security exception");
-    } catch (Exception e) {
+    } catch (final Exception e) {
       Assertions.assertTrue(e.getMessage().contains(ServerSecurityException.class.getSimpleName()));
     }
   }
@@ -69,7 +69,7 @@ public class GremlinServerSecurityTest extends BaseGraphServerTest {
 
       GlobalConfiguration.SERVER_PLUGINS.setValue("GremlinServer:com.arcadedb.server.gremlin.GremlinServerPlugin");
 
-    } catch (IOException e) {
+    } catch (final IOException e) {
       Assertions.fail(e);
     }
   }

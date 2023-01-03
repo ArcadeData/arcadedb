@@ -32,11 +32,11 @@ public class Timeout extends SimpleNode {
   protected Number val;
   protected String failureStrategy;
 
-  public Timeout(int id) {
+  public Timeout(final int id) {
     super(id);
   }
 
-  public Timeout(SqlParser p, int id) {
+  public Timeout(final SqlParser p, final int id) {
     super(p, id);
   }
 

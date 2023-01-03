@@ -70,8 +70,8 @@ public class ArcadeCypher extends ArcadeGremlin {
         result.add(next);
       else {
         // unpack single result projections
-        Map<String, Object> map = next.toMap();
-        Object nextValue = map.values().iterator().next();
+        final Map<String, Object> map = next.toMap();
+        final Object nextValue = map.values().iterator().next();
         if (map.size() == 1 && nextValue instanceof Map) {
           result.addAll(CypherQueryEngine.transformMap((Map<?, ?>) nextValue));
         } else {
@@ -92,7 +92,7 @@ public class ArcadeCypher extends ArcadeGremlin {
 
       final String mapKey = db + ":" + cypher;
 
-      CachedStatement cached = STATEMENT_CACHE.get(mapKey);
+      final CachedStatement cached = STATEMENT_CACHE.get(mapKey);
       // FOUND
       if (cached != null) {
         ++cached.used;
@@ -101,14 +101,14 @@ public class ArcadeCypher extends ArcadeGremlin {
 
       // TRANSLATE TO GREMLIN AND CACHE THE STATEMENT FOR FURTHER USAGE
       final CypherAst ast = parameters == null ? CypherAst.parse(cypher) : CypherAst.parse(cypher, parameters);
-      Translator<String, GroovyPredicate> translator = Translator.builder().gremlinGroovy().enableCypherExtensions().build();
+      final Translator<String, GroovyPredicate> translator = Translator.builder().gremlinGroovy().enableCypherExtensions().build();
       final String gremlin = ast.buildTranslation(translator);
 
       while (totalCachedStatements.get() >= CACHE_SIZE) {
         int leastUsedValue = 0;
         String leastUsedKey = null;
 
-        for (Map.Entry<String, CachedStatement> entry : STATEMENT_CACHE.entrySet()) {
+        for (final Map.Entry<String, CachedStatement> entry : STATEMENT_CACHE.entrySet()) {
           if (leastUsedKey == null || entry.getValue().used < leastUsedValue) {
             leastUsedKey = entry.getKey();
             leastUsedValue = entry.getValue().used;

@@ -40,16 +40,16 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
   private       long cost = 0;
   private final long maxElementsAllowed;
 
-  public DistinctExecutionStep(CommandContext ctx, boolean profilingEnabled) {
+  public DistinctExecutionStep(final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
-    Database db = ctx == null ? null : ctx.getDatabase();
+    final Database db = ctx == null ? null : ctx.getDatabase();
     maxElementsAllowed = db == null ?
         GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getValueAsLong() :
         db.getConfiguration().getValueAsLong(GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP);
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
 
     return new ResultSet() {
       int nextLocal = 0;
@@ -77,7 +77,7 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
         if (nextValue == null) {
           throw new NoSuchElementException();
         }
-        Result result1 = nextValue;
+        final Result result1 = nextValue;
         nextValue = null;
         nextLocal++;
         return result1;
@@ -94,7 +94,7 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
     };
   }
 
-  private void fetchNext(int nRecords) {
+  private void fetchNext(final int nRecords) {
     while (true) {
       if (nextValue != null) {
         return;
@@ -105,7 +105,7 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
       if (lastResult == null || !lastResult.hasNext()) {
         return;
       }
-      long begin = profilingEnabled ? System.nanoTime() : 0;
+      final long begin = profilingEnabled ? System.nanoTime() : 0;
       try {
         nextValue = lastResult.next();
         if (alreadyVisited(nextValue)) {
@@ -121,11 +121,11 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
     }
   }
 
-  private void markAsVisited(Result nextValue) {
+  private void markAsVisited(final Result nextValue) {
     if (nextValue.isElement()) {
-      RID identity = nextValue.getElement().get().getIdentity();
-      int bucket = identity.getBucketId();
-      long pos = identity.getPosition();
+      final RID identity = nextValue.getElement().get().getIdentity();
+      final int bucket = identity.getBucketId();
+      final long pos = identity.getPosition();
       if (bucket >= 0 && pos >= 0) {
         pastRids.add(identity);
         return;
@@ -140,11 +140,11 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
     }
   }
 
-  private boolean alreadyVisited(Result nextValue) {
+  private boolean alreadyVisited(final Result nextValue) {
     if (nextValue.isElement()) {
-      RID identity = nextValue.getElement().get().getIdentity();
-      int bucket = identity.getBucketId();
-      long pos = identity.getPosition();
+      final RID identity = nextValue.getElement().get().getIdentity();
+      final int bucket = identity.getBucketId();
+      final long pos = identity.getPosition();
       if (bucket >= 0 && pos >= 0) {
         return pastRids.contains(identity);
       }
@@ -163,7 +163,7 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
+  public String prettyPrint(final int depth, final int indent) {
     String result = ExecutionStepInternal.getIndent(depth, indent) + "+ DISTINCT";
     if (profilingEnabled) {
       result += " (" + getCostFormatted() + ")";

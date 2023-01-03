@@ -28,15 +28,15 @@ public class UpdatePutItem extends SimpleNode {
   protected Expression key;
   protected Expression value;
 
-  public UpdatePutItem(int id) {
+  public UpdatePutItem(final int id) {
     super(id);
   }
 
-  public UpdatePutItem(SqlParser p, int id) {
+  public UpdatePutItem(final SqlParser p, final int id) {
     super(p, id);
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     left.toString(params, builder);
     builder.append(" = ");
     key.toString(params, builder);
@@ -45,7 +45,7 @@ public class UpdatePutItem extends SimpleNode {
   }
 
   public UpdatePutItem copy() {
-    UpdatePutItem result = new UpdatePutItem(-1);
+    final UpdatePutItem result = new UpdatePutItem(-1);
     result.left = left == null ? null : left.copy();
     result.key = key == null ? null : key.copy();
     result.value = value == null ? null : value.copy();
@@ -53,13 +53,13 @@ public class UpdatePutItem extends SimpleNode {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    UpdatePutItem that = (UpdatePutItem) o;
+    final UpdatePutItem that = (UpdatePutItem) o;
 
     if (!Objects.equals(left, that.left))
       return false;

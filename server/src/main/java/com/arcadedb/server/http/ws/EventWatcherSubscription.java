@@ -41,7 +41,7 @@ public class EventWatcherSubscription {
     if (channel != null)
       try {
         channel.close();
-      } catch (IOException e) {
+      } catch (final IOException e) {
         // IGNORE THIS
       }
 

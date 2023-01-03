@@ -27,18 +27,18 @@ public class FragmentDefinition extends Definition {
   protected Directives    directives;
   protected SelectionSet  selectionSet;
 
-  public FragmentDefinition(int id) {
+  public FragmentDefinition(final int id) {
     super(id);
   }
 
-  public FragmentDefinition(GraphQLParser p, int id) {
+  public FragmentDefinition(final GraphQLParser p, final int id) {
     super(p, id);
   }
 
   /**
    * Accept the visitor.
    **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
+  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
     return visitor.visit(this, data);
   }
 }

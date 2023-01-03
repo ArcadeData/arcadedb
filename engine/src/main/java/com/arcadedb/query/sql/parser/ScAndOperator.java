@@ -26,16 +26,16 @@ import com.arcadedb.query.sql.executor.QueryOperatorEquals;
 public class ScAndOperator extends SimpleNode implements BinaryCompareOperator {
   QueryOperatorEquals lowLevelOperator = null;
 
-  public ScAndOperator(int id) {
+  public ScAndOperator(final int id) {
     super(id);
   }
 
-  public ScAndOperator(SqlParser p, int id) {
+  public ScAndOperator(final SqlParser p, final int id) {
     super(p, id);
   }
 
   @Override
-  public boolean execute(DatabaseInternal database, Object iLeft, Object iRight) {
+  public boolean execute(final DatabaseInternal database, final Object iLeft, final Object iRight) {
     if (lowLevelOperator == null) {
       //TODO implement this!
     }

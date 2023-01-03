@@ -39,8 +39,8 @@ import java.util.*;
  */
 public interface ExecutionStepInternal extends ExecutionStep {
 
-  static String getIndent(int depth, int indent) {
-    StringBuilder result = new StringBuilder();
+  static String getIndent(final int depth, final int indent) {
+    final StringBuilder result = new StringBuilder();
     for (int i = 0; i < depth; i++) {
       for (int j = 0; j < indent; j++) {
         result.append(" ");
@@ -49,20 +49,20 @@ public interface ExecutionStepInternal extends ExecutionStep {
     return result.toString();
   }
 
-  static ResultInternal basicSerialize(ExecutionStepInternal step) {
-    ResultInternal result = new ResultInternal();
+  static ResultInternal basicSerialize(final ExecutionStepInternal step) {
+    final ResultInternal result = new ResultInternal();
     result.setProperty(InternalExecutionPlan.JAVA_TYPE, step.getClass().getName());
     if (step.getSubSteps() != null && step.getSubSteps().size() > 0) {
-      List<Result> serializedSubsteps = new ArrayList<>();
-      for (ExecutionStep substep : step.getSubSteps()) {
+      final List<Result> serializedSubsteps = new ArrayList<>();
+      for (final ExecutionStep substep : step.getSubSteps()) {
         serializedSubsteps.add(((ExecutionStepInternal) substep).serialize());
       }
       result.setProperty("subSteps", serializedSubsteps);
     }
 
     if (step.getSubExecutionPlans() != null && step.getSubExecutionPlans().size() > 0) {
-      List<Result> serializedSubPlans = new ArrayList<>();
-      for (ExecutionPlan substep : step.getSubExecutionPlans()) {
+      final List<Result> serializedSubPlans = new ArrayList<>();
+      for (final ExecutionPlan substep : step.getSubExecutionPlans()) {
         serializedSubPlans.add(((InternalExecutionPlan) substep).serialize());
       }
       result.setProperty("subExecutionPlans", serializedSubPlans);
@@ -70,23 +70,23 @@ public interface ExecutionStepInternal extends ExecutionStep {
     return result;
   }
 
-  static void basicDeserialize(Result serialized, ExecutionStepInternal step)
+  static void basicDeserialize(final Result serialized, final ExecutionStepInternal step)
       throws ClassNotFoundException, IllegalAccessException, InstantiationException, NoSuchMethodException, InvocationTargetException {
-    List<Result> serializedSubsteps = serialized.getProperty("subSteps");
+    final List<Result> serializedSubsteps = serialized.getProperty("subSteps");
     if (serializedSubsteps != null) {
-      for (Result serializedSub : serializedSubsteps) {
-        String className = serializedSub.getProperty(InternalExecutionPlan.JAVA_TYPE);
-        ExecutionStepInternal subStep = (ExecutionStepInternal) Class.forName(className).getConstructor().newInstance();
+      for (final Result serializedSub : serializedSubsteps) {
+        final String className = serializedSub.getProperty(InternalExecutionPlan.JAVA_TYPE);
+        final ExecutionStepInternal subStep = (ExecutionStepInternal) Class.forName(className).getConstructor().newInstance();
         subStep.deserialize(serializedSub);
         step.getSubSteps().add(subStep);
       }
     }
 
-    List<Result> serializedPlans = serialized.getProperty("subExecutionPlans");
+    final List<Result> serializedPlans = serialized.getProperty("subExecutionPlans");
     if (serializedSubsteps != null) {
-      for (Result serializedSub : serializedPlans) {
-        String className = serializedSub.getProperty(InternalExecutionPlan.JAVA_TYPE);
-        InternalExecutionPlan subStep = (InternalExecutionPlan) Class.forName(className).getConstructor().newInstance();
+      for (final Result serializedSub : serializedPlans) {
+        final String className = serializedSub.getProperty(InternalExecutionPlan.JAVA_TYPE);
+        final InternalExecutionPlan subStep = (InternalExecutionPlan) Class.forName(className).getConstructor().newInstance();
         subStep.deserialize(serializedSub);
         step.getSubExecutionPlans().add(subStep);
       }
@@ -105,8 +105,8 @@ public interface ExecutionStepInternal extends ExecutionStep {
 
   void close();
 
-  default String prettyPrint(int depth, int indent) {
-    String spaces = getIndent(depth, indent);
+  default String prettyPrint(final int depth, final int indent) {
+    final String spaces = getIndent(depth, indent);
     return spaces + getClass().getSimpleName();
   }
 
@@ -142,11 +142,11 @@ public interface ExecutionStepInternal extends ExecutionStep {
     throw new UnsupportedOperationException();
   }
 
-  default void deserialize(Result fromResult) {
+  default void deserialize(final Result fromResult) {
     throw new UnsupportedOperationException();
   }
 
-  default ExecutionStep copy(CommandContext ctx) {
+  default ExecutionStep copy(final CommandContext ctx) {
     throw new UnsupportedOperationException();
   }
 

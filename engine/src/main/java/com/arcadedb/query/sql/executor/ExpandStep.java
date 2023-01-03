@@ -38,12 +38,12 @@ public class ExpandStep extends AbstractExecutionStep {
   Iterator  nextSubsequence = null;
   Result    nextElement     = null;
 
-  public ExpandStep(CommandContext ctx, boolean profilingEnabled) {
+  public ExpandStep(final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
     if (prev == null || prev.isEmpty()) {
       throw new CommandExecutionException("Cannot expand without a target");
     }
@@ -73,7 +73,7 @@ public class ExpandStep extends AbstractExecutionStep {
           throw new NoSuchElementException();
         }
 
-        Result result = nextElement;
+        final Result result = nextElement;
         localCount++;
         nextElement = null;
         fetchNext(ctx, nRecords);
@@ -91,16 +91,16 @@ public class ExpandStep extends AbstractExecutionStep {
     };
   }
 
-  private void fetchNext(CommandContext ctx, int n) {
+  private void fetchNext(final CommandContext ctx, final int n) {
     do {
       if (nextSubsequence != null && nextSubsequence.hasNext()) {
-        long begin = profilingEnabled ? System.nanoTime() : 0;
+        final long begin = profilingEnabled ? System.nanoTime() : 0;
         try {
-          Object nextElementObj = nextSubsequence.next();
+          final Object nextElementObj = nextSubsequence.next();
           if (nextElementObj instanceof Result) {
             nextElement = (Result) nextElementObj;
           } else if (nextElementObj instanceof Identifiable) {
-            Record record = ((Identifiable) nextElementObj).getRecord();
+            final Record record = ((Identifiable) nextElementObj).getRecord();
             if (record == null) {
               continue;
             }
@@ -128,7 +128,7 @@ public class ExpandStep extends AbstractExecutionStep {
         return;
 
       final Result nextAggregateItem = lastResult.next();
-      long begin = profilingEnabled ? System.nanoTime() : 0;
+      final long begin = profilingEnabled ? System.nanoTime() : 0;
       try {
         if (nextAggregateItem.getPropertyNames().size() == 0) {
           continue;
@@ -137,17 +137,17 @@ public class ExpandStep extends AbstractExecutionStep {
           throw new IllegalStateException("Invalid EXPAND on record " + nextAggregateItem);
         }
 
-        String propName = nextAggregateItem.getPropertyNames().iterator().next();
-        Object projValue = nextAggregateItem.getProperty(propName);
+        final String propName = nextAggregateItem.getPropertyNames().iterator().next();
+        final Object projValue = nextAggregateItem.getProperty(propName);
         if (projValue == null) {
           continue;
         }
         if (projValue instanceof Identifiable) {
-          Record rec = ((Identifiable) projValue).getRecord();
+          final Record rec = ((Identifiable) projValue).getRecord();
           if (rec == null) {
             continue;
           }
-          ResultInternal res = new ResultInternal();
+          final ResultInternal res = new ResultInternal();
           res.setElement((Document) rec);
 
           nextSubsequence = Collections.singleton(res).iterator();
@@ -168,8 +168,8 @@ public class ExpandStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     String result = spaces + "+ EXPAND";
     if (profilingEnabled) {
       result += " (" + getCostFormatted() + ")";

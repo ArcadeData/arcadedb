@@ -24,7 +24,7 @@ import org.junit.jupiter.api.Test;
 public class GlobalConfigurationTest extends TestHelper {
   @Test
   public void testServerMode() {
-    String original = GlobalConfiguration.SERVER_MODE.getValueAsString();
+    final String original = GlobalConfiguration.SERVER_MODE.getValueAsString();
 
     GlobalConfiguration.SERVER_MODE.setValue("development");
     Assertions.assertEquals("development", GlobalConfiguration.SERVER_MODE.getValueAsString());
@@ -38,7 +38,7 @@ public class GlobalConfigurationTest extends TestHelper {
     try {
       GlobalConfiguration.SERVER_MODE.setValue("notvalid");
       Assertions.fail();
-    } catch (IllegalArgumentException e) {
+    } catch (final IllegalArgumentException e) {
       // EXPECTED
     }
 
@@ -47,12 +47,12 @@ public class GlobalConfigurationTest extends TestHelper {
 
   @Test
   public void testTypeConversion() {
-    int original = GlobalConfiguration.INITIAL_PAGE_CACHE_SIZE.getValueAsInteger();
+    final int original = GlobalConfiguration.INITIAL_PAGE_CACHE_SIZE.getValueAsInteger();
 
     try {
       GlobalConfiguration.INITIAL_PAGE_CACHE_SIZE.setValue("notvalid");
       Assertions.fail();
-    } catch (NumberFormatException e) {
+    } catch (final NumberFormatException e) {
       // EXPECTED
     }
 
@@ -62,7 +62,7 @@ public class GlobalConfigurationTest extends TestHelper {
   @Test
   public void testDefaultValue() {
     GlobalConfiguration.INITIAL_PAGE_CACHE_SIZE.reset();
-    int original = GlobalConfiguration.INITIAL_PAGE_CACHE_SIZE.getValueAsInteger();
+    final int original = GlobalConfiguration.INITIAL_PAGE_CACHE_SIZE.getValueAsInteger();
 
     Assertions.assertEquals(original, GlobalConfiguration.INITIAL_PAGE_CACHE_SIZE.getDefValue());
     Assertions.assertFalse(GlobalConfiguration.INITIAL_PAGE_CACHE_SIZE.isChanged());

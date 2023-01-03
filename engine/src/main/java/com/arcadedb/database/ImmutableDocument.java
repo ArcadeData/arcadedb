@@ -118,7 +118,7 @@ public class ImmutableDocument extends BaseDocument {
       buffer.position(currPosition);
 
       int i = 0;
-      for (Map.Entry<String, Object> entry : map.entrySet()) {
+      for (final Map.Entry<String, Object> entry : map.entrySet()) {
         if (i > 0)
           output.append(',');
 

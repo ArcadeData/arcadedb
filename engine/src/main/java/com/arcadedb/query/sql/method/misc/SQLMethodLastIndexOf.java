@@ -34,8 +34,8 @@ public class SQLMethodLastIndexOf extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute( final Object iThis, Identifiable iCurrentRecord, CommandContext iContext,
-      Object ioResult, Object[] iParams) {
+  public Object execute( final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext,
+      final Object ioResult, final Object[] iParams) {
     final String toFind = FileUtils.getStringContent(iParams[0].toString());
     return iParams.length > 1 ?
         iThis.toString().lastIndexOf(toFind, Integer.parseInt(iParams[1].toString())) :

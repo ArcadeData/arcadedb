@@ -28,7 +28,7 @@ public class PerformanceScan {
   private static final String USERTYPE_NAME = "Person";
   private static final int    MAX_LOOPS  = 10;
 
-  public static void main(String[] args) throws Exception {
+  public static void main(final String[] args) throws Exception {
     new PerformanceScan().run();
   }
 

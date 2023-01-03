@@ -38,13 +38,13 @@ public class SQLFunctionSet extends SQLFunctionMultiValueAbstract<Set<Object>> {
     super(NAME, 1, -1);
   }
 
-  public Object execute( Object iThis, final Identifiable iCurrentRecord, Object iCurrentResult, final Object[] iParams,
-      CommandContext iContext) {
+  public Object execute( final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
+      final CommandContext iContext) {
     if (iParams.length > 1)
       // IN LINE MODE
       context = new HashSet<Object>();
 
-    for (Object value : iParams) {
+    for (final Object value : iParams) {
       if (value != null) {
         if (iParams.length == 1 && context == null)
           // AGGREGATION MODE (STATEFULL)

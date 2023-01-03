@@ -28,7 +28,7 @@ public class FetchFromIndexValuesStep extends FetchFromIndexStep {
 
   private boolean asc;
 
-  public FetchFromIndexValuesStep(RangeIndex index, boolean asc, CommandContext ctx, boolean profilingEnabled) {
+  public FetchFromIndexValuesStep(final RangeIndex index, final boolean asc, final CommandContext ctx, final boolean profilingEnabled) {
     super(index, null, null, ctx, profilingEnabled);
     this.asc = asc;
   }
@@ -39,7 +39,7 @@ public class FetchFromIndexValuesStep extends FetchFromIndexStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
+  public String prettyPrint(final int depth, final int indent) {
     if (isOrderAsc()) {
       return ExecutionStepInternal.getIndent(depth, indent) + "+ FETCH FROM INDEX VALUES ASC " + index.getName();
     } else {
@@ -49,17 +49,17 @@ public class FetchFromIndexValuesStep extends FetchFromIndexStep {
 
   @Override
   public Result serialize() {
-    ResultInternal result = (ResultInternal) super.serialize();
+    final ResultInternal result = (ResultInternal) super.serialize();
     result.setProperty("asc", asc);
     return result;
   }
 
   @Override
-  public void deserialize(Result fromResult) {
+  public void deserialize(final Result fromResult) {
     try {
       super.deserialize(fromResult);
       this.asc = fromResult.getProperty("asc");
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new CommandExecutionException(e);
     }
   }

@@ -40,14 +40,14 @@ public class UnwindStep extends AbstractExecutionStep {
   Iterator<Result> nextSubsequence = null;
   Result           nextElement     = null;
 
-  public UnwindStep(Unwind unwind, CommandContext ctx, boolean profilingEnabled) {
+  public UnwindStep(final Unwind unwind, final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
     this.unwind = unwind;
     unwindFields = unwind.getItems().stream().map(x -> x.getStringValue()).collect(Collectors.toList());
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
     if (prev == null || prev.isEmpty()) {
       throw new CommandExecutionException("Cannot expand without a target");
     }
@@ -77,7 +77,7 @@ public class UnwindStep extends AbstractExecutionStep {
           throw new NoSuchElementException();
         }
 
-        Result result = nextElement;
+        final Result result = nextElement;
         localCount++;
         nextElement = null;
         fetchNext(ctx, nRecords);
@@ -95,7 +95,7 @@ public class UnwindStep extends AbstractExecutionStep {
     };
   }
 
-  private void fetchNext(CommandContext ctx, int n) {
+  private void fetchNext(final CommandContext ctx, final int n) {
     do {
       if (nextSubsequence != null && nextSubsequence.hasNext()) {
         nextElement = nextSubsequence.next();
@@ -111,7 +111,7 @@ public class UnwindStep extends AbstractExecutionStep {
         }
       }
 
-      Result nextAggregateItem = lastResult.next();
+      final Result nextAggregateItem = lastResult.next();
       nextSubsequence = unwind(nextAggregateItem, unwindFields, ctx).iterator();
 
     } while (true);
@@ -124,10 +124,10 @@ public class UnwindStep extends AbstractExecutionStep {
     if (unwindFields.isEmpty()) {
       result.add(doc);
     } else {
-      String firstField = unwindFields.get(0);
+      final String firstField = unwindFields.get(0);
       final List<String> nextFields = unwindFields.subList(1, unwindFields.size());
 
-      Object fieldValue = doc.getProperty(firstField);
+      final Object fieldValue = doc.getProperty(firstField);
       if (fieldValue == null || fieldValue instanceof Record) {
         result.addAll(unwind(doc, nextFields, iContext));
         return result;
@@ -138,22 +138,22 @@ public class UnwindStep extends AbstractExecutionStep {
         return result;
       }
 
-      Iterator iterator;
+      final Iterator iterator;
       if (fieldValue.getClass().isArray()) {
         iterator = MultiValue.getMultiValueIterator(fieldValue);
       } else {
         iterator = ((Iterable) fieldValue).iterator();
       }
       if (!iterator.hasNext()) {
-        ResultInternal unwindedDoc = new ResultInternal();
+        final ResultInternal unwindedDoc = new ResultInternal();
         copy(doc, unwindedDoc);
 
         unwindedDoc.setProperty(firstField, null);
         result.addAll(unwind(unwindedDoc, nextFields, iContext));
       } else {
         do {
-          Object o = iterator.next();
-          ResultInternal unwindedDoc = new ResultInternal();
+          final Object o = iterator.next();
+          final ResultInternal unwindedDoc = new ResultInternal();
           copy(doc, unwindedDoc);
           unwindedDoc.setProperty(firstField, o);
           result.addAll(unwind(unwindedDoc, nextFields, iContext));
@@ -164,15 +164,15 @@ public class UnwindStep extends AbstractExecutionStep {
     return result;
   }
 
-  private void copy(Result from, ResultInternal to) {
-    for (String prop : from.getPropertyNames()) {
+  private void copy(final Result from, final ResultInternal to) {
+    for (final String prop : from.getPropertyNames()) {
       to.setProperty(prop, from.getProperty(prop));
     }
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     return spaces + "+ " + unwind;
   }
 }

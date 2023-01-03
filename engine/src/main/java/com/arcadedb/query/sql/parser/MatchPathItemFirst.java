@@ -30,7 +30,7 @@ public class MatchPathItemFirst extends MatchPathItem {
   protected          FunctionCall function;
   protected volatile MethodCall   methodWrapper;
 
-  public MatchPathItemFirst(int id) {
+  public MatchPathItemFirst(final int id) {
     super(id);
   }
 

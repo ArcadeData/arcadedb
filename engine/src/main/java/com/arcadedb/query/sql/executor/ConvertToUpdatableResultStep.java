@@ -39,16 +39,16 @@ public class ConvertToUpdatableResultStep extends AbstractExecutionStep {
 
   ResultSet prevResult = null;
 
-  public ConvertToUpdatableResultStep(CommandContext ctx, boolean profilingEnabled) {
+  public ConvertToUpdatableResultStep(final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
     if (prev.isEmpty()) {
       throw new IllegalStateException("filter step requires a previous step");
     }
-    ExecutionStepInternal prevStep = prev.get();
+    final ExecutionStepInternal prevStep = prev.get();
 
     return new ResultSet() {
       public boolean finished = false;
@@ -77,13 +77,13 @@ public class ConvertToUpdatableResultStep extends AbstractExecutionStep {
             }
           }
           nextItem = prevResult.next();
-          long begin = profilingEnabled ? System.nanoTime() : 0;
+          final long begin = profilingEnabled ? System.nanoTime() : 0;
           try {
             if (nextItem instanceof UpdatableResult) {
               break;
             }
             if (nextItem.isElement()) {
-              Record element = nextItem.getElement().get();
+              final Record element = nextItem.getElement().get();
               if (element != null) {
                 nextItem = new UpdatableResult(((Document) element.getRecord()).modify());
               }
@@ -121,7 +121,7 @@ public class ConvertToUpdatableResultStep extends AbstractExecutionStep {
         if (nextItem == null) {
           throw new NoSuchElementException();
         }
-        Result result = nextItem;
+        final Result result = nextItem;
         nextItem = null;
         fetched++;
         ctx.setVariable("current", result);
@@ -141,7 +141,7 @@ public class ConvertToUpdatableResultStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
+  public String prettyPrint(final int depth, final int indent) {
     String result = ExecutionStepInternal.getIndent(depth, indent) + "+ CONVERT TO UPDATABLE ITEM";
     if (profilingEnabled) {
       result += " (" + getCostFormatted() + ")";

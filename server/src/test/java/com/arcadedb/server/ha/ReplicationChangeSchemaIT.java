@@ -60,7 +60,7 @@ public class ReplicationChangeSchemaIT extends ReplicationServerIT {
 
     // CREATE NEW BUCKET
     final Bucket newBucket = databases[0].getSchema().createBucket("newBucket");
-    for (Database database : databases)
+    for (final Database database : databases)
       Assertions.assertTrue(database.getSchema().existsBucket("newBucket"));
 
     type1.addBucket(newBucket);
@@ -70,7 +70,7 @@ public class ReplicationChangeSchemaIT extends ReplicationServerIT {
     try {
       databases[1].getSchema().createVertexType("RuntimeVertex1");
       Assertions.fail();
-    } catch (ServerIsNotTheLeaderException e) {
+    } catch (final ServerIsNotTheLeaderException e) {
       // EXPECTED
     }
 
@@ -83,12 +83,12 @@ public class ReplicationChangeSchemaIT extends ReplicationServerIT {
     // DROP NEW BUCKET
     try {
       databases[0].getSchema().dropBucket("newBucket");
-    } catch (SchemaException e) {
+    } catch (final SchemaException e) {
       // EXPECTED
     }
 
     databases[0].getSchema().getType("RuntimeVertex0").removeBucket(databases[0].getSchema().getBucketByName("newBucket"));
-    for (Database database : databases)
+    for (final Database database : databases)
       Assertions.assertFalse(database.getSchema().getType("RuntimeVertex0").hasBucket("newBucket"));
 
     databases[0].getSchema().dropBucket("newBucket");
@@ -119,7 +119,7 @@ public class ReplicationChangeSchemaIT extends ReplicationServerIT {
           databases[1].newVertex("IndexedVertex0").set("propertyIndexed", i).save();
       });
       Assertions.fail();
-    } catch (TransactionException e) {
+    } catch (final TransactionException e) {
       // EXPECTED
     }
 
@@ -130,7 +130,7 @@ public class ReplicationChangeSchemaIT extends ReplicationServerIT {
     databases[0].transaction(() -> {
       try {
         databases[0].getSchema().createVertexType("RuntimeVertexTx0");
-      } catch (Exception e) {
+      } catch (final Exception e) {
         Assertions.fail(e);
       }
     });
@@ -141,11 +141,11 @@ public class ReplicationChangeSchemaIT extends ReplicationServerIT {
   private void testOnAllServers(final Callable<String, Database> callback) {
     // CREATE NEW TYPE
     schemaFiles.clear();
-    for (Database database : databases) {
+    for (final Database database : databases) {
       try {
         final String result = callback.call(database);
         schemaFiles.put(database.getDatabasePath(), result);
-      } catch (Exception e) {
+      } catch (final Exception e) {
         Assertions.fail(e);
       }
     }
@@ -157,7 +157,7 @@ public class ReplicationChangeSchemaIT extends ReplicationServerIT {
       final String content = FileUtils.readFileAsString(database.getSchema().getEmbedded().getConfigurationFile(), "UTF8");
       Assertions.assertTrue(content.contains(match));
       return content;
-    } catch (IOException e) {
+    } catch (final IOException e) {
       Assertions.fail(e);
       return null;
     }
@@ -168,7 +168,7 @@ public class ReplicationChangeSchemaIT extends ReplicationServerIT {
       final String content = FileUtils.readFileAsString(database.getSchema().getEmbedded().getConfigurationFile(), "UTF8");
       Assertions.assertFalse(content.contains(match));
       return content;
-    } catch (IOException e) {
+    } catch (final IOException e) {
       Assertions.fail(e);
       return null;
     }
@@ -177,7 +177,7 @@ public class ReplicationChangeSchemaIT extends ReplicationServerIT {
   private void checkSchemaFilesAreTheSameOnAllServers() {
     Assertions.assertEquals(getServerCount(), schemaFiles.size());
     String first = null;
-    for (Map.Entry<String, String> entry : schemaFiles.entrySet()) {
+    for (final Map.Entry<String, String> entry : schemaFiles.entrySet()) {
       if (first == null)
         first = entry.getValue();
       else

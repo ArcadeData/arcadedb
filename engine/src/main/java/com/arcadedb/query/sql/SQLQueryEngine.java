@@ -76,7 +76,7 @@ public class SQLQueryEngine implements QueryEngine {
   }
 
   @Override
-  public ResultSet query(String query, Map<String, Object> parameters) {
+  public ResultSet query(final String query, final Map<String, Object> parameters) {
     final Statement statement = parse(query, database);
     if (!statement.isIdempotent())
       throw new IllegalArgumentException("Query '" + query + "' is not idempotent");
@@ -87,7 +87,7 @@ public class SQLQueryEngine implements QueryEngine {
   }
 
   @Override
-  public ResultSet query(String query, Object... parameters) {
+  public ResultSet query(final String query, final Object... parameters) {
     final Statement statement = parse(query, database);
     if (!statement.isIdempotent())
       throw new IllegalArgumentException("Query '" + query + "' is not idempotent");
@@ -98,7 +98,7 @@ public class SQLQueryEngine implements QueryEngine {
   }
 
   @Override
-  public ResultSet command(String query, Map<String, Object> parameters) {
+  public ResultSet command(final String query, final Map<String, Object> parameters) {
     final Statement statement = parse(query, database);
 
     statement.setLimit(new Limit(JJTLIMIT).setValue((int) database.getResultSetLimit()));
@@ -107,7 +107,7 @@ public class SQLQueryEngine implements QueryEngine {
   }
 
   @Override
-  public ResultSet command(String query, Object... parameters) {
+  public ResultSet command(final String query, final Object... parameters) {
     final Statement statement = parse(query, database);
 
     statement.setLimit(new Limit(JJTLIMIT).setValue((int) database.getResultSetLimit()));
@@ -140,12 +140,12 @@ public class SQLQueryEngine implements QueryEngine {
     }
     if (MultiValue.isMultiValue(iCurrent) || iCurrent instanceof Iterator) {
       final MultiIterator<Object> result = new MultiIterator<>();
-      for (Object o : MultiValue.getMultiValueIterable(iCurrent, false)) {
+      for (final Object o : MultiValue.getMultiValueIterable(iCurrent, false)) {
         if (iContext != null && !iContext.checkTimeout())
           return null;
 
         if (MultiValue.isMultiValue(o) || o instanceof Iterator) {
-          for (Object inner : MultiValue.getMultiValueIterable(o, false)) {
+          for (final Object inner : MultiValue.getMultiValueIterable(o, false)) {
             result.addIterator(iCallable.call((Identifiable) inner));
           }
         } else
@@ -182,7 +182,8 @@ public class SQLQueryEngine implements QueryEngine {
           // WRAP LIBRARY FUNCTION TO SQL FUNCTION TO BE EXECUTED BY SQL ENGINE
           sqlFunction = new SQLFunctionAbstract(name) {
             @Override
-            public Object execute(Object iThis, Identifiable iCurrentRecord, Object iCurrentResult, Object[] iParams, CommandContext iContext) {
+            public Object execute(
+                final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams, final CommandContext iContext) {
               return function.execute(iParams);
             }
 
@@ -218,7 +219,7 @@ public class SQLQueryEngine implements QueryEngine {
     try {
       final SqlParser parser = new SqlParser(database, script);
       return parser.ParseScript();
-    } catch (ParseException e) {
+    } catch (final ParseException e) {
       throw new CommandSQLParsingException(e);
     }
   }

@@ -63,7 +63,7 @@ public class GraphQLParserSchemaTest {
           "  wrote: [Book] @relationship(type: \"IS_AUTHOR_OF\", direction: OUT)\n" +//
           "} dsfjsd fjsdkjf sdk");
       Assertions.fail(ast.treeToString(""));
-    } catch (ParseException e) {
+    } catch (final ParseException e) {
       // EXPECTED
     }
   }
@@ -88,7 +88,7 @@ public class GraphQLParserSchemaTest {
           "  wrote: [Book] @relationship(type: \"IS_AUTHOR_OF\", direction: OUT)\n" +//
           "} dsfjsd fjsdkjf sdk");
       Assertions.fail(ast.treeToString(""));
-    } catch (ParseException e) {
+    } catch (final ParseException e) {
       // EXPECTED
     }
   }

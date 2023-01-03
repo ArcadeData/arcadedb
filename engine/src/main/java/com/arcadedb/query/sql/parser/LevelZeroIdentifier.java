@@ -34,15 +34,15 @@ public class LevelZeroIdentifier extends SimpleNode {
   protected Boolean      self;
   protected PCollection  collection;
 
-  public LevelZeroIdentifier(int id) {
+  public LevelZeroIdentifier(final int id) {
     super(id);
   }
 
-  public LevelZeroIdentifier(SqlParser p, int id) {
+  public LevelZeroIdentifier(final SqlParser p, final int id) {
     super(p, id);
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (functionCall != null) {
       functionCall.toString(params, builder);
     } else if (Boolean.TRUE.equals(self)) {
@@ -52,7 +52,7 @@ public class LevelZeroIdentifier extends SimpleNode {
     }
   }
 
-  public Object execute(Record iCurrentRecord, CommandContext ctx) {
+  public Object execute(final Record iCurrentRecord, final CommandContext ctx) {
     if (functionCall != null) {
       return functionCall.execute(iCurrentRecord, ctx);
     }
@@ -65,7 +65,7 @@ public class LevelZeroIdentifier extends SimpleNode {
     throw new UnsupportedOperationException();
   }
 
-  public Object execute(Result iCurrentRecord, CommandContext ctx) {
+  public Object execute(final Result iCurrentRecord, final CommandContext ctx) {
     if (functionCall != null) {
       return functionCall.execute(iCurrentRecord, ctx);
     }
@@ -85,7 +85,7 @@ public class LevelZeroIdentifier extends SimpleNode {
     return false;
   }
 
-  public long estimateIndexedFunction(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {
+  public long estimateIndexedFunction(final FromClause target, final CommandContext context, final BinaryCompareOperator operator, final Object right) {
     if (functionCall != null) {
       return functionCall.estimateIndexedFunction(target, context, operator, right);
     }
@@ -93,7 +93,7 @@ public class LevelZeroIdentifier extends SimpleNode {
     return -1;
   }
 
-  public Iterable<Record> executeIndexedFunction(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {
+  public Iterable<Record> executeIndexedFunction(final FromClause target, final CommandContext context, final BinaryCompareOperator operator, final Object right) {
     if (functionCall != null) {
       return functionCall.executeIndexedFunction(target, context, operator, right);
     }
@@ -110,7 +110,7 @@ public class LevelZeroIdentifier extends SimpleNode {
    *
    * @return true if current expression is an indexed function AND that function can also be executed without using the index, false otherwise
    */
-  public boolean canExecuteIndexedFunctionWithoutIndex(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {
+  public boolean canExecuteIndexedFunctionWithoutIndex(final FromClause target, final CommandContext context, final BinaryCompareOperator operator, final Object right) {
     if (this.functionCall == null) {
       return false;
     }
@@ -127,7 +127,8 @@ public class LevelZeroIdentifier extends SimpleNode {
    *
    * @return true if current expression involves an indexed function AND that function can be used on this target, false otherwise
    */
-  public boolean allowsIndexedFunctionExecutionOnTarget(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {
+  public boolean allowsIndexedFunctionExecutionOnTarget(
+      final FromClause target, final CommandContext context, final BinaryCompareOperator operator, final Object right) {
     if (this.functionCall == null) {
       return false;
     }
@@ -144,7 +145,8 @@ public class LevelZeroIdentifier extends SimpleNode {
    *
    * @return true if current expression is an indexed function AND the function has also to be executed after the index search.
    */
-  public boolean executeIndexedFunctionAfterIndexSearch(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {
+  public boolean executeIndexedFunctionAfterIndexSearch(
+      final FromClause target, final CommandContext context, final BinaryCompareOperator operator, final Object right) {
     if (this.functionCall == null) {
       return false;
     }
@@ -165,7 +167,7 @@ public class LevelZeroIdentifier extends SimpleNode {
     return functionCall.getParams().get(0);
   }
 
-  public boolean needsAliases(Set<String> aliases) {
+  public boolean needsAliases(final Set<String> aliases) {
     if (functionCall != null && functionCall.needsAliases(aliases)) {
       return true;
     }
@@ -193,11 +195,11 @@ public class LevelZeroIdentifier extends SimpleNode {
     return collection != null && collection.isEarlyCalculated();
   }
 
-  public SimpleNode splitForAggregation(AggregateProjectionSplit aggregateProj) {
+  public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateProj) {
     if (isAggregate()) {
-      LevelZeroIdentifier result = new LevelZeroIdentifier(-1);
+      final LevelZeroIdentifier result = new LevelZeroIdentifier(-1);
       if (functionCall != null) {
-        SimpleNode node = functionCall.splitForAggregation(aggregateProj);
+        final SimpleNode node = functionCall.splitForAggregation(aggregateProj);
         if (node instanceof FunctionCall) {
           result.functionCall = (FunctionCall) node;
         } else {
@@ -215,7 +217,7 @@ public class LevelZeroIdentifier extends SimpleNode {
     }
   }
 
-  public AggregationContext getAggregationContext(CommandContext ctx) {
+  public AggregationContext getAggregationContext(final CommandContext ctx) {
     if (isAggregate()) {
       if (functionCall != null) {
         return functionCall.getAggregationContext(ctx);
@@ -256,7 +258,7 @@ public class LevelZeroIdentifier extends SimpleNode {
     return result;
   }
 
-  public void setCollection(PCollection collection) {
+  public void setCollection(final PCollection collection) {
     this.collection = collection;
   }
 
@@ -291,7 +293,7 @@ public class LevelZeroIdentifier extends SimpleNode {
     return result;
   }
 
-  public void deserialize(Result fromResult) {
+  public void deserialize(final Result fromResult) {
     if (fromResult.getProperty("functionCall") != null) {
       functionCall = new FunctionCall(parser, -1);
       functionCall.deserialize(fromResult.getProperty("functionCall"));
@@ -303,13 +305,13 @@ public class LevelZeroIdentifier extends SimpleNode {
     }
   }
 
-  public void extractSubQueries(Identifier letAlias, SubQueryCollector collector) {
+  public void extractSubQueries(final Identifier letAlias, final SubQueryCollector collector) {
     if (this.functionCall != null) {
       this.functionCall.extractSubQueries(letAlias, collector);
     }
   }
 
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
     if (this.functionCall != null) {
       this.functionCall.extractSubQueries(collector);
     }

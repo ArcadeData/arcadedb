@@ -25,7 +25,7 @@ public class ExportException extends ArcadeDBException {
     super(s);
   }
 
-  public ExportException(String s, Throwable e) {
+  public ExportException(final String s, final Throwable e) {
     super(s, e);
   }
 }

@@ -64,12 +64,12 @@ public class JavaMethodFunctionLibraryDefinition implements FunctionLibraryDefin
   }
 
   @Override
-  public JavaMethodFunctionLibraryDefinition registerFunction(JavaMethodFunctionDefinition registerFunction) {
+  public JavaMethodFunctionLibraryDefinition registerFunction(final JavaMethodFunctionDefinition registerFunction) {
     throw new UnsupportedOperationException("Cannot register additional methods to a class");
   }
 
   @Override
-  public JavaMethodFunctionLibraryDefinition unregisterFunction(String functionName) {
+  public JavaMethodFunctionLibraryDefinition unregisterFunction(final String functionName) {
     throw new UnsupportedOperationException("Cannot unregister additional methods to a class");
   }
 }

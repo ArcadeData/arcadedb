@@ -86,7 +86,7 @@ public enum Type {
   private static final Map<Class<?>, Type> TYPES_BY_USERTYPE = new HashMap<Class<?>, Type>();
 
   static {
-    for (Type type : values()) {
+    for (final Type type : values()) {
       TYPES_BY_ID[type.id] = type;
     }
     // This is made by hand because not all types should be add.
@@ -215,11 +215,11 @@ public enum Type {
     return null;
   }
 
-  public static Type getTypeByValue(Object value) {
+  public static Type getTypeByValue(final Object value) {
     if (value == null)
       return null;
-    Class<?> typez = value.getClass();
-    Type type = TYPES_BY_USERTYPE.get(typez);
+    final Class<?> typez = value.getClass();
+    final Type type = TYPES_BY_USERTYPE.get(typez);
     if (type != null)
       return type;
 
@@ -232,9 +232,9 @@ public enum Type {
     return valueOf(name.toUpperCase());
   }
 
-  private static boolean checkLinkCollection(Collection<?> toCheck) {
+  private static boolean checkLinkCollection(final Collection<?> toCheck) {
     boolean empty = true;
-    for (Object object : toCheck) {
+    for (final Object object : toCheck) {
       if (object != null && !(object instanceof Identifiable))
         return false;
       else if (object != null)
@@ -407,7 +407,7 @@ public enum Type {
           if (database != null)
             try {
               return new SimpleDateFormat(database.getSchema().getDateTimeFormat()).parse(valueAsString);
-            } catch (ParseException ignore) {
+            } catch (final ParseException ignore) {
               return new SimpleDateFormat(database.getSchema().getDateFormat()).parse(valueAsString);
             }
           else {
@@ -422,14 +422,14 @@ public enum Type {
         }
       } else if (iTargetClass.equals(Identifiable.class)) {
         if (MultiValue.isMultiValue(iValue)) {
-          List<Identifiable> result = new ArrayList<>();
-          for (Object o : MultiValue.getMultiValueIterable(iValue)) {
+          final List<Identifiable> result = new ArrayList<>();
+          for (final Object o : MultiValue.getMultiValueIterable(iValue)) {
             if (o instanceof Identifiable) {
               result.add((Identifiable) o);
             } else if (o instanceof String) {
               try {
                 result.add(new RID(database, iValue.toString()));
-              } catch (Exception e) {
+              } catch (final Exception e) {
                 LogManager.instance().log(Type.class, Level.FINE, "Error in conversion of value '%s' to type '%s'", e, iValue, iTargetClass);
               }
             }
@@ -438,15 +438,15 @@ public enum Type {
         } else if (iValue instanceof String) {
           try {
             return new RID(database, (String) iValue);
-          } catch (Exception e) {
+          } catch (final Exception e) {
             LogManager.instance().log(Type.class, Level.FINE, "Error in conversion of value '%s' to type '%s'", e, iValue, iTargetClass);
           }
         }
       }
-    } catch (IllegalArgumentException e) {
+    } catch (final IllegalArgumentException e) {
       // PASS THROUGH
       throw e;
-    } catch (Exception e) {
+    } catch (final Exception e) {
       LogManager.instance().log(Type.class, Level.FINE, "Error in conversion of value '%s' to type '%s'", e, iValue, iTargetClass);
       return null;
     }
@@ -870,7 +870,7 @@ public enum Type {
     return null;
   }
 
-  public Object newInstance(Object value) {
+  public Object newInstance(final Object value) {
     return convert(null, value, javaDefaultType);
   }
 }

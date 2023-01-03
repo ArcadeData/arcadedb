@@ -55,7 +55,7 @@ public class TraverseExecutionPlanner {
   private final Skip                         skip;
   private final Limit                        limit;
 
-  public TraverseExecutionPlanner(TraverseStatement statement) {
+  public TraverseExecutionPlanner(final TraverseStatement statement) {
     //copying the content, so that it can be manipulated and optimized
     this.projections = statement.getProjections() == null ? null : statement.getProjections().stream().map(x -> x.copy()).collect(Collectors.toList());
 
@@ -69,8 +69,8 @@ public class TraverseExecutionPlanner {
     this.limit = statement.getLimit();
   }
 
-  public InternalExecutionPlan createExecutionPlan(CommandContext ctx, boolean enableProfiling) {
-    SelectExecutionPlan result = new SelectExecutionPlan(ctx);
+  public InternalExecutionPlan createExecutionPlan(final CommandContext ctx, final boolean enableProfiling) {
+    final SelectExecutionPlan result = new SelectExecutionPlan(ctx);
 
     handleFetchFromTarget(result, ctx, enableProfiling);
 
@@ -86,7 +86,7 @@ public class TraverseExecutionPlanner {
     return result;
   }
 
-  private void handleTraversal(SelectExecutionPlan result, CommandContext ctx, boolean profilingEnabled) {
+  private void handleTraversal(final SelectExecutionPlan result, final CommandContext ctx, final boolean profilingEnabled) {
     switch (strategy) {
     case BREADTH_FIRST:
       result.chain(new BreadthFirstTraverseStep(this.projections, this.whileClause, maxDepth, ctx, profilingEnabled));
@@ -98,9 +98,9 @@ public class TraverseExecutionPlanner {
     //TODO
   }
 
-  private void handleFetchFromTarget(SelectExecutionPlan result, CommandContext ctx, boolean profilingEnabled) {
+  private void handleFetchFromTarget(final SelectExecutionPlan result, final CommandContext ctx, final boolean profilingEnabled) {
 
-    FromItem target = this.target == null ? null : this.target.getItem();
+    final FromItem target = this.target == null ? null : this.target.getItem();
     if (target == null) {
       handleNoTarget(result, ctx, profilingEnabled);
     } else if (target.getIdentifier() != null) {
@@ -128,30 +128,30 @@ public class TraverseExecutionPlanner {
 
   }
 
-  private void handleInputParamAsTarget(SelectExecutionPlan result, InputParameter inputParam, CommandContext ctx, boolean profilingEnabled) {
-    Object paramValue = inputParam.getValue(ctx.getInputParameters());
+  private void handleInputParamAsTarget(final SelectExecutionPlan result, final InputParameter inputParam, final CommandContext ctx, final boolean profilingEnabled) {
+    final Object paramValue = inputParam.getValue(ctx.getInputParameters());
     if (paramValue == null) {
       result.chain(new EmptyStep(ctx, profilingEnabled));//nothing to return
     } else if (paramValue instanceof DocumentType) {
-      FromClause from = new FromClause(-1);
-      FromItem item = new FromItem(-1);
+      final FromClause from = new FromClause(-1);
+      final FromItem item = new FromItem(-1);
       from.setItem(item);
       item.setIdentifier(new Identifier(((DocumentType) paramValue).getName()));
       handleClassAsTarget(result, from, ctx, profilingEnabled);
     } else if (paramValue instanceof String) {
       //strings are treated as classes
-      FromClause from = new FromClause(-1);
-      FromItem item = new FromItem(-1);
+      final FromClause from = new FromClause(-1);
+      final FromItem item = new FromItem(-1);
       from.setItem(item);
       item.setIdentifier(new Identifier((String) paramValue));
       handleClassAsTarget(result, from, ctx, profilingEnabled);
     } else if (paramValue instanceof Identifiable) {
-      RID orid = ((Identifiable) paramValue).getIdentity();
+      final RID orid = ((Identifiable) paramValue).getIdentity();
 
-      Rid rid = new Rid(-1);
-      PInteger bucket = new PInteger(-1);
+      final Rid rid = new Rid(-1);
+      final PInteger bucket = new PInteger(-1);
       bucket.setValue(orid.getBucketId());
-      PInteger position = new PInteger(-1);
+      final PInteger position = new PInteger(-1);
       position.setValue(orid.getPosition());
       rid.setLegacy(true);
       rid.setBucket(bucket);
@@ -160,17 +160,17 @@ public class TraverseExecutionPlanner {
       handleRidsAsTarget(result, Collections.singletonList(rid), ctx, profilingEnabled);
     } else if (paramValue instanceof Iterable) {
       //try list of RIDs
-      List<Rid> rids = new ArrayList<>();
-      for (Object x : (Iterable) paramValue) {
+      final List<Rid> rids = new ArrayList<>();
+      for (final Object x : (Iterable) paramValue) {
         if (!(x instanceof Identifiable)) {
           throw new CommandExecutionException("Cannot use collection as target: " + paramValue);
         }
-        RID orid = ((Identifiable) x).getIdentity();
+        final RID orid = ((Identifiable) x).getIdentity();
 
-        Rid rid = new Rid(-1);
-        PInteger bucket = new PInteger(-1);
+        final Rid rid = new Rid(-1);
+        final PInteger bucket = new PInteger(-1);
         bucket.setValue(orid.getBucketId());
-        PInteger position = new PInteger(-1);
+        final PInteger position = new PInteger(-1);
         position.setValue(orid.getPosition());
         rid.setBucket(bucket);
         rid.setPosition(position);
@@ -183,13 +183,13 @@ public class TraverseExecutionPlanner {
     }
   }
 
-  private void handleNoTarget(SelectExecutionPlan result, CommandContext ctx, boolean profilingEnabled) {
+  private void handleNoTarget(final SelectExecutionPlan result, final CommandContext ctx, final boolean profilingEnabled) {
     result.chain(new EmptyDataGeneratorStep(1, ctx, profilingEnabled));
   }
 
-  private void handleIndexAsTarget(SelectExecutionPlan result, IndexIdentifier indexIdentifier, CommandContext ctx, boolean profilingEnabled) {
-    String indexName = indexIdentifier.getIndexName();
-    RangeIndex index = (RangeIndex) ctx.getDatabase().getSchema().getIndexByName(indexName);
+  private void handleIndexAsTarget(final SelectExecutionPlan result, final IndexIdentifier indexIdentifier, final CommandContext ctx, final boolean profilingEnabled) {
+    final String indexName = indexIdentifier.getIndexName();
+    final RangeIndex index = (RangeIndex) ctx.getDatabase().getSchema().getIndexByName(indexName);
     if (index == null) {
       throw new CommandExecutionException("Index not found: " + indexName);
     }
@@ -220,7 +220,7 @@ public class TraverseExecutionPlanner {
     }
   }
 
-  private void handleMetadataAsTarget(final SelectExecutionPlan plan, SchemaIdentifier metadata, CommandContext ctx, boolean profilingEnabled) {
+  private void handleMetadataAsTarget(final SelectExecutionPlan plan, final SchemaIdentifier metadata, final CommandContext ctx, final boolean profilingEnabled) {
     throw new UnsupportedOperationException();
 //    final Database db = ctx.getDatabase();
 //    String schemaRecordIdAsString = null;
@@ -236,28 +236,28 @@ public class TraverseExecutionPlanner {
 
   }
 
-  private void handleRidsAsTarget(SelectExecutionPlan plan, List<Rid> rids, CommandContext ctx, boolean profilingEnabled) {
-    List<RID> actualRids = new ArrayList<>();
-    for (Rid rid : rids) {
+  private void handleRidsAsTarget(final SelectExecutionPlan plan, final List<Rid> rids, final CommandContext ctx, final boolean profilingEnabled) {
+    final List<RID> actualRids = new ArrayList<>();
+    for (final Rid rid : rids) {
       actualRids.add(rid.toRecordId((Result) null, ctx));
     }
     plan.chain(new FetchFromRidsStep(actualRids, ctx, profilingEnabled));
   }
 
-  private void handleClassAsTarget(SelectExecutionPlan plan, FromClause queryTarget, CommandContext ctx, boolean profilingEnabled) {
-    Identifier identifier = queryTarget.getItem().getIdentifier();
+  private void handleClassAsTarget(final SelectExecutionPlan plan, final FromClause queryTarget, final CommandContext ctx, final boolean profilingEnabled) {
+    final Identifier identifier = queryTarget.getItem().getIdentifier();
 
-    Boolean orderByRidAsc = null;//null: no order. true: asc, false:desc
-    FetchFromClassExecutionStep fetcher = new FetchFromClassExecutionStep(identifier.getStringValue(), null, ctx, orderByRidAsc, profilingEnabled);
+    final Boolean orderByRidAsc = null;//null: no order. true: asc, false:desc
+    final FetchFromClassExecutionStep fetcher = new FetchFromClassExecutionStep(identifier.getStringValue(), null, ctx, orderByRidAsc, profilingEnabled);
     plan.chain(fetcher);
   }
 
-  private void handleClustersAsTarget(SelectExecutionPlan plan, List<Bucket> clusters, CommandContext ctx, boolean profilingEnabled) {
+  private void handleClustersAsTarget(final SelectExecutionPlan plan, final List<Bucket> clusters, final CommandContext ctx, final boolean profilingEnabled) {
     final Database db = ctx.getDatabase();
-    Boolean orderByRidAsc = null;//null: no order. true: asc, false:desc
+    final Boolean orderByRidAsc = null;//null: no order. true: asc, false:desc
     if (clusters.size() == 1) {
       final Bucket bucket = clusters.get(0);
-      java.lang.Integer bucketId = bucket.getBucketNumber();
+      Integer bucketId = bucket.getBucketNumber();
       if (bucketId == null) {
         bucketId = db.getSchema().getBucketByName(bucket.getBucketName()).getId();
       }
@@ -271,10 +271,10 @@ public class TraverseExecutionPlanner {
       }
       plan.chain(step);
     } else {
-      int[] bucketIds = new int[clusters.size()];
+      final int[] bucketIds = new int[clusters.size()];
       for (int i = 0; i < clusters.size(); i++) {
         final Bucket bucket = clusters.get(i);
-        java.lang.Integer bucketId = bucket.getBucketNumber();
+        Integer bucketId = bucket.getBucketNumber();
         if (bucketId == null) {
           bucketId = db.getSchema().getBucketByName(bucket.getBucketName()).getId();
         }
@@ -285,11 +285,11 @@ public class TraverseExecutionPlanner {
     }
   }
 
-  private void handleSubqueryAsTarget(SelectExecutionPlan plan, Statement subQuery, CommandContext ctx, boolean profilingEnabled) {
-    BasicCommandContext subCtx = new BasicCommandContext();
+  private void handleSubqueryAsTarget(final SelectExecutionPlan plan, final Statement subQuery, final CommandContext ctx, final boolean profilingEnabled) {
+    final BasicCommandContext subCtx = new BasicCommandContext();
     subCtx.setDatabase(ctx.getDatabase());
     subCtx.setParent(ctx);
-    InternalExecutionPlan subExecutionPlan = subQuery.createExecutionPlan(subCtx, profilingEnabled);
+    final InternalExecutionPlan subExecutionPlan = subQuery.createExecutionPlan(subCtx, profilingEnabled);
     plan.chain(new SubQueryStep(subExecutionPlan, ctx, subCtx, profilingEnabled));
   }
 

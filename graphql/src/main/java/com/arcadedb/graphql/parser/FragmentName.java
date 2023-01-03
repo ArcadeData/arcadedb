@@ -23,11 +23,11 @@ package com.arcadedb.graphql.parser;
 public class FragmentName extends SimpleNode {
   protected Name name;
 
-  public FragmentName(int id) {
+  public FragmentName(final int id) {
     super(id);
   }
 
-  public FragmentName(GraphQLParser p, int id) {
+  public FragmentName(final GraphQLParser p, final int id) {
     super(p, id);
   }
 
@@ -38,7 +38,7 @@ public class FragmentName extends SimpleNode {
   /**
    * Accept the visitor.
    **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
+  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
     return visitor.visit(this, data);
   }
 }

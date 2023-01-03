@@ -31,26 +31,26 @@ public class CommitStatement extends SimpleExecStatement {
 
   protected PInteger retry;
 
-  public CommitStatement(int id) {
+  public CommitStatement(final int id) {
     super(id);
   }
 
-  public CommitStatement(SqlParser p, int id) {
+  public CommitStatement(final SqlParser p, final int id) {
     super(p, id);
   }
 
   @Override
-  public ResultSet executeSimple(CommandContext ctx) {
+  public ResultSet executeSimple(final CommandContext ctx) {
     ctx.getDatabase().commit();
-    InternalResultSet result = new InternalResultSet();
-    ResultInternal item = new ResultInternal();
+    final InternalResultSet result = new InternalResultSet();
+    final ResultInternal item = new ResultInternal();
     item.setProperty("operation", "commit");
     result.add(item);
     return result;
   }
 
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("COMMIT");
     if (retry != null) {
       builder.append(" RETRY ");
@@ -60,19 +60,19 @@ public class CommitStatement extends SimpleExecStatement {
 
   @Override
   public CommitStatement copy() {
-    CommitStatement result = new CommitStatement(-1);
+    final CommitStatement result = new CommitStatement(-1);
     result.retry = retry == null ? null : retry.copy();
     return result;
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    CommitStatement that = (CommitStatement) o;
+    final CommitStatement that = (CommitStatement) o;
 
     return Objects.equals(retry, that.retry);
   }

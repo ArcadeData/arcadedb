@@ -50,13 +50,13 @@ public class DeleteEdgeStatement extends Statement {
 
   @Override
   public ResultSet execute(final Database db, final Map params, final CommandContext parentCtx, final boolean usePlanCache) {
-    BasicCommandContext ctx = new BasicCommandContext();
+    final BasicCommandContext ctx = new BasicCommandContext();
     if (parentCtx != null) {
       ctx.setParentWithoutOverridingChild(parentCtx);
     }
     ctx.setDatabase(db);
     ctx.setInputParameters(params);
-    DeleteExecutionPlan executionPlan = createExecutionPlan(ctx, false);
+    final DeleteExecutionPlan executionPlan = createExecutionPlan(ctx, false);
     executionPlan.executeInternal();
     return new LocalResultSet(executionPlan);
   }
@@ -96,7 +96,7 @@ public class DeleteEdgeStatement extends Statement {
     if (rids != null) {
       builder.append(" [");
       boolean first = true;
-      for (Rid rid : rids) {
+      for (final Rid rid : rids) {
         if (!first) {
           builder.append(", ");
         }
@@ -138,7 +138,7 @@ public class DeleteEdgeStatement extends Statement {
       result.whereClause = whereClause == null ? null : whereClause.copy();
       result.limit = limit == null ? null : limit.copy();
       return result;
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new ArcadeDBException(e);
     }
   }

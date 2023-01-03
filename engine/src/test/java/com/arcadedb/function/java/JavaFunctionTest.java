@@ -11,11 +11,11 @@ import java.lang.reflect.*;
 public class JavaFunctionTest extends TestHelper {
 
   public static class Sum {
-    public int sum(int a, int b) {
+    public int sum(final int a, final int b) {
       return a + b;
     }
 
-    public static int SUM(int a, int b) {
+    public static int SUM(final int a, final int b) {
       return a + b;
     }
   }
@@ -29,7 +29,7 @@ public class JavaFunctionTest extends TestHelper {
     try {
       registerClass();
       Assertions.fail();
-    } catch (IllegalArgumentException e) {
+    } catch (final IllegalArgumentException e) {
       // EXPECTED
     }
 
@@ -46,7 +46,7 @@ public class JavaFunctionTest extends TestHelper {
     try {
       database.getSchema().registerFunctionLibrary(new JavaClassFunctionLibraryDefinition("math", JavaFunctionTest.Sum.class));
       Assertions.fail();
-    } catch (IllegalArgumentException e) {
+    } catch (final IllegalArgumentException e) {
       // EXPECTED
     }
 
@@ -65,7 +65,7 @@ public class JavaFunctionTest extends TestHelper {
       database.getSchema()
           .registerFunctionLibrary(new JavaMethodFunctionLibraryDefinition("math", JavaFunctionTest.Sum.class.getMethod("sum", Integer.TYPE, Integer.TYPE)));
       Assertions.fail();
-    } catch (IllegalArgumentException e) {
+    } catch (final IllegalArgumentException e) {
       // EXPECTED
     }
 
@@ -79,7 +79,7 @@ public class JavaFunctionTest extends TestHelper {
     try {
       database.getSchema().getFunction("math", "sum");
       Assertions.fail();
-    } catch (IllegalArgumentException e) {
+    } catch (final IllegalArgumentException e) {
       // EXPECTED
     }
   }
@@ -90,7 +90,7 @@ public class JavaFunctionTest extends TestHelper {
     // TEST REGISTRATION HERE
     registerClass();
 
-    Integer result = (Integer) database.getSchema().getFunction("math", "sum").execute(3, 5);
+    final Integer result = (Integer) database.getSchema().getFunction("math", "sum").execute(3, 5);
     Assertions.assertEquals(8, result);
   }
 
@@ -99,7 +99,7 @@ public class JavaFunctionTest extends TestHelper {
       throws ClassNotFoundException, InvocationTargetException, NoSuchMethodException, InstantiationException, IllegalAccessException {
     registerClass();
 
-    Integer result = (Integer) database.getSchema().getFunction("math", "SUM").execute(3, 5);
+    final Integer result = (Integer) database.getSchema().getFunction("math", "SUM").execute(3, 5);
     Assertions.assertEquals(8, result);
   }
 
@@ -109,9 +109,9 @@ public class JavaFunctionTest extends TestHelper {
     registerClass();
 
     database.transaction(() -> {
-      ResultSet rs = database.command("SQL", "SELECT `math.sum`(20,7) as sum");
+      final ResultSet rs = database.command("SQL", "SELECT `math.sum`(20,7) as sum");
       Assertions.assertTrue(rs.hasNext());
-      Result record = rs.next();
+      final Result record = rs.next();
       Assertions.assertNotNull(record);
       Assertions.assertFalse(record.getIdentity().isPresent());
       Assertions.assertEquals(27, ((Number) record.getProperty("sum")).intValue());

@@ -48,12 +48,12 @@ public class ReplicaConnectRequest extends HAAbstractCommand {
   }
 
   @Override
-  public void toStream(Binary stream) {
+  public void toStream(final Binary stream) {
     stream.putLong(lastReplicationMessageNumber);
   }
 
   @Override
-  public void fromStream(ArcadeDBServer server, Binary stream) {
+  public void fromStream(final ArcadeDBServer server, final Binary stream) {
     lastReplicationMessageNumber = stream.getLong();
   }
 

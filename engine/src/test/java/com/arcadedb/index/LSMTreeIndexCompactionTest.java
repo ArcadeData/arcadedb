@@ -103,7 +103,7 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
       compaction();
       checkLookups(1, 3);
 
-    } catch (InterruptedException e) {
+    } catch (final InterruptedException e) {
       Assertions.fail(e);
     } finally {
       GlobalConfiguration.INDEX_COMPACTION_RAM_MB.setValue(300);
@@ -113,12 +113,12 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
 
   private void compaction() {
     if (database.isOpen())
-      for (Index index : database.getSchema().getIndexes()) {
+      for (final Index index : database.getSchema().getIndexes()) {
         if (database.isOpen())
           try {
             index.scheduleCompaction();
             ((IndexInternal) index).compact();
-          } catch (Exception e) {
+          } catch (final Exception e) {
             Assertions.fail(e);
           }
       }
@@ -127,7 +127,7 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
   private void insertData() {
     database.transaction(() -> {
       if (!database.getSchema().existsType(TYPE_NAME)) {
-        DocumentType v = database.getSchema().createDocumentType(TYPE_NAME, PARALLEL);
+        final DocumentType v = database.getSchema().createDocumentType(TYPE_NAME, PARALLEL);
 
         v.createProperty("id", String.class);
         v.createProperty("number", String.class);
@@ -141,7 +141,7 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
       }
     });
 
-    long begin = System.currentTimeMillis();
+    final long begin = System.currentTimeMillis();
     try {
 
       database.setReadYourWrites(false);
@@ -152,7 +152,7 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
 
       database.async().onError(new ErrorCallback() {
         @Override
-        public void call(Throwable exception) {
+        public void call(final Throwable exception) {
           LogManager.instance().log(this, Level.SEVERE, "TEST: ERROR: ", exception);
           exception.printStackTrace();
           Assertions.fail(exception);
@@ -220,7 +220,7 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
 
         Assertions.assertEquals(expectedItems, records.size(), "Wrong result for lookup of key " + id);
 
-        for (Iterator<Identifiable> it = records.iterator(); it.hasNext(); ) {
+        for (final Iterator<Identifiable> it = records.iterator(); it.hasNext(); ) {
           final Identifiable rid = it.next();
           final Document record = (Document) rid.getRecord();
           Assertions.assertEquals("" + id, record.get("id"));
@@ -235,7 +235,7 @@ public class LSMTreeIndexCompactionTest extends TestHelper {
           LogManager.instance().log(this, Level.FINE, "Checked " + checked + " lookups in " + delta + "ms = " + (10000 / delta) + " lookups/msec");
           begin = System.currentTimeMillis();
         }
-      } catch (Exception e) {
+      } catch (final Exception e) {
         Assertions.fail("Error on lookup key " + id, e);
       }
     }

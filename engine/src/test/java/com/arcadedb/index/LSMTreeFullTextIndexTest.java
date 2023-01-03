@@ -46,7 +46,7 @@ public class LSMTreeFullTextIndexTest extends TestHelper {
 
         final DocumentType type = database.getSchema().createDocumentType(TYPE_NAME, 1);
         type.createProperty("text", String.class);
-        Index typeIndex = database.getSchema().createTypeIndex(Schema.INDEX_TYPE.FULL_TEXT, false, TYPE_NAME, new String[] { "text" }, PAGE_SIZE);
+        final Index typeIndex = database.getSchema().createTypeIndex(Schema.INDEX_TYPE.FULL_TEXT, false, TYPE_NAME, new String[] { "text" }, PAGE_SIZE);
 
         Assertions.assertTrue(database.getSchema().existsType(TYPE_NAME));
 
@@ -81,10 +81,10 @@ public class LSMTreeFullTextIndexTest extends TestHelper {
             ((LSMTreeFullTextIndex) ((TypeIndex) typeIndex).getIndexesOnBuckets()[0]).getAnalyzer(), new Object[] { text });
         Assertions.assertFalse(keywords.isEmpty());
 
-        for (String k : keywords) {
+        for (final String k : keywords) {
           int totalPerKeyword = 0;
 
-          for (Index idx : ((TypeIndex) typeIndex).getIndexesOnBuckets()) {
+          for (final Index idx : ((TypeIndex) typeIndex).getIndexesOnBuckets()) {
             if (idx instanceof TypeIndex)
               continue;
 
@@ -117,7 +117,7 @@ public class LSMTreeFullTextIndexTest extends TestHelper {
 
         final DocumentType type = database.getSchema().createDocumentType("Docs");
         type.createProperty("text", String.class);
-        Index typeIndex = database.getSchema().createTypeIndex(Schema.INDEX_TYPE.FULL_TEXT, false, "Docs", new String[] { "text" });
+        final Index typeIndex = database.getSchema().createTypeIndex(Schema.INDEX_TYPE.FULL_TEXT, false, "Docs", new String[] { "text" });
 
         Assertions.assertTrue(database.getSchema().existsType("Docs"));
 
@@ -173,7 +173,7 @@ public class LSMTreeFullTextIndexTest extends TestHelper {
     });
   }
 
-  private boolean skipIndexing(String toIndex) {
+  private boolean skipIndexing(final String toIndex) {
     boolean skip = false;
     for (int j = 0; j < toIndex.length(); j++) {
       final char c = toIndex.charAt(j);

@@ -33,58 +33,58 @@ public class ExplainStatement extends Statement {
 
   protected Statement statement;
 
-  public ExplainStatement(int id) {
+  public ExplainStatement(final int id) {
     super(id);
   }
 
-  public ExplainStatement(SqlParser p, int id) {
+  public ExplainStatement(final SqlParser p, final int id) {
     super(p, id);
   }
 
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("EXPLAIN ");
     statement.toString(params, builder);
   }
 
   @Override
-  public ResultSet execute(Database db, Object[] args, CommandContext parentCtx, boolean usePlanCache) {
-    BasicCommandContext ctx = new BasicCommandContext();
+  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentCtx, final boolean usePlanCache) {
+    final BasicCommandContext ctx = new BasicCommandContext();
     if (parentCtx != null) {
       ctx.setParentWithoutOverridingChild(parentCtx);
     }
     ctx.setDatabase(db);
     ctx.setInputParameters(args);
 
-    ExecutionPlan executionPlan = statement.createExecutionPlan(ctx, false);
+    final ExecutionPlan executionPlan = statement.createExecutionPlan(ctx, false);
 
-    ExplainResultSet result = new ExplainResultSet(executionPlan);
+    final ExplainResultSet result = new ExplainResultSet(executionPlan);
     return result;
   }
 
   @Override
-  public ResultSet execute(Database db, Map args, CommandContext parentCtx, boolean usePlanCache) {
-    BasicCommandContext ctx = new BasicCommandContext();
+  public ResultSet execute(final Database db, final Map args, final CommandContext parentCtx, final boolean usePlanCache) {
+    final BasicCommandContext ctx = new BasicCommandContext();
     if (parentCtx != null) {
       ctx.setParentWithoutOverridingChild(parentCtx);
     }
     ctx.setDatabase(db);
     ctx.setInputParameters(args);
 
-    ExecutionPlan executionPlan = statement.createExecutionPlan(ctx, false);
+    final ExecutionPlan executionPlan = statement.createExecutionPlan(ctx, false);
 
-    ExplainResultSet result = new ExplainResultSet(executionPlan);
+    final ExplainResultSet result = new ExplainResultSet(executionPlan);
     return result;
   }
 
   @Override
-  public InternalExecutionPlan createExecutionPlan(CommandContext ctx, boolean enableProfiling) {
+  public InternalExecutionPlan createExecutionPlan(final CommandContext ctx, final boolean enableProfiling) {
     return statement.createExecutionPlan(ctx, enableProfiling);
   }
 
   @Override
   public ExplainStatement copy() {
-    ExplainStatement result = new ExplainStatement(-1);
+    final ExplainStatement result = new ExplainStatement(-1);
     result.statement = statement == null ? null : statement.copy();
     return result;
   }

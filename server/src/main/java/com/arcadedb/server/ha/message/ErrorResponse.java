@@ -50,7 +50,7 @@ public class ErrorResponse extends HAAbstractCommand {
   }
 
   @Override
-  public void fromStream(ArcadeDBServer server, final Binary stream) {
+  public void fromStream(final ArcadeDBServer server, final Binary stream) {
     exceptionClass = stream.getString();
     exceptionMessage = stream.getString();
   }

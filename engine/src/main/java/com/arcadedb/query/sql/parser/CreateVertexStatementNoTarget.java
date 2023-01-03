@@ -21,17 +21,12 @@
 package com.arcadedb.query.sql.parser;
 
 public class CreateVertexStatementNoTarget extends CreateVertexStatement {
-  public CreateVertexStatementNoTarget(int id) {
+  public CreateVertexStatementNoTarget(final int id) {
     super(id);
   }
 
-  public CreateVertexStatementNoTarget(SqlParser p, int id) {
+  public CreateVertexStatementNoTarget(final SqlParser p, final int id) {
     super(p, id);
-  }
-
-  @Override
-  public CreateVertexStatement copy() {
-    return super.copy();
   }
 }
 /* JavaCC - OriginalChecksum=5213b77f14f5f89255590034bdc0ea54 (do not edit this line) */

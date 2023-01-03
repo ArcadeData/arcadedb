@@ -72,15 +72,17 @@ public class ValueExpression extends Expression {
     return false;
   }
 
-  public boolean canExecuteIndexedFunctionWithoutIndex(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {
+  public boolean canExecuteIndexedFunctionWithoutIndex(final FromClause target, final CommandContext context, final BinaryCompareOperator operator, final Object right) {
     return false;
   }
 
-  public boolean allowsIndexedFunctionExecutionOnTarget(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {
+  public boolean allowsIndexedFunctionExecutionOnTarget(
+      final FromClause target, final CommandContext context, final BinaryCompareOperator operator, final Object right) {
     return false;
   }
 
-  public boolean executeIndexedFunctionAfterIndexSearch(FromClause target, CommandContext context, BinaryCompareOperator operator, Object right) {
+  public boolean executeIndexedFunctionAfterIndexSearch(
+      final FromClause target, final CommandContext context, final BinaryCompareOperator operator, final Object right) {
     return false;
   }
 
@@ -130,7 +132,7 @@ public class ValueExpression extends Expression {
     return 1;
   }
 
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
   }
 
   public void extractSubQueries(final Identifier letAlias, final SubQueryCollector collector) {

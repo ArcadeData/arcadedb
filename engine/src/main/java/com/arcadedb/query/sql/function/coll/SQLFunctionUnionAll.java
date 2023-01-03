@@ -40,10 +40,10 @@ public class SQLFunctionUnionAll extends SQLFunctionMultiValueAbstract<Collectio
   }
 
   public Object execute( final Object iThis, final Identifiable iCurrentRecord,
-      final Object iCurrentResult, final Object[] iParams, CommandContext iContext) {
+      final Object iCurrentResult, final Object[] iParams, final CommandContext iContext) {
     if (iParams.length == 1) {
       // AGGREGATION MODE (STATEFUL)
-      Object value = iParams[0];
+      final Object value = iParams[0];
       if (value != null) {
 
         if (context == null)
@@ -56,7 +56,7 @@ public class SQLFunctionUnionAll extends SQLFunctionMultiValueAbstract<Collectio
     } else {
       // IN-LINE MODE (STATELESS)
       final MultiIterator<Identifiable> result = new MultiIterator<>();
-      for (Object value : iParams) {
+      for (final Object value : iParams) {
         if (value != null)
           result.addIterator(value);
       }

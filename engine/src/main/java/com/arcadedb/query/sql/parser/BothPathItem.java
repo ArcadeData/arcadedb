@@ -25,20 +25,20 @@ import com.arcadedb.query.sql.executor.Result;
 import java.util.*;
 
 public class BothPathItem extends MatchPathItem {
-  public BothPathItem(int id) {
+  public BothPathItem(final int id) {
     super(id);
   }
 
-  public BothPathItem(SqlParser p, int id) {
+  public BothPathItem(final SqlParser p, final int id) {
     super(p, id);
   }
 
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("-");
     boolean first = true;
     if (this.method.params != null) {
-      for (Expression exp : this.method.params) {
+      for (final Expression exp : this.method.params) {
         if (!first) {
           builder.append(", ");
         }

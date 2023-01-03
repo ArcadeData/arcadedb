@@ -40,7 +40,7 @@ public class GraphQLQueryEngine implements QueryEngine {
   }
 
   @Override
-  public AnalyzedQuery analyze(String query) {
+  public AnalyzedQuery analyze(final String query) {
     return new AnalyzedQuery() {
       @Override
       public boolean isIdempotent() {
@@ -71,7 +71,7 @@ public class GraphQLQueryEngine implements QueryEngine {
       final ResultSet resultSet = graphQLSchema.execute(query);
 
       return resultSet;
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new QueryParsingException("Error on executing GraphQL query:\n" + FileUtils.printWithLineNumbers(query), e);
     }
   }

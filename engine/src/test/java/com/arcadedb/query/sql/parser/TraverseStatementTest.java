@@ -26,18 +26,18 @@ import static org.junit.jupiter.api.Assertions.fail;
 
 public class TraverseStatementTest {
 
-  protected SimpleNode checkRightSyntax(String query) {
+  protected SimpleNode checkRightSyntax(final String query) {
     return checkSyntax(query, true);
   }
 
-  protected SimpleNode checkWrongSyntax(String query) {
+  protected SimpleNode checkWrongSyntax(final String query) {
     return checkSyntax(query, false);
   }
 
-  protected SimpleNode checkSyntax(String query, boolean isCorrect) {
-    SqlParser osql = getParserFor(query);
+  protected SimpleNode checkSyntax(final String query, final boolean isCorrect) {
+    final SqlParser osql = getParserFor(query);
     try {
-      SimpleNode result = osql.parse();
+      final SimpleNode result = osql.parse();
       if (!isCorrect) {
         //        System.out.println(query);
         //        if(result != null ) {
@@ -49,7 +49,7 @@ public class TraverseStatementTest {
       }
 
       return result;
-    } catch (Exception e) {
+    } catch (final Exception e) {
       if (isCorrect) {
         System.out.println(query);
         e.printStackTrace();
@@ -65,9 +65,9 @@ public class TraverseStatementTest {
     checkRightSyntax("traverse out() from #9:0 while $depth <= 2 strategy depth_first");
   }
 
-  protected SqlParser getParserFor(String string) {
-    InputStream is = new ByteArrayInputStream(string.getBytes());
-    SqlParser osql = new SqlParser(null, is);
+  protected SqlParser getParserFor(final String string) {
+    final InputStream is = new ByteArrayInputStream(string.getBytes());
+    final SqlParser osql = new SqlParser(null, is);
     return osql;
   }
 }

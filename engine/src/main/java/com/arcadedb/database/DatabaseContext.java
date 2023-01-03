@@ -55,7 +55,7 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
             final Transaction tx = current.transactions.remove(current.transactions.size() - 1);
             try {
               tx.rollback();
-            } catch (Exception e) {
+            } catch (final Exception e) {
               // IGNORE ANY ERROR DURING ROLLBACK
             }
           }

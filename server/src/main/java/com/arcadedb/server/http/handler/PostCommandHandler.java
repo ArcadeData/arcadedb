@@ -70,7 +70,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
 
     try {
       if (language.equalsIgnoreCase("sql") || language.equalsIgnoreCase("sqlScript")) {
-        String commandLC = command.toLowerCase().trim();
+        final String commandLC = command.toLowerCase().trim();
         if ((commandLC.startsWith("select") || commandLC.startsWith("match")) && !commandLC.endsWith(";")) {
           if (!command.contains(" limit ")) {
             command += " limit " + limit;
@@ -121,7 +121,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
     return database.execute(language, command, (Map<String, Object>) params);
   }
 
-  private ResultSet executeCommand(final Database database, final String language, String command, final Map<String, Object> paramMap) {
+  private ResultSet executeCommand(final Database database, final String language, final String command, final Map<String, Object> paramMap) {
     final Object params = mapParams(paramMap);
 
     if (params instanceof Object[])

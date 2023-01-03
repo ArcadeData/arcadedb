@@ -51,11 +51,11 @@ public class MethodCall extends SimpleNode {
 
   private Boolean calculatedIsGraph = null;
 
-  public MethodCall(int id) {
+  public MethodCall(final int id) {
     super(id);
   }
 
-  public MethodCall(SqlParser p, int id) {
+  public MethodCall(final SqlParser p, final int id) {
     super(p, id);
   }
 
@@ -64,7 +64,7 @@ public class MethodCall extends SimpleNode {
     methodName.toString(params, builder);
     builder.append("(");
     boolean first = true;
-    for (Expression param : this.params) {
+    for (final Expression param : this.params) {
       if (!first) {
         builder.append(", ");
       }
@@ -78,11 +78,11 @@ public class MethodCall extends SimpleNode {
     return bidirectionalMethods.containsKey(methodName.getStringValue().toLowerCase(Locale.ENGLISH));
   }
 
-  public Object execute(Object targetObjects, CommandContext ctx) {
+  public Object execute(final Object targetObjects, final CommandContext ctx) {
     return execute(targetObjects, ctx, methodName.getStringValue(), params, null);
   }
 
-  public Object execute(Object targetObjects, Iterable<Identifiable> iPossibleResults, CommandContext ctx) {
+  public Object execute(final Object targetObjects, final Iterable<Identifiable> iPossibleResults, final CommandContext ctx) {
     return execute(targetObjects, ctx, methodName.getStringValue(), params, iPossibleResults);
   }
 
@@ -93,7 +93,7 @@ public class MethodCall extends SimpleNode {
     if (val == null && targetObjects == null) {
       return null;
     }
-    for (Expression expr : iParams) {
+    for (final Expression expr : iParams) {
       if (val instanceof Identifiable) {
         paramValues.add(expr.execute((Identifiable) val, ctx));
       } else if (val instanceof Result) {
@@ -107,7 +107,7 @@ public class MethodCall extends SimpleNode {
       }
     }
     if (isGraphFunction()) {
-      SQLFunction function = ((SQLQueryEngine) ctx.getDatabase().getQueryEngine("sql")).getFunction(name);
+      final SQLFunction function = ((SQLQueryEngine) ctx.getDatabase().getQueryEngine("sql")).getFunction(name);
       if (function instanceof SQLFunctionFiltered) {
         Object current = ctx.getVariable("current");
         if (current instanceof Result) {
@@ -148,8 +148,8 @@ public class MethodCall extends SimpleNode {
     throw new UnsupportedOperationException("Invalid reverse traversal: " + methodName);
   }
 
-  public boolean needsAliases(Set<String> aliases) {
-    for (Expression param : params) {
+  public boolean needsAliases(final Set<String> aliases) {
+    for (final Expression param : params) {
       if (param.needsAliases(aliases)) {
         return true;
       }
@@ -187,7 +187,7 @@ public class MethodCall extends SimpleNode {
 
   public void extractSubQueries(final SubQueryCollector collector) {
     if (params != null) {
-      for (Expression param : params) {
+      for (final Expression param : params) {
         param.extractSubQueries(collector);
       }
     }
@@ -195,7 +195,7 @@ public class MethodCall extends SimpleNode {
 
   public boolean refersToParent() {
     if (params != null) {
-      for (Expression exp : params) {
+      for (final Expression exp : params) {
         if (exp.refersToParent()) {
           return true;
         }
@@ -223,8 +223,8 @@ public class MethodCall extends SimpleNode {
     if (fromResult.getProperty("params") != null) {
       final List<Result> ser = fromResult.getProperty("params");
       params = new ArrayList<>();
-      for (Result r : ser) {
-        Expression exp = new Expression(-1);
+      for (final Result r : ser) {
+        final Expression exp = new Expression(-1);
         exp.deserialize(r);
         params.add(exp);
       }
@@ -241,7 +241,7 @@ public class MethodCall extends SimpleNode {
 
     final String methodNameLC = methodName.getStringValue().toLowerCase();
 
-    for (String graphMethod : bidirectionalMethods.keySet()) {
+    for (final String graphMethod : bidirectionalMethods.keySet()) {
       if (graphMethod.equals(methodNameLC)) {
         calculatedIsGraph = true;
         break;

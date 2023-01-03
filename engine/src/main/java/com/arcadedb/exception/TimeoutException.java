@@ -19,7 +19,7 @@
 package com.arcadedb.exception;
 
 public class TimeoutException extends ArcadeDBException {
-  public TimeoutException(String message) {
+  public TimeoutException(final String message) {
     super(message);
   }
 }

@@ -42,18 +42,18 @@ public class ContainsValueCondition extends BooleanExpression {
 
   @Override
   public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
-    Object leftValue = left.execute(currentRecord, ctx);
+    final Object leftValue = left.execute(currentRecord, ctx);
     if (leftValue instanceof Map) {
-      Map map = (Map) leftValue;
+      final Map map = (Map) leftValue;
       if (condition != null) {
-        for (Object o : map.values()) {
+        for (final Object o : map.values()) {
           if (condition.evaluate(o, ctx)) {
             return true;
           }
         }
         return false;
       } else {
-        Object rightValue = expression.execute(currentRecord, ctx);
+        final Object rightValue = expression.execute(currentRecord, ctx);
         return map.containsValue(rightValue);//TODO type conversions...?
       }
 
@@ -65,9 +65,9 @@ public class ContainsValueCondition extends BooleanExpression {
   public boolean evaluate(final Result currentRecord, final CommandContext ctx) {
     final Object leftValue = left.execute(currentRecord, ctx);
     if (leftValue instanceof Map) {
-      Map map = (Map) leftValue;
+      final Map map = (Map) leftValue;
       if (condition != null) {
-        for (Object o : map.values()) {
+        for (final Object o : map.values()) {
           if (condition.evaluate(o, ctx)) {
             return true;
           }
@@ -110,7 +110,7 @@ public class ContainsValueCondition extends BooleanExpression {
   @Override
   protected List<Object> getExternalCalculationConditions() {
     if (condition == null)
-      return Collections.EMPTY_LIST;
+      return Collections.emptyList();
 
     return condition.getExternalCalculationConditions();
   }

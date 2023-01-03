@@ -94,7 +94,7 @@ public interface Result {
     final StringBuilder result = new StringBuilder();
     result.append("{");
     boolean first = true;
-    for (String prop : getPropertyNames()) {
+    for (final String prop : getPropertyNames()) {
       if (!first) {
         result.append(", ");
       }
@@ -118,16 +118,16 @@ public interface Result {
     } else if (val instanceof Result) {
       jsonVal = ((Result) val).toJSON();
     } else if (val instanceof Record) {
-      RID id = ((Record) val).getIdentity();
+      final RID id = ((Record) val).getIdentity();
 
       jsonVal = "\"" + id + "\"";
     } else if (val instanceof RID) {
       jsonVal = "\"" + val + "\"";
     } else if (val instanceof Iterable) {
-      StringBuilder builder = new StringBuilder();
+      final StringBuilder builder = new StringBuilder();
       builder.append("[");
       boolean first = true;
-      for (Object o : (Iterable) val) {
+      for (final Object o : (Iterable) val) {
         if (!first) {
           builder.append(", ");
         }
@@ -137,10 +137,10 @@ public interface Result {
       builder.append("]");
       jsonVal = builder.toString();
     } else if (val instanceof Iterator) {
-      StringBuilder builder = new StringBuilder();
+      final StringBuilder builder = new StringBuilder();
       builder.append("[");
       boolean first = true;
-      Iterator iterator = (Iterator) val;
+      final Iterator iterator = (Iterator) val;
       while (iterator.hasNext()) {
         if (!first) {
           builder.append(", ");
@@ -151,11 +151,11 @@ public interface Result {
       builder.append("]");
       jsonVal = builder.toString();
     } else if (val instanceof Map) {
-      StringBuilder builder = new StringBuilder();
+      final StringBuilder builder = new StringBuilder();
       builder.append("{");
       boolean first = true;
-      Map<String, Object> map = (Map) val;
-      for (Map.Entry entry : map.entrySet()) {
+      final Map<String, Object> map = (Map) val;
+      for (final Map.Entry entry : map.entrySet()) {
         if (!first) {
           builder.append(", ");
         }
@@ -181,7 +181,7 @@ public interface Result {
     return jsonVal;
   }
 
-  default String encode(String s) {
+  default String encode(final String s) {
     String result = s.replaceAll("\"", "\\\\\"");
     result = result.replaceAll("\n", "\\\\n");
     result = result.replaceAll("\t", "\\\\t");

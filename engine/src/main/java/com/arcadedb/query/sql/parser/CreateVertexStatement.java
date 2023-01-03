@@ -39,47 +39,47 @@ public class CreateVertexStatement extends Statement {
   Projection returnStatement;
   InsertBody insertBody;
 
-  public CreateVertexStatement(int id) {
+  public CreateVertexStatement(final int id) {
     super(id);
   }
 
-  public CreateVertexStatement(SqlParser p, int id) {
+  public CreateVertexStatement(final SqlParser p, final int id) {
     super(p, id);
   }
 
   @Override
-  public ResultSet execute(Database db, Map params, CommandContext parentCtx, boolean usePlanCache) {
-    BasicCommandContext ctx = new BasicCommandContext();
+  public ResultSet execute(final Database db, final Map params, final CommandContext parentCtx, final boolean usePlanCache) {
+    final BasicCommandContext ctx = new BasicCommandContext();
     if (parentCtx != null) {
       ctx.setParentWithoutOverridingChild(parentCtx);
     }
     ctx.setDatabase(db);
     ctx.setInputParameters(params);
-    InsertExecutionPlan executionPlan = (InsertExecutionPlan) createExecutionPlan(ctx, false);
+    final InsertExecutionPlan executionPlan = (InsertExecutionPlan) createExecutionPlan(ctx, false);
     executionPlan.executeInternal();
     return new LocalResultSet(executionPlan);
   }
 
   @Override
-  public ResultSet execute(Database db, Object[] args, CommandContext parentCtx, boolean usePlanCache) {
-    BasicCommandContext ctx = new BasicCommandContext();
+  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentCtx, final boolean usePlanCache) {
+    final BasicCommandContext ctx = new BasicCommandContext();
     if (parentCtx != null) {
       ctx.setParentWithoutOverridingChild(parentCtx);
     }
     ctx.setDatabase(db);
     ctx.setInputParameters(args);
-    InsertExecutionPlan executionPlan = (InsertExecutionPlan) createExecutionPlan(ctx, false);
+    final InsertExecutionPlan executionPlan = (InsertExecutionPlan) createExecutionPlan(ctx, false);
     executionPlan.executeInternal();
     return new LocalResultSet(executionPlan);
   }
 
   @Override
-  public InternalExecutionPlan createExecutionPlan(CommandContext ctx, boolean enableProfiling) {
-    CreateVertexExecutionPlanner planner = new CreateVertexExecutionPlanner(this);
+  public InternalExecutionPlan createExecutionPlan(final CommandContext ctx, final boolean enableProfiling) {
+    final CreateVertexExecutionPlanner planner = new CreateVertexExecutionPlanner(this);
     return planner.createExecutionPlan(ctx, enableProfiling);
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
 
     builder.append("CREATE VERTEX ");
     if (targetType != null) {
@@ -109,7 +109,7 @@ public class CreateVertexStatement extends Statement {
     CreateVertexStatement result = null;
     try {
       result = getClass().getConstructor(Integer.TYPE).newInstance(-1);
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new ArcadeDBException(e);
     }
     result.targetType = targetType == null ? null : targetType.copy();
@@ -121,13 +121,13 @@ public class CreateVertexStatement extends Statement {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    CreateVertexStatement that = (CreateVertexStatement) o;
+    final CreateVertexStatement that = (CreateVertexStatement) o;
 
     if (!Objects.equals(targetType, that.targetType))
       return false;

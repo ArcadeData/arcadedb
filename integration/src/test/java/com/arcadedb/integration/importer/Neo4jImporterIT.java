@@ -52,30 +52,30 @@ public class Neo4jImporterIT {
       Assertions.assertTrue(databaseDirectory.exists());
 
       try (final DatabaseFactory factory = new DatabaseFactory(DATABASE_PATH)) {
-        try (Database database = factory.open()) {
-          DocumentType personType = database.getSchema().getType("User");
+        try (final Database database = factory.open()) {
+          final DocumentType personType = database.getSchema().getType("User");
           Assertions.assertNotNull(personType);
           Assertions.assertEquals(3, database.countType("User", true));
 
-          IndexCursor cursor = database.lookupByKey("User", "id", "0");
+          final IndexCursor cursor = database.lookupByKey("User", "id", "0");
           Assertions.assertTrue(cursor.hasNext());
-          Vertex v = cursor.next().asVertex();
+          final Vertex v = cursor.next().asVertex();
           Assertions.assertEquals("Adam", v.get("name"));
           Assertions.assertEquals("2015-07-04T19:32:24", new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss").format(v.getLong("born")));
 
-          Map<String, Object> place = (Map<String, Object>) v.get("place");
+          final Map<String, Object> place = (Map<String, Object>) v.get("place");
           Assertions.assertEquals(33.46789, place.get("latitude"));
           Assertions.assertNull(place.get("height"));
 
           Assertions.assertEquals(Arrays.asList("Sam", "Anna", "Grace"), v.get("kids"));
 
-          DocumentType friendType = database.getSchema().getType("KNOWS");
+          final DocumentType friendType = database.getSchema().getType("KNOWS");
           Assertions.assertNotNull(friendType);
           Assertions.assertEquals(1, database.countType("KNOWS", true));
 
-          Iterator<Edge> relationships = v.getEdges(Vertex.DIRECTION.OUT, "KNOWS").iterator();
+          final Iterator<Edge> relationships = v.getEdges(Vertex.DIRECTION.OUT, "KNOWS").iterator();
           Assertions.assertTrue(relationships.hasNext());
-          Edge e = relationships.next();
+          final Edge e = relationships.next();
 
           Assertions.assertEquals(1993, e.get("since"));
           Assertions.assertEquals("P5M1DT12H", e.get("bffSince"));
@@ -94,7 +94,7 @@ public class Neo4jImporterIT {
     try {
       importer.run();
       Assertions.fail("Expected File Not Found Exception");
-    } catch (IllegalArgumentException e) {
+    } catch (final IllegalArgumentException e) {
     }
     Assertions.assertTrue(importer.isError());
   }

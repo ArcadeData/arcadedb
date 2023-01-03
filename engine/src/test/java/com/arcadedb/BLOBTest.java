@@ -29,7 +29,7 @@ public class BLOBTest extends TestHelper {
   @Override
   public void beginTest() {
     database.transaction(() -> {
-      DocumentType type = database.getSchema().createDocumentType("Blob");
+      final DocumentType type = database.getSchema().createDocumentType("Blob");
       type.createProperty("binary", Type.BINARY);
     });
   }

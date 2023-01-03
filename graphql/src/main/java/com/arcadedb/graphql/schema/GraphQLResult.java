@@ -32,7 +32,7 @@ public class GraphQLResult extends ResultInternal {
   public GraphQLResult() {
   }
 
-  public GraphQLResult(Map<String, Object> map) {
+  public GraphQLResult(final Map<String, Object> map) {
     super(map);
     identity = (RID) map.remove("@rid");
   }

@@ -138,7 +138,7 @@ public class JavaQueryEngine implements QueryEngine {
           resultSet = (InternalResultSet) result;
         else if (result instanceof Iterable) {
           resultSet = new InternalResultSet();
-          for (Object o : (Iterable) result)
+          for (final Object o : (Iterable) result)
             resultSet.add(extractResult(o));
         } else {
           resultSet = new InternalResultSet();
@@ -149,20 +149,20 @@ public class JavaQueryEngine implements QueryEngine {
 
       }, timeout);
 
-    } catch (CommandExecutionException e) {
+    } catch (final CommandExecutionException e) {
       throw e;
-    } catch (ExecutionException e) {
+    } catch (final ExecutionException e) {
       // USE THE UNDERLYING CAUSE BYPASSING THE NOT RELEVANT EXECUTION EXCEPTION
       throw new CommandExecutionException("Error on executing user code", e.getCause());
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new CommandExecutionException("Error on executing user code", e);
     }
 
   }
 
-  private Method searchMethod(String[] parts, Class<?> impl, Object[] parameterArray, Object[] parameters) {
+  private Method searchMethod(final String[] parts, final Class<?> impl, final Object[] parameterArray, final Object[] parameters) {
     Method rightMethod = null;
-    for (Method method : impl.getMethods()) {
+    for (final Method method : impl.getMethods()) {
       if (method.getName().equals(parts[1])) {
         if (method.getParameterCount() == parameters.length) {
 
@@ -246,12 +246,12 @@ public class JavaQueryEngine implements QueryEngine {
       executeUserCode(() -> {
         return null;
       }, timeout);
-    } catch (CommandExecutionException e) {
+    } catch (final CommandExecutionException e) {
       throw e;
-    } catch (ExecutionException e) {
+    } catch (final ExecutionException e) {
       // USE THE UNDERLYING CAUSE BYPASSING THE NOT RELEVANT EXECUTION EXCEPTION
       throw new CommandExecutionException("Error on executing user code", e.getCause());
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new CommandExecutionException("Error on analyzing user code", e);
     }
 
@@ -275,13 +275,13 @@ public class JavaQueryEngine implements QueryEngine {
       return null;
 
     try {
-      Object result = executionTimeoutMs > 0 ? future.get(executionTimeoutMs, TimeUnit.MILLISECONDS) : future.get();
+      final Object result = executionTimeoutMs > 0 ? future.get(executionTimeoutMs, TimeUnit.MILLISECONDS) : future.get();
       if (result instanceof Exception)
         throw (Exception) result;
 
       return (ResultSet) result;
 
-    } catch (TimeoutException e) {
+    } catch (final TimeoutException e) {
       future.cancel(true); //this method will stop the running underlying task
       throw e;
     }

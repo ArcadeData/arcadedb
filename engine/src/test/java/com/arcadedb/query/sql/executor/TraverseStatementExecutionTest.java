@@ -31,7 +31,7 @@ public class TraverseStatementExecutionTest extends TestHelper {
   @Test
   public void testPlainTraverse() {
     database.transaction(() -> {
-      String classPrefix = "testPlainTraverse_";
+      final String classPrefix = "testPlainTraverse_";
       database.getSchema().createVertexType(classPrefix + "V");
       database.getSchema().createEdgeType(classPrefix + "E");
       database.command("sql", "create vertex " + classPrefix + "V set name = 'a'").close();
@@ -49,11 +49,11 @@ public class TraverseStatementExecutionTest extends TestHelper {
           "create edge " + classPrefix + "E from (select from " + classPrefix + "V where name = 'c') to (select from " + classPrefix + "V where name = 'd')")
           .close();
 
-      ResultSet result = database.query("sql", "traverse out() from (select from " + classPrefix + "V where name = 'a')");
+      final ResultSet result = database.query("sql", "traverse out() from (select from " + classPrefix + "V where name = 'a')");
 
       for (int i = 0; i < 4; i++) {
         Assertions.assertTrue(result.hasNext());
-        Result item = result.next();
+        final Result item = result.next();
         Assertions.assertEquals(i, item.getMetadata("$depth"));
       }
       Assertions.assertFalse(result.hasNext());
@@ -64,7 +64,7 @@ public class TraverseStatementExecutionTest extends TestHelper {
   @Test
   public void testWithDepth() {
     database.transaction(() -> {
-      String classPrefix = "testWithDepth_";
+      final String classPrefix = "testWithDepth_";
       database.getSchema().createVertexType(classPrefix + "V");
       database.getSchema().createEdgeType(classPrefix + "E");
       database.command("sql", "create vertex " + classPrefix + "V set name = 'a'").close();
@@ -82,11 +82,11 @@ public class TraverseStatementExecutionTest extends TestHelper {
           "create edge " + classPrefix + "E from (select from " + classPrefix + "V where name = 'c') to (select from " + classPrefix + "V where name = 'd')")
           .close();
 
-      ResultSet result = database.query("sql", "traverse out() from (select from " + classPrefix + "V where name = 'a') WHILE $depth < 2");
+      final ResultSet result = database.query("sql", "traverse out() from (select from " + classPrefix + "V where name = 'a') WHILE $depth < 2");
 
       for (int i = 0; i < 2; i++) {
         Assertions.assertTrue(result.hasNext());
-        Result item = result.next();
+        final Result item = result.next();
         Assertions.assertEquals(i, item.getMetadata("$depth"));
       }
       Assertions.assertFalse(result.hasNext());
@@ -97,7 +97,7 @@ public class TraverseStatementExecutionTest extends TestHelper {
   @Test
   public void testMaxDepth() {
     database.transaction(() -> {
-      String classPrefix = "testMaxDepth";
+      final String classPrefix = "testMaxDepth";
       database.getSchema().createVertexType(classPrefix + "V");
       database.getSchema().createEdgeType(classPrefix + "E");
       database.command("sql", "create vertex " + classPrefix + "V set name = 'a'").close();
@@ -119,7 +119,7 @@ public class TraverseStatementExecutionTest extends TestHelper {
 
       for (int i = 0; i < 2; i++) {
         Assertions.assertTrue(result.hasNext());
-        Result item = result.next();
+        final Result item = result.next();
         Assertions.assertEquals(i, item.getMetadata("$depth"));
       }
       Assertions.assertFalse(result.hasNext());
@@ -129,7 +129,7 @@ public class TraverseStatementExecutionTest extends TestHelper {
 
       for (int i = 0; i < 3; i++) {
         Assertions.assertTrue(result.hasNext());
-        Result item = result.next();
+        final Result item = result.next();
         Assertions.assertEquals(i, item.getMetadata("$depth"));
       }
       Assertions.assertFalse(result.hasNext());
@@ -140,7 +140,7 @@ public class TraverseStatementExecutionTest extends TestHelper {
   @Test
   public void testBreadthFirst() {
     database.transaction(() -> {
-      String classPrefix = "testBreadthFirst_";
+      final String classPrefix = "testBreadthFirst_";
       database.getSchema().createVertexType(classPrefix + "V");
       database.getSchema().createEdgeType(classPrefix + "E");
       database.command("sql", "create vertex " + classPrefix + "V set name = 'a'").close();
@@ -158,11 +158,11 @@ public class TraverseStatementExecutionTest extends TestHelper {
           "create edge " + classPrefix + "E from (select from " + classPrefix + "V where name = 'c') to (select from " + classPrefix + "V where name = 'd')")
           .close();
 
-      ResultSet result = database.query("sql", "traverse out() from (select from " + classPrefix + "V where name = 'a') STRATEGY BREADTH_FIRST");
+      final ResultSet result = database.query("sql", "traverse out() from (select from " + classPrefix + "V where name = 'a') STRATEGY BREADTH_FIRST");
 
       for (int i = 0; i < 4; i++) {
         Assertions.assertTrue(result.hasNext());
-        Result item = result.next();
+        final Result item = result.next();
         Assertions.assertEquals(i, item.getMetadata("$depth"));
       }
       Assertions.assertFalse(result.hasNext());
@@ -190,10 +190,10 @@ public class TraverseStatementExecutionTest extends TestHelper {
       script += "commit;";
       script += "return $top;";
 
-      ResultSet result = database.execute("sql", script);
+      final ResultSet result = database.execute("sql", script);
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
-      Object val = item.getProperty("value");
+      final Result item = result.next();
+      final Object val = item.getProperty("value");
       Assertions.assertTrue(val instanceof Collection);
       Assertions.assertEquals(1, ((Collection) val).size());
       result.close();

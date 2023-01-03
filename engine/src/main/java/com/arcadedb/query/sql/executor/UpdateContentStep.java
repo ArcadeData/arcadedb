@@ -86,7 +86,7 @@ public class UpdateContentStep extends AbstractExecutionStep {
     if (json != null) {
       doc.fromMap(json.toMap(record, ctx));
     } else if (inputParameter != null) {
-      Object val = inputParameter.getValue(ctx.getInputParameters());
+      final Object val = inputParameter.getValue(ctx.getInputParameters());
       if (val instanceof Document) {
         doc.fromMap(((Document) val).getRecord().toJSON().toMap());
       } else if (val instanceof Map) {

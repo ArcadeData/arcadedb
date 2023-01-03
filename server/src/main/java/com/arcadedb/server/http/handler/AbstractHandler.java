@@ -113,36 +113,36 @@ public abstract class AbstractHandler implements HttpHandler {
         timer.stop();
       }
 
-    } catch (ServerSecurityException e) {
+    } catch (final ServerSecurityException e) {
       LogManager.instance().log(this, getErrorLogLevel(), "Security error on command execution (%s)", e, getClass().getSimpleName());
       sendErrorResponse(exchange, 403, "Security error", e, null);
-    } catch (ServerIsNotTheLeaderException e) {
+    } catch (final ServerIsNotTheLeaderException e) {
       LogManager.instance().log(this, getErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
       sendErrorResponse(exchange, 400, "Cannot execute command", e, e.getLeaderAddress());
-    } catch (NeedRetryException e) {
+    } catch (final NeedRetryException e) {
       LogManager.instance().log(this, getErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
       sendErrorResponse(exchange, 503, "Cannot execute command", e, null);
-    } catch (DuplicatedKeyException e) {
+    } catch (final DuplicatedKeyException e) {
       LogManager.instance().log(this, getErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
       sendErrorResponse(exchange, 503, "Found duplicate key in index", e, e.getIndexName() + "|" + e.getKeys() + "|" + e.getCurrentIndexedRID());
-    } catch (RecordNotFoundException e) {
+    } catch (final RecordNotFoundException e) {
       LogManager.instance().log(this, getErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
       sendErrorResponse(exchange, 404, "Record not found", e, null);
-    } catch (CommandExecutionException | CommandSQLParsingException | QueryParsingException e) {
+    } catch (final CommandExecutionException | CommandSQLParsingException | QueryParsingException e) {
       Throwable realException = e;
       if (e.getCause() != null)
         realException = e.getCause();
 
       LogManager.instance().log(this, getErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
       sendErrorResponse(exchange, 500, "Cannot execute command", realException, null);
-    } catch (TransactionException e) {
+    } catch (final TransactionException e) {
       Throwable realException = e;
       if (e.getCause() != null)
         realException = e.getCause();
 
       LogManager.instance().log(this, getErrorLogLevel(), "Error on transaction execution (%s)", e, getClass().getSimpleName());
       sendErrorResponse(exchange, 500, "Error on transaction commit", realException, null);
-    } catch (Exception e) {
+    } catch (final Exception e) {
       LogManager.instance().log(this, getErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
       sendErrorResponse(exchange, 500, "Internal error", e, null);
     } finally {

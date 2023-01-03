@@ -38,7 +38,7 @@ public class SQLFunctionSymmetricDifference extends SQLFunctionMultiValueAbstrac
     super(NAME, 1, -1);
   }
 
-  private static void addItemToResult(Object o, Set<Object> accepted, Set<Object> rejected) {
+  private static void addItemToResult(final Object o, final Set<Object> accepted, final Set<Object> rejected) {
     if (!accepted.contains(o) && !rejected.contains(o)) {
       accepted.add(o);
     } else {
@@ -47,18 +47,18 @@ public class SQLFunctionSymmetricDifference extends SQLFunctionMultiValueAbstrac
     }
   }
 
-  private static void addItemsToResult(Collection<Object> co, Set<Object> accepted, Set<Object> rejected) {
-    for (Object o : co) {
+  private static void addItemsToResult(final Collection<Object> co, final Set<Object> accepted, final Set<Object> rejected) {
+    for (final Object o : co) {
       addItemToResult(o, accepted, rejected);
     }
   }
 
   @SuppressWarnings("unchecked")
-  public Object execute(Object iThis, Identifiable iCurrentRecord, Object iCurrentResult, final Object[] iParams, CommandContext iContext) {
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams, final CommandContext iContext) {
     if (iParams[0] == null)
       return null;
 
-    Object value = iParams[0];
+    final Object value = iParams[0];
 
     if (iParams.length == 1) {
       // AGGREGATION MODE (STATEFUL)
@@ -78,7 +78,7 @@ public class SQLFunctionSymmetricDifference extends SQLFunctionMultiValueAbstrac
       final Set<Object> result = new HashSet<Object>();
       final Set<Object> rejected = new HashSet<Object>();
 
-      for (Object iParameter : iParams) {
+      for (final Object iParameter : iParams) {
         if (iParameter instanceof Collection<?>) {
           addItemsToResult((Collection<Object>) iParameter, result, rejected);
         } else {

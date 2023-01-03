@@ -50,8 +50,9 @@ public class FetchEdgesFromToVerticesStep extends AbstractExecutionStep {
 
   private Edge nextEdge = null;
 
-  public FetchEdgesFromToVerticesStep(String fromAlias, String toAlias, Identifier targetType, Identifier targetCluster, CommandContext ctx,
-      boolean profilingEnabled) {
+  public FetchEdgesFromToVerticesStep(
+      final String fromAlias, final String toAlias, final Identifier targetType, final Identifier targetCluster, final CommandContext ctx,
+      final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
     this.targetType = targetType;
     this.targetCluster = targetCluster;
@@ -60,7 +61,7 @@ public class FetchEdgesFromToVerticesStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
     getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
     init();
     return new ResultSet() {
@@ -76,9 +77,9 @@ public class FetchEdgesFromToVerticesStep extends AbstractExecutionStep {
         if (!hasNext()) {
           throw new NoSuchElementException();
         }
-        Edge edge = nextEdge;
+        final Edge edge = nextEdge;
         fetchNextEdge();
-        ResultInternal result = new ResultInternal();
+        final ResultInternal result = new ResultInternal();
         result.setElement(edge);
         currentBatch++;
         return result;

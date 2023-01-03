@@ -47,18 +47,18 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
    * @param filterClusterIds only extract values from these clusters. Pass null if no filtering is needed
    * @param profilingEnabled enable profiling
    */
-  public GetValueFromIndexEntryStep(CommandContext ctx, int[] filterClusterIds, boolean profilingEnabled) {
+  public GetValueFromIndexEntryStep(final CommandContext ctx, final int[] filterClusterIds, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
     this.filterClusterIds = filterClusterIds;
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
 
     if (prev.isEmpty()) {
       throw new IllegalStateException("filter step requires a previous step");
     }
-    ExecutionStepInternal prevStep = prev.get();
+    final ExecutionStepInternal prevStep = prev.get();
 
     return new ResultSet() {
 
@@ -92,7 +92,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
         if (nextItem == null) {
           throw new NoSuchElementException();
         }
-        Result result = nextItem;
+        final Result result = nextItem;
         nextItem = null;
         fetched++;
         return result;
@@ -118,18 +118,18 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
               return;
             }
           }
-          Result val = prevResult.next();
-          long begin = profilingEnabled ? System.nanoTime() : 0;
+          final Result val = prevResult.next();
+          final long begin = profilingEnabled ? System.nanoTime() : 0;
 
           try {
-            Object finalVal = val.getProperty("rid");
+            final Object finalVal = val.getProperty("rid");
             if (filterClusterIds != null) {
               if (!(finalVal instanceof Identifiable)) {
                 continue;
               }
-              RID rid = ((Identifiable) finalVal).getIdentity();
+              final RID rid = ((Identifiable) finalVal).getIdentity();
               boolean found = false;
-              for (int filterClusterId : filterClusterIds) {
+              for (final int filterClusterId : filterClusterIds) {
                 if (rid.getBucketId() < 0 || filterClusterId == rid.getBucketId()) {
                   found = true;
                   break;
@@ -145,7 +145,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
               try {
                 res.setElement(((RID) finalVal).asDocument());
                 nextItem = res;
-              } catch (RecordNotFoundException e) {
+              } catch (final RecordNotFoundException e) {
                 LogManager.instance().log(this, Level.WARNING, "Record %s not found. Skip it from the result set", null, finalVal);
                 continue;
               }
@@ -177,8 +177,8 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     String result = spaces + "+ EXTRACT VALUE FROM INDEX ENTRY";
     if (profilingEnabled) {
       result += " (" + getCostFormatted() + ")";
@@ -204,7 +204,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ExecutionStep copy(CommandContext ctx) {
+  public ExecutionStep copy(final CommandContext ctx) {
     return new GetValueFromIndexEntryStep(ctx, this.filterClusterIds, this.profilingEnabled);
   }
 }

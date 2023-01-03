@@ -28,7 +28,7 @@ public class IterableObject<T> implements Iterable<T>, Iterator<T> {
   private final T object;
   private boolean alreadyRead = false;
 
-  public IterableObject(T o) {
+  public IterableObject(final T o) {
     object = o;
   }
 

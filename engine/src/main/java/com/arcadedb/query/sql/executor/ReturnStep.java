@@ -28,13 +28,13 @@ public class ReturnStep extends AbstractExecutionStep {
   private final SimpleExecStatement statement;
   boolean executed = false;
 
-  public ReturnStep(SimpleExecStatement statement, CommandContext ctx, boolean profilingEnabled) {
+  public ReturnStep(final SimpleExecStatement statement, final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
     this.statement = statement;
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
     if (executed) {
       return new InternalResultSet();
     }

@@ -65,7 +65,7 @@ public class ParseException extends Exception {
   /**
    * Constructor with message.
    */
-  public ParseException(String message) {
+  public ParseException(final String message) {
     super(message);
   }
 
@@ -98,7 +98,7 @@ public class ParseException extends Exception {
    * gets displayed.
    */
   private static String _initialise(final Token currentToken, final int[][] expectedTokenSequences, final String[] tokenImage) {
-    StringBuilder expected = new StringBuilder();
+    final StringBuilder expected = new StringBuilder();
     int maxSize = 0;
     for (int i = 0; i < expectedTokenSequences.length; i++) {
       if (maxSize < expectedTokenSequences[i].length)
@@ -111,13 +111,13 @@ public class ParseException extends Exception {
       expected.append(EOL).append("    ");
     }
 
-    StringBuilder sb = new StringBuilder();
+    final StringBuilder sb = new StringBuilder();
     sb.append("Encountered \"");
 
     Token tok = currentToken.next;
     for (int i = 0; i < maxSize; i++) {
-      String tokenText = tok.image;
-      String escapedTokenText = add_escapes(tokenText);
+      final String tokenText = tok.image;
+      final String escapedTokenText = add_escapes(tokenText);
       if (i != 0)
         sb.append(' ');
       if (tok.kind == 0) {
@@ -145,7 +145,7 @@ public class ParseException extends Exception {
    * when these raw version cannot be used as part of an ASCII
    * string literal.
    */
-  static String add_escapes(String str) {
+  static String add_escapes(final String str) {
     final StringBuilder retval = new StringBuilder();
     for (int i = 0; i < str.length(); i++) {
       final char ch = str.charAt(i);
@@ -176,7 +176,7 @@ public class ParseException extends Exception {
         continue;
       default:
         if (ch < 0x20 || ch > 0x7e) {
-          String s = "0000" + Integer.toString(ch, 16);
+          final String s = "0000" + Integer.toString(ch, 16);
           retval.append("\\u").append(s.substring(s.length() - 4, s.length()));
         } else {
           retval.append(ch);

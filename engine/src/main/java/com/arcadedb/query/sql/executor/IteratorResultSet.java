@@ -28,7 +28,7 @@ import java.util.*;
 public class IteratorResultSet implements ResultSet {
   protected final Iterator iterator;
 
-  public IteratorResultSet(Iterator iter) {
+  public IteratorResultSet(final Iterator iter) {
     this.iterator = iter;
   }
 
@@ -39,12 +39,12 @@ public class IteratorResultSet implements ResultSet {
 
   @Override
   public Result next() {
-    Object val = iterator.next();
+    final Object val = iterator.next();
     if (val instanceof Result) {
       return (Result) val;
     }
 
-    ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal();
     if (val instanceof Document) {
       result.setElement((Document) val);
     } else {

@@ -34,17 +34,17 @@ public class DropBucketStatement extends DDLStatement {
   protected PInteger   id;
   protected boolean    ifExists = false;
 
-  public DropBucketStatement(int id) {
+  public DropBucketStatement(final int id) {
     super(id);
   }
 
-  public DropBucketStatement(SqlParser p, int id) {
+  public DropBucketStatement(final SqlParser p, final int id) {
     super(p, id);
   }
 
   @Override
-  public ResultSet executeDDL(CommandContext ctx) {
-    Database database = ctx.getDatabase();
+  public ResultSet executeDDL(final CommandContext ctx) {
+    final Database database = ctx.getDatabase();
     // CHECK IF ANY USERTYPE IS USING IT
     final int bucketId;
     if (id != null) {
@@ -59,7 +59,7 @@ public class DropBucketStatement extends DDLStatement {
         }
       }
     }
-    for (DocumentType iClass : database.getSchema().getTypes()) {
+    for (final DocumentType iClass : database.getSchema().getTypes()) {
 //      for (int i : iClass.getClusterIds()) {
 //        if (i == bucketId) {
 //          // IN USE
@@ -71,7 +71,7 @@ public class DropBucketStatement extends DDLStatement {
     }
 
     // REMOVE CACHE OF COMMAND RESULTS IF ACTIVE
-    String bucketName = database.getSchema().getBucketById(bucketId).getName();
+    final String bucketName = database.getSchema().getBucketById(bucketId).getName();
     if (bucketName == null) {
       if (ifExists) {
         return new InternalResultSet();
@@ -96,7 +96,7 @@ public class DropBucketStatement extends DDLStatement {
   }
 
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("DROP BUCKET ");
     if (name != null) {
       name.toString(params, builder);
@@ -110,7 +110,7 @@ public class DropBucketStatement extends DDLStatement {
 
   @Override
   public DropBucketStatement copy() {
-    DropBucketStatement result = new DropBucketStatement(-1);
+    final DropBucketStatement result = new DropBucketStatement(-1);
     result.name = name == null ? null : name.copy();
     result.id = id == null ? null : id.copy();
     result.ifExists = this.ifExists;

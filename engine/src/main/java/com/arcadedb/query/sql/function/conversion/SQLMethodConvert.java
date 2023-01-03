@@ -56,7 +56,7 @@ public class SQLMethodConvert extends AbstractSQLMethod {
     if (destType.contains(".")) {
       try {
         return Type.convert(iContext.getDatabase(), iThis, Class.forName(destType));
-      } catch (ClassNotFoundException e) {
+      } catch (final ClassNotFoundException e) {
         LogManager.instance().log(this, Level.SEVERE, "Type for destination type was not found", e);
       }
     } else {

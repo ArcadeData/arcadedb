@@ -10,14 +10,14 @@ public class SQLDefinedJavascriptFunctionTest extends TestHelper {
   @Test
   public void testEmbeddedFunction() {
     registerFunctions();
-    Integer result = (Integer) database.getSchema().getFunction("math", "sum").execute(3, 5);
+    final Integer result = (Integer) database.getSchema().getFunction("math", "sum").execute(3, 5);
     Assertions.assertEquals(8, result);
   }
 
   @Test
   public void testCallFromSQL() {
     registerFunctions();
-    ResultSet result = database.command("sql", "select `math.sum`(?,?) as result", 3, 5);
+    final ResultSet result = database.command("sql", "select `math.sum`(?,?) as result", 3, 5);
     Assertions.assertEquals(8, (Integer) result.next().getProperty("result"));
   }
 
@@ -48,7 +48,7 @@ public class SQLDefinedJavascriptFunctionTest extends TestHelper {
     try {
       database.getSchema().getFunctionLibrary("math").registerFunction(new JavascriptFunctionDefinition("sum", "return a - b;", "a", "b"));
       Assertions.fail();
-    } catch (IllegalArgumentException e) {
+    } catch (final IllegalArgumentException e) {
       // EXPECTED
     }
 

@@ -42,7 +42,7 @@ public class CypherQueryEngine implements QueryEngine {
   }
 
   @Override
-  public AnalyzedQuery analyze(String query) {
+  public AnalyzedQuery analyze(final String query) {
     return new AnalyzedQuery() {
       @Override
       public boolean isIdempotent() {
@@ -73,7 +73,7 @@ public class CypherQueryEngine implements QueryEngine {
       arcadeCypher.setParameters(parameters);
       return arcadeCypher.execute();
 
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new QueryParsingException("Error on executing Cypher query", e);
     }
   }
@@ -85,14 +85,14 @@ public class CypherQueryEngine implements QueryEngine {
         return list.get(0);
       return list;
     } else if (value instanceof List) {
-      List<?> listValue = (List<?>) value;
-      List<Object> transformed = listValue.stream().map(CypherQueryEngine::transformValue).collect(Collectors.toList());
+      final List<?> listValue = (List<?>) value;
+      final List<Object> transformed = listValue.stream().map(CypherQueryEngine::transformValue).collect(Collectors.toList());
       return transformed.size() == 1 ? transformed.iterator().next() : transformed;
     }
     return value;
   }
 
-  public static List<ResultInternal> transformMap(Map<? extends Object, ? extends Object> map) {
+  public static List<ResultInternal> transformMap(final Map<? extends Object, ? extends Object> map) {
 
     final List<ResultInternal> result = new ArrayList<>();
 
@@ -111,7 +111,7 @@ public class CypherQueryEngine implements QueryEngine {
         result.add(cypherObjectToResult(mapStringObject, (Map) element));
       else if (element instanceof List) {
         final List<Map> list = (List<Map>) element;
-        for (Map mapEntry : list)
+        for (final Map mapEntry : list)
           result.add(cypherObjectToResult(new HashMap<>(), mapEntry));
       }
     } else
@@ -121,7 +121,7 @@ public class CypherQueryEngine implements QueryEngine {
   }
 
   private static ResultInternal cypherObjectToResult(final Map<String, Object> mapStringObject, final Map<Object, Object> internalMap) {
-    for (Map.Entry<Object, Object> entry : internalMap.entrySet()) {
+    for (final Map.Entry<Object, Object> entry : internalMap.entrySet()) {
       Object mapKey = entry.getKey();
       Object mapValue = entry.getValue();
 

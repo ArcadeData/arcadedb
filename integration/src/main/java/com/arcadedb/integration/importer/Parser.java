@@ -117,7 +117,7 @@ public class Parser {
         if (limit > 0 && position.get() > limit)
           throw new EOFException();
 
-        int res = super.read(b, off, len);
+        final int res = super.read(b, off, len);
         position.addAndGet(res);
         return res;
       }

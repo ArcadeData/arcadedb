@@ -21,18 +21,18 @@
 package com.arcadedb.graphql.parser;
 
 public class TypeDefinition extends SimpleNode {
-  public TypeDefinition(int id) {
+  public TypeDefinition(final int id) {
     super(id);
   }
 
-  public TypeDefinition(GraphQLParser p, int id) {
+  public TypeDefinition(final GraphQLParser p, final int id) {
     super(p, id);
   }
 
   /**
    * Accept the visitor.
    **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
+  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
     return visitor.visit(this, data);
   }
 }

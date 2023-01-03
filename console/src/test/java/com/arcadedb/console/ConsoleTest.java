@@ -94,7 +94,7 @@ public class ConsoleTest {
     try {
       console.parse("set verbose = 2; close; connect " + DB_NAME + "XX", false);
       Assertions.fail();
-    } catch (DatabaseOperationException e) {
+    } catch (final DatabaseOperationException e) {
       // EXPECTED
     }
   }
@@ -155,7 +155,7 @@ public class ConsoleTest {
     try {
       Assertions.assertTrue(console.parse("info blablabla", false));
       Assertions.fail();
-    } catch (ConsoleException e) {
+    } catch (final ConsoleException e) {
       // EXPECTED
     }
   }
@@ -208,14 +208,14 @@ public class ConsoleTest {
     try {
       Assertions.assertTrue(console.parse("create user elon identified by musk", false));
       Assertions.fail("local connection allowed user creation");
-    } catch (Exception e) {
+    } catch (final Exception e) {
       // EXPECTED
     }
 
     try {
       Assertions.assertTrue(console.parse("drop user jack", false));
       Assertions.fail("local connection allowed user deletion");
-    } catch (Exception e) {
+    } catch (final Exception e) {
       // EXPECTED
     }
   }
@@ -229,30 +229,30 @@ public class ConsoleTest {
     Console.main(new String[] { "create database " + DATABASE_PATH + ";import database file://src/test/resources/neo4j-export-mini.jsonl" });
 
     try (final DatabaseFactory factory = new DatabaseFactory("databases/" + DATABASE_PATH)) {
-      try (Database database = factory.open()) {
-        DocumentType personType = database.getSchema().getType("User");
+      try (final Database database = factory.open()) {
+        final DocumentType personType = database.getSchema().getType("User");
         Assertions.assertNotNull(personType);
         Assertions.assertEquals(3, database.countType("User", true));
 
-        IndexCursor cursor = database.lookupByKey("User", "id", "0");
+        final IndexCursor cursor = database.lookupByKey("User", "id", "0");
         Assertions.assertTrue(cursor.hasNext());
-        Vertex v = cursor.next().asVertex();
+        final Vertex v = cursor.next().asVertex();
         Assertions.assertEquals("Adam", v.get("name"));
         Assertions.assertEquals("2015-07-04T19:32:24", new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss").format(v.getLong("born")));
 
-        Map<String, Object> place = (Map<String, Object>) v.get("place");
+        final Map<String, Object> place = (Map<String, Object>) v.get("place");
         Assertions.assertEquals(33.46789, ((Number) place.get("latitude")).doubleValue());
         Assertions.assertNull(place.get("height"));
 
         Assertions.assertEquals(Arrays.asList("Sam", "Anna", "Grace"), v.get("kids"));
 
-        DocumentType friendType = database.getSchema().getType("KNOWS");
+        final DocumentType friendType = database.getSchema().getType("KNOWS");
         Assertions.assertNotNull(friendType);
         Assertions.assertEquals(1, database.countType("KNOWS", true));
 
-        Iterator<Edge> relationships = v.getEdges(Vertex.DIRECTION.OUT, "KNOWS").iterator();
+        final Iterator<Edge> relationships = v.getEdges(Vertex.DIRECTION.OUT, "KNOWS").iterator();
         Assertions.assertTrue(relationships.hasNext());
-        Edge e = relationships.next();
+        final Edge e = relationships.next();
 
         Assertions.assertEquals(1993, e.get("since"));
         Assertions.assertEquals("P5M1DT12H", e.get("bffSince"));
@@ -276,7 +276,13 @@ public class ConsoleTest {
     {
       final StringBuilder buffer = new StringBuilder();
       console.setOutput(output -> buffer.append(output));
-      Assertions.assertTrue(console.parse("select name, lastname, nothing from Person", false));
+      Assertions.assertTrue(console.parse("select nothing, lastname, name from Person where nothing is null", false));
+      Assertions.assertTrue(buffer.toString().contains("<null>"));
+    }
+    {
+      final StringBuilder buffer = new StringBuilder();
+      console.setOutput(output -> buffer.append(output));
+      Assertions.assertTrue(console.parse("select nothing, lastname, name from Person", false));
       Assertions.assertTrue(buffer.toString().contains("<null>"));
     }
   }

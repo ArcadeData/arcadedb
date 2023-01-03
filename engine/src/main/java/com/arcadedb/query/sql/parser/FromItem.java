@@ -40,15 +40,15 @@ public class FromItem extends SimpleNode {
   protected FunctionCall         functionCall;
   protected Modifier             modifier;
 
-  public FromItem(int id) {
+  public FromItem(final int id) {
     super(id);
   }
 
-  public FromItem(SqlParser p, int id) {
+  public FromItem(final SqlParser p, final int id) {
     super(p, id);
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (rids != null && rids.size() > 0) {
       if (rids.size() == 1) {
         rids.get(0).toString(params, builder);
@@ -56,7 +56,7 @@ public class FromItem extends SimpleNode {
       } else {
         builder.append("[");
         boolean first = true;
-        for (Rid rid : rids) {
+        for (final Rid rid : rids) {
           if (!first) {
             builder.append(", ");
           }
@@ -73,7 +73,7 @@ public class FromItem extends SimpleNode {
       } else {
         builder.append("[");
         boolean first = true;
-        for (InputParameter rid : inputParams) {
+        for (final InputParameter rid : inputParams) {
           if (!first) {
             builder.append(", ");
           }
@@ -159,7 +159,7 @@ public class FromItem extends SimpleNode {
   }
 
   public FromItem copy() {
-    FromItem result = new FromItem(-1);
+    final FromItem result = new FromItem(-1);
     if (rids != null) {
       result.rids = rids.stream().map(r -> r.copy()).collect(Collectors.toList());
     }
@@ -227,52 +227,52 @@ public class FromItem extends SimpleNode {
     return result;
   }
 
-  public void setRids(List<Rid> rids) {
+  public void setRids(final List<Rid> rids) {
     this.rids = rids;
   }
 
-  public void setBucket(Bucket bucket) {
+  public void setBucket(final Bucket bucket) {
     this.bucket = bucket;
   }
 
-  public void setBucketList(BucketList bucketList) {
+  public void setBucketList(final BucketList bucketList) {
     this.bucketList = bucketList;
   }
 
-  public void setIndex(IndexIdentifier index) {
+  public void setIndex(final IndexIdentifier index) {
     this.index = index;
   }
 
-  public void setSchema(SchemaIdentifier schema) {
+  public void setSchema(final SchemaIdentifier schema) {
     this.schema = schema;
   }
 
-  public void setStatement(Statement statement) {
+  public void setStatement(final Statement statement) {
     this.statement = statement;
   }
 
-  public void setInputParam(InputParameter inputParam) {
+  public void setInputParam(final InputParameter inputParam) {
     this.inputParam = inputParam;
   }
 
-  public void setIdentifier(Identifier identifier) {
+  public void setIdentifier(final Identifier identifier) {
     this.identifier = identifier;
   }
 
-  public void setFunctionCall(FunctionCall functionCall) {
+  public void setFunctionCall(final FunctionCall functionCall) {
     this.functionCall = functionCall;
   }
 
-  public void setModifier(Modifier modifier) {
+  public void setModifier(final Modifier modifier) {
     this.modifier = modifier;
   }
 
-  public void setInputParams(List<InputParameter> inputParams) {
+  public void setInputParams(final List<InputParameter> inputParams) {
     this.inputParams = inputParams;
   }
 
   public Result serialize() {
-    ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal();
     if (rids != null) {
       result.setProperty("rids", rids.stream().map(x -> x.serialize()).collect(Collectors.toList()));
     }
@@ -310,21 +310,21 @@ public class FromItem extends SimpleNode {
     return result;
   }
 
-  public void deserialize(Result fromResult) {
+  public void deserialize(final Result fromResult) {
     if (fromResult.getProperty("rids") != null) {
-      List<Result> serRids = fromResult.getProperty("rids");
+      final List<Result> serRids = fromResult.getProperty("rids");
       rids = new ArrayList<>();
-      for (Result res : serRids) {
-        Rid rid = new Rid(-1);
+      for (final Result res : serRids) {
+        final Rid rid = new Rid(-1);
         rid.deserialize(res);
         rids.add(rid);
       }
     }
 
     if (fromResult.getProperty("inputParams") != null) {
-      List<Result> ser = fromResult.getProperty("inputParams");
+      final List<Result> ser = fromResult.getProperty("inputParams");
       inputParams = new ArrayList<>();
-      for (Result res : ser) {
+      for (final Result res : ser) {
         inputParams.add(InputParameter.deserializeFromOResult(res));
       }
     }

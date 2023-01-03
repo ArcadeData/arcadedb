@@ -44,11 +44,11 @@ public class ServerSecurityIT {
     security.loadUsers();
 
     final Path securityConfPath = Paths.get("./target", SecurityUserFileRepository.FILE_NAME);
-    File securityConf = securityConfPath.toFile();
+    final File securityConf = securityConfPath.toFile();
 
     Assertions.assertTrue(securityConf.exists());
 
-    SecurityUserFileRepository repository = new SecurityUserFileRepository("./target");
+    final SecurityUserFileRepository repository = new SecurityUserFileRepository("./target");
 
     final List<JSONObject> jsonl = repository.load();
 
@@ -75,11 +75,11 @@ public class ServerSecurityIT {
     security.startService();
     security.loadUsers();
 
-    File securityConf = securityConfPath.toFile();
+    final File securityConf = securityConfPath.toFile();
 
     Assertions.assertTrue(securityConf.exists());
 
-    SecurityUserFileRepository repository = new SecurityUserFileRepository("./target");
+    final SecurityUserFileRepository repository = new SecurityUserFileRepository("./target");
 
     final List<JSONObject> jsonl = repository.load();
 
@@ -92,7 +92,7 @@ public class ServerSecurityIT {
   void shouldLoadProvidedSecurityConfiguration() throws IOException {
     GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(PASSWORD);
 
-    SecurityUserFileRepository repository = new SecurityUserFileRepository("./target");
+    final SecurityUserFileRepository repository = new SecurityUserFileRepository("./target");
 
     final ServerSecurity security = new ServerSecurity(null, new ContextConfiguration(), "./target");
 
@@ -114,7 +114,7 @@ public class ServerSecurityIT {
   void shouldReloadSecurityConfiguration() throws IOException {
     GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(PASSWORD);
 
-    SecurityUserFileRepository repository = new SecurityUserFileRepository("./target");
+    final SecurityUserFileRepository repository = new SecurityUserFileRepository("./target");
 
     final ServerSecurity security = new ServerSecurity(null, new ContextConfiguration(), "./target");
 
@@ -136,7 +136,7 @@ public class ServerSecurityIT {
 
     try {
       Thread.sleep(5_500);
-    } catch (InterruptedException e) {
+    } catch (final InterruptedException e) {
       e.printStackTrace();
     }
 
@@ -160,7 +160,7 @@ public class ServerSecurityIT {
     security.stopService();
   }
 
-  private void passwordShouldMatch(final ServerSecurity security, String password, String expectedHash) {
+  private void passwordShouldMatch(final ServerSecurity security, final String password, final String expectedHash) {
     Assertions.assertTrue(security.passwordMatch(password, expectedHash));
   }
 

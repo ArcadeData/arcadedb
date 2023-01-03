@@ -121,7 +121,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
         subIndex.binaryKeyTypes = binaryKeyTypes;
 
       }
-    } catch (Exception e) {
+    } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE,
           "Invalid sub-index for index '%s', ignoring it. WARNING: This could lead on using partial indexes. Please recreate the index from scratch (error=%s)",
           null, name, e.getMessage());
@@ -155,7 +155,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
   }
 
   public LSMTreeIndexCompacted createNewForCompaction() throws IOException {
-    int last_ = name.lastIndexOf('_');
+    final int last_ = name.lastIndexOf('_');
     final String newName = name.substring(0, last_) + "_" + System.nanoTime();
 
     return new LSMTreeIndexCompacted(mainIndex, database, newName, unique, database.getDatabasePath() + File.separator + newName, binaryKeyTypes, pageSize);
@@ -229,7 +229,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
   protected LookupResult compareKey(final Binary currentPageBuffer, final int startIndexArray, final Object[] convertedKeys, int mid, final int count,
       final int purpose) {
 
-    int result = compareKey(currentPageBuffer, startIndexArray, convertedKeys, mid, count);
+    final int result = compareKey(currentPageBuffer, startIndexArray, convertedKeys, mid, count);
 
     if (result > 0)
       return HIGHER;
@@ -486,7 +486,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
             .log(this, Level.FINE, "Put entry %s=%s in index '%s' (page=%s countInPage=%d newPage=%s thread=%d)", Arrays.toString(keys), Arrays.toString(rids),
                 name, currentPage.getPageId(), count + 1, newPage, Thread.currentThread().getId());
 
-    } catch (IOException e) {
+    } catch (final IOException e) {
       throw new DatabaseOperationException(
           "Cannot index key '" + Arrays.toString(keys) + "' with value '" + Arrays.toString(rids) + "' in index '" + name + "'", e);
     }
@@ -607,7 +607,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
             .log(this, Level.FINE, "Put removed entry %s=%s (original=%s) in index '%s' (page=%s countInPage=%d newPage=%s)", null, Arrays.toString(keys),
                 removedRID, rid, name, currentPage.getPageId(), count + 1, newPage);
 
-    } catch (IOException e) {
+    } catch (final IOException e) {
       throw new DatabaseOperationException("Cannot index key '" + Arrays.toString(keys) + "' with value '" + rid + "' in index '" + name + "'", e);
     }
   }

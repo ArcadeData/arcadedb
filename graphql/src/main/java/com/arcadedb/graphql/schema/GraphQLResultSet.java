@@ -82,7 +82,7 @@ public class GraphQLResultSet implements ResultSet {
   private GraphQLResult mapByReturnType(final Result current, final ObjectTypeDefinition type) {
     final List<Projection> projections = new ArrayList<>(type.getFieldDefinitions().size());
     // ADD ALL THE TYPE FIELDS AUTOMATICALLY
-    for (FieldDefinition fieldDefinition : type.getFieldDefinitions()) {
+    for (final FieldDefinition fieldDefinition : type.getFieldDefinitions()) {
       final ObjectTypeDefinition subType = schema.getTypeFromField(fieldDefinition);
       projections.add(new Projection(fieldDefinition.getName(), null, subType, null));
     }
@@ -91,7 +91,7 @@ public class GraphQLResultSet implements ResultSet {
 
   private GraphQLResult mapBySelections(final Result current, final List<Selection> definedProjections) {
     final List<Projection> projections = new ArrayList<>(definedProjections.size());
-    for (Selection fieldDefinition : definedProjections) {
+    for (final Selection fieldDefinition : definedProjections) {
       final SelectionSet set = fieldDefinition.getField().getSelectionSet();
       projections.add(new Projection(fieldDefinition.getName(), fieldDefinition.getField(), null, set != null ? set.getSelections() : null));
     }
@@ -119,12 +119,12 @@ public class GraphQLResultSet implements ResultSet {
     if (fieldDefinition != null) {
       final Directives directives = fieldDefinition.getDirectives();
       if (directives != null) {
-        for (Directive directive : directives.getDirectives()) {
+        for (final Directive directive : directives.getDirectives()) {
           if ("relationship".equals(directive.getName())) {
             if (directive.getArguments() != null) {
               String type = null;
               Vertex.DIRECTION direction = Vertex.DIRECTION.BOTH;
-              for (Argument argument : directive.getArguments().getList()) {
+              for (final Argument argument : directive.getArguments().getList()) {
                 if ("type".equals(argument.getName())) {
                   type = argument.getValueWithVariable().getValue().getValue().toString();
                 } else if ("direction".equals(argument.getName())) {
@@ -157,7 +157,7 @@ public class GraphQLResultSet implements ResultSet {
       map.put("@rid", element.getIdentity());
     }
 
-    for (Projection entry : projections) {
+    for (final Projection entry : projections) {
       final String projName = entry.name;
 
       Object projectionValue = current.getProperty(projName);
@@ -175,7 +175,7 @@ public class GraphQLResultSet implements ResultSet {
       final AbstractField field = entry.field;
       if (projectionValue == null && field != null) {
         if (field.getDirectives() != null) {
-          for (Directive directive : field.getDirectives().getDirectives()) {
+          for (final Directive directive : field.getDirectives().getDirectives()) {
             if ("rid".equals(directive.getName())) {
               if (current.getElement().isPresent())
                 projectionValue = current.getElement().get().getIdentity();
@@ -197,8 +197,8 @@ public class GraphQLResultSet implements ResultSet {
           projectionValue = mapBySelections((Result) projectionValue, selectionSet);
         else if (projectionValue instanceof Iterable) {
           final List<Result> subResults = new ArrayList<>();
-          for (Object o : ((Iterable) projectionValue)) {
-            Result item;
+          for (final Object o : ((Iterable) projectionValue)) {
+            final Result item;
             if (o instanceof Document)
               item = mapBySelections(new ResultInternal((Document) o), selectionSet);
             else if (o instanceof Result)
@@ -218,8 +218,8 @@ public class GraphQLResultSet implements ResultSet {
           projectionValue = mapByReturnType((Result) projectionValue, projectionType);
         else if (projectionValue instanceof Iterable) {
           final List<Result> subResults = new ArrayList<>();
-          for (Object o : ((Iterable) projectionValue)) {
-            Result item;
+          for (final Object o : ((Iterable) projectionValue)) {
+            final Result item;
             if (o instanceof Document)
               item = mapByReturnType(new ResultInternal((Document) o), projectionType);
             else if (o instanceof Result)

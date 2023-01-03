@@ -94,7 +94,7 @@ public class UpsertStep extends AbstractExecutionStep {
       throw new CommandExecutionException("Cannot UPSERT on OR conditions");
 
     final AndBlock andCond = flattened.get(0);
-    for (BooleanExpression condition : andCond.getSubBlocks())
+    for (final BooleanExpression condition : andCond.getSubBlocks())
       condition.transformToUpdateItem().ifPresent(x -> x.applyUpdate(doc, ctx));
   }
 

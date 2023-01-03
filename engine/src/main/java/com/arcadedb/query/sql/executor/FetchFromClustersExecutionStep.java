@@ -51,7 +51,7 @@ public class FetchFromClustersExecutionStep extends AbstractExecutionStep {
 
     subSteps = new ArrayList<>();
     sort(bucketIds);
-    for (int bucketId : bucketIds) {
+    for (final int bucketId : bucketIds) {
       final FetchFromClusterExecutionStep step = new FetchFromClusterExecutionStep(bucketId, ctx, profilingEnabled);
       if (orderByRidAsc)
         step.setOrder(FetchFromClusterExecutionStep.ORDER_ASC);
@@ -62,14 +62,14 @@ public class FetchFromClustersExecutionStep extends AbstractExecutionStep {
     }
   }
 
-  private void sort(int[] bucketIds) {
+  private void sort(final int[] bucketIds) {
     if (orderByRidAsc) {
       Arrays.sort(bucketIds);
     } else if (orderByRidDesc) {
       Arrays.sort(bucketIds);
       //revert order
       for (int i = 0; i < bucketIds.length / 2; i++) {
-        int old = bucketIds[i];
+        final int old = bucketIds[i];
         bucketIds[i] = bucketIds[bucketIds.length - 1 - i];
         bucketIds[bucketIds.length - 1 - i] = old;
       }
@@ -77,7 +77,7 @@ public class FetchFromClustersExecutionStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
     getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
     return new ResultSet() {
 
@@ -128,7 +128,7 @@ public class FetchFromClustersExecutionStep extends AbstractExecutionStep {
 
       @Override
       public void close() {
-        for (ExecutionStep step : subSteps) {
+        for (final ExecutionStep step : subSteps) {
           ((AbstractExecutionStep) step).close();
         }
       }
@@ -145,7 +145,7 @@ public class FetchFromClustersExecutionStep extends AbstractExecutionStep {
 
   @Override
   public void sendTimeout() {
-    for (ExecutionStep step : subSteps) {
+    for (final ExecutionStep step : subSteps) {
       ((AbstractExecutionStep) step).sendTimeout();
     }
     prev.ifPresent(p -> p.sendTimeout());
@@ -153,7 +153,7 @@ public class FetchFromClustersExecutionStep extends AbstractExecutionStep {
 
   @Override
   public void close() {
-    for (ExecutionStep step : subSteps) {
+    for (final ExecutionStep step : subSteps) {
       ((AbstractExecutionStep) step).close();
     }
     prev.ifPresent(p -> p.close());
@@ -170,7 +170,7 @@ public class FetchFromClustersExecutionStep extends AbstractExecutionStep {
     }
     builder.append("\n");
     for (int i = 0; i < subSteps.size(); i++) {
-      ExecutionStepInternal step = (ExecutionStepInternal) subSteps.get(i);
+      final ExecutionStepInternal step = (ExecutionStepInternal) subSteps.get(i);
       builder.append(step.prettyPrint(depth + 1, indent));
       if (i < subSteps.size() - 1) {
         builder.append("\n");
@@ -203,7 +203,7 @@ public class FetchFromClustersExecutionStep extends AbstractExecutionStep {
       ExecutionStepInternal.basicDeserialize(fromResult, this);
       this.orderByRidAsc = fromResult.getProperty("orderByRidAsc");
       this.orderByRidDesc = fromResult.getProperty("orderByRidDesc");
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new CommandExecutionException(e);
     }
   }

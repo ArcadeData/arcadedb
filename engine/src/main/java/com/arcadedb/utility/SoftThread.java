@@ -45,9 +45,11 @@ public abstract class SoftThread extends Thread {
   protected abstract void execute() throws Exception;
 
   public void startup() {
+    // SUBCLASS CAN EXTEND THIS
   }
 
   public void shutdown() {
+    // SUBCLASS CAN EXTEND THIS
   }
 
   public void sendShutdown() {
@@ -72,10 +74,10 @@ public abstract class SoftThread extends Thread {
         beforeExecution();
         execute();
         afterExecution();
-      } catch (Exception e) {
+      } catch (final Exception e) {
         if (dumpExceptions)
           LogManager.instance().log(this, Level.SEVERE, "Error during thread execution", e);
-      } catch (Error e) {
+      } catch (final Error e) {
         if (dumpExceptions)
           LogManager.instance().log(this, Level.SEVERE, "Error during thread execution", e);
         throw e;
@@ -97,7 +99,7 @@ public abstract class SoftThread extends Thread {
 
       Thread.sleep(iTime);
       return true;
-    } catch (InterruptedException ignore) {
+    } catch (final InterruptedException ignore) {
       Thread.currentThread().interrupt();
       return false;
     }
@@ -112,10 +114,10 @@ public abstract class SoftThread extends Thread {
   }
 
   protected void beforeExecution() {
-    return;
+    // SUBCLASS CAN EXTEND THIS
   }
 
   protected void afterExecution() {
-    return;
+    // SUBCLASS CAN EXTEND THIS
   }
 }

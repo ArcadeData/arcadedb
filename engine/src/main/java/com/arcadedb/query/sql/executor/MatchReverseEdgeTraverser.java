@@ -34,32 +34,32 @@ public class MatchReverseEdgeTraverser extends MatchEdgeTraverser {
   private final String startingPointAlias;
   private final String endPointAlias;
 
-  public MatchReverseEdgeTraverser(Result lastUpstreamRecord, EdgeTraversal edge) {
+  public MatchReverseEdgeTraverser(final Result lastUpstreamRecord, final EdgeTraversal edge) {
     super(lastUpstreamRecord, edge);
     this.startingPointAlias = edge.edge.in.alias;
     this.endPointAlias = edge.edge.out.alias;
   }
 
-  protected String targetClassName(MatchPathItem item, CommandContext iCommandContext) {
+  protected String targetClassName(final MatchPathItem item, final CommandContext iCommandContext) {
     return edge.getLeftClass();
   }
 
-  protected String targetClusterName(MatchPathItem item, CommandContext iCommandContext) {
+  protected String targetClusterName(final MatchPathItem item, final CommandContext iCommandContext) {
     return edge.getLeftCluster();
   }
 
-  protected Rid targetRid(MatchPathItem item, CommandContext iCommandContext) {
+  protected Rid targetRid(final MatchPathItem item, final CommandContext iCommandContext) {
     return edge.getLeftRid();
   }
 
-  protected WhereClause getTargetFilter(MatchPathItem item) {
+  protected WhereClause getTargetFilter(final MatchPathItem item) {
     return edge.getLeftFilter();
   }
 
   @Override
-  protected Iterable<ResultInternal> traversePatternEdge(Identifiable startingPoint, CommandContext iCommandContext) {
+  protected Iterable<ResultInternal> traversePatternEdge(final Identifiable startingPoint, final CommandContext iCommandContext) {
 
-    Object qR = this.item.getMethod().executeReverse(startingPoint, iCommandContext);
+    final Object qR = this.item.getMethod().executeReverse(startingPoint, iCommandContext);
     if (qR == null) {
       return Collections.emptyList();
     }
@@ -70,9 +70,9 @@ public class MatchReverseEdgeTraverser extends MatchEdgeTraverser {
       return Collections.singleton(new ResultInternal((Document) qR));
     }
     if (qR instanceof Iterable) {
-      Iterable iterable = (Iterable) qR;
-      List<ResultInternal> result = new ArrayList<>();
-      for (Object o : iterable) {
+      final Iterable iterable = (Iterable) qR;
+      final List<ResultInternal> result = new ArrayList<>();
+      for (final Object o : iterable) {
         if (o instanceof Document) {
           result.add(new ResultInternal((Document) o));
         } else if (o instanceof ResultInternal) {
@@ -84,7 +84,7 @@ public class MatchReverseEdgeTraverser extends MatchEdgeTraverser {
       }
       return result;
     }
-    return Collections.EMPTY_LIST;
+    return Collections.emptyList();
   }
 
   @Override

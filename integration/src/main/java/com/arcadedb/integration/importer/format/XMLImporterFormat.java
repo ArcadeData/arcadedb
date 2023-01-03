@@ -40,12 +40,12 @@ import java.util.logging.*;
 
 public class XMLImporterFormat implements FormatImporter {
   @Override
-  public void load(final SourceSchema sourceSchema, AnalyzedEntity.ENTITY_TYPE entityType, final Parser parser, final DatabaseInternal database,
+  public void load(final SourceSchema sourceSchema, final AnalyzedEntity.ENTITY_TYPE entityType, final Parser parser, final DatabaseInternal database,
       final ImporterContext context, final ImporterSettings settings) throws IOException {
     try {
       int objectNestLevel = 1;
 
-      for (Map.Entry<String, String> entry : settings.options.entrySet()) {
+      for (final Map.Entry<String, String> entry : settings.options.entrySet()) {
         if ("objectNestLevel".equals(entry.getKey()))
           objectNestLevel = Integer.parseInt(entry.getValue());
       }
@@ -134,7 +134,7 @@ public class XMLImporterFormat implements FormatImporter {
         if (settings.parsingLimitEntries > 0 && context.parsed.get() > settings.parsingLimitEntries)
           break;
       }
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new ImportException("Error on importing from source '" + parser.getSource() + "'", e);
     }
   }
@@ -145,7 +145,7 @@ public class XMLImporterFormat implements FormatImporter {
     int objectNestLevel = 1;
     long analyzingLimitEntries = 0;
 
-    for (Map.Entry<String, String> entry : settings.options.entrySet()) {
+    for (final Map.Entry<String, String> entry : settings.options.entrySet()) {
       if ("analyzingLimitEntries".equals(entry.getKey()))
         analyzingLimitEntries = Long.parseLong(entry.getValue());
       else if ("objectNestLevel".equals(entry.getKey()))
@@ -253,10 +253,10 @@ public class XMLImporterFormat implements FormatImporter {
           break;
       }
 
-    } catch (XMLStreamException e) {
+    } catch (final XMLStreamException e) {
       // IGNORE IT
 
-    } catch (Exception e) {
+    } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on parsing XML", e);
       return null;
     }

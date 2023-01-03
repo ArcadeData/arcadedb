@@ -36,20 +36,20 @@ public class ConvertToUpdatableResultStepTest {
   @Test
   public void shouldConvertUpdatableResult() throws Exception {
     TestHelper.executeInNewDatabase((database) -> {
-      String type = TestHelper.createRandomType(database).getName();
+      final String type = TestHelper.createRandomType(database).getName();
 
-      CommandContext context = new BasicCommandContext();
-      ConvertToUpdatableResultStep step = new ConvertToUpdatableResultStep(context, false);
-      AbstractExecutionStep previous = new AbstractExecutionStep(context, false) {
+      final CommandContext context = new BasicCommandContext();
+      final ConvertToUpdatableResultStep step = new ConvertToUpdatableResultStep(context, false);
+      final AbstractExecutionStep previous = new AbstractExecutionStep(context, false) {
         boolean done = false;
 
         @Override
-        public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-          InternalResultSet result = new InternalResultSet();
+        public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
+          final InternalResultSet result = new InternalResultSet();
           if (!done) {
             for (int i = 0; i < 10; i++) {
-              ResultInternal item = new ResultInternal();
-              MutableDocument document = database.newDocument(type);
+              final ResultInternal item = new ResultInternal();
+              final MutableDocument document = database.newDocument(type);
               document.set(STRING_PROPERTY, UUID.randomUUID().toString());
               document.set(INTEGER_PROPERTY, new Random().nextInt());
               documents.add(document);
@@ -63,11 +63,11 @@ public class ConvertToUpdatableResultStepTest {
       };
 
       step.setPrevious(previous);
-      ResultSet result = step.syncPull(context, 10);
+      final ResultSet result = step.syncPull(context, 10);
 
       int counter = 0;
       while (result.hasNext()) {
-        Result currentItem = result.next();
+        final Result currentItem = result.next();
         if (!(currentItem.getClass().equals(UpdatableResult.class))) {
           Assertions.fail("There is an item in result set that is not an instance of OUpdatableResult");
         }

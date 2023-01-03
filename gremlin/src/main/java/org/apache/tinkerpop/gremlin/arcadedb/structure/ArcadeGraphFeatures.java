@@ -108,7 +108,7 @@ public class ArcadeGraphFeatures implements Graph.Features {
     }
 
     @Override
-    public boolean willAllowId(Object id) {
+    public boolean willAllowId(final Object id) {
       return false;
     }
 
@@ -130,7 +130,7 @@ public class ArcadeGraphFeatures implements Graph.Features {
     }
 
     @Override
-    public VertexProperty.Cardinality getCardinality(String key) {
+    public VertexProperty.Cardinality getCardinality(final String key) {
       return VertexProperty.Cardinality.single;
     }
 
@@ -189,7 +189,7 @@ public class ArcadeGraphFeatures implements Graph.Features {
     }
 
     @Override
-    public boolean willAllowId(Object id) {
+    public boolean willAllowId(final Object id) {
       return false;
     }
   }

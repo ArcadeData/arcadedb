@@ -35,31 +35,31 @@ public class IndexMatchCondition extends BooleanExpression {
   protected List<Expression> leftExpressions;
   protected List<Expression> rightExpressions;
 
-  public IndexMatchCondition(int id) {
+  public IndexMatchCondition(final int id) {
     super(id);
   }
 
-  public IndexMatchCondition(SqlParser p, int id) {
+  public IndexMatchCondition(final SqlParser p, final int id) {
     super(p, id);
   }
 
   @Override
-  public boolean evaluate(Identifiable currentRecord, CommandContext ctx) {
+  public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
     throw new UnsupportedOperationException("TODO Implement IndexMatch!!!");//TODO
   }
 
   @Override
-  public boolean evaluate(Result currentRecord, CommandContext ctx) {
+  public boolean evaluate(final Result currentRecord, final CommandContext ctx) {
     throw new UnsupportedOperationException("TODO Implement IndexMatch!!!");//TODO
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("KEY ");
     if (operator != null) {
       builder.append(operator);
       builder.append(" [");
       boolean first = true;
-      for (Expression x : leftExpressions) {
+      for (final Expression x : leftExpressions) {
         if (!first) {
           builder.append(", ");
         }
@@ -70,7 +70,7 @@ public class IndexMatchCondition extends BooleanExpression {
     } else if (Boolean.TRUE.equals(between)) {
       builder.append(" BETWEEN [");
       boolean first = true;
-      for (Expression x : leftExpressions) {
+      for (final Expression x : leftExpressions) {
         if (!first) {
           builder.append(", ");
         }
@@ -79,7 +79,7 @@ public class IndexMatchCondition extends BooleanExpression {
       }
       builder.append("] AND [");
       first = true;
-      for (Expression x : rightExpressions) {
+      for (final Expression x : rightExpressions) {
         if (!first) {
           builder.append(", ");
         }
@@ -102,22 +102,22 @@ public class IndexMatchCondition extends BooleanExpression {
 
   @Override
   protected List<Object> getExternalCalculationConditions() {
-    List<Object> result = new ArrayList<Object>();
+    final List<Object> result = new ArrayList<Object>();
     result.add(this);
     return result;
   }
 
   @Override
-  public boolean needsAliases(Set<String> aliases) {
+  public boolean needsAliases(final Set<String> aliases) {
     if (leftExpressions != null) {
-      for (Expression exp : leftExpressions) {
+      for (final Expression exp : leftExpressions) {
         if (exp.needsAliases(aliases)) {
           return true;
         }
       }
     }
     if (rightExpressions != null) {
-      for (Expression exp : rightExpressions) {
+      for (final Expression exp : rightExpressions) {
         if (exp.needsAliases(aliases)) {
           return true;
         }
@@ -128,7 +128,7 @@ public class IndexMatchCondition extends BooleanExpression {
 
   @Override
   public IndexMatchCondition copy() {
-    IndexMatchCondition result = new IndexMatchCondition(-1);
+    final IndexMatchCondition result = new IndexMatchCondition(-1);
     result.operator = operator == null ? null : operator.copy();
     result.between = between;
 
@@ -139,14 +139,14 @@ public class IndexMatchCondition extends BooleanExpression {
   }
 
   @Override
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
     if (leftExpressions != null) {
-      for (Expression exp : leftExpressions) {
+      for (final Expression exp : leftExpressions) {
         exp.extractSubQueries(collector);
       }
     }
     if (rightExpressions != null) {
-      for (Expression exp : rightExpressions) {
+      for (final Expression exp : rightExpressions) {
         exp.extractSubQueries(collector);
       }
     }
@@ -155,14 +155,14 @@ public class IndexMatchCondition extends BooleanExpression {
   @Override
   public boolean refersToParent() {
     if (leftExpressions != null) {
-      for (Expression exp : leftExpressions) {
+      for (final Expression exp : leftExpressions) {
         if (exp != null && exp.refersToParent()) {
           return true;
         }
       }
     }
     if (rightExpressions != null) {
-      for (Expression exp : rightExpressions) {
+      for (final Expression exp : rightExpressions) {
         if (exp != null && exp.refersToParent()) {
           return true;
         }
@@ -207,14 +207,14 @@ public class IndexMatchCondition extends BooleanExpression {
   public boolean isCacheable() {
 
     if (leftExpressions != null) {
-      for (Expression exp : leftExpressions) {
+      for (final Expression exp : leftExpressions) {
         if (!exp.isCacheable()) {
           return false;
         }
       }
     }
     if (rightExpressions != null) {
-      for (Expression exp : rightExpressions) {
+      for (final Expression exp : rightExpressions) {
         if (!exp.isCacheable()) {
           return false;
         }

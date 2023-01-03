@@ -21,11 +21,11 @@
 package com.arcadedb.graphql.parser;
 
 public class VariableLiteral extends AbstractValue {
-  public VariableLiteral(int id) {
+  public VariableLiteral(final int id) {
     super(id);
   }
 
-  public VariableLiteral(GraphQLParser p, int id) {
+  public VariableLiteral(final GraphQLParser p, final int id) {
     super(p, id);
   }
 
@@ -37,7 +37,7 @@ public class VariableLiteral extends AbstractValue {
   /**
    * Accept the visitor.
    **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
+  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
     return visitor.visit(this, data);
   }
 

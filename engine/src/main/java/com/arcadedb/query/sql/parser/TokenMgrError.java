@@ -66,8 +66,8 @@ public class TokenMgrError extends Error {
    * Replaces unprintable characters by their escaped (or unicode escaped)
    * equivalents in the given string
    */
-  protected static final String addEscapes(String str) {
-    StringBuilder retval = new StringBuilder();
+  protected static final String addEscapes(final String str) {
+    final StringBuilder retval = new StringBuilder();
     char ch;
     for (int i = 0; i < str.length(); i++) {
       switch (str.charAt(i)) {
@@ -99,7 +99,7 @@ public class TokenMgrError extends Error {
         continue;
       default:
         if ((ch = str.charAt(i)) < 0x20 || ch > 0x7e) {
-          String s = "0000" + Integer.toString(ch, 16);
+          final String s = "0000" + Integer.toString(ch, 16);
           retval.append("\\u" + s.substring(s.length() - 4));
         } else {
           retval.append(ch);
@@ -122,7 +122,8 @@ public class TokenMgrError extends Error {
    * curchar     : the offending character
    * Note: You can customize the lexical error message by modifying this method.
    */
-  protected static String LexicalError(boolean EOFSeen, int lexState, int errorLine, int errorColumn, String errorAfter, char curChar) {
+  protected static String LexicalError(
+      final boolean EOFSeen, final int lexState, final int errorLine, final int errorColumn, final String errorAfter, final char curChar) {
     return ("Lexical error at line " + errorLine + ", column " + errorColumn + ".  Encountered: " + (EOFSeen ?
         "<EOF> " :
         ("\"" + addEscapes(String.valueOf(curChar)) + "\"") + " (" + (int) curChar + "), ") + "after : \"" + addEscapes(errorAfter) + "\"");
@@ -154,7 +155,7 @@ public class TokenMgrError extends Error {
   /**
    * Constructor with message and reason.
    */
-  public TokenMgrError(String message, int reason) {
+  public TokenMgrError(final String message, final int reason) {
     super(message);
     errorCode = reason;
   }
@@ -162,7 +163,8 @@ public class TokenMgrError extends Error {
   /**
    * Full Constructor.
    */
-  public TokenMgrError(boolean EOFSeen, int lexState, int errorLine, int errorColumn, String errorAfter, int curChar, int reason) {
+  public TokenMgrError(
+      final boolean EOFSeen, final int lexState, final int errorLine, final int errorColumn, final String errorAfter, final int curChar, final int reason) {
     this(LexicalError(EOFSeen, lexState, errorLine, errorColumn, errorAfter, (char) curChar), reason);
   }
 }

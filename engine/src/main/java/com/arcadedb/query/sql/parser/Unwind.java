@@ -86,8 +86,8 @@ public class Unwind extends SimpleNode {
     if (fromResult.getProperty("items") != null) {
       final List<Result> ser = fromResult.getProperty("items");
       items = new ArrayList<>();
-      for (Result r : ser) {
-        Identifier exp = new Identifier(-1);
+      for (final Result r : ser) {
+        final Identifier exp = new Identifier(-1);
         Identifier.deserialize(r);
         items.add(exp);
       }

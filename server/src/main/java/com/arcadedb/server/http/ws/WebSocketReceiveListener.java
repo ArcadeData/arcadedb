@@ -47,20 +47,20 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
   }
 
   @Override
-  protected void onFullTextMessage(WebSocketChannel channel, BufferedTextMessage textMessage) throws IOException {
+  protected void onFullTextMessage(final WebSocketChannel channel, final BufferedTextMessage textMessage) throws IOException {
     try {
-      var message = new JSONObject(textMessage.getData());
-      var rawAction = message.optString("action");
+      final var message = new JSONObject(textMessage.getData());
+      final var rawAction = message.optString("action");
       var action = ACTION.UNKNOWN;
       try {
         action = ACTION.valueOf(rawAction.toUpperCase());
-      } catch (IllegalArgumentException ignored) {
+      } catch (final IllegalArgumentException ignored) {
       }
 
       switch (action) {
       case SUBSCRIBE:
-        var jsonChangeTypes = message.optJSONArray("changeTypes");
-        var changeTypes = jsonChangeTypes == null ?
+        final var jsonChangeTypes = message.optJSONArray("changeTypes");
+        final var changeTypes = jsonChangeTypes == null ?
             null :
             jsonChangeTypes.toList().stream().map(t -> ChangeEvent.TYPE.valueOf(t.toString().toUpperCase())).collect(Collectors.toSet());
         this.webSocketEventBus.subscribe(message.getString("database"), message.optString("type", null), changeTypes, channel);
@@ -78,11 +78,11 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
         }
         break;
       }
-    } catch (JSONException e) {
+    } catch (final JSONException e) {
       sendError(channel, "Unable to parse JSON", e.getMessage(), e);
-    } catch (DatabaseOperationException e) {
+    } catch (final DatabaseOperationException e) {
       sendError(channel, "Database error", e.getMessage(), e);
-    } catch (Exception e) {
+    } catch (final Exception e) {
       LogManager.instance().log(this, getErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
       sendError(channel, "Internal error", e.getMessage(), e);
     }

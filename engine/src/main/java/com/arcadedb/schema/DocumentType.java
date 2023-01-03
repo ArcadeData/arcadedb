@@ -73,7 +73,7 @@ public class DocumentType {
       return propertiesWithDefaultDefined;
 
     final HashSet<String> set = new HashSet<>(propertiesWithDefaultDefined);
-    for (DocumentType superType : superTypes)
+    for (final DocumentType superType : superTypes)
       set.addAll(superType.propertiesWithDefaultDefined);
     return set;
   }
@@ -93,7 +93,7 @@ public class DocumentType {
 
     // CHECK FOR CONFLICT WITH PROPERTIES NAMES
     final Set<String> allProperties = getPolymorphicPropertyNames();
-    for (String p : superType.getPolymorphicPropertyNames())
+    for (final String p : superType.getPolymorphicPropertyNames())
       if (allProperties.contains(p)) {
         LogManager.instance().log(this, Level.WARNING, "Property '" + p + "' is already defined in type '" + name + "' or any super types");
         //throw new IllegalArgumentException("Property '" + p + "' is already defined in type '" + name + "' or any super types");
@@ -110,7 +110,7 @@ public class DocumentType {
       if (createIndexes) {
         try {
           schema.getDatabase().transaction(() -> {
-            for (TypeIndex index : indexes) {
+            for (final TypeIndex index : indexes) {
               if (index.getType() == null) {
                 LogManager.instance()
                     .log(this, Level.WARNING, "Error on creating implicit indexes from super type '" + superType.getName() + "': key types is null");
@@ -124,7 +124,7 @@ public class DocumentType {
               }
             }
           }, false);
-        } catch (IndexException e) {
+        } catch (final IndexException e) {
           LogManager.instance().log(this, Level.WARNING, "Error on creating implicit indexes from super type '" + superType.getName() + "'", e);
           throw e;
         }
@@ -179,7 +179,7 @@ public class DocumentType {
     if (name.equals(type))
       return true;
 
-    for (DocumentType t : superTypes) {
+    for (final DocumentType t : superTypes) {
       if (t.instanceOf(type))
         return true;
     }
@@ -257,7 +257,7 @@ public class DocumentType {
       return getPropertyNames();
 
     final Set<String> allProperties = new HashSet<>(getPropertyNames());
-    for (DocumentType p : superTypes)
+    for (final DocumentType p : superTypes)
       allProperties.addAll(p.getPolymorphicPropertyNames());
     return allProperties;
   }
@@ -282,7 +282,7 @@ public class DocumentType {
     return createProperty(propertyName, Type.getTypeByClass(propertyType));
   }
 
-  public Property createProperty(String propName, JSONObject prop) {
+  public Property createProperty(final String propName, final JSONObject prop) {
     final Property p = createProperty(propName, (String) prop.get("type"));
 
     if (prop.has("default"))
@@ -357,7 +357,7 @@ public class DocumentType {
    * @param propertyType Property type, as @{@link Type}, to use in case the property does not exist and will be created
    */
   public Property getOrCreateProperty(final String propertyName, final Type propertyType) {
-    Property p = properties.get(propertyName);
+    final Property p = properties.get(propertyName);
     if (p != null) {
       if (p.getType().equals(propertyType))
         return p;
@@ -374,7 +374,7 @@ public class DocumentType {
    * @param propertyName Property name to remove
    */
   public void dropProperty(final String propertyName) {
-    for (TypeIndex index : getAllIndexes(true)) {
+    for (final TypeIndex index : getAllIndexes(true)) {
       if (index.getPropertyNames().contains(propertyName))
         throw new SchemaException("Error on dropping property '" + propertyName + "' because used by index '" + index.getName() + "'");
     }
@@ -389,7 +389,7 @@ public class DocumentType {
     return schema.createTypeIndex(indexType, unique, name, propertyNames, LSMTreeIndexAbstract.DEF_PAGE_SIZE, LSMTreeIndexAbstract.NULL_STRATEGY.SKIP, null);
   }
 
-  public TypeIndex createTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique, String[] propertyNames, final int pageSize) {
+  public TypeIndex createTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames, final int pageSize) {
     return schema.createTypeIndex(indexType, unique, name, propertyNames, pageSize);
   }
 
@@ -399,7 +399,7 @@ public class DocumentType {
   }
 
   public TypeIndex createTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames, final int pageSize,
-      LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, final Index.BuildIndexCallback callback) {
+      final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, final Index.BuildIndexCallback callback) {
     return schema.createTypeIndex(indexType, unique, name, propertyNames, pageSize, nullStrategy, callback);
   }
 
@@ -407,7 +407,7 @@ public class DocumentType {
     return schema.getOrCreateTypeIndex(indexType, unique, name, propertyNames);
   }
 
-  public TypeIndex getOrCreateTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique, String[] propertyNames, final int pageSize) {
+  public TypeIndex getOrCreateTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames, final int pageSize) {
     return schema.getOrCreateTypeIndex(indexType, unique, name, propertyNames, pageSize);
   }
 
@@ -417,7 +417,7 @@ public class DocumentType {
   }
 
   public TypeIndex getOrCreateTypeIndex(final EmbeddedSchema.INDEX_TYPE indexType, final boolean unique, final String[] propertyNames, final int pageSize,
-      LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, final Index.BuildIndexCallback callback) {
+      final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, final Index.BuildIndexCallback callback) {
     return schema.getOrCreateTypeIndex(indexType, unique, name, propertyNames, pageSize, nullStrategy, callback);
   }
 
@@ -426,7 +426,7 @@ public class DocumentType {
       return Collections.unmodifiableList(buckets);
 
     final List<Bucket> allBuckets = new ArrayList<>(buckets);
-    for (DocumentType p : subTypes)
+    for (final DocumentType p : subTypes)
       allBuckets.addAll(p.getBuckets(true));
     return allBuckets;
   }
@@ -481,7 +481,7 @@ public class DocumentType {
     if (prop != null)
       return prop;
 
-    for (DocumentType superType : superTypes) {
+    for (final DocumentType superType : superTypes) {
       prop = superType.getPolymorphicPropertyIfExists(propertyName);
       if (prop != null)
         return prop;
@@ -515,7 +515,7 @@ public class DocumentType {
     final List<TypeIndex> list = new ArrayList<>(indexesByProperties.values());
 
     if (polymorphic)
-      for (DocumentType t : superTypes)
+      for (final DocumentType t : superTypes)
         list.addAll(t.getAllIndexes(true));
 
     return Collections.unmodifiableCollection(list);
@@ -534,7 +534,7 @@ public class DocumentType {
     }
 
     final List<Index> result = r != null ? new ArrayList<>(r) : new ArrayList<>();
-    for (DocumentType t : superTypes)
+    for (final DocumentType t : superTypes)
       result.addAll(t.getPolymorphicBucketIndexByBucketId(bucketId));
 
     return result;
@@ -547,8 +547,8 @@ public class DocumentType {
     properties.add(property1);
     Collections.addAll(properties, propertiesN);
 
-    for (Map.Entry<List<String>, TypeIndex> entry : indexesByProperties.entrySet()) {
-      for (String prop : entry.getKey()) {
+    for (final Map.Entry<List<String>, TypeIndex> entry : indexesByProperties.entrySet()) {
+      for (final String prop : entry.getKey()) {
         if (properties.contains(prop)) {
           result.add(entry.getValue());
           break;
@@ -567,7 +567,7 @@ public class DocumentType {
     TypeIndex idx = indexesByProperties.get(properties);
 
     if (idx == null)
-      for (DocumentType t : superTypes) {
+      for (final DocumentType t : superTypes) {
         idx = t.getPolymorphicIndexByProperties(properties);
         if (idx != null)
           break;
@@ -599,10 +599,10 @@ public class DocumentType {
       return false;
 
     final Set<String> set = new HashSet<>();
-    for (DocumentType t : superTypes)
+    for (final DocumentType t : superTypes)
       set.add(t.name);
 
-    for (DocumentType t : that.superTypes)
+    for (final DocumentType t : that.superTypes)
       set.remove(t.name);
 
     if (!set.isEmpty())
@@ -613,10 +613,10 @@ public class DocumentType {
 
     set.clear();
 
-    for (DocumentType t : subTypes)
+    for (final DocumentType t : subTypes)
       set.add(t.name);
 
-    for (DocumentType t : that.subTypes)
+    for (final DocumentType t : that.subTypes)
       set.remove(t.name);
 
     if (!set.isEmpty())
@@ -627,10 +627,10 @@ public class DocumentType {
 
     set.clear();
 
-    for (Bucket t : buckets)
+    for (final Bucket t : buckets)
       set.add(t.getName());
 
-    for (Bucket t : that.buckets)
+    for (final Bucket t : that.buckets)
       set.remove(t.getName());
 
     if (!set.isEmpty())
@@ -641,16 +641,16 @@ public class DocumentType {
 
     set.clear();
 
-    for (Property p : properties.values())
+    for (final Property p : properties.values())
       set.add(p.getName());
 
-    for (Property p : that.properties.values())
+    for (final Property p : that.properties.values())
       set.remove(p.getName());
 
     if (!set.isEmpty())
       return false;
 
-    for (Property p1 : properties.values()) {
+    for (final Property p1 : properties.values()) {
       final Property p2 = that.properties.get(p1.getName());
       if (!p1.equals(p2))
         return false;
@@ -659,7 +659,7 @@ public class DocumentType {
     if (bucketIndexesByBucket.size() != that.bucketIndexesByBucket.size())
       return false;
 
-    for (Map.Entry<Integer, List<IndexInternal>> entry1 : bucketIndexesByBucket.entrySet()) {
+    for (final Map.Entry<Integer, List<IndexInternal>> entry1 : bucketIndexesByBucket.entrySet()) {
       final List<IndexInternal> value2 = that.bucketIndexesByBucket.get(entry1.getKey());
       if (value2 == null)
         return false;
@@ -687,7 +687,7 @@ public class DocumentType {
     if (indexesByProperties.size() != that.indexesByProperties.size())
       return false;
 
-    for (Map.Entry<List<String>, TypeIndex> entry1 : indexesByProperties.entrySet()) {
+    for (final Map.Entry<List<String>, TypeIndex> entry1 : indexesByProperties.entrySet()) {
       final TypeIndex index2 = that.indexesByProperties.get(entry1.getKey());
       if (index2 == null)
         return false;
@@ -742,7 +742,7 @@ public class DocumentType {
   }
 
   public void removeTypeIndexInternal(final TypeIndex index) {
-    for (Iterator<TypeIndex> it = indexesByProperties.values().iterator(); it.hasNext(); ) {
+    for (final Iterator<TypeIndex> it = indexesByProperties.values().iterator(); it.hasNext(); ) {
       final TypeIndex idx = it.next();
       if (idx == index) {
         it.remove();
@@ -750,10 +750,10 @@ public class DocumentType {
       }
     }
 
-    for (IndexInternal idx : index.getIndexesOnBuckets())
+    for (final IndexInternal idx : index.getIndexesOnBuckets())
       removeBucketIndexInternal(idx);
 
-    for (DocumentType superType : superTypes)
+    for (final DocumentType superType : superTypes)
       superType.removeTypeIndexInternal(index);
   }
 
@@ -767,7 +767,7 @@ public class DocumentType {
   }
 
   protected void addBucketInternal(final Bucket bucket) {
-    for (DocumentType cl : schema.getTypes()) {
+    for (final DocumentType cl : schema.getTypes()) {
       if (cl.hasBucket(bucket.getName()))
         throw new SchemaException(
             "Cannot add the bucket '" + bucket.getName() + "' to the type '" + name + "', because the bucket is already associated to the type '" + cl.getName()
@@ -790,14 +790,14 @@ public class DocumentType {
   protected Map<String, Property> getPolymorphicProperties() {
     final Map<String, Property> allProperties = new HashMap<>(properties);
 
-    for (DocumentType p : superTypes)
+    for (final DocumentType p : superTypes)
       allProperties.putAll(p.getPolymorphicProperties());
 
     return allProperties;
   }
 
   public boolean hasBucket(final String bucketName) {
-    for (Bucket b : buckets)
+    for (final Bucket b : buckets)
       if (b.getName().equals(bucketName))
         return true;
     return false;
@@ -813,7 +813,7 @@ public class DocumentType {
 
     if (type.equalsIgnoreCase(getName()))
       return true;
-    for (DocumentType superType : superTypes) {
+    for (final DocumentType superType : superTypes) {
       if (superType.isSubTypeOf(type))
         return true;
     }
@@ -826,7 +826,7 @@ public class DocumentType {
 
     if (type.equalsIgnoreCase(getName()))
       return true;
-    for (DocumentType subType : subTypes) {
+    for (final DocumentType subType : subTypes) {
       if (subType.isSuperTypeOf(type))
         return true;
     }
@@ -874,14 +874,14 @@ public class DocumentType {
     final JSONObject properties = new JSONObject();
     type.put("properties", properties);
 
-    for (String propName : getPropertyNames())
+    for (final String propName : getPropertyNames())
       properties.put(propName, getProperty(propName).toJSON());
 
     final JSONObject indexes = new JSONObject();
     type.put("indexes", indexes);
 
-    for (TypeIndex i : getAllIndexes(false)) {
-      for (Index entry : i.getIndexesOnBuckets())
+    for (final TypeIndex i : getAllIndexes(false)) {
+      for (final Index entry : i.getIndexesOnBuckets())
         indexes.put(entry.getName(), entry.toJSON());
     }
 

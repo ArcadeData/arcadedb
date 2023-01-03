@@ -106,8 +106,8 @@ public class LSMTreeIndexCompactor {
         pagesToCompact = lastImmutablePage - pageIndex + 1;
 
       // CREATE ROOT PAGE
-      MutablePage rootPage = compactedIndex.createNewPage(0);
-      TrackableBinary rootPageBuffer = rootPage.getTrackable();
+      final MutablePage rootPage = compactedIndex.createNewPage(0);
+      final TrackableBinary rootPageBuffer = rootPage.getTrackable();
       Object[] lastPageMaxKey = null;
 
       int compactedPageNumberInSeries = 1;

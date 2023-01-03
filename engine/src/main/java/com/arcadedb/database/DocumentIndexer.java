@@ -53,7 +53,7 @@ public class DocumentIndexer {
 
     // INDEX THE RECORD
     final List<Index> metadata = type.getPolymorphicBucketIndexByBucketId(bucket.getId());
-    for (Index entry : metadata)
+    for (final Index entry : metadata)
       addToIndex(entry, rid, record);
   }
 
@@ -82,7 +82,7 @@ public class DocumentIndexer {
       // RECORD IS NOT PERSISTENT
       return;
 
-    for (Index index : indexes) {
+    for (final Index index : indexes) {
       final List<String> keyNames = index.getPropertyNames();
       final Object[] oldKeyValues = new Object[keyNames.size()];
       final Object[] newKeyValues = new Object[keyNames.size()];
@@ -125,7 +125,7 @@ public class DocumentIndexer {
         // FORCE RESET OF ANY PROPERTY TEMPORARY SET
         ((RecordInternal) record).unsetDirty();
 
-      for (Index index : metadata) {
+      for (final Index index : metadata) {
         final List<String> keyNames = index.getPropertyNames();
         final Object[] keyValues = new Object[keyNames.size()];
         for (int i = 0; i < keyNames.size(); ++i) {

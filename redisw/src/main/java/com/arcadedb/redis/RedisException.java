@@ -24,7 +24,7 @@ import com.arcadedb.exception.ArcadeDBException;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  **/
 public class RedisException extends ArcadeDBException {
-  public RedisException(String message) {
+  public RedisException(final String message) {
     super(message);
   }
 }

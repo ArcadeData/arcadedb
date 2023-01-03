@@ -368,7 +368,7 @@ public enum GlobalConfiguration {
    * Reset all the configurations to the default values.
    */
   public static void resetAll() {
-    for (GlobalConfiguration v : values())
+    for (final GlobalConfiguration v : values())
       v.reset();
   }
 
@@ -385,7 +385,7 @@ public enum GlobalConfiguration {
     out.println(" configuration:");
 
     String lastSection = "";
-    for (GlobalConfiguration v : values()) {
+    for (final GlobalConfiguration v : values()) {
       final String section = v.key.substring(0, v.key.indexOf('.'));
 
       if (!lastSection.equals(section)) {
@@ -407,7 +407,7 @@ public enum GlobalConfiguration {
 
     final JSONObject json = new JSONObject(input);
     final JSONObject cfg = json.getJSONObject("configuration");
-    for (String k : cfg.keySet()) {
+    for (final String k : cfg.keySet()) {
       final GlobalConfiguration cfgEntry = findByKey(GlobalConfiguration.PREFIX + k);
       if (cfgEntry != null) {
         cfgEntry.setValue(cfg.get(k));
@@ -421,7 +421,7 @@ public enum GlobalConfiguration {
     final JSONObject cfg = new JSONObject();
     json.put("configuration", cfg);
 
-    for (GlobalConfiguration k : values()) {
+    for (final GlobalConfiguration k : values()) {
       cfg.put(k.key.substring(PREFIX.length()), (Object) k.getValue());
     }
 
@@ -439,7 +439,7 @@ public enum GlobalConfiguration {
     String key = iKey;
     if (!key.startsWith(PREFIX))
       key = PREFIX + iKey;
-    for (GlobalConfiguration v : values()) {
+    for (final GlobalConfiguration v : values()) {
       if (v.getKey().equalsIgnoreCase(key))
         return v;
     }
@@ -451,8 +451,8 @@ public enum GlobalConfiguration {
    * representation of configuration values
    */
   public static void setConfiguration(final Map<String, Object> iConfig) {
-    for (Map.Entry<String, Object> config : iConfig.entrySet()) {
-      for (GlobalConfiguration v : values()) {
+    for (final Map.Entry<String, Object> config : iConfig.entrySet()) {
+      for (final GlobalConfiguration v : values()) {
         if (BinaryComparator.equalsString(v.getKey(), config.getKey())) {
           v.setValue(config.getValue());
           break;
@@ -470,7 +470,7 @@ public enum GlobalConfiguration {
   private static void readConfiguration() {
     String prop;
 
-    for (GlobalConfiguration config : values()) {
+    for (final GlobalConfiguration config : values()) {
       prop = System.getProperty(config.key);
       if (prop == null)
         prop = System.getenv(config.key);
@@ -502,7 +502,7 @@ public enum GlobalConfiguration {
    * @throws IllegalArgumentException if value associated with configuration parameter is a string bug can not be converted to
    *                                  instance of passed in enumeration class.
    */
-  public <T extends Enum<T>> T getValueAsEnum(Class<T> enumType) {
+  public <T extends Enum<T>> T getValueAsEnum(final Class<T> enumType) {
     final Object value = getValue();
 
     if (value == null)
@@ -519,7 +519,7 @@ public enum GlobalConfiguration {
   }
 
   public void setValue(final Object iValue) {
-    Object oldValue = value;
+    final Object oldValue = value;
 
     try {
       if (iValue == null)
@@ -543,7 +543,7 @@ public enum GlobalConfiguration {
         } else if (iValue instanceof String) {
           final String string = (String) iValue;
 
-          for (Object constant : type.getEnumConstants()) {
+          for (final Object constant : type.getEnumConstants()) {
             final Enum<?> enumConstant = (Enum<?>) constant;
 
             if (enumConstant.name().equalsIgnoreCase(string)) {
@@ -565,7 +565,7 @@ public enum GlobalConfiguration {
           if (newValue != value)
             // OVERWRITE IT
             value = newValue;
-        } catch (Exception e) {
+        } catch (final Exception e) {
           LogManager.instance().log(this, Level.SEVERE, "Error during setting property %s=%s", e, key, value);
         }
 
@@ -573,7 +573,7 @@ public enum GlobalConfiguration {
         if (!allowed.contains(value.toString().toLowerCase()))
           throw new IllegalArgumentException("Global setting '" + key + "=" + value + "' is not valid. Allowed values are " + allowed);
 
-    } catch (Exception e) {
+    } catch (final Exception e) {
       // RESTORE THE PREVIOUS VALUE
       value = oldValue;
       throw e;

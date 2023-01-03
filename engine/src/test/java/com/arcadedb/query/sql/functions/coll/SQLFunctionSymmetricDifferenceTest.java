@@ -38,7 +38,7 @@ public class SQLFunctionSymmetricDifferenceTest {
     final List<Object> income = Arrays.asList(1, 2, 3, 1, 4, 5, 2, 2, 1, 1);
     final Set<Object> expectedResult = new HashSet<Object>(Arrays.asList(3, 4, 5));
 
-    for (Object i : income) {
+    for (final Object i : income) {
       differenceFunction.execute(null, null, null, new Object[] { i }, null);
     }
 
@@ -61,9 +61,9 @@ public class SQLFunctionSymmetricDifferenceTest {
     assertSetEquals(actualResult, expectedResult);
   }
 
-  private void assertSetEquals(Set<Object> actualResult, Set<Object> expectedResult) {
+  private void assertSetEquals(final Set<Object> actualResult, final Set<Object> expectedResult) {
     Assertions.assertEquals(actualResult.size(), expectedResult.size());
-    for (Object o : actualResult) {
+    for (final Object o : actualResult) {
       Assertions.assertTrue(expectedResult.contains(o));
     }
   }

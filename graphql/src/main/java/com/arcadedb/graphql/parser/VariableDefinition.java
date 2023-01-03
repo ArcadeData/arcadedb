@@ -29,17 +29,17 @@ class VariableDefinition extends SimpleNode {
   protected DefaultValue defaultValue;
 
 
-  public VariableDefinition(int id) {
+  public VariableDefinition(final int id) {
     super(id);
   }
 
-  public VariableDefinition(GraphQLParser p, int id) {
+  public VariableDefinition(final GraphQLParser p, final int id) {
     super(p, id);
   }
 
 
   /** Accept the visitor. **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
+  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
     return
     visitor.visit(this, data);
   }

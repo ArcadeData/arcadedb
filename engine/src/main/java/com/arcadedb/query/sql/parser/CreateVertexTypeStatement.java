@@ -42,7 +42,7 @@ public class CreateVertexTypeStatement extends CreateTypeAbstractStatement {
   }
 
   @Override
-  protected DocumentType createType(Schema schema) {
+  protected DocumentType createType(final Schema schema) {
     final VertexType type;
     if (totalBucketNo != null)
       type = schema.createVertexType(name.getStringValue(), totalBucketNo.getValue().intValue());
@@ -52,7 +52,7 @@ public class CreateVertexTypeStatement extends CreateTypeAbstractStatement {
       else {
         // CHECK THE BUCKETS FIRST
         final List<Bucket> bucketInstances = new ArrayList<>();
-        for (BucketIdentifier b : buckets)
+        for (final BucketIdentifier b : buckets)
           bucketInstances.add(b.bucketName != null ? schema.getBucketByName(b.bucketName.getStringValue()) : schema.getBucketById(b.bucketId.value.intValue()));
 
         type = schema.createVertexType(name.getStringValue(), bucketInstances);

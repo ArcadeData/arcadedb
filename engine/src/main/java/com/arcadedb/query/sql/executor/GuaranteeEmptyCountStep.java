@@ -29,17 +29,17 @@ public class GuaranteeEmptyCountStep extends AbstractExecutionStep {
     private boolean executed = false;
 
     public GuaranteeEmptyCountStep(
-            ProjectionItem oProjectionItem, CommandContext ctx, boolean enableProfiling) {
+            final ProjectionItem oProjectionItem, final CommandContext ctx, final boolean enableProfiling) {
         super(ctx, enableProfiling);
         this.item = oProjectionItem;
     }
 
     @Override
-    public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
+    public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
         if (prev.isEmpty()) {
             throw new IllegalStateException("filter step requires a previous step");
         }
-        ResultSet upstream = prev.get().syncPull(ctx, nRecords);
+        final ResultSet upstream = prev.get().syncPull(ctx, nRecords);
         return new ResultSet() {
             @Override
             public boolean hasNext() {
@@ -60,7 +60,7 @@ public class GuaranteeEmptyCountStep extends AbstractExecutionStep {
                     if (upstream.hasNext()) {
                         return upstream.next();
                     }
-                    ResultInternal result = new ResultInternal();
+                    final ResultInternal result = new ResultInternal();
                     result.setProperty(item.getProjectionAliasAsString(), 0L);
                     return result;
                 } finally {
@@ -86,7 +86,7 @@ public class GuaranteeEmptyCountStep extends AbstractExecutionStep {
     }
 
     @Override
-    public ExecutionStep copy(CommandContext ctx) {
+    public ExecutionStep copy(final CommandContext ctx) {
         return new GuaranteeEmptyCountStep(item.copy(), ctx, profilingEnabled);
     }
 
@@ -95,7 +95,7 @@ public class GuaranteeEmptyCountStep extends AbstractExecutionStep {
     }
 
     @Override
-    public String prettyPrint(int depth, int indent) {
+    public String prettyPrint(final int depth, final int indent) {
         return ExecutionStepInternal.getIndent(depth, indent) + "+ GUARANTEE FOR ZERO COUNT ";
     }
 }

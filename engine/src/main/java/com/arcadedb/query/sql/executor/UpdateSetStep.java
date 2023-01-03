@@ -29,14 +29,14 @@ import java.util.*;
 public class UpdateSetStep extends AbstractExecutionStep {
   private final List<UpdateItem> items;
 
-  public UpdateSetStep(List<UpdateItem> updateItems, CommandContext ctx, boolean profilingEnabled) {
+  public UpdateSetStep(final List<UpdateItem> updateItems, final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
     this.items = updateItems;
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    ResultSet upstream = getPrev().get().syncPull(ctx, nRecords);
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
+    final ResultSet upstream = getPrev().get().syncPull(ctx, nRecords);
     return new ResultSet() {
       @Override
       public boolean hasNext() {
@@ -45,9 +45,9 @@ public class UpdateSetStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        Result result = upstream.next();
+        final Result result = upstream.next();
         if (result instanceof ResultInternal) {
-          for (UpdateItem item : items) {
+          for (final UpdateItem item : items) {
             item.applyUpdate((ResultInternal) result, ctx);
           }
         }
@@ -66,13 +66,13 @@ public class UpdateSetStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    StringBuilder result = new StringBuilder();
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
+    final StringBuilder result = new StringBuilder();
     result.append(spaces);
     result.append("+ UPDATE SET");
     for (int i = 0; i < items.size(); i++) {
-      UpdateItem item = items.get(i);
+      final UpdateItem item = items.get(i);
       if (i < items.size()) {
         result.append("\n");
       }

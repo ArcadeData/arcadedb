@@ -100,7 +100,7 @@ public class SQLMethodInclude extends AbstractSQLMethod {
         // ACT ON MULTIPLE DOCUMENTS
         final int size = MultiValue.getSizeIfAvailable(current);
         final List<Object> result = size > 0 ? new ArrayList<>(size) : new ArrayList<>();
-        for (Object o : MultiValue.getMultiValueIterable(current, false)) {
+        for (final Object o : MultiValue.getMultiValueIterable(current, false)) {
           if (o instanceof Identifiable) {
             result.add(copy((Document) ((Identifiable) o).getRecord(), iParams));
           }
@@ -135,12 +135,12 @@ public class SQLMethodInclude extends AbstractSQLMethod {
         if (fieldName.endsWith("*")) {
           final String fieldPart = fieldName.substring(0, fieldName.length() - 1);
           final List<String> toInclude = new ArrayList<>();
-          for (String f : document.getPropertyNames()) {
+          for (final String f : document.getPropertyNames()) {
             if (f.startsWith(fieldPart))
               toInclude.add(f);
           }
 
-          for (String f : toInclude)
+          for (final String f : toInclude)
             doc.set(fieldName, document.get(f));
 
         } else
@@ -159,12 +159,12 @@ public class SQLMethodInclude extends AbstractSQLMethod {
         if (fieldName.endsWith("*")) {
           final String fieldPart = fieldName.substring(0, fieldName.length() - 1);
           final List<String> toInclude = new ArrayList<>();
-          for (Object f : map.keySet()) {
+          for (final Object f : map.keySet()) {
             if (f.toString().startsWith(fieldPart))
               toInclude.add(f.toString());
           }
 
-          for (String f : toInclude)
+          for (final String f : toInclude)
             doc.put(fieldName, map.get(f));
 
         } else

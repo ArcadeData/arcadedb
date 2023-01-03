@@ -87,9 +87,9 @@ public class EdgeVertexIterator extends ResettableIteratorBase<Pair<RID, RID>> {
           new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdgeRID, nextVertexRID, vertex).delete();
       } else
         nextEdgeRID.asEdge().delete();
-    } catch (RecordNotFoundException e) {
+    } catch (final RecordNotFoundException e) {
       // IGNORE IT
-    } catch (Exception e) {
+    } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING, "Error on deleting edge record %s", e, nextEdgeRID);
     }
 

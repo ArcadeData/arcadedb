@@ -31,14 +31,14 @@ public class CheckRecordTypeStep extends AbstractExecutionStep {
 
   private long cost = 0;
 
-  public CheckRecordTypeStep(CommandContext ctx, String className, boolean profilingEnabled) {
+  public CheckRecordTypeStep(final CommandContext ctx, final String className, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
     this.typez = className;
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    ResultSet upstream = prev.get().syncPull(ctx, nRecords);
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
+    final ResultSet upstream = prev.get().syncPull(ctx, nRecords);
     return new ResultSet() {
       @Override
       public boolean hasNext() {
@@ -47,14 +47,14 @@ public class CheckRecordTypeStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        Result result = upstream.next();
+        final Result result = upstream.next();
 
-        long begin = profilingEnabled ? System.nanoTime() : 0;
+        final long begin = profilingEnabled ? System.nanoTime() : 0;
         try {
           if (!result.isElement()) {
             throw new CommandExecutionException("record " + result + " is not an instance of " + typez);
           }
-          Document record = result.getElement().get();
+          final Document record = result.getElement().get();
           if (record == null) {
             throw new CommandExecutionException("record " + result + " is not an instance of " + typez);
           }
@@ -82,7 +82,7 @@ public class CheckRecordTypeStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
+  public String prettyPrint(final int depth, final int indent) {
     String result = ExecutionStepInternal.getIndent(depth, indent) + "+ CHECK RECORD TYPE";
     if (profilingEnabled) {
       result += " (" + getCostFormatted() + ")";

@@ -65,7 +65,7 @@ public class FullBackupFormat extends AbstractBackupFormat {
 
     logger.logLine(0, "Executing full backup of database to '%s'...", settings.file);
 
-    try (ZipOutputStream zipFile = new ZipOutputStream(new FileOutputStream(backupFile), DatabaseFactory.getDefaultCharset())) {
+    try (final ZipOutputStream zipFile = new ZipOutputStream(new FileOutputStream(backupFile), DatabaseFactory.getDefaultCharset())) {
       zipFile.setLevel(9);
 
       // ACQUIRE A READ LOCK. TRANSACTION CAN STILL RUN, BUT CREATION OF NEW FILES (BUCKETS, TYPES, INDEXES) WILL BE PUT ON PAUSE UNTIL THIS LOCK IS RELEASED
@@ -81,7 +81,7 @@ public class FullBackupFormat extends AbstractBackupFormat {
 
           final Collection<PaginatedFile> files = database.getFileManager().getFiles();
 
-          for (PaginatedFile paginatedFile : files)
+          for (final PaginatedFile paginatedFile : files)
             if (paginatedFile != null)
               databaseOrigSize += compressFile(zipFile, paginatedFile.getOSFile());
 

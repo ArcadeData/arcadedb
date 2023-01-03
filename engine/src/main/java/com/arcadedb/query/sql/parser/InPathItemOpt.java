@@ -21,11 +21,11 @@
 package com.arcadedb.query.sql.parser;
 
 public class InPathItemOpt extends InPathItem {
-  public InPathItemOpt(int id) {
+  public InPathItemOpt(final int id) {
     super(id);
   }
 
-  public InPathItemOpt(SqlParser p, int id) {
+  public InPathItemOpt(final SqlParser p, final int id) {
     super(p, id);
   }
 

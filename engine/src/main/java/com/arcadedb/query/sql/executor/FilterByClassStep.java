@@ -37,17 +37,17 @@ public class FilterByClassStep extends AbstractExecutionStep {
 
   private long cost;
 
-  public FilterByClassStep(Identifier identifier, CommandContext ctx, boolean profilingEnabled) {
+  public FilterByClassStep(final Identifier identifier, final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
     this.identifier = identifier;
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
     if (prev.isEmpty()) {
       throw new IllegalStateException("filter step requires a previous step");
     }
-    ExecutionStepInternal prevStep = prev.get();
+    final ExecutionStepInternal prevStep = prev.get();
 
     return new ResultSet() {
       public boolean finished = false;
@@ -76,10 +76,10 @@ public class FilterByClassStep extends AbstractExecutionStep {
             }
           }
           nextItem = prevResult.next();
-          long begin = profilingEnabled ? System.nanoTime() : 0;
+          final long begin = profilingEnabled ? System.nanoTime() : 0;
           try {
             if (nextItem.isElement()) {
-              DocumentType typez = nextItem.getElement().get().getType();
+              final DocumentType typez = nextItem.getElement().get().getType();
               if (typez != null && typez.isSubTypeOf(identifier.getStringValue())) {
                 break;
               }
@@ -118,7 +118,7 @@ public class FilterByClassStep extends AbstractExecutionStep {
         if (nextItem == null) {
           throw new NoSuchElementException();
         }
-        Result result = nextItem;
+        final Result result = nextItem;
         nextItem = null;
         fetched++;
         return result;
@@ -137,8 +137,8 @@ public class FilterByClassStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    StringBuilder result = new StringBuilder();
+  public String prettyPrint(final int depth, final int indent) {
+    final StringBuilder result = new StringBuilder();
     result.append(ExecutionStepInternal.getIndent(depth, indent));
     result.append("+ FILTER ITEMS BY TYPE");
     if (profilingEnabled) {
@@ -153,18 +153,18 @@ public class FilterByClassStep extends AbstractExecutionStep {
 
   @Override
   public Result serialize() {
-    ResultInternal result = ExecutionStepInternal.basicSerialize(this);
+    final ResultInternal result = ExecutionStepInternal.basicSerialize(this);
     result.setProperty("identifier", identifier.serialize());
 
     return result;
   }
 
   @Override
-  public void deserialize(Result fromResult) {
+  public void deserialize(final Result fromResult) {
     try {
       ExecutionStepInternal.basicDeserialize(fromResult, this);
       identifier = Identifier.deserialize(fromResult.getProperty("identifier"));
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new CommandExecutionException(e);
     }
   }
@@ -180,7 +180,7 @@ public class FilterByClassStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ExecutionStep copy(CommandContext ctx) {
+  public ExecutionStep copy(final CommandContext ctx) {
     return new FilterByClassStep(this.identifier.copy(), ctx, this.profilingEnabled);
   }
 }

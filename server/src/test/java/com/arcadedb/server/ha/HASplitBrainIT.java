@@ -63,10 +63,10 @@ public class HASplitBrainIT extends ReplicationServerIT {
       @Override
       public void onEvent(final TYPE type, final Object object, final ArcadeDBServer server) throws IOException {
         if (type == TYPE.NETWORK_CONNECTION && split) {
-          String connectTo = (String) object;
+          final String connectTo = (String) object;
 
           final String[] parts = connectTo.split(":");
-          int port = Integer.parseInt(parts[1]);
+          final int port = Integer.parseInt(parts[1]);
 
           if (server.getServerName().equals("ArcadeDB_3") || server.getServerName().equals("ArcadeDB_4")) {
             // SERVERS 3-4

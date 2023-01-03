@@ -65,7 +65,7 @@ public class IsDefinedCondition extends BooleanExpression implements SimpleBoole
 
   @Override
   protected List<Object> getExternalCalculationConditions() {
-    return Collections.EMPTY_LIST;
+    return Collections.emptyList();
   }
 
   @Override
@@ -75,13 +75,13 @@ public class IsDefinedCondition extends BooleanExpression implements SimpleBoole
 
   @Override
   public IsDefinedCondition copy() {
-    IsDefinedCondition result = new IsDefinedCondition(-1);
+    final IsDefinedCondition result = new IsDefinedCondition(-1);
     result.expression = expression.copy();
     return result;
   }
 
   @Override
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
     this.expression.extractSubQueries(collector);
   }
 

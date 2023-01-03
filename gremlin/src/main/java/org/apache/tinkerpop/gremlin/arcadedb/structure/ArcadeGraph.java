@@ -49,6 +49,8 @@ import org.apache.tinkerpop.gremlin.structure.Vertex;
 import org.apache.tinkerpop.gremlin.structure.io.Io;
 import org.apache.tinkerpop.gremlin.structure.util.ElementHelper;
 import org.apache.tinkerpop.gremlin.structure.util.StringFactory;
+import org.opencypher.gremlin.traversal.CustomFunctions;
+import org.opencypher.gremlin.traversal.CustomPredicate;
 import org.opencypher.v9_0.util.SyntaxException;
 
 import java.io.*;
@@ -151,15 +153,15 @@ public class ArcadeGraph implements Graph, Closeable {
         if (!cypherEngineInitialized) {
           // REGISTER CYPHER CUSTOM FUNCTIONS
           final ImportGremlinPlugin.Builder importPlugin = ImportGremlinPlugin.build();
-          importPlugin.classImports(new Class[] { java.lang.Math.class, org.opencypher.gremlin.traversal.CustomFunctions.class,
-              org.opencypher.gremlin.traversal.CustomPredicate.class });
+          importPlugin.classImports(new Class[] { Math.class, CustomFunctions.class,
+              CustomPredicate.class });
           importPlugin.methodImports(List.of("java.lang.Math#*", "org.opencypher.gremlin.traversal.CustomFunctions#*"));
           gremlinExecutor.getScriptEngineManager().addPlugin(importPlugin.create());
           cypherEngineInitialized = true;
         }
       }
       return new ArcadeCypher(this, query, parameters);
-    } catch (SyntaxException e) {
+    } catch (final SyntaxException e) {
       throw new QueryParsingException(e);
     }
   }
@@ -209,7 +211,7 @@ public class ArcadeGraph implements Graph, Closeable {
     if (vertexIds.length == 0) {
       final Collection<DocumentType> types = this.database.getSchema().getTypes();
       final Set<Bucket> buckets = new HashSet<>();
-      for (DocumentType t : types)
+      for (final DocumentType t : types)
         if (t instanceof VertexType)
           buckets.addAll(t.getBuckets(true));
 
@@ -219,7 +221,7 @@ public class ArcadeGraph implements Graph, Closeable {
       // BUILD THE QUERY
       final StringBuilder query = new StringBuilder("select from bucket:[");
       int i = 0;
-      for (Bucket b : buckets) {
+      for (final Bucket b : buckets) {
         if (i > 0)
           query.append(", ");
         query.append("`");
@@ -235,7 +237,7 @@ public class ArcadeGraph implements Graph, Closeable {
 
     final List<Vertex> resultSet = new ArrayList<>(vertexIds.length);
 
-    for (Object o : vertexIds) {
+    for (final Object o : vertexIds) {
       final RID rid;
       if (o instanceof RID)
         rid = (RID) o;
@@ -254,7 +256,7 @@ public class ArcadeGraph implements Graph, Closeable {
         final Record r = database.lookupByRID(rid, true);
         if (r instanceof com.arcadedb.graph.Vertex)
           resultSet.add(new ArcadeVertex(this, ((com.arcadedb.graph.Vertex) r)));
-      } catch (RecordNotFoundException e) {
+      } catch (final RecordNotFoundException e) {
         // NP, IGNORE IT
       }
     }
@@ -270,7 +272,7 @@ public class ArcadeGraph implements Graph, Closeable {
 
       final Collection<DocumentType> types = this.database.getSchema().getTypes();
       final Set<Bucket> buckets = new HashSet<>();
-      for (DocumentType t : types)
+      for (final DocumentType t : types)
         if (t instanceof EdgeType)
           buckets.addAll(t.getBuckets(true));
 
@@ -280,7 +282,7 @@ public class ArcadeGraph implements Graph, Closeable {
       // BUILD THE QUERY
       final StringBuilder query = new StringBuilder("select from bucket:[");
       int i = 0;
-      for (Bucket b : buckets) {
+      for (final Bucket b : buckets) {
         if (i > 0)
           query.append(", ");
         query.append("`");
@@ -297,7 +299,7 @@ public class ArcadeGraph implements Graph, Closeable {
 
     final List<Edge> resultSet = new ArrayList<>(edgeIds.length);
 
-    for (Object o : edgeIds) {
+    for (final Object o : edgeIds) {
       final RID rid;
       if (o instanceof RID)
         rid = (RID) o;
@@ -316,7 +318,7 @@ public class ArcadeGraph implements Graph, Closeable {
         final Record r = database.lookupByRID(rid, true);
         if (r instanceof com.arcadedb.graph.Edge)
           resultSet.add(new ArcadeEdge(this, (com.arcadedb.graph.Edge) r));
-      } catch (RecordNotFoundException e) {
+      } catch (final RecordNotFoundException e) {
         // NP, IGNORE IT
       }
     }
@@ -325,7 +327,7 @@ public class ArcadeGraph implements Graph, Closeable {
   }
 
   @Override
-  public <I extends Io> I io(Io.Builder<I> builder) {
+  public <I extends Io> I io(final Io.Builder<I> builder) {
     return (I) Graph.super.io(builder.onMapper(mb -> mb.addRegistry(new ArcadeIoRegistry(this.database))));
   }
 
@@ -340,7 +342,7 @@ public class ArcadeGraph implements Graph, Closeable {
       try {
         gremlinExecutor.close();
         gremlinExecutor = null;
-      } catch (Exception e) {
+      } catch (final Exception e) {
         LogManager.instance().log(this, Level.INFO, "Error on closing gremlin executor", e);
       }
     }
@@ -360,7 +362,7 @@ public class ArcadeGraph implements Graph, Closeable {
       try {
         gremlinExecutor.close();
         gremlinExecutor = null;
-      } catch (Exception e) {
+      } catch (final Exception e) {
         LogManager.instance().log(this, Level.INFO, "Error on closing gremlin executor", e);
       }
     }
@@ -400,7 +402,7 @@ public class ArcadeGraph implements Graph, Closeable {
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
-    ArcadeGraph that = (ArcadeGraph) o;
+    final ArcadeGraph that = (ArcadeGraph) o;
     return Objects.equals(database, that.database);
   }
 

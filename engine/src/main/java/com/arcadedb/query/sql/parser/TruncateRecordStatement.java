@@ -30,16 +30,16 @@ public class TruncateRecordStatement extends SimpleExecStatement {
   protected Rid       record;
   protected List<Rid> records;
 
-  public TruncateRecordStatement(int id) {
+  public TruncateRecordStatement(final int id) {
     super(id);
   }
 
-  public TruncateRecordStatement(SqlParser p, int id) {
+  public TruncateRecordStatement(final SqlParser p, final int id) {
     super(p, id);
   }
 
   @Override
-  public ResultSet executeSimple(CommandContext ctx) {
+  public ResultSet executeSimple(final CommandContext ctx) {
 //    List<ORid> recs = new ArrayList<>();
 //    if (record != null) {
 //      recs.add(record);
@@ -71,14 +71,14 @@ public class TruncateRecordStatement extends SimpleExecStatement {
   }
 
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("TRUNCATE RECORD ");
     if (record != null) {
       record.toString(params, builder);
     } else {
       builder.append("[");
       boolean first = true;
-      for (Rid r : records) {
+      for (final Rid r : records) {
         if (!first) {
           builder.append(",");
         }
@@ -91,20 +91,20 @@ public class TruncateRecordStatement extends SimpleExecStatement {
 
   @Override
   public TruncateRecordStatement copy() {
-    TruncateRecordStatement result = new TruncateRecordStatement(-1);
+    final TruncateRecordStatement result = new TruncateRecordStatement(-1);
     result.record = record == null ? null : record.copy();
     result.records = records == null ? null : records.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    TruncateRecordStatement that = (TruncateRecordStatement) o;
+    final TruncateRecordStatement that = (TruncateRecordStatement) o;
 
     if (!Objects.equals(record, that.record))
       return false;

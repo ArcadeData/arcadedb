@@ -56,7 +56,7 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
     try {
       Assertions.assertTrue(console.parse("connect " + URL_NOCREDENTIALS + ";create document type VVVV", false));
       Assertions.fail("Security was bypassed!");
-    } catch (ConsoleException e) {
+    } catch (final ConsoleException e) {
     }
   }
 
@@ -65,7 +65,7 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
     try {
       Assertions.assertTrue(console.parse("connect " + URL_WRONGPASSWD + ";create document type VVVV", false));
       Assertions.fail("Security was bypassed!");
-    } catch (RemoteException e) {
+    } catch (final RemoteException e) {
     }
   }
 
@@ -132,7 +132,7 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
     try {
       Assertions.assertTrue(console.parse("commit", false));
       Assertions.fail();
-    } catch (Exception e) {
+    } catch (final Exception e) {
       // EXPECTED
     }
 
@@ -147,14 +147,14 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
     Assertions.assertTrue(console.parse("connect " + URL, false));
     try {
       Assertions.assertTrue(console.parse("drop user elon", false));
-    } catch (Exception e) {
+    } catch (final Exception e) {
       // EXPECTED IF ALREADY EXISTENT
     }
 
     try {
       Assertions.assertTrue(console.parse("create user jay identified by m", false));
       Assertions.fail();
-    } catch (RuntimeException e) {
+    } catch (final RuntimeException e) {
       // PASSWORD MUST BE AT LEAST 5 CHARS
     }
 
@@ -165,7 +165,7 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
 
       Assertions.assertTrue(console.parse("create user jay identified by " + longPassword, false));
       Assertions.fail();
-    } catch (RuntimeException e) {
+    } catch (final RuntimeException e) {
       // PASSWORD MUST BE MAX 256 CHARS LONG
     }
 
@@ -176,7 +176,7 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
     try {
       Assertions.assertTrue(console.parse("create user elon identified by musk grand connect on db1", false));
       Assertions.fail();
-    } catch (Exception e) {
+    } catch (final Exception e) {
       // EXPECTED
     }
 
@@ -210,7 +210,7 @@ public class RemoteConsoleIT extends BaseGraphServerTest {
     try {
       console = new Console(false);
       console.parse("close", false);
-    } catch (IOException e) {
+    } catch (final IOException e) {
       Assertions.fail(e);
     }
   }

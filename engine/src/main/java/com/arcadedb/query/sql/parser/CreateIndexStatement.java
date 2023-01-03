@@ -153,7 +153,7 @@ public class CreateIndexStatement extends DDLStatement {
       typeName.toString(params, builder);
       builder.append(" (");
       boolean first = true;
-      for (Property prop : propertyList) {
+      for (final Property prop : propertyList) {
         if (!first) {
           builder.append(", ");
         }
@@ -188,7 +188,7 @@ public class CreateIndexStatement extends DDLStatement {
     if (keyTypes != null && keyTypes.size() > 0) {
       boolean first = true;
       builder.append(" ");
-      for (Identifier keyType : keyTypes) {
+      for (final Identifier keyType : keyTypes) {
         if (!first) {
           builder.append(",");
         }
@@ -204,7 +204,7 @@ public class CreateIndexStatement extends DDLStatement {
 
   @Override
   public CreateIndexStatement copy() {
-    CreateIndexStatement result = new CreateIndexStatement(-1);
+    final CreateIndexStatement result = new CreateIndexStatement(-1);
     result.name = name == null ? null : name.copy();
     result.typeName = typeName == null ? null : typeName.copy();
     result.propertyList = propertyList == null ? null : propertyList.stream().map(x -> x.copy()).collect(Collectors.toList());
@@ -308,7 +308,7 @@ public class CreateIndexStatement extends DDLStatement {
      * @return
      */
     public String getCompleteKey() {
-      StringBuilder result = new StringBuilder();
+      final StringBuilder result = new StringBuilder();
       if (name != null)
         result.append(name.getStringValue());
       else if (recordAttribute != null)

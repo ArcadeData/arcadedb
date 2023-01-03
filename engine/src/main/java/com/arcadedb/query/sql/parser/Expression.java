@@ -53,7 +53,7 @@ public class Expression extends SimpleNode {
     mathExpression = new BaseExpression(identifier);
   }
 
-  public Expression(final Identifier identifier, Modifier modifier) {
+  public Expression(final Identifier identifier, final Modifier modifier) {
     mathExpression = new BaseExpression(identifier, modifier);
   }
 
@@ -96,7 +96,7 @@ public class Expression extends SimpleNode {
       return ((Json) value).toMap(iCurrentRecord, ctx);
     } else if (value instanceof String) {
       return value;
-    } else if (value instanceof java.lang.Number) {
+    } else if (value instanceof Number) {
       return value;
     }
 
@@ -128,7 +128,7 @@ public class Expression extends SimpleNode {
 
     //from here it's old stuff, only for the old executor
     if (value instanceof Rid) {
-      Rid v = (Rid) value;
+      final Rid v = (Rid) value;
       return new RID(ctx.getDatabase(), v.bucket.getValue().intValue(), v.position.getValue().longValue());
     } else if (value instanceof MathExpression) {
       return ((MathExpression) value).execute(iCurrentRecord, ctx);
@@ -138,7 +138,7 @@ public class Expression extends SimpleNode {
       return ((Json) value).toMap(iCurrentRecord, ctx);
     } else if (value instanceof String) {
       return value;
-    } else if (value instanceof java.lang.Number) {
+    } else if (value instanceof Number) {
       return value;
     }
 
@@ -167,7 +167,7 @@ public class Expression extends SimpleNode {
     if (booleanValue != null) {
       return true;
     }
-    if (value instanceof java.lang.Number) {
+    if (value instanceof Number) {
       return true;
     }
     if (value instanceof String) {
@@ -190,7 +190,7 @@ public class Expression extends SimpleNode {
     return identifier;
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     //    if (value == null) {
     //      builder.append("null");
     //    } else if (value instanceof SimpleNode) {
@@ -231,9 +231,9 @@ public class Expression extends SimpleNode {
     }
   }
 
-  public static String encode(String s) {
+  public static String encode(final String s) {
     final StringBuilder builder = new StringBuilder(s.length());
-    for (char c : s.toCharArray()) {
+    for (final char c : s.toCharArray()) {
       if (c == '\n') {
         builder.append("\\n");
         continue;
@@ -269,7 +269,7 @@ public class Expression extends SimpleNode {
 
   public static String encodeSingle(final String s) {
     final StringBuilder builder = new StringBuilder(s.length());
-    for (char c : s.toCharArray()) {
+    for (final char c : s.toCharArray()) {
       if (c == '\n') {
         builder.append("\\n");
         continue;
@@ -568,7 +568,7 @@ public class Expression extends SimpleNode {
     return arrayConcatExpression;
   }
 
-  public void setArrayConcatExpression(ArrayConcatExpression arrayConcatExpression) {
+  public void setArrayConcatExpression(final ArrayConcatExpression arrayConcatExpression) {
     this.arrayConcatExpression = arrayConcatExpression;
   }
 
@@ -594,7 +594,7 @@ public class Expression extends SimpleNode {
     return result;
   }
 
-  public void deserialize(Result fromResult) {
+  public void deserialize(final Result fromResult) {
     singleQuotes = fromResult.getProperty("singleQuotes");
     doubleQuotes = fromResult.getProperty("doubleQuotes");
     isNull = fromResult.getProperty("isNull");

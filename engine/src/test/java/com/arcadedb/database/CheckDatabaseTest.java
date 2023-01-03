@@ -86,7 +86,7 @@ public class CheckDatabaseTest extends TestHelper {
   public void checkRegularDeleteEdges() {
     database.transaction(() -> database.command("sql", "delete from Knows"));
 
-    ResultSet result = database.command("sql", "check database");
+    final ResultSet result = database.command("sql", "check database");
     Assertions.assertTrue(result.hasNext());
     while (result.hasNext()) {
       final Result row = result.next();
@@ -248,7 +248,7 @@ public class CheckDatabaseTest extends TestHelper {
         for (int i = 0; i < page.getAvailableContentSize(); i++) {
           page.writeByte(i, (byte) 4);
         }
-      } catch (IOException e) {
+      } catch (final IOException e) {
         Assertions.fail(e);
       }
     });
@@ -292,7 +292,7 @@ public class CheckDatabaseTest extends TestHelper {
     Assertions.assertEquals(0L, ((Collection) row.getProperty("corruptedRecords")).size());
 
     // CHECK CORRUPTED RECORD ARE NOT INDEXED ANYMORE
-    List<TypeIndex> indexes = database.getSchema().getType("Person").getIndexesByProperties("id");
+    final List<TypeIndex> indexes = database.getSchema().getType("Person").getIndexesByProperties("id");
     Assertions.assertEquals(1, indexes.size());
 
     Assertions.assertEquals((Long) row.getProperty("totalActiveVertices"), indexes.get(0).countEntries());
@@ -307,26 +307,26 @@ public class CheckDatabaseTest extends TestHelper {
     database.transaction(() -> {
       root = database.newVertex("Person").set("name", "root", "id", 0).save();
       for (int i = 1; i <= TOTAL - 1; i++) {
-        MutableVertex v = database.newVertex("Person").set("name", "test", "id", i).save();
+        final MutableVertex v = database.newVertex("Person").set("name", "test", "id", i).save();
         root.newEdge("Knows", v, true);
       }
     });
   }
 
-  private int countEdges(RID rootVertex) {
+  private int countEdges(final RID rootVertex) {
     final Iterable<Edge> iter = rootVertex.asVertex().getEdges(Vertex.DIRECTION.OUT);
     int totalEdges = 0;
     try {
-      for (Edge e : iter)
+      for (final Edge e : iter)
         ++totalEdges;
-    } catch (NoSuchElementException e) {
+    } catch (final NoSuchElementException e) {
       // EXPECTED FOR BROKEN EDGES WHEN THE FIRST ITEM (LAST IN THE ITERATOR) IS DELETED
     }
 
     return totalEdges;
   }
 
-  private int countEdgesSegmentList(RID rootVertex) {
+  private int countEdgesSegmentList(final RID rootVertex) {
     final EdgeLinkedList outEdges = ((DatabaseInternal) database).getGraphEngine()
         .getEdgeHeadChunk((VertexInternal) rootVertex.asVertex(), Vertex.DIRECTION.OUT);
 

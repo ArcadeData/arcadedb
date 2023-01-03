@@ -45,14 +45,14 @@ public class SQLMethodRemove extends AbstractSQLMethod {
         if (params != null &&
                 params.length > 0 &&
                 params[0] != null) {
-            Object[] arguments = MultiValue.array(params, Object.class, argument -> {
+            final Object[] arguments = MultiValue.array(params, Object.class, argument -> {
                 if (argument instanceof String &&
                         ((String) argument).startsWith("$")) {
                     return context.getVariable((String) argument);
                 }
                 return argument;
             });
-            for (Object o : arguments) {
+            for (final Object o : arguments) {
                 result = MultiValue.remove(result, o, false);
             }
             return result;

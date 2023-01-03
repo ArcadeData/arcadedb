@@ -21,11 +21,11 @@
 package com.arcadedb.query.sql.parser;
 
 public class parse extends SimpleNode {
-  public parse(int id) {
+  public parse(final int id) {
     super(id);
   }
 
-  public parse(SqlParser p, int id) {
+  public parse(final SqlParser p, final int id) {
     super(p, id);
   }
 }

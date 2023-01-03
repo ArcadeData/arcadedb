@@ -52,13 +52,13 @@ public class FunctionTest extends TestHelper {
   @Test
   public void testCountFunction() {
     database.transaction(() -> {
-      Map<String, Object> params = new HashMap<>();
+      final Map<String, Object> params = new HashMap<>();
       params.put(":id", 10);
-      ResultSet rs = database.command("SQL", "SELECT count(*) as count FROM V WHERE id < :id", params);
+      final ResultSet rs = database.command("SQL", "SELECT count(*) as count FROM V WHERE id < :id", params);
 
       final AtomicInteger counter = new AtomicInteger();
       while (rs.hasNext()) {
-        Result record = rs.next();
+        final Result record = rs.next();
         Assertions.assertNotNull(record);
         Assertions.assertFalse(record.getIdentity().isPresent());
         Assertions.assertEquals(10, ((Number) record.getProperty("count")).intValue());
@@ -71,13 +71,13 @@ public class FunctionTest extends TestHelper {
   @Test
   public void testAvgFunction() {
     database.transaction(() -> {
-      Map<String, Object> params = new HashMap<>();
+      final Map<String, Object> params = new HashMap<>();
       params.put(":id", 10);
-      ResultSet rs = database.command("SQL", "SELECT avg(id) as avg FROM V WHERE id < :id", params);
+      final ResultSet rs = database.command("SQL", "SELECT avg(id) as avg FROM V WHERE id < :id", params);
 
       final AtomicInteger counter = new AtomicInteger();
       while (rs.hasNext()) {
-        Result record = rs.next();
+        final Result record = rs.next();
         Assertions.assertNotNull(record);
         Assertions.assertFalse(record.getIdentity().isPresent());
         Assertions.assertEquals(4, ((Number) record.getProperty("avg")).intValue());
@@ -90,12 +90,12 @@ public class FunctionTest extends TestHelper {
   @Test
   public void testMaxFunction() {
     database.transaction(() -> {
-      Map<String, Object> params = new HashMap<>();
-      ResultSet rs = database.command("SQL", "SELECT max(id) as max FROM V", params);
+      final Map<String, Object> params = new HashMap<>();
+      final ResultSet rs = database.command("SQL", "SELECT max(id) as max FROM V", params);
 
       final AtomicInteger counter = new AtomicInteger();
       while (rs.hasNext()) {
-        Result record = rs.next();
+        final Result record = rs.next();
         Assertions.assertNotNull(record);
         Assertions.assertFalse(record.getIdentity().isPresent());
         Assertions.assertEquals(TOT - 1, ((Number) record.getProperty("max")).intValue());
@@ -108,12 +108,12 @@ public class FunctionTest extends TestHelper {
   @Test
   public void testMinFunction() {
     database.transaction(() -> {
-      Map<String, Object> params = new HashMap<>();
-      ResultSet rs = database.command("SQL", "SELECT min(id) as min FROM V", params);
+      final Map<String, Object> params = new HashMap<>();
+      final ResultSet rs = database.command("SQL", "SELECT min(id) as min FROM V", params);
 
       final AtomicInteger counter = new AtomicInteger();
       while (rs.hasNext()) {
-        Result record = rs.next();
+        final Result record = rs.next();
         Assertions.assertNotNull(record);
         Assertions.assertFalse(record.getIdentity().isPresent());
         Assertions.assertEquals(0, ((Number) record.getProperty("min")).intValue());
@@ -126,7 +126,7 @@ public class FunctionTest extends TestHelper {
   @Test
   public void testAllFunctionsHaveSyntax() {
     final SQLQueryEngine sqlEngine = (SQLQueryEngine) database.getQueryEngine("sql");
-    for (String name : sqlEngine.getFunctionFactory().getFunctionNames()) {
+    for (final String name : sqlEngine.getFunctionFactory().getFunctionNames()) {
       Assertions.assertNotNull(sqlEngine.getFunction(name).getName());
       Assertions.assertNotNull(sqlEngine.getFunction(name).getSyntax());
     }

@@ -28,11 +28,11 @@ import java.util.*;
 
 public class CreateDocumentTypeStatement extends CreateTypeAbstractStatement {
 
-  public CreateDocumentTypeStatement(int id) {
+  public CreateDocumentTypeStatement(final int id) {
     super(id);
   }
 
-  public CreateDocumentTypeStatement(SqlParser p, int id) {
+  public CreateDocumentTypeStatement(final SqlParser p, final int id) {
     super(p, id);
   }
 
@@ -42,7 +42,7 @@ public class CreateDocumentTypeStatement extends CreateTypeAbstractStatement {
   }
 
   @Override
-  protected DocumentType createType(Schema schema) {
+  protected DocumentType createType(final Schema schema) {
     final DocumentType type;
     if (totalBucketNo != null)
       type = schema.createDocumentType(name.getStringValue(), totalBucketNo.getValue().intValue());
@@ -52,7 +52,7 @@ public class CreateDocumentTypeStatement extends CreateTypeAbstractStatement {
       else {
         // CHECK THE BUCKETS FIRST
         final List<Bucket> bucketInstances = new ArrayList<>();
-        for (BucketIdentifier b : buckets)
+        for (final BucketIdentifier b : buckets)
           bucketInstances.add(b.bucketName != null ? schema.getBucketByName(b.bucketName.getStringValue()) : schema.getBucketById(b.bucketId.value.intValue()));
 
         type = schema.createDocumentType(name.getStringValue(), bucketInstances);

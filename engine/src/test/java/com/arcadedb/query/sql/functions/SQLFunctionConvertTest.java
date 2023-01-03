@@ -42,7 +42,7 @@ public class SQLFunctionConvertTest {
 
       db.command("sql", "insert into TestConversion set string = 'Jay', date = sysdate(), number = 33, dateAsString = '2011-12-03T10:15:30.388724'");
 
-      Document doc = db.query("sql", "select from TestConversion limit 1").next().toElement();
+      final Document doc = db.query("sql", "select from TestConversion limit 1").next().toElement();
 
       db.command("sql", "update TestConversion set selfrid = 'foo" + doc.getIdentity() + "'");
 

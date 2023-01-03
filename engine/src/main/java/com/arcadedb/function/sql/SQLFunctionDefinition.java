@@ -61,7 +61,7 @@ public class SQLFunctionDefinition implements FunctionDefinition {
       first = extractResult(first);
 
       if (result.hasNext()) {
-        List list = new ArrayList<>();
+        final List list = new ArrayList<>();
         list.add(first);
         while (result.hasNext())
           list.add(extractResult(result.next()));

@@ -183,7 +183,7 @@ public class SQLFunctionAdjacencyTest {
     TestHelper.executeInNewDatabase("testOutV", (graph) -> {
       setUpDatabase(graph);
 
-      Vertex v = (Vertex) new SQLFunctionOutV().execute(edges.get(3), null, null, new Object[] {}, new BasicCommandContext().setDatabase(graph));
+      final Vertex v = (Vertex) new SQLFunctionOutV().execute(edges.get(3), null, null, new Object[] {}, new BasicCommandContext().setDatabase(graph));
 
       Assertions.assertEquals(v.getIdentity(), vertices.get(3).getIdentity());
     });
@@ -194,7 +194,7 @@ public class SQLFunctionAdjacencyTest {
     TestHelper.executeInNewDatabase("testInV", (graph) -> {
       setUpDatabase(graph);
 
-      Vertex v = (Vertex) new SQLFunctionInV().execute(edges.get(3), null, null, new Object[] {}, new BasicCommandContext().setDatabase(graph));
+      final Vertex v = (Vertex) new SQLFunctionInV().execute(edges.get(3), null, null, new Object[] {}, new BasicCommandContext().setDatabase(graph));
 
       Assertions.assertEquals(v.getIdentity(), vertices.get(1).getIdentity());
     });

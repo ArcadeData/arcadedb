@@ -48,7 +48,7 @@ public class PageManagerStressTest {
       if (!database.getSchema().existsType(TYPE_NAME)) {
         database.begin();
 
-        DocumentType v = database.getSchema().createDocumentType(TYPE_NAME, parallel);
+        final DocumentType v = database.getSchema().createDocumentType(TYPE_NAME, parallel);
 
         v.createProperty("id", Long.class);
         v.createProperty("name", String.class);
@@ -66,7 +66,7 @@ public class PageManagerStressTest {
 
     database = new DatabaseFactory(PerformanceTest.DATABASE_PATH).open();
 
-    long begin = System.currentTimeMillis();
+    final long begin = System.currentTimeMillis();
 
     try {
 

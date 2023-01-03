@@ -34,7 +34,7 @@ public class TraversalTest {
   private static final int             SIZE = 1000000;
   private              DatabaseFactory factory;
 
-  public static void main(String[] args) {
+  public static void main(final String[] args) {
     new TraversalTest().test();
   }
 
@@ -43,18 +43,18 @@ public class TraversalTest {
     if (factory.exists())
       factory.open().drop();
 
-    Database db = factory.create();
+    final Database db = factory.create();
 
     db.getSchema().createVertexType("V");
     db.getSchema().createEdgeType("E");
 
-    long begin = System.currentTimeMillis();
+    final long begin = System.currentTimeMillis();
     RID firstRid = null;
     RID lastRid = null;
     db.begin();
     db.setWALFlush(WALFile.FLUSH_TYPE.YES_FULL);
     for (int i = 0; i < SIZE; i++) {
-      MutableVertex v = db.newVertex("V");
+      final MutableVertex v = db.newVertex("V");
 
       v.set("val", i);
       v.set("name", "vertex" + i);
@@ -82,11 +82,11 @@ public class TraversalTest {
     }
   }
 
-  private void traversal(RID firstRid) {
-    Database db = factory.open();
-    long traverseTime;
+  private void traversal(final RID firstRid) {
+    final Database db = factory.open();
+    final long traverseTime;
 
-    long begin = System.currentTimeMillis();
+    final long begin = System.currentTimeMillis();
 
     db.begin();
 

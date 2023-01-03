@@ -78,7 +78,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
 
       return set;
 
-    } catch (IOException e) {
+    } catch (final IOException e) {
       throw new DatabaseOperationException("Cannot lookup key '" + Arrays.toString(keys) + "' in index '" + name + "'", e);
     }
   }
@@ -132,10 +132,10 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
     return currentPage;
   }
 
-  protected LookupResult compareKey(final Binary currentPageBuffer, final int startIndexArray, final Object[] convertedKeys, int mid, final int count,
+  protected LookupResult compareKey(final Binary currentPageBuffer, final int startIndexArray, final Object[] convertedKeys, final int mid, final int count,
       final int purpose) {
 
-    int result = compareKey(currentPageBuffer, startIndexArray, convertedKeys, mid, count);
+    final int result = compareKey(currentPageBuffer, startIndexArray, convertedKeys, mid, count);
 
     if (result > 0)
       return HIGHER;
@@ -230,7 +230,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
       rootPageNumber -= rootPageCount;
 
       final PageId pageId = new PageId(file.getFileId(), rootPageNumber);
-      BasePage rootPage = database.getTransaction().getPage(pageId, pageSize);
+      final BasePage rootPage = database.getTransaction().getPage(pageId, pageSize);
 
       if (pageId.getPageNumber() > 0) {
         final int rootPageId = getCompactedPageNumberOfSeries(rootPage);
@@ -334,7 +334,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
       pageNumber -= rootPageCount;
 
       final PageId pageId = new PageId(file.getFileId(), pageNumber);
-      BasePage rootPage = database.getTransaction().getPage(pageId, pageSize);
+      final BasePage rootPage = database.getTransaction().getPage(pageId, pageSize);
 
       if (pageId.getPageNumber() > 0) {
         final int rootPageId = getCompactedPageNumberOfSeries(rootPage);

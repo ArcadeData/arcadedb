@@ -36,8 +36,8 @@ public class PolyglotQueryEngine implements QueryEngine {
   private final long                         timeout;
   private final DatabaseInternal             database;
   private       List<String>                 allowedPackages = null;
-  private       ExecutorService              userCodeExecutor;
-  private       ArrayBlockingQueue<Runnable> userCodeExecutorQueue;
+  private final ExecutorService              userCodeExecutor;
+  private final ArrayBlockingQueue<Runnable> userCodeExecutorQueue;
 
   private static final AnalyzedQuery ANALYZED_QUERY = new AnalyzedQuery() {
     @Override
@@ -108,7 +108,7 @@ public class PolyglotQueryEngine implements QueryEngine {
 
         synchronized (polyglotEngine) {
           if (parameters != null && !parameters.isEmpty()) {
-            for (Map.Entry<String, Object> entry : parameters.entrySet())
+            for (final Map.Entry<String, Object> entry : parameters.entrySet())
               polyglotEngine.setAttribute(entry.getKey(), entry.getValue());
           }
 
@@ -121,7 +121,7 @@ public class PolyglotQueryEngine implements QueryEngine {
 
             final InternalResultSet resultSet = new InternalResultSet();
             if (host instanceof Iterable) {
-              for (Object o : (Iterable) host)
+              for (final Object o : (Iterable) host)
                 resultSet.add(extractResult(o));
             } else
               resultSet.add(extractResult(host));
@@ -132,7 +132,7 @@ public class PolyglotQueryEngine implements QueryEngine {
 
           final InternalResultSet resultSet = new InternalResultSet();
 
-          Object value;
+          final Object value;
           if (result.isString())
             value = result.asString();
           else if (result.isBoolean())
@@ -158,12 +158,12 @@ public class PolyglotQueryEngine implements QueryEngine {
 
       }, timeout);
 
-    } catch (CommandExecutionException e) {
+    } catch (final CommandExecutionException e) {
       throw e;
-    } catch (ExecutionException e) {
+    } catch (final ExecutionException e) {
       // USE THE UNDERLYING CAUSE BYPASSING THE NOT RELEVANT EXECUTION EXCEPTION
       throw new CommandExecutionException("Error on executing user code", e.getCause());
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new CommandExecutionException("Error on executing user code", e);
     }
   }
@@ -173,9 +173,9 @@ public class PolyglotQueryEngine implements QueryEngine {
     synchronized (polyglotEngine) {
       try {
         polyglotEngine.eval(function);
-      } catch (CommandExecutionException e) {
+      } catch (final CommandExecutionException e) {
         throw e;
-      } catch (Exception e) {
+      } catch (final Exception e) {
         throw new CommandExecutionException("Error on executing user code", e);
       }
     }
@@ -197,12 +197,12 @@ public class PolyglotQueryEngine implements QueryEngine {
         }
         return null;
       }, timeout);
-    } catch (CommandExecutionException e) {
+    } catch (final CommandExecutionException e) {
       throw e;
-    } catch (ExecutionException e) {
+    } catch (final ExecutionException e) {
       // USE THE UNDERLYING CAUSE BYPASSING THE NOT RELEVANT EXECUTION EXCEPTION
       throw new CommandExecutionException("Error on executing user code", e.getCause());
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new CommandExecutionException("Error on analyzing user code", e);
     }
 
@@ -233,13 +233,13 @@ public class PolyglotQueryEngine implements QueryEngine {
       return null;
 
     try {
-      Object result = executionTimeoutMs > 0 ? future.get(executionTimeoutMs, TimeUnit.MILLISECONDS) : future.get();
+      final Object result = executionTimeoutMs > 0 ? future.get(executionTimeoutMs, TimeUnit.MILLISECONDS) : future.get();
       if (result instanceof Exception)
         throw (Exception) result;
 
       return (ResultSet) result;
 
-    } catch (TimeoutException e) {
+    } catch (final TimeoutException e) {
       future.cancel(true); //this method will stop the running underlying task
       throw e;
     }

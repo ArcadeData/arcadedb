@@ -194,7 +194,7 @@ public class Property {
   }
 
   public Object setCustomValue(final String key, final Object value) {
-    Object prev;
+    final Object prev;
     if (value == null)
       prev = custom.remove(key);
     else

@@ -101,7 +101,7 @@ public class FileContentResponse extends HAAbstractCommand {
             pageId, page.getVersion());
       }
 
-    } catch (IOException e) {
+    } catch (final IOException e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on installing file content from leader server", e);
       throw new ReplicationException("Error on installing file content from leader server", e);
     }

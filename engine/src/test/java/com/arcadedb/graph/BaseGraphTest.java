@@ -65,7 +65,7 @@ public abstract class BaseGraphTest extends TestHelper {
     v2.save();
 
     // CREATION OF EDGE PASSING PARAMS AS VARARGS
-    MutableEdge e1 = v1.newEdge(EDGE1_TYPE_NAME, v2, true, "name", "E1");
+    final MutableEdge e1 = v1.newEdge(EDGE1_TYPE_NAME, v2, true, "name", "E1");
     Assertions.assertEquals(e1.getOut(), v1);
     Assertions.assertEquals(e1.getIn(), v2);
 
@@ -78,21 +78,21 @@ public abstract class BaseGraphTest extends TestHelper {
     try {
       Assertions.assertNotNull(v3.asEdge());
       Assertions.fail();
-    } catch (ClassCastException e) {
+    } catch (final ClassCastException e) {
       // EXPECTED
     }
     try {
       Assertions.assertNotNull(v3.asEdge(true));
       Assertions.fail();
-    } catch (ClassCastException e) {
+    } catch (final ClassCastException e) {
       // EXPECTED
     }
 
-    Map<String, Object> params = new HashMap<>();
+    final Map<String, Object> params = new HashMap<>();
     params.put("name", "E2");
 
     // CREATION OF EDGE PASSING PARAMS AS MAP
-    MutableEdge e2 = v2.newEdge(EDGE2_TYPE_NAME, v3, true, params);
+    final MutableEdge e2 = v2.newEdge(EDGE2_TYPE_NAME, v3, true, params);
     Assertions.assertEquals(e2.getOut(), v2);
     Assertions.assertEquals(e2.getIn(), v3);
 
@@ -102,17 +102,17 @@ public abstract class BaseGraphTest extends TestHelper {
     try {
       Assertions.assertNotNull(e2.asVertex());
       Assertions.fail();
-    } catch (ClassCastException e) {
+    } catch (final ClassCastException e) {
       // EXPECTED
     }
     try {
       Assertions.assertNotNull(e2.asVertex(true));
       Assertions.fail();
-    } catch (ClassCastException e) {
+    } catch (final ClassCastException e) {
       // EXPECTED
     }
 
-    ImmutableLightEdge e3 = v1.newLightEdge(EDGE2_TYPE_NAME, v3, true);
+    final ImmutableLightEdge e3 = v1.newLightEdge(EDGE2_TYPE_NAME, v3, true);
     Assertions.assertEquals(e3.getOut(), v1);
     Assertions.assertEquals(e3.getIn(), v3);
 

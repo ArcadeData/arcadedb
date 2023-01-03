@@ -49,11 +49,11 @@ public class FetchFromSchemaIndexesStep extends AbstractExecutionStep {
     getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
 
     if (cursor == 0) {
-      long begin = profilingEnabled ? System.nanoTime() : 0;
+      final long begin = profilingEnabled ? System.nanoTime() : 0;
       try {
         final Schema schema = ctx.getDatabase().getSchema();
 
-        for (Index index : schema.getIndexes()) {
+        for (final Index index : schema.getIndexes()) {
           final ResultInternal r = new ResultInternal();
           result.add(r);
 
@@ -67,7 +67,7 @@ public class FetchFromSchemaIndexesStep extends AbstractExecutionStep {
           // KEY TYPES
           final List<String> keyTypes = new ArrayList<>();
           if (((IndexInternal) index).getKeyTypes() != null)
-            for (Type k : ((IndexInternal) index).getKeyTypes())
+            for (final Type k : ((IndexInternal) index).getKeyTypes())
               keyTypes.add(k.name());
           r.setProperty("keyTypes", keyTypes);
 
@@ -78,7 +78,7 @@ public class FetchFromSchemaIndexesStep extends AbstractExecutionStep {
             r.setProperty("fileId", fileId);
             try {
               r.setProperty("size", FileUtils.getSizeAsString(ctx.getDatabase().getFileManager().getFile(((IndexInternal) index).getFileId()).getSize()));
-            } catch (IOException e) {
+            } catch (final IOException e) {
               // IGNORE IT, NO SIZE AVAILABLE
             }
           }
@@ -121,8 +121,8 @@ public class FetchFromSchemaIndexesStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     String result = spaces + "+ FETCH DATABASE METADATA INDEXES";
     if (profilingEnabled) {
       result += " (" + getCostFormatted() + ")";

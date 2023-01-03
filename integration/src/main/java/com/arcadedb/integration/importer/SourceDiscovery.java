@@ -69,7 +69,7 @@ public class SourceDiscovery {
       LogManager.instance().log(this, Level.INFO, "Recognized format %s (parsingLimitBytes=%s parsingLimitEntries=%d)", formatImporter.getFormat(),
           FileUtils.getSizeAsString(limitBytes), limitEntries);
       if (sourceSchema != null && !sourceSchema.getOptions().isEmpty()) {
-        for (Map.Entry<String, String> o : sourceSchema.getOptions().entrySet())
+        for (final Map.Entry<String, String> o : sourceSchema.getOptions().entrySet())
           LogManager.instance().log(this, Level.INFO, "- %s = %s", o.getKey(), o.getValue());
       }
     }
@@ -114,7 +114,7 @@ public class SourceDiscovery {
           source.inputStream = new ZipInputStream(connection1.getInputStream());
         else
           source.inputStream = new BufferedInputStream(connection1.getInputStream());
-      } catch (Exception e) {
+      } catch (final Exception e) {
         throw new ImportException("Error on reset remote resource", e);
       }
       return null;
@@ -156,7 +156,7 @@ public class SourceDiscovery {
           source.inputStream = new ZipInputStream(new FileInputStream(file));
         else
           source.inputStream = new BufferedInputStream(new FileInputStream(file));
-      } catch (IOException e) {
+      } catch (final IOException e) {
         throw new ImportException("Error on reset local resource", e);
       }
       return null;
@@ -235,7 +235,7 @@ public class SourceDiscovery {
         try {
           final Class<FormatImporter> clazz = (Class<FormatImporter>) Class.forName("com.arcadedb.gremlin.integration.importer.format.GraphMLImporterFormat");
           return clazz.getConstructor().newInstance();
-        } catch (ClassNotFoundException | InvocationTargetException | InstantiationException | IllegalAccessException | NoSuchMethodException e) {
+        } catch (final ClassNotFoundException | InvocationTargetException | InstantiationException | IllegalAccessException | NoSuchMethodException e) {
           LogManager.instance().log(this, Level.SEVERE, "Impossible to find importer for 'graphml' ", e);
         }
 
@@ -244,7 +244,7 @@ public class SourceDiscovery {
         try {
           final Class<FormatImporter> clazz = (Class<FormatImporter>) Class.forName("com.arcadedb.gremlin.integration.importer.format.GraphSONImporterFormat");
           return clazz.getConstructor().newInstance();
-        } catch (ClassNotFoundException | InvocationTargetException | InstantiationException | IllegalAccessException | NoSuchMethodException e) {
+        } catch (final ClassNotFoundException | InvocationTargetException | InstantiationException | IllegalAccessException | NoSuchMethodException e) {
           LogManager.instance().log(this, Level.SEVERE, "Impossible to find importer for 'graphson' ", e);
         }
 
@@ -349,7 +349,7 @@ public class SourceDiscovery {
 
       if (!delimiters.isEmpty() && beginTag == endTag) {
         boolean allDelimitersAreTheSame = true;
-        char delimiter = delimiters.get(0);
+        final char delimiter = delimiters.get(0);
         for (int i = 1; i < delimiters.size() - 1; ++i) {
           if (delimiters.get(i) != delimiter) {
             allDelimitersAreTheSame = false;
@@ -439,7 +439,7 @@ public class SourceDiscovery {
     try {
       final GZIPInputStream gzip = new GZIPInputStream(in, 8192);
       return new Source(url, gzip, totalSize, true, resetCallback, closeCallback);
-    } catch (IOException e) {
+    } catch (final IOException e) {
       // NOT GZIP
     }
 

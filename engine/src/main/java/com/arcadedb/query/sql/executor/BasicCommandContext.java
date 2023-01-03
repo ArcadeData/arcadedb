@@ -44,7 +44,7 @@ public class BasicCommandContext implements CommandContext {
   public BasicCommandContext() {
   }
 
-  public Object getVariable(String name) {
+  public Object getVariable(final String name) {
     return getVariable(name, null);
   }
 
@@ -52,12 +52,12 @@ public class BasicCommandContext implements CommandContext {
     if (name == null)
       return iDefault;
 
-    Object result;
+    final Object result;
 
     if (name.startsWith("$"))
       name = name.substring(1);
 
-    String firstPart;
+    final String firstPart;
     firstPart = name;
 
     if (firstPart.equalsIgnoreCase("CONTEXT"))
@@ -83,7 +83,7 @@ public class BasicCommandContext implements CommandContext {
     return result != null ? result : iDefault;
   }
 
-  protected Object getVariableFromParentHierarchy(String varName) {
+  protected Object getVariableFromParentHierarchy(final String varName) {
     if (this.variables != null && variables.containsKey(varName)) {
       return variables.get(varName);
     }
@@ -113,7 +113,7 @@ public class BasicCommandContext implements CommandContext {
     return this;
   }
 
-  boolean hasVariable(String name) {
+  boolean hasVariable(final String name) {
     if (variables != null && variables.containsKey(name)) {
       return true;
     }
@@ -279,7 +279,7 @@ public class BasicCommandContext implements CommandContext {
     return parent == null ? null : parent.getInputParameters();
   }
 
-  public void setInputParameters(Map<String, Object> inputParameters) {
+  public void setInputParameters(final Map<String, Object> inputParameters) {
     this.inputParameters = inputParameters;
   }
 
@@ -319,7 +319,7 @@ public class BasicCommandContext implements CommandContext {
    */
   public static int getLowerIndexOf(final String iText, final int iBeginOffset, final String... iToSearch) {
     int lowest = -1;
-    for (String toSearch : iToSearch) {
+    for (final String toSearch : iToSearch) {
       boolean singleQuote = false;
       boolean doubleQuote = false;
       boolean backslash = false;
@@ -353,7 +353,7 @@ public class BasicCommandContext implements CommandContext {
   }
 
   @Override
-  public void declareScriptVariable(String varName) {
+  public void declareScriptVariable(final String varName) {
     this.declaredScriptVariables.add(varName);
   }
 

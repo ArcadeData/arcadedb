@@ -32,7 +32,7 @@ public class PerformanceParsing {
   private static final String TYPE_NAME = "Person";
   private static final int    MAX_LOOPS = 10000000;
 
-  public static void main(String[] args) throws Exception {
+  public static void main(final String[] args) throws Exception {
     new PerformanceParsing().run();
   }
 
@@ -63,13 +63,13 @@ public class PerformanceParsing {
             ok.incrementAndGet();
 
             while (rs.hasNext()) {
-              Result record = rs.next();
+              final Result record = rs.next();
               Assertions.assertNotNull(record);
             }
           }
 
           @Override
-          public void onError(Exception exception) {
+          public void onError(final Exception exception) {
             error.incrementAndGet();
           }
         });

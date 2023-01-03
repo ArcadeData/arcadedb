@@ -52,7 +52,7 @@ public class CypherTest {
           graph.getDatabase().newVertex("Person").set("name", "Jay").set("age", i).save();
       });
 
-      ResultSet result = graph.cypher("MATCH (p:Person) WHERE p.age >= $p1 RETURN p.name, p.age ORDER BY p.age")//
+      final ResultSet result = graph.cypher("MATCH (p:Person) WHERE p.age >= $p1 RETURN p.name, p.age ORDER BY p.age")//
           .setParameter("p1", 25).execute();
 
       int i = 0;
@@ -87,7 +87,7 @@ public class CypherTest {
         graph.cypher("MATCH (p::Person) WHERE p.age >= $p1 RETURN p.name, p.age ORDER BY p.age")//
             .setParameter("p1", 25).execute();
         Assertions.fail();
-      } catch (QueryParsingException e) {
+      } catch (final QueryParsingException e) {
         // EXPECTED
       }
 
@@ -109,7 +109,7 @@ public class CypherTest {
           database.newVertex("Person").set("name", "Jay").set("age", i).save();
       });
 
-      ResultSet result = database.query("cypher", "MATCH (p:Person) WHERE p.age >= $p1 RETURN p.name, p.age ORDER BY p.age", "p1", 25);
+      final ResultSet result = database.query("cypher", "MATCH (p:Person) WHERE p.age >= $p1 RETURN p.name, p.age ORDER BY p.age", "p1", 25);
 
       int i = 0;
       int lastAge = 0;
@@ -187,13 +187,13 @@ public class CypherTest {
 
       graph.getDatabase().getSchema().getOrCreateVertexType("Person");
 
-      ResultSet p1 = graph.cypher("CREATE (p:Person {label:\"First\"}) return p").execute();
+      final ResultSet p1 = graph.cypher("CREATE (p:Person {label:\"First\"}) return p").execute();
       Assertions.assertTrue(p1.hasNext());
-      RID p1RID = p1.next().getIdentity().get();
+      final RID p1RID = p1.next().getIdentity().get();
 
-      ResultSet p2 = graph.cypher("CREATE (p:Person {label:\"Second\"}) return p").execute();
+      final ResultSet p2 = graph.cypher("CREATE (p:Person {label:\"Second\"}) return p").execute();
       Assertions.assertTrue(p2.hasNext());
-      RID p2RID = p2.next().getIdentity().get();
+      final RID p2RID = p2.next().getIdentity().get();
 
       final ArcadeCypher query = graph.cypher("MATCH (a),(b) WHERE a.label = \"First\" AND b.label = \"Second\" RETURN a,b");
       final ResultSet result = query.execute();
@@ -219,11 +219,11 @@ public class CypherTest {
     final ArcadeGraph graph = ArcadeGraph.open("./target/testcypher");
     try {
 
-      ResultSet p1 = graph.cypher("CREATE (p:Person) RETURN p").execute();
+      final ResultSet p1 = graph.cypher("CREATE (p:Person) RETURN p").execute();
       Assertions.assertTrue(p1.hasNext());
       p1.next().getIdentity().get();
 
-      ResultSet p2 = graph.cypher("MATCH (p) DELETE p").execute();
+      final ResultSet p2 = graph.cypher("MATCH (p) DELETE p").execute();
 
     } finally {
       graph.drop();

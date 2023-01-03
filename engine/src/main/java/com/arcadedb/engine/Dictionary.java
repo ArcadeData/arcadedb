@@ -56,7 +56,7 @@ public class Dictionary extends PaginatedComponent {
   /**
    * Called at creation time.
    */
-  public Dictionary(final DatabaseInternal database, final String name, String filePath, final PaginatedFile.MODE mode, final int pageSize) throws IOException {
+  public Dictionary(final DatabaseInternal database, final String name, final String filePath, final PaginatedFile.MODE mode, final int pageSize) throws IOException {
     super(database, name, filePath, DICT_EXT, mode, pageSize, CURRENT_VERSION);
     if (file.getSize() == 0) {
       // NEW FILE, CREATE HEADER PAGE
@@ -97,7 +97,7 @@ public class Dictionary extends PaginatedComponent {
             if (dictionary.size() != newPos.get() + 1) {
               try {
                 reload();
-              } catch (IOException e) {
+              } catch (final IOException e) {
                 // IGNORE IT
               }
               throw new SchemaException("Error on updating dictionary for key '" + name + "'");
@@ -162,7 +162,7 @@ public class Dictionary extends PaginatedComponent {
       if (oldIndexes.isEmpty())
         throw new IllegalArgumentException("Item '" + oldName + "' not found in the dictionary");
 
-      for (DocumentType t : database.getSchema().getTypes())
+      for (final DocumentType t : database.getSchema().getTypes())
         if (oldName.equals(t.getName()))
           throw new IllegalArgumentException("Cannot rename the item '" + oldName + "' in the dictionary because it has been used as a type name");
 
@@ -171,7 +171,7 @@ public class Dictionary extends PaginatedComponent {
       header.clearContent();
       updateCounters(header);
 
-      for (String d : dictionary) {
+      for (final String d : dictionary) {
         final byte[] property = d.getBytes(DatabaseFactory.getDefaultCharset());
 
         if (header.getAvailableContentSize() < Binary.SHORT_SERIALIZED_SIZE + property.length)
@@ -184,10 +184,10 @@ public class Dictionary extends PaginatedComponent {
       if (newIndex == null)
         dictionaryMap.putIfAbsent(newName, oldIndexes.get(0)); // IF ALREADY PRESENT, USE THE PREVIOUS KEY INDEX
 
-    } catch (IOException e) {
+    } catch (final IOException e) {
       try {
         reload();
-      } catch (IOException ioException) {
+      } catch (final IOException ioException) {
         LogManager.instance().log(this, Level.SEVERE, "Error on reloading dictionary", ioException);
       }
       throw new SchemaException("Error on updating name in dictionary");
@@ -209,7 +209,7 @@ public class Dictionary extends PaginatedComponent {
 
       header.writeString(header.getContentSize(), propertyName);
 
-    } catch (IOException e) {
+    } catch (final IOException e) {
       throw new SchemaException("Error on adding new item to the database schema dictionary");
     }
   }

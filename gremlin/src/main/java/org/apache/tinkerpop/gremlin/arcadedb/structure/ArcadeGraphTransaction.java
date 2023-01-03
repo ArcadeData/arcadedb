@@ -27,7 +27,7 @@ import org.apache.tinkerpop.gremlin.structure.util.TransactionException;
 public class ArcadeGraphTransaction extends AbstractThreadLocalTransaction {
   private final ArcadeGraph graph;
 
-  public ArcadeGraphTransaction(ArcadeGraph arcadeGraph) {
+  public ArcadeGraphTransaction(final ArcadeGraph arcadeGraph) {
     super(arcadeGraph);
     graph = arcadeGraph;
   }

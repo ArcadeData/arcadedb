@@ -31,7 +31,7 @@ public class CustomSQLFunctionsTest {
   @Test
   public void testRandom() throws Exception {
     TestHelper.executeInNewDatabase("testRandom", (db) -> {
-      ResultSet result = db.query("sql", "select math_random() as random");
+      final ResultSet result = db.query("sql", "select math_random() as random");
       assertTrue((Double) result.next().getProperty("random") > 0);
     });
   }
@@ -39,7 +39,7 @@ public class CustomSQLFunctionsTest {
   @Test
   public void testLog10() throws Exception {
     TestHelper.executeInNewDatabase("testRandom", (db) -> {
-      ResultSet result = db.query("sql", "select math_log10(10000) as log10");
+      final ResultSet result = db.query("sql", "select math_log10(10000) as log10");
       assertEquals(result.next().getProperty("log10"), 4.0, 0.0001);
     });
   }
@@ -47,7 +47,7 @@ public class CustomSQLFunctionsTest {
   @Test
   public void testAbsInt() throws Exception {
     TestHelper.executeInNewDatabase("testRandom", (db) -> {
-      ResultSet result = db.query("sql", "select math_abs(-5) as abs");
+      final ResultSet result = db.query("sql", "select math_abs(-5) as abs");
       assertTrue((Integer) result.next().getProperty("abs") == 5);
     });
   }
@@ -55,7 +55,7 @@ public class CustomSQLFunctionsTest {
   @Test
   public void testAbsDouble() throws Exception {
     TestHelper.executeInNewDatabase("testRandom", (db) -> {
-      ResultSet result = db.query("sql", "select math_abs(-5.0d) as abs");
+      final ResultSet result = db.query("sql", "select math_abs(-5.0d) as abs");
       assertTrue((Double) result.next().getProperty("abs") == 5.0);
     });
   }
@@ -63,7 +63,7 @@ public class CustomSQLFunctionsTest {
   @Test
   public void testAbsFloat() throws Exception {
     TestHelper.executeInNewDatabase("testRandom", (db) -> {
-      ResultSet result = db.query("sql", "select math_abs(-5.0f) as abs");
+      final ResultSet result = db.query("sql", "select math_abs(-5.0f) as abs");
       assertTrue((Float) result.next().getProperty("abs") == 5.0);
     });
   }
@@ -71,7 +71,7 @@ public class CustomSQLFunctionsTest {
   @Test
   public void testNonExistingFunction() {
     assertThrows(QueryParsingException.class, () -> TestHelper.executeInNewDatabase("testRandom", (db) -> {
-      ResultSet result = db.query("sql", "select math_min('boom', 'boom') as boom");
+      final ResultSet result = db.query("sql", "select math_min('boom', 'boom') as boom");
       result.next();
     }));
   }

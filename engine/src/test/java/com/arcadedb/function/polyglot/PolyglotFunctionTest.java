@@ -8,7 +8,7 @@ public class PolyglotFunctionTest extends TestHelper {
   @Test
   public void testEmbeddedFunction() {
     registerFunctions();
-    Integer result = (Integer) database.getSchema().getFunction("math", "sum").execute(3, 5);
+    final Integer result = (Integer) database.getSchema().getFunction("math", "sum").execute(3, 5);
     Assertions.assertEquals(8, result);
   }
 
@@ -33,7 +33,7 @@ public class PolyglotFunctionTest extends TestHelper {
     try {
       database.getSchema().getFunctionLibrary("math").registerFunction(new JavascriptFunctionDefinition("sum", "return a - b;", "a", "b"));
       Assertions.fail();
-    } catch (IllegalArgumentException e) {
+    } catch (final IllegalArgumentException e) {
       // EXPECTED
     }
 

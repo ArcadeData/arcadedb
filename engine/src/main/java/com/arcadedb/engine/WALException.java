@@ -21,7 +21,7 @@ package com.arcadedb.engine;
 import com.arcadedb.exception.ArcadeDBException;
 
 public class WALException extends ArcadeDBException {
-  public WALException(String s, Exception e) {
+  public WALException(final String s, final Exception e) {
     super(s, e);
   }
 }

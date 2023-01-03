@@ -30,21 +30,21 @@ import java.util.*;
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdb.com)
  */
 public class CreateVertexStatementExecutionTest extends TestHelper {
-  public CreateVertexStatementExecutionTest(){
+  public CreateVertexStatementExecutionTest() {
     autoStartTx = true;
   }
 
   @Test
   public void testInsertSet() {
-    String className = "testInsertSet";
-    Schema schema = database.getSchema();
+    final String className = "testInsertSet";
+    final Schema schema = database.getSchema();
     schema.createVertexType(className);
 
     ResultSet result = database.command("sql", "create vertex " + className + " set name = 'name1'");
-    printExecutionPlan(result);
+
     for (int i = 0; i < 1; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
       Assertions.assertEquals("name1", item.getProperty("name"));
     }
@@ -53,7 +53,7 @@ public class CreateVertexStatementExecutionTest extends TestHelper {
     result = database.query("sql", "select from " + className);
     for (int i = 0; i < 1; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
       Assertions.assertEquals("name1", item.getProperty("name"));
     }
@@ -63,30 +63,30 @@ public class CreateVertexStatementExecutionTest extends TestHelper {
 
   @Test
   public void testInsertSetNoVertex() {
-    String className = "testInsertSetNoVertex";
-    Schema schema = database.getSchema();
+    final String className = "testInsertSetNoVertex";
+    final Schema schema = database.getSchema();
     schema.createDocumentType(className);
 
     try {
-      ResultSet result = database.command("sql", "create vertex " + className + " set name = 'name1'");
+      final ResultSet result = database.command("sql", "create vertex " + className + " set name = 'name1'");
       Assertions.fail();
-    } catch (CommandExecutionException e1) {
-    } catch (Exception e2) {
+    } catch (final CommandExecutionException e1) {
+    } catch (final Exception e2) {
       Assertions.fail();
     }
   }
 
   @Test
   public void testInsertValue() {
-    String className = "testInsertValue";
-    Schema schema = database.getSchema();
+    final String className = "testInsertValue";
+    final Schema schema = database.getSchema();
     schema.createVertexType(className);
 
     ResultSet result = database.command("sql", "create vertex " + className + "  (name, surname) values ('name1', 'surname1')");
-    printExecutionPlan(result);
+
     for (int i = 0; i < 1; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
       Assertions.assertEquals("name1", item.getProperty("name"));
       Assertions.assertEquals("surname1", item.getProperty("surname"));
@@ -96,7 +96,7 @@ public class CreateVertexStatementExecutionTest extends TestHelper {
     result = database.query("sql", "select from " + className);
     for (int i = 0; i < 1; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
       Assertions.assertEquals("name1", item.getProperty("name"));
     }
@@ -106,29 +106,28 @@ public class CreateVertexStatementExecutionTest extends TestHelper {
 
   @Test
   public void testInsertValue2() {
-    String className = "testInsertValue2";
-    Schema schema = database.getSchema();
+    final String className = "testInsertValue2";
+    final Schema schema = database.getSchema();
     schema.createVertexType(className);
 
     ResultSet result = database.command("sql", "create vertex " + className + "  (name, surname) values ('name1', 'surname1'), ('name2', 'surname2')");
-    printExecutionPlan(result);
 
     for (int i = 0; i < 2; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
       Assertions.assertEquals("name" + (i + 1), item.getProperty("name"));
       Assertions.assertEquals("surname" + (i + 1), item.getProperty("surname"));
     }
     Assertions.assertFalse(result.hasNext());
 
-    Set<String> names = new HashSet<>();
+    final Set<String> names = new HashSet<>();
     names.add("name1");
     names.add("name2");
     result = database.query("sql", "select from " + className);
     for (int i = 0; i < 2; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
       Assertions.assertNotNull(item.getProperty("name"));
       names.remove(item.getProperty("name"));
@@ -139,20 +138,17 @@ public class CreateVertexStatementExecutionTest extends TestHelper {
     result.close();
   }
 
-  private void printExecutionPlan(ResultSet result) {
-  }
-
   @Test
   public void testContent() {
-    String className = "testContent";
-    Schema schema = database.getSchema();
+    final String className = "testContent";
+    final Schema schema = database.getSchema();
     schema.createVertexType(className);
 
     ResultSet result = database.command("sql", "create vertex " + className + " content {'name':'name1', 'surname':'surname1'}");
-    printExecutionPlan(result);
+
     for (int i = 0; i < 1; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
       Assertions.assertEquals("name1", item.getProperty("name"));
     }
@@ -161,7 +157,7 @@ public class CreateVertexStatementExecutionTest extends TestHelper {
     result = database.query("sql", "select from " + className);
     for (int i = 0; i < 1; i++) {
       Assertions.assertTrue(result.hasNext());
-      Result item = result.next();
+      final Result item = result.next();
       Assertions.assertNotNull(item);
       Assertions.assertEquals("name1", item.getProperty("name"));
       Assertions.assertEquals("surname1", item.getProperty("surname"));

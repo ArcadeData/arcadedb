@@ -51,7 +51,7 @@ public class InsertGraphIndexTest extends TestHelper {
 
     // PHASE 2
     {
-      Vertex[] cachedVertices = loadVertices();
+      final Vertex[] cachedVertices = loadVertices();
       checkGraph(cachedVertices);
     }
 
@@ -134,7 +134,7 @@ public class InsertGraphIndexTest extends TestHelper {
   private void createVertices() {
     //System.out.println("Start inserting " + VERTICES + " vertices...");
 
-    long startOfTest = System.currentTimeMillis();
+    final long startOfTest = System.currentTimeMillis();
 
     try {
       //database.setEdgeListSize(256);
@@ -144,7 +144,7 @@ public class InsertGraphIndexTest extends TestHelper {
       database.async().setCommitEvery(5000);
       database.async().onError(new ErrorCallback() {
         @Override
-        public void call(Throwable exception) {
+        public void call(final Throwable exception) {
           LogManager.instance().log(this, Level.SEVERE, "ERROR: " + exception, exception);
           System.exit(1);
         }
@@ -180,7 +180,7 @@ public class InsertGraphIndexTest extends TestHelper {
     database.getSchema().createEdgeType(EDGE_TYPE_NAME, PARALLEL);
   }
 
-  private void checkGraph(Vertex[] cachedVertices) {
+  private void checkGraph(final Vertex[] cachedVertices) {
     //System.out.println("Checking graph with " + VERTICES + " vertices");
 
     final int expectedEdges = Math.min(VERTICES, EDGES_PER_VERTEX);

@@ -20,6 +20,12 @@
 /* ParserGeneratorCCOptions:SUPPORT_CLASS_VISIBILITY_PUBLIC=true */
 package com.arcadedb.graphql.parser;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.Reader;
+import java.nio.charset.Charset;
+
 /**
  * An implementation of interface CharStream, where the stream is assumed to
  * contain only ASCII characters (without unicode processing).
@@ -27,10 +33,10 @@ package com.arcadedb.graphql.parser;
 public
 class SimpleCharStream extends AbstractCharStream
 {
-  private java.io.Reader m_aIS;
+  private Reader m_aIS;
 
   /** Constructor. */
-  public SimpleCharStream(final java.io.Reader dstream,
+  public SimpleCharStream(final Reader dstream,
                           final int startline,
                           final int startcolumn,
                           final int buffersize)
@@ -40,7 +46,7 @@ class SimpleCharStream extends AbstractCharStream
   }
 
   /** Constructor. */
-  public SimpleCharStream(final java.io.Reader dstream,
+  public SimpleCharStream(final Reader dstream,
                           final int startline,
                           final int startcolumn)
   {
@@ -48,13 +54,13 @@ class SimpleCharStream extends AbstractCharStream
   }
 
   /** Constructor. */
-  public SimpleCharStream(final java.io.Reader dstream)
+  public SimpleCharStream(final Reader dstream)
   {
     this(dstream, 1, 1, DEFAULT_BUF_SIZE);
   }
 
   /** Reinitialise. */
-  public void reInit(final java.io.Reader dstream,
+  public void reInit(final Reader dstream,
                      final int startline,
                      final int startcolumn,
                      final int buffersize)
@@ -64,7 +70,7 @@ class SimpleCharStream extends AbstractCharStream
   }
 
   /** Reinitialise. */
-  public void reInit(final java.io.Reader dstream,
+  public void reInit(final Reader dstream,
                      final int startline,
                      final int startcolumn)
   {
@@ -72,24 +78,24 @@ class SimpleCharStream extends AbstractCharStream
   }
 
   /** Reinitialise. */
-  public void reInit(final java.io.Reader dstream)
+  public void reInit(final Reader dstream)
   {
     reInit(dstream, 1, 1, DEFAULT_BUF_SIZE);
   }
 
   /** Constructor. */
-  public SimpleCharStream(final java.io.InputStream dstream,
-                          final java.nio.charset.Charset encoding,
+  public SimpleCharStream(final InputStream dstream,
+                          final Charset encoding,
                           final int startline,
                           final int startcolumn,
                           final int buffersize)
   {
-    this(new java.io.InputStreamReader(dstream, encoding), startline, startcolumn, buffersize);
+    this(new InputStreamReader(dstream, encoding), startline, startcolumn, buffersize);
   }
 
   /** Constructor. */
-  public SimpleCharStream(final java.io.InputStream dstream,
-                          final java.nio.charset.Charset encoding,
+  public SimpleCharStream(final InputStream dstream,
+                          final Charset encoding,
                           final int startline,
                           final int startcolumn)
   {
@@ -97,22 +103,22 @@ class SimpleCharStream extends AbstractCharStream
   }
 
   /** Constructor. */
-  public SimpleCharStream(final java.io.InputStream dstream,
-                          final java.nio.charset.Charset encoding)
+  public SimpleCharStream(final InputStream dstream,
+                          final Charset encoding)
   {
     this(dstream, encoding, 1, 1, DEFAULT_BUF_SIZE);
   }
 
   /** Reinitialise. */
-  public void reInit(final java.io.InputStream dstream,
-                     final java.nio.charset.Charset encoding)
+  public void reInit(final InputStream dstream,
+                     final Charset encoding)
   {
     reInit(dstream, encoding, 1, 1, DEFAULT_BUF_SIZE);
   }
 
   /** Reinitialise. */
-  public void reInit(final java.io.InputStream dstream,
-                     final java.nio.charset.Charset encoding,
+  public void reInit(final InputStream dstream,
+                     final Charset encoding,
                      final int startline,
                      final int startcolumn)
   {
@@ -120,23 +126,23 @@ class SimpleCharStream extends AbstractCharStream
   }
 
   /** Reinitialise. */
-  public void reInit(final java.io.InputStream dstream,
-                     final java.nio.charset.Charset encoding,
+  public void reInit(final InputStream dstream,
+                     final Charset encoding,
                      final int startline,
                      final int startcolumn,
                      final int buffersize)
   {
-    reInit(new java.io.InputStreamReader(dstream, encoding), startline, startcolumn, buffersize);
+    reInit(new InputStreamReader(dstream, encoding), startline, startcolumn, buffersize);
   }
 
   @Override
-  protected int streamRead (final char[] aBuf, final int nOfs, final int nLen) throws java.io.IOException
+  protected int streamRead (final char[] aBuf, final int nOfs, final int nLen) throws IOException
   {
     return m_aIS.read (aBuf, nOfs, nLen);
   }
 
   @Override
-  protected void streamClose () throws java.io.IOException
+  protected void streamClose () throws IOException
   {
     if (m_aIS != null)
       m_aIS.close ();

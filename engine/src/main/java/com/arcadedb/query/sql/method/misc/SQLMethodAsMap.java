@@ -39,14 +39,14 @@ public class SQLMethodAsMap extends AbstractSQLMethod {
 
   @SuppressWarnings("unchecked")
   @Override
-  public Object execute(final Object iThis, Identifiable iCurrentRecord, CommandContext iContext, Object ioResult, Object[] iParams) {
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult, final Object[] iParams) {
     if (ioResult instanceof Map)
       // ALREADY A MAP
       return ioResult;
 
     if (ioResult == null) {
       // NULL VALUE, RETURN AN EMPTY MAP
-      return Collections.EMPTY_MAP;
+      return Collections.emptyMap();
     }
 
     if (ioResult instanceof Document) {
@@ -54,7 +54,7 @@ public class SQLMethodAsMap extends AbstractSQLMethod {
       return ((Document) ioResult).toMap();
     }
 
-    Iterator<Object> iter;
+    final Iterator<Object> iter;
     if (ioResult instanceof Iterator<?>) {
       iter = (Iterator<Object>) ioResult;
     } else if (ioResult instanceof Iterable<?>) {

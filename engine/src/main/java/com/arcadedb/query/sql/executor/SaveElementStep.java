@@ -30,18 +30,18 @@ public class SaveElementStep extends AbstractExecutionStep {
 
   private final Identifier bucket;
 
-  public SaveElementStep(CommandContext ctx, Identifier bucket, boolean profilingEnabled) {
+  public SaveElementStep(final CommandContext ctx, final Identifier bucket, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
     this.bucket = bucket;
   }
 
-  public SaveElementStep(CommandContext ctx, boolean profilingEnabled) {
+  public SaveElementStep(final CommandContext ctx, final boolean profilingEnabled) {
     this(ctx, null, profilingEnabled);
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    ResultSet upstream = getPrev().get().syncPull(ctx, nRecords);
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
+    final ResultSet upstream = getPrev().get().syncPull(ctx, nRecords);
     return new ResultSet() {
       @Override
       public boolean hasNext() {
@@ -50,7 +50,7 @@ public class SaveElementStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        Result result = upstream.next();
+        final Result result = upstream.next();
         if (result != null && result.isElement()) {
           final Document doc = result.getElement().orElse(null);
 
@@ -75,9 +75,9 @@ public class SaveElementStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    StringBuilder result = new StringBuilder();
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
+    final StringBuilder result = new StringBuilder();
     result.append(spaces);
     result.append("+ SAVE RECORD");
     if (bucket != null) {
@@ -89,7 +89,7 @@ public class SaveElementStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ExecutionStep copy(CommandContext ctx) {
+  public ExecutionStep copy(final CommandContext ctx) {
     return new SaveElementStep(ctx, bucket == null ? null : bucket.copy(), profilingEnabled);
   }
 }

@@ -105,12 +105,12 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   /**
    * Called at creation time.
    */
-  public LSMTreeIndex(final DatabaseInternal database, final String name, final boolean unique, String filePath, final PaginatedFile.MODE mode,
+  public LSMTreeIndex(final DatabaseInternal database, final String name, final boolean unique, final String filePath, final PaginatedFile.MODE mode,
       final Type[] keyTypes, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy) {
     try {
       this.name = name;
       this.mutable = new LSMTreeIndexMutable(this, database, name, unique, filePath, mode, keyTypes, pageSize, nullStrategy);
-    } catch (IOException e) {
+    } catch (final IOException e) {
       throw new IndexException("Error on creating index '" + name + "'", e);
     }
   }
@@ -118,7 +118,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   /**
    * Called at load time (1st page only).
    */
-  public LSMTreeIndex(final DatabaseInternal database, final String name, final boolean unique, String filePath, final int id, final PaginatedFile.MODE mode,
+  public LSMTreeIndex(final DatabaseInternal database, final String name, final boolean unique, final String filePath, final int id, final PaginatedFile.MODE mode,
       final int pageSize, final int version) throws IOException {
     this.name = name;
     this.mutable = new LSMTreeIndexMutable(this, database, name, unique, filePath, id, mode, pageSize, version);
@@ -225,7 +225,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
 
     try {
       return LSMTreeIndexCompactor.compact(this);
-    } catch (TimeoutException e) {
+    } catch (final TimeoutException e) {
       // IGNORE IT, WILL RETRY LATER
       return false;
     } finally {
@@ -283,7 +283,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   public long countEntries() {
     checkIsValid();
     long total = 0;
-    for (IndexCursor it = iterator(true); it.hasNext(); ) {
+    for (final IndexCursor it = iterator(true); it.hasNext(); ) {
       it.next();
       ++total;
     }
@@ -385,7 +385,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     if (mutable.getDatabase().getTransaction().getStatus() == TransactionContext.STATUS.BEGUN) {
       // KEY ADDED AT COMMIT TIME (IN A LOCK)
       final TransactionContext tx = mutable.getDatabase().getTransaction();
-      for (RID rid : rids)
+      for (final RID rid : rids)
         tx.addIndexOperation(this, true, convertedKeys, rid);
     } else
       lock.executeInReadLock(() -> {
@@ -485,7 +485,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
       final LSMTreeIndexMutable result = lock.executeInWriteLock(() -> {
         final int pageSize = mutable.getPageSize();
 
-        int last_ = mutable.getName().lastIndexOf('_');
+        final int last_ = mutable.getName().lastIndexOf('_');
         final String newName = mutable.getName().substring(0, last_) + "_" + System.nanoTime();
 
         final LSMTreeIndexMutable newMutableIndex = new LSMTreeIndexMutable(this, database, newName, mutable.isUnique(),
@@ -534,7 +534,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
       if (prevMutable != null) {
         try {
           prevMutable.drop();
-        } catch (IOException e) {
+        } catch (final IOException e) {
           LogManager.instance().log(this, Level.WARNING, "Error on deleting old copy of mutable index file %s", e, prevMutable);
         }
       }

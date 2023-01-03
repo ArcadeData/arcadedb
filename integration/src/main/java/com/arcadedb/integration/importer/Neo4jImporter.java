@@ -84,7 +84,7 @@ public class Neo4jImporter {
     printHeader();
 
     String state = null;
-    for (String arg : args) {
+    for (final String arg : args) {
       if (arg.equals("-?"))
         printHelp();
       else if (arg.equals("-d"))
@@ -166,20 +166,20 @@ public class Neo4jImporter {
       log("Import of Neo4j database completed in %,d secs with %,d errors and %,d warnings.", elapsed, errors, warnings);
       log("\nSUMMARY\n");
       log("- Vertices.............: %,d", totalVerticesParsed);
-      for (Map.Entry<String, Long> entry : totalVerticesByType.entrySet()) {
+      for (final Map.Entry<String, Long> entry : totalVerticesByType.entrySet()) {
         final String typeName = entry.getKey();
         final Long verticesByClass = totalVerticesByType.get(typeName);
         final long entries = verticesByClass != null ? verticesByClass : 0L;
-        String additional = "";
+        final String additional = "";
 
         log("-- %-20s: %,d %s", typeName, entries, additional);
       }
       log("- Edges................: %,d", totalEdgesParsed);
-      for (Map.Entry<String, Long> entry : totalEdgesByType.entrySet()) {
+      for (final Map.Entry<String, Long> entry : totalEdgesByType.entrySet()) {
         final String typeName = entry.getKey();
         final Long edgesByClass = totalEdgesByType.get(typeName);
         final long entries = edgesByClass != null ? edgesByClass : 0L;
-        String additional = "";
+        final String additional = "";
 
         log("-- %-20s: %,d %s", typeName, entries, additional);
       }
@@ -210,7 +210,7 @@ public class Neo4jImporter {
         if (!database.getSchema().existsType(labels.getFirst())) {
           final VertexType type = database.getSchema().getOrCreateVertexType(labels.getFirst());
           if (labels.getSecond() != null)
-            for (String parent : labels.getSecond())
+            for (final String parent : labels.getSecond())
               type.addSuperType(parent);
 
           database.transaction(() -> {
@@ -237,10 +237,10 @@ public class Neo4jImporter {
 
   private void inferPropertyType(final JSONObject json, final String label) {
     // TRY TO INFER PROPERTY TYPES
-    Map<String, Type> typeProperties = schemaProperties.computeIfAbsent(label, k -> new HashMap<>());
+    final Map<String, Type> typeProperties = schemaProperties.computeIfAbsent(label, k -> new HashMap<>());
 
     final JSONObject properties = json.getJSONObject("properties");
-    for (String propName : properties.keySet()) {
+    for (final String propName : properties.keySet()) {
       ++totalAttributesParsed;
 
       Type currentType = typeProperties.get(propName);
@@ -253,7 +253,7 @@ public class Neo4jImporter {
             try {
               dateTimeISO8601Format.parse((String) propValue);
               currentType = Type.DATETIME;
-            } catch (ParseException e) {
+            } catch (final ParseException e) {
               currentType = Type.STRING;
             }
           } else {
@@ -411,7 +411,7 @@ public class Neo4jImporter {
   private Map<String, Object> setProperties(final JSONObject properties, final Map<String, Type> typeSchema) {
     final Map<String, Object> result = new HashMap<>();
 
-    for (String propName : properties.keySet()) {
+    for (final String propName : properties.keySet()) {
       Object propValue = properties.get(propName);
 
       if (propValue == JSONObject.NULL)
@@ -423,7 +423,7 @@ public class Neo4jImporter {
       else if (propValue instanceof String && typeSchema != null && typeSchema.get(propName) == Type.DATETIME) {
         try {
           propValue = dateTimeISO8601Format.parse((String) propValue).getTime();
-        } catch (ParseException e) {
+        } catch (final ParseException e) {
           log("Invalid date '%s', ignoring conversion to timestamp and leaving it as string", propValue);
           ++errors;
         }
@@ -447,7 +447,7 @@ public class Neo4jImporter {
     return file.getName().endsWith("gz") ? new GZIPInputStream(new FileInputStream(file)) : new FileInputStream(file);
   }
 
-  private void readFile(Callable<Void, JSONObject> callback) throws IOException {
+  private void readFile(final Callable<Void, JSONObject> callback) throws IOException {
     final InputStream inputStream = openInputStream();
     try {
       final BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, DatabaseFactory.getDefaultCharset()));
@@ -474,7 +474,7 @@ public class Neo4jImporter {
               ++errors;
             }
 
-          } catch (JSONException e) {
+          } catch (final JSONException e) {
             log("Error on parsing json on line %d of the input JSONL file. The line will be ignored. JSON: %s", lineNumber, line);
             ++errors;
           }

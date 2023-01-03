@@ -27,29 +27,29 @@ import java.util.*;
 
 public class PInteger extends PNumber {
 
-  protected java.lang.Number value;
+  protected Number value;
 
-  public PInteger(int id) {
+  public PInteger(final int id) {
     super(id);
   }
 
-  public PInteger(SqlParser p, int id) {
+  public PInteger(final SqlParser p, final int id) {
     super(p, id);
   }
 
-  public java.lang.Number getValue() {
+  public Number getValue() {
     return value;
   }
 
-  public void setValue(int sign, String stringValue) {
-    int radix = radix(stringValue);
+  public void setValue(final int sign, String stringValue) {
+    final int radix = radix(stringValue);
     stringValue = convertToJavaByRadix(stringValue, radix);
 
     if (stringValue.endsWith("L") || stringValue.endsWith("l")) {
       value = Long.parseLong(stringValue.substring(0, stringValue.length() - 1), radix) * sign;
     } else {
-      long longValue = Long.parseLong(stringValue, radix) * sign;
-      if (longValue > java.lang.Integer.MAX_VALUE || longValue < java.lang.Integer.MIN_VALUE) {
+      final long longValue = Long.parseLong(stringValue, radix) * sign;
+      if (longValue > Integer.MAX_VALUE || longValue < Integer.MIN_VALUE) {
         value = longValue;
       } else {
         value = (int) longValue;
@@ -57,7 +57,7 @@ public class PInteger extends PNumber {
     }
   }
 
-  private String convertToJavaByRadix(String stringValue, int radix) {
+  private String convertToJavaByRadix(final String stringValue, final int radix) {
     if (radix == 16) {
       if (stringValue.charAt(0) == '-') {
         return "-" + stringValue.substring(3);
@@ -86,24 +86,24 @@ public class PInteger extends PNumber {
     return this;
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("" + value);
   }
 
   public PInteger copy() {
-    PInteger result = new PInteger(-1);
+    final PInteger result = new PInteger(-1);
     result.value = value;
     return result;
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    PInteger oInteger = (PInteger) o;
+    final PInteger oInteger = (PInteger) o;
 
     return Objects.equals(value, oInteger.value);
   }
@@ -114,12 +114,12 @@ public class PInteger extends PNumber {
   }
 
   public Result serialize() {
-    ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal();
     result.setProperty("value", value);
     return result;
   }
 
-  public void deserialize(Result fromResult) {
+  public void deserialize(final Result fromResult) {
     value = fromResult.getProperty("value");
   }
 }

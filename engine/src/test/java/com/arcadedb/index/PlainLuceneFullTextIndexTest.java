@@ -70,18 +70,18 @@ public class PlainLuceneFullTextIndexTest {
       //System.out.println("path = " + path.toAbsolutePath());
       final FSDirectory directory = FSDirectory.open(path);
 
-      Analyzer analyzer = new StandardAnalyzer();
+      final Analyzer analyzer = new StandardAnalyzer();
 
       //re-create index
-      IndexWriterConfig config = new IndexWriterConfig(analyzer);
+      final IndexWriterConfig config = new IndexWriterConfig(analyzer);
       config.setOpenMode(IndexWriterConfig.OpenMode.CREATE);
 
       //write documents
-      IndexWriter writer = new IndexWriter(directory, config);
+      final IndexWriter writer = new IndexWriter(directory, config);
 
       IntStream.rangeClosed(0, 1000).forEach(i -> {
         try {
-          Document doc = new Document();
+          final Document doc = new Document();
           doc.add(new StringField("id", "" + i, Field.Store.YES));
 
           if (i % 2 == 0)
@@ -90,7 +90,7 @@ public class PlainLuceneFullTextIndexTest {
             doc.add(new TextField("text", text2, Field.Store.NO));
 
           writer.addDocument(doc);
-        } catch (IOException e) {
+        } catch (final IOException e) {
           e.printStackTrace();
         }
       });
@@ -100,16 +100,16 @@ public class PlainLuceneFullTextIndexTest {
       //search
       final DirectoryReader reader = DirectoryReader.open(directory);
 
-      IndexSearcher searcher = new IndexSearcher(reader);
+      final IndexSearcher searcher = new IndexSearcher(reader);
 
-      QueryParser parser = new QueryParser("text", analyzer);
-      Query query = parser.parse("elec*");
-      ScoreDoc[] hits = searcher.search(query, 1000, Sort.RELEVANCE).scoreDocs;
+      final QueryParser parser = new QueryParser("text", analyzer);
+      final Query query = parser.parse("elec*");
+      final ScoreDoc[] hits = searcher.search(query, 1000, Sort.RELEVANCE).scoreDocs;
 
       Assertions.assertEquals(501, hits.length);
       // Iterate through the results:
       for (int i = 0; i < hits.length; i++) {
-        Document hitDoc = searcher.doc(hits[i].doc);
+        final Document hitDoc = searcher.doc(hits[i].doc);
         //System.out.print(hitDoc.get("id") + " - ");
       }
 

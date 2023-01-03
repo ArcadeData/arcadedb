@@ -42,11 +42,11 @@ public class QueryHelper {
     for (int i = 0; i < value.length(); ) {
       final char c = value.charAt(i);
 
-      String replaceWith;
+      final String replaceWith;
       switch (c) {
       case '\\':
         if (i + 1 < value.length()) {
-          char next = value.charAt(i + 1);
+          final char next = value.charAt(i + 1);
           if (next == '%')
             replaceWith = "" + next;
           else

@@ -45,14 +45,14 @@ public class CountFromClassStep extends AbstractExecutionStep {
    * @param ctx              the query context
    * @param profilingEnabled true to enable the profiling of the execution (for SQL PROFILE)
    */
-  public CountFromClassStep(Identifier targetClass, String alias, CommandContext ctx, boolean profilingEnabled) {
+  public CountFromClassStep(final Identifier targetClass, final String alias, final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
     this.target = targetClass;
     this.alias = alias;
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
     getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
     return new ResultSet() {
       @Override
@@ -65,16 +65,16 @@ public class CountFromClassStep extends AbstractExecutionStep {
         if (executed) {
           throw new NoSuchElementException();
         }
-        long begin = profilingEnabled ? System.nanoTime() : 0;
+        final long begin = profilingEnabled ? System.nanoTime() : 0;
         try {
-          DocumentType typez = ctx.getDatabase().getSchema().getType(target.getStringValue());
+          final DocumentType typez = ctx.getDatabase().getSchema().getType(target.getStringValue());
           if (typez == null) {
             throw new CommandExecutionException("Type " + target.getStringValue() + " does not exist in the database schema");
           }
 
-          long size = ctx.getDatabase().countType(target.getStringValue(), true);
+          final long size = ctx.getDatabase().countType(target.getStringValue(), true);
           executed = true;
-          ResultInternal result = new ResultInternal();
+          final ResultInternal result = new ResultInternal();
           result.setProperty(alias, size);
           return result;
 
@@ -107,8 +107,8 @@ public class CountFromClassStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     String result = spaces + "+ CALCULATE USERTYPE SIZE: " + target;
     if (profilingEnabled) {
       result += " (" + getCostFormatted() + ")";

@@ -49,7 +49,7 @@ public class DatabaseStructureResponse extends HAAbstractCommand {
     stream.putString(schemaJson);
 
     stream.putUnsignedNumber(fileNames.size());
-    for (Map.Entry<Integer, String> file : fileNames.entrySet()) {
+    for (final Map.Entry<Integer, String> file : fileNames.entrySet()) {
       stream.putInt(file.getKey());
       stream.putByte((byte) (file.getValue() != null ? 1 : 0));
       if (file.getValue() != null)
@@ -58,7 +58,7 @@ public class DatabaseStructureResponse extends HAAbstractCommand {
   }
 
   @Override
-  public void fromStream(ArcadeDBServer server, final Binary stream) {
+  public void fromStream(final ArcadeDBServer server, final Binary stream) {
     schemaJson = stream.getString();
 
     fileNames = new HashMap<>();

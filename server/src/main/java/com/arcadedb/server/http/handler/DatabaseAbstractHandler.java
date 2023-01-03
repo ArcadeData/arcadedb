@@ -129,7 +129,7 @@ public abstract class DatabaseAbstractHandler extends AbstractHandler {
     return true;
   }
 
-  protected HttpSession setTransactionInThreadLocal(final HttpServerExchange exchange, final Database database, ServerSecurityUser user,
+  protected HttpSession setTransactionInThreadLocal(final HttpServerExchange exchange, final Database database, final ServerSecurityUser user,
       final boolean mandatory) {
     final HeaderValues sessionId = exchange.getRequestHeaders().get(HttpSessionManager.ARCADEDB_SESSION_ID);
     if (sessionId == null || sessionId.isEmpty()) {

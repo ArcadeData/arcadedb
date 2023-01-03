@@ -36,35 +36,35 @@ class SQLMethodAsLongTest {
 
   @Test
   void testNulIsReturnedAsNull() {
-    Object result = method.execute(null, null, null, null, null);
+    final Object result = method.execute(null, null, null, null, null);
     assertThat(result).isNull();
   }
 
   @Test
   void testStringToLong() {
-    Object result = method.execute(null, null, null, "10", null);
+    final Object result = method.execute(null, null, null, "10", null);
     assertThat(result).isInstanceOf(Long.class);
     assertThat(result).isEqualTo(10l);
   }
 
   @Test
   void testLongToLong() {
-    Object result = method.execute(null, null, null, 10l, null);
+    final Object result = method.execute(null, null, null, 10l, null);
     assertThat(result).isInstanceOf(Long.class);
     assertThat(result).isEqualTo(10l);
   }
 
   @Test
   void testIntegerToLong() {
-    Object result = method.execute(null, null, null, 10, null);
+    final Object result = method.execute(null, null, null, 10, null);
     assertThat(result).isInstanceOf(Long.class);
     assertThat(result).isEqualTo(10l);
   }
 
   @Test
   void testDateToLong() {
-    Date now = new Date();
-    Object result = method.execute(null, null, null, now, null);
+    final Date now = new Date();
+    final Object result = method.execute(null, null, null, now, null);
     assertThat(result).isInstanceOf(Long.class);
     assertThat(result).isEqualTo(now.getTime());
   }

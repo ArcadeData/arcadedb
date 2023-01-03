@@ -21,11 +21,11 @@
 package com.arcadedb.query.sql.parser;
 
 public class ParseScript extends SimpleNode {
-  public ParseScript(int id) {
+  public ParseScript(final int id) {
     super(id);
   }
 
-  public ParseScript(SqlParser p, int id) {
+  public ParseScript(final SqlParser p, final int id) {
     super(p, id);
   }
 }

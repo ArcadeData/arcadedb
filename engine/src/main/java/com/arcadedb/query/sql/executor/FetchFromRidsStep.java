@@ -58,14 +58,14 @@ public class FetchFromRidsStep extends AbstractExecutionStep {
           return;
         }
         while (iterator.hasNext()) {
-          RID nextRid = iterator.next();
+          final RID nextRid = iterator.next();
           if (nextRid == null)
             continue;
 
           Identifiable nextDoc = null;
           try {
             nextDoc = ctx.getDatabase().lookupByRID(nextRid, true);
-          } catch (RecordNotFoundException e) {
+          } catch (final RecordNotFoundException e) {
             // IGNORE HERE< HANDLED BELOW
           }
 
@@ -130,7 +130,7 @@ public class FetchFromRidsStep extends AbstractExecutionStep {
 //        rids = ser.stream().map(x -> new PRID(x)).collect(Collectors.toList());
       }
       reset();
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new CommandExecutionException(e);
     }
   }

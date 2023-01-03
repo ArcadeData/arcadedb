@@ -45,7 +45,7 @@ public class MatchFilterItem extends SimpleNode {
     super(p, id);
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (typeName != null) {
       builder.append("type: ");
       typeName.toString(params, builder);

@@ -35,11 +35,11 @@ public class WhileBlock extends Statement {
   protected BooleanExpression condition;
   protected List<Statement>   statements = new ArrayList<>();
 
-  public WhileBlock(int id) {
+  public WhileBlock(final int id) {
     super(id);
   }
 
-  public WhileBlock(SqlParser p, int id) {
+  public WhileBlock(final SqlParser p, final int id) {
     super(p, id);
   }
 
@@ -62,7 +62,7 @@ public class WhileBlock extends Statement {
   }
 
   @Override
-  public ResultSet execute(final Database db, Map params, final CommandContext parentCtx, final boolean usePlanCache) {
+  public ResultSet execute(final Database db, final Map params, final CommandContext parentCtx, final boolean usePlanCache) {
     final BasicCommandContext ctx = new BasicCommandContext();
     if (parentCtx != null) {
       ctx.setParentWithoutOverridingChild(parentCtx);
@@ -96,7 +96,7 @@ public class WhileBlock extends Statement {
   }
 
   public boolean containsReturn() {
-    for (Statement stm : this.statements) {
+    for (final Statement stm : this.statements) {
       if (stm instanceof ReturnStatement) {
         return true;
       }
@@ -138,7 +138,7 @@ public class WhileBlock extends Statement {
     builder.append("WHILE (");
     condition.toString(params, builder);
     builder.append(") {\n");
-    for (Statement stm : statements) {
+    for (final Statement stm : statements) {
       stm.toString(params, builder);
       builder.append("\n");
     }

@@ -36,25 +36,25 @@ public class CountStep extends AbstractExecutionStep {
    * @param ctx              the query context
    * @param profilingEnabled true to enable the profiling of the execution (for SQL PROFILE)
    */
-  public CountStep(CommandContext ctx, boolean profilingEnabled) {
+  public CountStep(final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
     if (executed) {
       return new InternalResultSet();
     }
-    ResultInternal resultRecord = new ResultInternal();
+    final ResultInternal resultRecord = new ResultInternal();
     executed = true;
     long count = 0;
     while (true) {
-      ResultSet prevResult = getPrev().get().syncPull(ctx, nRecords);
+      final ResultSet prevResult = getPrev().get().syncPull(ctx, nRecords);
 
       if (!prevResult.hasNext()) {
-        long begin = profilingEnabled ? System.nanoTime() : 0;
+        final long begin = profilingEnabled ? System.nanoTime() : 0;
         try {
-          InternalResultSet result = new InternalResultSet();
+          final InternalResultSet result = new InternalResultSet();
           resultRecord.setProperty("count", count);
           result.add(resultRecord);
           return result;
@@ -72,9 +72,9 @@ public class CountStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    StringBuilder result = new StringBuilder();
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
+    final StringBuilder result = new StringBuilder();
     result.append(spaces);
     result.append("+ COUNT");
     if (profilingEnabled) {
@@ -89,7 +89,7 @@ public class CountStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ExecutionStep copy(CommandContext ctx) {
+  public ExecutionStep copy(final CommandContext ctx) {
     return new CountStep(ctx, profilingEnabled);
   }
 }

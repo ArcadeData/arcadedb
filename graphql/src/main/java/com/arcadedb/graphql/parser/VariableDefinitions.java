@@ -27,17 +27,17 @@ class VariableDefinitions extends SimpleNode {
 
   List<VariableDefinition> variableDefinitions = new ArrayList<>();
 
-  public VariableDefinitions(int id) {
+  public VariableDefinitions(final int id) {
     super(id);
   }
 
-  public VariableDefinitions(GraphQLParser p, int id) {
+  public VariableDefinitions(final GraphQLParser p, final int id) {
     super(p, id);
   }
 
 
   /** Accept the visitor. **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
+  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
     return
     visitor.visit(this, data);
   }

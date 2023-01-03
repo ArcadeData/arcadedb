@@ -51,10 +51,10 @@ public class RWLockContext {
 
       return callable.call();
 
-    } catch (RuntimeException e) {
+    } catch (final RuntimeException e) {
       throw e;
 
-    } catch (Throwable e) {
+    } catch (final Throwable e) {
       throw new ArcadeDBException("Error in execution in lock", e);
 
     } finally {
@@ -71,10 +71,10 @@ public class RWLockContext {
 
       return callable.call();
 
-    } catch (RuntimeException e) {
+    } catch (final RuntimeException e) {
       throw e;
 
-    } catch (Throwable e) {
+    } catch (final Throwable e) {
       throw new ArcadeDBException("Error in execution in lock", e);
 
     } finally {

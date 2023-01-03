@@ -37,17 +37,17 @@ public class VariableParser {
     if (iListener == null)
       throw new IllegalArgumentException("Missed VariableParserListener listener");
 
-    int beginPos = iText.lastIndexOf(iBegin);
+    final int beginPos = iText.lastIndexOf(iBegin);
     if (beginPos == -1)
       return iText;
 
-    int endPos = iText.indexOf(iEnd, beginPos + 1);
+    final int endPos = iText.indexOf(iEnd, beginPos + 1);
     if (endPos == -1)
       return iText;
 
-    String pre = iText.substring(0, beginPos);
-    String var = iText.substring(beginPos + iBegin.length(), endPos);
-    String post = iText.substring(endPos + iEnd.length());
+    final String pre = iText.substring(0, beginPos);
+    final String var = iText.substring(beginPos + iBegin.length(), endPos);
+    final String post = iText.substring(endPos + iEnd.length());
 
     Object resolved = iListener.resolve(var);
 

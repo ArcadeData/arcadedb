@@ -133,7 +133,7 @@ public class CreateEdgeFromImportTask implements DatabaseAsyncTask {
 
       context.createdEdges.addAndGet(newEdges.size());
 
-      for (Edge e : newEdges)
+      for (final Edge e : newEdges)
         edgeIndex.put(e.getIn(), e.getIdentity(), threadContext.lastSourceVertex.getIdentity());
 
       connections.clear();
@@ -177,7 +177,7 @@ public class CreateEdgeFromImportTask implements DatabaseAsyncTask {
         connections.add(new Pair<>(it.getEdgeRID(), it.getVertexRID()));
 
         ++totalEdges;
-      } catch (Exception e) {
+      } catch (final Exception e) {
         LogManager.instance()
             .log(CreateEdgeFromImportTask.class, Level.SEVERE, "Error on creating incoming edge from %s -[%s]-> %s", e, it.getVertexRID(), it.getEdgeRID(),
                 it.getKeyRID(), it.getVertexRID());

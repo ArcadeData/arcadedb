@@ -41,7 +41,7 @@ public class BucketList extends SimpleNode {
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("bucket:[");
     boolean first = true;
-    for (Identifier id : buckets) {
+    for (final Identifier id : buckets) {
       if (!first) {
         builder.append(",");
       }
@@ -53,8 +53,8 @@ public class BucketList extends SimpleNode {
 
   public List<Bucket> toListOfClusters() {
     final  List<Bucket> result = new ArrayList<>();
-    for (Identifier id : buckets) {
-      Bucket bucket = new Bucket(-1);
+    for (final Identifier id : buckets) {
+      final Bucket bucket = new Bucket(-1);
       bucket.bucketName = id.getStringValue();
       result.add(bucket);
     }
@@ -92,12 +92,12 @@ public class BucketList extends SimpleNode {
     return result;
   }
 
-  public void deserialize(Result fromResult) {
+  public void deserialize(final Result fromResult) {
     if (fromResult.getProperty("buckets") != null) {
       buckets = new ArrayList<>();
       final List<Result> ser = fromResult.getProperty("buckets");
-      for (Result item : ser) {
-        Identifier id = new Identifier(-1);
+      for (final Result item : ser) {
+        final Identifier id = new Identifier(-1);
         Identifier.deserialize(item);
         buckets.add(id);
       }

@@ -72,7 +72,7 @@ public class RebuildIndexStatement extends DDLStatement {
       if (all) {
         final Index[] indexes = database.getSchema().getIndexes();
 
-        for (Index idx : indexes) {
+        for (final Index idx : indexes) {
           try {
             if (idx instanceof TypeIndex) {
               final EmbeddedSchema.INDEX_TYPE indexType = idx.getType();
@@ -87,7 +87,7 @@ public class RebuildIndexStatement extends DDLStatement {
                   .createTypeIndex(indexType, unique, typeName, propNames.toArray(new String[propNames.size()]), pageSize, nullStrategy, callback);
               indexList.add(idx.getName());
             }
-          } catch (Exception e) {
+          } catch (final Exception e) {
             LogManager.instance().log(this, Level.SEVERE, "Error on rebuilding index '%s'", e, idx.getName());
           }
         }

@@ -22,11 +22,13 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.DatabaseFactory;
 
+import javax.annotation.processing.Generated;
+
 /**
  * An implementation of interface CharStream, where the stream is assumed to
  * contain only ASCII characters (with java-like unicode escape processing).
  */
-
+@Generated("JavaCC")
 public class JavaCharStream implements CharStream {
   /**
    * Whether parser is static.

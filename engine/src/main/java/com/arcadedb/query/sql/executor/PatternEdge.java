@@ -30,8 +30,8 @@ public class PatternEdge {
   public PatternNode   out;
   public MatchPathItem item;
 
-  public Iterable<Identifiable> executeTraversal(MatchStatement.MatchContext matchContext, CommandContext iCommandContext,
-      Identifiable startingPoint, int depth) {
+  public Iterable<Identifiable> executeTraversal(final MatchStatement.MatchContext matchContext, final CommandContext iCommandContext,
+      final Identifiable startingPoint, final int depth) {
     return item.executeTraversal(matchContext, iCommandContext, startingPoint, depth);
   }
 

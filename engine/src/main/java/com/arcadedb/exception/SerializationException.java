@@ -25,7 +25,7 @@ public class SerializationException extends ArcadeDBException {
     super(s);
   }
 
-  public SerializationException(String s, IOException e) {
+  public SerializationException(final String s, final IOException e) {
     super(s, e);
   }
 }

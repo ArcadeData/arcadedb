@@ -32,7 +32,7 @@ public class QueryEngineManager {
 
   public QueryEngineManager() {
     // REGISTER ALL THE SUPPORTED LANGUAGE FROM POLYGLOT ENGINE
-    for (String language : PolyglotQueryEngine.PolyglotQueryEngineFactory.getSupportedLanguages())
+    for (final String language : PolyglotQueryEngine.PolyglotQueryEngineFactory.getSupportedLanguages())
       register(new PolyglotQueryEngine.PolyglotQueryEngineFactory(language));
 
     register(new JavaQueryEngine.JavaQueryEngineFactory());
@@ -48,7 +48,7 @@ public class QueryEngineManager {
   public void register(final String className) {
     try {
       register((QueryEngine.QueryEngineFactory) Class.forName(className).getConstructor().newInstance());
-    } catch (Exception e) {
+    } catch (final Exception e) {
       LogManager.instance().log(this, Level.FINE, "Unable to register engine '%s' (%s)", className, e.getMessage());
     }
   }
@@ -57,7 +57,7 @@ public class QueryEngineManager {
     implementations.put(impl.getLanguage().toLowerCase(), impl);
   }
 
-  public QueryEngine getInstance(final String language, DatabaseInternal database) {
+  public QueryEngine getInstance(final String language, final DatabaseInternal database) {
     final QueryEngine.QueryEngineFactory impl = implementations.get(language.toLowerCase());
     if (impl == null)
       throw new IllegalArgumentException("Query engine '" + language + "' was not found. Check your configuration");
@@ -66,7 +66,7 @@ public class QueryEngineManager {
 
   public List<String> getAvailableLanguages() {
     final List<String> available = new ArrayList<>();
-    for (QueryEngine.QueryEngineFactory impl : implementations.values()) {
+    for (final QueryEngine.QueryEngineFactory impl : implementations.values()) {
       available.add(impl.getLanguage());
     }
     return available;

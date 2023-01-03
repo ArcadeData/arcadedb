@@ -25,11 +25,11 @@ import java.util.*;
 public class ObjectValueWithVariable extends AbstractValue {
   protected List<ObjectFieldWithValue> values = new ArrayList<>();
 
-  public ObjectValueWithVariable(int id) {
+  public ObjectValueWithVariable(final int id) {
     super(id);
   }
 
-  public ObjectValueWithVariable(GraphQLParser p, int id) {
+  public ObjectValueWithVariable(final GraphQLParser p, final int id) {
     super(p, id);
   }
 
@@ -41,7 +41,7 @@ public class ObjectValueWithVariable extends AbstractValue {
   /**
    * Accept the visitor.
    **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
+  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
     return visitor.visit(this, data);
   }
 

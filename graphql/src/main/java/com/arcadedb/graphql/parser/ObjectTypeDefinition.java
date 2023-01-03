@@ -29,11 +29,11 @@ public class ObjectTypeDefinition extends TypeDefinition {
   protected Directives            directives;
   protected List<FieldDefinition> fieldDefinitions = new ArrayList<>();
 
-  public ObjectTypeDefinition(int id) {
+  public ObjectTypeDefinition(final int id) {
     super(id);
   }
 
-  public ObjectTypeDefinition(GraphQLParser p, int id) {
+  public ObjectTypeDefinition(final GraphQLParser p, final int id) {
     super(p, id);
   }
 
@@ -44,7 +44,7 @@ public class ObjectTypeDefinition extends TypeDefinition {
   /**
    * Accept the visitor.
    **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
+  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
     return visitor.visit(this, data);
   }
 
@@ -53,7 +53,7 @@ public class ObjectTypeDefinition extends TypeDefinition {
   }
 
   public FieldDefinition getFieldDefinitionByName(final String fieldName) {
-    for (FieldDefinition f : fieldDefinitions) {
+    for (final FieldDefinition f : fieldDefinitions) {
       if (f.getName().equals(fieldName))
         return f;
     }

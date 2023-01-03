@@ -25,18 +25,18 @@ public class FragmentSpread extends SimpleNode {
   protected FragmentName name;
   protected Directives   directives;
 
-  public FragmentSpread(int id) {
+  public FragmentSpread(final int id) {
     super(id);
   }
 
-  public FragmentSpread(GraphQLParser p, int id) {
+  public FragmentSpread(final GraphQLParser p, final int id) {
     super(p, id);
   }
 
   /**
    * Accept the visitor.
    **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
+  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
     return visitor.visit(this, data);
   }
 }

@@ -38,7 +38,7 @@ public class InsertExecutionPlan extends SelectExecutionPlan {
   }
 
   @Override
-  public ResultSet fetchNext(int n) {
+  public ResultSet fetchNext(final int n) {
     if (next >= result.size())
       return new InternalResultSet();//empty
 

@@ -31,7 +31,7 @@ public class JsonItem {
   protected String     leftString;
   protected Expression right;
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (leftIdentifier != null) {
       builder.append("\"");
       leftIdentifier.toString(params, builder);
@@ -56,7 +56,7 @@ public class JsonItem {
     return null;
   }
 
-  public boolean needsAliases(Set<String> aliases) {
+  public boolean needsAliases(final Set<String> aliases) {
     if (aliases.contains(leftIdentifier.getStringValue())) {
       return true;
     }
@@ -67,9 +67,9 @@ public class JsonItem {
     return right.isAggregate();
   }
 
-  public JsonItem splitForAggregation(AggregateProjectionSplit aggregateSplit) {
+  public JsonItem splitForAggregation(final AggregateProjectionSplit aggregateSplit) {
     if (isAggregate()) {
-      JsonItem item = new JsonItem();
+      final JsonItem item = new JsonItem();
       item.leftIdentifier = leftIdentifier;
       item.leftString = leftString;
       item.right = right.splitForAggregation(aggregateSplit);
@@ -80,14 +80,14 @@ public class JsonItem {
   }
 
   public JsonItem copy() {
-    JsonItem result = new JsonItem();
+    final JsonItem result = new JsonItem();
     result.leftIdentifier = leftIdentifier == null ? null : leftIdentifier.copy();
     result.leftString = leftString;
     result.right = right.copy();
     return result;
   }
 
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
     right.extractSubQueries(collector);
   }
 
@@ -120,14 +120,14 @@ public class JsonItem {
   }
 
   public Result serialize() {
-    ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal();
     result.setProperty("leftIdentifier", leftIdentifier.serialize());
     result.setProperty("leftString", leftString);
     result.setProperty("right", right.serialize());
     return result;
   }
 
-  public void deserialize(Result fromResult) {
+  public void deserialize(final Result fromResult) {
     if (fromResult.getProperty("leftIdentifier") != null) {
       leftIdentifier = new Identifier(-1);
       Identifier.deserialize(fromResult.getProperty("leftIdentifier"));

@@ -20,11 +20,11 @@ package com.arcadedb.network.binary;
 
 public class NetworkProtocolException extends RuntimeException {
 
-  public NetworkProtocolException(String string) {
+  public NetworkProtocolException(final String string) {
     super(string);
   }
 
-  public NetworkProtocolException(String string, Exception exception) {
+  public NetworkProtocolException(final String string, final Exception exception) {
     super(string, exception);
   }
 }

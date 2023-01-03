@@ -77,19 +77,19 @@ public class DropIndexTest extends TestHelper {
 
       database.getSchema().dropIndex(typeIndex.getName());
 
-      for (Index idx : subIndexes)
+      for (final Index idx : subIndexes)
         try {
           database.getSchema().getIndexByName(idx.getName());
           Assertions.fail("Found removed index " + idx.getName());
-        } catch (SchemaException e) {
+        } catch (final SchemaException e) {
         }
 
-      for (Index subIndex : subIndexes)
+      for (final Index subIndex : subIndexes)
         try {
           database.getSchema().getFileById(subIndex.getAssociatedBucketId());
           database.getSchema().getFileById(((IndexInternal) subIndex).getFileId());
           Assertions.fail("Found removed file " + ((IndexInternal) subIndex).getFileId());
-        } catch (SchemaException e) {
+        } catch (final SchemaException e) {
         }
 
       final Index typeIndex3 = database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, TYPE_NAME, new String[] { "id" }, PAGE_SIZE);
@@ -154,25 +154,25 @@ public class DropIndexTest extends TestHelper {
       database.getSchema().dropType(TYPE_NAME2);
 
       // CHECK ALL THE BUCKETS ARE REMOVED
-      for (Bucket b : buckets) {
+      for (final Bucket b : buckets) {
         try {
           database.getSchema().getBucketById(b.getId());
           Assertions.fail();
-        } catch (SchemaException e) {
+        } catch (final SchemaException e) {
           // EXPECTED
         }
 
         try {
           database.getSchema().getBucketByName(b.getName());
           Assertions.fail();
-        } catch (SchemaException e) {
+        } catch (final SchemaException e) {
           // EXPECTED
         }
 
         try {
           database.getSchema().getFileById(b.getId());
           Assertions.fail();
-        } catch (SchemaException e) {
+        } catch (final SchemaException e) {
           // EXPECTED
         }
       }
@@ -181,34 +181,34 @@ public class DropIndexTest extends TestHelper {
       try {
         database.getSchema().getIndexByName(typeIndex.getName());
         Assertions.fail();
-      } catch (SchemaException e) {
+      } catch (final SchemaException e) {
         // EXPECTED
       }
 
       try {
         database.getSchema().getIndexByName(typeIndex2.getName());
         Assertions.fail();
-      } catch (SchemaException e) {
+      } catch (final SchemaException e) {
         // EXPECTED
       }
 
       // CHECK TYPE HAS BEEN REMOVED FROM INHERITANCE
-      for (DocumentType parent : type2.getSuperTypes())
+      for (final DocumentType parent : type2.getSuperTypes())
         Assertions.assertFalse(parent.getSubTypes().contains(type2));
 
-      for (DocumentType sub : type2.getSubTypes())
+      for (final DocumentType sub : type2.getSubTypes())
         Assertions.assertFalse(sub.getSuperTypes().contains(type2));
 
       // CHECK INHERITANCE CHAIN IS CONSISTENT
-      for (DocumentType parent : type2.getSuperTypes())
+      for (final DocumentType parent : type2.getSuperTypes())
         Assertions.assertTrue(parent.getSubTypes().contains(type2.getSubTypes().get(0)));
 
-      for (DocumentType sub : type2.getSubTypes())
+      for (final DocumentType sub : type2.getSubTypes())
         Assertions.assertTrue(sub.getSuperTypes().contains(type2.getSuperTypes().get(0)));
 
       Assertions.assertEquals(1, database.countType(TYPE_NAME, true));
 
-      DocumentType newType = database.getSchema().getOrCreateDocumentType(TYPE_NAME2);
+      final DocumentType newType = database.getSchema().getOrCreateDocumentType(TYPE_NAME2);
 
       Assertions.assertEquals(1, database.countType(TYPE_NAME, true));
       Assertions.assertEquals(0, database.countType(TYPE_NAME2, true));
@@ -216,10 +216,10 @@ public class DropIndexTest extends TestHelper {
       newType.addSuperType(TYPE_NAME);
 
       // CHECK INHERITANCE CHAIN IS CONSISTENT AGAIN
-      for (DocumentType parent : newType.getSuperTypes())
+      for (final DocumentType parent : newType.getSuperTypes())
         Assertions.assertTrue(parent.getSubTypes().contains(newType));
 
-      for (DocumentType sub : newType.getSubTypes())
+      for (final DocumentType sub : newType.getSubTypes())
         Assertions.assertTrue(sub.getSuperTypes().contains(newType));
 
       Assertions.assertEquals(1, database.countType(TYPE_NAME, true));

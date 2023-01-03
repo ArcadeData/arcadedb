@@ -58,21 +58,21 @@ public class ServerDefaultDatabasesIT extends BaseGraphServerTest {
     try {
       getServer(0).getSecurity().authenticate("elon", "musk", "Amiga");
       Assertions.fail();
-    } catch (ServerSecurityException e) {
+    } catch (final ServerSecurityException e) {
       // EXPECTED
     }
 
     try {
       getServer(0).getSecurity().authenticate("Jack", "Tramiel", "Universe");
       Assertions.fail();
-    } catch (ServerSecurityException e) {
+    } catch (final ServerSecurityException e) {
       // EXPECTED
     }
 
     try {
       getServer(0).getSecurity().authenticate("Jack", "Tramiel", "RandomName");
       Assertions.fail();
-    } catch (ServerSecurityException e) {
+    } catch (final ServerSecurityException e) {
       // EXPECTED
     }
 

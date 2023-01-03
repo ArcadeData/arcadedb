@@ -51,7 +51,7 @@ public class LSMTreeIndexTest extends TestHelper {
 
       for (int i = 0; i < TOT; ++i) {
         final List<Integer> results = new ArrayList<>();
-        for (Index index : indexes) {
+        for (final Index index : indexes) {
           if (index instanceof TypeIndex)
             continue;
 
@@ -77,7 +77,7 @@ public class LSMTreeIndexTest extends TestHelper {
       for (int i = 0; i < TOT; ++i) {
         int total = 0;
 
-        for (Index index : indexes) {
+        for (final Index index : indexes) {
           if (index instanceof TypeIndex)
             continue;
 
@@ -89,11 +89,11 @@ public class LSMTreeIndexTest extends TestHelper {
             Assertions.assertNotNull(iterator);
 
             while (iterator.hasNext()) {
-              Identifiable value = iterator.next();
+              final Identifiable value = iterator.next();
 
               Assertions.assertNotNull(value);
 
-              int fieldValue = (int) value.asDocument().get("id");
+              final int fieldValue = (int) value.asDocument().get("id");
               Assertions.assertEquals(i, fieldValue);
 
               Assertions.assertNotNull(iterator.getKeys());
@@ -101,7 +101,7 @@ public class LSMTreeIndexTest extends TestHelper {
 
               total++;
             }
-          } catch (Exception e) {
+          } catch (final Exception e) {
             Assertions.fail(e);
           }
         }
@@ -119,7 +119,7 @@ public class LSMTreeIndexTest extends TestHelper {
       for (int i = 0; i < TOT - 1; ++i) {
         int total = 0;
 
-        for (Index index : indexes) {
+        for (final Index index : indexes) {
           if (index instanceof TypeIndex)
             continue;
 
@@ -130,11 +130,11 @@ public class LSMTreeIndexTest extends TestHelper {
           Assertions.assertNotNull(iterator);
 
           while (iterator.hasNext()) {
-            Identifiable value = iterator.next();
+            final Identifiable value = iterator.next();
 
             Assertions.assertNotNull(value);
 
-            int fieldValue = (int) value.asDocument().get("id");
+            final int fieldValue = (int) value.asDocument().get("id");
             Assertions.assertTrue(fieldValue >= i && fieldValue <= i + 1);
 
             Assertions.assertNotNull(iterator.getKeys());
@@ -201,7 +201,7 @@ public class LSMTreeIndexTest extends TestHelper {
 
         final Object[] key = new Object[] { i };
 
-        for (Index index : indexes) {
+        for (final Index index : indexes) {
           if (index instanceof TypeIndex)
             continue;
 
@@ -220,7 +220,7 @@ public class LSMTreeIndexTest extends TestHelper {
 
       // GET EACH ITEM TO CHECK IT HAS BEEN DELETED
       for (int i = 0; i < TOT; ++i) {
-        for (Index index : indexes) {
+        for (final Index index : indexes) {
           if (index instanceof TypeIndex)
             continue;
           Assertions.assertFalse(index.get(new Object[] { i }).hasNext(), "Found item with key " + i + " inside the TX by using get()");
@@ -244,7 +244,7 @@ public class LSMTreeIndexTest extends TestHelper {
     database.transaction(() -> {
       final Index[] indexes = database.getSchema().getIndexes();
       for (int i = 0; i < TOT; ++i) {
-        for (Index index : indexes) {
+        for (final Index index : indexes) {
           if (index instanceof TypeIndex)
             continue;
           Assertions.assertFalse(index.get(new Object[] { i }).hasNext(), "Found item with key " + i + " after the TX was committed");
@@ -253,7 +253,7 @@ public class LSMTreeIndexTest extends TestHelper {
 
       // CHECK ALSO WITH RANGE
       for (int i = 0; i < TOT; ++i) {
-        for (Index index : indexes) {
+        for (final Index index : indexes) {
           if (index instanceof TypeIndex)
             continue;
 
@@ -276,13 +276,13 @@ public class LSMTreeIndexTest extends TestHelper {
 
         final Object[] key = new Object[] { i };
 
-        for (Index index : indexes) {
+        for (final Index index : indexes) {
           if (index instanceof TypeIndex)
             continue;
 
           final IndexCursor value = index.get(key);
           if (value.hasNext()) {
-            for (Identifiable r : value)
+            for (final Identifiable r : value)
               index.remove(key, r);
             found++;
             total++;
@@ -296,7 +296,7 @@ public class LSMTreeIndexTest extends TestHelper {
 
       // GET EACH ITEM TO CHECK IT HAS BEEN DELETED
       for (int i = 0; i < TOT; ++i) {
-        for (Index index : indexes) {
+        for (final Index index : indexes) {
           if (index instanceof TypeIndex)
             continue;
 
@@ -321,7 +321,7 @@ public class LSMTreeIndexTest extends TestHelper {
     database.transaction(() -> {
       final Index[] indexes = database.getSchema().getIndexes();
       for (int i = 0; i < TOT; ++i) {
-        for (Index index : indexes) {
+        for (final Index index : indexes) {
           if (index instanceof TypeIndex)
             continue;
 
@@ -331,7 +331,7 @@ public class LSMTreeIndexTest extends TestHelper {
 
       // CHECK ALSO WITH RANGE
       for (int i = 0; i < TOT; ++i) {
-        for (Index index : indexes) {
+        for (final Index index : indexes) {
           if (index instanceof TypeIndex)
             continue;
 
@@ -354,13 +354,13 @@ public class LSMTreeIndexTest extends TestHelper {
 
         final Object[] key = new Object[] { i };
 
-        for (Index index : indexes) {
+        for (final Index index : indexes) {
           if (index instanceof TypeIndex)
             continue;
 
           final IndexCursor value = index.get(key);
           if (value.hasNext()) {
-            for (Identifiable r : value) {
+            for (final Identifiable r : value) {
               for (int k = 0; k < 10; ++k)
                 index.remove(key, r);
             }
@@ -376,7 +376,7 @@ public class LSMTreeIndexTest extends TestHelper {
 
       // GET EACH ITEM TO CHECK IT HAS BEEN DELETED
       for (int i = 0; i < TOT; ++i) {
-        for (Index index : indexes) {
+        for (final Index index : indexes) {
           if (index instanceof TypeIndex)
             continue;
 
@@ -400,13 +400,13 @@ public class LSMTreeIndexTest extends TestHelper {
 
         final Object[] key = new Object[] { i };
 
-        for (Index index : indexes) {
+        for (final Index index : indexes) {
           if (index instanceof TypeIndex)
             continue;
 
           final IndexCursor value = index.get(key);
           if (value.hasNext()) {
-            for (Identifiable r : value) {
+            for (final Identifiable r : value) {
               index.remove(key, r);
               index.put(key, new RID[] { r.getIdentity() });
               index.remove(key, r);
@@ -423,7 +423,7 @@ public class LSMTreeIndexTest extends TestHelper {
 
       // GET EACH ITEM TO CHECK IT HAS BEEN DELETED
       for (int i = 0; i < TOT; ++i) {
-        for (Index index : indexes) {
+        for (final Index index : indexes) {
           if (index instanceof TypeIndex)
             continue;
 
@@ -437,7 +437,7 @@ public class LSMTreeIndexTest extends TestHelper {
       final Collection<TypeIndex> indexes = database.getSchema().getType(TYPE_NAME).getAllIndexes(false);
 
       for (int i = 0; i < TOT; ++i) {
-        for (Index index : indexes) {
+        for (final Index index : indexes) {
           if (index instanceof TypeIndex)
             continue;
 
@@ -489,7 +489,7 @@ public class LSMTreeIndexTest extends TestHelper {
       int total = 0;
 
       final ResultSet resultSet = database.query("sql", "select from " + TYPE_NAME);
-      for (ResultSet it = resultSet; it.hasNext(); ) {
+      for (final ResultSet it = resultSet; it.hasNext(); ) {
         final Result r = it.next();
 
         Assertions.assertNotNull(r.getElement().get().get("id"));
@@ -510,7 +510,7 @@ public class LSMTreeIndexTest extends TestHelper {
 
         final Object[] key = new Object[] { i };
 
-        for (Index index : indexes) {
+        for (final Index index : indexes) {
           if (index instanceof TypeIndex)
             continue;
 
@@ -534,14 +534,14 @@ public class LSMTreeIndexTest extends TestHelper {
 
         final Object[] key = new Object[] { i };
 
-        for (Index index : indexes) {
+        for (final Index index : indexes) {
           if (index instanceof TypeIndex)
             continue;
 
           final IndexCursor value = index.get(key);
 
           if (value.hasNext()) {
-            for (Identifiable r : value) {
+            for (final Identifiable r : value) {
               index.remove(key, r);
               found++;
             }
@@ -556,7 +556,7 @@ public class LSMTreeIndexTest extends TestHelper {
 
       // GET EACH ITEM TO CHECK IT HAS BEEN DELETED
       for (int i = 0; i < TOT; ++i) {
-        for (Index index : indexes)
+        for (final Index index : indexes)
           Assertions.assertFalse(index.get(new Object[] { i }).hasNext(), "Found item with key " + i);
       }
 
@@ -575,7 +575,7 @@ public class LSMTreeIndexTest extends TestHelper {
 
         final Object[] key = new Object[] { i };
 
-        for (Index index : indexes) {
+        for (final Index index : indexes) {
           if (index instanceof TypeIndex)
             continue;
 
@@ -585,7 +585,7 @@ public class LSMTreeIndexTest extends TestHelper {
               index.put(key, new RID[] { new RID(database, 10, 10) });
               database.commit();
               Assertions.fail();
-            } catch (DuplicatedKeyException e) {
+            } catch (final DuplicatedKeyException e) {
               // OK
             }
             database.begin();
@@ -608,14 +608,14 @@ public class LSMTreeIndexTest extends TestHelper {
       try {
         // WAIT FOR THE INDEX TO BE COMPACTED
         Thread.sleep(1000);
-      } catch (InterruptedException e) {
+      } catch (final InterruptedException e) {
         e.printStackTrace();
       }
 
       int total = 0;
 
       final Index[] indexes = database.getSchema().getIndexes();
-      for (Index index : indexes) {
+      for (final Index index : indexes) {
         if (index instanceof TypeIndex)
           continue;
 
@@ -642,7 +642,7 @@ public class LSMTreeIndexTest extends TestHelper {
 //            LogManager.instance().log(this, Level.INFO, "*****************************************************************************\nCURSOR END total=%d %s", total,
 //                iterator.dumpStats());
 
-        } catch (Exception e) {
+        } catch (final Exception e) {
           Assertions.fail(e);
         }
       }
@@ -658,14 +658,14 @@ public class LSMTreeIndexTest extends TestHelper {
       try {
         // WAIT FOR THE INDEX TO BE COMPACTED
         Thread.sleep(1000);
-      } catch (InterruptedException e) {
+      } catch (final InterruptedException e) {
         e.printStackTrace();
       }
 
       int total = 0;
 
       final Index[] indexes = database.getSchema().getIndexes();
-      for (Index index : indexes) {
+      for (final Index index : indexes) {
         if (index instanceof TypeIndex)
           continue;
 
@@ -686,7 +686,7 @@ public class LSMTreeIndexTest extends TestHelper {
 
             total++;
           }
-        } catch (Exception e) {
+        } catch (final Exception e) {
           Assertions.fail(e);
         }
       }
@@ -701,7 +701,7 @@ public class LSMTreeIndexTest extends TestHelper {
       int total = 0;
 
       final Index[] indexes = database.getSchema().getIndexes();
-      for (Index index : indexes) {
+      for (final Index index : indexes) {
         if (index instanceof TypeIndex)
           continue;
 
@@ -721,7 +721,7 @@ public class LSMTreeIndexTest extends TestHelper {
 
             total++;
           }
-        } catch (Exception e) {
+        } catch (final Exception e) {
           Assertions.fail(e);
         }
       }
@@ -736,7 +736,7 @@ public class LSMTreeIndexTest extends TestHelper {
       int total = 0;
 
       final Index[] indexes = database.getSchema().getIndexes();
-      for (Index index : indexes) {
+      for (final Index index : indexes) {
         if (index instanceof TypeIndex)
           continue;
 
@@ -756,7 +756,7 @@ public class LSMTreeIndexTest extends TestHelper {
 
             total++;
           }
-        } catch (Exception e) {
+        } catch (final Exception e) {
           Assertions.fail(e);
         }
       }
@@ -771,7 +771,7 @@ public class LSMTreeIndexTest extends TestHelper {
       int total = 0;
 
       final Index[] indexes = database.getSchema().getIndexes();
-      for (Index index : indexes) {
+      for (final Index index : indexes) {
         if (index instanceof TypeIndex)
           continue;
 
@@ -790,7 +790,7 @@ public class LSMTreeIndexTest extends TestHelper {
 
             total++;
           }
-        } catch (Exception e) {
+        } catch (final Exception e) {
           Assertions.fail(e);
         }
       }
@@ -805,7 +805,7 @@ public class LSMTreeIndexTest extends TestHelper {
       int total = 0;
 
       final Index[] indexes = database.getSchema().getIndexes();
-      for (Index index : indexes) {
+      for (final Index index : indexes) {
         if (index instanceof TypeIndex)
           continue;
 
@@ -824,7 +824,7 @@ public class LSMTreeIndexTest extends TestHelper {
 
             total++;
           }
-        } catch (Exception e) {
+        } catch (final Exception e) {
           Assertions.fail(e);
         }
       }
@@ -839,7 +839,7 @@ public class LSMTreeIndexTest extends TestHelper {
       int total = 0;
 
       final Index[] indexes = database.getSchema().getIndexes();
-      for (Index index : indexes) {
+      for (final Index index : indexes) {
         if (index instanceof TypeIndex)
           continue;
 
@@ -851,11 +851,11 @@ public class LSMTreeIndexTest extends TestHelper {
           Assertions.assertNotNull(iterator);
 
           while (iterator.hasNext()) {
-            Identifiable value = iterator.next();
+            final Identifiable value = iterator.next();
 
             Assertions.assertNotNull(value);
 
-            int fieldValue = (int) value.asDocument().get("id");
+            final int fieldValue = (int) value.asDocument().get("id");
             Assertions.assertTrue(fieldValue >= 10 && fieldValue <= 19);
 
             Assertions.assertNotNull(iterator.getKeys());
@@ -863,7 +863,7 @@ public class LSMTreeIndexTest extends TestHelper {
 
             total++;
           }
-        } catch (Exception e) {
+        } catch (final Exception e) {
           Assertions.fail(e);
         }
       }
@@ -878,7 +878,7 @@ public class LSMTreeIndexTest extends TestHelper {
       int total = 0;
 
       final Index[] indexes = database.getSchema().getIndexes();
-      for (Index index : indexes) {
+      for (final Index index : indexes) {
         if (index instanceof TypeIndex)
           continue;
 
@@ -890,11 +890,11 @@ public class LSMTreeIndexTest extends TestHelper {
           Assertions.assertNotNull(iterator);
 
           while (iterator.hasNext()) {
-            Identifiable value = iterator.next();
+            final Identifiable value = iterator.next();
 
             Assertions.assertNotNull(value);
 
-            int fieldValue = (int) value.asDocument().get("id");
+            final int fieldValue = (int) value.asDocument().get("id");
             Assertions.assertTrue(fieldValue >= 10 && fieldValue < 19);
 
             Assertions.assertNotNull(iterator.getKeys());
@@ -902,7 +902,7 @@ public class LSMTreeIndexTest extends TestHelper {
 
             total++;
           }
-        } catch (Exception e) {
+        } catch (final Exception e) {
           Assertions.fail(e);
         }
       }
@@ -917,7 +917,7 @@ public class LSMTreeIndexTest extends TestHelper {
       int total = 0;
 
       final Index[] indexes = database.getSchema().getIndexes();
-      for (Index index : indexes) {
+      for (final Index index : indexes) {
         if (index instanceof TypeIndex)
           continue;
 
@@ -929,11 +929,11 @@ public class LSMTreeIndexTest extends TestHelper {
           Assertions.assertNotNull(iterator);
 
           while (iterator.hasNext()) {
-            Identifiable value = iterator.next();
+            final Identifiable value = iterator.next();
 
             Assertions.assertNotNull(value);
 
-            int fieldValue = (int) value.asDocument().get("id");
+            final int fieldValue = (int) value.asDocument().get("id");
             Assertions.assertTrue(fieldValue > 10 && fieldValue <= 19);
 
             Assertions.assertNotNull(iterator.getKeys());
@@ -941,7 +941,7 @@ public class LSMTreeIndexTest extends TestHelper {
 
             total++;
           }
-        } catch (Exception e) {
+        } catch (final Exception e) {
           Assertions.fail(e);
         }
       }
@@ -956,7 +956,7 @@ public class LSMTreeIndexTest extends TestHelper {
       int total = 0;
 
       final Index[] indexes = database.getSchema().getIndexes();
-      for (Index index : indexes) {
+      for (final Index index : indexes) {
         if (index instanceof TypeIndex)
           continue;
 
@@ -968,11 +968,11 @@ public class LSMTreeIndexTest extends TestHelper {
           Assertions.assertNotNull(iterator);
 
           while (iterator.hasNext()) {
-            Identifiable value = iterator.next();
+            final Identifiable value = iterator.next();
 
             Assertions.assertNotNull(value);
 
-            int fieldValue = (int) value.asDocument().get("id");
+            final int fieldValue = (int) value.asDocument().get("id");
             Assertions.assertTrue(fieldValue > 10 && fieldValue < 19);
 
             Assertions.assertNotNull(iterator.getKeys());
@@ -980,7 +980,7 @@ public class LSMTreeIndexTest extends TestHelper {
 
             total++;
           }
-        } catch (Exception e) {
+        } catch (final Exception e) {
           Assertions.fail(e);
         }
       }
@@ -1016,7 +1016,7 @@ public class LSMTreeIndexTest extends TestHelper {
 
                 try {
                   Thread.sleep(new Random().nextInt(10));
-                } catch (InterruptedException e) {
+                } catch (final InterruptedException e) {
                   e.printStackTrace();
                   Thread.currentThread().interrupt();
                   return;
@@ -1041,15 +1041,15 @@ public class LSMTreeIndexTest extends TestHelper {
 
                   keyPresent = true;
 
-                } catch (NeedRetryException e) {
+                } catch (final NeedRetryException e) {
                   needRetryExceptions.incrementAndGet();
                   Assertions.assertFalse(database.isTransactionActive());
                   continue;
-                } catch (DuplicatedKeyException e) {
+                } catch (final DuplicatedKeyException e) {
                   duplicatedExceptions.incrementAndGet();
                   keyPresent = true;
                   Assertions.assertFalse(database.isTransactionActive());
-                } catch (Exception e) {
+                } catch (final Exception e) {
                   LogManager.instance().log(this, Level.SEVERE, "%s Thread %d Generic Exception", e, getClass(), Thread.currentThread().getId());
                   Assertions.assertFalse(database.isTransactionActive());
                   return;
@@ -1065,7 +1065,7 @@ public class LSMTreeIndexTest extends TestHelper {
             LogManager.instance()
                 .log(this, Level.INFO, "%s Thread %d completed (inserted=%d)", null, getClass(), Thread.currentThread().getId(), threadInserted);
 
-          } catch (Exception e) {
+          } catch (final Exception e) {
             LogManager.instance().log(this, Level.SEVERE, "%s Thread %d Error", e, getClass(), Thread.currentThread().getId());
           }
         }
@@ -1079,7 +1079,7 @@ public class LSMTreeIndexTest extends TestHelper {
     for (int i = 0; i < threads.length; ++i) {
       try {
         threads[i].join();
-      } catch (InterruptedException e) {
+      } catch (final InterruptedException e) {
         e.printStackTrace();
       }
     }
@@ -1099,7 +1099,7 @@ public class LSMTreeIndexTest extends TestHelper {
       final Map<Integer, Integer> result = new HashMap<>();
       database.scanType(TYPE_NAME, true, record -> {
         final int id = (int) record.get("id");
-        Integer key = result.get(id);
+        final Integer key = result.get(id);
         if (key == null)
           result.put(id, 1);
         else
@@ -1109,9 +1109,9 @@ public class LSMTreeIndexTest extends TestHelper {
 
       LogManager.instance().log(this, Level.INFO, "FOUND %d ENTRIES", null, result.size());
 
-      Iterator<Map.Entry<Integer, Integer>> it = result.entrySet().iterator();
+      final Iterator<Map.Entry<Integer, Integer>> it = result.entrySet().iterator();
       while (it.hasNext()) {
-        Map.Entry<Integer, Integer> next = it.next();
+        final Map.Entry<Integer, Integer> next = it.next();
         if (next.getValue() > 1)
           LogManager.instance().log(this, Level.INFO, "- %d = %d", null, next.getKey(), next.getValue());
       }
@@ -1144,7 +1144,7 @@ public class LSMTreeIndexTest extends TestHelper {
       database.commit();
       database.begin();
 
-      for (Index index : ((TypeIndex) typeIndex).getIndexesOnBuckets()) {
+      for (final Index index : ((TypeIndex) typeIndex).getIndexesOnBuckets()) {
         Assertions.assertTrue(((IndexInternal) index).getStats().get("pages") > 1);
       }
     });

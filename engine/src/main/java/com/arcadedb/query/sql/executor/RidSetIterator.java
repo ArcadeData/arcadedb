@@ -33,7 +33,7 @@ public class RidSetIterator implements Iterator<RID> {
   int  currentCluster = -1;
   long currentId      = -1;
 
-  RidSetIterator(CommandContext ctx, RidSet set) {
+  RidSetIterator(final CommandContext ctx, final RidSet set) {
     this.set = set;
     this.ctx = ctx;
     fetchNext();
@@ -49,7 +49,7 @@ public class RidSetIterator implements Iterator<RID> {
     if (!hasNext()) {
       throw new NoSuchElementException();
     }
-    RID result = new RID(ctx.getDatabase(), currentCluster, currentId);
+    final RID result = new RID(ctx.getDatabase(), currentCluster, currentId);
     currentId++;
     fetchNext();
     return result;

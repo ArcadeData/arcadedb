@@ -56,7 +56,7 @@ public abstract class BooleanExpression extends SimpleNode {
 
     @Override
     protected List<Object> getExternalCalculationConditions() {
-      return Collections.EMPTY_LIST;
+      return Collections.emptyList();
     }
 
     @Override
@@ -126,11 +126,11 @@ public abstract class BooleanExpression extends SimpleNode {
 
     @Override
     protected List<Object> getExternalCalculationConditions() {
-      return Collections.EMPTY_LIST;
+      return Collections.emptyList();
     }
 
     @Override
-    public boolean needsAliases(Set<String> aliases) {
+    public boolean needsAliases(final Set<String> aliases) {
       return false;
     }
 
@@ -164,7 +164,7 @@ public abstract class BooleanExpression extends SimpleNode {
     }
 
     @Override
-    public void extractSubQueries(SubQueryCollector collector) {
+    public void extractSubQueries(final SubQueryCollector collector) {
 
     }
 
@@ -201,7 +201,7 @@ public abstract class BooleanExpression extends SimpleNode {
    */
   protected abstract List<Object> getExternalCalculationConditions();
 
-  public List<BinaryCondition> getIndexedFunctionConditions(DocumentType iSchemaClass, Database database) {
+  public List<BinaryCondition> getIndexedFunctionConditions(final DocumentType iSchemaClass, final Database database) {
     return null;
   }
 
@@ -248,7 +248,7 @@ public abstract class BooleanExpression extends SimpleNode {
     try {
       final BooleanExpression result = (BooleanExpression) Class.forName(doc.getProperty("__class")).getConstructor(Integer.class).newInstance(-1);
       result.deserialize(doc);
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new CommandExecutionException("", e);
     }
     return null;

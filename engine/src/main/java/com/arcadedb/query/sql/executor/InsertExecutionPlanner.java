@@ -104,9 +104,9 @@ public class InsertExecutionPlanner {
     } else if (insertBody.getContentInputParam() != null) {
       result.chain(new UpdateContentStep(insertBody.getContentInputParam(), ctx, profilingEnabled));
     } else if (insertBody.getSetExpressions() != null) {
-      List<UpdateItem> items = new ArrayList<>();
-      for (InsertSetExpression exp : insertBody.getSetExpressions()) {
-        UpdateItem item = new UpdateItem(-1);
+      final List<UpdateItem> items = new ArrayList<>();
+      for (final InsertSetExpression exp : insertBody.getSetExpressions()) {
+        final UpdateItem item = new UpdateItem(-1);
         item.setOperator(UpdateItem.OPERATOR_EQ);
         item.setLeft(exp.getLeft().copy());
         item.setRight(exp.getRight().copy());

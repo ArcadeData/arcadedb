@@ -42,15 +42,15 @@ public class Modifier extends SimpleNode {
 
   Modifier next;
 
-  public Modifier(int id) {
+  public Modifier(final int id) {
     super(id);
   }
 
-  public Modifier(SqlParser p, int id) {
+  public Modifier(final SqlParser p, final int id) {
     super(p, id);
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
 
     if (squareBrackets) {
       builder.append("[");
@@ -77,7 +77,7 @@ public class Modifier extends SimpleNode {
     }
   }
 
-  public Object execute(Identifiable iCurrentRecord, Object result, CommandContext ctx) {
+  public Object execute(final Identifiable iCurrentRecord, Object result, final CommandContext ctx) {
     if (methodCall != null) {
       result = methodCall.execute(result, ctx);
     } else if (suffix != null) {
@@ -97,7 +97,7 @@ public class Modifier extends SimpleNode {
     return result;
   }
 
-  public Object execute(Result iCurrentRecord, Object result, CommandContext ctx) {
+  public Object execute(final Result iCurrentRecord, Object result, final CommandContext ctx) {
     if (methodCall != null) {
       result = methodCall.execute(result, ctx);
     } else if (suffix != null) {
@@ -117,14 +117,14 @@ public class Modifier extends SimpleNode {
     return result;
   }
 
-  private Object filterByCondition(Object iResult, CommandContext ctx) {
+  private Object filterByCondition(Object iResult, final CommandContext ctx) {
     if (iResult == null) {
       return null;
     }
-    List<Object> result = new ArrayList<Object>();
+    final List<Object> result = new ArrayList<Object>();
     if (iResult.getClass().isArray()) {
       for (int i = 0; i < Array.getLength(iResult); i++) {
-        Object item = Array.get(iResult, i);
+        final Object item = Array.get(iResult, i);
         if (condition.evaluate(item, ctx)) {
           result.add(item);
         }
@@ -139,7 +139,7 @@ public class Modifier extends SimpleNode {
     }
     if (iResult instanceof Iterator) {
       while (((Iterator) iResult).hasNext()) {
-        Object item = ((Iterator) iResult).next();
+        final Object item = ((Iterator) iResult).next();
         if (condition.evaluate(item, ctx)) {
           result.add(item);
         }
@@ -148,7 +148,7 @@ public class Modifier extends SimpleNode {
     return result;
   }
 
-  public boolean needsAliases(Set<String> aliases) {
+  public boolean needsAliases(final Set<String> aliases) {
     if (condition != null && condition.needsAliases(aliases)) {
       return true;
     }
@@ -174,7 +174,7 @@ public class Modifier extends SimpleNode {
   }
 
   public Modifier copy() {
-    Modifier result = new Modifier(-1);
+    final Modifier result = new Modifier(-1);
     result.squareBrackets = squareBrackets;
     result.arrayRange = arrayRange == null ? null : arrayRange.copy();
     result.condition = condition == null ? null : condition.copy();
@@ -226,7 +226,7 @@ public class Modifier extends SimpleNode {
     return result;
   }
 
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
     if (arrayRange != null) {
       arrayRange.extractSubQueries(collector);
     }
@@ -271,18 +271,18 @@ public class Modifier extends SimpleNode {
     return suffix != null && suffix.refersToParent();
   }
 
-  protected void setValue(Result currentRecord, Object target, Object value, CommandContext ctx) {
+  protected void setValue(final Result currentRecord, final Object target, final Object value, final CommandContext ctx) {
     if (next == null) {
       doSetValue(currentRecord, target, value, ctx);
     } else {
-      Object newTarget = calculateLocal(currentRecord, target, ctx);
+      final Object newTarget = calculateLocal(currentRecord, target, ctx);
       if (newTarget != null) {
         next.setValue(currentRecord, newTarget, value, ctx);
       }
     }
   }
 
-  private void doSetValue(Result currentRecord, Object target, Object value, CommandContext ctx) {
+  private void doSetValue(final Result currentRecord, final Object target, final Object value, final CommandContext ctx) {
     if (methodCall != null) {
       //do nothing
     } else if (suffix != null) {
@@ -299,7 +299,7 @@ public class Modifier extends SimpleNode {
     }
   }
 
-  private Object calculateLocal(Result currentRecord, Object target, CommandContext ctx) {
+  private Object calculateLocal(final Result currentRecord, final Object target, final CommandContext ctx) {
     if (methodCall != null) {
       return methodCall.execute(target, ctx);
     } else if (suffix != null) {
@@ -314,8 +314,8 @@ public class Modifier extends SimpleNode {
           return null;
         }
       } else if (MultiValue.isMultiValue(target)) {
-        List<Object> result = new ArrayList<>();
-        for (Object o : MultiValue.getMultiValueIterable(target)) {
+        final List<Object> result = new ArrayList<>();
+        for (final Object o : MultiValue.getMultiValueIterable(target)) {
           if (condition.evaluate(target, ctx)) {
             result.add(o);
           }
@@ -333,9 +333,9 @@ public class Modifier extends SimpleNode {
 
   }
 
-  public void applyRemove(Object currentValue, ResultInternal originalRecord, CommandContext ctx) {
+  public void applyRemove(final Object currentValue, final ResultInternal originalRecord, final CommandContext ctx) {
     if (next != null) {
-      Object val = calculateLocal(originalRecord, currentValue, ctx);
+      final Object val = calculateLocal(originalRecord, currentValue, ctx);
       next.applyRemove(val, originalRecord, ctx);
     } else {
       if (arrayRange != null) {
@@ -357,7 +357,7 @@ public class Modifier extends SimpleNode {
   }
 
   public Result serialize() {
-    ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal();
     result.setProperty("squareBrackets", squareBrackets);
     if (arrayRange != null) {
       result.setProperty("arrayRange", arrayRange.serialize());
@@ -383,7 +383,7 @@ public class Modifier extends SimpleNode {
     return result;
   }
 
-  public void deserialize(Result fromResult) {
+  public void deserialize(final Result fromResult) {
     squareBrackets = fromResult.getProperty("squareBrackets");
 
     if (fromResult.getProperty("arrayRange") != null) {

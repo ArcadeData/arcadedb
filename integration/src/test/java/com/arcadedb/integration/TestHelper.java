@@ -15,7 +15,7 @@ public abstract class TestHelper {
     if (!activeDatabases.isEmpty())
       LogManager.instance().log(TestHelper.class, Level.SEVERE, "Found active databases: " + activeDatabases + ". Forced closing...");
 
-    for (Database db : activeDatabases)
+    for (final Database db : activeDatabases)
       db.close();
 
     Assertions.assertTrue(activeDatabases.isEmpty(), "Found active databases: " + activeDatabases);

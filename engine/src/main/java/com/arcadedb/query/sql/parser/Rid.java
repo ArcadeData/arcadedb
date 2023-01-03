@@ -80,7 +80,7 @@ public class Rid extends SimpleNode {
 
         try {
           return new RID(ctx.getDatabase(), Integer.parseInt(parts[0]), Integer.parseInt(parts[1]));
-        } catch (Exception e) {
+        } catch (final Exception e) {
           throw new CommandExecutionException("Cannot convert to RID: " + result);
         }
       }
@@ -157,7 +157,7 @@ public class Rid extends SimpleNode {
     if (expression != null) {
       final RID rid = toRecordId((Result) null, new BasicCommandContext());
       if (rid != null) {
-        PInteger result = new PInteger(-1);
+        final PInteger result = new PInteger(-1);
         result.setValue(rid.getBucketId());
         return result;
       }
@@ -169,7 +169,7 @@ public class Rid extends SimpleNode {
     if (expression != null) {
       final RID rid = toRecordId((Result) null, new BasicCommandContext());
       if (rid != null) {
-        PInteger result = new PInteger(-1);
+        final PInteger result = new PInteger(-1);
         result.setValue(rid.getPosition());
         return result;
       }

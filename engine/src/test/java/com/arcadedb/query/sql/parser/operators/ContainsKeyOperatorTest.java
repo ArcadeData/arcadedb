@@ -33,12 +33,12 @@ public class ContainsKeyOperatorTest {
 
     @Test
     public void test() {
-        ContainsKeyOperator op = new ContainsKeyOperator(-1);
+        final ContainsKeyOperator op = new ContainsKeyOperator(-1);
 
         assertFalse(op.execute(null, null, null));
         assertFalse(op.execute(null, null, "foo"));
 
-        Map<Object, Object> originMap = new HashMap<Object, Object>();
+        final Map<Object, Object> originMap = new HashMap<Object, Object>();
         assertFalse(op.execute(null, originMap, "foo"));
         assertFalse(op.execute(null, originMap, null));
 

@@ -19,15 +19,15 @@
 package com.arcadedb.exception;
 
 public class QueryParsingException extends ArcadeDBException {
-  public QueryParsingException(String message) {
+  public QueryParsingException(final String message) {
     super(message);
   }
 
-  public QueryParsingException(String message, Throwable cause) {
+  public QueryParsingException(final String message, final Throwable cause) {
     super(message, cause);
   }
 
-  public QueryParsingException(Throwable cause) {
+  public QueryParsingException(final Throwable cause) {
     super(cause);
   }
 }

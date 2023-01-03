@@ -104,7 +104,7 @@ public class SocketFactory {
       } else {
         return SSLContext.getDefault();
       }
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new ConfigurationException("Failed to create ssl context", e);
     }
 
@@ -115,9 +115,9 @@ public class SocketFactory {
     InputStream input;
 
     try {
-      URL url = new URL(path);
+      final URL url = new URL(path);
       input = url.openStream();
-    } catch (MalformedURLException ignore) {
+    } catch (final MalformedURLException ignore) {
       input = null;
     }
 
@@ -130,9 +130,9 @@ public class SocketFactory {
     if (input == null) {
       try {
         // This resolves an issue on Windows with relative paths not working correctly.
-        path = new java.io.File(path).getAbsolutePath();
+        path = new File(path).getAbsolutePath();
         input = new FileInputStream(path);
-      } catch (FileNotFoundException ignore) {
+      } catch (final FileNotFoundException ignore) {
         input = null;
       }
     }
@@ -143,7 +143,7 @@ public class SocketFactory {
     return input;
   }
 
-  private Socket configureSocket(Socket socket) {
+  private Socket configureSocket(final Socket socket) {
     // Add possible timeouts?
     return socket;
   }
@@ -152,19 +152,19 @@ public class SocketFactory {
     return configureSocket(getBackingFactory().createSocket());
   }
 
-  public Socket createSocket(String host, int port) throws IOException {
+  public Socket createSocket(final String host, final int port) throws IOException {
     return configureSocket(getBackingFactory().createSocket(host, port));
   }
 
-  public Socket createSocket(InetAddress host, int port) throws IOException {
+  public Socket createSocket(final InetAddress host, final int port) throws IOException {
     return configureSocket(getBackingFactory().createSocket(host, port));
   }
 
-  public Socket createSocket(String host, int port, InetAddress localHost, int localPort) throws IOException {
+  public Socket createSocket(final String host, final int port, final InetAddress localHost, final int localPort) throws IOException {
     return configureSocket(getBackingFactory().createSocket(host, port, localHost, localPort));
   }
 
-  public Socket createSocket(InetAddress address, int port, InetAddress localAddress, int localPort) throws IOException {
+  public Socket createSocket(final InetAddress address, final int port, final InetAddress localAddress, final int localPort) throws IOException {
     return configureSocket(getBackingFactory().createSocket(address, port, localAddress, localPort));
   }
 

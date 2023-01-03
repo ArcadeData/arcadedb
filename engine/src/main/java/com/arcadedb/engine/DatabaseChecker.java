@@ -65,11 +65,11 @@ public class DatabaseChecker {
     checkBuckets(result);
 
     final Set<Integer> affectedBuckets = new HashSet<>();
-    for (RID rid : (Collection<RID>) result.get("corruptedRecords"))
+    for (final RID rid : (Collection<RID>) result.get("corruptedRecords"))
       affectedBuckets.add(rid.getBucketId());
 
     final Set<Index> affectedIndexes = new HashSet<>();
-    for (Index index : database.getSchema().getIndexes())
+    for (final Index index : database.getSchema().getIndexes())
       if (affectedBuckets.contains(index.getAssociatedBucketId()))
         affectedIndexes.add(index);
 
@@ -80,7 +80,7 @@ public class DatabaseChecker {
       LogManager.instance().log(this, Level.INFO, "Rebuilding indexes %s...", null, rebuildIndexes);
 
     if (fix)
-      for (Index idx : affectedIndexes) {
+      for (final Index idx : affectedIndexes) {
         final String bucketName = database.getSchema().getBucketById(idx.getAssociatedBucketId()).getName();
         final EmbeddedSchema.INDEX_TYPE indexType = idx.getType();
         final boolean unique = idx.isUnique();
@@ -104,7 +104,7 @@ public class DatabaseChecker {
     if (verboseLevel > 0)
       LogManager.instance().log(this, Level.INFO, "Checking edges...");
 
-    for (DocumentType type : database.getSchema().getTypes()) {
+    for (final DocumentType type : database.getSchema().getTypes()) {
       if (types != null && !types.isEmpty())
         if (type == null || !types.contains(type.getName()))
           continue;
@@ -124,7 +124,7 @@ public class DatabaseChecker {
     if (verboseLevel > 0)
       LogManager.instance().log(this, Level.INFO, "Checking vertices...");
 
-    for (DocumentType type : database.getSchema().getTypes()) {
+    for (final DocumentType type : database.getSchema().getTypes()) {
       if (types != null && !types.isEmpty())
         if (type == null || !types.contains(type.getName()))
           continue;
@@ -160,7 +160,7 @@ public class DatabaseChecker {
     return this;
   }
 
-  private void checkBuckets(Map<String, Object> result) {
+  private void checkBuckets(final Map<String, Object> result) {
     if (verboseLevel > 0)
       LogManager.instance().log(this, Level.INFO, "Checking buckets...");
 
@@ -179,7 +179,7 @@ public class DatabaseChecker {
     result.put("totalAllocatedEdges", 0L);
     result.put("totalActiveEdges", 0L);
 
-    for (Bucket bucket : database.getSchema().getBuckets()) {
+    for (final Bucket bucket : database.getSchema().getBuckets()) {
       if (buckets != null && !buckets.isEmpty())
         if (!buckets.contains(bucket.name))
           continue;
@@ -210,7 +210,7 @@ public class DatabaseChecker {
   }
 
   private void updateStats(final Map<String, Object> stats) {
-    for (Map.Entry<String, Object> entry : stats.entrySet()) {
+    for (final Map.Entry<String, Object> entry : stats.entrySet()) {
       final Object value = entry.getValue();
       if (value instanceof Long) {
         Long current = (Long) result.get(entry.getKey());

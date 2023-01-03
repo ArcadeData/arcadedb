@@ -55,13 +55,13 @@ public class CheckClusterTypeStep extends AbstractExecutionStep {
   @Override
   public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
     getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
-    long begin = profilingEnabled ? System.nanoTime() : 0;
+    final long begin = profilingEnabled ? System.nanoTime() : 0;
     try {
       if (found) {
         return new InternalResultSet();
       }
       final Database db = ctx.getDatabase();
-      com.arcadedb.engine.Bucket bucketObj;
+      final com.arcadedb.engine.Bucket bucketObj;
       if (bucketName != null) {
         bucketObj = db.getSchema().getBucketByName(bucketName);
       } else if (bucket.getBucketName() != null) {
@@ -78,7 +78,7 @@ public class CheckClusterTypeStep extends AbstractExecutionStep {
         throw new CommandExecutionException("Type not found: " + targetType);
       }
 
-      for (com.arcadedb.engine.Bucket bucket : typez.getBuckets(true)) {
+      for (final com.arcadedb.engine.Bucket bucket : typez.getBuckets(true)) {
         if (bucket.getId() == bucketObj.getId()) {
           found = true;
           break;

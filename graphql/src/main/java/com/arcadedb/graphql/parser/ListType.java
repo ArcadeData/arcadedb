@@ -24,11 +24,11 @@ public class ListType extends SimpleNode {
   protected Type    type;
   protected boolean bang = false;
 
-  public ListType(int id) {
+  public ListType(final int id) {
     super(id);
   }
 
-  public ListType(GraphQLParser p, int id) {
+  public ListType(final GraphQLParser p, final int id) {
     super(p, id);
   }
 
@@ -43,7 +43,7 @@ public class ListType extends SimpleNode {
   /**
    * Accept the visitor.
    **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
+  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
     return visitor.visit(this, data);
   }
 }

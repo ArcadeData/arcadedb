@@ -78,7 +78,7 @@ public class IndexIdentifier extends SimpleNode {
   }
 
   public IndexIdentifier copy() {
-    IndexIdentifier result = new IndexIdentifier(-1);
+    final IndexIdentifier result = new IndexIdentifier(-1);
     result.type = type;
     result.indexNameString = indexNameString;
     result.indexName = indexName.copy();
@@ -120,7 +120,7 @@ public class IndexIdentifier extends SimpleNode {
     return result;
   }
 
-  public void deserialize(Result fromResult) {
+  public void deserialize(final Result fromResult) {
     type = Type.valueOf(fromResult.getProperty("type"));
     indexNameString = fromResult.getProperty("indexNameString");
 
@@ -130,15 +130,15 @@ public class IndexIdentifier extends SimpleNode {
     }
   }
 
-  public void setType(Type type) {
+  public void setType(final Type type) {
     this.type = type;
   }
 
-  public void setIndexNameString(String indexNameString) {
+  public void setIndexNameString(final String indexNameString) {
     this.indexNameString = indexNameString;
   }
 
-  public void setIndexName(Identifier indexName) {
+  public void setIndexName(final Identifier indexName) {
     this.indexName = indexName;
   }
 

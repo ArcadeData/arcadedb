@@ -114,7 +114,7 @@ public abstract class BaseGraphServerTest {
       final Schema schema = database.getSchema();
       Assertions.assertFalse(schema.existsType(VERTEX1_TYPE_NAME));
 
-      VertexType v = schema.createVertexType(VERTEX1_TYPE_NAME, 3);
+      final VertexType v = schema.createVertexType(VERTEX1_TYPE_NAME, 3);
       v.createProperty("id", Long.class);
 
       schema.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, VERTEX1_TYPE_NAME, "id");
@@ -141,7 +141,7 @@ public abstract class BaseGraphServerTest {
     v2.save();
 
     // CREATION OF EDGE PASSING PARAMS AS VARARGS
-    MutableEdge e1 = v1.newEdge(EDGE1_TYPE_NAME, v2, true, "name", "E1");
+    final MutableEdge e1 = v1.newEdge(EDGE1_TYPE_NAME, v2, true, "name", "E1");
     Assertions.assertEquals(e1.getOut(), v1);
     Assertions.assertEquals(e1.getIn(), v2);
 
@@ -149,15 +149,15 @@ public abstract class BaseGraphServerTest {
     v3.set("name", "V3");
     v3.save();
 
-    Map<String, Object> params = new HashMap<>();
+    final Map<String, Object> params = new HashMap<>();
     params.put("name", "E2");
 
     // CREATION OF EDGE PASSING PARAMS AS MAP
-    MutableEdge e2 = v2.newEdge(EDGE2_TYPE_NAME, v3, true, params);
+    final MutableEdge e2 = v2.newEdge(EDGE2_TYPE_NAME, v3, true, params);
     Assertions.assertEquals(e2.getOut(), v2);
     Assertions.assertEquals(e2.getIn(), v3);
 
-    MutableEdge e3 = v1.newEdge(EDGE2_TYPE_NAME, v3, true);
+    final MutableEdge e3 = v1.newEdge(EDGE2_TYPE_NAME, v3, true);
     Assertions.assertEquals(e3.getOut(), v1);
     Assertions.assertEquals(e3.getIn(), v3);
 
@@ -188,7 +188,7 @@ public abstract class BaseGraphServerTest {
         testLog("Wait a bit until realignment is completed");
         try {
           Thread.sleep(5000);
-        } catch (InterruptedException e) {
+        } catch (final InterruptedException e) {
           e.printStackTrace();
         }
       }
@@ -222,7 +222,7 @@ public abstract class BaseGraphServerTest {
 
   protected void checkArcadeIsTotallyDown() {
     if (servers != null)
-      for (ArcadeDBServer server : servers) {
+      for (final ArcadeDBServer server : servers) {
         Assertions.assertFalse(server.isStarted());
         Assertions.assertEquals(ArcadeDBServer.STATUS.OFFLINE, server.getStatus());
         Assertions.assertEquals(0, server.getHttpServer().getSessionManager().getActiveSessions());
@@ -270,7 +270,7 @@ public abstract class BaseGraphServerTest {
 
       try {
         Thread.sleep(1000);
-      } catch (InterruptedException e) {
+      } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
         e.printStackTrace();
       }
@@ -304,7 +304,7 @@ public abstract class BaseGraphServerTest {
 
       final byte[] data = jsonRequest.toString().getBytes(StandardCharsets.UTF_8);
       connection.setRequestProperty("Content-Length", Integer.toString(data.length));
-      try (DataOutputStream wr = new DataOutputStream(connection.getOutputStream())) {
+      try (final DataOutputStream wr = new DataOutputStream(connection.getOutputStream())) {
         wr.write(data);
       }
     }
@@ -313,7 +313,7 @@ public abstract class BaseGraphServerTest {
   protected void onServerConfiguration(final ContextConfiguration config) {
   }
 
-  protected void onBeforeStarting(ArcadeDBServer server) {
+  protected void onBeforeStarting(final ArcadeDBServer server) {
   }
 
   protected boolean isCreateDatabases() {
@@ -337,7 +337,7 @@ public abstract class BaseGraphServerTest {
   }
 
   protected ArcadeDBServer getServer(final String name) {
-    for (ArcadeDBServer s : servers) {
+    for (final ArcadeDBServer s : servers) {
       if (s.getServerName().equals(name))
         return s;
     }
@@ -379,7 +379,7 @@ public abstract class BaseGraphServerTest {
       public void run() {
         try {
           callback.call();
-        } catch (Exception e) {
+        } catch (final Exception e) {
           e.printStackTrace();
         }
       }
@@ -428,7 +428,7 @@ public abstract class BaseGraphServerTest {
     if (servers != null)
       for (int i = 0; i < getServerCount(); ++i)
         if (getServer(i) != null)
-          for (String dbName : getServer(i).getDatabaseNames())
+          for (final String dbName : getServer(i).getDatabaseNames())
             if (getServer(i).existsDatabase(dbName))
               ((DatabaseInternal) getServer(i).getDatabase(dbName)).getEmbedded().drop();
 
@@ -450,7 +450,7 @@ public abstract class BaseGraphServerTest {
       try {
         new DatabaseComparator().compare(db1, db2);
         LogManager.instance().log(this, Level.FINE, "TEST: OK databases '%s' and '%s' are identical", db1.getDatabasePath(), db2.getDatabasePath());
-      } catch (RuntimeException e) {
+      } catch (final RuntimeException e) {
         LogManager.instance()
             .log(this, Level.FINE, "ERROR on comparing databases '%s' and '%s': %s", db1.getDatabasePath(), db2.getDatabasePath(), e.getMessage());
         throw e;
@@ -464,7 +464,7 @@ public abstract class BaseGraphServerTest {
     LogManager.instance().log(this, Level.FINE, "***********************************************************************************");
   }
 
-  protected void testEachServer(Callback callback) throws Exception {
+  protected void testEachServer(final Callback callback) throws Exception {
     for (int i = 0; i < getServerCount(); i++) {
       LogManager.instance().log(this, Level.FINE, "***********************************************************************************");
       LogManager.instance().log(this, Level.FINE, "EXECUTING TEST ON SERVER %d/%d...", i, getServerCount());
@@ -475,7 +475,7 @@ public abstract class BaseGraphServerTest {
 
   private void checkForActiveDatabases() {
     final Collection<Database> activeDatabases = DatabaseFactory.getActiveDatabaseInstances();
-    for (Database db : activeDatabases)
+    for (final Database db : activeDatabases)
       db.close();
 
     if (!activeDatabases.isEmpty())
@@ -485,7 +485,7 @@ public abstract class BaseGraphServerTest {
   }
 
   protected String createRecord(final int serverIndex, final String payload) throws IOException {
-    HttpURLConnection connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/document/graph").openConnection();
+    final HttpURLConnection connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/document/graph").openConnection();
     connection.setRequestMethod("POST");
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization",
@@ -494,7 +494,7 @@ public abstract class BaseGraphServerTest {
 
     connection.connect();
 
-    PrintWriter pw = new PrintWriter(new OutputStreamWriter(connection.getOutputStream()));
+    final PrintWriter pw = new PrintWriter(new OutputStreamWriter(connection.getOutputStream()));
     pw.write(payload);
     pw.close();
 
@@ -530,7 +530,7 @@ public abstract class BaseGraphServerTest {
       Assertions.assertEquals("OK", initialConnection.getResponseMessage());
       return response;
 
-    } catch (Exception e) {
+    } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on connecting to server %s", e, "http://127.0.0.1:248" + serverIndex);
       throw e;
     } finally {

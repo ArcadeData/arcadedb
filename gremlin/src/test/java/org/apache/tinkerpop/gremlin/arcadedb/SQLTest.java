@@ -46,7 +46,7 @@ public class SQLTest {
           graph.getDatabase().newVertex("Person").set("name", "Jay").set("age", i).save();
       });
 
-      ResultSet result = graph.sql("select name as `p.name`, age as `p.age` from Person where age >= :p1 ORDER BY `p.age`")//
+      final ResultSet result = graph.sql("select name as `p.name`, age as `p.age` from Person where age >= :p1 ORDER BY `p.age`")//
           .setParameter(":p1", 25).execute();
 
       int i = 0;

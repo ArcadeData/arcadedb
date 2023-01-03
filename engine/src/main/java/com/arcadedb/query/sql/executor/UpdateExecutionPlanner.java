@@ -50,7 +50,7 @@ public class UpdateExecutionPlanner {
   public final    Limit                  limit;
   public final    Timeout                timeout;
 
-  public UpdateExecutionPlanner(UpdateStatement oUpdateStatement) {
+  public UpdateExecutionPlanner(final UpdateStatement oUpdateStatement) {
     if (oUpdateStatement instanceof UpdateEdgeStatement) {
       updateEdge = true;
     }
@@ -94,7 +94,7 @@ public class UpdateExecutionPlanner {
    * @param plan the execution plan
    * @param ctx  the execution context
    */
-  private void convertToModifiableResult(final UpdateExecutionPlan plan, CommandContext ctx, final boolean profilingEnabled) {
+  private void convertToModifiableResult(final UpdateExecutionPlan plan, final CommandContext ctx, final boolean profilingEnabled) {
     plan.chain(new ConvertToUpdatableResultStep(ctx, profilingEnabled));
   }
 
@@ -162,7 +162,7 @@ public class UpdateExecutionPlanner {
 
   private void handleOperations(final UpdateExecutionPlan plan, final CommandContext ctx, final List<UpdateOperations> ops, final boolean profilingEnabled) {
     if (ops != null) {
-      for (UpdateOperations op : ops) {
+      for (final UpdateOperations op : ops) {
         switch (op.getType()) {
         case UpdateOperations.TYPE_SET:
           plan.chain(new UpdateSetStep(op.getUpdateItems(), ctx, profilingEnabled));
@@ -190,7 +190,7 @@ public class UpdateExecutionPlanner {
   }
 
   private void handleTarget(final UpdateExecutionPlan result, final CommandContext ctx, final FromClause target, final WhereClause whereClause,
-      final Timeout timeout, boolean profilingEnabled) {
+      final Timeout timeout, final boolean profilingEnabled) {
     final SelectStatement sourceStatement = new SelectStatement(-1);
     sourceStatement.setTarget(target);
     sourceStatement.setWhereClause(whereClause);

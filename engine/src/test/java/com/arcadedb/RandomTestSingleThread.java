@@ -52,7 +52,7 @@ public class RandomTestSingleThread extends TestHelper {
     createSchema();
     populateDatabase();
 
-    long begin = System.currentTimeMillis();
+    final long begin = System.currentTimeMillis();
 
     try {
       database.begin();
@@ -84,7 +84,7 @@ public class RandomTestSingleThread extends TestHelper {
             break;
           }
 
-        } catch (Exception e) {
+        } catch (final Exception e) {
           if (e instanceof ConcurrentModificationException) {
             mvccErrors.incrementAndGet();
           } else {
@@ -108,7 +108,7 @@ public class RandomTestSingleThread extends TestHelper {
     //System.out.println("----------------");
   }
 
-  private void createTransactions(Database database) {
+  private void createTransactions(final Database database) {
     final int txOps = rnd.nextInt(100);
 
     //LogManager.instance().log(this, Level.INFO, "Creating %d transactions...", txOps);
@@ -122,7 +122,7 @@ public class RandomTestSingleThread extends TestHelper {
     }
   }
 
-  private void deleteRecords(Database database) {
+  private void deleteRecords(final Database database) {
     LogManager.instance().log(this, Level.INFO, "Deleting records...");
 
     final Iterator<Record> iter = database.iterateType("Account", true);
@@ -139,7 +139,7 @@ public class RandomTestSingleThread extends TestHelper {
 
   private void populateDatabase() {
 
-    long begin = System.currentTimeMillis();
+    final long begin = System.currentTimeMillis();
 
     database.begin();
 

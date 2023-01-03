@@ -90,7 +90,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   /**
    * Called at creation time.
    */
-  protected LSMTreeIndexAbstract(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name, final boolean unique, String filePath,
+  protected LSMTreeIndexAbstract(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name, final boolean unique, final String filePath,
       final String ext, final PaginatedFile.MODE mode, final Type[] keyTypes, final int pageSize, final int version, final NULL_STRATEGY nullStrategy)
       throws IOException {
     super(database, name, filePath, ext, mode, pageSize, version);
@@ -115,7 +115,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   /**
    * Called at cloning time.
    */
-  protected LSMTreeIndexAbstract(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name, final boolean unique, String filePath,
+  protected LSMTreeIndexAbstract(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name, final boolean unique, final String filePath,
       final String ext, final byte[] keyTypes, final int pageSize, final int version) throws IOException {
     super(database, name, filePath, TEMP_EXT + ext, PaginatedFile.MODE.READ_WRITE, pageSize, version);
     this.mainIndex = mainIndex;
@@ -129,7 +129,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   /**
    * Called at load time (1st page only).
    */
-  protected LSMTreeIndexAbstract(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name, final boolean unique, String filePath,
+  protected LSMTreeIndexAbstract(final LSMTreeIndex mainIndex, final DatabaseInternal database, final String name, final boolean unique, final String filePath,
       final int id, final PaginatedFile.MODE mode, final int pageSize, final int version) throws IOException {
     super(database, name, filePath, id, mode, pageSize, version);
     this.mainIndex = mainIndex;
@@ -183,7 +183,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
 
       try {
         file.rename(newFileName);
-      } catch (IOException e) {
+      } catch (final IOException e) {
         throw new IndexException(
             "Cannot rename index file '" + file.getFilePath() + "' into temp file '" + newFileName + "' (exists=" + (new File(file.getFilePath()).exists())
                 + ")", e);

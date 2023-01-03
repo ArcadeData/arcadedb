@@ -38,14 +38,14 @@ public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
     super(database, current);
 
     validBuckets = new HashSet<>();
-    for (String e : edgeTypes) {
+    for (final String e : edgeTypes) {
       if (!database.getSchema().existsType(e))
         continue;
 
       final EdgeType type = (EdgeType) database.getSchema().getType(e);
 
       final List<Bucket> buckets = type.getBuckets(true);
-      for (Bucket b : buckets)
+      for (final Bucket b : buckets)
         validBuckets.add(b.getId());
     }
   }
@@ -68,7 +68,7 @@ public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
           if (nextEdge.getPosition() > -1)
             try {
               database.lookupByRID(nextEdge, true);
-            } catch (Exception e) {
+            } catch (final Exception e) {
               handleCorruption(e, nextEdge, nextVertex);
               continue;
             }
@@ -79,7 +79,7 @@ public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
 
           try {
             database.lookupByRID(nextVertex, true);
-          } catch (Exception e) {
+          } catch (final Exception e) {
             handleCorruption(e, nextEdge, nextVertex);
             continue;
           }

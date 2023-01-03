@@ -43,7 +43,7 @@ public class ReplicationServerQuorumNoneIT extends ReplicationServerIT {
   public void endTest() {
     try {
       Thread.sleep(5000);
-    } catch (InterruptedException e) {
+    } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
       e.printStackTrace();
     }

@@ -47,8 +47,8 @@ public class SQLMethodToJSON extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute( Object iThis, Identifiable iCurrentRecord, CommandContext iContext, Object ioResult,
-      Object[] iParams) {
+  public Object execute( final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult,
+      final Object[] iParams) {
     if (iThis == null)
       return null;
 
@@ -62,10 +62,10 @@ public class SQLMethodToJSON extends AbstractSQLMethod {
 
     } else if (MultiValue.isMultiValue(iThis)) {
 
-      StringBuilder builder = new StringBuilder();
+      final StringBuilder builder = new StringBuilder();
       builder.append("[");
       boolean first = true;
-      for (Object o : MultiValue.getMultiValueIterable(iThis, false)) {
+      for (final Object o : MultiValue.getMultiValueIterable(iThis, false)) {
         if (!first) {
           builder.append(",");
         }

@@ -39,23 +39,23 @@ public class SuffixIdentifier extends SimpleNode {
   protected RecordAttribute recordAttribute;
   protected boolean         star = false;
 
-  public SuffixIdentifier(int id) {
+  public SuffixIdentifier(final int id) {
     super(id);
   }
 
-  public SuffixIdentifier(SqlParser p, int id) {
+  public SuffixIdentifier(final SqlParser p, final int id) {
     super(p, id);
   }
 
-  public SuffixIdentifier(Identifier identifier) {
+  public SuffixIdentifier(final Identifier identifier) {
     this.identifier = identifier;
   }
 
-  public SuffixIdentifier(RecordAttribute attr) {
+  public SuffixIdentifier(final RecordAttribute attr) {
     this.recordAttribute = attr;
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (identifier != null) {
       identifier.toString(params, builder);
     } else if (recordAttribute != null) {
@@ -65,12 +65,12 @@ public class SuffixIdentifier extends SimpleNode {
     }
   }
 
-  public Object execute(Identifiable iCurrentRecord, CommandContext ctx) {
+  public Object execute(final Identifiable iCurrentRecord, final CommandContext ctx) {
     if (star) {
       return iCurrentRecord;
     }
     if (identifier != null) {
-      String varName = identifier.getStringValue();
+      final String varName = identifier.getStringValue();
       if (ctx != null && ctx.getVariable(varName) != null) {
         return ctx.getVariable(varName);
       }
@@ -89,17 +89,17 @@ public class SuffixIdentifier extends SimpleNode {
     return null;
   }
 
-  public Object execute(Result iCurrentRecord, CommandContext ctx) {
+  public Object execute(final Result iCurrentRecord, final CommandContext ctx) {
     if (star) {
       return iCurrentRecord;
     }
     if (identifier != null) {
-      String varName = identifier.getStringValue();
+      final String varName = identifier.getStringValue();
       if (ctx != null && varName.equalsIgnoreCase("$parent")) {
         return ctx.getParent();
       }
       if (ctx != null && (varName.startsWith("$") || varName.startsWith("_$$$")) && ctx.getVariable(varName) != null) {
-        Object result = ctx.getVariable(varName);
+        final Object result = ctx.getVariable(varName);
         return result;
       }
       if (iCurrentRecord != null) {
@@ -123,11 +123,11 @@ public class SuffixIdentifier extends SimpleNode {
     return null;
   }
 
-  public Object execute(Map iCurrentRecord, CommandContext ctx) {
+  public Object execute(final Map iCurrentRecord, final CommandContext ctx) {
     if (star) {
-      ResultInternal result = new ResultInternal();
+      final ResultInternal result = new ResultInternal();
       if (iCurrentRecord != null) {
-        for (Map.Entry<String, Object> x : ((Map<String, Object>) iCurrentRecord).entrySet()) {
+        for (final Map.Entry<String, Object> x : ((Map<String, Object>) iCurrentRecord).entrySet()) {
           result.setProperty("" + x.getKey(), x.getValue());
         }
         return result;
@@ -135,7 +135,7 @@ public class SuffixIdentifier extends SimpleNode {
       return iCurrentRecord;
     }
     if (identifier != null) {
-      String varName = identifier.getStringValue();
+      final String varName = identifier.getStringValue();
       if (ctx != null && varName.equalsIgnoreCase("$parent")) {
         return ctx.getParent();
       }
@@ -153,29 +153,29 @@ public class SuffixIdentifier extends SimpleNode {
     return null;
   }
 
-  public Object execute(Iterable iterable, CommandContext ctx) {
+  public Object execute(final Iterable iterable, final CommandContext ctx) {
     if (star) {
       return null;
     }
-    List<Object> result = new ArrayList<>();
-    for (Object o : iterable) {
+    final List<Object> result = new ArrayList<>();
+    for (final Object o : iterable) {
       result.add(execute(o, ctx));
     }
     return result;
   }
 
-  public Object execute(Iterator iterator, CommandContext ctx) {
+  public Object execute(final Iterator iterator, final CommandContext ctx) {
     if (star) {
       return null;
     }
-    List<Object> result = new ArrayList<>();
+    final List<Object> result = new ArrayList<>();
     while (iterator.hasNext()) {
       result.add(execute(iterator.next(), ctx));
     }
     if (iterator instanceof ResultSet) {
       try {
         ((ResultSet) iterator).reset();
-      } catch (Exception ignore) {
+      } catch (final Exception ignore) {
       }
     }
     return result;
@@ -186,7 +186,7 @@ public class SuffixIdentifier extends SimpleNode {
       return null;
 
     if (identifier != null) {
-      String varName = identifier.getStringValue();
+      final String varName = identifier.getStringValue();
       if (iCurrentRecord != null)
         return iCurrentRecord.getVariable(varName);
 
@@ -233,7 +233,7 @@ public class SuffixIdentifier extends SimpleNode {
       return aliases.contains(identifier.getStringValue());
 
     if (recordAttribute != null) {
-      for (String s : aliases) {
+      for (final String s : aliases) {
         if (s.equalsIgnoreCase(recordAttribute.name)) {
           return true;
         }
@@ -299,6 +299,7 @@ public class SuffixIdentifier extends SimpleNode {
   }
 
   public void extractSubQueries(final SubQueryCollector collector) {
+    // EMPTY METHOD
   }
 
   public boolean refersToParent() {

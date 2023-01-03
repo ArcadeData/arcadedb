@@ -26,26 +26,26 @@ import static org.junit.jupiter.api.Assertions.fail;
 
 public class MatchStatementTest {
 
-  protected SimpleNode checkRightSyntax(String query) {
-    SimpleNode result = checkSyntax(query, true);
-    StringBuilder builder = new StringBuilder();
+  protected SimpleNode checkRightSyntax(final String query) {
+    final SimpleNode result = checkSyntax(query, true);
+    final StringBuilder builder = new StringBuilder();
     result.toString(null, builder);
     return checkSyntax(builder.toString(), true);
   }
 
-  protected SimpleNode checkWrongSyntax(String query) {
+  protected SimpleNode checkWrongSyntax(final String query) {
     return checkSyntax(query, false);
   }
 
-  protected SimpleNode checkSyntax(String query, boolean isCorrect) {
-    SqlParser osql = getParserFor(query);
+  protected SimpleNode checkSyntax(final String query, final boolean isCorrect) {
+    final SqlParser osql = getParserFor(query);
     try {
-      SimpleNode result = osql.parse();
+      final SimpleNode result = osql.parse();
       if (!isCorrect) {
         fail();
       }
       return result;
-    } catch (Exception e) {
+    } catch (final Exception e) {
       if (isCorrect) {
         e.printStackTrace();
         fail();
@@ -102,7 +102,7 @@ public class MatchStatementTest {
 
   @Test
   public void testFilterTypes() {
-    StringBuilder query = new StringBuilder();
+    final StringBuilder query = new StringBuilder();
     query.append("MATCH {");
     query.append("   type: 'v', ");
     query.append("   as: foo, ");
@@ -114,7 +114,7 @@ public class MatchStatementTest {
 
   @Test
   public void testFilterTypes2() {
-    StringBuilder query = new StringBuilder();
+    final StringBuilder query = new StringBuilder();
     query.append("MATCH {");
     query.append("   types: ['V', 'E'], ");
     query.append("   as: foo, ");
@@ -126,7 +126,7 @@ public class MatchStatementTest {
 
   @Test
   public void testMultiPath() {
-    StringBuilder query = new StringBuilder();
+    final StringBuilder query = new StringBuilder();
     query.append("MATCH {}");
     query.append("  .(out().in(){type:'v'}.both('Foo')){maxDepth: 3}.out() return foo");
     checkRightSyntax(query.toString());
@@ -134,7 +134,7 @@ public class MatchStatementTest {
 
   @Test
   public void testMultiPathArrows() {
-    StringBuilder query = new StringBuilder();
+    final StringBuilder query = new StringBuilder();
     query.append("MATCH {}");
     query.append("  .(-->{}<--{type:'v'}--){maxDepth: 3}-->{} return foo");
     checkRightSyntax(query.toString());
@@ -250,9 +250,9 @@ public class MatchStatementTest {
         "MATCH {type: 'V', as: foo}.toBar.out(){as:bar} RETURN foo.name, bar.name skip 10 limit 10");
   }
 
-  protected SqlParser getParserFor(String string) {
-    InputStream is = new ByteArrayInputStream(string.getBytes());
-    SqlParser osql = new SqlParser(null, is);
+  protected SqlParser getParserFor(final String string) {
+    final InputStream is = new ByteArrayInputStream(string.getBytes());
+    final SqlParser osql = new SqlParser(null, is);
     return osql;
   }
 }

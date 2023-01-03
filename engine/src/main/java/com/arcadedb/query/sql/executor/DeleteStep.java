@@ -28,13 +28,13 @@ import com.arcadedb.exception.TimeoutException;
 public class DeleteStep extends AbstractExecutionStep {
   private long cost = 0;
 
-  public DeleteStep(CommandContext ctx, boolean profilingEnabled) {
+  public DeleteStep(final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    ResultSet upstream = getPrev().get().syncPull(ctx, nRecords);
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
+    final ResultSet upstream = getPrev().get().syncPull(ctx, nRecords);
     return new ResultSet() {
       @Override
       public boolean hasNext() {
@@ -43,8 +43,8 @@ public class DeleteStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        Result result = upstream.next();
-        long begin = profilingEnabled ? System.nanoTime() : 0;
+        final Result result = upstream.next();
+        final long begin = profilingEnabled ? System.nanoTime() : 0;
         try {
           if (result.isElement()) {
             ctx.getDatabase().deleteRecord(result.getElement().get());
@@ -69,9 +69,9 @@ public class DeleteStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    StringBuilder result = new StringBuilder();
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
+    final StringBuilder result = new StringBuilder();
     result.append(spaces);
     result.append("+ DELETE");
     if (profilingEnabled) {

@@ -62,7 +62,7 @@ public class TxForwardRequest extends TxRequestAbstract {
   }
 
   @Override
-  public void fromStream(ArcadeDBServer server, final Binary stream) {
+  public void fromStream(final ArcadeDBServer server, final Binary stream) {
     super.fromStream(server, stream);
     uniqueKeysUncompressedLength = stream.getInt();
     uniqueKeysBuffer = CompressionFactory.getDefault().decompress(new Binary(stream.getBytes()), uniqueKeysUncompressedLength);
@@ -91,9 +91,9 @@ public class TxForwardRequest extends TxRequestAbstract {
       if (db.isTransactionActive())
         throw new ReplicationException("Error on committing transaction in database '" + databaseName + "': a nested transaction occurred");
 
-    } catch (NeedRetryException | TransactionException e) {
+    } catch (final NeedRetryException | TransactionException e) {
       return new ErrorResponse(e);
-    } catch (Exception e) {
+    } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error with the execution of the forwarded message %d", e, messageNumber);
       return new ErrorResponse(e);
     }
@@ -114,13 +114,13 @@ public class TxForwardRequest extends TxRequestAbstract {
 
     uniqueKeysBuffer.putUnsignedNumber(indexesChanges.size());
 
-    for (Map.Entry<String, TreeMap<TransactionIndexContext.ComparableKey, Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey>>> entry : indexesChanges.entrySet()) {
+    for (final Map.Entry<String, TreeMap<TransactionIndexContext.ComparableKey, Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey>>> entry : indexesChanges.entrySet()) {
       uniqueKeysBuffer.putString(entry.getKey());
       final Map<TransactionIndexContext.ComparableKey, Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey>> indexChanges = entry.getValue();
 
       uniqueKeysBuffer.putUnsignedNumber(indexChanges.size());
 
-      for (Map.Entry<TransactionIndexContext.ComparableKey, Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey>> keyChange : indexChanges.entrySet()) {
+      for (final Map.Entry<TransactionIndexContext.ComparableKey, Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey>> keyChange : indexChanges.entrySet()) {
         final TransactionIndexContext.ComparableKey entryKey = keyChange.getKey();
 
         uniqueKeysBuffer.putUnsignedNumber(entryKey.values.length);
@@ -134,7 +134,7 @@ public class TxForwardRequest extends TxRequestAbstract {
 
         uniqueKeysBuffer.putUnsignedNumber(entryValue.size());
 
-        for (TransactionIndexContext.IndexKey key : entryValue.values()) {
+        for (final TransactionIndexContext.IndexKey key : entryValue.values()) {
           uniqueKeysBuffer.putByte((byte) (key.addOperation ? 1 : 0));
           uniqueKeysBuffer.putUnsignedNumber(key.rid.getBucketId());
           uniqueKeysBuffer.putUnsignedNumber(key.rid.getPosition());

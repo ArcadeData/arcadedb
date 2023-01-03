@@ -41,12 +41,12 @@ public class SQLMethodCharAt extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute( Object iThis, Identifiable iCurrentRecord, CommandContext iContext, Object ioResult, Object[] iParams) {
+  public Object execute( final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult, final Object[] iParams) {
     if (iParams[0] == null) {
       return null;
     }
 
-    int index = Integer.parseInt(iParams[0].toString());
+    final int index = Integer.parseInt(iParams[0].toString());
     return "" + iThis.toString().charAt(index);
   }
 }

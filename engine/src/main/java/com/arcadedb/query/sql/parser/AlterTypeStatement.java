@@ -49,16 +49,16 @@ public class AlterTypeStatement extends DDLStatement {
   protected Identifier       customKey;
   protected Expression       customValue;
 
-  public AlterTypeStatement(int id) {
+  public AlterTypeStatement(final int id) {
     super(id);
   }
 
-  public AlterTypeStatement(SqlParser p, int id) {
+  public AlterTypeStatement(final SqlParser p, final int id) {
     super(p, id);
   }
 
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("ALTER TYPE ");
     name.toString(params, builder);
     if (property != null) {
@@ -86,7 +86,7 @@ public class AlterTypeStatement extends DDLStatement {
   }
 
   public Statement copy() {
-    AlterTypeStatement result = new AlterTypeStatement(-1);
+    final AlterTypeStatement result = new AlterTypeStatement(-1);
     result.name = name == null ? null : name.copy();
     result.property = property;
     result.identifierListValue = identifierListValue.stream().map(x -> x.copy()).collect(Collectors.toList());
@@ -99,7 +99,7 @@ public class AlterTypeStatement extends DDLStatement {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
@@ -138,7 +138,7 @@ public class AlterTypeStatement extends DDLStatement {
   }
 
   @Override
-  public ResultSet executeDDL(CommandContext ctx) {
+  public ResultSet executeDDL(final CommandContext ctx) {
     final DocumentType type = ctx.getDatabase().getSchema().getType(name.getStringValue());
     if (type == null)
       throw new CommandExecutionException("Type not found: " + name);

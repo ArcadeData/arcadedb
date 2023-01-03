@@ -45,7 +45,7 @@ class SQLMethodPrefixTest {
 
     @Test
     void testPrefix() {
-        Object result = method.execute("suffix", null, null, null, new Object[]{"prefix"});
+        final Object result = method.execute("suffix", null, null, null, new Object[]{"prefix"});
         assertThat(result).isEqualTo("prefixsuffix");
 
     }

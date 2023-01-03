@@ -62,7 +62,7 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
 
       @Override
       public boolean hasNext() {
-        int totalFetched = 0;
+        final int totalFetched = 0;
         return finalResult.hasNext() && totalFetched < n;
       }
 
@@ -164,7 +164,7 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
   }
 
   public boolean containsReturn() {
-    for (ExecutionStepInternal step : steps) {
+    for (final ExecutionStepInternal step : steps) {
       if (step instanceof ReturnStep) {
         return true;
       }
@@ -186,9 +186,9 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
     if (steps.size() > 0) {
       lastStep = steps.get(steps.size() - 1);
       for (int i = 0; i < steps.size() - 1; i++) {
-        ScriptLineStep step = steps.get(i);
+        final ScriptLineStep step = steps.get(i);
         if (step.containsReturn()) {
-          ExecutionStepInternal returnStep = step.executeUntilReturn(ctx);
+          final ExecutionStepInternal returnStep = step.executeUntilReturn(ctx);
           if (returnStep != null) {
             lastStep = returnStep;
             return lastStep;
@@ -215,9 +215,9 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
    * @return
    */
   public ExecutionStepInternal executeFull() {
-    for (ScriptLineStep step : steps) {
+    for (final ScriptLineStep step : steps) {
       if (step.containsReturn()) {
-        ExecutionStepInternal returnStep = step.executeUntilReturn(ctx);
+        final ExecutionStepInternal returnStep = step.executeUntilReturn(ctx);
         if (returnStep != null) {
           return returnStep;
         }

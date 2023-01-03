@@ -35,39 +35,39 @@ import java.util.*;
  */
 public abstract class SimpleExecStatement extends Statement {
 
-  public SimpleExecStatement(int id) {
+  public SimpleExecStatement(final int id) {
     super(id);
   }
 
-  public SimpleExecStatement(SqlParser p, int id) {
+  public SimpleExecStatement(final SqlParser p, final int id) {
     super(p, id);
   }
 
   public abstract ResultSet executeSimple(CommandContext ctx);
 
-  public ResultSet execute(Database db, Object[] args, CommandContext parentContext, boolean usePlanCache) {
-    BasicCommandContext ctx = new BasicCommandContext();
+  public ResultSet execute(final Database db, final Object[] args, final CommandContext parentContext, final boolean usePlanCache) {
+    final BasicCommandContext ctx = new BasicCommandContext();
     if (parentContext != null) {
       ctx.setParentWithoutOverridingChild(parentContext);
     }
     ctx.setDatabase(db);
     ctx.setInputParameters(args);
-    SingleOpExecutionPlan executionPlan = (SingleOpExecutionPlan) createExecutionPlan(ctx, false);
+    final SingleOpExecutionPlan executionPlan = (SingleOpExecutionPlan) createExecutionPlan(ctx, false);
     return executionPlan.executeInternal(ctx);
   }
 
-  public ResultSet execute(Database db, Map<String, Object> params, CommandContext parentContext, boolean usePlanCache) {
-    BasicCommandContext ctx = new BasicCommandContext();
+  public ResultSet execute(final Database db, final Map<String, Object> params, final CommandContext parentContext, final boolean usePlanCache) {
+    final BasicCommandContext ctx = new BasicCommandContext();
     if (parentContext != null) {
       ctx.setParentWithoutOverridingChild(parentContext);
     }
     ctx.setDatabase(db);
     ctx.setInputParameters(params);
-    SingleOpExecutionPlan executionPlan = (SingleOpExecutionPlan) createExecutionPlan(ctx, false);
+    final SingleOpExecutionPlan executionPlan = (SingleOpExecutionPlan) createExecutionPlan(ctx, false);
     return executionPlan.executeInternal(ctx);
   }
 
-  public InternalExecutionPlan createExecutionPlan(CommandContext ctx, boolean enableProfiling) {
+  public InternalExecutionPlan createExecutionPlan(final CommandContext ctx, final boolean enableProfiling) {
     return new SingleOpExecutionPlan(ctx, this);
   }
 

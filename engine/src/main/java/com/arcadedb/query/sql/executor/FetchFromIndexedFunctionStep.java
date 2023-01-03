@@ -38,15 +38,15 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
   //runtime0
   Iterator<Record> fullResult = null;
 
-  public FetchFromIndexedFunctionStep(BinaryCondition functionCondition, FromClause queryTarget, CommandContext ctx,
-      boolean profilingEnabled) {
+  public FetchFromIndexedFunctionStep(final BinaryCondition functionCondition, final FromClause queryTarget, final CommandContext ctx,
+      final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
     this.functionCondition = functionCondition;
     this.queryTarget = queryTarget;
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
     getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
     init(ctx);
 
@@ -63,7 +63,7 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        long begin = profilingEnabled ? System.nanoTime() : 0;
+        final long begin = profilingEnabled ? System.nanoTime() : 0;
         try {
           if (localCount >= nRecords) {
             throw new NoSuchElementException();
@@ -71,7 +71,7 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
           if (!fullResult.hasNext()) {
             throw new NoSuchElementException();
           }
-          ResultInternal result = new ResultInternal();
+          final ResultInternal result = new ResultInternal();
           result.setElement((Document) fullResult.next().getRecord());
           localCount++;
           return result;
@@ -93,9 +93,9 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
     };
   }
 
-  private void init(CommandContext ctx) {
+  private void init(final CommandContext ctx) {
     if (fullResult == null) {
-      long begin = profilingEnabled ? System.nanoTime() : 0;
+      final long begin = profilingEnabled ? System.nanoTime() : 0;
       try {
         fullResult = functionCondition.executeIndexedFunction(queryTarget, ctx).iterator();
       } finally {
@@ -107,7 +107,7 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
+  public String prettyPrint(final int depth, final int indent) {
     String result =
         ExecutionStepInternal.getIndent(depth, indent) + "+ FETCH FROM INDEXED FUNCTION " + functionCondition.toString();
     if (profilingEnabled) {
@@ -128,7 +128,7 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
 
   @Override
   public Result serialize() {
-    ResultInternal result = ExecutionStepInternal.basicSerialize(this);
+    final ResultInternal result = ExecutionStepInternal.basicSerialize(this);
     result.setProperty("functionCondition", this.functionCondition.serialize());
     result.setProperty("queryTarget", this.queryTarget.serialize());
 
@@ -136,7 +136,7 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
   }
 
   @Override
-  public void deserialize(Result fromResult) {
+  public void deserialize(final Result fromResult) {
     try {
       ExecutionStepInternal.basicDeserialize(fromResult, this);
       functionCondition = new BinaryCondition(-1);
@@ -145,7 +145,7 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
       queryTarget = new FromClause(-1);
       queryTarget.deserialize(fromResult.getProperty("functionCondition "));
 
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new CommandExecutionException(e);
     }
   }

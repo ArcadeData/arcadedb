@@ -27,7 +27,7 @@ import java.util.*;
  */
 public abstract class ArcadeGraphSON extends TinkerPopJacksonModule {
 
-  public ArcadeGraphSON(String name) {
+  public ArcadeGraphSON(final String name) {
     super(name);
   }
 

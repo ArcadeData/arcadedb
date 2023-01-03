@@ -27,11 +27,11 @@ import com.arcadedb.query.sql.executor.UpdateExecutionPlanner;
 import java.util.stream.*;
 
 public class UpdateEdgeStatement extends UpdateStatement {
-  public UpdateEdgeStatement(int id) {
+  public UpdateEdgeStatement(final int id) {
     super(id);
   }
 
-  public UpdateEdgeStatement(SqlParser p, int id) {
+  public UpdateEdgeStatement(final SqlParser p, final int id) {
     super(p, id);
   }
 
@@ -40,14 +40,14 @@ public class UpdateEdgeStatement extends UpdateStatement {
   }
 
   @Override
-  public UpdateExecutionPlan createExecutionPlan(CommandContext ctx, boolean enableProfiling) {
-    UpdateExecutionPlanner planner = new UpdateExecutionPlanner(this);
+  public UpdateExecutionPlan createExecutionPlan(final CommandContext ctx, final boolean enableProfiling) {
+    final UpdateExecutionPlanner planner = new UpdateExecutionPlanner(this);
     return planner.createExecutionPlan(ctx, enableProfiling);
   }
 
   @Override
   public UpdateEdgeStatement copy() {
-    UpdateEdgeStatement result = new UpdateEdgeStatement(-1);
+    final UpdateEdgeStatement result = new UpdateEdgeStatement(-1);
     result.target = target == null ? null : target.copy();
     result.operations = operations == null ? null : operations.stream().map(x -> x.copy()).collect(Collectors.toList());
     result.upsert = upsert;

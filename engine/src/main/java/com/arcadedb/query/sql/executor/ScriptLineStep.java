@@ -73,7 +73,7 @@ public class ScriptLineStep extends AbstractExecutionStep {
       if (step.positivePlan != null && step.positivePlan.containsReturn()) {
         return true;
       } else if (step.positiveStatements != null) {
-        for (Statement stm : step.positiveStatements) {
+        for (final Statement stm : step.positiveStatements) {
           if (containsReturn(stm)) {
             return true;
           }
@@ -92,7 +92,7 @@ public class ScriptLineStep extends AbstractExecutionStep {
       return true;
 
     if (stm instanceof IfStatement) {
-      for (Statement o : ((IfStatement) stm).getStatements()) {
+      for (final Statement o : ((IfStatement) stm).getStatements()) {
         if (containsReturn(o)) {
           return true;
         }

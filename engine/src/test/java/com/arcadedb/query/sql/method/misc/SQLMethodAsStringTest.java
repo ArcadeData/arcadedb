@@ -36,13 +36,13 @@ class SQLMethodAsStringTest {
 
     @Test
     void testNulIsReturnedAsNull() {
-        Object result = method.execute(null, null, null, null, null);
+        final Object result = method.execute(null, null, null, null, null);
         assertThat(result).isNull();
     }
 
     @Test
     void testStringIsReturnedAsString() {
-        Object result = method.execute(null, null, null, "a string", null);
+        final Object result = method.execute(null, null, null, "a string", null);
         assertThat(result).isEqualTo("a string");
     }
 

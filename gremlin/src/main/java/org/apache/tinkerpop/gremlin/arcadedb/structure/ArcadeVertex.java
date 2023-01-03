@@ -51,7 +51,7 @@ public class ArcadeVertex extends ArcadeElement<com.arcadedb.graph.Vertex> imple
       throw Edge.Exceptions.userSuppliedIdsNotSupported();
 
     this.graph.tx().readWrite();
-    ArcadeVertex vertex = (ArcadeVertex) inVertex;
+    final ArcadeVertex vertex = (ArcadeVertex) inVertex;
 
     //ElementHelper.getLabelValue(keyValues).orElse(Vertex.DEFAULT_LABEL);
 
@@ -60,10 +60,10 @@ public class ArcadeVertex extends ArcadeElement<com.arcadedb.graph.Vertex> imple
     else if (!(this.graph.getDatabase().getSchema().getType(label) instanceof EdgeType))
       throw new IllegalArgumentException("Type '" + label + "' is not a edge");
 
-    com.arcadedb.graph.Vertex baseElement = getBaseElement();
+    final com.arcadedb.graph.Vertex baseElement = getBaseElement();
 
-    MutableEdge edge = baseElement.newEdge(label, vertex.getBaseElement(), true);
-    ArcadeEdge arcadeEdge = new ArcadeEdge(graph, edge, keyValues);
+    final MutableEdge edge = baseElement.newEdge(label, vertex.getBaseElement(), true);
+    final ArcadeEdge arcadeEdge = new ArcadeEdge(graph, edge, keyValues);
     edge.save();
     return arcadeEdge;
   }
@@ -125,14 +125,14 @@ public class ArcadeVertex extends ArcadeElement<com.arcadedb.graph.Vertex> imple
     if (propertyKeys == null || propertyKeys.length == 0) {
       final Set<String> propNames = baseElement.getPropertyNames();
       props = new ArrayList<>(propNames.size());
-      for (String p : propNames) {
+      for (final String p : propNames) {
         final V value = (V) baseElement.get(p);
         if (value != null)
           props.add(new ArcadeVertexProperty<>(this, p, value));
       }
     } else {
       props = new ArrayList<>(propertyKeys.length);
-      for (String p : propertyKeys) {
+      for (final String p : propertyKeys) {
         final V value = (V) baseElement.get(p);
         if (value != null)
           props.add(new ArcadeVertexProperty<>(this, p, value));
@@ -151,10 +151,10 @@ public class ArcadeVertex extends ArcadeElement<com.arcadedb.graph.Vertex> imple
     final List<Edge> result = new ArrayList<>();
 
     if (edgeLabels.length == 0)
-      for (com.arcadedb.graph.Edge edge : this.baseElement.getEdges(ArcadeGraph.mapDirection(direction)))
+      for (final com.arcadedb.graph.Edge edge : this.baseElement.getEdges(ArcadeGraph.mapDirection(direction)))
         result.add(new ArcadeEdge(this.graph, edge));
     else
-      for (com.arcadedb.graph.Edge edge : this.baseElement.getEdges(ArcadeGraph.mapDirection(direction), edgeLabels))
+      for (final com.arcadedb.graph.Edge edge : this.baseElement.getEdges(ArcadeGraph.mapDirection(direction), edgeLabels))
         result.add(new ArcadeEdge(this.graph, edge));
 
     return result.iterator();
@@ -165,10 +165,10 @@ public class ArcadeVertex extends ArcadeElement<com.arcadedb.graph.Vertex> imple
     final List<Vertex> result = new ArrayList<>();
 
     if (edgeLabels.length == 0)
-      for (com.arcadedb.graph.Vertex vertex : this.baseElement.getVertices(ArcadeGraph.mapDirection(direction)))
+      for (final com.arcadedb.graph.Vertex vertex : this.baseElement.getVertices(ArcadeGraph.mapDirection(direction)))
         result.add(new ArcadeVertex(this.graph, vertex));
     else
-      for (com.arcadedb.graph.Vertex vertex : this.baseElement.getVertices(ArcadeGraph.mapDirection(direction), edgeLabels))
+      for (final com.arcadedb.graph.Vertex vertex : this.baseElement.getVertices(ArcadeGraph.mapDirection(direction), edgeLabels))
         result.add(new ArcadeVertex(this.graph, vertex));
 
     return result.iterator();

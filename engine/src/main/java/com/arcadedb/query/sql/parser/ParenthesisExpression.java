@@ -65,13 +65,13 @@ public class ParenthesisExpression extends MathExpression {
       return expression.execute(iCurrentRecord, ctx);
     }
     if (statement != null) {
-      InternalExecutionPlan execPlan = statement.createExecutionPlan(ctx, false);
+      final InternalExecutionPlan execPlan = statement.createExecutionPlan(ctx, false);
 
       if (execPlan instanceof InsertExecutionPlan) {
         ((InsertExecutionPlan) execPlan).executeInternal();
       }
-      LocalResultSet rs = new LocalResultSet(execPlan);
-      List<Result> result = new ArrayList<>();
+      final LocalResultSet rs = new LocalResultSet(execPlan);
+      final List<Result> result = new ArrayList<>();
       while (rs.hasNext()) {
         result.add(rs.next());
       }
@@ -82,7 +82,7 @@ public class ParenthesisExpression extends MathExpression {
     return super.execute(iCurrentRecord, ctx);
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("(");
     if (expression != null) {
       expression.toString(params, builder);
@@ -106,7 +106,7 @@ public class ParenthesisExpression extends MathExpression {
     return expression != null && expression.isEarlyCalculated();
   }
 
-  public boolean needsAliases(Set<String> aliases) {
+  public boolean needsAliases(final Set<String> aliases) {
     return expression.needsAliases(aliases);
   }
 
@@ -131,9 +131,9 @@ public class ParenthesisExpression extends MathExpression {
     return false;
   }
 
-  public SimpleNode splitForAggregation(AggregateProjectionSplit aggregateProj) {
+  public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateProj) {
     if (isAggregate()) {
-      ParenthesisExpression result = new ParenthesisExpression(-1);
+      final ParenthesisExpression result = new ParenthesisExpression(-1);
       result.expression = expression.splitForAggregation(aggregateProj);
       return result;
     } else {
@@ -210,7 +210,7 @@ public class ParenthesisExpression extends MathExpression {
   }
 
   @Override
-  public void applyRemove(ResultInternal result, CommandContext ctx) {
+  public void applyRemove(final ResultInternal result, final CommandContext ctx) {
     if (expression != null) {
       expression.applyRemove(result, ctx);
     } else {

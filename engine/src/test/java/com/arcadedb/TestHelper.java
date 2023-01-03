@@ -149,9 +149,11 @@ public abstract class TestHelper {
   }
 
   protected void beginTest() {
+    // SUB CLASS CAN EXTEND THIS
   }
 
   protected void endTest() {
+    // SUB CLASS CAN EXTEND THIS
   }
 
   @BeforeEach
@@ -196,7 +198,7 @@ public abstract class TestHelper {
     try {
       callback.call();
       Assertions.fail();
-    } catch (Throwable e) {
+    } catch (final Throwable e) {
       if (e.getClass().equals(expectedException))
         // EXPECTED
         return;
@@ -209,7 +211,7 @@ public abstract class TestHelper {
   }
 
   protected void checkDatabaseIntegrity() {
-    ResultSet result = database.command("sql", "check database");
+    final ResultSet result = database.command("sql", "check database");
     while (result.hasNext()) {
       final Result row = result.next();
 
@@ -227,7 +229,7 @@ public abstract class TestHelper {
     if (!activeDatabases.isEmpty())
       LogManager.instance().log(TestHelper.class, Level.SEVERE, "Found active databases: " + activeDatabases + ". Forced closing...");
 
-    for (Database db : activeDatabases)
+    for (final Database db : activeDatabases)
       db.close();
 
     Assertions.assertTrue(activeDatabases.isEmpty(), "Found active databases: " + activeDatabases);

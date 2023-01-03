@@ -80,7 +80,7 @@ public class ImmutableLightEdge extends ImmutableDocument implements LightEdge {
 
   @Override
   public synchronized Set<String> getPropertyNames() {
-    return Collections.EMPTY_SET;
+    return Collections.emptySet();
   }
 
   @Override

@@ -41,13 +41,13 @@ public class SQLFunctionAverage extends SQLFunctionMathAbstract {
     super(NAME, 1, -1);
   }
 
-  public Object execute( Object iThis, Identifiable iCurrentRecord, Object iCurrentResult,
-      final Object[] iParams, CommandContext iContext) {
+  public Object execute( final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult,
+      final Object[] iParams, final CommandContext iContext) {
     if (iParams.length == 1) {
       if (iParams[0] instanceof Number)
         sum((Number) iParams[0]);
       else if (MultiValue.isMultiValue(iParams[0]))
-        for (Object n : MultiValue.getMultiValueIterable(iParams[0]))
+        for (final Object n : MultiValue.getMultiValueIterable(iParams[0]))
           sum((Number) n);
 
     } else {
@@ -59,7 +59,7 @@ public class SQLFunctionAverage extends SQLFunctionMathAbstract {
     return getResult();
   }
 
-  protected void sum(Number value) {
+  protected void sum(final Number value) {
     if (value != null) {
       total++;
       if (sum == null)
@@ -84,7 +84,7 @@ public class SQLFunctionAverage extends SQLFunctionMathAbstract {
     return configuredParameters.length == 1;
   }
 
-  private Object computeAverage(Number iSum, int iTotal) {
+  private Object computeAverage(final Number iSum, final int iTotal) {
     if (iSum instanceof Integer)
       return iSum.intValue() / iTotal;
     else if (iSum instanceof Long)

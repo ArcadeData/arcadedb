@@ -33,20 +33,20 @@ public class NotBlock extends BooleanExpression {
 
   protected boolean negate = false;
 
-  public NotBlock(int id) {
+  public NotBlock(final int id) {
     super(id);
   }
 
-  public NotBlock(SqlParser p, int id) {
+  public NotBlock(final SqlParser p, final int id) {
     super(p, id);
   }
 
   @Override
-  public boolean evaluate(Identifiable currentRecord, CommandContext ctx) {
+  public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
     if (sub == null) {
       return true;
     }
-    boolean result = sub.evaluate(currentRecord, ctx);
+    final boolean result = sub.evaluate(currentRecord, ctx);
     if (negate) {
       return !result;
     }
@@ -54,11 +54,11 @@ public class NotBlock extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(Result currentRecord, CommandContext ctx) {
+  public boolean evaluate(final Result currentRecord, final CommandContext ctx) {
     if (sub == null) {
       return true;
     }
-    boolean result = sub.evaluate(currentRecord, ctx);
+    final boolean result = sub.evaluate(currentRecord, ctx);
     if (negate) {
       return !result;
     }
@@ -69,7 +69,7 @@ public class NotBlock extends BooleanExpression {
     return sub;
   }
 
-  public void setSub(BooleanExpression sub) {
+  public void setSub(final BooleanExpression sub) {
     this.sub = sub;
   }
 
@@ -77,11 +77,11 @@ public class NotBlock extends BooleanExpression {
     return negate;
   }
 
-  public void setNegate(boolean negate) {
+  public void setNegate(final boolean negate) {
     this.negate = negate;
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (negate) {
       builder.append("NOT ");
     }
@@ -103,7 +103,7 @@ public class NotBlock extends BooleanExpression {
     return sub.getExternalCalculationConditions();
   }
 
-  public List<BinaryCondition> getIndexedFunctionConditions(DocumentType iSchemaClass, Database database) {
+  public List<BinaryCondition> getIndexedFunctionConditions(final DocumentType iSchemaClass, final Database database) {
     if (sub == null) {
       return null;
     }
@@ -122,20 +122,20 @@ public class NotBlock extends BooleanExpression {
   }
 
   @Override
-  public boolean needsAliases(Set<String> aliases) {
+  public boolean needsAliases(final Set<String> aliases) {
     return sub.needsAliases(aliases);
   }
 
   @Override
   public NotBlock copy() {
-    NotBlock result = new NotBlock(-1);
+    final NotBlock result = new NotBlock(-1);
     result.sub = sub.copy();
     result.negate = negate;
     return result;
   }
 
   @Override
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
     sub.extractSubQueries(collector);
   }
 

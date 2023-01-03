@@ -55,7 +55,7 @@ public class LetQueryStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        ResultInternal result = (ResultInternal) source.next();
+        final ResultInternal result = (ResultInternal) source.next();
         if (result != null) {
           calculate(result, ctx);
         }
@@ -93,7 +93,7 @@ public class LetQueryStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
+  public String prettyPrint(final int depth, final int indent) {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     return spaces + "+ LET (for each record)\n" + spaces + "  " + varName + " = (" + query + ")";
   }

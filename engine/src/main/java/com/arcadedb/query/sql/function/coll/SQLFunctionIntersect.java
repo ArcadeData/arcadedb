@@ -37,8 +37,8 @@ public class SQLFunctionIntersect extends SQLFunctionMultiValueAbstract<Object> 
     super(NAME, 1, -1);
   }
 
-  public Object execute( Object iThis, final Identifiable iCurrentRecord, Object iCurrentResult, final Object[] iParams,
-      CommandContext iContext) {
+  public Object execute( final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
+      final CommandContext iContext) {
     Object value = iParams[0];
 
     if (value == null)
@@ -83,7 +83,7 @@ public class SQLFunctionIntersect extends SQLFunctionMultiValueAbstract<Object> 
       }
     }
 
-    List result = new ArrayList();
+    final List result = new ArrayList();
     while (iterator.hasNext()) {
       result.add(iterator.next());
     }
@@ -101,7 +101,7 @@ public class SQLFunctionIntersect extends SQLFunctionMultiValueAbstract<Object> 
     if (!(value instanceof Set))
       value = MultiValue.toSet(value);
 
-    for (Iterator it = current; it.hasNext(); ) {
+    for (final Iterator it = current; it.hasNext(); ) {
       final Object curr = it.next();
 
       if (value instanceof Collection) {

@@ -39,17 +39,17 @@ public class DropPropertyStatement extends DDLStatement {
   protected boolean    ifExists = false;
   protected boolean    force    = false;
 
-  public DropPropertyStatement(int id) {
+  public DropPropertyStatement(final int id) {
     super(id);
   }
 
-  public DropPropertyStatement(SqlParser p, int id) {
+  public DropPropertyStatement(final SqlParser p, final int id) {
     super(p, id);
   }
 
   @Override
-  public ResultSet executeDDL(CommandContext ctx) {
-    InternalResultSet rs = new InternalResultSet();
+  public ResultSet executeDDL(final CommandContext ctx) {
+    final InternalResultSet rs = new InternalResultSet();
     final Database database = ctx.getDatabase();
     final DocumentType sourceClass = database.getSchema().getType(typeName.getStringValue());
     if (sourceClass == null)
@@ -92,7 +92,7 @@ public class DropPropertyStatement extends DDLStatement {
     // REMOVE THE PROPERTY
     sourceClass.dropProperty(propertyName.getStringValue());
 
-    ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal();
     result.setProperty("operation", "drop property");
     result.setProperty("typeName", typeName.getStringValue());
     result.setProperty("propertyName", propertyName.getStringValue());
@@ -101,7 +101,7 @@ public class DropPropertyStatement extends DDLStatement {
   }
 
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("DROP PROPERTY ");
     typeName.toString(params, builder);
     builder.append(".");
@@ -116,7 +116,7 @@ public class DropPropertyStatement extends DDLStatement {
 
   @Override
   public DropPropertyStatement copy() {
-    DropPropertyStatement result = new DropPropertyStatement(-1);
+    final DropPropertyStatement result = new DropPropertyStatement(-1);
     result.typeName = typeName == null ? null : typeName.copy();
     result.propertyName = propertyName == null ? null : propertyName.copy();
     result.force = force;

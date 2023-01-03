@@ -49,7 +49,7 @@ public class SQLMethodNormalize extends AbstractSQLMethod {
                     Normalizer.Form.valueOf(FileUtils.getStringContent(iParams[0].toString())) :
                     Normalizer.Form.NFD;
 
-            String normalized = Normalizer.normalize(ioResult.toString(), form);
+            final String normalized = Normalizer.normalize(ioResult.toString(), form);
             if (iParams != null && iParams.length > 1) {
                 return normalized.replaceAll(FileUtils.getStringContent(iParams[1].toString()), "");
             }

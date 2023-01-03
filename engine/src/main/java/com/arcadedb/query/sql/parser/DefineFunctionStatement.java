@@ -93,7 +93,7 @@ public class DefineFunctionStatement extends SimpleExecStatement {
     if (parameters != null) {
       boolean first = true;
       builder.append(" PARAMETERS [");
-      for (Identifier param : parameters) {
+      for (final Identifier param : parameters) {
         if (!first) {
           builder.append(", ");
         }

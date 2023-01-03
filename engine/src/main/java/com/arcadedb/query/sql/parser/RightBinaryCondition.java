@@ -37,17 +37,17 @@ public class RightBinaryCondition extends SimpleNode {
 
   Expression right;
 
-  public RightBinaryCondition(int id) {
+  public RightBinaryCondition(final int id) {
     super(id);
   }
 
-  public RightBinaryCondition(SqlParser p, int id) {
+  public RightBinaryCondition(final SqlParser p, final int id) {
     super(p, id);
   }
 
   @Override
   public RightBinaryCondition copy() {
-    RightBinaryCondition result = new RightBinaryCondition(-1);
+    final RightBinaryCondition result = new RightBinaryCondition(-1);
     result.operator = operator == null ? null : operator.copy();
     result.not = not;
     result.inOperator = inOperator == null ? null : inOperator.copy();
@@ -56,7 +56,7 @@ public class RightBinaryCondition extends SimpleNode {
   }
 
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (operator != null) {
       builder.append(operator);
       builder.append(" ");
@@ -70,11 +70,11 @@ public class RightBinaryCondition extends SimpleNode {
     }
   }
 
-  public Object execute(Result iCurrentRecord, Object elementToFilter, CommandContext ctx) {
+  public Object execute(final Result iCurrentRecord, final Object elementToFilter, final CommandContext ctx) {
     if (elementToFilter == null) {
       return null;
     }
-    Iterator iterator;
+    final Iterator iterator;
     if (elementToFilter instanceof Identifiable) {
       iterator = Collections.singleton(elementToFilter).iterator();
     } else if (elementToFilter instanceof Iterable) {
@@ -85,9 +85,9 @@ public class RightBinaryCondition extends SimpleNode {
       iterator = Collections.singleton(elementToFilter).iterator();
     }
 
-    List result = new ArrayList();
+    final List result = new ArrayList();
     while (iterator.hasNext()) {
-      Object element = iterator.next();
+      final Object element = iterator.next();
       if (matchesFilters(iCurrentRecord, element, ctx)) {
         result.add(element);
       }
@@ -95,11 +95,11 @@ public class RightBinaryCondition extends SimpleNode {
     return result;
   }
 
-  public Object execute(Identifiable iCurrentRecord, Object elementToFilter, CommandContext ctx) {
+  public Object execute(final Identifiable iCurrentRecord, final Object elementToFilter, final CommandContext ctx) {
     if (elementToFilter == null) {
       return null;
     }
-    Iterator iterator;
+    final Iterator iterator;
     if (elementToFilter instanceof Identifiable) {
       iterator = Collections.singleton(elementToFilter).iterator();
     } else if (elementToFilter instanceof Iterable) {
@@ -110,9 +110,9 @@ public class RightBinaryCondition extends SimpleNode {
       iterator = Collections.singleton(elementToFilter).iterator();
     }
 
-    List result = new ArrayList();
+    final List result = new ArrayList();
     while (iterator.hasNext()) {
-      Object element = iterator.next();
+      final Object element = iterator.next();
       if (matchesFilters(iCurrentRecord, element, ctx)) {
         result.add(element);
       }
@@ -156,19 +156,19 @@ public class RightBinaryCondition extends SimpleNode {
     return false;
   }
 
-  public Object evaluateRight(Identifiable currentRecord, CommandContext ctx) {
+  public Object evaluateRight(final Identifiable currentRecord, final CommandContext ctx) {
     return right.execute(currentRecord, ctx);
   }
 
-  public Object evaluateRight(Result currentRecord, CommandContext ctx) {
+  public Object evaluateRight(final Result currentRecord, final CommandContext ctx) {
     return right.execute(currentRecord, ctx);
   }
 
-  public boolean needsAliases(Set<String> aliases) {
+  public boolean needsAliases(final Set<String> aliases) {
     return right != null && right.needsAliases(aliases);
   }
 
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
     if (right != null) {
       right.extractSubQueries(collector);
     }
@@ -180,7 +180,7 @@ public class RightBinaryCondition extends SimpleNode {
 
   public Result serialize() {
 
-    ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal();
     result.setProperty("operator", operator.getClass().getName());
     result.setProperty("not", not);
     result.setProperty("in", inOperator != null);
@@ -188,10 +188,10 @@ public class RightBinaryCondition extends SimpleNode {
     return result;
   }
 
-  public void deserialize(Result fromResult) {
+  public void deserialize(final Result fromResult) {
     try {
       operator = (BinaryCompareOperator) Class.forName(String.valueOf(fromResult.getProperty("operator"))).getConstructor().newInstance();
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new CommandExecutionException(e);
     }
     not = fromResult.getProperty("not");

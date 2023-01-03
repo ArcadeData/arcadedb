@@ -52,7 +52,7 @@ public class UpdateOperations extends SimpleNode {
     switch (type) {
     case TYPE_SET:
       builder.append("SET ");
-      for (UpdateItem item : this.updateItems) {
+      for (final UpdateItem item : this.updateItems) {
         if (!first) {
           builder.append(", ");
         }
@@ -62,7 +62,7 @@ public class UpdateOperations extends SimpleNode {
       break;
     case TYPE_PUT:
       builder.append("PUT ");
-      for (UpdatePutItem item : this.updatePutItems) {
+      for (final UpdatePutItem item : this.updatePutItems) {
         if (!first) {
           builder.append(", ");
         }
@@ -80,7 +80,7 @@ public class UpdateOperations extends SimpleNode {
       break;
     case TYPE_INCREMENT:
       builder.append("INCREMENT ");
-      for (UpdateIncrementItem item : this.updateIncrementItems) {
+      for (final UpdateIncrementItem item : this.updateIncrementItems) {
         if (!first) {
           builder.append(", ");
         }
@@ -90,7 +90,7 @@ public class UpdateOperations extends SimpleNode {
       break;
     case TYPE_ADD:
       builder.append("ADD ");
-      for (UpdateIncrementItem item : this.updateIncrementItems) {
+      for (final UpdateIncrementItem item : this.updateIncrementItems) {
         if (!first) {
           builder.append(", ");
         }
@@ -100,7 +100,7 @@ public class UpdateOperations extends SimpleNode {
       break;
     case TYPE_REMOVE:
       builder.append("REMOVE ");
-      for (UpdateRemoveItem item : this.updateRemoveItems) {
+      for (final UpdateRemoveItem item : this.updateRemoveItems) {
         if (!first) {
           builder.append(", ");
         }

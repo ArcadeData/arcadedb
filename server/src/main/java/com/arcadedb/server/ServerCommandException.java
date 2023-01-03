@@ -22,15 +22,15 @@ public class ServerCommandException extends RuntimeException {
   public ServerCommandException() {
   }
 
-  public ServerCommandException(String message) {
+  public ServerCommandException(final String message) {
     super(message);
   }
 
-  public ServerCommandException(String message, Throwable cause) {
+  public ServerCommandException(final String message, final Throwable cause) {
     super(message, cause);
   }
 
-  public ServerCommandException(Throwable cause) {
+  public ServerCommandException(final Throwable cause) {
     super(cause);
   }
 }

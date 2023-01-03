@@ -46,7 +46,7 @@ public class Neo4jImporterFormat extends AbstractImporterFormat {
         }
       }.run();
 
-    } catch (IOException e) {
+    } catch (final IOException e) {
       throw new ImportException("Error on importing Neo4j database", e);
     }
   }

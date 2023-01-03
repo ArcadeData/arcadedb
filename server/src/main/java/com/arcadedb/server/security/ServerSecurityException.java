@@ -24,19 +24,19 @@ public class ServerSecurityException extends ServerException {
   public ServerSecurityException() {
   }
 
-  public ServerSecurityException(String message) {
+  public ServerSecurityException(final String message) {
     super(message);
   }
 
-  public ServerSecurityException(String message, Throwable cause) {
+  public ServerSecurityException(final String message, final Throwable cause) {
     super(message, cause);
   }
 
-  public ServerSecurityException(Throwable cause) {
+  public ServerSecurityException(final Throwable cause) {
     super(cause);
   }
 
-  public ServerSecurityException(String message, Throwable cause, boolean enableSuppression, boolean writableStackTrace) {
+  public ServerSecurityException(final String message, final Throwable cause, final boolean enableSuppression, final boolean writableStackTrace) {
     super(message, cause, enableSuppression, writableStackTrace);
   }
 }

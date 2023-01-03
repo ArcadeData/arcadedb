@@ -34,7 +34,7 @@ public abstract class AbstractUnrollStep extends AbstractExecutionStep {
   Iterator<Result> nextSubsequence = null;
   Result           nextElement     = null;
 
-  public AbstractUnrollStep(CommandContext ctx, boolean profilingEnabled) {
+  public AbstractUnrollStep(final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
   }
 
@@ -44,7 +44,7 @@ public abstract class AbstractUnrollStep extends AbstractExecutionStep {
     this.nextElement = null;
   }
 
-  @Override public ResultSet syncPull(CommandContext ctx, int nRecords) {
+  @Override public ResultSet syncPull(final CommandContext ctx, final int nRecords) {
     if (prev == null || prev.isEmpty()) {
       throw new CommandExecutionException("Cannot expand without a target");
     }
@@ -72,7 +72,7 @@ public abstract class AbstractUnrollStep extends AbstractExecutionStep {
           throw new NoSuchElementException();
         }
 
-        Result result = nextElement;
+        final Result result = nextElement;
         localCount++;
         nextElement = null;
         fetchNext(ctx, nRecords);
@@ -93,7 +93,7 @@ public abstract class AbstractUnrollStep extends AbstractExecutionStep {
     };
   }
 
-  private void fetchNext(CommandContext ctx, int n) {
+  private void fetchNext(final CommandContext ctx, final int n) {
     do {
       if (nextSubsequence != null && nextSubsequence.hasNext()) {
         nextElement = nextSubsequence.next();
@@ -109,7 +109,7 @@ public abstract class AbstractUnrollStep extends AbstractExecutionStep {
         }
       }
 
-      Result nextAggregateItem = lastResult.next();
+      final Result nextAggregateItem = lastResult.next();
       nextSubsequence = unroll(nextAggregateItem, ctx).iterator();
 
     } while (true);

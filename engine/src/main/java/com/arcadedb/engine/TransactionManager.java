@@ -90,7 +90,7 @@ public class TransactionManager {
 
     try {
       taskExecuting.await();
-    } catch (InterruptedException e) {
+    } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
       // IGNORE IT
     }
@@ -112,7 +112,7 @@ public class TransactionManager {
     for (int retry = 0; retry < 20 && !cleanWALFiles(drop, false); ++retry) {
       try {
         Thread.sleep(100);
-      } catch (InterruptedException e) {
+      } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
         break;
       }
@@ -150,7 +150,7 @@ public class TransactionManager {
 
       try {
         Thread.sleep(10);
-      } catch (InterruptedException e) {
+      } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
         break;
       }
@@ -177,10 +177,10 @@ public class TransactionManager {
       }
 
       if (activeWALFilePool != null && activeWALFilePool.length > 0) {
-        for (WALFile file : activeWALFilePool) {
+        for (final WALFile file : activeWALFilePool) {
           try {
             file.close();
-          } catch (IOException e) {
+          } catch (final IOException e) {
             // IGNORE IT
           }
         }
@@ -190,7 +190,7 @@ public class TransactionManager {
       for (int i = 0; i < walFiles.length; ++i) {
         try {
           activeWALFilePool[i] = new WALFile(database.getDatabasePath() + File.separator + walFiles[i].getName());
-        } catch (FileNotFoundException e) {
+        } catch (final FileNotFoundException e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on WAL file management for file '%s'", e, database.getDatabasePath() + walFiles[i].getName());
         }
       }
@@ -237,7 +237,7 @@ public class TransactionManager {
           try {
             file.drop();
             LogManager.instance().log(this, Level.FINE, "Dropped WAL file '%s'", null, file);
-          } catch (IOException e) {
+          } catch (final IOException e) {
             LogManager.instance().log(this, Level.SEVERE, "Error on dropping WAL file '%s'", e, file);
           }
         }
@@ -274,7 +274,7 @@ public class TransactionManager {
 
     LogManager.instance().log(this, Level.FINE, "- applying changes from txId=%d", null, tx.txId);
 
-    for (WALFile.WALPage txPage : tx.pages) {
+    for (final WALFile.WALPage txPage : tx.pages) {
       final PaginatedFile file;
 
       if (!database.getFileManager().existsFile(txPage.fileId)) {
@@ -284,7 +284,7 @@ public class TransactionManager {
 
       try {
         file = database.getFileManager().getFile(txPage.fileId);
-      } catch (Exception e) {
+      } catch (final Exception e) {
         LogManager.instance().log(this, Level.SEVERE, "Error on applying tx changes for page %s", e, txPage);
         throw e;
       }
@@ -337,11 +337,11 @@ public class TransactionManager {
         changed = true;
         LogManager.instance().log(this, Level.FINE, "  - updating page %s v%d", null, pageId, modifiedPage.version);
 
-      } catch (ClosedByInterruptException e) {
+      } catch (final ClosedByInterruptException e) {
         // NORMAL EXCEPTION IN CASE THE CONNECTION/THREAD IS CLOSED (=INTERRUPTED)
         Thread.currentThread().interrupt();
         throw new WALException("Cannot apply changes to page " + pageId, e);
-      } catch (IOException e) {
+      } catch (final IOException e) {
         LogManager.instance().log(this, Level.SEVERE, "Error on applying changes to page %s", e, pageId);
         throw new WALException("Cannot apply changes to page " + pageId, e);
       }
@@ -350,7 +350,7 @@ public class TransactionManager {
     if (involveDictionary) {
       try {
         database.getSchema().getDictionary().reload();
-      } catch (IOException e) {
+      } catch (final IOException e) {
         throw new SchemaException("Unable to update dictionary after transaction commit");
       }
     }
@@ -368,7 +368,7 @@ public class TransactionManager {
 
     try {
       taskExecuting.await();
-    } catch (InterruptedException e) {
+    } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
       // IGNORE IT
     }
@@ -388,7 +388,7 @@ public class TransactionManager {
     for (int retry = 0; retry < 20 && !cleanWALFiles(false, true); ++retry) {
       try {
         Thread.sleep(100);
-      } catch (InterruptedException e) {
+      } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
         break;
       }
@@ -415,7 +415,7 @@ public class TransactionManager {
 
     boolean error = false;
     Integer attemptFileId = null;
-    for (Integer fileId : orderedFilesIds) {
+    for (final Integer fileId : orderedFilesIds) {
       attemptFileId = fileId;
 
       final LockManager.LOCK_STATUS lock = tryLockFile(fileId, timeout);
@@ -448,7 +448,7 @@ public class TransactionManager {
 
   public void unlockFilesInOrder(final List<Integer> lockedFileIds) {
     if (lockedFileIds != null && !lockedFileIds.isEmpty()) {
-      for (Integer fileId : lockedFileIds)
+      for (final Integer fileId : lockedFileIds)
         unlockFile(fileId);
 
       LogManager.instance().log(this, Level.FINE, "Unlocked files %s (threadId=%d)", null, lockedFileIds, Thread.currentThread().getId());
@@ -469,7 +469,7 @@ public class TransactionManager {
       final long counter = logFileCounter.getAndIncrement();
       try {
         activeWALFilePool[i] = database.getWALFileFactory().newInstance(database.getDatabasePath() + "/txlog_" + counter + ".wal");
-      } catch (FileNotFoundException e) {
+      } catch (final FileNotFoundException e) {
         LogManager.instance()
             .log(this, Level.SEVERE, "Error on WAL file management for file '%s'", e, database.getDatabasePath() + "/txlog_" + counter + ".wal");
       }
@@ -491,14 +491,14 @@ public class TransactionManager {
             file.setActive(false);
             inactiveWALFilePool.add(file);
           }
-        } catch (IOException e) {
+        } catch (final IOException e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on WAL file management for file '%s'", e, file);
         }
       }
   }
 
   private boolean cleanWALFiles(final boolean dropFiles, final boolean force) {
-    for (Iterator<WALFile> it = inactiveWALFilePool.iterator(); it.hasNext(); ) {
+    for (final Iterator<WALFile> it = inactiveWALFilePool.iterator(); it.hasNext(); ) {
       final WALFile file = it.next();
 
       if (force || !dropFiles || file.getPendingPagesToFlush() == 0) {
@@ -513,7 +513,7 @@ public class TransactionManager {
           else
             file.close();
 
-        } catch (IOException e) {
+        } catch (final IOException e) {
           LogManager.instance().log(this, Level.SEVERE, "Error on %s WAL file '%s'", e, dropFiles ? "dropping" : "closing", file);
         }
         it.remove();

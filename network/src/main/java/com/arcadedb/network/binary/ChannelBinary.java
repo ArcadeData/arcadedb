@@ -41,7 +41,7 @@ public abstract class ChannelBinary extends Channel implements ChannelDataInput,
   protected            DataInputStream  in;
   protected            DataOutputStream out;
 
-  public ChannelBinary(final Socket iSocket, int chunkMaxSize) throws IOException {
+  public ChannelBinary(final Socket iSocket, final int chunkMaxSize) throws IOException {
     super(iSocket);
 
     maxChunkSize = chunkMaxSize;
@@ -55,7 +55,7 @@ public abstract class ChannelBinary extends Channel implements ChannelDataInput,
     if (in != null)
       try {
         return in.available() > 0;
-      } catch (IOException e) {
+      } catch (final IOException e) {
         // RETURN FALSE
       }
     return false;
@@ -383,7 +383,7 @@ public abstract class ChannelBinary extends Channel implements ChannelDataInput,
     final StringBuilder dirtyBuffer = new StringBuilder(MAX_LENGTH_DEBUG);
     int i = 0;
     while (in.available() > 0) {
-      char c = (char) in.read();
+      final char c = (char) in.read();
       ++i;
 
       if (dirtyBuffer.length() < MAX_LENGTH_DEBUG)
@@ -423,7 +423,7 @@ public abstract class ChannelBinary extends Channel implements ChannelDataInput,
       if (in != null) {
         in.close();
       }
-    } catch (IOException e) {
+    } catch (final IOException e) {
       LogManager.instance().log(this, Level.FINE, "Error during closing of input stream", e);
     }
 
@@ -431,7 +431,7 @@ public abstract class ChannelBinary extends Channel implements ChannelDataInput,
       if (out != null) {
         out.close();
       }
-    } catch (IOException e) {
+    } catch (final IOException e) {
       LogManager.instance().log(this, Level.FINE, "Error during closing of output stream", e);
     }
 

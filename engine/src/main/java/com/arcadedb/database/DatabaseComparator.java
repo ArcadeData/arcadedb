@@ -54,20 +54,20 @@ public class DatabaseComparator {
     final HashMap<String, Bucket> types1Map = new HashMap<>(buckets1.size());
     final HashMap<String, Bucket> types2Map = new HashMap<>(buckets2.size());
 
-    for (Bucket entry : buckets1)
+    for (final Bucket entry : buckets1)
       types1Map.put(entry.getName(), entry);
 
-    for (Bucket entry : buckets2) {
+    for (final Bucket entry : buckets2) {
       if (!types1Map.containsKey(entry.getName()))
         throw new DatabaseAreNotIdentical("Bucket '%s' is not present in DB2", entry.getName());
       types2Map.put(entry.getName(), entry);
     }
 
-    for (Bucket entry : buckets1)
+    for (final Bucket entry : buckets1)
       if (!types2Map.containsKey(entry.getName()))
         throw new DatabaseAreNotIdentical("Bucket '%s' is not present in DB1", entry.getName());
 
-    for (Bucket bucket1 : buckets1) {
+    for (final Bucket bucket1 : buckets1) {
       final Bucket bucket2 = types2Map.get(bucket1.getName());
 
       if (bucket1.getPageSize() != bucket2.getPageSize())
@@ -88,13 +88,13 @@ public class DatabaseComparator {
 
         try {
           page1 = db1.getPageManager().getPage(pageId, pageSize, false, true);
-        } catch (IOException e) {
+        } catch (final IOException e) {
           throw new DatabaseAreNotIdentical("Error on reading page %s from bucket '%s' DB1 (cause=%s)", pageId, bucket1.getName(), e.toString());
         }
 
         try {
           page2 = db2.getPageManager().getPage(pageId, pageSize, false, true);
-        } catch (IOException e) {
+        } catch (final IOException e) {
           throw new DatabaseAreNotIdentical("Error on reading page %s from bucket '%s' DB2 (cause=%s)", pageId, bucket2.getName(), e.toString());
         }
 
@@ -121,21 +121,21 @@ public class DatabaseComparator {
     final HashMap<String, DocumentType> types1Map = new HashMap<>(types1.size());
     final HashMap<String, DocumentType> types2Map = new HashMap<>(types2.size());
 
-    for (DocumentType entry : types1)
+    for (final DocumentType entry : types1)
       types1Map.put(entry.getName(), entry);
 
-    for (DocumentType entry : types2) {
+    for (final DocumentType entry : types2) {
       if (!types1Map.containsKey(entry.getName()))
         throw new DatabaseAreNotIdentical("Types '%s' is not present in DB2", entry.getName());
       types2Map.put(entry.getName(), entry);
     }
 
-    for (DocumentType entry : types1)
+    for (final DocumentType entry : types1)
       if (!types2Map.containsKey(entry.getName()))
         throw new DatabaseAreNotIdentical("Types '%s' is not present in DB1", entry.getName());
 
     // AT THIS POINT BOTH DBS HAVE THE SAME TYPE NAMES, CHECKING TYPE DETAILS
-    for (DocumentType entry1 : types1) {
+    for (final DocumentType entry1 : types1) {
       final DocumentType entry2 = types2Map.get(entry1.getName());
       if (!entry1.isTheSameAs(entry2))
         throw new DatabaseAreNotIdentical("Types '%s' is configured differently in two databases 1:\n%s\n2:\n%s", entry2.getName(), entry1.toJSON(),
@@ -152,21 +152,21 @@ public class DatabaseComparator {
     final HashMap<String, Index> indexes1Map = new HashMap<>(indexes1.length);
     final HashMap<String, Index> indexes2Map = new HashMap<>(indexes2.length);
 
-    for (Index entry : indexes1)
+    for (final Index entry : indexes1)
       indexes1Map.put(entry.getName(), entry);
 
-    for (Index entry : indexes2) {
+    for (final Index entry : indexes2) {
       if (!indexes1Map.containsKey(entry.getName()))
         throw new DatabaseAreNotIdentical("Index '%s' is not present in DB2", entry.getName());
       indexes2Map.put(entry.getName(), entry);
     }
 
-    for (Index entry : indexes1)
+    for (final Index entry : indexes1)
       if (!indexes2Map.containsKey(entry.getName()))
         throw new DatabaseAreNotIdentical("Index '%s' is not present in DB1", entry.getName());
 
     // AT THIS POINT BOTH DBS HAVE THE SAME INDEX NAMES, CHECKING INDEXED ENTRIES
-    for (Index entry1 : indexes1) {
+    for (final Index entry1 : indexes1) {
       final Index entry2 = indexes2Map.get(entry1.getName());
 
       final long count1 = entry1.countEntries();

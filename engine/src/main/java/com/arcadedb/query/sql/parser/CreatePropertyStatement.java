@@ -40,29 +40,29 @@ public class CreatePropertyStatement extends DDLStatement {
   public List<CreatePropertyAttributeStatement> attributes = new ArrayList<CreatePropertyAttributeStatement>();
   boolean ifNotExists = false;
 
-  public CreatePropertyStatement(int id) {
+  public CreatePropertyStatement(final int id) {
     super(id);
   }
 
-  public CreatePropertyStatement(SqlParser p, int id) {
+  public CreatePropertyStatement(final SqlParser p, final int id) {
     super(p, id);
   }
 
   @Override
-  public ResultSet executeDDL(CommandContext ctx) {
-    ResultInternal result = new ResultInternal();
+  public ResultSet executeDDL(final CommandContext ctx) {
+    final ResultInternal result = new ResultInternal();
     result.setProperty("operation", "create property");
     result.setProperty("typeName", typeName.getStringValue());
     result.setProperty("propertyName", propertyName.getStringValue());
     executeInternal(ctx, result);
-    InternalResultSet rs = new InternalResultSet();
+    final InternalResultSet rs = new InternalResultSet();
     rs.add(result);
     return rs;
   }
 
-  private void executeInternal(CommandContext ctx, ResultInternal result) {
-    Database db = ctx.getDatabase();
-    DocumentType typez = db.getSchema().getType(typeName.getStringValue());
+  private void executeInternal(final CommandContext ctx, final ResultInternal result) {
+    final Database db = ctx.getDatabase();
+    final DocumentType typez = db.getSchema().getType(typeName.getStringValue());
     if (typez == null) {
       throw new CommandExecutionException("Type not found: " + typeName.getStringValue());
     }
@@ -72,15 +72,15 @@ public class CreatePropertyStatement extends DDLStatement {
       }
       throw new CommandExecutionException("Property " + typeName.getStringValue() + "." + propertyName.getStringValue() + " already exists");
     }
-    Type type = Type.valueOf(propertyType.getStringValue().toUpperCase(Locale.ENGLISH));
+    final Type type = Type.valueOf(propertyType.getStringValue().toUpperCase(Locale.ENGLISH));
     if (type == null) {
       throw new CommandExecutionException("Invalid property type: " + propertyType.getStringValue());
     }
 
     // CREATE IT LOCALLY
     final Property internalProp = typez.createProperty(propertyName.getStringValue(), type);
-    for (CreatePropertyAttributeStatement attr : attributes) {
-      Object val = attr.setOnProperty(internalProp, ctx);
+    for (final CreatePropertyAttributeStatement attr : attributes) {
+      final Object val = attr.setOnProperty(internalProp, ctx);
       result.setProperty(attr.settingName.getStringValue(), val);
     }
   }

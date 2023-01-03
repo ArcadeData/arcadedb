@@ -49,8 +49,8 @@ public class SQLMethodFormat extends AbstractSQLMethod {
 
     if (v != null) {
       if (isCollectionOfDates(ioResult)) {
-        List<String> result = new ArrayList<String>();
-        Iterator<Object> iterator = MultiValue.getMultiValueIterator(ioResult);
+        final List<String> result = new ArrayList<String>();
+        final Iterator<Object> iterator = MultiValue.getMultiValueIterator(ioResult);
         final SimpleDateFormat format = new SimpleDateFormat(v.toString());
 
         final TimeZone tz =
@@ -76,11 +76,11 @@ public class SQLMethodFormat extends AbstractSQLMethod {
     return ioResult;
   }
 
-  private boolean isCollectionOfDates(Object ioResult) {
+  private boolean isCollectionOfDates(final Object ioResult) {
     if (MultiValue.isMultiValue(ioResult)) {
-      Iterator<Object> iterator = MultiValue.getMultiValueIterator(ioResult);
+      final Iterator<Object> iterator = MultiValue.getMultiValueIterator(ioResult);
       while (iterator.hasNext()) {
-        Object item = iterator.next();
+        final Object item = iterator.next();
         if (item != null && !(item instanceof Date)) {
           return false;
         }

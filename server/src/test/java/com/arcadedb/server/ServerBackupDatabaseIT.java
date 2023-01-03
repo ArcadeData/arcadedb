@@ -37,7 +37,7 @@ public class ServerBackupDatabaseIT extends BaseGraphServerTest {
     if (backupFile.exists())
       backupFile.delete();
 
-    Database database = getServer(0).getDatabase(getDatabaseName());
+    final Database database = getServer(0).getDatabase(getDatabaseName());
     database.command("sql", "backup database file://" + backupFile.getName());
 
     Assertions.assertTrue(backupFile.exists());

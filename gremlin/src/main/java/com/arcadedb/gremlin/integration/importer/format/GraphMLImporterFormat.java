@@ -34,20 +34,20 @@ import java.io.*;
 
 public class GraphMLImporterFormat extends CSVImporterFormat {
   @Override
-  public void load(final SourceSchema sourceSchema, AnalyzedEntity.ENTITY_TYPE entityType, final Parser parser, final DatabaseInternal database,
+  public void load(final SourceSchema sourceSchema, final AnalyzedEntity.ENTITY_TYPE entityType, final Parser parser, final DatabaseInternal database,
       final ImporterContext context, final ImporterSettings settings) throws ImportException {
 
     final ArcadeGraph graph = ArcadeGraph.open(database);
 
-    try (InputStream is = parser.getInputStream()) {
+    try (final InputStream is = parser.getInputStream()) {
       graph.io(IoCore.graphml()).reader().create().readGraph(is, graph);
-    } catch (IOException e) {
+    } catch (final IOException e) {
       throw new ImportException("Error on importing GraphML", e);
     }
   }
 
   @Override
-  public SourceSchema analyze(AnalyzedEntity.ENTITY_TYPE entityType, Parser parser, ImporterSettings settings, AnalyzedSchema analyzedSchema)
+  public SourceSchema analyze(final AnalyzedEntity.ENTITY_TYPE entityType, final Parser parser, final ImporterSettings settings, final AnalyzedSchema analyzedSchema)
       throws IOException {
     return new SourceSchema(this, parser.getSource(), analyzedSchema);
   }

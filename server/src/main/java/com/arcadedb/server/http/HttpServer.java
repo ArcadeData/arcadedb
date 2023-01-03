@@ -81,7 +81,7 @@ public class HttpServer implements ServerPlugin {
     if (undertow != null)
       try {
         undertow.stop();
-      } catch (Exception e) {
+      } catch (final Exception e) {
         // IGNORE IT
       }
 
@@ -89,7 +89,7 @@ public class HttpServer implements ServerPlugin {
   }
 
   @Override
-  public void configure(ArcadeDBServer arcadeDBServer, ContextConfiguration configuration) {
+  public void configure(final ArcadeDBServer arcadeDBServer, final ContextConfiguration configuration) {
   }
 
   @Override
@@ -147,7 +147,7 @@ public class HttpServer implements ServerPlugin {
     }
 
     // REGISTER PLUGIN API
-    for (ServerPlugin plugin : server.getPlugins())
+    for (final ServerPlugin plugin : server.getPlugins())
       plugin.registerAPI(this, routes);
 
     for (portListening = portFrom; portListening <= portTo; ++portListening) {
@@ -159,7 +159,7 @@ public class HttpServer implements ServerPlugin {
         listeningAddress = host + ":" + portListening;
         return;
 
-      } catch (Exception e) {
+      } catch (final Exception e) {
         undertow = null;
 
         if (e.getCause() instanceof BindException) {
@@ -204,9 +204,5 @@ public class HttpServer implements ServerPlugin {
 
   public WebSocketEventBus getWebSocketEventBus() {
     return webSocketEventBus;
-  }
-
-  @Override
-  public void registerAPI(HttpServer httpServer, final PathHandler routes) {
   }
 }

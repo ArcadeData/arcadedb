@@ -37,8 +37,8 @@ public class SQLFunctionDistance extends SQLFunctionAbstract {
     super(NAME);
   }
 
-  public Object execute( final Object iThis, final Identifiable iCurrentRecord, Object iCurrentResult,
-      final Object[] iParams, CommandContext iContext) {
+  public Object execute( final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult,
+      final Object[] iParams, final CommandContext iContext) {
     double distance;
 
     final double[] values = new double[4];

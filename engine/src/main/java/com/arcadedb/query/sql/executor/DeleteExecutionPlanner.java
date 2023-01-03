@@ -89,7 +89,7 @@ public class DeleteExecutionPlanner {
 
     switch (indexIdentifier.getType()) {
     case INDEX:
-      BooleanExpression keyCondition;
+      final BooleanExpression keyCondition;
       BooleanExpression ridCondition = null;
       if (flattenedWhereClause == null || flattenedWhereClause.size() == 0) {
         //TODO
@@ -99,7 +99,7 @@ public class DeleteExecutionPlanner {
       } else if (flattenedWhereClause.size() > 1) {
         throw new CommandExecutionException("Index queries with this kind of condition are not supported yet: " + whereClause);
       } else {
-        AndBlock andBlock = flattenedWhereClause.get(0);
+        final AndBlock andBlock = flattenedWhereClause.get(0);
         if (andBlock.getSubBlocks().size() == 1) {
 
           whereClause = null;//The WHERE clause won't be used anymore, the index does all the filtering
@@ -122,7 +122,7 @@ public class DeleteExecutionPlanner {
       }
       result.chain(new DeleteFromIndexStep(index, keyCondition, null, ridCondition, ctx, profilingEnabled));
       if (ridCondition != null) {
-        WhereClause where = new WhereClause(-1);
+        final WhereClause where = new WhereClause(-1);
         where.setBaseExpression(ridCondition);
         result.chain(new FilterStep(where, ctx, profilingEnabled));
       }
@@ -178,7 +178,7 @@ public class DeleteExecutionPlanner {
   }
 
   private BooleanExpression getKeyCondition(final AndBlock andBlock) {
-    for (BooleanExpression exp : andBlock.getSubBlocks()) {
+    for (final BooleanExpression exp : andBlock.getSubBlocks()) {
       final String str = exp.toString();
       if (str.length() < 5)
         continue;
@@ -190,7 +190,7 @@ public class DeleteExecutionPlanner {
   }
 
   private BooleanExpression getRidCondition(final AndBlock andBlock) {
-    for (BooleanExpression exp : andBlock.getSubBlocks()) {
+    for (final BooleanExpression exp : andBlock.getSubBlocks()) {
       final String str = exp.toString();
       if (str.length() < 5)
         continue;

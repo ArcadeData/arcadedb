@@ -25,7 +25,7 @@ public class DatabaseIsClosedException extends ArcadeDBException {
     super(s);
   }
 
-  public DatabaseIsClosedException(String s, IOException e) {
+  public DatabaseIsClosedException(final String s, final IOException e) {
     super(s, e);
   }
 }

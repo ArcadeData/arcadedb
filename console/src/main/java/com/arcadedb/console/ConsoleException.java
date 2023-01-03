@@ -19,7 +19,7 @@
 package com.arcadedb.console;
 
 public class ConsoleException extends RuntimeException {
-  public ConsoleException(String message) {
+  public ConsoleException(final String message) {
     super(message);
   }
 }

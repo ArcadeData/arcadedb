@@ -21,11 +21,11 @@ package com.arcadedb.postgres;
 import com.arcadedb.exception.ArcadeDBException;
 
 public class PostgresProtocolException extends ArcadeDBException {
-  public PostgresProtocolException(String message) {
+  public PostgresProtocolException(final String message) {
     super(message);
   }
 
-  public PostgresProtocolException(String message, Throwable cause) {
+  public PostgresProtocolException(final String message, final Throwable cause) {
     super(message, cause);
   }
 }

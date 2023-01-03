@@ -46,7 +46,7 @@ public interface ExecutionStep {
   }
 
   default Result toResult() {
-    ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal();
     result.setProperty("name", getName());
     result.setProperty("type", getType());
     result.setProperty("targetNode", getType());

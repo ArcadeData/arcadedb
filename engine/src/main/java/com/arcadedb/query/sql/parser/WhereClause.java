@@ -37,29 +37,29 @@ public class WhereClause extends SimpleNode {
 
   protected List<AndBlock> flattened;
 
-  public WhereClause(int id) {
+  public WhereClause(final int id) {
     super(id);
   }
 
-  public WhereClause(SqlParser p, int id) {
+  public WhereClause(final SqlParser p, final int id) {
     super(p, id);
   }
 
-  public boolean matchesFilters(Identifiable currentRecord, CommandContext ctx) {
+  public boolean matchesFilters(final Identifiable currentRecord, final CommandContext ctx) {
     if (baseExpression == null) {
       return true;
     }
     return baseExpression.evaluate(currentRecord, ctx);
   }
 
-  public boolean matchesFilters(Result currentRecord, CommandContext ctx) {
+  public boolean matchesFilters(final Result currentRecord, final CommandContext ctx) {
     if (baseExpression == null) {
       return true;
     }
     return baseExpression.evaluate(currentRecord, ctx);
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (baseExpression == null) {
       return;
     }
@@ -74,7 +74,7 @@ public class WhereClause extends SimpleNode {
    * @return an estimation of the number of records of this class returned applying this filter, 0 if and only if sure that no
    * records are returned
    */
-  public long estimate(DocumentType oClass, long threshold, CommandContext ctx) {
+  public long estimate(final DocumentType oClass, final long threshold, final CommandContext ctx) {
     long count = ctx.getDatabase().countType(oClass.getName(), true);
     if (count > 1) {
       count = count / 2;
@@ -84,34 +84,34 @@ public class WhereClause extends SimpleNode {
     }
 
     long indexesCount = 0L;
-    List<AndBlock> flattenedConditions = flatten();
-    Collection<TypeIndex> indexes = oClass.getAllIndexes(true);
-    for (AndBlock condition : flattenedConditions) {
+    final List<AndBlock> flattenedConditions = flatten();
+    final Collection<TypeIndex> indexes = oClass.getAllIndexes(true);
+    for (final AndBlock condition : flattenedConditions) {
 
-      List<BinaryCondition> indexedFunctConditions = condition.getIndexedFunctionConditions(oClass, ctx.getDatabase());
+      final List<BinaryCondition> indexedFunctConditions = condition.getIndexedFunctionConditions(oClass, ctx.getDatabase());
 
       long conditionEstimation = Long.MAX_VALUE;
 
       if (indexedFunctConditions != null) {
-        for (BinaryCondition cond : indexedFunctConditions) {
-          FromClause from = new FromClause(-1);
+        for (final BinaryCondition cond : indexedFunctConditions) {
+          final FromClause from = new FromClause(-1);
           from.item = new FromItem(-1);
           from.item.setIdentifier(new Identifier(oClass.getName()));
-          long newCount = cond.estimateIndexed(from, ctx);
+          final long newCount = cond.estimateIndexed(from, ctx);
           if (newCount < conditionEstimation) {
             conditionEstimation = newCount;
           }
         }
       } else {
-        Map<String, Object> conditions = getEqualityOperations(condition, ctx);
+        final Map<String, Object> conditions = getEqualityOperations(condition, ctx);
 
-        for (Index index : indexes) {
+        for (final Index index : indexes) {
           if (index.getType().equals(Schema.INDEX_TYPE.FULL_TEXT))
             continue;
 
           final List<String> indexedFields = index.getPropertyNames();
           int nMatchingKeys = 0;
-          for (String indexedField : indexedFields) {
+          for (final String indexedField : indexedFields) {
             if (conditions.containsKey(indexedField)) {
               nMatchingKeys++;
             } else {
@@ -119,7 +119,7 @@ public class WhereClause extends SimpleNode {
             }
           }
           if (nMatchingKeys > 0) {
-            long newCount = estimateFromIndex(index, conditions, nMatchingKeys);
+            final long newCount = estimateFromIndex(index, conditions, nMatchingKeys);
             if (newCount < conditionEstimation) {
               conditionEstimation = newCount;
             }
@@ -134,7 +134,7 @@ public class WhereClause extends SimpleNode {
     return Math.min(indexesCount, count);
   }
 
-  private long estimateFromIndex(Index index, Map<String, Object> conditions, int nMatchingKeys) {
+  private long estimateFromIndex(final Index index, final Map<String, Object> conditions, final int nMatchingKeys) {
     if (nMatchingKeys < 1) {
       throw new IllegalArgumentException("Cannot estimate from an index with zero keys");
     }
@@ -161,11 +161,11 @@ public class WhereClause extends SimpleNode {
     return Long.MAX_VALUE;
   }
 
-  private Map<String, Object> getEqualityOperations(AndBlock condition, CommandContext ctx) {
-    Map<String, Object> result = new HashMap<String, Object>();
-    for (BooleanExpression expression : condition.subBlocks) {
+  private Map<String, Object> getEqualityOperations(final AndBlock condition, final CommandContext ctx) {
+    final Map<String, Object> result = new HashMap<String, Object>();
+    for (final BooleanExpression expression : condition.subBlocks) {
       if (expression instanceof BinaryCondition) {
-        BinaryCondition b = (BinaryCondition) expression;
+        final BinaryCondition b = (BinaryCondition) expression;
         if (b.operator instanceof EqualsCompareOperator) {
           if (b.left.isBaseIdentifier() && b.right.isEarlyCalculated()) {
             result.put(b.left.toString(), b.right.execute((Result) null, ctx));
@@ -178,7 +178,7 @@ public class WhereClause extends SimpleNode {
 
   public List<AndBlock> flatten() {
     if (this.baseExpression == null)
-      return Collections.EMPTY_LIST;
+      return Collections.emptyList();
 
     if (flattened == null)
       flattened = this.baseExpression.flatten();
@@ -239,7 +239,7 @@ public class WhereClause extends SimpleNode {
   }
 
   public Result serialize() {
-    ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal();
     if (baseExpression != null) {
       result.setProperty("baseExpression", baseExpression.serialize());
     }
@@ -249,15 +249,15 @@ public class WhereClause extends SimpleNode {
     return result;
   }
 
-  public void deserialize(Result fromResult) {
+  public void deserialize(final Result fromResult) {
     if (fromResult.getProperty("baseExpression") != null) {
       baseExpression = BooleanExpression.deserializeFromOResult(fromResult.getProperty("baseExpression"));
     }
     if (fromResult.getProperty("flattened") != null) {
-      List<Result> ser = fromResult.getProperty("flattened");
+      final List<Result> ser = fromResult.getProperty("flattened");
       flattened = new ArrayList<>();
-      for (Result r : ser) {
-        AndBlock block = new AndBlock(-1);
+      for (final Result r : ser) {
+        final AndBlock block = new AndBlock(-1);
         block.deserialize(r);
         flattened.add(block);
       }

@@ -49,7 +49,7 @@ public abstract class PolyglotFunctionLibraryDefinition<T extends PolyglotFuncti
     // REGISTER ALL THE FUNCTIONS UNDER THE NEW ENGINE INSTANCE
     this.polyglotEngine.close();
     this.polyglotEngine = GraalPolyglotEngine.newBuilder(database, Engine.create()).setLanguage(language).setAllowedPackages(allowedPackages).build();
-    for (T f : functions.values())
+    for (final T f : functions.values())
       f.init(this);
 
     return this;

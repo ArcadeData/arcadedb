@@ -35,21 +35,21 @@ public class ContainsCondition extends BooleanExpression {
   protected Expression        right;
   protected BooleanExpression condition;
 
-  public ContainsCondition(int id) {
+  public ContainsCondition(final int id) {
     super(id);
   }
 
-  public ContainsCondition(SqlParser p, int id) {
+  public ContainsCondition(final SqlParser p, final int id) {
     super(p, id);
   }
 
-  public boolean execute(Object left, Object right) {
+  public boolean execute(final Object left, Object right) {
     if (left instanceof Collection) {
       if (right instanceof Collection) {
         if (((Collection) right).size() == 1) {
           Object item = ((Collection) right).iterator().next();
           if (item instanceof Result && ((Result) item).getPropertyNames().size() == 1) {
-            Object propValue = ((Result) item).getProperty(((Result) item).getPropertyNames().iterator().next());
+            final Object propValue = ((Result) item).getProperty(((Result) item).getPropertyNames().iterator().next());
             if (((Collection) left).contains(propValue)) {
               return true;
             }
@@ -70,15 +70,15 @@ public class ContainsCondition extends BooleanExpression {
         right = ((Iterable) right).iterator();
       }
       if (right instanceof Iterator) {
-        Iterator iterator = (Iterator) right;
+        final Iterator iterator = (Iterator) right;
         while (iterator.hasNext()) {
-          Object next = iterator.next();
+          final Object next = iterator.next();
           if (!((Collection) left).contains(next)) {
             return false;
           }
         }
       }
-      for (Object o : (Collection) left) {
+      for (final Object o : (Collection) left) {
         if (equalsInContainsSpace(o, right)) {
           return true;
         }
@@ -98,12 +98,12 @@ public class ContainsCondition extends BooleanExpression {
       }
       right = ((Iterable) right).iterator();
 
-      Iterator rightIterator = (Iterator) right;
+      final Iterator rightIterator = (Iterator) right;
       while (rightIterator.hasNext()) {
-        Object leftItem = rightIterator.next();
+        final Object leftItem = rightIterator.next();
         boolean found = false;
         while (leftIterator.hasNext()) {
-          Object rightItem = leftIterator.next();
+          final Object rightItem = leftIterator.next();
           if ((leftItem != null && leftItem.equals(rightItem)) || (leftItem == null && rightItem == null)) {
             found = true;
             break;
@@ -127,7 +127,7 @@ public class ContainsCondition extends BooleanExpression {
     return false;
   }
 
-  private boolean equalsInContainsSpace(Object left, Object right) {
+  private boolean equalsInContainsSpace(final Object left, final Object right) {
     if (left == null && right == null) {
       return true;
     } else {
@@ -136,18 +136,18 @@ public class ContainsCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(Identifiable currentRecord, CommandContext ctx) {
-    Object leftValue = left.execute(currentRecord, ctx);
+  public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
+    final Object leftValue = left.execute(currentRecord, ctx);
     if (right != null) {
-      Object rightValue = right.execute(currentRecord, ctx);
+      final Object rightValue = right.execute(currentRecord, ctx);
       return execute(leftValue, rightValue);
     } else {
       if (!MultiValue.isMultiValue(leftValue)) {
         return false;
       }
-      Iterator<Object> iter = MultiValue.getMultiValueIterator(leftValue);
+      final Iterator<Object> iter = MultiValue.getMultiValueIterator(leftValue);
       while (iter.hasNext()) {
-        Object item = iter.next();
+        final Object item = iter.next();
         if (item instanceof Identifiable && condition.evaluate((Identifiable) item, ctx))
           return true;
         else if (item instanceof Result && condition.evaluate((Result) item, ctx))
@@ -160,18 +160,18 @@ public class ContainsCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(Result currentRecord, CommandContext ctx) {
-    Object leftValue = left.execute(currentRecord, ctx);
+  public boolean evaluate(final Result currentRecord, final CommandContext ctx) {
+    final Object leftValue = left.execute(currentRecord, ctx);
     if (right != null) {
-      Object rightValue = right.execute(currentRecord, ctx);
+      final Object rightValue = right.execute(currentRecord, ctx);
       return execute(leftValue, rightValue);
     } else {
       if (!MultiValue.isMultiValue(leftValue)) {
         return false;
       }
-      Iterator<Object> iter = MultiValue.getMultiValueIterator(leftValue);
+      final Iterator<Object> iter = MultiValue.getMultiValueIterator(leftValue);
       while (iter.hasNext()) {
-        Object item = iter.next();
+        final Object item = iter.next();
         if (item instanceof Identifiable && condition.evaluate((Identifiable) item, ctx))
           return true;
         else if (item instanceof Result && condition.evaluate((Result) item, ctx))
@@ -183,7 +183,7 @@ public class ContainsCondition extends BooleanExpression {
     }
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     left.toString(params, builder);
     builder.append(" CONTAINS ");
     if (right != null) {
@@ -223,7 +223,7 @@ public class ContainsCondition extends BooleanExpression {
 
   @Override
   protected List<Object> getExternalCalculationConditions() {
-    List<Object> result = new ArrayList<Object>();
+    final List<Object> result = new ArrayList<Object>();
 
     if (condition != null) {
       result.addAll(condition.getExternalCalculationConditions());
@@ -238,7 +238,7 @@ public class ContainsCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean needsAliases(Set<String> aliases) {
+  public boolean needsAliases(final Set<String> aliases) {
     if (left != null && left.needsAliases(aliases)) {
       return true;
     }
@@ -250,7 +250,7 @@ public class ContainsCondition extends BooleanExpression {
 
   @Override
   public ContainsCondition copy() {
-    ContainsCondition result = new ContainsCondition(-1);
+    final ContainsCondition result = new ContainsCondition(-1);
     result.left = left == null ? null : left.copy();
     result.right = right == null ? null : right.copy();
     result.condition = condition == null ? null : condition.copy();
@@ -259,7 +259,7 @@ public class ContainsCondition extends BooleanExpression {
   }
 
   @Override
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
     if (left != null) {
       left.extractSubQueries(collector);
     }
@@ -283,13 +283,13 @@ public class ContainsCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    ContainsCondition that = (ContainsCondition) o;
+    final ContainsCondition that = (ContainsCondition) o;
 
     if (!Objects.equals(left, that.left))
       return false;
@@ -308,11 +308,11 @@ public class ContainsCondition extends BooleanExpression {
 
   @Override
   public List<String> getMatchPatternInvolvedAliases() {
-    List<String> leftX = left == null ? null : left.getMatchPatternInvolvedAliases();
-    List<String> rightX = right == null ? null : right.getMatchPatternInvolvedAliases();
-    List<String> conditionX = condition == null ? null : condition.getMatchPatternInvolvedAliases();
+    final List<String> leftX = left == null ? null : left.getMatchPatternInvolvedAliases();
+    final List<String> rightX = right == null ? null : right.getMatchPatternInvolvedAliases();
+    final List<String> conditionX = condition == null ? null : condition.getMatchPatternInvolvedAliases();
 
-    List<String> result = new ArrayList<String>();
+    final List<String> result = new ArrayList<String>();
     if (leftX != null) {
       result.addAll(leftX);
     }

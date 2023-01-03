@@ -42,7 +42,7 @@ public class SQLMethodSubString extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute( Object iThis, Identifiable iCurrentRecord, CommandContext iContext, Object ioResult, Object[] iParams) {
+  public Object execute( final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult, final Object[] iParams) {
     if (iThis == null || iParams[0] == null) {
       return null;
     }
@@ -50,7 +50,7 @@ public class SQLMethodSubString extends AbstractSQLMethod {
     if (iParams.length > 1) {
       int from = Integer.parseInt(iParams[0].toString());
       int to = Integer.parseInt(iParams[1].toString());
-      String thisString = iThis.toString();
+      final String thisString = iThis.toString();
       if (from < 0) {
         from = 0;
       }
@@ -67,7 +67,7 @@ public class SQLMethodSubString extends AbstractSQLMethod {
       return thisString.substring(from, to);
     } else {
       int from = Integer.parseInt(iParams[0].toString());
-      String thisString = iThis.toString();
+      final String thisString = iThis.toString();
       if (from < 0) {
         from = 0;
       }

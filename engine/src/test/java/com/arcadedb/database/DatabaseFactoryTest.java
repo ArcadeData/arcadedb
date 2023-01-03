@@ -33,14 +33,14 @@ class DatabaseFactoryTest extends TestHelper {
     try {
       new DatabaseFactory(null);
       Assertions.fail();
-    } catch (IllegalArgumentException e) {
+    } catch (final IllegalArgumentException e) {
       // EXPECTED
     }
 
     try {
       new DatabaseFactory("");
       Assertions.fail();
-    } catch (IllegalArgumentException e) {
+    } catch (final IllegalArgumentException e) {
       // EXPECTED
     }
   }
@@ -51,9 +51,9 @@ class DatabaseFactoryTest extends TestHelper {
     f.setAutoTransaction(true);
     Assertions.assertNotNull(f.getContextConfiguration());
 
-    SecurityManager security = new SecurityManager() {
+    final SecurityManager security = new SecurityManager() {
       @Override
-      public void updateSchema(DatabaseInternal database) {
+      public void updateSchema(final DatabaseInternal database) {
       }
     };
     f.setSecurity(security);
@@ -63,7 +63,7 @@ class DatabaseFactoryTest extends TestHelper {
   @Test
   void testDatabaseRegistration() {
     final DatabaseFactory f = new DatabaseFactory("test");
-    Database db = f.create();
+    final Database db = f.create();
 
     DatabaseFactory.getActiveDatabaseInstances().contains(db);
     DatabaseFactory.removeActiveDatabaseInstance(db.getDatabasePath());

@@ -30,15 +30,15 @@ public abstract class AbstractSQLMethod implements SQLMethod {
   private final int    minparams;
   private final int    maxparams;
 
-  public AbstractSQLMethod(String name) {
+  public AbstractSQLMethod(final String name) {
     this(name, 0);
   }
 
-  public AbstractSQLMethod(String name, int nbparams) {
+  public AbstractSQLMethod(final String name, final int nbparams) {
     this(name, nbparams, nbparams);
   }
 
-  public AbstractSQLMethod(String name, int minparams, int maxparams) {
+  public AbstractSQLMethod(final String name, final int minparams, final int maxparams) {
     this.name = name;
     this.minparams = minparams;
     this.maxparams = maxparams;
@@ -105,7 +105,7 @@ public abstract class AbstractSQLMethod implements SQLMethod {
   }
 
   @Override
-  public int compareTo(SQLMethod o) {
+  public int compareTo(final SQLMethod o) {
     return this.getName().compareTo(o.getName());
   }
 

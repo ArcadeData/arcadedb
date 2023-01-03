@@ -29,7 +29,7 @@ public class PerformanceSQLInsert {
   private static final String TYPE_NAME = "Person";
   private static final int    MAX_LOOPS = 10_000_000;
 
-  public static void main(String[] args) {
+  public static void main(final String[] args) {
     new PerformanceSQLInsert().run();
   }
 
@@ -55,12 +55,12 @@ public class PerformanceSQLInsert {
       for (int i = 0; i < MAX_LOOPS; ++i) {
         database.async().command("SQL", "insert into " + TYPE_NAME + " set id = " + i + ", name = 'Luca'", new AsyncResultsetCallback() {
           @Override
-          public void onStart(ResultSet resultset) {
+          public void onStart(final ResultSet resultset) {
             oks.incrementAndGet();
           }
 
           @Override
-          public void onError(Exception exception) {
+          public void onError(final Exception exception) {
             errors.incrementAndGet();
           }
         });
@@ -78,7 +78,7 @@ public class PerformanceSQLInsert {
       while (oks.get() < MAX_LOOPS) {
         try {
           Thread.sleep(1000);
-        } catch (InterruptedException e) {
+        } catch (final InterruptedException e) {
           Thread.currentThread().interrupt();
           e.printStackTrace();
         }

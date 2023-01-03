@@ -37,7 +37,7 @@ public class GetExistsDatabaseHandler extends DatabaseAbstractHandler {
   }
 
   @Override
-  public void execute(final HttpServerExchange exchange, ServerSecurityUser user, final Database database) {
+  public void execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database) {
     final Deque<String> databaseName = exchange.getQueryParameters().get("database");
     if (databaseName.isEmpty()) {
       exchange.setStatusCode(400);

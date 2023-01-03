@@ -80,7 +80,7 @@ public class Console {
     GlobalConfiguration.PROFILE.setValue("low-cpu");
 
     terminal = TerminalBuilder.builder().system(system).streams(System.in, System.out).jansi(true).build();
-    Completer completer = new StringsCompleter("align database", "begin", "rollback", "commit", "check database", "close", "connect", "create database",
+    final Completer completer = new StringsCompleter("align database", "begin", "rollback", "commit", "check database", "close", "connect", "create database",
         "create user", "drop database", "drop user", "export", "import", "help", "info types", "list databases", "load", "exit", "quit", "set", "match",
         "select", "insert into", "update", "delete", "pwd");
 
@@ -109,14 +109,14 @@ public class Console {
 
           lineReader.getHistory().save();
 
-        } catch (UserInterruptException | EndOfFileException e) {
+        } catch (final UserInterruptException | EndOfFileException e) {
           return;
         }
 
         try {
           if (!parse(line, false))
             return;
-        } catch (Exception e) {
+        } catch (final Exception e) {
           // IGNORE (ALREADY PRINTED)
         }
       }
@@ -125,7 +125,7 @@ public class Console {
     }
   }
 
-  public static void main(String[] args) throws IOException {
+  public static void main(final String[] args) throws IOException {
     if (args.length > 0) {
       final Console console = new Console(false);
       console.parse(args[0], true);
@@ -173,7 +173,7 @@ public class Console {
     this.output = output;
   }
 
-  private boolean execute(String line) throws IOException {
+  private boolean execute(final String line) throws IOException {
     try {
 
       if (line == null)
@@ -223,7 +223,7 @@ public class Console {
         executeSQL(lineTrimmed);
 
       return true;
-    } catch (IOException | RuntimeException e) {
+    } catch (final IOException | RuntimeException e) {
       outputError(e);
       throw e;
     }
@@ -322,14 +322,14 @@ public class Console {
       final RemoteDatabase holdRemoteDatabase = remoteDatabase;
 
       connectToRemoteServer(url, false);
-      for (Object f : remoteDatabase.databases()) {
+      for (final Object f : remoteDatabase.databases()) {
         outputLine(f.toString());
       }
 
       remoteDatabase = holdRemoteDatabase;
 
     } else {
-      for (String f : new File(databaseDirectory).list()) {
+      for (final String f : new File(databaseDirectory).list()) {
         outputLine(f);
       }
     }
@@ -341,7 +341,7 @@ public class Console {
     checkDatabaseIsConnected();
     checkIsEmpty("URL", url);
 
-    String databaseName;
+    final String databaseName;
 
     if (url.startsWith(REMOTE_PREFIX)) {
       connectToRemoteServer(url, true);
@@ -371,7 +371,7 @@ public class Console {
     checkDatabaseIsConnected();
     checkIsEmpty("URL", url);
 
-    String databaseName;
+    final String databaseName;
 
     if (url.startsWith(REMOTE_PREFIX)) {
       connectToRemoteServer(url, true);
@@ -436,7 +436,7 @@ public class Console {
     checkDatabaseIsConnected();
     checkIsEmpty("URL", url);
 
-    String databaseName;
+    final String databaseName;
 
     if (url.startsWith(REMOTE_PREFIX)) {
       connectToRemoteServer(url, true);
@@ -488,7 +488,7 @@ public class Console {
     final List<TableFormatter.TableRow> resultSet = new ArrayList<>();
 
     Object value;
-    for (String fieldName : currentRecord.getPropertyNames()) {
+    for (final String fieldName : currentRecord.getPropertyNames()) {
       value = currentRecord.getProperty(fieldName);
       if (value instanceof byte[])
         value = "byte[" + ((byte[]) value).length + "]";
@@ -600,7 +600,7 @@ public class Console {
     if (parsedLine == null)
       return true;
 
-    for (String w : parsedLine.words()) {
+    for (final String w : parsedLine.words()) {
       if (printCommand)
         output(getPrompt() + w);
 
@@ -642,7 +642,7 @@ public class Console {
       }
 
       final List<TableFormatter.TableMapRow> rows = new ArrayList<>();
-      for (DocumentType type : localDatabase.getSchema().getTypes()) {
+      for (final DocumentType type : localDatabase.getSchema().getTypes()) {
         final TableFormatter.TableMapRow row = new TableFormatter.TableMapRow();
         row.setField("NAME", type.getName());
 
@@ -736,8 +736,8 @@ public class Console {
     if ((needsDatabase && serverParts.length != 2) || (!needsDatabase && serverParts.length != 1))
       throw new ConsoleException("Remote URL '" + url + "' not valid");
 
-    String remoteServer;
-    int remotePort;
+    final String remoteServer;
+    final int remotePort;
 
     final int portPos = serverParts[0].indexOf(":");
     if (portPos < 0) {
@@ -757,7 +757,7 @@ public class Console {
 
   private void outputError(final Exception e) throws IOException {
     if (verboseLevel > 1) {
-      try (ByteArrayOutputStream out = new ByteArrayOutputStream(); PrintWriter writer = new PrintWriter(out)) {
+      try (final ByteArrayOutputStream out = new ByteArrayOutputStream(); final PrintWriter writer = new PrintWriter(out)) {
         e.printStackTrace(writer);
         writer.flush();
         output("\nERROR:\n" + out + "\n");

@@ -21,11 +21,11 @@
 package com.arcadedb.query.sql.parser;
 
 public class Wait extends SimpleNode {
-  public Wait(int id) {
+  public Wait(final int id) {
     super(id);
   }
 
-  public Wait(SqlParser p, int id) {
+  public Wait(final SqlParser p, final int id) {
     super(p, id);
   }
 }

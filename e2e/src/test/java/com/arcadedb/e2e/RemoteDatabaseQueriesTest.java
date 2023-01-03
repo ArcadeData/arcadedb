@@ -46,7 +46,7 @@ public class RemoteDatabaseQueriesTest extends ArcadeContainerTemplate {
   @Test
   void simpleSQLQuery() {
     database.transaction(() -> {
-      ResultSet result = database.query("SQL", "select from Beer limit 10");
+      final ResultSet result = database.query("SQL", "select from Beer limit 10");
       assertThat(CollectionUtils.countEntries(result)).isEqualTo(10);
     }, 10);
   }
@@ -54,7 +54,7 @@ public class RemoteDatabaseQueriesTest extends ArcadeContainerTemplate {
   @Test
   void simpleGremlinQuery() {
     database.transaction(() -> {
-      ResultSet result = database.query("gremlin", "g.V().limit(10)");
+      final ResultSet result = database.query("gremlin", "g.V().limit(10)");
       assertThat(CollectionUtils.countEntries(result)).isEqualTo(10);
     }, 10);
   }
@@ -62,7 +62,7 @@ public class RemoteDatabaseQueriesTest extends ArcadeContainerTemplate {
   @Test
   void simpleCypherQuery() {
     database.transaction(() -> {
-      ResultSet result = database.query("cypher", "MATCH(p:Beer) RETURN * LIMIT 10");
+      final ResultSet result = database.query("cypher", "MATCH(p:Beer) RETURN * LIMIT 10");
       assertThat(CollectionUtils.countEntries(result)).isEqualTo(10);
     }, 10);
   }

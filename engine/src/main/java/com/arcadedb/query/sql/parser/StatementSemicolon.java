@@ -21,11 +21,11 @@
 package com.arcadedb.query.sql.parser;
 
 public class StatementSemicolon extends SimpleNode {
-  public StatementSemicolon(int id) {
+  public StatementSemicolon(final int id) {
     super(id);
   }
 
-  public StatementSemicolon(SqlParser p, int id) {
+  public StatementSemicolon(final SqlParser p, final int id) {
     super(p, id);
   }
 }

@@ -50,13 +50,13 @@ public class DatabaseEventsTest extends TestHelper {
     try {
 
       database.transaction(() -> {
-        MutableVertex v1 = database.newVertex("Vertex").set("id", "test");
+        final MutableVertex v1 = database.newVertex("Vertex").set("id", "test");
         Assertions.assertEquals(0, counter.get());
         v1.save();
         Assertions.assertEquals(1, counter.get());
         Assertions.assertEquals(1, database.countType("Vertex", true));
 
-        MutableVertex v2 = database.newVertex("Vertex").set("id", "test2");
+        final MutableVertex v2 = database.newVertex("Vertex").set("id", "test2");
         Assertions.assertEquals(1, counter.get());
         v2.save();
         Assertions.assertEquals(2, counter.get());
@@ -77,13 +77,13 @@ public class DatabaseEventsTest extends TestHelper {
     try {
 
       database.transaction(() -> {
-        MutableVertex v1 = database.newVertex("Vertex").set("id", "test");
+        final MutableVertex v1 = database.newVertex("Vertex").set("id", "test");
         Assertions.assertEquals(0, counter.get());
         v1.save();
         Assertions.assertEquals(1, counter.get());
         Assertions.assertEquals(1, database.countType("Vertex", true));
 
-        MutableVertex v2 = database.newVertex("Vertex").set("id", "test2");
+        final MutableVertex v2 = database.newVertex("Vertex").set("id", "test2");
         Assertions.assertEquals(1, counter.get());
         v2.save();
         Assertions.assertEquals(2, counter.get());
@@ -107,7 +107,7 @@ public class DatabaseEventsTest extends TestHelper {
     try {
 
       database.transaction(() -> {
-        MutableVertex v1 = database.newVertex("Vertex").set("id", "test");
+        final MutableVertex v1 = database.newVertex("Vertex").set("id", "test");
         Assertions.assertEquals(0, counter.get());
         v1.save();
         Assertions.assertEquals(0, counter.get());
@@ -121,7 +121,7 @@ public class DatabaseEventsTest extends TestHelper {
       });
 
       database.transaction(() -> {
-        MutableVertex v1 = database.iterateType("Vertex", true).next().asVertex().modify();
+        final MutableVertex v1 = database.iterateType("Vertex", true).next().asVertex().modify();
         v1.set("modified2", true);
         Assertions.assertEquals(1, counter.get());
 
@@ -145,7 +145,7 @@ public class DatabaseEventsTest extends TestHelper {
     try {
 
       database.transaction(() -> {
-        MutableVertex v1 = database.newVertex("Vertex").set("id", "test");
+        final MutableVertex v1 = database.newVertex("Vertex").set("id", "test");
         Assertions.assertEquals(0, counter.get());
         v1.save();
         Assertions.assertEquals(0, counter.get());
@@ -175,7 +175,7 @@ public class DatabaseEventsTest extends TestHelper {
     try {
 
       database.transaction(() -> {
-        MutableVertex v1 = database.newVertex("Vertex").set("id", "test");
+        final MutableVertex v1 = database.newVertex("Vertex").set("id", "test");
         Assertions.assertEquals(0, counter.get());
         v1.save();
         Assertions.assertEquals(0, counter.get());
@@ -189,11 +189,11 @@ public class DatabaseEventsTest extends TestHelper {
       });
 
       database.transaction(() -> {
-        MutableVertex v1 = database.iterateType("Vertex", true).next().asVertex().modify();
+        final MutableVertex v1 = database.iterateType("Vertex", true).next().asVertex().modify();
         v1.delete();
         Assertions.assertEquals(1, counter.get());
 
-        MutableVertex v2 = database.newVertex("Vertex").set("id", "test2").save();
+        final MutableVertex v2 = database.newVertex("Vertex").set("id", "test2").save();
         v2.delete();
         Assertions.assertEquals(2, counter.get());
       });
@@ -214,7 +214,7 @@ public class DatabaseEventsTest extends TestHelper {
     try {
 
       database.transaction(() -> {
-        MutableVertex v1 = database.newVertex("Vertex").set("id", "test");
+        final MutableVertex v1 = database.newVertex("Vertex").set("id", "test");
         Assertions.assertEquals(0, counter.get());
         v1.save();
         Assertions.assertEquals(0, counter.get());
@@ -228,11 +228,11 @@ public class DatabaseEventsTest extends TestHelper {
       });
 
       database.transaction(() -> {
-        MutableVertex v1 = database.iterateType("Vertex", true).next().asVertex().modify();
+        final MutableVertex v1 = database.iterateType("Vertex", true).next().asVertex().modify();
         v1.delete();
         Assertions.assertEquals(1, counter.get());
 
-        MutableVertex v2 = database.newVertex("Vertex").set("id", "test2").save();
+        final MutableVertex v2 = database.newVertex("Vertex").set("id", "test2").save();
         v2.delete();
         Assertions.assertEquals(2, counter.get());
       });

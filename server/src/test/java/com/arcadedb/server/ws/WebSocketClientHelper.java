@@ -54,7 +54,7 @@ public class WebSocketClientHelper implements AutoCloseable {
 
   private static final int DEFAULT_DELAY = 5_000;
 
-  public WebSocketClientHelper(String uri, String user, String pass) throws URISyntaxException, IOException {
+  public WebSocketClientHelper(final String uri, final String user, final String pass) throws URISyntaxException, IOException {
     final Xnio xnio = Xnio.getInstance(BaseGraphServerTest.class.getClassLoader());
     worker = xnio.createWorker(OptionMap.builder()//
         .set(Options.WORKER_IO_THREADS, 4)//
@@ -64,11 +64,11 @@ public class WebSocketClientHelper implements AutoCloseable {
         .set(Options.CORK, true)//
         .getMap());
 
-    var builder = WebSocketClient.connectionBuilder(worker, pool, new URI(uri));
+    final var builder = WebSocketClient.connectionBuilder(worker, pool, new URI(uri));
     if (user != null) {
       builder.setClientNegotiation(new WebSocketClientNegotiation(new ArrayList<>(), new ArrayList<>()) {
         @Override
-        public void beforeRequest(Map<String, List<String>> headers) {
+        public void beforeRequest(final Map<String, List<String>> headers) {
           headers.put("Authorization", Collections.singletonList("Basic " + Base64.getEncoder().encodeToString((user + ":" + pass).getBytes())));
         }
       });
@@ -76,12 +76,12 @@ public class WebSocketClientHelper implements AutoCloseable {
     this.channel = builder.connect().get();
     this.channel.getReceiveSetter().set(new AbstractReceiveListener() {
       @Override
-      protected void onFullTextMessage(WebSocketChannel channel, BufferedTextMessage message) {
+      protected void onFullTextMessage(final WebSocketChannel channel, final BufferedTextMessage message) {
         messageQueue.offer(message.getData());
       }
 
       @Override
-      protected void onError(WebSocketChannel channel, Throwable error) {
+      protected void onError(final WebSocketChannel channel, final Throwable error) {
         LogManager.instance().log(this, Level.SEVERE, "WS client error: " + error);
         super.onError(channel, error);
         Assertions.fail(error.getMessage());
@@ -108,8 +108,8 @@ public class WebSocketClientHelper implements AutoCloseable {
     messageQueue.clear();
   }
 
-  public String send(String payload) throws URISyntaxException, IOException {
-    var sendChannel = this.channel.send(WebSocketFrameType.TEXT);
+  public String send(final String payload) throws URISyntaxException, IOException {
+    final var sendChannel = this.channel.send(WebSocketFrameType.TEXT);
     new StringWriteChannelListener(payload).setup(sendChannel);
     return this.popMessage(DEFAULT_DELAY);
   }
@@ -118,10 +118,10 @@ public class WebSocketClientHelper implements AutoCloseable {
     return this.popMessage(DEFAULT_DELAY);
   }
 
-  public String popMessage(int delayMS) {
+  public String popMessage(final int delayMS) {
     try {
       return this.messageQueue.poll(delayMS, TimeUnit.MILLISECONDS);
-    } catch (InterruptedException ignored) {
+    } catch (final InterruptedException ignored) {
     }
 
     return null;

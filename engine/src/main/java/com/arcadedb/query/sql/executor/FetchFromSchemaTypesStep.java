@@ -50,12 +50,12 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
     getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
 
     if (cursor == 0) {
-      long begin = profilingEnabled ? System.nanoTime() : 0;
+      final long begin = profilingEnabled ? System.nanoTime() : 0;
       try {
         final Schema schema = ctx.getDatabase().getSchema();
 
         final List<String> orderedTypes = schema.getTypes().stream().map(x -> x.getName()).sorted(String::compareToIgnoreCase).collect(Collectors.toList());
-        for (String typeName : orderedTypes) {
+        for (final String typeName : orderedTypes) {
           final DocumentType type = schema.getType(typeName);
 
           final ResultInternal r = new ResultInternal();
@@ -74,7 +74,7 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
 
           r.setProperty("type", t);
 
-          List<String> parents = type.getSuperTypes().stream().map(pt -> pt.getName()).collect(Collectors.toList());
+          final List<String> parents = type.getSuperTypes().stream().map(pt -> pt.getName()).collect(Collectors.toList());
           r.setProperty("parentTypes", parents);
 
           final List<ResultInternal> propertiesTypes = type.getPropertyNames().stream().sorted(String::compareToIgnoreCase).map(name -> type.getProperty(name))
@@ -85,7 +85,7 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
                 propRes.setProperty("type", property.getType());
 
                 final Map<String, Object> customs = new HashMap<>();
-                for (Object customKey : property.getCustomKeys().stream().sorted(String::compareToIgnoreCase).toArray())
+                for (final Object customKey : property.getCustomKeys().stream().sorted(String::compareToIgnoreCase).toArray())
                   customs.put((String) customKey, type.getCustomValue((String) customKey));
                 propRes.setProperty("custom", customs);
 
@@ -106,7 +106,7 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
           r.setProperty("indexes", indexes);
 
           final Map<String, Object> customs = new HashMap<>();
-          for (Object customKey : type.getCustomKeys().stream().sorted(String::compareToIgnoreCase).toArray())
+          for (final Object customKey : type.getCustomKeys().stream().sorted(String::compareToIgnoreCase).toArray())
             customs.put((String) customKey, type.getCustomValue((String) customKey));
           r.setProperty("custom", customs);
 
@@ -145,8 +145,8 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     String result = spaces + "+ FETCH DATABASE METADATA TYPES";
     if (profilingEnabled) {
       result += " (" + getCostFormatted() + ")";

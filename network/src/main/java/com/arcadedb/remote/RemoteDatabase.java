@@ -120,6 +120,7 @@ public class RemoteDatabase extends RWLockContext {
   }
 
   public void close() {
+    sessionId = null;
   }
 
   public void drop() {
@@ -147,13 +148,13 @@ public class RemoteDatabase extends RWLockContext {
         commit();
 
         return;
-      } catch (NeedRetryException | DuplicatedKeyException e) {
+      } catch (final NeedRetryException | DuplicatedKeyException e) {
         // RETRY
         lastException = e;
-      } catch (Exception e) {
+      } catch (final Exception e) {
         try {
           rollback();
-        } catch (Throwable t) {
+        } catch (final Throwable t) {
           // IGNORE IT
         }
         throw e;
@@ -173,7 +174,7 @@ public class RemoteDatabase extends RWLockContext {
       if (connection.getResponseCode() != 204)
         throw new TransactionException("Error on transaction begin");
       sessionId = connection.getHeaderField(ARCADEDB_SESSION_ID);
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new TransactionException("Error on transaction begin", e);
     }
   }
@@ -187,7 +188,7 @@ public class RemoteDatabase extends RWLockContext {
       if (connection.getResponseCode() != 204)
         throw new TransactionException("Error on transaction commit");
       sessionId = null;
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new TransactionException("Error on transaction commit", e);
     }
   }
@@ -203,7 +204,7 @@ public class RemoteDatabase extends RWLockContext {
         throw new TransactionException("Error on transaction rollback");
 
       sessionId = null;
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new TransactionException("Error on transaction rollback", e);
     }
   }
@@ -223,9 +224,9 @@ public class RemoteDatabase extends RWLockContext {
         return json2Record(response.getJSONObject("result"));
       return null;
 
-    } catch (RecordNotFoundException e) {
+    } catch (final RecordNotFoundException e) {
       throw e;
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new DatabaseOperationException("Error on loading record " + rid, e);
     }
   }
@@ -271,14 +272,14 @@ public class RemoteDatabase extends RWLockContext {
       jsonRequest.put("password", password);
       if (databases != null && !databases.isEmpty()) {
         final JSONObject databasesJson = new JSONObject();
-        for (String dbName : databases)
+        for (final String dbName : databases)
           databasesJson.put(dbName, new String[] { "admin" });
         jsonRequest.put("databases", databasesJson);
       }
 
       final byte[] postData = jsonRequest.toString().getBytes(StandardCharsets.UTF_8);
       connection.setRequestProperty("Content-Length", Integer.toString(postData.length));
-      try (DataOutputStream wr = new DataOutputStream(connection.getOutputStream())) {
+      try (final DataOutputStream wr = new DataOutputStream(connection.getOutputStream())) {
         wr.write(postData);
       }
 
@@ -286,7 +287,7 @@ public class RemoteDatabase extends RWLockContext {
       if (connection.getResponseCode() != 204)
         throw new RuntimeException("Error on creating user: " + connection.getResponseMessage());
 
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new RuntimeException("Error on creating user", e);
     }
   }
@@ -298,7 +299,7 @@ public class RemoteDatabase extends RWLockContext {
       if (connection.getResponseCode() != 204)
         throw new RuntimeException("Error on deleting user: " + connection.getResponseMessage());
 
-    } catch (Exception e) {
+    } catch (final Exception e) {
       throw new RuntimeException("Error on deleting user", e);
     }
   }
@@ -349,7 +350,7 @@ public class RemoteDatabase extends RWLockContext {
 
             final byte[] postData = jsonRequest.toString().getBytes(StandardCharsets.UTF_8);
             connection.setRequestProperty("Content-Length", Integer.toString(postData.length));
-            try (DataOutputStream wr = new DataOutputStream(connection.getOutputStream())) {
+            try (final DataOutputStream wr = new DataOutputStream(connection.getOutputStream())) {
               wr.write(postData);
             }
           }
@@ -371,7 +372,7 @@ public class RemoteDatabase extends RWLockContext {
                 detail = response.has("detail") ? response.getString("detail") : null;
                 exception = response.has("exception") ? response.getString("exception") : null;
                 exceptionArgs = response.has("exceptionArgs") ? response.getString("exceptionArgs") : null;
-              } catch (Exception e) {
+              } catch (final Exception e) {
                 lastException = e;
                 // TODO CHECK IF THE COMMAND NEEDS TO BE RE-EXECUTED OR NOT
                 LogManager.instance()
@@ -437,7 +438,7 @@ public class RemoteDatabase extends RWLockContext {
           connection.disconnect();
         }
 
-      } catch (IOException | ServerIsNotTheLeaderException e) {
+      } catch (final IOException | ServerIsNotTheLeaderException e) {
         lastException = e;
 
         if (!autoReconnect)
@@ -458,9 +459,9 @@ public class RemoteDatabase extends RWLockContext {
               .log(this, Level.WARNING, "Remote server (%s:%d) seems unreachable, switching to server %s:%d...", null, currentConnectToServer.getFirst(),
                   currentConnectToServer.getSecond(), connectToServer.getFirst(), connectToServer.getSecond());
 
-      } catch (RemoteException | NeedRetryException | DuplicatedKeyException | TransactionException | TimeoutException e) {
+      } catch (final RemoteException | NeedRetryException | DuplicatedKeyException | TransactionException | TimeoutException e) {
         throw e;
-      } catch (Exception e) {
+      } catch (final Exception e) {
         throw new RemoteException("Error on executing remote operation " + operation + " (cause: " + e.getMessage() + ")", e);
       }
     }
@@ -523,7 +524,7 @@ public class RemoteDatabase extends RWLockContext {
 
         if (cfgReplicaServers != null && !cfgReplicaServers.isEmpty()) {
           final String[] serverEntries = cfgReplicaServers.split(",");
-          for (String serverEntry : serverEntries) {
+          for (final String serverEntry : serverEntries) {
             final String[] serverParts = serverEntry.split(":");
             if (serverParts.length != 2)
               LogManager.instance().log(this, Level.WARNING, "No port specified on remote server URL '%s'", null, serverEntry);
@@ -558,14 +559,14 @@ public class RemoteDatabase extends RWLockContext {
 
     // ASK REPLICA FIRST
     for (int replicaIdx = 0; replicaIdx < replicaServerList.size(); ++replicaIdx) {
-      Pair<String, Integer> connectToServer = replicaServerList.get(replicaIdx);
+      final Pair<String, Integer> connectToServer = replicaServerList.get(replicaIdx);
 
       currentServer = connectToServer.getFirst();
       currentPort = connectToServer.getSecond();
 
       try {
         requestClusterConfiguration();
-      } catch (Exception e) {
+      } catch (final Exception e) {
         // IGNORE< TRY NEXT
         continue;
       }
@@ -587,14 +588,14 @@ public class RemoteDatabase extends RWLockContext {
     return leaderServer != null;
   }
 
-  private Map<String, Object> mapArgs(Object[] args) {
+  private Map<String, Object> mapArgs(final Object[] args) {
     Map<String, Object> params = null;
     if (args != null && args.length > 0) {
       if (args.length == 1 && args[0] instanceof Map)
         params = (Map<String, Object>) args[0];
       else {
         params = new HashMap<>();
-        for (Object o : args) {
+        for (final Object o : args) {
           params.put("" + params.size(), o);
         }
       }

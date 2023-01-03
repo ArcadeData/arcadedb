@@ -40,8 +40,8 @@ public class CreatePropertyStatementExecutionTest extends TestHelper {
     database.command("sql", "create document type testBasicCreateProperty").close();
     database.command("sql", "CREATE property testBasicCreateProperty.name STRING").close();
 
-    DocumentType companyClass = database.getSchema().getType("testBasicCreateProperty");
-    Property nameProperty = companyClass.getProperty(PROP_NAME);
+    final DocumentType companyClass = database.getSchema().getType("testBasicCreateProperty");
+    final Property nameProperty = companyClass.getProperty(PROP_NAME);
 
     Assertions.assertEquals(nameProperty.getName(), PROP_NAME);
     Assertions.assertEquals(nameProperty.getType(), Type.STRING);
@@ -52,8 +52,8 @@ public class CreatePropertyStatementExecutionTest extends TestHelper {
     database.command("sql", "create document type testCreateMandatoryPropertyWithEmbeddedType").close();
     database.command("sql", "CREATE Property testCreateMandatoryPropertyWithEmbeddedType.officers LIST").close();
 
-    DocumentType companyClass = database.getSchema().getType("testCreateMandatoryPropertyWithEmbeddedType");
-    Property nameProperty = companyClass.getProperty(PROP_OFFICERS);
+    final DocumentType companyClass = database.getSchema().getType("testCreateMandatoryPropertyWithEmbeddedType");
+    final Property nameProperty = companyClass.getProperty(PROP_OFFICERS);
 
     Assertions.assertEquals(nameProperty.getName(), PROP_OFFICERS);
     Assertions.assertEquals(nameProperty.getType(), Type.LIST);
@@ -64,8 +64,8 @@ public class CreatePropertyStatementExecutionTest extends TestHelper {
     database.command("sql", "create document type testCreateUnsafePropertyWithEmbeddedType").close();
     database.command("sql", "CREATE Property testCreateUnsafePropertyWithEmbeddedType.officers LIST").close();
 
-    DocumentType companyClass = database.getSchema().getType("testCreateUnsafePropertyWithEmbeddedType");
-    Property nameProperty = companyClass.getProperty(PROP_OFFICERS);
+    final DocumentType companyClass = database.getSchema().getType("testCreateUnsafePropertyWithEmbeddedType");
+    final Property nameProperty = companyClass.getProperty(PROP_OFFICERS);
 
     Assertions.assertEquals(nameProperty.getName(), PROP_OFFICERS);
     Assertions.assertEquals(nameProperty.getType(), Type.LIST);
@@ -76,8 +76,8 @@ public class CreatePropertyStatementExecutionTest extends TestHelper {
     database.command("sql", "create document type testExtraSpaces").close();
     database.command("sql", "CREATE PROPERTY testExtraSpaces.id INTEGER  ").close();
 
-    DocumentType companyClass = database.getSchema().getType("testExtraSpaces");
-    Property idProperty = companyClass.getProperty(PROP_ID);
+    final DocumentType companyClass = database.getSchema().getType("testExtraSpaces");
+    final Property idProperty = companyClass.getProperty(PROP_ID);
 
     Assertions.assertEquals(idProperty.getName(), PROP_ID);
     Assertions.assertEquals(idProperty.getType(), Type.INTEGER);
@@ -88,7 +88,7 @@ public class CreatePropertyStatementExecutionTest extends TestHelper {
       database.command("sql", "create document type CommandExecutionException").close();
       database.command("sql", "CREATE PROPERTY CommandExecutionException.id INTEGER (MANDATORY, INVALID, NOTNULL)  UNSAFE").close();
       Assertions.fail("Expected CommandExecutionException");
-    } catch (CommandExecutionException e) {
+    } catch (final CommandExecutionException e) {
       // OK
     }
   }
@@ -99,9 +99,9 @@ public class CreatePropertyStatementExecutionTest extends TestHelper {
     database.command("sql", "create document type testMandatoryAsLinkedName_2").close();
     database.command("sql", "CREATE PROPERTY testMandatoryAsLinkedName.id LIST").close();
 
-    DocumentType companyClass = database.getSchema().getType("testMandatoryAsLinkedName");
-    DocumentType mandatoryClass = database.getSchema().getType("testMandatoryAsLinkedName_2");
-    Property idProperty = companyClass.getProperty(PROP_ID);
+    final DocumentType companyClass = database.getSchema().getType("testMandatoryAsLinkedName");
+    final DocumentType mandatoryClass = database.getSchema().getType("testMandatoryAsLinkedName_2");
+    final Property idProperty = companyClass.getProperty(PROP_ID);
 
     Assertions.assertEquals(idProperty.getName(), PROP_ID);
     Assertions.assertEquals(idProperty.getType(), Type.LIST);

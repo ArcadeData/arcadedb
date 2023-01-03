@@ -47,9 +47,9 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
         ResultSet result = database.command("SQL", "insert into Person set name = 'Elon'");
         Assertions.assertNotNull(result);
         Assertions.assertTrue(result.hasNext());
-        Result rec = result.next();
+        final Result rec = result.next();
         Assertions.assertTrue(rec.toJSON().contains("Elon"));
-        RID rid = rec.toElement().getIdentity();
+        final RID rid = rec.toElement().getIdentity();
 
         // RETRIEVE DOCUMENT WITH QUERY
         result = database.query("SQL", "select from Person where name = 'Elon'");
@@ -60,7 +60,7 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
         Assertions.assertTrue(result.hasNext());
         Assertions.assertEquals(1, new JSONObject(result.next().toJSON()).getInt("count"));
 
-        Document record = (Document) database.lookupByRID(rid);
+        final Document record = (Document) database.lookupByRID(rid);
         Assertions.assertNotNull(result);
         Assertions.assertEquals("Musk", record.getString("lastName"));
       });
@@ -113,7 +113,7 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
         // CREATE EDGE WITH COMMAND
         result = database.command("SQL", "create edge " + EDGE1_TYPE_NAME + " from " + rid1 + " to " + rid2);
         Assertions.assertTrue(result.hasNext());
-        Edge edge = result.next().getEdge().get();
+        final Edge edge = result.next().getEdge().get();
 
         edge.toMap();
         edge.toJSON();
@@ -143,10 +143,10 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
       // RETRIEVE VERTEX WITH QUERY AFTER COMMIT
       final ResultSet result = database.query("SQL", "select from Character where name = 'Kimbal'");
       Assertions.assertTrue(result.hasNext());
-      Result record = result.next();
+      final Result record = result.next();
       Assertions.assertTrue(record.isVertex());
 
-      Vertex kimbal = record.getVertex().get();
+      final Vertex kimbal = record.getVertex().get();
       Assertions.assertEquals("Musk", kimbal.getString("lastName"));
       Assertions.assertEquals(100, kimbal.getInteger("extra"));
 
@@ -209,7 +209,7 @@ public class RemoteDatabaseIT extends BaseGraphServerTest {
       try {
         database.lookupByRID(elon.getIdentity());
         Assertions.fail();
-      } catch (RecordNotFoundException e) {
+      } catch (final RecordNotFoundException e) {
         // EXPECTED
       }
     });

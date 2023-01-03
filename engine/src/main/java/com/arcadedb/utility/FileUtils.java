@@ -24,6 +24,7 @@ import com.arcadedb.log.LogManager;
 
 import java.io.*;
 import java.lang.management.*;
+import java.net.URLEncoder;
 import java.nio.channels.*;
 import java.nio.file.FileSystem;
 import java.nio.file.*;
@@ -45,7 +46,7 @@ public class FileUtils {
 
     try {
       Class.forName("java.nio.file.FileSystemException");
-    } catch (ClassNotFoundException ignore) {
+    } catch (final ClassNotFoundException ignore) {
       oldAPI = true;
     }
 
@@ -164,7 +165,7 @@ public class FileUtils {
           if (rootFile.isDirectory()) {
             final File[] files = rootFile.listFiles();
             if (files != null) {
-              for (File f : files) {
+              for (final File f : files) {
                 if (f.isFile()) {
                   Files.delete(Paths.get(f.getAbsolutePath()));
                 } else
@@ -178,7 +179,7 @@ public class FileUtils {
 
         break;
 
-      } catch (IOException e) {
+      } catch (final IOException e) {
 //        if (System.getProperty("os.name").toLowerCase().contains("win")) {
 //          // AVOID LOCKING UNDER WINDOWS
 //          try {
@@ -207,7 +208,7 @@ public class FileUtils {
         if (file.exists())
           Files.delete(file.toPath());
         return true;
-      } catch (IOException e) {
+      } catch (final IOException e) {
 //        if (System.getProperty("os.name").toLowerCase().contains("win")) {
 //          // AVOID LOCKING UNDER WINDOWS
 //          try {
@@ -226,7 +227,7 @@ public class FileUtils {
 
   @SuppressWarnings("resource")
   public static final void copyFile(final File source, final File destination) throws IOException {
-    try (FileInputStream fis = new FileInputStream(source); FileOutputStream fos = new FileOutputStream(destination)) {
+    try (final FileInputStream fis = new FileInputStream(source); final FileOutputStream fos = new FileOutputStream(destination)) {
       final FileChannel sourceChannel = fis.getChannel();
       final FileChannel targetChannel = fos.getChannel();
       sourceChannel.transferTo(0, sourceChannel.size(), targetChannel);
@@ -237,7 +238,7 @@ public class FileUtils {
     if (!destination.exists())
       destination.mkdirs();
 
-    for (File f : source.listFiles()) {
+    for (final File f : source.listFiles()) {
       final File target = new File(destination.getAbsolutePath() + File.separator + f.getName());
       if (f.isFile())
         copyFile(f, target);
@@ -246,7 +247,7 @@ public class FileUtils {
     }
   }
 
-  public static boolean renameFile(File from, File to) throws IOException {
+  public static boolean renameFile(final File from, final File to) throws IOException {
     if (useOldFileAPI)
       return from.renameTo(to);
 
@@ -263,7 +264,7 @@ public class FileUtils {
     final StringBuilder dump = new StringBuilder();
     final ThreadMXBean threadMXBean = ManagementFactory.getThreadMXBean();
     final ThreadInfo[] threadInfos = threadMXBean.getThreadInfo(threadMXBean.getAllThreadIds(), 100);
-    for (ThreadInfo threadInfo : threadInfos) {
+    for (final ThreadInfo threadInfo : threadInfos) {
       dump.append('"');
       dump.append(threadInfo.getThreadName());
       dump.append("\" ");
@@ -281,7 +282,7 @@ public class FileUtils {
   }
 
   public static String readFileAsString(final File file, final String iCharset) throws IOException {
-    try (FileInputStream is = new FileInputStream(file)) {
+    try (final FileInputStream is = new FileInputStream(file)) {
       return readStreamAsString(is, iCharset, 0);
     }
   }
@@ -331,13 +332,13 @@ public class FileUtils {
   }
 
   public static void writeFile(final File iFile, final String iContent) throws IOException {
-    try (FileOutputStream fos = new FileOutputStream(iFile)) {
+    try (final FileOutputStream fos = new FileOutputStream(iFile)) {
       writeContentToStream(fos, iContent);
     }
   }
 
   public static void writeContentToStream(final File file, final byte[] content) throws IOException {
-    try (FileOutputStream fos = new FileOutputStream(file)) {
+    try (final FileOutputStream fos = new FileOutputStream(file)) {
       fos.write(content);
     }
   }
@@ -356,18 +357,18 @@ public class FileUtils {
 
   public static String encode(final String value, final String encoding) {
     try {
-      return java.net.URLEncoder.encode(value, encoding);
-    } catch (UnsupportedEncodingException e) {
+      return URLEncoder.encode(value, encoding);
+    } catch (final UnsupportedEncodingException e) {
       LogManager.instance().log(FileUtils.class, Level.SEVERE, "Error on using encoding " + encoding, e);
       return value;
     }
   }
 
   public static void gzipFile(final File sourceFile, final File destFile) throws IOException {
-    try (FileInputStream fis = new FileInputStream(sourceFile);
-        FileOutputStream fos = new FileOutputStream(destFile);
-        GZIPOutputStream gzipOS = new GZIPOutputStream(fos)) {
-      byte[] buffer = new byte[1024 * 1024];
+    try (final FileInputStream fis = new FileInputStream(sourceFile);
+        final FileOutputStream fos = new FileOutputStream(destFile);
+        final GZIPOutputStream gzipOS = new GZIPOutputStream(fos)) {
+      final byte[] buffer = new byte[1024 * 1024];
       int len;
       while ((len = fis.read(buffer)) != -1) {
         gzipOS.write(buffer, 0, len);
@@ -420,7 +421,7 @@ public class FileUtils {
       result.append(" ");
 
     for (int i = 0; i < maxWidth; i++) {
-      String s = "" + i;
+      final String s = "" + i;
       final char unit = s.charAt(s.length() - 1);
       if (unit == '0') {
         final char decimal = s.length() > 1 ? s.charAt(s.length() - 2) : ' ';
@@ -435,7 +436,7 @@ public class FileUtils {
       result.append(" ");
 
     for (int i = 0; i < maxWidth; i++) {
-      String s = "" + i;
+      final String s = "" + i;
       final char unit = s.charAt(s.length() - 1);
       result.append(unit);
     }

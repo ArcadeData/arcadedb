@@ -19,15 +19,15 @@
 package com.arcadedb.exception;
 
 public class CommandExecutionException extends ArcadeDBException {
-  public CommandExecutionException(String message) {
+  public CommandExecutionException(final String message) {
     super(message);
   }
 
-  public CommandExecutionException(String message, Throwable cause) {
+  public CommandExecutionException(final String message, final Throwable cause) {
     super(message, cause);
   }
 
-  public CommandExecutionException(Throwable cause) {
+  public CommandExecutionException(final Throwable cause) {
     super(cause);
   }
 }

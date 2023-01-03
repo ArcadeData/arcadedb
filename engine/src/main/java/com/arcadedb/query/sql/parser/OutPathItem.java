@@ -25,20 +25,20 @@ import com.arcadedb.query.sql.executor.Result;
 import java.util.*;
 
 public class OutPathItem extends MatchPathItem {
-  public OutPathItem(int id) {
+  public OutPathItem(final int id) {
     super(id);
   }
 
-  public OutPathItem(SqlParser p, int id) {
+  public OutPathItem(final SqlParser p, final int id) {
     super(p, id);
   }
 
   @Override
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("-");
     boolean first = true;
     if (this.method.params != null) {
-      for (Expression exp : this.method.params) {
+      for (final Expression exp : this.method.params) {
         if (!first) {
           builder.append(", ");
         }

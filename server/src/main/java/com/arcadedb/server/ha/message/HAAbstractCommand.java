@@ -27,6 +27,6 @@ public abstract class HAAbstractCommand implements HACommand {
   }
 
   @Override
-  public void fromStream(ArcadeDBServer server, final Binary stream) {
+  public void fromStream(final ArcadeDBServer server, final Binary stream) {
   }
 }

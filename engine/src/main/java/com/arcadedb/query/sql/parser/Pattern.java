@@ -32,19 +32,19 @@ public class Pattern {
   public Map<String, PatternNode> aliasToNode = new LinkedHashMap<>();
   public int                      numOfEdges  = 0;
 
-  public void addExpression(MatchExpression expression) {
+  public void addExpression(final MatchExpression expression) {
     PatternNode originNode = getOrCreateNode(expression.origin);
 
-    for (MatchPathItem item : expression.items) {
-      String nextAlias = item.filter.getAlias();
-      PatternNode nextNode = getOrCreateNode(item.filter);
+    for (final MatchPathItem item : expression.items) {
+      final String nextAlias = item.filter.getAlias();
+      final PatternNode nextNode = getOrCreateNode(item.filter);
 
       numOfEdges += originNode.addEdge(item, nextNode);
       originNode = nextNode;
     }
   }
 
-  private PatternNode getOrCreateNode(MatchFilter origin) {
+  private PatternNode getOrCreateNode(final MatchFilter origin) {
     PatternNode originNode = get(origin.getAlias());
     if (originNode == null) {
       originNode = new PatternNode();
@@ -57,7 +57,7 @@ public class Pattern {
     return originNode;
   }
 
-  public PatternNode get(String alias) {
+  public PatternNode get(final String alias) {
     return aliasToNode.get(alias);
   }
 
@@ -66,7 +66,7 @@ public class Pattern {
   }
 
   public void validate() {
-    for (PatternNode node : this.aliasToNode.values()) {
+    for (final PatternNode node : this.aliasToNode.values()) {
       if (node.isOptionalNode()) {
         if (node.out.size() > 0) {
           throw new CommandSQLParsingException(
@@ -88,25 +88,25 @@ public class Pattern {
    * @return
    */
   public List<Pattern> getDisjointPatterns() {
-    Map<PatternNode, String> reverseMap = new IdentityHashMap<>(this.aliasToNode.entrySet().stream().collect(Collectors.toMap(Map.Entry::getValue, Map.Entry::getKey)));
+    final Map<PatternNode, String> reverseMap = new IdentityHashMap<>(this.aliasToNode.entrySet().stream().collect(Collectors.toMap(Map.Entry::getValue, Map.Entry::getKey)));
 
-    List<Pattern> result = new ArrayList<>();
+    final List<Pattern> result = new ArrayList<>();
     while (!reverseMap.isEmpty()) {
-      Pattern pattern = new Pattern();
+      final Pattern pattern = new Pattern();
       result.add(pattern);
-      Map.Entry<PatternNode, String> nextNode = reverseMap.entrySet().iterator().next();
-      Set<PatternNode> toVisit = new HashSet<>();
+      final Map.Entry<PatternNode, String> nextNode = reverseMap.entrySet().iterator().next();
+      final Set<PatternNode> toVisit = new HashSet<>();
       toVisit.add(nextNode.getKey());
       while (toVisit.size() > 0) {
-        PatternNode currentNode = toVisit.iterator().next();
+        final PatternNode currentNode = toVisit.iterator().next();
         toVisit.remove(currentNode);
         if (reverseMap.containsKey(currentNode)) {
           pattern.aliasToNode.put(reverseMap.get(currentNode), currentNode);
           reverseMap.remove(currentNode);
-          for (PatternEdge x : currentNode.out) {
+          for (final PatternEdge x : currentNode.out) {
             toVisit.add(x.in);
           }
-          for (PatternEdge x : currentNode.in) {
+          for (final PatternEdge x : currentNode.in) {
             toVisit.add(x.out);
           }
         }
@@ -117,12 +117,12 @@ public class Pattern {
   }
 
   private void recalculateNumOfEdges() {
-    Map<PatternEdge, PatternEdge> edges = new IdentityHashMap<>();
-    for (PatternNode node : this.aliasToNode.values()) {
-      for (PatternEdge edge : node.out) {
+    final Map<PatternEdge, PatternEdge> edges = new IdentityHashMap<>();
+    for (final PatternNode node : this.aliasToNode.values()) {
+      for (final PatternEdge edge : node.out) {
         edges.put(edge, edge);
       }
-      for (PatternEdge edge : node.in) {
+      for (final PatternEdge edge : node.in) {
         edges.put(edge, edge);
       }
     }
@@ -133,11 +133,11 @@ public class Pattern {
     return aliasToNode;
   }
 
-  public void setAliasToNode(Map<String, PatternNode> aliasToNode) {
+  public void setAliasToNode(final Map<String, PatternNode> aliasToNode) {
     this.aliasToNode = aliasToNode;
   }
 
-  public void setNumOfEdges(int numOfEdges) {
+  public void setNumOfEdges(final int numOfEdges) {
     this.numOfEdges = numOfEdges;
   }
 }

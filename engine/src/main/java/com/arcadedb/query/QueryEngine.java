@@ -48,7 +48,7 @@ public interface QueryEngine {
 
   ResultSet command(String query, Object... parameters);
 
-  default QueryEngine registerFunctions(String function) {
+  default QueryEngine registerFunctions(final String function) {
     return this;
   }
 

@@ -65,7 +65,7 @@ public class ParseException extends Exception {
    * a new object of this type with the fields "currentToken",
    * "expectedTokenSequences", and "tokenImage" set.
    */
-  public ParseException(Token currentTokenVal, int[][] expectedTokenSequencesVal, String[] tokenImageVal) {
+  public ParseException(final Token currentTokenVal, final int[][] expectedTokenSequencesVal, final String[] tokenImageVal) {
     super(initialise(currentTokenVal, expectedTokenSequencesVal, tokenImageVal));
     currentToken = currentTokenVal;
     expectedTokenSequences = expectedTokenSequencesVal;
@@ -89,7 +89,7 @@ public class ParseException extends Exception {
   /**
    * Constructor with message.
    */
-  public ParseException(String message) {
+  public ParseException(final String message) {
     super(message);
   }
 
@@ -100,9 +100,9 @@ public class ParseException extends Exception {
    * from the parser) the correct error message
    * gets displayed.
    */
-  private static String initialise(Token currentToken, int[][] expectedTokenSequences, String[] tokenImage) {
-    String eol = System.getProperty("line.separator", "\n");
-    StringBuilder expected = new StringBuilder();
+  private static String initialise(final Token currentToken, final int[][] expectedTokenSequences, final String[] tokenImage) {
+    final String eol = System.getProperty("line.separator", "\n");
+    final StringBuilder expected = new StringBuilder();
     int maxSize = 0;
     for (int i = 0; i < expectedTokenSequences.length; i++) {
       if (maxSize < expectedTokenSequences[i].length) {
@@ -152,8 +152,8 @@ public class ParseException extends Exception {
    * when these raw version cannot be used as part of an ASCII
    * string literal.
    */
-  static String add_escapes(String str) {
-    StringBuilder retval = new StringBuilder();
+  static String add_escapes(final String str) {
+    final StringBuilder retval = new StringBuilder();
     char ch;
     for (int i = 0; i < str.length(); i++) {
       switch (str.charAt(i)) {
@@ -185,7 +185,7 @@ public class ParseException extends Exception {
         continue;
       default:
         if ((ch = str.charAt(i)) < 0x20 || ch > 0x7e) {
-          String s = "0000" + Integer.toString(ch, 16);
+          final String s = "0000" + Integer.toString(ch, 16);
           retval.append("\\u" + s.substring(s.length() - 4));
         } else {
           retval.append(ch);

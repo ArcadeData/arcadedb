@@ -21,11 +21,11 @@
 package com.arcadedb.query.sql.parser;
 
 public class BothPathItemOpt extends BothPathItem {
-  public BothPathItemOpt(int id) {
+  public BothPathItemOpt(final int id) {
     super(id);
   }
 
-  public BothPathItemOpt(SqlParser p, int id) {
+  public BothPathItemOpt(final SqlParser p, final int id) {
     super(p, id);
   }
 

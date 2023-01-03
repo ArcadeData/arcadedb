@@ -29,21 +29,21 @@ public class LimitExecutionStep extends AbstractExecutionStep {
 
   int loaded = 0;
 
-  public LimitExecutionStep(Limit limit, CommandContext ctx, boolean profilingEnabled) {
+  public LimitExecutionStep(final Limit limit, final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
     this.limit = limit;
   }
 
-  @Override public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    int limitVal = limit.getValue(ctx);
+  @Override public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
+    final int limitVal = limit.getValue(ctx);
     if (limitVal == -1) {
       return getPrev().get().syncPull(ctx, nRecords);
     }
     if (limitVal <= loaded) {
       return new InternalResultSet();
     }
-    int nextBlockSize = Math.min(nRecords, limitVal - loaded);
-    ResultSet result = prev.get().syncPull(ctx, nextBlockSize);
+    final int nextBlockSize = Math.min(nRecords, limitVal - loaded);
+    final ResultSet result = prev.get().syncPull(ctx, nextBlockSize);
     loaded += nextBlockSize;
     return result;
   }
@@ -56,7 +56,7 @@ public class LimitExecutionStep extends AbstractExecutionStep {
     prev.ifPresent(x -> x.close());
   }
 
-  @Override public String prettyPrint(int depth, int indent) {
+  @Override public String prettyPrint(final int depth, final int indent) {
     return ExecutionStepInternal.getIndent(depth, indent) + "+ LIMIT (" + limit.toString() + ")";
   }
 

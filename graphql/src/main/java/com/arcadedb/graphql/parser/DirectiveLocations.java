@@ -27,17 +27,17 @@ class DirectiveLocations extends SimpleNode {
 
   protected List<DirectiveLocation> directiveLocations = new ArrayList<>();
 
-  public DirectiveLocations(int id) {
+  public DirectiveLocations(final int id) {
     super(id);
   }
 
-  public DirectiveLocations(GraphQLParser p, int id) {
+  public DirectiveLocations(final GraphQLParser p, final int id) {
     super(p, id);
   }
 
 
   /** Accept the visitor. **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
+  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
     return
     visitor.visit(this, data);
   }

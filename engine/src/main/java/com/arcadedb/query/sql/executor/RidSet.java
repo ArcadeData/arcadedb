@@ -56,7 +56,7 @@ public class RidSet implements Set<RID> {
   /**
    * @param bucketSize
    */
-  public RidSet(int bucketSize) {
+  public RidSet(final int bucketSize) {
     maxArraySize = bucketSize;
   }
 
@@ -71,7 +71,7 @@ public class RidSet implements Set<RID> {
   }
 
   @Override
-  public boolean contains(Object o) {
+  public boolean contains(final Object o) {
     if (size == 0L)
       return false;
 
@@ -86,9 +86,9 @@ public class RidSet implements Set<RID> {
       return false;
 
     final long positionByte = (position / 63);
-    int positionBit = (int) (position % 63);
-    int block = (int) (positionByte / maxArraySize);
-    int blockPositionByteInt = (int) (positionByte % maxArraySize);
+    final int positionBit = (int) (position % 63);
+    final int block = (int) (positionByte / maxArraySize);
+    final int blockPositionByteInt = (int) (positionByte % maxArraySize);
 
     if (content.length <= bucket)
       return false;
@@ -131,8 +131,8 @@ public class RidSet implements Set<RID> {
     if (identifiable == null)
       throw new IllegalArgumentException();
 
-    int bucket = identifiable.getBucketId();
-    long position = identifiable.getPosition();
+    final int bucket = identifiable.getBucketId();
+    final long position = identifiable.getPosition();
     if (bucket < 0 || position < 0)
       throw new IllegalArgumentException("negative RID");//TODO
 
@@ -248,7 +248,7 @@ public class RidSet implements Set<RID> {
 
   @Override
   public boolean containsAll(final Collection<?> c) {
-    for (Object o : c) {
+    for (final Object o : c) {
       if (!contains(o)) {
         return false;
       }
@@ -259,7 +259,7 @@ public class RidSet implements Set<RID> {
   @Override
   public boolean addAll(final Collection<? extends RID> c) {
     boolean added = false;
-    for (RID o : c)
+    for (final RID o : c)
       added = added && add(o);
 
     return added;
@@ -272,7 +272,7 @@ public class RidSet implements Set<RID> {
 
   @Override
   public boolean removeAll(final Collection<?> c) {
-    for (Object o : c)
+    for (final Object o : c)
       remove(o);
 
     return true;

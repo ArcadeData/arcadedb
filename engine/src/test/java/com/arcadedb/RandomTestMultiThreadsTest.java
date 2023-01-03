@@ -59,7 +59,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
     createSchema();
     populateDatabase();
 
-    long begin = System.currentTimeMillis();
+    final long begin = System.currentTimeMillis();
 
     try {
 
@@ -187,7 +187,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
                   Thread.sleep(ms);
                 }
 
-              } catch (Exception e) {
+              } catch (final Exception e) {
                 if (e instanceof ConcurrentModificationException) {
                   mvccErrors.incrementAndGet();
                   total.decrementAndGet();
@@ -204,7 +204,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
 
             try {
               database.commit();
-            } catch (Exception e) {
+            } catch (final Exception e) {
               mvccErrors.incrementAndGet();
             }
 
@@ -220,7 +220,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
       for (int i = 0; i < WORKERS; ++i) {
         try {
           threads[i].join();
-        } catch (InterruptedException e) {
+        } catch (final InterruptedException e) {
           Thread.currentThread().interrupt();
           e.printStackTrace();
         }
@@ -232,7 +232,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
       //System.out.println(
       //     "Test finished in " + (System.currentTimeMillis() - begin) + "ms, mvccExceptions=" + mvccErrors.get() + " otherExceptions=" + otherErrors.size());
 
-      for (Pair<Integer, Exception> entry : otherErrors) {
+      for (final Pair<Integer, Exception> entry : otherErrors) {
         //System.out.println(" = threadId=" + entry.getFirst() + " exception=" + entry.getSecond());
       }
     }
@@ -280,7 +280,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
 
           updated++;
 
-        } catch (RecordNotFoundException e) {
+        } catch (final RecordNotFoundException e) {
           // OK
         }
         LogManager.instance().log(this, Level.FINE, "Updated record %s (threadId=%d)",  next.getIdentity(), threadId);
@@ -310,7 +310,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
         try {
           database.deleteRecord(next);
           deleted++;
-        } catch (RecordNotFoundException e) {
+        } catch (final RecordNotFoundException e) {
           // OK
         }
         //LogManager.instance().log(this, Level.FINE, "Deleted record %s (threadId=%d)", next.getIdentity(), threadId);
@@ -330,7 +330,7 @@ public class RandomTestMultiThreadsTest extends TestHelper {
 
   private void populateDatabase() {
 
-    long begin = System.currentTimeMillis();
+    final long begin = System.currentTimeMillis();
 
     database.begin();
 

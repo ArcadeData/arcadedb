@@ -40,6 +40,7 @@ public class TransactionTypeTest extends TestHelper {
 
   @Test
   public void testPopulate() {
+    // EMPTY METHOD
   }
 
   @Test
@@ -51,7 +52,7 @@ public class TransactionTypeTest extends TestHelper {
     database.scanType(TYPE_NAME, true, record -> {
       Assertions.assertNotNull(record);
 
-      Set<String> prop = new HashSet<String>();
+      final Set<String> prop = new HashSet<String>();
       prop.addAll(record.getPropertyNames());
 
       Assertions.assertEquals(3, record.getPropertyNames().size(), 9);
@@ -79,7 +80,7 @@ public class TransactionTypeTest extends TestHelper {
       Assertions.assertNotNull(record2);
       Assertions.assertEquals(record, record2);
 
-      Set<String> prop = new HashSet<String>();
+      final Set<String> prop = new HashSet<String>();
       prop.addAll(record2.getPropertyNames());
 
       Assertions.assertEquals(record2.getPropertyNames().size(), 3);
@@ -111,7 +112,7 @@ public class TransactionTypeTest extends TestHelper {
 
       Assertions.assertEquals(i, record2.get("id"));
 
-      Set<String> prop = new HashSet<String>();
+      final Set<String> prop = new HashSet<String>();
       prop.addAll(record2.getPropertyNames());
 
       Assertions.assertEquals(record2.getPropertyNames().size(), 3);
@@ -150,7 +151,7 @@ public class TransactionTypeTest extends TestHelper {
     // GET EACH ITEM TO CHECK IT HAS BEEN DELETED
     final Index[] indexes = database.getSchema().getIndexes();
     for (int i = 0; i < TOT; ++i) {
-      for (Index index : indexes)
+      for (final Index index : indexes)
         Assertions.assertFalse(index.get(new Object[] { i }).hasNext(), "Found item with key " + i);
     }
 
@@ -191,7 +192,7 @@ public class TransactionTypeTest extends TestHelper {
 
     // COUNT WITH ITERATE TYPE
     total.set(0);
-    for (Iterator<Record> it = database.iterateType(TYPE_NAME, true); it.hasNext(); it.next())
+    for (final Iterator<Record> it = database.iterateType(TYPE_NAME, true); it.hasNext(); it.next())
       total.incrementAndGet();
 
     Assertions.assertEquals(originalCount - 1, total.get());
@@ -229,7 +230,7 @@ public class TransactionTypeTest extends TestHelper {
 
     // COUNT WITH ITERATE TYPE
     total.set(0);
-    for (Iterator<Record> it = database.iterateType(TYPE_NAME, true); it.hasNext(); it.next())
+    for (final Iterator<Record> it = database.iterateType(TYPE_NAME, true); it.hasNext(); it.next())
       total.incrementAndGet();
 
     Assertions.assertEquals(originalCount, total.get());

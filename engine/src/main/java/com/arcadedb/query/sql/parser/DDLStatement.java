@@ -32,11 +32,11 @@ import java.util.*;
  */
 public abstract class DDLStatement extends Statement {
 
-  public DDLStatement(int id) {
+  public DDLStatement(final int id) {
     super(id);
   }
 
-  public DDLStatement(SqlParser p, int id) {
+  public DDLStatement(final SqlParser p, final int id) {
     super(p, id);
   }
 

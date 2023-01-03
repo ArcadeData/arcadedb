@@ -32,7 +32,7 @@ public class ExplainResultSet implements ResultSet {
   private final ExecutionPlan executionPlan;
   boolean hasNext = true;
 
-  public ExplainResultSet(ExecutionPlan executionPlan) {
+  public ExplainResultSet(final ExecutionPlan executionPlan) {
     this.executionPlan = executionPlan;
   }
 
@@ -46,7 +46,7 @@ public class ExplainResultSet implements ResultSet {
     if (!hasNext) {
       throw new IllegalStateException();
     }
-    ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal();
     getExecutionPlan().ifPresent(x -> result.setProperty("executionPlan", x.toResult()));
     getExecutionPlan().ifPresent(x -> result.setProperty("executionPlanAsString", x.prettyPrint(0, 3)));
     hasNext = false;

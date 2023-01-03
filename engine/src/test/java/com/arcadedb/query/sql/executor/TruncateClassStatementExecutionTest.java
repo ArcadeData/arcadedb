@@ -38,8 +38,8 @@ public class TruncateClassStatementExecutionTest extends TestHelper {
   public void testTruncateClass() {
     database.begin();
 
-    Schema schema = database.getSchema();
-    DocumentType testClass = getOrcreateDocumentType(schema);
+    final Schema schema = database.getSchema();
+    final DocumentType testClass = getOrcreateDocumentType(schema);
 
     final Index index = getOrCreateIndex(testClass);
 
@@ -53,10 +53,10 @@ public class TruncateClassStatementExecutionTest extends TestHelper {
     database.newDocument(testClass.getName()).set("name", "x").set("data", Arrays.asList(5, 6, 7)).save();
     database.newDocument(testClass.getName()).set("name", "y").set("data", Arrays.asList(8, 9, -1)).save();
 
-    ResultSet result = database.query("sql", "SElect from test_class");
+    final ResultSet result = database.query("sql", "SElect from test_class");
     //    Assertions.assertEquals(result.size(), 2);
 
-    Set<Integer> set = new HashSet<Integer>();
+    final Set<Integer> set = new HashSet<Integer>();
     while (result.hasNext()) {
       set.addAll(result.next().getProperty("data"));
     }
@@ -121,8 +121,8 @@ public class TruncateClassStatementExecutionTest extends TestHelper {
   public void testTruncateClassWithCommandCache() {
     database.begin();
 
-    Schema schema = database.getSchema();
-    DocumentType testClass = getOrcreateDocumentType(schema);
+    final Schema schema = database.getSchema();
+    final DocumentType testClass = getOrcreateDocumentType(schema);
 
     database.command("sql", "truncate type test_class");
 
@@ -144,15 +144,15 @@ public class TruncateClassStatementExecutionTest extends TestHelper {
     database.commit();
   }
 
-  private List<Result> toList(ResultSet input) {
-    List<Result> result = new ArrayList<>();
+  private List<Result> toList(final ResultSet input) {
+    final List<Result> result = new ArrayList<>();
     while (input.hasNext()) {
       result.add(input.next());
     }
     return result;
   }
 
-  private Index getOrCreateIndex(DocumentType testClass) {
+  private Index getOrCreateIndex(final DocumentType testClass) {
     if (database.getSchema().existsIndex("test_class_by_data"))
       return database.getSchema().getIndexByName("test_class_by_data");
 
@@ -160,8 +160,8 @@ public class TruncateClassStatementExecutionTest extends TestHelper {
     return testClass.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "data");
   }
 
-  private DocumentType getOrcreateDocumentType(Schema schema) {
-    DocumentType testClass;
+  private DocumentType getOrcreateDocumentType(final Schema schema) {
+    final DocumentType testClass;
     if (schema.existsType("test_class")) {
       testClass = schema.getType("test_class");
     } else {

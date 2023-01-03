@@ -32,7 +32,7 @@ public class ExecutionPlanCacheTest {
 
   @Test
   public void testCacheInvalidation1() throws InterruptedException {
-    String testName = "testCacheInvalidation1";
+    final String testName = "testCacheInvalidation1";
 
     final DatabaseInternal db = (DatabaseInternal) new DatabaseFactory("ExecutionPlanCacheTest").create();
     try {
@@ -42,7 +42,7 @@ public class ExecutionPlanCacheTest {
       db.commit();
 
       ExecutionPlanCache cache = ExecutionPlanCache.instance(db);
-      String stm = "SELECT FROM OUser";
+      final String stm = "SELECT FROM OUser";
 
       /*
        * the cache has a mechanism that guarantees that if you are doing execution planning
@@ -59,7 +59,7 @@ public class ExecutionPlanCacheTest {
       cache = ExecutionPlanCache.instance(db);
       Assertions.assertTrue(cache.contains(stm));
 
-      DocumentType clazz = db.getSchema().createDocumentType(testName);
+      final DocumentType clazz = db.getSchema().createDocumentType(testName);
       Assertions.assertFalse(cache.contains(stm));
 
       Thread.sleep(2);
@@ -69,7 +69,7 @@ public class ExecutionPlanCacheTest {
       cache = ExecutionPlanCache.instance(db);
       Assertions.assertTrue(cache.contains(stm));
 
-      Property prop = clazz.createProperty("name", Type.STRING);
+      final Property prop = clazz.createProperty("name", Type.STRING);
       Assertions.assertFalse(cache.contains(stm));
 
       Thread.sleep(2);

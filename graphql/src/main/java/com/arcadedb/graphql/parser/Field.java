@@ -25,23 +25,23 @@ public class Field extends AbstractField {
   protected Arguments    arguments;
   protected SelectionSet selectionSet;
 
-  public Field(Name name, int line, int column, int tokenId) {
+  public Field(final Name name, final int line, final int column, final int tokenId) {
     this(-1);
     this.name = name;
   }
 
-  public Field(int id) {
+  public Field(final int id) {
     super(id);
   }
 
-  public Field(GraphQLParser p, int id) {
+  public Field(final GraphQLParser p, final int id) {
     super(p, id);
   }
 
   /**
    * Accept the visitor.
    **/
-  public Object jjtAccept(GraphQLParserVisitor visitor, Object data) {
+  public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
     return visitor.visit(this, data);
   }
 

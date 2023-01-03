@@ -92,7 +92,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
         if (currentTo == null) {
           loadNextFromTo();
         }
-        long begin = profilingEnabled ? System.nanoTime() : 0;
+        final long begin = profilingEnabled ? System.nanoTime() : 0;
         try {
 
           if (finished || currentBatch >= nRecords) {
@@ -160,16 +160,16 @@ public class CreateEdgesStep extends AbstractExecutionStep {
     if (fromIter instanceof ResultSet) {
       try {
         ((ResultSet) fromIter).reset();
-      } catch (Exception ignore) {
+      } catch (final Exception ignore) {
       }
     }
 
-    Iterator toIter = (Iterator) toValues;
+    final Iterator toIter = (Iterator) toValues;
 
     if (toIter instanceof ResultSet) {
       try {
         ((ResultSet) toIter).reset();
-      } catch (Exception ignore) {
+      } catch (final Exception ignore) {
       }
     }
     while (toIter != null && toIter.hasNext()) {
@@ -210,7 +210,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
           }
         }
 
-        Object obj = toIterator.next();
+        final Object obj = toIterator.next();
 
         currentTo = asVertex(obj);
         if (currentTo == null) {
@@ -218,7 +218,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
         }
 
         if (isUpsert()) {
-          Edge existingEdge = getExistingEdge(currentFrom, currentTo);
+          final Edge existingEdge = getExistingEdge(currentFrom, currentTo);
           if (existingEdge != null) {
             edgeToUpdate = existingEdge.modify();
           }
@@ -255,14 +255,14 @@ public class CreateEdgesStep extends AbstractExecutionStep {
       currentFrom = ((RID) currentFrom).getRecord();
     }
     if (currentFrom instanceof Result) {
-      Object from = currentFrom;
+      final Object from = currentFrom;
       currentFrom = ((Result) currentFrom).getVertex().orElseThrow(() -> new CommandExecutionException("Invalid vertex for edge creation: " + from.toString()));
     }
     if (currentFrom instanceof Vertex) {
       return (Vertex) currentFrom;
     }
     if (currentFrom instanceof Document) {
-      Object from = currentFrom;
+      final Object from = currentFrom;
       return ((Document) currentFrom).asVertex();
     }
     throw new CommandExecutionException("Invalid vertex for edge creation: " + (currentFrom == null ? "null" : currentFrom.toString()));
@@ -270,7 +270,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
 
   @Override
   public String prettyPrint(final int depth, final int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     String result = spaces + "+ FOR EACH x in " + fromAlias + "\n";
     result += spaces + "    FOR EACH y in " + toAlias + "\n";
     result += spaces + "       CREATE EDGE " + targetClass + " FROM x TO y";

@@ -124,10 +124,10 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
 
   }
 
-  private LinkedList<Vertex> internalExecute(final CommandContext iContext, Database graph) {
+  private LinkedList<Vertex> internalExecute(final CommandContext iContext, final Database graph) {
 
-    Vertex start = paramSourceVertex;
-    Vertex goal = paramDestinationVertex;
+    final Vertex start = paramSourceVertex;
+    final Vertex goal = paramDestinationVertex;
 
     open.add(start);
 
@@ -155,16 +155,16 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
       }
 
       closedSet.add(current);
-      for (Edge neighborEdge : getNeighborEdges(current)) {
+      for (final Edge neighborEdge : getNeighborEdges(current)) {
 
-        Vertex neighbor = getNeighbor(current, neighborEdge, graph);
+        final Vertex neighbor = getNeighbor(current, neighborEdge, graph);
         // Ignore the neighbor which is already evaluated.
         if (closedSet.contains(neighbor)) {
           continue;
         }
         // The distance from start to a neighbor
-        double tentative_gScore = gScore.get(current) + getDistance(neighborEdge);
-        boolean contains = open.contains(neighbor);
+        final double tentative_gScore = gScore.get(current) + getDistance(neighborEdge);
+        final boolean contains = open.contains(neighbor);
 
         if (!contains || tentative_gScore < gScore.get(neighbor)) {
           gScore.put(neighbor, tentative_gScore);
@@ -186,7 +186,7 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
     return getPath();
   }
 
-  private Vertex getNeighbor(Vertex current, Edge neighborEdge, Database graph) {
+  private Vertex getNeighbor(final Vertex current, final Edge neighborEdge, final Database graph) {
     if (neighborEdge.getOut().equals(current.getIdentity())) {
       return toVertex(neighborEdge.getIn());
     }
@@ -208,7 +208,7 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
 
     final Set<Edge> neighbors = new HashSet<Edge>();
     if (node != null) {
-      for (Edge v : node.getEdges(paramDirection, paramEdgeTypeNames)) {
+      for (final Edge v : node.getEdges(paramDirection, paramEdgeTypeNames)) {
         final Edge ov = v;
         if (ov != null)
           neighbors.add(ov);
@@ -217,7 +217,7 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
     return neighbors;
   }
 
-  private void bindAdditionalParams(Object additionalParams, SQLFunctionAstar ctx) {
+  private void bindAdditionalParams(final Object additionalParams, final SQLFunctionAstar ctx) {
     if (additionalParams == null) {
       return;
     }
@@ -270,7 +270,7 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
     final Iterator<Edge> edges = node.getEdges(paramDirection).iterator();
     Edge e = null;
     while (edges.hasNext()) {
-      Edge next = edges.next();
+      final Edge next = edges.next();
       if (next.getOut().equals(target.getIdentity()) || next.getIn().equals(target.getIdentity())) {
         e = next;
         break;
@@ -307,26 +307,26 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
   }
 
   @Override
-  protected double getHeuristicCost(final Vertex node, Vertex parent, final Vertex target, CommandContext iContext) {
+  protected double getHeuristicCost(final Vertex node, Vertex parent, final Vertex target, final CommandContext iContext) {
     double hresult = 0.0;
 
     if (paramVertexAxisNames.length == 0) {
       return hresult;
     } else if (paramVertexAxisNames.length == 1) {
-      double n = doubleOrDefault(node.get(paramVertexAxisNames[0]), 0.0);
-      double g = doubleOrDefault(target.get(paramVertexAxisNames[0]), 0.0);
+      final double n = doubleOrDefault(node.get(paramVertexAxisNames[0]), 0.0);
+      final double g = doubleOrDefault(target.get(paramVertexAxisNames[0]), 0.0);
       hresult = getSimpleHeuristicCost(n, g, paramDFactor);
     } else if (paramVertexAxisNames.length == 2) {
       if (parent == null)
         parent = node;
-      double sx = doubleOrDefault(paramSourceVertex.get(paramVertexAxisNames[0]), 0);
-      double sy = doubleOrDefault(paramSourceVertex.get(paramVertexAxisNames[1]), 0);
-      double nx = doubleOrDefault(node.get(paramVertexAxisNames[0]), 0);
-      double ny = doubleOrDefault(node.get(paramVertexAxisNames[1]), 0);
-      double px = doubleOrDefault(parent.get(paramVertexAxisNames[0]), 0);
-      double py = doubleOrDefault(parent.get(paramVertexAxisNames[1]), 0);
-      double gx = doubleOrDefault(target.get(paramVertexAxisNames[0]), 0);
-      double gy = doubleOrDefault(target.get(paramVertexAxisNames[1]), 0);
+      final double sx = doubleOrDefault(paramSourceVertex.get(paramVertexAxisNames[0]), 0);
+      final double sy = doubleOrDefault(paramSourceVertex.get(paramVertexAxisNames[1]), 0);
+      final double nx = doubleOrDefault(node.get(paramVertexAxisNames[0]), 0);
+      final double ny = doubleOrDefault(node.get(paramVertexAxisNames[1]), 0);
+      final double px = doubleOrDefault(parent.get(paramVertexAxisNames[0]), 0);
+      final double py = doubleOrDefault(parent.get(paramVertexAxisNames[1]), 0);
+      final double gx = doubleOrDefault(target.get(paramVertexAxisNames[0]), 0);
+      final double gy = doubleOrDefault(target.get(paramVertexAxisNames[1]), 0);
 
       switch (paramHeuristicFormula) {
       case MANHATTAN:
@@ -350,16 +350,16 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
       }
 
     } else {
-      Map<String, Double> sList = new HashMap<String, Double>();
-      Map<String, Double> cList = new HashMap<String, Double>();
-      Map<String, Double> pList = new HashMap<String, Double>();
-      Map<String, Double> gList = new HashMap<String, Double>();
+      final Map<String, Double> sList = new HashMap<String, Double>();
+      final Map<String, Double> cList = new HashMap<String, Double>();
+      final Map<String, Double> pList = new HashMap<String, Double>();
+      final Map<String, Double> gList = new HashMap<String, Double>();
       parent = parent == null ? node : parent;
       for (int i = 0; i < paramVertexAxisNames.length; i++) {
-        Double s = doubleOrDefault(paramSourceVertex.get(paramVertexAxisNames[i]), 0);
-        Double c = doubleOrDefault(node.get(paramVertexAxisNames[i]), 0);
-        Double g = doubleOrDefault(target.get(paramVertexAxisNames[i]), 0);
-        Double p = doubleOrDefault(parent.get(paramVertexAxisNames[i]), 0);
+        final Double s = doubleOrDefault(paramSourceVertex.get(paramVertexAxisNames[i]), 0);
+        final Double c = doubleOrDefault(node.get(paramVertexAxisNames[i]), 0);
+        final Double g = doubleOrDefault(target.get(paramVertexAxisNames[i]), 0);
+        final Double p = doubleOrDefault(parent.get(paramVertexAxisNames[i]), 0);
         if (s != null)
           sList.put(paramVertexAxisNames[i], s);
         if (c != null)

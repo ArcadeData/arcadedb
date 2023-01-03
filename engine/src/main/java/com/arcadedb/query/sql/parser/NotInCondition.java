@@ -39,17 +39,17 @@ public class NotInCondition extends BooleanExpression {
   private static final Object UNSET           = new Object();
   private final        Object inputFinalValue = UNSET;
 
-  public NotInCondition(int id) {
+  public NotInCondition(final int id) {
     super(id);
   }
 
-  public NotInCondition(SqlParser p, int id) {
+  public NotInCondition(final SqlParser p, final int id) {
     super(p, id);
   }
 
   @Override
-  public boolean evaluate(Identifiable currentRecord, CommandContext ctx) {
-    Object leftVal = left.execute(currentRecord, ctx);
+  public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
+    final Object leftVal = left.execute(currentRecord, ctx);
     Object rightVal = null;
     if (rightStatement != null) {
       rightVal = InCondition.executeQuery(rightStatement, ctx);
@@ -65,8 +65,8 @@ public class NotInCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(Result currentRecord, CommandContext ctx) {
-    Object leftVal = left.execute(currentRecord, ctx);
+  public boolean evaluate(final Result currentRecord, final CommandContext ctx) {
+    final Object leftVal = left.execute(currentRecord, ctx);
     Object rightVal = null;
     if (rightStatement != null) {
       rightVal = InCondition.executeQuery(rightStatement, ctx);
@@ -81,7 +81,7 @@ public class NotInCondition extends BooleanExpression {
     return !InCondition.evaluateExpression(leftVal, rightVal);
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
 
     left.toString(params, builder);
     builder.append(" NOT IN ");
@@ -98,7 +98,7 @@ public class NotInCondition extends BooleanExpression {
     }
   }
 
-  private String convertToString(Object o) {
+  private String convertToString(final Object o) {
     if (o instanceof String) {
       return "\"" + ((String) o).replaceAll("\"", "\\\"") + "\"";
     }
@@ -135,7 +135,7 @@ public class NotInCondition extends BooleanExpression {
 
   @Override
   protected List<Object> getExternalCalculationConditions() {
-    List<Object> result = new ArrayList<Object>();
+    final List<Object> result = new ArrayList<Object>();
     if (operator != null && !operator.supportsBasicCalculation()) {
       result.add(this);
     }
@@ -146,7 +146,7 @@ public class NotInCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean needsAliases(Set<String> aliases) {
+  public boolean needsAliases(final Set<String> aliases) {
     if (left.needsAliases(aliases)) {
       return true;
     }
@@ -156,7 +156,7 @@ public class NotInCondition extends BooleanExpression {
 
   @Override
   public NotInCondition copy() {
-    NotInCondition result = new NotInCondition(-1);
+    final NotInCondition result = new NotInCondition(-1);
     result.operator = operator == null ? null : operator.copy();
     result.left = left == null ? null : left.copy();
     result.rightMathExpression = rightMathExpression == null ? null : rightMathExpression.copy();
@@ -167,7 +167,7 @@ public class NotInCondition extends BooleanExpression {
   }
 
   @Override
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
     if (left != null) {
       left.extractSubQueries(collector);
     }
@@ -175,7 +175,7 @@ public class NotInCondition extends BooleanExpression {
     if (rightMathExpression != null) {
       rightMathExpression.extractSubQueries(collector);
     } else if (rightStatement != null) {
-      Identifier alias = collector.addStatement(rightStatement);
+      final Identifier alias = collector.addStatement(rightStatement);
       rightMathExpression = new BaseExpression(alias);
       rightStatement = null;
     }

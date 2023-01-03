@@ -41,7 +41,7 @@ public class FetchEdgesToVerticesStep extends AbstractExecutionStep {
   private Edge           nextEdge;
   private Iterator<Edge> currentToEdgesIter;
 
-  public FetchEdgesToVerticesStep(String toAlias, Identifier targetType, Identifier targetBucket, CommandContext ctx, boolean profilingEnabled) {
+  public FetchEdgesToVerticesStep(final String toAlias, final Identifier targetType, final Identifier targetBucket, final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
     this.toAlias = toAlias;
     this.targetType = targetType;
@@ -49,7 +49,7 @@ public class FetchEdgesToVerticesStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
     getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
     init();
 
@@ -141,11 +141,11 @@ public class FetchEdgesToVerticesStep extends AbstractExecutionStep {
     }
   }
 
-  private boolean matchesBucket(Edge edge) {
+  private boolean matchesBucket(final Edge edge) {
     if (targetBucket == null)
       return true;
 
-    int bucketId = edge.getIdentity().getBucketId();
+    final int bucketId = edge.getIdentity().getBucketId();
     final String bucketName = ctx.getDatabase().getSchema().getBucketById(bucketId).getName();
     return bucketName.equals(targetBucket.getStringValue());
   }
@@ -158,8 +158,8 @@ public class FetchEdgesToVerticesStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     String result = spaces + "+ FOR EACH x in " + toAlias + "\n";
     result += spaces + "       FETCH EDGES TO x";
     if (targetType != null) {

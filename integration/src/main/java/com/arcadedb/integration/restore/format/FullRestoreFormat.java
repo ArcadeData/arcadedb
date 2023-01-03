@@ -65,7 +65,7 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
 
     logger.logLine(0, "Executing full restore of database from file '%s' to '%s'...", settings.inputFileURL, settings.databaseDirectory);
 
-    try (ZipInputStream zipFile = new ZipInputStream(inputSource.inputStream, DatabaseFactory.getDefaultCharset())) {
+    try (final ZipInputStream zipFile = new ZipInputStream(inputSource.inputStream, DatabaseFactory.getDefaultCharset())) {
       final long beginTime = System.currentTimeMillis();
 
       long databaseOrigSize = 0L;
@@ -85,7 +85,7 @@ public class FullRestoreFormat extends AbstractRestoreFormat {
     }
   }
 
-  private long uncompressFile(final ZipInputStream inputFile, ZipEntry compressedFile, final File databaseDirectory) throws IOException {
+  private long uncompressFile(final ZipInputStream inputFile, final ZipEntry compressedFile, final File databaseDirectory) throws IOException {
     final String fileName = compressedFile.getName();
 
     FileUtils.checkValidName(fileName);

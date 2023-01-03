@@ -61,7 +61,7 @@ public class HttpSessionManager extends RWLockContext {
     return executeInWriteLock(() -> {
       int expired = 0;
       Map.Entry<String, HttpSession> s;
-      for (Iterator<Map.Entry<String, HttpSession>> it = sessions.entrySet().iterator(); it.hasNext(); ) {
+      for (final Iterator<Map.Entry<String, HttpSession>> it = sessions.entrySet().iterator(); it.hasNext(); ) {
         s = it.next();
 
         if (s.getValue().elapsedFromLastUpdate() > expirationTimeInMs) {

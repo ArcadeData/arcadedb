@@ -44,10 +44,10 @@ public class SQLFunctionMode extends SQLFunctionAbstract {
   }
 
   @Override
-  public Object execute(Object iThis, Identifiable iCurrentRecord, Object iCurrentResult, Object[] iParams, CommandContext iContext) {
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams, final CommandContext iContext) {
 
     if (MultiValue.isMultiValue(iParams[0])) {
-      for (Object o : MultiValue.getMultiValueIterable(iParams[0])) {
+      for (final Object o : MultiValue.getMultiValueIterable(iParams[0])) {
         max = evaluate(o, 1, seen, maxElems, max);
       }
     } else {
@@ -71,7 +71,7 @@ public class SQLFunctionMode extends SQLFunctionAbstract {
     return true;
   }
 
-  private int evaluate(Object value, int times, Map<Object, Integer> iSeen, List<Object> iMaxElems, int iMax) {
+  private int evaluate(final Object value, final int times, final Map<Object, Integer> iSeen, final List<Object> iMaxElems, int iMax) {
     if (value != null) {
       if (iSeen.containsKey(value)) {
         iSeen.put(value, iSeen.get(value) + times);

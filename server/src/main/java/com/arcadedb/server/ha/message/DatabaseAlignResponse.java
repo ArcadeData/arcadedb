@@ -34,7 +34,7 @@ public class DatabaseAlignResponse extends HAAbstractCommand {
   public DatabaseAlignResponse() {
   }
 
-  public DatabaseAlignResponse(List<int[]> alignedPages) {
+  public DatabaseAlignResponse(final List<int[]> alignedPages) {
     this.alignedPages = alignedPages;
   }
 
@@ -62,7 +62,7 @@ public class DatabaseAlignResponse extends HAAbstractCommand {
   }
 
   @Override
-  public void fromStream(ArcadeDBServer server, final Binary stream) {
+  public void fromStream(final ArcadeDBServer server, final Binary stream) {
     final int total = stream.getInt();
     if (total > 0) {
       alignedPages = new ArrayList<>(total);
@@ -89,7 +89,7 @@ public class DatabaseAlignResponse extends HAAbstractCommand {
   public String toString() {
     final StringBuilder buffer = new StringBuilder();
 
-    for (int[] array : alignedPages) {
+    for (final int[] array : alignedPages) {
       if (buffer.length() > 0)
         buffer.append(',');
       buffer.append(Arrays.toString(array));

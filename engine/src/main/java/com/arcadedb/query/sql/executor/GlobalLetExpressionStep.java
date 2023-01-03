@@ -31,29 +31,29 @@ public class GlobalLetExpressionStep extends AbstractExecutionStep {
 
   boolean executed = false;
 
-  public GlobalLetExpressionStep(Identifier varName, Expression expression, CommandContext ctx, boolean profilingEnabled) {
+  public GlobalLetExpressionStep(final Identifier varName, final Expression expression, final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
     this.varname = varName;
     this.expression = expression;
   }
 
-  @Override public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
+  @Override public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
     getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
     calculate(ctx);
     return new InternalResultSet();
   }
 
-  private void calculate(CommandContext ctx) {
+  private void calculate(final CommandContext ctx) {
     if (executed) {
       return;
     }
-    Object value = expression.execute((Result) null, ctx);
+    final Object value = expression.execute((Result) null, ctx);
     ctx.setVariable(varname.getStringValue(), value);
     executed = true;
   }
 
-  @Override public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
+  @Override public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     return spaces + "+ LET (once)\n" +
         spaces + "  " + varname + " = " + expression;
   }

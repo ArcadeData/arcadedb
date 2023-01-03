@@ -20,11 +20,13 @@
 /* JavaCCOptions:TOKEN_EXTENDS=,KEEP_LINE_COL=null,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import java.io.Serializable;
+
 /**
  * Describes the input token stream.
  */
 
-public class Token implements java.io.Serializable {
+public class Token implements Serializable {
 
   /**
    * The version identifier for this Serializable class.
@@ -107,14 +109,14 @@ public class Token implements java.io.Serializable {
   /**
    * Constructs a new token for the specified Image.
    */
-  public Token(int kind) {
+  public Token(final int kind) {
     this(kind, null);
   }
 
   /**
    * Constructs a new token for the specified Image and Kind.
    */
-  public Token(int kind, String image) {
+  public Token(final int kind, final String image) {
     this.kind = kind;
     this.image = image;
   }
@@ -138,11 +140,11 @@ public class Token implements java.io.Serializable {
    * to the following switch statement. Then you can cast matchedToken
    * variable to the appropriate type and use sit in your lexical actions.
    */
-  public static Token newToken(int ofKind, String image) {
+  public static Token newToken(final int ofKind, final String image) {
     return new Token(ofKind, image);
   }
 
-  public static Token newToken(int ofKind) {
+  public static Token newToken(final int ofKind) {
     return newToken(ofKind, null);
   }
 

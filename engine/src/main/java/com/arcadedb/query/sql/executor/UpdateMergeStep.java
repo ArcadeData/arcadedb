@@ -32,14 +32,14 @@ import java.util.*;
 public class UpdateMergeStep extends AbstractExecutionStep {
   private final Json json;
 
-  public UpdateMergeStep(Json json, CommandContext ctx, boolean profilingEnabled) {
+  public UpdateMergeStep(final Json json, final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
     this.json = json;
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    ResultSet upstream = getPrev().get().syncPull(ctx, nRecords);
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
+    final ResultSet upstream = getPrev().get().syncPull(ctx, nRecords);
     return new ResultSet() {
       @Override
       public boolean hasNext() {
@@ -48,7 +48,7 @@ public class UpdateMergeStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        Result result = upstream.next();
+        final Result result = upstream.next();
         if (result instanceof ResultInternal) {
           if (!(result.getElement().orElse(null) instanceof Document)) {
             ((ResultInternal) result).setElement((Document) result.getElement().get().getRecord());
@@ -72,17 +72,17 @@ public class UpdateMergeStep extends AbstractExecutionStep {
     };
   }
 
-  private void handleMerge(Record record, CommandContext ctx) {
+  private void handleMerge(final Record record, final CommandContext ctx) {
     final MutableDocument doc = ((Document) record).modify();
     final Map<String, Object> map = json.toMap(record, ctx);
-    for (Map.Entry<String, Object> entry : map.entrySet())
+    for (final Map.Entry<String, Object> entry : map.entrySet())
       doc.set(entry.getKey(), entry.getValue());
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    String result = spaces + "+ UPDATE MERGE\n" + spaces + "  " + json;
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
+    final String result = spaces + "+ UPDATE MERGE\n" + spaces + "  " + json;
     return result;
   }
 }

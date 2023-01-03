@@ -46,8 +46,8 @@ public class SQLFunctionDate extends SQLFunctionAbstract {
     date = new Date();
   }
 
-  public Object execute(Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
-      CommandContext iContext) {
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
+      final CommandContext iContext) {
     if (iParams.length == 0)
       return date;
 
@@ -71,7 +71,7 @@ public class SQLFunctionDate extends SQLFunctionAbstract {
 
     try {
       return format.parse((String) iParams[0]);
-    } catch (ParseException e) {
+    } catch (final ParseException e) {
       throw new QueryParsingException("Error on formatting date '" + iParams[0] + "' using the format: " + format.toPattern(), e);
     }
   }

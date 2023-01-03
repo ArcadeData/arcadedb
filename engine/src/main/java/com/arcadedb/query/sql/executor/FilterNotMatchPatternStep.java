@@ -30,17 +30,17 @@ public class FilterNotMatchPatternStep extends AbstractExecutionStep {
 
   private long cost;
 
-  public FilterNotMatchPatternStep(List<AbstractExecutionStep> steps, CommandContext ctx, boolean enableProfiling) {
+  public FilterNotMatchPatternStep(final List<AbstractExecutionStep> steps, final CommandContext ctx, final boolean enableProfiling) {
     super(ctx, enableProfiling);
     this.subSteps = steps;
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
     if (prev.isEmpty()) {
       throw new IllegalStateException("filter step requires a previous step");
     }
-    ExecutionStepInternal prevStep = prev.get();
+    final ExecutionStepInternal prevStep = prev.get();
 
     return new ResultSet() {
       public boolean finished = false;
@@ -69,7 +69,7 @@ public class FilterNotMatchPatternStep extends AbstractExecutionStep {
             }
           }
           nextItem = prevResult.next();
-          long begin = profilingEnabled ? System.nanoTime() : 0;
+          final long begin = profilingEnabled ? System.nanoTime() : 0;
           try {
             if (!matchesPattern(nextItem, ctx)) {
               break;
@@ -108,7 +108,7 @@ public class FilterNotMatchPatternStep extends AbstractExecutionStep {
         if (nextItem == null) {
           throw new NoSuchElementException();
         }
-        Result result = nextItem;
+        final Result result = nextItem;
         nextItem = null;
         fetched++;
         return result;
@@ -125,21 +125,21 @@ public class FilterNotMatchPatternStep extends AbstractExecutionStep {
     };
   }
 
-  private boolean matchesPattern(Result nextItem, CommandContext ctx) {
-    SelectExecutionPlan plan = createExecutionPlan(nextItem, ctx);
-    try (ResultSet rs = plan.fetchNext(1)) {
+  private boolean matchesPattern(final Result nextItem, final CommandContext ctx) {
+    final SelectExecutionPlan plan = createExecutionPlan(nextItem, ctx);
+    try (final ResultSet rs = plan.fetchNext(1)) {
       return rs.hasNext();
     }
   }
 
-  private SelectExecutionPlan createExecutionPlan(Result nextItem, CommandContext ctx) {
-    SelectExecutionPlan plan = new SelectExecutionPlan(ctx);
+  private SelectExecutionPlan createExecutionPlan(final Result nextItem, final CommandContext ctx) {
+    final SelectExecutionPlan plan = new SelectExecutionPlan(ctx);
     plan.chain(new AbstractExecutionStep(ctx, profilingEnabled) {
       private boolean executed = false;
 
       @Override
-      public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-        InternalResultSet result = new InternalResultSet();
+      public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
+        final InternalResultSet result = new InternalResultSet();
         if (!executed) {
           result.add(copy(nextItem));
           executed = true;
@@ -147,12 +147,12 @@ public class FilterNotMatchPatternStep extends AbstractExecutionStep {
         return result;
       }
 
-      private Result copy(Result nextItem) {
-        ResultInternal result = new ResultInternal();
-        for (String prop : nextItem.getPropertyNames()) {
+      private Result copy(final Result nextItem) {
+        final ResultInternal result = new ResultInternal();
+        for (final String prop : nextItem.getPropertyNames()) {
           result.setProperty(prop, nextItem.getProperty(prop));
         }
-        for (String md : nextItem.getMetadataKeys()) {
+        for (final String md : nextItem.getMetadataKeys()) {
           result.setMetadata(md, nextItem.getMetadata(md));
         }
         return result;
@@ -168,9 +168,9 @@ public class FilterNotMatchPatternStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    StringBuilder result = new StringBuilder();
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
+    final StringBuilder result = new StringBuilder();
     result.append(spaces);
     result.append("+ NOT (\n");
     this.subSteps.forEach(x -> result.append(x.prettyPrint(depth + 1, indent)).append("\n"));

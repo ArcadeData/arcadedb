@@ -32,15 +32,15 @@ public class TraverseProjectionItem extends SimpleNode {
   protected BaseIdentifier base;
   protected Modifier       modifier;
 
-  public TraverseProjectionItem(int id) {
+  public TraverseProjectionItem(final int id) {
     super(id);
   }
 
-  public TraverseProjectionItem(SqlParser p, int id) {
+  public TraverseProjectionItem(final SqlParser p, final int id) {
     super(p, id);
   }
 
-  public Object execute(Result iCurrentRecord, CommandContext ctx) {
+  public Object execute(final Result iCurrentRecord, final CommandContext ctx) {
     if (isStar()) {
       return handleStar(iCurrentRecord, ctx);
     }
@@ -55,9 +55,9 @@ public class TraverseProjectionItem extends SimpleNode {
     return base.toString().equals("*") && modifier == null;
   }
 
-  private Object handleStar(Result iCurrentRecord, CommandContext ctx) {
-    Set<Object> result = new HashSet<>();
-    for (String prop : iCurrentRecord.getPropertyNames()) {
+  private Object handleStar(final Result iCurrentRecord, final CommandContext ctx) {
+    final Set<Object> result = new HashSet<>();
+    for (final String prop : iCurrentRecord.getPropertyNames()) {
       Object val = iCurrentRecord.getProperty(prop);
       if (isOResult(val) || isValidIdentifiable(val)) {
         result.add(val);
@@ -68,7 +68,7 @@ public class TraverseProjectionItem extends SimpleNode {
         }
         if (val instanceof Iterator) {
           while (((Iterator) val).hasNext()) {
-            Object sub = ((Iterator) val).next();
+            final Object sub = ((Iterator) val).next();
             if (isOResult(sub) || isValidIdentifiable(sub)) {
               result.add(sub);
             }
@@ -83,15 +83,15 @@ public class TraverseProjectionItem extends SimpleNode {
     return result;
   }
 
-  private boolean isValidIdentifiable(Object val) {
+  private boolean isValidIdentifiable(final Object val) {
     return val instanceof Identifiable;
   }
 
-  private boolean isOResult(Object val) {
+  private boolean isOResult(final Object val) {
     return val instanceof Result;
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
 
     base.toString(params, builder);
     if (modifier != null) {
@@ -100,20 +100,20 @@ public class TraverseProjectionItem extends SimpleNode {
   }
 
   public TraverseProjectionItem copy() {
-    TraverseProjectionItem result = new TraverseProjectionItem(-1);
+    final TraverseProjectionItem result = new TraverseProjectionItem(-1);
     result.base = base == null ? null : base.copy();
     result.modifier = modifier == null ? null : modifier.copy();
     return result;
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    TraverseProjectionItem that = (TraverseProjectionItem) o;
+    final TraverseProjectionItem that = (TraverseProjectionItem) o;
 
     if (!Objects.equals(base, that.base))
       return false;

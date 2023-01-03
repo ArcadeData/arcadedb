@@ -35,13 +35,13 @@ public class RemoveEdgePointersStep extends AbstractExecutionStep {
 
   private long cost = 0;
 
-  public RemoveEdgePointersStep(CommandContext ctx, boolean profilingEnabled) {
+  public RemoveEdgePointersStep(final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
-    ResultSet upstream = getPrev().get().syncPull(ctx, nRecords);
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
+    final ResultSet upstream = getPrev().get().syncPull(ctx, nRecords);
     return new ResultSet() {
       @Override
       public boolean hasNext() {
@@ -50,19 +50,19 @@ public class RemoveEdgePointersStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        ResultInternal elem = (ResultInternal) upstream.next();
-        long begin = profilingEnabled ? System.nanoTime() : 0;
+        final ResultInternal elem = (ResultInternal) upstream.next();
+        final long begin = profilingEnabled ? System.nanoTime() : 0;
         try {
 
-          Set<String> propNames = elem.getPropertyNames();
-          for (String propName : propNames.stream().filter(x -> x.startsWith("in_") || x.startsWith("out_")).collect(Collectors.toList())) {
-            Object val = elem.getProperty(propName);
+          final Set<String> propNames = elem.getPropertyNames();
+          for (final String propName : propNames.stream().filter(x -> x.startsWith("in_") || x.startsWith("out_")).collect(Collectors.toList())) {
+            final Object val = elem.getProperty(propName);
             if (val instanceof Document) {
               if (((Document) val).getType() instanceof EdgeType) {
                 elem.removeProperty(propName);
               }
             } else if (val instanceof Iterable) {
-              for (Object o : (Iterable) val) {
+              for (final Object o : (Iterable) val) {
                 if (o instanceof Document) {
                   if (((Document) o).getType() instanceof EdgeType) {
                     elem.removeProperty(propName);
@@ -92,9 +92,9 @@ public class RemoveEdgePointersStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    StringBuilder result = new StringBuilder();
+  public String prettyPrint(final int depth, final int indent) {
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
+    final StringBuilder result = new StringBuilder();
     result.append(spaces);
     result.append("+ CHECK AND EXCLUDE (possible) EXISTING EDGES ");
     if (profilingEnabled) {
