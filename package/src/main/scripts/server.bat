@@ -14,25 +14,36 @@
 @REM limitations under the License.
 @REM
 
-echo "ARCADEDB - PLAY WITH DATA - arcadedb.com"
+@echo off
+echo ARCADEDB - PLAY WITH DATA - https://arcadedb.com
+
+@setlocal
+
+set ERROR_CODE=0
+
+rem Validations
+if not "%JAVA_HOME%"=="" goto OkJHome
+
+rem Look for java executable on PATH
+for %%i in (java.exe) do set "JAVACMD=%%~$PATH:i"
+goto checkJCmd
+
+:OkJHome
+set "JAVACMD=%JAVA_HOME%\bin\java.exe"
+
+:checkJCmd
+if exist "%JAVACMD%" goto chkArcHome
+
+echo The JAVA_HOME environment variable is not defined correctly, >&2
+echo this environment variable is needed to run this program. >&2
+goto error
+
+:chkArcHome
+if not "%ARCADEDB_HOME%" == "" goto gotHome
 
 rem Guess ARCADEDB_HOME if not defined
-set CURRENT_DIR=%cd%
-
-if exist "%JAVA_HOME:"=%\bin\java.exe" goto setJavaHome
-set JAVA=java
-goto okJava
-
-:setJavaHome
-set JAVA="%JAVA_HOME:"=%\bin\java"
-
-:okJava
-if not "%ARCADEDB_HOME%" == "" goto gotHome
-set ARCADEDB_HOME=%CURRENT_DIR%
-if exist "%ARCADEDB_HOME%\bin\server.bat" goto okHome
-cd ..
-set ARCADEDB_HOME=%cd%
-cd %CURRENT_DIR%
+set "ARCADEDB_HOME=%~dp0"
+set "ARCADEDB_HOME=%ARCADEDB_HOME:~0,-5%"
 
 :gotHome
 if exist "%ARCADEDB_HOME%\bin\server.bat" goto okHome
@@ -41,6 +52,12 @@ echo This environment variable is needed to run this program
 goto end
 
 :okHome
+echo ARCADEDB server script path = %~dpnx0
+echo ARCADEDB home directory     = %ARCADEDB_HOME%
+
+rem Always change directory to HOME directory
+cd /d %ARCADEDB_HOME%
+
 rem Get remaining unshifted command line arguments and save them in the
 set CMD_LINE_ARGS=
 
@@ -59,11 +76,25 @@ set ARCADEDB_OPTS_MEMORY=
 
 set ARCADEDB_JMX=-Dcom.sun.management.jmxremote=true -Dcom.sun.management.jmxremote.local.only=false -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.ssl=false -Dcom.sun.management.jmxremote.port=9999 -Dcom.sun.management.jmxremote.rmi.port=9998
 
-
 rem TO DEBUG ARCADEDB SERVER RUN IT WITH THESE OPTIONS:
 rem -Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=n,address=1044
 rem AND ATTACH TO THE CURRENT HOST, PORT 1044
 
-call %JAVA% -server %JAVA_OPTS% %ARCADEDB_OPTS_MEMORY% %JAVA_OPTS_SCRIPT% %ARCADEDB_JMX% %ARCADEDB_SETTINGS% %CMD_LINE_ARGS% -cp "%ARCADEDB_HOME%\lib\*" com.arcadedb.server.ArcadeDBServer
+"%JAVACMD%" ^
+  -server %JAVA_OPTS% ^
+  %ARCADEDB_OPTS_MEMORY% ^
+  %JAVA_OPTS_SCRIPT% ^
+  %ARCADEDB_JMX% ^
+  %ARCADEDB_SETTINGS% ^
+  -cp "%ARCADEDB_HOME%\lib\*" ^
+  %CMD_LINE_ARGS% com.arcadedb.server.ArcadeDBServer
+  
+if ERRORLEVEL 1 goto error
+goto end
+
+:error
+set ERROR_CODE=1
 
 :end
+@endlocal & set ERROR_CODE=%ERROR_CODE%
+cmd /c exit /b %ERROR_CODE%

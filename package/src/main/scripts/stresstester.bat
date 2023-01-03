@@ -15,26 +15,35 @@
 @REM
 
 @echo off
-rem
-rem Copyright (c) Arcade Analytics LTD (https://www.arcadeanalytics.com)
-rem
-rem Guess ARCADEDB_HOME if not defined
-set CURRENT_DIR=%cd%
+echo ARCADEDB - PLAY WITH DATA - https://arcadedb.com
 
-if exist "%JAVA_HOME%\bin\java.exe" goto setJavaHome
-set JAVA="java"
-goto okJava
+@setlocal
 
-:setJavaHome
-set JAVA="%JAVA_HOME%\bin\java"
+set ERROR_CODE=0
 
-:okJava
+rem Validations
+if not "%JAVA_HOME%"=="" goto OkJHome
+
+rem Look for java executable
+for %%i in (java.exe) do set "JAVACMD=%%~$PATH:i"
+goto checkJCmd
+
+:OkJHome
+set "JAVACMD=%JAVA_HOME%\bin\java.exe"
+
+:checkJCmd
+if exist "%JAVACMD%" goto chkArcHome
+
+echo The JAVA_HOME environment variable is not defined correctly, >&2
+echo this environment variable is needed to run this program. >&2
+goto error
+
+:chkArcHome
 if not "%ARCADEDB_HOME%" == "" goto gotHome
-set ARCADEDB_HOME=%CURRENT_DIR%
-if exist "%ARCADEDB_HOME%\bin\stresstester.bat" goto okHome
-cd ..
-set ARCADEDB_HOME=%cd%
-cd %CURRENT_DIR%
+
+rem Guess ARCADEDB_HOME if not defined
+set "ARCADEDB_HOME=%~dp0"
+set "ARCADEDB_HOME=%ARCADEDB_HOME:~0,-5%"
 
 :gotHome
 if exist "%ARCADEDB_HOME%\bin\stresstester.bat" goto okHome
@@ -43,6 +52,9 @@ echo This environment variable is needed to run this program
 goto end
 
 :okHome
+rem Always change directory to HOME directory
+cd /d %ARCADEDB_HOME%
+
 rem Get remaining unshifted command line arguments and save them in the
 set CMD_LINE_ARGS=
 
@@ -54,6 +66,10 @@ goto setArgs
 
 :doneSetArgs
 
-call %JAVA% -client -cp "%ARCADEDB_HOME%\lib\*;%ARCADEDB_HOME%\plugins\*" com.arcadedb.console.stresstest.StressTester %CMD_LINE_ARGS%
+%JAVACMD% ^
+  -client ^
+  -cp "%ARCADEDB_HOME%\lib\*;%ARCADEDB_HOME%\plugins\*" ^
+  com.arcadedb.console.stresstest.StressTester ^
+  %CMD_LINE_ARGS% ^
 
 :end
