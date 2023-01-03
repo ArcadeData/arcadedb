@@ -180,13 +180,13 @@ public class FromItem extends SimpleNode {
   }
 
   @Override
-  public boolean equals( final Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    final    FromItem oFromItem = (FromItem) o;
+    final FromItem oFromItem = (FromItem) o;
 
     if (!Objects.equals(rids, oFromItem.rids))
       return false;
@@ -384,6 +384,19 @@ public class FromItem extends SimpleNode {
     }
 
     return true;
+  }
+
+  public boolean refersToParent() {
+    if (modifier != null && modifier.refersToParent()) {
+      return true;
+    }
+    if (statement != null && statement.refersToParent()) {
+      return true;
+    }
+    if (functionCall != null && functionCall.refersToParent()) {
+      return true;
+    }
+    return false;
   }
 }
 /* JavaCC - OriginalChecksum=f64e3b4d2a2627a1b5d04a7dcb95fa94 (do not edit this line) */

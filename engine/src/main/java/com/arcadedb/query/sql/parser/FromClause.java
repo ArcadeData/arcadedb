@@ -58,13 +58,13 @@ public class FromClause extends SimpleNode {
   }
 
   @Override
-  public boolean equals( final Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    final    FromClause that = (FromClause) o;
+    final FromClause that = (FromClause) o;
 
     return Objects.equals(item, that.item);
   }
@@ -87,6 +87,10 @@ public class FromClause extends SimpleNode {
 
   public boolean isCacheable() {
     return item.isCacheable();
+  }
+
+  public boolean refersToParent() {
+    return item.refersToParent();
   }
 }
 /* JavaCC - OriginalChecksum=051839d20dabfa4cce26ebcbe0d03a86 (do not edit this line) */

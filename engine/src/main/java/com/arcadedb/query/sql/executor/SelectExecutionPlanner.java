@@ -139,7 +139,7 @@ public class SelectExecutionPlanner {
 
     info.fetchExecutionPlan = new SelectExecutionPlan(ctx);
 
-    handleFetchFromTarger(result, info, ctx, enableProfiling);
+    handleFetchFromTarget(result, info, ctx, enableProfiling);
 
     if (info.globalLetPresent)
       // do the raw fetch remotely, then do the rest on the coordinator
@@ -436,7 +436,7 @@ public class SelectExecutionPlanner {
           addGlobalLet(info, item.getVarName(), item.getExpression());
         } else if (item.getQuery() != null && !item.getQuery().refersToParent()) {
           iterator.remove();
-          addGlobalLet(info, item.getVarName(), item.getQuery());
+          addGlobalLet(info, item.getVarName(), item.getQuery(), -1);
         }
       }
     }
@@ -667,12 +667,11 @@ public class SelectExecutionPlanner {
       info.perRecordLetClause.extractSubQueries(collector);
 
     int i = 0;
-    int j = 0;
     for (final Map.Entry<Identifier, Statement> entry : collector.getSubQueries().entrySet()) {
       final Identifier alias = entry.getKey();
       final Statement query = entry.getValue();
       if (query.refersToParent()) {
-        addRecordLevelLet(info, alias, query, j++);
+        addRecordLevelLet(info, alias, query, -1);
       } else {
         addGlobalLet(info, alias, query, i++);
       }
@@ -696,9 +695,9 @@ public class SelectExecutionPlanner {
       final Identifier alias = entry.getKey();
       final Statement query = entry.getValue();
       if (query.refersToParent()) {
-        addRecordLevelLet(info, alias, query);
+        addRecordLevelLet(info, alias, query, -1);
       } else {
-        addGlobalLet(info, alias, query);
+        addGlobalLet(info, alias, query, -1);
       }
     }
   }
@@ -713,16 +712,6 @@ public class SelectExecutionPlanner {
     info.globalLetClause.addItem(item);
   }
 
-  private static void addGlobalLet(final QueryPlanningInfo info, final Identifier alias, final Statement stm) {
-    if (info.globalLetClause == null)
-      info.globalLetClause = new LetClause(-1);
-
-    final LetItem item = new LetItem(-1);
-    item.setVarName(alias);
-    item.setQuery(stm);
-    info.globalLetClause.addItem(item);
-  }
-
   private static void addGlobalLet(final QueryPlanningInfo info, final Identifier alias, final Statement stm, final int pos) {
     if (info.globalLetClause == null)
       info.globalLetClause = new LetClause(-1);
@@ -730,17 +719,10 @@ public class SelectExecutionPlanner {
     final LetItem item = new LetItem(-1);
     item.setVarName(alias);
     item.setQuery(stm);
-    info.globalLetClause.getItems().add(pos, item);
-  }
-
-  private static void addRecordLevelLet(final QueryPlanningInfo info, final Identifier alias, final Statement stm) {
-    if (info.perRecordLetClause == null)
-      info.perRecordLetClause = new LetClause(-1);
-
-    final LetItem item = new LetItem(-1);
-    item.setVarName(alias);
-    item.setQuery(stm);
-    info.perRecordLetClause.addItem(item);
+    if (pos > -1)
+      info.globalLetClause.getItems().add(pos, item);
+    else
+      info.globalLetClause.getItems().add(item);
   }
 
   private static void addRecordLevelLet(final QueryPlanningInfo info, final Identifier alias, final Statement stm, final int pos) {
@@ -750,10 +732,13 @@ public class SelectExecutionPlanner {
     final LetItem item = new LetItem(-1);
     item.setVarName(alias);
     item.setQuery(stm);
-    info.perRecordLetClause.getItems().add(pos, item);
+    if (pos > -1)
+      info.perRecordLetClause.getItems().add(pos, item);
+    else
+      info.perRecordLetClause.getItems().add(item);
   }
 
-  private void handleFetchFromTarger(final SelectExecutionPlan result, final QueryPlanningInfo info, final CommandContext ctx, final boolean profilingEnabled) {
+  private void handleFetchFromTarget(final SelectExecutionPlan result, final QueryPlanningInfo info, final CommandContext ctx, final boolean profilingEnabled) {
     final FromItem target = info.target == null ? null : info.target.getItem();
 
     if (target == null) {
@@ -857,7 +842,6 @@ public class SelectExecutionPlanner {
       return result;
 
     //TODO optimization: merge multiple conditions
-
     for (final BooleanExpression booleanExpression : flattenedWhereClause.get(0).getSubBlocks()) {
       if (isRidRange(booleanExpression, ctx)) {
         result.getSubBlocks().add(booleanExpression.copy());
