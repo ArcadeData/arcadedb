@@ -39,21 +39,12 @@ public class DDLExecutionPlan implements InternalExecutionPlan {
   }
 
   @Override
-  public void close() {
-  }
-
-  @Override
   public ResultSet fetchNext(final int n) {
     return new InternalResultSet();
   }
 
   public void reset(final CommandContext ctx) {
     executed = false;
-  }
-
-  @Override
-  public long getCost() {
-    return 0;
   }
 
   @Override

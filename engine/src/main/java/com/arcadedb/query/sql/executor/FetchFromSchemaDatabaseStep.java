@@ -75,10 +75,7 @@ public class FetchFromSchemaDatabaseStep extends AbstractExecutionStep {
         }
       }
 
-      @Override
-      public void close() {
 
-      }
 
 
 
@@ -101,8 +98,5 @@ public class FetchFromSchemaDatabaseStep extends AbstractExecutionStep {
     return result;
   }
 
-  @Override
-  public long getCost() {
-    return cost;
-  }
+
 }

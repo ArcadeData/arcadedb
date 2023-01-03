@@ -84,10 +84,7 @@ public class UnwindStep extends AbstractExecutionStep {
         return result;
       }
 
-      @Override
-      public void close() {
 
-      }
 
 
 

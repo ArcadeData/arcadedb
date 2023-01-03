@@ -84,7 +84,6 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
         return finalResult == null ? Optional.empty() : finalResult.getExecutionPlan();
       }
 
-
     };
   }
 
@@ -151,11 +150,6 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
     result.setProperty("prettyPrint", prettyPrint(0, 2));
     result.setProperty("steps", steps == null ? null : steps.stream().map(x -> x.toResult()).collect(Collectors.toList()));
     return result;
-  }
-
-  @Override
-  public long getCost() {
-    return 0L;
   }
 
   @Override

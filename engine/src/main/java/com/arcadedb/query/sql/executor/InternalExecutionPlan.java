@@ -29,7 +29,9 @@ public interface InternalExecutionPlan extends ExecutionPlan {
 
   String JAVA_TYPE = "javaType";
 
-  void close();
+  default void close(){
+    // NO ACTION
+  }
 
   /**
    * if the execution can still return N elements, then the result will contain them all. If the execution contains less than N
@@ -43,7 +45,9 @@ public interface InternalExecutionPlan extends ExecutionPlan {
 
   void reset(CommandContext ctx);
 
-  long getCost();
+  default long getCost(){
+    return -1;
+  }
 
   default Result serialize() {
     throw new UnsupportedOperationException();

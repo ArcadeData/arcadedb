@@ -224,35 +224,6 @@ public class BasicCommandContext implements CommandContext {
   }
 
   @Override
-  public void beginExecution(final long iTimeout, final TIMEOUT_STRATEGY iStrategy) {
-//    if (iTimeout > 0) {
-    // MANAGES THE TIMEOUT
-    //long executionStartedOn = System.currentTimeMillis();
-    //      timeoutStrategy = iStrategy;
-//    }
-  }
-
-  public boolean checkTimeout() {
-//    if (timeoutMs > 0) {
-//      if (System.currentTimeMillis() - executionStartedOn > timeoutMs) {
-//        // TIMEOUT!
-//        switch (timeoutStrategy) {
-//        case RETURN:
-//          return false;
-//        case EXCEPTION:
-//          throw new PTimeoutException("Command execution timeout exceed (" + timeoutMs + "ms)");
-//        }
-//      }
-//    } else if (parent != null)
-//      // CHECK THE TIMER OF PARENT CONTEXT
-//      return parent.checkTimeout();
-
-    //TODO
-
-    return true;
-  }
-
-  @Override
   public CommandContext copy() {
     final BasicCommandContext copy = new BasicCommandContext();
     copy.init();

@@ -34,7 +34,7 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
   private BinaryCondition functionCondition;
   private FromClause      queryTarget;
 
-  private long cost = 0;
+
   //runtime0
   Iterator<Record> fullResult = null;
 
@@ -82,10 +82,7 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
         }
       }
 
-      @Override
-      public void close() {
 
-      }
 
 
 
@@ -121,10 +118,7 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
     this.fullResult = null;
   }
 
-  @Override
-  public long getCost() {
-    return cost;
-  }
+
 
   @Override
   public Result serialize() {

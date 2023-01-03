@@ -99,11 +99,6 @@ public class SelectExecutionPlan implements InternalExecutionPlan {
     return result;
   }
 
-  @Override
-  public long getCost() {
-    return 0L;
-  }
-
   public Result serialize() {
     final ResultInternal result = new ResultInternal();
     result.setProperty("type", "QueryExecutionPlan");

@@ -32,7 +32,6 @@ public class FilterStep extends AbstractExecutionStep {
 
   ResultSet prevResult = null;
 
-  private long cost;
 
   public FilterStep(final WhereClause whereClause, final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
@@ -166,10 +165,7 @@ public class FilterStep extends AbstractExecutionStep {
     }
   }
 
-  @Override
-  public long getCost() {
-    return cost;
-  }
+
 
   @Override
   public boolean canBeCached() {

@@ -30,14 +30,10 @@ import java.util.*;
  * Created by luigidellaquila on 08/07/16.
  */
 public class DistinctExecutionStep extends AbstractExecutionStep {
-
   final Set<Result> pastItems = new HashSet<>();
   final RidSet      pastRids  = new RidSet();
-
   ResultSet lastResult = null;
   Result    nextValue;
-
-  private       long cost = 0;
   private final long maxElementsAllowed;
 
   public DistinctExecutionStep(final CommandContext ctx, final boolean profilingEnabled) {
@@ -82,14 +78,6 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
         nextLocal++;
         return result1;
       }
-
-      @Override
-      public void close() {
-
-      }
-
-
-
 
     };
   }
@@ -171,8 +159,4 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
     return result;
   }
 
-  @Override
-  public long getCost() {
-    return cost;
-  }
 }

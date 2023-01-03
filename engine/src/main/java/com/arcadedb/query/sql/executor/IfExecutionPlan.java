@@ -37,20 +37,24 @@ public class IfExecutionPlan implements InternalExecutionPlan {
     this.ctx = ctx;
   }
 
-  @Override public void reset(final CommandContext ctx) {
+  @Override
+  public void reset(final CommandContext ctx) {
     //TODO
     throw new UnsupportedOperationException();
   }
 
-  @Override public void close() {
+  @Override
+  public void close() {
     step.close();
   }
 
-  @Override public ResultSet fetchNext(final int n) {
+  @Override
+  public ResultSet fetchNext(final int n) {
     return step.syncPull(ctx, n);
   }
 
-  @Override public String prettyPrint(final int depth, final int indent) {
+  @Override
+  public String prettyPrint(final int depth, final int indent) {
     return step.prettyPrint(depth, indent);
   }
 
@@ -58,7 +62,8 @@ public class IfExecutionPlan implements InternalExecutionPlan {
     this.step = step;
   }
 
-  @Override public List<ExecutionStep> getSteps() {
+  @Override
+  public List<ExecutionStep> getSteps() {
     //TODO do a copy of the steps
     return Collections.singletonList(step);
   }
@@ -67,7 +72,8 @@ public class IfExecutionPlan implements InternalExecutionPlan {
     this.step = (IfStep) steps.get(0);
   }
 
-  @Override public Result toResult() {
+  @Override
+  public Result toResult() {
     final ResultInternal result = new ResultInternal();
     result.setProperty("type", "IfExecutionPlan");
     result.setProperty("javaType", getClass().getName());
@@ -75,10 +81,6 @@ public class IfExecutionPlan implements InternalExecutionPlan {
     result.setProperty("prettyPrint", prettyPrint(0, 2));
     result.setProperty("steps", Collections.singletonList(step.toResult()));
     return result;
-  }
-
-  @Override public long getCost() {
-    return 0L;
   }
 
   @Override

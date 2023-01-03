@@ -42,13 +42,7 @@ public class SingleOpExecutionPlan implements InternalExecutionPlan {
   }
 
   @Override
-  public void close() {
-
-  }
-
-  @Override
   public ResultSet fetchNext(final int n) {
-
     if (executed && result == null) {
       return new InternalResultSet();
     }
@@ -81,19 +75,11 @@ public class SingleOpExecutionPlan implements InternalExecutionPlan {
         result.close();
       }
 
-
-
-
     };
   }
 
   public void reset(final CommandContext ctx) {
     executed = false;
-  }
-
-  @Override
-  public long getCost() {
-    return 0;
   }
 
   @Override

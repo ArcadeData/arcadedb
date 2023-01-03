@@ -25,39 +25,36 @@ import java.util.*;
  */
 public class InfoExecutionStep implements ExecutionStep {
 
-  String              name;
-  String              type;
-  String              javaType;
-  String              targetNode;
-  String              description;
-  long                cost;
+  String name;
+  String type;
+  String javaType;
+  String targetNode;
+  String description;
+  long   cost;
   final List<ExecutionStep> subSteps = new ArrayList<>();
 
-  @Override public String getName() {
+  @Override
+  public String getName() {
     return name;
   }
 
-  @Override public String getType() {
+  @Override
+  public String getType() {
     return type;
   }
 
-  @Override public String getTargetNode() {
-    return targetNode;
-  }
-
-  @Override public String getDescription() {
+  @Override
+  public String getDescription() {
     return description;
   }
 
-  @Override public List<ExecutionStep> getSubSteps() {
+  @Override
+  public List<ExecutionStep> getSubSteps() {
     return subSteps;
   }
 
-  @Override public long getCost() {
-    return cost;
-  }
-
-  @Override public Result toResult() {
+  @Override
+  public Result toResult() {
     return null;
   }
 
@@ -75,6 +72,11 @@ public class InfoExecutionStep implements ExecutionStep {
 
   public void setDescription(final String description) {
     this.description = description;
+  }
+
+  @Override
+  public long getCost() {
+    return cost;
   }
 
   public void setCost(final long cost) {

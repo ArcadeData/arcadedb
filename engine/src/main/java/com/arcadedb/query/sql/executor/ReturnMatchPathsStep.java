@@ -43,10 +43,7 @@ public class ReturnMatchPathsStep extends AbstractExecutionStep {
         return upstream.next();
       }
 
-      @Override
-      public void close() {
 
-      }
 
 
 

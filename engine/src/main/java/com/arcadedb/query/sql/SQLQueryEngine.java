@@ -141,9 +141,6 @@ public class SQLQueryEngine implements QueryEngine {
     if (MultiValue.isMultiValue(iCurrent) || iCurrent instanceof Iterator) {
       final MultiIterator<Object> result = new MultiIterator<>();
       for (final Object o : MultiValue.getMultiValueIterable(iCurrent, false)) {
-        if (iContext != null && !iContext.checkTimeout())
-          return null;
-
         if (MultiValue.isMultiValue(o) || o instanceof Iterator) {
           for (final Object inner : MultiValue.getMultiValueIterable(o, false)) {
             result.addIterator(iCallable.call((Identifiable) inner));

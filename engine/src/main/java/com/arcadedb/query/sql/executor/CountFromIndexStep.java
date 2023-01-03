@@ -33,9 +33,8 @@ public class CountFromIndexStep extends AbstractExecutionStep {
   private final IndexIdentifier target;
   private final String          alias;
 
-  private long count = 0;
-
   private boolean executed = false;
+  private int     cost     = -1;
 
   /**
    * @param targetIndex      the index name as it is parsed by the SQL parsed
@@ -73,18 +72,9 @@ public class CountFromIndexStep extends AbstractExecutionStep {
           result.setProperty(alias, size);
           return result;
         } finally {
-          count += (System.nanoTime() - begin);
+          cost += (System.nanoTime() - begin);
         }
       }
-
-      @Override
-      public void close() {
-
-      }
-
-
-
-
 
       @Override
       public void reset() {
@@ -92,6 +82,8 @@ public class CountFromIndexStep extends AbstractExecutionStep {
       }
     };
   }
+
+
 
   @Override
   public void reset() {

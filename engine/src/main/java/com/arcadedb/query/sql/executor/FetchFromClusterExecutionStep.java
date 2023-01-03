@@ -48,7 +48,6 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
   private Object order;
 
   private Iterator<Record> iterator;
-  private long             cost = 0;
 
   public FetchFromClusterExecutionStep(final int bucketId, final CommandContext ctx, final boolean profilingEnabled) {
     this(bucketId, null, ctx, profilingEnabled);
@@ -233,11 +232,6 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
   }
 
   @Override
-  public long getCost() {
-    return cost;
-  }
-
-  @Override
   public Result serialize() {
     final ResultInternal result = ExecutionStepInternal.basicSerialize(this);
     result.setProperty("bucketId", bucketId);
@@ -266,7 +260,6 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
 
   @Override
   public ExecutionStep copy(final CommandContext ctx) {
-    return new FetchFromClusterExecutionStep(this.bucketId, this.queryPlanning == null ? null : this.queryPlanning.copy(), ctx,
-        profilingEnabled);
+    return new FetchFromClusterExecutionStep(this.bucketId, this.queryPlanning == null ? null : this.queryPlanning.copy(), ctx, profilingEnabled);
   }
 }

@@ -72,10 +72,7 @@ public class ParallelExecStep extends AbstractExecutionStep {
         return currentResultSet.next();
       }
 
-      @Override
-      public void close() {
 
-      }
 
 
 

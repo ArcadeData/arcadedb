@@ -26,7 +26,6 @@ import com.arcadedb.query.sql.parser.Projection;
  */
 public class ProjectionCalculationStep extends AbstractExecutionStep {
   protected final Projection projection;
-  protected       long       cost = 0;
 
   public ProjectionCalculationStep(final Projection projection, final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
@@ -83,11 +82,6 @@ public class ProjectionCalculationStep extends AbstractExecutionStep {
     }
     result += ("\n" + spaces + "  " + projection.toString() + "");
     return result;
-  }
-
-  @Override
-  public long getCost() {
-    return cost;
   }
 
   @Override

@@ -39,11 +39,10 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
   private final Map<List, ResultInternal> aggregateResults = new LinkedHashMap<>();
   private       List<ResultInternal>      finalResults     = null;
 
-  private int  nextItem = 0;
-  private long cost     = 0;
+  private int nextItem = 0;
 
-  public AggregateProjectionCalculationStep(final Projection projection, final GroupBy groupBy, final long limit, final CommandContext ctx, final long timeoutMillis,
-      final boolean profilingEnabled) {
+  public AggregateProjectionCalculationStep(final Projection projection, final GroupBy groupBy, final long limit, final CommandContext ctx,
+      final long timeoutMillis, final boolean profilingEnabled) {
     super(projection, ctx, profilingEnabled);
     this.groupBy = groupBy;
     this.timeoutMillis = timeoutMillis;
@@ -74,15 +73,6 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
         localNext++;
         return result;
       }
-
-      @Override
-      public void close() {
-
-      }
-
-
-
-
     };
   }
 
@@ -173,8 +163,4 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
     return result;
   }
 
-  @Override
-  public long getCost() {
-    return cost;
-  }
 }

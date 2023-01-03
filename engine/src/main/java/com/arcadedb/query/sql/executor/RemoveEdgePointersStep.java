@@ -33,7 +33,7 @@ import java.util.stream.*;
  */
 public class RemoveEdgePointersStep extends AbstractExecutionStep {
 
-  private long cost = 0;
+
 
   public RemoveEdgePointersStep(final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
@@ -103,8 +103,5 @@ public class RemoveEdgePointersStep extends AbstractExecutionStep {
     return result.toString();
   }
 
-  @Override
-  public long getCost() {
-    return cost;
-  }
+
 }

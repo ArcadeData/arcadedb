@@ -680,10 +680,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     return result;
   }
 
-  @Override
-  public long getCost() {
-    return cost;
-  }
+
 
   @Override
   public Result serialize() {

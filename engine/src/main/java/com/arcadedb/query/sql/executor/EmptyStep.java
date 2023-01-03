@@ -40,5 +40,4 @@ public class EmptyStep extends AbstractExecutionStep {
     // This step is there most of the cases because the query was early optimized based on DATA, eg. an empty bucket,
     // so this execution plan cannot be cached!!!
   }
-
 }

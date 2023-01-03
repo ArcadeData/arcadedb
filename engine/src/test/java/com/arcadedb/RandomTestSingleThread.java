@@ -52,7 +52,7 @@ public class RandomTestSingleThread extends TestHelper {
     createSchema();
     populateDatabase();
 
-    final long begin = System.currentTimeMillis();
+    // final long begin = System.currentTimeMillis();
 
     try {
       database.begin();

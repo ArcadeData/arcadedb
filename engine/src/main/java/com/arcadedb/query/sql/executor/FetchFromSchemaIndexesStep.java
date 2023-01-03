@@ -38,7 +38,7 @@ public class FetchFromSchemaIndexesStep extends AbstractExecutionStep {
   private final List<ResultInternal> result = new ArrayList<>();
 
   private int  cursor = 0;
-  private long cost   = 0;
+
 
   public FetchFromSchemaIndexesStep(final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
@@ -130,8 +130,5 @@ public class FetchFromSchemaIndexesStep extends AbstractExecutionStep {
     return result;
   }
 
-  @Override
-  public long getCost() {
-    return cost;
-  }
+
 }

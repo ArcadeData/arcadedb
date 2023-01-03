@@ -39,7 +39,7 @@ public class CartesianProductStep extends AbstractExecutionStep {
 
   ResultInternal nextRecord;
 
-  private long cost = 0;
+
 
   public CartesianProductStep(final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
@@ -270,8 +270,5 @@ public class CartesianProductStep extends AbstractExecutionStep {
     return "| " + p;
   }
 
-  @Override
-  public long getCost() {
-    return cost;
-  }
+
 }

@@ -38,7 +38,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
 
   // runtime
 
-  private long cost = 0;
+
 
   private ResultSet prevResult = null;
 
@@ -165,10 +165,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
         }
       }
 
-      @Override
-      public void close() {
 
-      }
 
 
 
@@ -193,10 +190,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
     return result;
   }
 
-  @Override
-  public long getCost() {
-    return cost;
-  }
+
 
   @Override
   public boolean canBeCached() {

@@ -88,10 +88,7 @@ public class MatchFirstStep extends AbstractExecutionStep {
         return result;
       }
 
-      @Override
-      public void close() {
 
-      }
 
 
 

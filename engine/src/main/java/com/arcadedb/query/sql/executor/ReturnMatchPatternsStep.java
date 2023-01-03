@@ -43,10 +43,7 @@ public class ReturnMatchPatternsStep extends AbstractExecutionStep {
         return filter(upstream.next());
       }
 
-      @Override
-      public void close() {
 
-      }
 
 
 

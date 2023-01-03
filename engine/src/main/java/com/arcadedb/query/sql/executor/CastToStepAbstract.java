@@ -28,7 +28,6 @@ import com.arcadedb.exception.TimeoutException;
 public abstract class CastToStepAbstract extends AbstractExecutionStep {
   private final Class  cls;
   private final String clsName;
-  private       long   cost;
 
   public CastToStepAbstract(final Class cls, final String clsName, final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
@@ -79,9 +78,6 @@ public abstract class CastToStepAbstract extends AbstractExecutionStep {
         upstream.close();
       }
 
-
-
-
     };
   }
 
@@ -94,8 +90,4 @@ public abstract class CastToStepAbstract extends AbstractExecutionStep {
     return result;
   }
 
-  @Override
-  public long getCost() {
-    return cost;
-  }
 }

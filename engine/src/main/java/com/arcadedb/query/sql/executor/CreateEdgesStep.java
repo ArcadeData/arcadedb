@@ -60,7 +60,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
 
   private boolean inited = false;
 
-  private long cost = 0;
+
 
   public CreateEdgesStep(final Identifier targetClass, final Identifier targetClusterName, final String uniqueIndex, final Identifier fromAlias,
       final Identifier toAlias, final boolean ifNotExists, final Number wait, final Number retry, final CommandContext ctx, final boolean profilingEnabled) {
@@ -122,10 +122,6 @@ public class CreateEdgesStep extends AbstractExecutionStep {
           }
         }
       }
-
-
-
-
     };
   }
 
@@ -223,11 +219,9 @@ public class CreateEdgesStep extends AbstractExecutionStep {
             edgeToUpdate = existingEdge.modify();
           }
         }
-        return;
 
       } else {
         this.currentTo = null;
-        return;
       }
     } finally {
       if (profilingEnabled) {
@@ -251,20 +245,19 @@ public class CreateEdgesStep extends AbstractExecutionStep {
   }
 
   private Vertex asVertex(Object currentFrom) {
-    if (currentFrom instanceof RID) {
+    if (currentFrom instanceof RID)
       currentFrom = ((RID) currentFrom).getRecord();
-    }
+
     if (currentFrom instanceof Result) {
       final Object from = currentFrom;
       currentFrom = ((Result) currentFrom).getVertex().orElseThrow(() -> new CommandExecutionException("Invalid vertex for edge creation: " + from.toString()));
     }
-    if (currentFrom instanceof Vertex) {
+    if (currentFrom instanceof Vertex)
       return (Vertex) currentFrom;
-    }
-    if (currentFrom instanceof Document) {
-      final Object from = currentFrom;
+
+    if (currentFrom instanceof Document)
       return ((Document) currentFrom).asVertex();
-    }
+
     throw new CommandExecutionException("Invalid vertex for edge creation: " + (currentFrom == null ? "null" : currentFrom.toString()));
   }
 
@@ -274,19 +267,16 @@ public class CreateEdgesStep extends AbstractExecutionStep {
     String result = spaces + "+ FOR EACH x in " + fromAlias + "\n";
     result += spaces + "    FOR EACH y in " + toAlias + "\n";
     result += spaces + "       CREATE EDGE " + targetClass + " FROM x TO y";
-    if (profilingEnabled) {
+    if (profilingEnabled)
       result += " (" + getCostFormatted() + ")";
-    }
-    if (targetCluster != null) {
+
+    if (targetCluster != null)
       result += "\n" + spaces + "       (target cluster " + targetCluster + ")";
-    }
+
     return result;
   }
 
-  @Override
-  public long getCost() {
-    return cost;
-  }
+
 
   @Override
   public boolean canBeCached() {

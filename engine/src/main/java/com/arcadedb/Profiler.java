@@ -46,12 +46,6 @@ public class Profiler {
     databases.remove(database);
   }
 
-  //  @Override
-//  protected void finalize() {
-//    if (!databases.isEmpty())
-//      System.err.println("ARCADEDB: The following databases weren't closed properly: " + databases);
-//  }
-//
   public synchronized void dumpMetrics(final PrintStream out) {
 
     final StringBuilder buffer = new StringBuilder("\n");

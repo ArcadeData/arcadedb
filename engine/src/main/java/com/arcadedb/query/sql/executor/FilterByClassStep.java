@@ -35,7 +35,6 @@ public class FilterByClassStep extends AbstractExecutionStep {
 
   ResultSet prevResult = null;
 
-  private long cost;
 
   public FilterByClassStep(final Identifier identifier, final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
@@ -169,10 +168,7 @@ public class FilterByClassStep extends AbstractExecutionStep {
     }
   }
 
-  @Override
-  public long getCost() {
-    return cost;
-  }
+
 
   @Override
   public boolean canBeCached() {

@@ -57,7 +57,7 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
   private boolean     inited = false;
   private IndexCursor cursor;
 
-  private long cost = 0;
+
 
   public DeleteFromIndexStep(final RangeIndex index, final BooleanExpression condition, final BinaryCondition additionalRangeCondition, final BooleanExpression ridCondition,
       final CommandContext ctx, final boolean profilingEnabled) {
@@ -362,8 +362,5 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
     return result;
   }
 
-  @Override
-  public long getCost() {
-    return cost;
-  }
+
 }

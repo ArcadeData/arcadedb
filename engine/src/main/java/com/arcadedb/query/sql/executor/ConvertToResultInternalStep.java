@@ -33,7 +33,7 @@ import java.util.*;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class ConvertToResultInternalStep extends AbstractExecutionStep {
-  private long cost = 0;
+
 
   ResultSet prevResult = null;
 
@@ -145,8 +145,5 @@ public class ConvertToResultInternalStep extends AbstractExecutionStep {
     return result;
   }
 
-  @Override
-  public long getCost() {
-    return cost;
-  }
+
 }

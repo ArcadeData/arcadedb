@@ -33,7 +33,7 @@ import com.arcadedb.exception.TimeoutException;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class CheckSafeDeleteStep extends AbstractExecutionStep {
-  private long cost = 0;
+
 
   public CheckSafeDeleteStep(final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
@@ -78,10 +78,7 @@ public class CheckSafeDeleteStep extends AbstractExecutionStep {
         }
       }
 
-      @Override
-      public void close() {
 
-      }
 
 
 
@@ -101,8 +98,5 @@ public class CheckSafeDeleteStep extends AbstractExecutionStep {
     return result.toString();
   }
 
-  @Override
-  public long getCost() {
-    return cost;
-  }
+
 }

@@ -36,7 +36,6 @@ public abstract class AbstractTraverseStep extends AbstractExecutionStep {
 
   protected       List<Result> entryPoints = null;
   protected final List<Result> results     = new ArrayList<>();
-  private         long         cost        = 0;
 
   final Set<RID> traversed = new RidSet();
 
@@ -114,10 +113,5 @@ public abstract class AbstractTraverseStep extends AbstractExecutionStep {
 
   protected boolean isFinished() {
     return entryPoints != null && entryPoints.isEmpty() && results.isEmpty();
-  }
-
-  @Override
-  public long getCost() {
-    return cost;
   }
 }

@@ -32,23 +32,15 @@ import com.arcadedb.schema.DocumentType;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class CheckClusterTypeStep extends AbstractExecutionStep {
-  final   Bucket bucket;
-  final   String bucketName;
-  final   String targetType;
-  private long   cost = 0;
+  final Bucket bucket;
+  final String bucketName;
+  final String targetType;
   boolean found = false;
 
   public CheckClusterTypeStep(final String targetBucketName, final String typez, final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
     this.bucketName = targetBucketName;
     this.bucket = null;
-    this.targetType = typez;
-  }
-
-  public CheckClusterTypeStep(final Bucket targetBucket, final String typez, final CommandContext ctx, final boolean profilingEnabled) {
-    super(ctx, profilingEnabled);
-    this.bucketName = null;
-    this.bucket = targetBucket;
     this.targetType = typez;
   }
 
@@ -108,10 +100,5 @@ public class CheckClusterTypeStep extends AbstractExecutionStep {
     result.append(spaces);
     result.append("  ").append(this.targetType);
     return result.toString();
-  }
-
-  @Override
-  public long getCost() {
-    return cost;
   }
 }

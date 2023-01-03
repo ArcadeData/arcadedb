@@ -33,7 +33,7 @@ public class OrderByStep extends AbstractExecutionStep {
   private       Integer maxResults;
   private final long    timeoutMillis;
 
-  private long cost = 0;
+
 
   List<Result> cachedResult = null;
   int          nextElement  = 0;
@@ -188,8 +188,5 @@ public class OrderByStep extends AbstractExecutionStep {
     return result;
   }
 
-  @Override
-  public long getCost() {
-    return cost;
-  }
+
 }

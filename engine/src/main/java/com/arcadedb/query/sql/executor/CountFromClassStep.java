@@ -35,7 +35,7 @@ public class CountFromClassStep extends AbstractExecutionStep {
   private final Identifier target;
   private final String     alias;
 
-  private long cost = 0;
+
 
   private boolean executed = false;
 
@@ -86,15 +86,6 @@ public class CountFromClassStep extends AbstractExecutionStep {
       }
 
       @Override
-      public void close() {
-
-      }
-
-
-
-
-
-      @Override
       public void reset() {
         CountFromClassStep.this.reset();
       }
@@ -116,9 +107,6 @@ public class CountFromClassStep extends AbstractExecutionStep {
     return result;
   }
 
-  @Override
-  public long getCost() {
-    return cost;
-  }
+
 
 }

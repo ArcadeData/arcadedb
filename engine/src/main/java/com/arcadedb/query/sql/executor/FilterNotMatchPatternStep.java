@@ -28,7 +28,6 @@ public class FilterNotMatchPatternStep extends AbstractExecutionStep {
 
   private ResultSet prevResult = null;
 
-  private long cost;
 
   public FilterNotMatchPatternStep(final List<AbstractExecutionStep> steps, final CommandContext ctx, final boolean enableProfiling) {
     super(ctx, enableProfiling);
@@ -118,10 +117,6 @@ public class FilterNotMatchPatternStep extends AbstractExecutionStep {
       public void close() {
         FilterNotMatchPatternStep.this.close();
       }
-
-
-
-
     };
   }
 

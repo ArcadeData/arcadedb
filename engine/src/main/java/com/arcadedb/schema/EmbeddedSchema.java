@@ -1155,7 +1155,7 @@ public class EmbeddedSchema implements Schema {
           if (schemaProperties != null) {
             for (final String propName : schemaProperties.keySet()) {
               final JSONObject prop = schemaProperties.getJSONObject(propName);
-              final Property p = type.createProperty(propName, prop);
+              type.createProperty(propName, prop);
             }
           }
         }

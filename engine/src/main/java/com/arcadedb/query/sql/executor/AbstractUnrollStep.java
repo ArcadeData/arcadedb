@@ -29,7 +29,6 @@ import java.util.*;
  */
 public abstract class AbstractUnrollStep extends AbstractExecutionStep {
 
-
   ResultSet        lastResult      = null;
   Iterator<Result> nextSubsequence = null;
   Result           nextElement     = null;
@@ -38,20 +37,23 @@ public abstract class AbstractUnrollStep extends AbstractExecutionStep {
     super(ctx, profilingEnabled);
   }
 
-  @Override public void reset() {
+  @Override
+  public void reset() {
     this.lastResult = null;
     this.nextSubsequence = null;
     this.nextElement = null;
   }
 
-  @Override public ResultSet syncPull(final CommandContext ctx, final int nRecords) {
+  @Override
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) {
     if (prev == null || prev.isEmpty()) {
       throw new CommandExecutionException("Cannot expand without a target");
     }
     return new ResultSet() {
       long localCount = 0;
 
-      @Override public boolean hasNext() {
+      @Override
+      public boolean hasNext() {
         if (localCount >= nRecords) {
           return false;
         }
@@ -61,7 +63,8 @@ public abstract class AbstractUnrollStep extends AbstractExecutionStep {
         return nextElement != null;
       }
 
-      @Override public Result next() {
+      @Override
+      public Result next() {
         if (localCount >= nRecords) {
           throw new NoSuchElementException();
         }
@@ -77,18 +80,6 @@ public abstract class AbstractUnrollStep extends AbstractExecutionStep {
         nextElement = null;
         fetchNext(ctx, nRecords);
         return result;
-      }
-
-      @Override public void close() {
-
-      }
-
-      @Override public Optional<ExecutionPlan> getExecutionPlan() {
-        return Optional.empty();
-      }
-
-      @Override public Map<String, Long> getQueryStats() {
-        return null;
       }
     };
   }

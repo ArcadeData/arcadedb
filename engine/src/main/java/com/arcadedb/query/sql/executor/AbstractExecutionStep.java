@@ -30,6 +30,7 @@ public abstract class AbstractExecutionStep implements ExecutionStepInternal {
   protected       Optional<ExecutionStepInternal> prev     = Optional.empty();
   protected       Optional<ExecutionStepInternal> next     = Optional.empty();
   protected       boolean                         timedOut = false;
+  protected       long                            cost     = -1;
 
   protected boolean profilingEnabled;
 
@@ -56,10 +57,6 @@ public abstract class AbstractExecutionStep implements ExecutionStepInternal {
     return prev;
   }
 
-  public Optional<ExecutionStepInternal> getNext() {
-    return next;
-  }
-
   @Override
   public void sendTimeout() {
     this.timedOut = true;
@@ -75,16 +72,14 @@ public abstract class AbstractExecutionStep implements ExecutionStepInternal {
     prev.ifPresent(ExecutionStepInternal::close);
   }
 
-  public boolean isProfilingEnabled() {
-    return profilingEnabled;
-  }
-
-  public void setProfilingEnabled(final boolean profilingEnabled) {
-    this.profilingEnabled = profilingEnabled;
+  @Override
+  public long getCost() {
+    return cost;
   }
 
   protected String getCostFormatted() {
-    return new DecimalFormat().format(getCost() / 1000) + "μs";
+    final long computedCost = getCost();
+    return computedCost > -1 ? new DecimalFormat().format(computedCost / 1000) + "μs" : "";
   }
 
 }

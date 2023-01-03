@@ -72,10 +72,6 @@ public class UpdateContentStep extends AbstractExecutionStep {
       public void close() {
         upstream.close();
       }
-
-
-
-
     };
   }
 
@@ -100,7 +96,7 @@ public class UpdateContentStep extends AbstractExecutionStep {
   }
 
   @Override
-  public String prettyPrint(final int depth,final  int indent) {
+  public String prettyPrint(final int depth, final int indent) {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     final StringBuilder result = new StringBuilder();
     result.append(spaces);

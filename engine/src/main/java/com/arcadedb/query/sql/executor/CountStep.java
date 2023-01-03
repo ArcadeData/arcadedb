@@ -28,7 +28,7 @@ import com.arcadedb.exception.TimeoutException;
  */
 public class CountStep extends AbstractExecutionStep {
 
-  private long cost = 0;
+
 
   boolean executed = false;
 
@@ -83,10 +83,7 @@ public class CountStep extends AbstractExecutionStep {
     return result.toString();
   }
 
-  @Override
-  public long getCost() {
-    return cost;
-  }
+
 
   @Override
   public ExecutionStep copy(final CommandContext ctx) {

@@ -30,8 +30,6 @@ public interface ExecutionStep {
 
   String getType();
 
-  String getTargetNode();
-
   String getDescription();
 
   List<ExecutionStep> getSubSteps();
@@ -52,8 +50,7 @@ public interface ExecutionStep {
     result.setProperty("targetNode", getType());
     result.setProperty(InternalExecutionPlan.JAVA_TYPE, getClass().getName());
     result.setProperty("cost", getCost());
-    result.setProperty("subSteps",
-        getSubSteps() == null ? null : getSubSteps().stream().map(x -> x.toResult()).collect(Collectors.toList()));
+    result.setProperty("subSteps", getSubSteps() == null ? null : getSubSteps().stream().map(x -> x.toResult()).collect(Collectors.toList()));
     result.setProperty("description", getDescription());
     return result;
   }

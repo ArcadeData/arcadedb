@@ -36,9 +36,7 @@ public class Pattern {
     PatternNode originNode = getOrCreateNode(expression.origin);
 
     for (final MatchPathItem item : expression.items) {
-      final String nextAlias = item.filter.getAlias();
       final PatternNode nextNode = getOrCreateNode(item.filter);
-
       numOfEdges += originNode.addEdge(item, nextNode);
       originNode = nextNode;
     }
@@ -131,13 +129,5 @@ public class Pattern {
 
   public Map<String, PatternNode> getAliasToNode() {
     return aliasToNode;
-  }
-
-  public void setAliasToNode(final Map<String, PatternNode> aliasToNode) {
-    this.aliasToNode = aliasToNode;
-  }
-
-  public void setNumOfEdges(final int numOfEdges) {
-    this.numOfEdges = numOfEdges;
   }
 }

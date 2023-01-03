@@ -32,7 +32,7 @@ import com.arcadedb.exception.TimeoutException;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class CopyRecordContentBeforeUpdateStep extends AbstractExecutionStep {
-  private long cost = 0;
+
 
   public CopyRecordContentBeforeUpdateStep(final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
@@ -98,9 +98,6 @@ public class CopyRecordContentBeforeUpdateStep extends AbstractExecutionStep {
     return result.toString();
   }
 
-  @Override
-  public long getCost() {
-    return cost;
-  }
+
 
 }

@@ -36,7 +36,7 @@ public class CheckIsEdgeTypeStep extends AbstractExecutionStep {
 
   private final String targetClass;
 
-  private long cost = 0;
+
 
   boolean found = false;
 
@@ -96,8 +96,5 @@ public class CheckIsEdgeTypeStep extends AbstractExecutionStep {
     return result.toString();
   }
 
-  @Override
-  public long getCost() {
-    return cost;
-  }
+
 }

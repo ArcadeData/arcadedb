@@ -26,7 +26,7 @@ import com.arcadedb.exception.TimeoutException;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class DeleteStep extends AbstractExecutionStep {
-  private long cost = 0;
+
 
   public DeleteStep(final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
@@ -80,8 +80,5 @@ public class DeleteStep extends AbstractExecutionStep {
     return result.toString();
   }
 
-  @Override
-  public long getCost() {
-    return cost;
-  }
+
 }

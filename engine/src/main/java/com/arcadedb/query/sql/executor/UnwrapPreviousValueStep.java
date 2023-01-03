@@ -28,7 +28,7 @@ import com.arcadedb.exception.TimeoutException;
  */
 public class UnwrapPreviousValueStep extends AbstractExecutionStep {
 
-  private long cost = 0;
+
 
   public UnwrapPreviousValueStep(final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
@@ -85,8 +85,5 @@ public class UnwrapPreviousValueStep extends AbstractExecutionStep {
     return result;
   }
 
-  @Override
-  public long getCost() {
-    return cost;
-  }
+
 }

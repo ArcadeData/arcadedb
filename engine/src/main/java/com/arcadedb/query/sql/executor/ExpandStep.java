@@ -32,7 +32,7 @@ import java.util.*;
  */
 public class ExpandStep extends AbstractExecutionStep {
 
-  private long cost = 0;
+
 
   ResultSet lastResult      = null;
   Iterator  nextSubsequence = null;
@@ -80,10 +80,7 @@ public class ExpandStep extends AbstractExecutionStep {
         return result;
       }
 
-      @Override
-      public void close() {
 
-      }
 
 
 
@@ -177,8 +174,5 @@ public class ExpandStep extends AbstractExecutionStep {
     return result;
   }
 
-  @Override
-  public long getCost() {
-    return cost;
-  }
+
 }

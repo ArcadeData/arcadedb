@@ -34,7 +34,6 @@ import com.arcadedb.exception.TimeoutException;
 public class CopyDocumentStep extends AbstractExecutionStep {
 
   private final String targetType;
-  private       long   cost = 0;
 
   public CopyDocumentStep(final CommandContext ctx, final String targetType, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
@@ -102,8 +101,5 @@ public class CopyDocumentStep extends AbstractExecutionStep {
     return result.toString();
   }
 
-  @Override
-  public long getCost() {
-    return cost;
-  }
+
 }

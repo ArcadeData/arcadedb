@@ -39,7 +39,7 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
   private final List<ResultInternal> result = new ArrayList<>();
 
   private int  cursor = 0;
-  private long cost   = 0;
+
 
   public FetchFromSchemaTypesStep(final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
@@ -154,8 +154,5 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
     return result;
   }
 
-  @Override
-  public long getCost() {
-    return cost;
-  }
+
 }

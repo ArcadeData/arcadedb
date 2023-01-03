@@ -29,7 +29,7 @@ import com.arcadedb.exception.TimeoutException;
 public class CheckRecordTypeStep extends AbstractExecutionStep {
   private final String typez;
 
-  private long cost = 0;
+
 
   public CheckRecordTypeStep(final CommandContext ctx, final String className, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
@@ -91,8 +91,5 @@ public class CheckRecordTypeStep extends AbstractExecutionStep {
     return result;
   }
 
-  @Override
-  public long getCost() {
-    return cost;
-  }
+
 }

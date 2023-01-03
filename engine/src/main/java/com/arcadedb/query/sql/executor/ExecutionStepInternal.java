@@ -122,10 +122,6 @@ public interface ExecutionStepInternal extends ExecutionStep {
     return prettyPrint(0, 3);
   }
 
-  default String getTargetNode() {
-    return "<local>";
-  }
-
   default List<ExecutionStep> getSubSteps() {
     return Collections.emptyList();
   }

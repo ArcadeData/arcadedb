@@ -27,7 +27,7 @@ import java.util.*;
  */
 public class EmptyDataGeneratorStep extends AbstractExecutionStep {
 
-  private long cost = 0;
+
 
   final int size;
   int served = 0;
@@ -66,15 +66,6 @@ public class EmptyDataGeneratorStep extends AbstractExecutionStep {
       }
 
       @Override
-      public void close() {
-
-      }
-
-
-
-
-
-      @Override
       public void reset() {
         served = 0;
       }
@@ -91,8 +82,5 @@ public class EmptyDataGeneratorStep extends AbstractExecutionStep {
     return result;
   }
 
-  @Override
-  public long getCost() {
-    return cost;
-  }
+
 }

@@ -35,7 +35,7 @@ import java.util.*;
  */
 public class ConvertToUpdatableResultStep extends AbstractExecutionStep {
 
-  private long cost = 0;
+
 
   ResultSet prevResult = null;
 
@@ -149,8 +149,5 @@ public class ConvertToUpdatableResultStep extends AbstractExecutionStep {
     return result;
   }
 
-  @Override
-  public long getCost() {
-    return cost;
-  }
+
 }

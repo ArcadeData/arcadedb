@@ -40,7 +40,7 @@ public class CheckClassTypeStep extends AbstractExecutionStep {
   private final String targetClass;
   private final String parentClass;
 
-  private long cost = 0;
+
 
   boolean found = false;
 
@@ -114,8 +114,5 @@ public class CheckClassTypeStep extends AbstractExecutionStep {
     return result.toString();
   }
 
-  @Override
-  public long getCost() {
-    return cost;
-  }
+
 }

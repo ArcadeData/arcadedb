@@ -133,8 +133,6 @@ public class FetchFromClustersExecutionStep extends AbstractExecutionStep {
         }
       }
 
-
-
       @Override
       public Map<String, Long> getQueryStats() {
         return new HashMap<>();
@@ -186,7 +184,7 @@ public class FetchFromClustersExecutionStep extends AbstractExecutionStep {
 
   @Override
   public long getCost() {
-    return subSteps.stream().map(x -> x.getCost()).reduce((a, b) -> a + b).orElse(-1L);
+    return subSteps.stream().map(x -> x.getCost()).reduce((a, b) -> a > 0 && b > 0 ? a + b : a > 0 ? a : b > 0 ? b : -1L).orElse(-1L);
   }
 
   @Override
