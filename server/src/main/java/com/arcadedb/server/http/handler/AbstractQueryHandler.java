@@ -104,8 +104,8 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
         if (row.isVertex()) {
           if (recordIncluded) {
             final Vertex v = row.getVertex().get();
-            includedVertices.add(v.getIdentity());
-            vertices.put(serializerImpl.serializeGraphElement(v));
+            if (includedVertices.add(v.getIdentity()))
+              vertices.put(serializerImpl.serializeGraphElement(v));
           }
         } else if (row.isEdge()) {
           final Edge e = row.getEdge().get();
@@ -194,17 +194,17 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
       }
 
       if (type instanceof VertexType) {
-        includedVertices.add((Identifiable) value);
-        vertices.put(serializerImpl.serializeGraphElement(((Identifiable) value).asVertex(true)));
+        if (includedVertices.add((Identifiable) value))
+          vertices.put(serializerImpl.serializeGraphElement(((Identifiable) value).asVertex(true)));
       } else if (type instanceof EdgeType) {
         final Edge edge = ((Identifiable) value).asEdge(true);
 
         edges.put(serializerImpl.serializeGraphElement(edge));
 
-        includedVertices.add(edge.getIn());
-        vertices.put(serializerImpl.serializeGraphElement(edge.getInVertex()));
-        includedVertices.add(edge.getOut());
-        vertices.put(serializerImpl.serializeGraphElement(edge.getOutVertex()));
+        if (includedVertices.add(edge.getIn()))
+          vertices.put(serializerImpl.serializeGraphElement(edge.getInVertex()));
+        if (includedVertices.add(edge.getOut()))
+          vertices.put(serializerImpl.serializeGraphElement(edge.getOutVertex()));
       }
     } else if (value instanceof Result) {
       analyzeResultContent(database, serializerImpl, includedVertices, vertices, edges, (Result) value);
