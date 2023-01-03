@@ -34,30 +34,25 @@ import java.util.*;
 import java.util.stream.*;
 
 public class ProjectionItem extends SimpleNode {
-  protected boolean exclude = false;
-
-  protected boolean all = false;
-
-  protected Identifier alias;
-
-  protected Expression expression;
-
-  protected Boolean aggregate;
-
+  protected boolean          exclude = false;
+  protected boolean          all     = false;
+  protected Identifier       alias;
+  protected Expression       expression;
+  protected Boolean          aggregate;
   protected NestedProjection nestedProjection;
 
-  public ProjectionItem(Expression expression, Identifier alias, NestedProjection nestedProjection) {
+  public ProjectionItem(final Expression expression, final Identifier alias, final NestedProjection nestedProjection) {
     super(-1);
     this.expression = expression;
     this.alias = alias;
     this.nestedProjection = nestedProjection;
   }
 
-  public ProjectionItem(int id) {
+  public ProjectionItem(final int id) {
     super(id);
   }
 
-  public ProjectionItem(SqlParser p, int id) {
+  public ProjectionItem(final SqlParser p, final int id) {
     super(p, id);
   }
 
@@ -68,7 +63,7 @@ public class ProjectionItem extends SimpleNode {
     return expression != null && "*".equals(expression.toString());
   }
 
-  public void setAll(boolean all) {
+  public void setAll(final boolean all) {
     this.all = all;
   }
 
@@ -76,7 +71,7 @@ public class ProjectionItem extends SimpleNode {
     return alias;
   }
 
-  public void setAlias(Identifier alias) {
+  public void setAlias(final Identifier alias) {
     this.alias = alias;
   }
 
@@ -84,11 +79,11 @@ public class ProjectionItem extends SimpleNode {
     return expression;
   }
 
-  public void setExpression(Expression expression) {
+  public void setExpression(final Expression expression) {
     this.expression = expression;
   }
 
-  public void toString(Map<String, Object> params, StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (all) {
       builder.append("*");
     } else {
@@ -110,7 +105,7 @@ public class ProjectionItem extends SimpleNode {
     }
   }
 
-  public Object execute(Record iCurrentRecord, CommandContext ctx) {
+  public Object execute(final Record iCurrentRecord, final CommandContext ctx) {
     Object result;
     if (all) {
       result = iCurrentRecord;
@@ -129,7 +124,7 @@ public class ProjectionItem extends SimpleNode {
       value = ((InternalResultSet) value).stream().collect(Collectors.toList());
     }
     if (value instanceof Iterator && !(value instanceof Identifiable)) {
-      Iterator iter = (Iterator) value;
+      final Iterator iter = (Iterator) value;
       value = new ArrayList<>();
       while (iter.hasNext()) {
         ((List) value).add(iter.next());
@@ -139,7 +134,7 @@ public class ProjectionItem extends SimpleNode {
     return value;
   }
 
-  public Object execute(Result iCurrentRecord, CommandContext ctx) {
+  public Object execute(final Result iCurrentRecord, final CommandContext ctx) {
     Object result;
     if (all) {
       result = iCurrentRecord;
@@ -182,7 +177,7 @@ public class ProjectionItem extends SimpleNode {
   }
 
   public ProjectionItem getExpandContent() {
-    ProjectionItem result = new ProjectionItem(-1);
+    final ProjectionItem result = new ProjectionItem(-1);
     result.setExpression(expression.getExpandContent());
     return result;
   }
@@ -220,7 +215,7 @@ public class ProjectionItem extends SimpleNode {
     }
   }
 
-  public AggregationContext getAggregationContext(CommandContext ctx) {
+  public AggregationContext getAggregationContext(final CommandContext ctx) {
     if (expression == null) {
       throw new CommandExecutionException("Cannot aggregate on this projection: " + this);
     }
@@ -228,7 +223,7 @@ public class ProjectionItem extends SimpleNode {
   }
 
   public ProjectionItem copy() {
-    ProjectionItem result = new ProjectionItem(-1);
+    final ProjectionItem result = new ProjectionItem(-1);
     result.exclude = this.exclude;
     result.all = all;
     result.alias = alias == null ? null : alias.copy();
@@ -239,12 +234,12 @@ public class ProjectionItem extends SimpleNode {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
-    ProjectionItem that = (ProjectionItem) o;
+    final ProjectionItem that = (ProjectionItem) o;
     return exclude == that.exclude && all == that.all && Objects.equals(alias, that.alias) && Objects.equals(expression, that.expression) && Objects.equals(
         aggregate, that.aggregate) && Objects.equals(nestedProjection, that.nestedProjection);
   }
@@ -254,7 +249,7 @@ public class ProjectionItem extends SimpleNode {
     return Objects.hash(exclude, all, alias, expression, aggregate, nestedProjection);
   }
 
-  public void extractSubQueries(SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
     if (expression != null) {
       expression.extractSubQueries(collector);
     }
@@ -268,7 +263,7 @@ public class ProjectionItem extends SimpleNode {
   }
 
   public Result serialize() {
-    ResultInternal result = new ResultInternal();
+    final ResultInternal result = new ResultInternal();
     result.setProperty("all", all);
     if (alias != null) {
       result.setProperty("alias", alias.serialize());
@@ -284,7 +279,7 @@ public class ProjectionItem extends SimpleNode {
     return result;
   }
 
-  public void deserialize(Result fromResult) {
+  public void deserialize(final Result fromResult) {
     all = fromResult.getProperty("all");
     if (fromResult.getProperty("alias") != null) {
       alias = Identifier.deserialize(fromResult.getProperty("alias"));
@@ -304,7 +299,7 @@ public class ProjectionItem extends SimpleNode {
 
   }
 
-  public void setNestedProjection(NestedProjection nestedProjection) {
+  public void setNestedProjection(final NestedProjection nestedProjection) {
     this.nestedProjection = nestedProjection;
   }
 

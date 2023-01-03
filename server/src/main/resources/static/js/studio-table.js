@@ -97,6 +97,8 @@ function renderTable(){
             value = value.toString().substr( 0, 30) + "...";
         }
 
+        if( value == null )
+          value = "<null>";
         record.push( escapeHtml( value ) );
       }
       tableRecords.push( record );

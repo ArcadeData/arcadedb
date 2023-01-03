@@ -26,21 +26,20 @@ import com.arcadedb.query.sql.parser.Projection;
  */
 public class ProjectionCalculationStep extends AbstractExecutionStep {
   protected final Projection projection;
+  protected       long       cost = 0;
 
-  protected long cost = 0;
-
-  public ProjectionCalculationStep(Projection projection, CommandContext ctx, boolean profilingEnabled) {
+  public ProjectionCalculationStep(final Projection projection, final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
     this.projection = projection;
   }
 
   @Override
-  public ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException {
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
     if (prev.isEmpty()) {
       throw new IllegalStateException("Cannot calculate projections without a previous source");
     }
 
-    ResultSet parentRs = prev.get().syncPull(ctx, nRecords);
+    final ResultSet parentRs = prev.get().syncPull(ctx, nRecords);
     return new ResultSet() {
       @Override
       public boolean hasNext() {
@@ -49,10 +48,10 @@ public class ProjectionCalculationStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        Result item = parentRs.next();
+        final Result item = parentRs.next();
         Object oldCurrent = ctx.getVariable("current");
         ctx.setVariable("current", item);
-        Result result = calculateProjections(ctx, item);
+        final Result result = calculateProjections(ctx, item);
         ctx.setVariable("current", oldCurrent);
         return result;
       }
@@ -61,15 +60,11 @@ public class ProjectionCalculationStep extends AbstractExecutionStep {
       public void close() {
         parentRs.close();
       }
-
-
-
-
     };
   }
 
-  private Result calculateProjections(CommandContext ctx, Result next) {
-    long begin = profilingEnabled ? System.nanoTime() : 0;
+  private Result calculateProjections(final CommandContext ctx, final Result next) {
+    final long begin = profilingEnabled ? System.nanoTime() : 0;
     try {
       return this.projection.calculateSingle(ctx, next);
     } finally {
@@ -81,8 +76,7 @@ public class ProjectionCalculationStep extends AbstractExecutionStep {
 
   @Override
   public String prettyPrint(int depth, int indent) {
-    String spaces = ExecutionStepInternal.getIndent(depth, indent);
-
+    final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     String result = spaces + "+ CALCULATE PROJECTIONS";
     if (profilingEnabled) {
       result += " (" + getCostFormatted() + ")";
@@ -102,7 +96,7 @@ public class ProjectionCalculationStep extends AbstractExecutionStep {
   }
 
   @Override
-  public ExecutionStep copy(CommandContext ctx) {
+  public ExecutionStep copy(final CommandContext ctx) {
     return new ProjectionCalculationStep(projection.copy(), ctx, profilingEnabled);
   }
 }

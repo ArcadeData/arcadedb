@@ -44,7 +44,9 @@ public class JsonSerializer {
     for (String p : document.getPropertyNames()) {
       Object value = document.get(p);
 
-      if (value instanceof Document)
+      if (value == null)
+        value = JSONObject.NULL;
+      else if (value instanceof Document)
         value = serializeDocument((Document) value);
       else if (value instanceof Collection) {
         if (useCollectionSize) {
@@ -97,7 +99,9 @@ public class JsonSerializer {
     for (String p : result.getPropertyNames()) {
       Object value = result.getProperty(p);
 
-      if (value instanceof Document)
+      if (value == null)
+        value = JSONObject.NULL;
+      else if (value instanceof Document)
         value = serializeDocument((Document) value);
       else if (value instanceof Result)
         value = serializeResult((Result) value);
