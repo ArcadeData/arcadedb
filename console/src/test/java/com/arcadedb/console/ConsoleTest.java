@@ -286,4 +286,36 @@ public class ConsoleTest {
       Assertions.assertTrue(buffer.toString().contains("<null>"));
     }
   }
+
+  /**
+   * Issue https://github.com/ArcadeData/arcadedb/issues/726
+   */
+  @Test
+  public void testProjectionOrder() throws IOException {
+    Assertions.assertTrue(console.parse("connect " + DB_NAME, false));
+    Assertions.assertTrue(console.parse("create document type Order", false));
+    Assertions.assertTrue(console.parse(
+        "insert into Order set processor = 'SIR1LRM-7.1', vstart = '20220319_002624.404379', vstop = '20220319_002826.525650', status = 'PENDING'", false));
+
+    {
+      final StringBuilder buffer = new StringBuilder();
+      console.setOutput(output -> buffer.append(output));
+      Assertions.assertTrue(console.parse("select processor, vstart, vstop, pstart, pstop, status, node from Order", false));
+
+      int pos = buffer.toString().indexOf("processor");
+      Assertions.assertTrue(pos > -1);
+      pos = buffer.toString().indexOf("vstart", pos);
+      Assertions.assertTrue(pos > -1);
+      pos = buffer.toString().indexOf("vstop", pos);
+      Assertions.assertTrue(pos > -1);
+      pos = buffer.toString().indexOf("pstart", pos);
+      Assertions.assertTrue(pos > -1);
+      pos = buffer.toString().indexOf("pstop", pos);
+      Assertions.assertTrue(pos > -1);
+      pos = buffer.toString().indexOf("status", pos);
+      Assertions.assertTrue(pos > -1);
+      pos = buffer.toString().indexOf("node", pos);
+      Assertions.assertTrue(pos > -1);
+    }
+  }
 }
