@@ -52,6 +52,9 @@ echo This environment variable is needed to run this program
 goto end
 
 :okHome
+echo ARCADEDB stresstester script path = %~dpnx0
+echo ARCADEDB home directory           = %ARCADEDB_HOME%
+
 rem Always change directory to HOME directory
 cd /d %ARCADEDB_HOME%
 
@@ -70,6 +73,6 @@ goto setArgs
   -client ^
   -cp "%ARCADEDB_HOME%\lib\*;%ARCADEDB_HOME%\plugins\*" ^
   com.arcadedb.console.stresstest.StressTester ^
-  %CMD_LINE_ARGS% ^
+  %CMD_LINE_ARGS%
 
 :end
