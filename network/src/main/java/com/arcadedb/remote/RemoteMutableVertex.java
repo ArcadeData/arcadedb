@@ -113,6 +113,7 @@ public class RemoteMutableVertex extends MutableVertex {
 
   @Override
   protected void checkForLazyLoadingProperties() {
+    // NO ACTIONS
   }
 
   @Override

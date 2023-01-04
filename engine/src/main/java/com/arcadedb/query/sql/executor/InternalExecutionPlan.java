@@ -68,5 +68,6 @@ public interface InternalExecutionPlan extends ExecutionPlan {
   }
 
   default void setStatements(final List<Statement> stm) {
+    // NO ACTIONS
   }
 }

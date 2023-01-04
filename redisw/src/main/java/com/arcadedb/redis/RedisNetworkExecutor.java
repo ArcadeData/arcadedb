@@ -215,7 +215,6 @@ public class RedisNetworkExecutor extends Thread {
   }
 
   private void exists(final List<Object> list) {
-    final String k = (String) list.get(1);
     int total = 0;
     for (int i = 1; i < list.size(); i++)
       total += defaultBucket.containsKey(list.get(i)) ? 1 : 0;

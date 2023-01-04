@@ -44,9 +44,11 @@ public class SimpleNode implements Node {
   }
 
   public void jjtOpen() {
+    // NO ACTIONS
   }
 
   public void jjtClose() {
+    // NO ACTIONS
   }
 
   public void jjtSetParent(final Node n) {

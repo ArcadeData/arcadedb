@@ -31,7 +31,7 @@ public class PatternTest extends ParserTestAbstract {
     final String query = "MATCH {as:a, type:Person} return a";
     final SqlParser parser = getParserFor(query);
     try {
-      final MatchStatement stm = (MatchStatement) parser.parse();
+      final MatchStatement stm = (MatchStatement) parser.Parse();
       stm.buildPatterns();
       final Pattern pattern = stm.pattern;
       Assertions.assertEquals(0, pattern.getNumOfEdges());
@@ -48,7 +48,7 @@ public class PatternTest extends ParserTestAbstract {
     final String query = "MATCH {as:a, type:Person}, {as:b, type:Person} return a, b";
     final SqlParser parser = getParserFor(query);
     try {
-      final MatchStatement stm = (MatchStatement) parser.parse();
+      final MatchStatement stm = (MatchStatement) parser.Parse();
       stm.buildPatterns();
       final Pattern pattern = stm.pattern;
       Assertions.assertEquals(0, pattern.getNumOfEdges());
@@ -79,7 +79,7 @@ public class PatternTest extends ParserTestAbstract {
         "MATCH {as:a, type:Person}-->{as:b}, {as:c, type:Person}-->{as:d}-->{as:e}, {as:d, type:Foo}-->{as:f} return a, b";
     final SqlParser parser = getParserFor(query);
     try {
-      final MatchStatement stm = (MatchStatement) parser.parse();
+      final MatchStatement stm = (MatchStatement) parser.Parse();
       stm.buildPatterns();
       final Pattern pattern = stm.pattern;
       Assertions.assertEquals(4, pattern.getNumOfEdges());

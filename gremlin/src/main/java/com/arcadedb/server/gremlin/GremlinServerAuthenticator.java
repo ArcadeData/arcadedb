@@ -28,11 +28,8 @@ import java.net.*;
 import java.nio.charset.*;
 import java.util.*;
 
-public class GremlinServerAuthenticator implements org.apache.tinkerpop.gremlin.server.auth.Authenticator {
+public class GremlinServerAuthenticator implements Authenticator {
   private ArcadeDBServer server;
-
-  public GremlinServerAuthenticator() {
-  }
 
   @Override
   public boolean requireAuthentication() {

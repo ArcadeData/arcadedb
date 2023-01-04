@@ -20,12 +20,12 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-public class parse extends SimpleNode {
-  public parse(final int id) {
+public class Parse extends SimpleNode {
+  public Parse(final int id) {
     super(id);
   }
 
-  public parse(final SqlParser p, final int id) {
+  public Parse(final SqlParser p, final int id) {
     super(p, id);
   }
 }

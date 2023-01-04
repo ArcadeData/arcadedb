@@ -15,3 +15,6 @@ exclude_paths:
   - "**/*CharStream.java"
   - "**/SqlParser*.java"
   - "**/GraphQLParser*.java"
+  - "**/ParseException*.java"
+  - "**/TokenMgrException.java"
+  - "**/TokenMgrError.java"

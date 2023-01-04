@@ -35,7 +35,9 @@ import java.util.stream.*;
 
 public class MathExpression extends SimpleNode {
 
-  private static final Object NULL_VALUE = new Object();
+  private static final Object               NULL_VALUE       = new Object();
+  protected            List<MathExpression> childExpressions = new ArrayList<MathExpression>();
+  protected            List<Operator>       operators        = new ArrayList<>();
 
   public Expression getExpandContent() {
     throw new CommandExecutionException("Invalid expand expression");
@@ -498,17 +500,6 @@ public class MathExpression extends SimpleNode {
         return left != null ? left : right;
       }
     };
-
-    private static Long toLong(final Object left) {
-      if (left instanceof Number) {
-        return ((Number) left).longValue();
-      }
-      if (left instanceof Date) {
-        return ((Date) left).getTime();
-      }
-      return null;
-    }
-
     private final int priority;
 
     Operator(final int priority) {
@@ -600,9 +591,6 @@ public class MathExpression extends SimpleNode {
       return priority;
     }
   }
-
-  protected List<MathExpression> childExpressions = new ArrayList<MathExpression>();
-  protected List<Operator>       operators        = new ArrayList<>();
 
   public MathExpression(final int id) {
     super(id);
@@ -834,7 +822,8 @@ public class MathExpression extends SimpleNode {
     return this.childExpressions.get(0).estimateIndexedFunction(target, context, operator, right);
   }
 
-  public Iterable<Record> executeIndexedFunction(final FromClause target, final CommandContext context, final BinaryCompareOperator operator, final Object right) {
+  public Iterable<Record> executeIndexedFunction(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
+      final Object right) {
     if (this.childExpressions.size() != 1) {
       return null;
     }
@@ -850,7 +839,8 @@ public class MathExpression extends SimpleNode {
    * @return true if current expression is an indexed function AND that function can also be executed without using the index, false
    * otherwise
    */
-  public boolean canExecuteIndexedFunctionWithoutIndex(final FromClause target, final CommandContext context, final BinaryCompareOperator operator, final Object right) {
+  public boolean canExecuteIndexedFunctionWithoutIndex(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
+      final Object right) {
     if (this.childExpressions.size() != 1) {
       return false;
     }
@@ -865,7 +855,8 @@ public class MathExpression extends SimpleNode {
    *
    * @return true if current expression is an indexed function AND that function can be used on this target, false otherwise
    */
-  public boolean allowsIndexedFunctionExecutionOnTarget(final FromClause target, final CommandContext context, final BinaryCompareOperator operator, final Object right) {
+  public boolean allowsIndexedFunctionExecutionOnTarget(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
+      final Object right) {
     if (this.childExpressions.size() != 1) {
       return false;
     }
@@ -882,7 +873,8 @@ public class MathExpression extends SimpleNode {
    *
    * @return true if current expression is an indexed function AND the function has also to be executed after the index search.
    */
-  public boolean executeIndexedFunctionAfterIndexSearch(final FromClause target, final CommandContext context, final BinaryCompareOperator operator, final Object right) {
+  public boolean executeIndexedFunctionAfterIndexSearch(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
+      final Object right) {
     if (this.childExpressions.size() != 1) {
       return false;
     }
@@ -1091,6 +1083,16 @@ public class MathExpression extends SimpleNode {
 
   private Operator deserializeOperator(final String x) {
     return Operator.valueOf(x);
+  }
+
+  private static Long toLong(final Object left) {
+    if (left instanceof Number) {
+      return ((Number) left).longValue();
+    }
+    if (left instanceof Date) {
+      return ((Date) left).getTime();
+    }
+    return null;
   }
 }
 /* JavaCC - OriginalChecksum=c255bea24e12493e1005ba2a4d1dbb9d (do not edit this line) */

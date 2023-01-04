@@ -78,7 +78,7 @@ public class SQLStaticReflectiveFunction extends SQLFunctionAbstract {
 
   private final Method[] methods;
 
-  public SQLStaticReflectiveFunction(final String name, final int minParams, final int maxParams, final Method... methods) {
+  public SQLStaticReflectiveFunction(final String name, final Method... methods) {
     super(name);
     this.methods = methods;
     // we need to sort the methods by parameters type to return the closest overloaded method
@@ -100,7 +100,8 @@ public class SQLStaticReflectiveFunction extends SQLFunctionAbstract {
   }
 
   @Override
-  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams, final CommandContext iContext) {
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
+      final CommandContext iContext) {
 
     final Supplier<String> paramsPrettyPrint = () -> Arrays.stream(iParams).map(p -> p + " [ " + p.getClass().getName() + " ]")
         .collect(Collectors.joining(", ", "(", ")"));

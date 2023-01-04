@@ -37,7 +37,7 @@ public class TraverseStatementTest {
   protected SimpleNode checkSyntax(final String query, final boolean isCorrect) {
     final SqlParser osql = getParserFor(query);
     try {
-      final SimpleNode result = osql.parse();
+      final SimpleNode result = osql.Parse();
       if (!isCorrect) {
         //        System.out.println(query);
         //        if(result != null ) {

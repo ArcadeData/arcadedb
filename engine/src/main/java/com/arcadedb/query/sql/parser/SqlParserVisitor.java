@@ -27,7 +27,7 @@ public interface SqlParserVisitor {
 
   Object visit(Rid node, Object data);
 
-  Object visit(parse node, Object data);
+  Object visit(Parse node, Object data);
 
   Object visit(ParseScript node, Object data);
 

@@ -44,10 +44,6 @@ public class MongoDBProtocolPlugin implements ServerPlugin {
       protected MongoDatabase openOrCreateDatabase(final String databaseName) throws MongoServerException {
         return new MongoDBDatabaseWrapper(server.getDatabase(databaseName), this);
       }
-
-      @Override
-      public void close() {
-      }
     });
     mongoDBServer.bind("localhost", 27017);
   }

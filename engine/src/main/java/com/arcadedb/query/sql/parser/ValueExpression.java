@@ -72,17 +72,18 @@ public class ValueExpression extends Expression {
     return false;
   }
 
-  public boolean canExecuteIndexedFunctionWithoutIndex(final FromClause target, final CommandContext context, final BinaryCompareOperator operator, final Object right) {
+  public boolean canExecuteIndexedFunctionWithoutIndex(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
+      final Object right) {
     return false;
   }
 
-  public boolean allowsIndexedFunctionExecutionOnTarget(
-      final FromClause target, final CommandContext context, final BinaryCompareOperator operator, final Object right) {
+  public boolean allowsIndexedFunctionExecutionOnTarget(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
+      final Object right) {
     return false;
   }
 
-  public boolean executeIndexedFunctionAfterIndexSearch(
-      final FromClause target, final CommandContext context, final BinaryCompareOperator operator, final Object right) {
+  public boolean executeIndexedFunctionAfterIndexSearch(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
+      final Object right) {
     return false;
   }
 
@@ -124,7 +125,7 @@ public class ValueExpression extends Expression {
       return false;
 
     final ValueExpression that = (ValueExpression) o;
-    return that.value == this.value;
+    return that.value.equals(this.value);
   }
 
   @Override
@@ -133,9 +134,11 @@ public class ValueExpression extends Expression {
   }
 
   public void extractSubQueries(final SubQueryCollector collector) {
+    // NO ACTIONS
   }
 
   public void extractSubQueries(final Identifier letAlias, final SubQueryCollector collector) {
+    // NO ACTIONS
   }
 
   public boolean refersToParent() {

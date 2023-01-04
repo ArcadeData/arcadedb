@@ -32,26 +32,26 @@ public class ProjectionTest {
   @Test
   public void testIsExpand() throws ParseException {
     final SqlParser parser = getParserFor("select expand(foo)  from V");
-    final SelectStatement stm = (SelectStatement) parser.parse();
+    final SelectStatement stm = (SelectStatement) parser.Parse();
     Assertions.assertTrue(stm.getProjection().isExpand());
 
     final SqlParser parser2 = getParserFor("select foo  from V");
-    final SelectStatement stm2 = (SelectStatement) parser2.parse();
+    final SelectStatement stm2 = (SelectStatement) parser2.Parse();
     Assertions.assertFalse(stm2.getProjection().isExpand());
 
     final SqlParser parser3 = getParserFor("select expand  from V");
-    final SelectStatement stm3 = (SelectStatement) parser3.parse();
+    final SelectStatement stm3 = (SelectStatement) parser3.Parse();
     Assertions.assertFalse(stm3.getProjection().isExpand());
   }
 
   @Test
   public void testValidate() throws ParseException {
     final SqlParser parser = getParserFor("select expand(foo)  from V");
-    final SelectStatement stm = (SelectStatement) parser.parse();
+    final SelectStatement stm = (SelectStatement) parser.Parse();
     stm.getProjection().validate();
 
     try {
-      getParserFor("select expand(foo), bar  from V").parse();
+      getParserFor("select expand(foo), bar  from V").Parse();
 
       Assertions.fail();
     } catch (final CommandSQLParsingException ex) {

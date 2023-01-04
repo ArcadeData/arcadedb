@@ -35,19 +35,18 @@ public class MatchFieldTraverser extends MatchEdgeTraverser {
   }
 
   protected Iterable<ResultInternal> traversePatternEdge(final Identifiable startingPoint, final CommandContext iCommandContext) {
-
-    Iterable possibleResults = null;
-    if (this.item.getFilter() != null) {
-      final String alias = getEndpointAlias();
-      final Object matchedNodes = iCommandContext.getVariable(MatchPrefetchStep.PREFETCHED_MATCH_ALIAS_PREFIX + alias);
-      if (matchedNodes != null) {
-        if (matchedNodes instanceof Iterable) {
-          possibleResults = (Iterable) matchedNodes;
-        } else {
-          possibleResults = Collections.singleton(matchedNodes);
-        }
-      }
-    }
+//    Iterable possibleResults = null;
+//    if (this.item.getFilter() != null) {
+//      final String alias = getEndpointAlias();
+//      final Object matchedNodes = iCommandContext.getVariable(MatchPrefetchStep.PREFETCHED_MATCH_ALIAS_PREFIX + alias);
+//      if (matchedNodes != null) {
+//        if (matchedNodes instanceof Iterable) {
+//          possibleResults = (Iterable) matchedNodes;
+//        } else {
+//          possibleResults = Collections.singleton(matchedNodes);
+//        }
+//      }
+//    }
 
     final Object prevCurrent = iCommandContext.getVariable("current");
     iCommandContext.setVariable("current", startingPoint);

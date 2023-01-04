@@ -59,6 +59,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   public final static DatabaseAsyncTask FORCE_EXIT = new DatabaseAsyncTask() {
     @Override
     public void execute(final AsyncThread async, final DatabaseInternal database) {
+      // NO ACTIONS
     }
 
     @Override

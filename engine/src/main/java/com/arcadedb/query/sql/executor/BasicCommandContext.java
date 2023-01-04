@@ -31,18 +31,14 @@ import java.util.concurrent.atomic.*;
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
 public class BasicCommandContext implements CommandContext {
-  protected DatabaseInternal    database;
-  protected boolean             recordMetrics           = false;
-  protected CommandContext      parent;
-  protected CommandContext      child;
-  protected Map<String, Object> variables;
-  protected Map<String, Object> inputParameters;
-  protected Set<String>         declaredScriptVariables = new HashSet<>();
-
-  protected final AtomicLong resultsProcessed = new AtomicLong(0);
-
-  public BasicCommandContext() {
-  }
+  protected       DatabaseInternal    database;
+  protected       boolean             recordMetrics           = false;
+  protected       CommandContext      parent;
+  protected       CommandContext      child;
+  protected       Map<String, Object> variables;
+  protected       Map<String, Object> inputParameters;
+  protected       Set<String>         declaredScriptVariables = new HashSet<>();
+  protected final AtomicLong          resultsProcessed        = new AtomicLong(0);
 
   public Object getVariable(final String name) {
     return getVariable(name, null);

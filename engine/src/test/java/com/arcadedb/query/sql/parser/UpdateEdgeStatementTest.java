@@ -37,7 +37,7 @@ public class UpdateEdgeStatementTest {
   protected SimpleNode checkSyntax(final String query, final boolean isCorrect) {
     final SqlParser osql = getParserFor(query);
     try {
-      final SimpleNode result = osql.parse();
+      final SimpleNode result = osql.Parse();
       if (!isCorrect) {
         fail();
       }
@@ -124,7 +124,7 @@ public class UpdateEdgeStatementTest {
   private void printTree(final String s) {
     final SqlParser osql = getParserFor(s);
     try {
-      final SimpleNode result = osql.parse();
+      final SimpleNode result = osql.Parse();
 
     } catch (final ParseException e) {
       e.printStackTrace();

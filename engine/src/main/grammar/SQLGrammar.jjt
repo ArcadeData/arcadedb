@@ -666,7 +666,7 @@ BucketIdentifier BucketIdentifier():
 }
 
 /** Root productions. */
-Statement parse() :
+Statement Parse() :
 {Statement result;}
 {
   result = Statement() <EOF>

@@ -89,10 +89,6 @@ public class HttpServer implements ServerPlugin {
   }
 
   @Override
-  public void configure(final ArcadeDBServer arcadeDBServer, final ContextConfiguration configuration) {
-  }
-
-  @Override
   public void startService() {
     final ContextConfiguration configuration = server.getConfiguration();
 

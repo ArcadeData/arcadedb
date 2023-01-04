@@ -51,14 +51,10 @@ public class SQLFunctionReflectionFactory {
         final List<Method> methodsList = methodsMap.get(entry.getKey());
         final Method[] methods = new Method[methodsList.size()];
         int i = 0;
-        int minParams = 0;
-        int maxParams = 0;
         for (final Method m : methodsList) {
           methods[i++] = m;
-          minParams = minParams < m.getParameterTypes().length ? minParams : m.getParameterTypes().length;
-          maxParams = maxParams > m.getParameterTypes().length ? maxParams : m.getParameterTypes().length;
         }
-        factory.register(name.toLowerCase(Locale.ENGLISH), new SQLStaticReflectiveFunction(name, minParams, maxParams, methods));
+        factory.register(name.toLowerCase(Locale.ENGLISH), new SQLStaticReflectiveFunction(name, methods));
       }
     }
   }

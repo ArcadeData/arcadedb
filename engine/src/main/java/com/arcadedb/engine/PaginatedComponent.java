@@ -75,9 +75,11 @@ public abstract class PaginatedComponent {
   }
 
   public void onAfterLoad() {
+    // NO ACTIONS
   }
 
   public void onAfterCommit() {
+    // NO ACTIONS
   }
 
   public int getPageSize() {

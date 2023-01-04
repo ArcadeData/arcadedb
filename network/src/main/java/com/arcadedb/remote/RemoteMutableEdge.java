@@ -114,6 +114,7 @@ public class RemoteMutableEdge extends MutableEdge {
 
   @Override
   protected void checkForLazyLoadingProperties() {
+    // NO ACTIONS
   }
 
   @Override
@@ -123,5 +124,6 @@ public class RemoteMutableEdge extends MutableEdge {
 
   @Override
   protected void checkForUpgradeLightWeight() {
+    // NO ACTIONS
   }
 }

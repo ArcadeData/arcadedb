@@ -47,7 +47,7 @@ public class SelectStatementTest {
   protected SimpleNode checkSyntax(final String query, final boolean isCorrect) {
     final SqlParser osql = getParserFor(query);
     try {
-      final SimpleNode result = osql.parse();
+      final SimpleNode result = osql.Parse();
       if (!isCorrect) {
         //        System.out.println(query);
         //        if(result!= null ) {
@@ -291,7 +291,7 @@ public class SelectStatementTest {
     final String query = "select from bar where name not in :param1";
     final SqlParser osql = getParserFor(query);
     try {
-      final SimpleNode result = osql.parse();
+      final SimpleNode result = osql.Parse();
       final SelectStatement stm = (SelectStatement) result;
       final Map<String, Object> params = new HashMap<>();
       params.put("param1", new HashSet<>());

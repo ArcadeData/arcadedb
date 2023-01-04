@@ -25,7 +25,6 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.schema.DocumentType;
 
 import java.util.*;
 
@@ -59,7 +58,7 @@ public class DropBucketStatement extends DDLStatement {
         }
       }
     }
-    for (final DocumentType iClass : database.getSchema().getTypes()) {
+//    for (final DocumentType iClass : database.getSchema().getTypes()) {
 //      for (int i : iClass.getClusterIds()) {
 //        if (i == bucketId) {
 //          // IN USE
@@ -67,8 +66,8 @@ public class DropBucketStatement extends DDLStatement {
 //              "Cannot drop bucket " + bucketId + " because it's used by class " + iClass.getName());
 //        }
 //      }
-      //TODO
-    }
+//      //TODO
+//    }
 
     // REMOVE CACHE OF COMMAND RESULTS IF ACTIVE
     final String bucketName = database.getSchema().getBucketById(bucketId).getName();

@@ -74,7 +74,8 @@ public class UpdateItem extends SimpleNode {
     case OPERATOR_SLASHASSIGN:
       builder.append(" /= ");
       break;
-
+    default:
+      throw new IllegalArgumentException("Operator '" + operator + "' not supported in update");
     }
     right.toString(params, builder);
   }
@@ -125,7 +126,7 @@ public class UpdateItem extends SimpleNode {
     }
   }
 
-  public void applyOperation(final ResultInternal doc,final  Identifier attrName, final Object rightValue,final  CommandContext ctx) {
+  public void applyOperation(final ResultInternal doc, final Identifier attrName, final Object rightValue, final CommandContext ctx) {
     switch (operator) {
     case OPERATOR_EQ:
       Object newValue = convertResultToDocument(rightValue);

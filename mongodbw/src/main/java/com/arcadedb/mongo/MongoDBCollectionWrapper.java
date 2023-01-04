@@ -34,7 +34,7 @@ import java.util.*;
 
 public class MongoDBCollectionWrapper implements MongoCollection<Long> {
   private final Database database;
-  private final int      collectionId;
+//  private final int      collectionId;
   private final String   collectionName;
 
 //  private static class ProjectingIterable implements Iterable<Document> {
@@ -81,7 +81,7 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
   protected MongoDBCollectionWrapper(final Database database, final String collectionName) {
     this.database = database;
     this.collectionName = collectionName;
-    this.collectionId = database.getSchema().getType(collectionName).getBuckets(false).get(0).getId();
+    //this.collectionId = database.getSchema().getType(collectionName).getBuckets(false).get(0).getId();
   }
 
 //  protected Document getDocument(final Long aLong) {

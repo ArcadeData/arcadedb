@@ -95,6 +95,7 @@ public abstract class BooleanExpression extends SimpleNode {
 
     @Override
     public void extractSubQueries(final SubQueryCollector collector) {
+      // NO ACTIONS
     }
 
     @Override
@@ -165,7 +166,7 @@ public abstract class BooleanExpression extends SimpleNode {
 
     @Override
     public void extractSubQueries(final SubQueryCollector collector) {
-
+      // NO ACTIONS
     }
 
     @Override

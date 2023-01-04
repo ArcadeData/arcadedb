@@ -45,7 +45,7 @@ public class StatementCache {
   public StatementCache(final Database db, final int size) {
     this.db = db;
     this.mapSize = size;
-    this.map = new LinkedHashMap<String, Statement>(size) {
+    this.map = new LinkedHashMap<>(size) {
       protected boolean removeEldestEntry(final Map.Entry<String, Statement> eldest) {
         return super.size() > mapSize;
       }
@@ -95,7 +95,7 @@ public class StatementCache {
         is = new ByteArrayInputStream(statement.getBytes(StandardCharsets.UTF_8));
       }
 
-      SqlParser osql = null;
+      SqlParser osql;
       if (db == null) {
         osql = new SqlParser(db, is);
       } else {
@@ -108,7 +108,7 @@ public class StatementCache {
         }
       }
 
-      final Statement result = osql.parse();
+      final Statement result = osql.Parse();
       result.originalStatementAsString = statement;
       return result;
 
