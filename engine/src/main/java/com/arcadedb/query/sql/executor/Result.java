@@ -52,7 +52,7 @@ public interface Result {
    * @return the property value. If the property value is a persistent record, it only returns the RID. See also  {@link
    * #getElementProperty(String)}
    */
-  <T> T getProperty(String name, T defaultValue);
+  <T> T getProperty(String name, Object defaultValue);
 
   /**
    * returns an OElement property from the result

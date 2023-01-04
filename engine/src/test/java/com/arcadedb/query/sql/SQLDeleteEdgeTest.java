@@ -36,7 +36,7 @@ public class SQLDeleteEdgeTest extends TestHelper {
 
       database.command("sql", "DELETE FROM testFromToOneE unsafe");
       database.command("sql", "DELETE FROM testFromToTwoE unsafe");
-      final long deleted = database.command("sql", "DELETE VERTEX from testFromToV").nextIfAvailable().getProperty("count", 0L);
+      final long deleted = database.command("sql", "DELETE VERTEX from testFromToV").nextIfAvailable().getProperty("count", 0);
     });
   }
 
@@ -94,7 +94,7 @@ public class SQLDeleteEdgeTest extends TestHelper {
 
       database.command("sql", "DELETE FROM testToOneE unsafe");
       database.command("sql", "DELETE FROM testToTwoE unsafe");
-      final long deleted = database.command("sql", "DELETE VERTEX from testToV").nextIfAvailable().getProperty("count", 0L);
+      final long deleted = database.command("sql", "DELETE VERTEX from testToV").nextIfAvailable().getProperty("count", 0);
     });
   }
 
@@ -164,7 +164,7 @@ public class SQLDeleteEdgeTest extends TestHelper {
         Assertions.assertTrue(true);
       }
 
-      final long deleted = database.command("sql", "DELETE FROM SuperV").nextIfAvailable().getProperty("count", 0L);
+      final long deleted = database.command("sql", "DELETE FROM SuperV").nextIfAvailable().getProperty("count", 0);
 
       try {
         database.command("sql", "DROP TYPE SuperV");

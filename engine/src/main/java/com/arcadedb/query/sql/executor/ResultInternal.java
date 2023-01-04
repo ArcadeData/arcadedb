@@ -106,8 +106,8 @@ public class ResultInternal implements Result {
     return result;
   }
 
-  public <T> T getProperty(final String name, final T defaultValue) {
-    T result = defaultValue;
+  public <T> T getProperty(final String name, final Object defaultValue) {
+    T result = (T) defaultValue;
     if (content != null && content.containsKey(name))
       result = (T) wrap(content.get(name));
     else if (element != null && element.has(name))

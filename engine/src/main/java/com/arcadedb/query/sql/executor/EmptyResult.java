@@ -36,8 +36,8 @@ public class EmptyResult implements Result {
   }
 
   @Override
-  public <T> T getProperty(String name, T defaultValue) {
-    return defaultValue;
+  public <T> T getProperty(String name, Object defaultValue) {
+    return (T) defaultValue;
   }
 
   @Override
