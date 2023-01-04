@@ -31,7 +31,6 @@ import java.lang.reflect.*;
 import java.util.*;
 
 public class Modifier extends SimpleNode {
-
   boolean                   squareBrackets = false;
   ArrayRangeSelector        arrayRange;
   OrBlock                   condition;

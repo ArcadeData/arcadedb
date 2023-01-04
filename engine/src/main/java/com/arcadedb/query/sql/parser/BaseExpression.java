@@ -36,7 +36,8 @@ public class BaseExpression extends MathExpression {
   protected BaseIdentifier identifier;
   protected InputParameter inputParam;
   protected String         string;
-  Modifier modifier;
+  protected Modifier       modifier;
+  protected boolean        isNull = false;
 
   public BaseExpression(final int id) {
     super(id);
@@ -72,7 +73,9 @@ public class BaseExpression extends MathExpression {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
-    if (number != null) {
+    if (isNull)
+      builder.append("NULL");
+    else if (number != null) {
       number.toString(params, builder);
     } else if (identifier != null) {
       identifier.toString(params, builder);
@@ -90,25 +93,27 @@ public class BaseExpression extends MathExpression {
 
   public Object execute(final Identifiable iCurrentRecord, final CommandContext ctx) {
     Object result = null;
-    if (number != null) {
+    if (isNull)
+      result = null;
+    else if (number != null)
       result = number.getValue();
-    } else if (identifier != null) {
+    else if (identifier != null)
       result = identifier.execute(iCurrentRecord.getRecord(), ctx);
-    } else if (string != null && string.length() > 1) {
+    else if (string != null && string.length() > 1)
       result = decode(string.substring(1, string.length() - 1));
-    } else if (inputParam != null) {
+    else if (inputParam != null)
       result = inputParam.getValue(ctx.getInputParameters());
-    }
 
-    if (modifier != null) {
+    if (modifier != null)
       result = modifier.execute(iCurrentRecord, result, ctx);
-    }
 
     return result;
   }
 
   public Object execute(final Result iCurrentRecord, final CommandContext ctx) {
     Object result = null;
+    if (isNull)
+      result = null;
     if (number != null) {
       result = number.getValue();
     } else {
@@ -294,6 +299,7 @@ public class BaseExpression extends MathExpression {
   @Override
   public BaseExpression copy() {
     final BaseExpression result = new BaseExpression(-1);
+    result.isNull = isNull;
     result.number = number == null ? null : number.copy();
     result.identifier = identifier == null ? null : identifier.copy();
     result.inputParam = inputParam == null ? null : inputParam.copy();
@@ -337,6 +343,7 @@ public class BaseExpression extends MathExpression {
     result = 31 * result + (inputParam != null ? inputParam.hashCode() : 0);
     result = 31 * result + (string != null ? string.hashCode() : 0);
     result = 31 * result + (modifier != null ? modifier.hashCode() : 0);
+    result = 31 * result + (isNull ? 1 : 0);
     return result;
   }
 
@@ -375,6 +382,8 @@ public class BaseExpression extends MathExpression {
 
   public Result serialize() {
     final ResultInternal result = (ResultInternal) super.serialize();
+    if (isNull)
+      result.setProperty("isNull", true);
     if (number != null)
       result.setProperty("number", number.serialize());
     if (identifier != null)
@@ -390,6 +399,9 @@ public class BaseExpression extends MathExpression {
 
   public void deserialize(final Result fromResult) {
     super.deserialize(fromResult);
+
+    if (fromResult.getProperty("isNull") != null)
+      isNull = true;
 
     if (fromResult.getProperty("number") != null) {
       number = new PNumber(-1);

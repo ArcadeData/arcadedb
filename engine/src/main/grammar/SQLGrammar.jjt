@@ -2189,12 +2189,11 @@ BaseExpression BaseExpression():
         jjtThis.modifier = Modifier()
       ]
     )
-
+    |
+    <NULL> { jjtThis.isNull = true; }
   )
   {return jjtThis;}
 }
-
-
 
 FromClause FromClause():
 {}

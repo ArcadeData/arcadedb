@@ -161,6 +161,29 @@ public class MathExpressionTest {
   }
 
   @Test
+  public void testDivide() {
+    final MathExpression exp = new MathExpression(-1);
+    exp.childExpressions.add(integer(20));
+    exp.operators.add(MathExpression.Operator.SLASH);
+    exp.childExpressions.add(integer(4));
+
+    final Object result = exp.execute((Result) null, null);
+    Assertions.assertTrue(result instanceof Integer);
+    Assertions.assertEquals(5, result);
+  }
+
+  @Test
+  public void testDivideByNull() {
+    final MathExpression exp = new MathExpression(-1);
+    exp.childExpressions.add(integer(20));
+    exp.operators.add(MathExpression.Operator.SLASH);
+    exp.childExpressions.add(nullValue());
+
+    final Object result = exp.execute((Result) null, null);
+    Assertions.assertNull(result);
+  }
+
+  @Test
   public void testOr() {
     final MathExpression exp = new MathExpression(-1);
     exp.childExpressions.add(integer(4));
@@ -172,11 +195,37 @@ public class MathExpressionTest {
     Assertions.assertEquals(5, result);
   }
 
+  @Test
+  public void testNullCoalescing() {
+    testNullCoalescingGeneric(integer(20), integer(15), 20);
+    testNullCoalescingGeneric(nullExpr(), integer(14), 14);
+    testNullCoalescingGeneric(str("32"), nullExpr(), "32");
+    testNullCoalescingGeneric(str("2"), integer(5), "2");
+    testNullCoalescingGeneric(nullExpr(), str("3"), "3");
+  }
+
+  private void testNullCoalescingGeneric(final MathExpression left, final MathExpression right, final Object expected) {
+    final MathExpression exp = new MathExpression(-1);
+    exp.childExpressions.add(left);
+    exp.operators.add(MathExpression.Operator.NULL_COALESCING);
+    exp.childExpressions.add(right);
+
+    final Object result = exp.execute((Result) null, null);
+    //    Assertions.assertTrue(result instanceof Integer);
+    Assertions.assertEquals(expected, result);
+  }
+
   private MathExpression integer(final Number i) {
     final BaseExpression exp = new BaseExpression(-1);
     final PInteger integer = new PInteger(-1);
     integer.setValue(i);
     exp.number = integer;
+    return exp;
+  }
+
+  private BaseExpression nullValue() {
+    final BaseExpression exp = new BaseExpression(-1);
+    exp.isNull = true;
     return exp;
   }
 
@@ -203,25 +252,5 @@ public class MathExpressionTest {
       coll.expressions.add(sub);
     }
     return exp;
-  }
-
-  @Test
-  public void testNullCoalescing() {
-    testNullCoalescingGeneric(integer(20), integer(15), 20);
-    testNullCoalescingGeneric(nullExpr(), integer(14), 14);
-    testNullCoalescingGeneric(str("32"), nullExpr(), "32");
-    testNullCoalescingGeneric(str("2"), integer(5), "2");
-    testNullCoalescingGeneric(nullExpr(), str("3"), "3");
-  }
-
-  private void testNullCoalescingGeneric(final MathExpression left, final MathExpression right, final Object expected) {
-    final MathExpression exp = new MathExpression(-1);
-    exp.childExpressions.add(left);
-    exp.operators.add(MathExpression.Operator.NULL_COALESCING);
-    exp.childExpressions.add(right);
-
-    final Object result = exp.execute((Result) null, null);
-    //    Assertions.assertTrue(result instanceof Integer);
-    Assertions.assertEquals(expected, result);
   }
 }

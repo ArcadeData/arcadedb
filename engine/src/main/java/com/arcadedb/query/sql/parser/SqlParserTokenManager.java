@@ -6,7 +6,7 @@ import javax.annotation.processing.Generated;
 
 /** Token Manager. */
 @SuppressWarnings ("unused")
-@Generated("JavaCC")
+@Generated("JavaCC") // EXCLUDE INSPECTION FROM JACOCO
 public class SqlParserTokenManager implements SqlParserConstants {
 
   /** Debug output. */
