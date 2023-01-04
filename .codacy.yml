@@ -12,3 +12,6 @@ exclude_paths:
   - "**/src/test/*"
   - "**/*Test.java"
   - "**/*IT.java"
+  - "**/*CharStream.java"
+  - "**/SqlParser*.java"
+  - "**/GraphQLParser*.java"
