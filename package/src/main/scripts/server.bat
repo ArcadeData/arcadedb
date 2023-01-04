@@ -88,7 +88,7 @@ rem AND ATTACH TO THE CURRENT HOST, PORT 1044
   %ARCADEDB_SETTINGS% ^
   -cp "%ARCADEDB_HOME%\lib\*" ^
   %CMD_LINE_ARGS% com.arcadedb.server.ArcadeDBServer
-  
+
 if ERRORLEVEL 1 goto error
 goto end
 
