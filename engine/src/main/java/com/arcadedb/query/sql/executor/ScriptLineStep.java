@@ -115,4 +115,12 @@ public class ScriptLineStep extends AbstractExecutionStep {
 
     throw new NoSuchElementException();
   }
+
+  @Override
+  public String prettyPrint(int depth, int indent) {
+    if (plan == null) {
+      return "Script Line";
+    }
+    return plan.prettyPrint(depth, indent);
+  }
 }

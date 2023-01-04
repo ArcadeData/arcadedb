@@ -30,7 +30,6 @@ import java.util.*;
  * Created by luigidellaquila on 03/08/16.
  */
 public class LetQueryStep extends AbstractExecutionStep {
-
   private final Identifier varName;
   private final Statement  query;
 
@@ -85,9 +84,6 @@ public class LetQueryStep extends AbstractExecutionStep {
       public void close() {
         source.close();
       }
-
-
-
 
     };
   }

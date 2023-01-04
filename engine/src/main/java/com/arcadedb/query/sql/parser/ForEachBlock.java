@@ -23,7 +23,9 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Database;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.LetExpressionStep;
+import com.arcadedb.query.sql.executor.ForEachExecutionPlan;
+import com.arcadedb.query.sql.executor.ForEachStep;
+import com.arcadedb.query.sql.executor.GlobalLetExpressionStep;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.UpdateExecutionPlan;
 
@@ -34,7 +36,6 @@ import java.util.stream.*;
 //import com.orientechnologies.orient.core.sql.executor.LetExpressionStep;
 
 public class ForEachBlock extends Statement {
-
   protected static AtomicInteger   FOREACH_VARIABLE_PROGR = new AtomicInteger();
   protected        Identifier      loopVariable;
   protected        Expression      loopValues;
@@ -75,14 +76,14 @@ public class ForEachBlock extends Statement {
   }
 
   public UpdateExecutionPlan createExecutionPlan(final CommandContext ctx, final boolean enableProfiling) {
-    final UpdateExecutionPlan plan = new UpdateExecutionPlan(ctx);
-    final int nextProg = FOREACH_VARIABLE_PROGR.incrementAndGet();
-    if (FOREACH_VARIABLE_PROGR.get() < 0) {
+    ForEachExecutionPlan plan = new ForEachExecutionPlan(ctx);
+    int nextProg = FOREACH_VARIABLE_PROGR.incrementAndGet();
+    if (nextProg < 0)
       FOREACH_VARIABLE_PROGR.set(0);
-    }
-    final Identifier varName = new Identifier("__ARCADEDB_FOREACH_VAR_" + nextProg);
-    plan.chain(new LetExpressionStep(varName, loopValues, ctx, enableProfiling));
-//    ForEachStep step = new ForEachStep(loopVariable, new OExpression(varName), ctx);//TODO
+
+    Identifier varName = new Identifier("$__ARCADEDB_FOREACH_VAR_" + nextProg);
+    plan.chain(new GlobalLetExpressionStep(varName, loopValues, ctx, enableProfiling));
+    plan.chain(new ForEachStep(loopVariable, new Expression(varName), statements, ctx, enableProfiling));
     return plan;
   }
 
@@ -96,20 +97,19 @@ public class ForEachBlock extends Statement {
   }
 
   @Override
-  public boolean equals( final Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    final  ForEachBlock that = (ForEachBlock) o;
+    final ForEachBlock that = (ForEachBlock) o;
 
     if (!Objects.equals(loopVariable, that.loopVariable))
       return false;
     if (!Objects.equals(loopValues, that.loopValues))
       return false;
     return Objects.equals(statements, that.statements);
-
   }
 
   @Override
@@ -118,6 +118,20 @@ public class ForEachBlock extends Statement {
     result = 31 * result + (loopValues != null ? loopValues.hashCode() : 0);
     result = 31 * result + (statements != null ? statements.hashCode() : 0);
     return result;
+  }
+
+  @Override
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
+    builder.append("FOREACH (");
+    loopVariable.toString(params, builder);
+    builder.append(" IN ");
+    loopValues.toString(params, builder);
+    builder.append(") {\n");
+    for (Statement stm : statements) {
+      stm.toString(params, builder);
+      builder.append("\n");
+    }
+    builder.append("}");
   }
 
   public boolean containsReturn() {

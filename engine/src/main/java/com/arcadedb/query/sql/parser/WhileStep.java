@@ -32,12 +32,11 @@ import com.arcadedb.query.sql.executor.ScriptExecutionPlan;
 import java.util.*;
 
 public class WhileStep extends AbstractExecutionStep {
-  private final BooleanExpression condition;
-  private final List<Statement>   statements;
+  private final BooleanExpression     condition;
+  private final List<Statement>       statements;
+  private       ExecutionStepInternal finalResult = null;
 
-  private ExecutionStepInternal finalResult = null;
-
-  public WhileStep(final BooleanExpression condition, final List<Statement> statements,final  CommandContext ctx, final boolean enableProfiling) {
+  public WhileStep(final BooleanExpression condition, final List<Statement> statements, final CommandContext ctx, final boolean enableProfiling) {
     super(ctx, enableProfiling);
     this.condition = condition;
     this.statements = statements;
@@ -51,7 +50,6 @@ public class WhileStep extends AbstractExecutionStep {
     }
 
     while (condition.evaluate(new ResultInternal(), ctx)) {
-
       final ScriptExecutionPlan plan = initPlan(ctx);
       final ExecutionStepInternal result = plan.executeFull();
       if (result != null) {
@@ -61,7 +59,6 @@ public class WhileStep extends AbstractExecutionStep {
     }
     finalResult = new EmptyStep(ctx, false);
     return finalResult.syncPull(ctx, nRecords);
-
   }
 
   public ScriptExecutionPlan initPlan(final CommandContext ctx) {
@@ -80,18 +77,17 @@ public class WhileStep extends AbstractExecutionStep {
 
   public boolean containsReturn() {
     for (final Statement stm : this.statements) {
-      if (stm instanceof ReturnStatement) {
+      if (stm instanceof ReturnStatement)
         return true;
-      }
-      if (stm instanceof ForEachBlock && ((ForEachBlock) stm).containsReturn()) {
+
+      if (stm instanceof ForEachBlock && ((ForEachBlock) stm).containsReturn())
         return true;
-      }
-      if (stm instanceof IfStatement && ((IfStatement) stm).containsReturn()) {
+
+      if (stm instanceof IfStatement && ((IfStatement) stm).containsReturn())
         return true;
-      }
-      if (stm instanceof WhileBlock && ((WhileBlock) stm).containsReturn()) {
+
+      if (stm instanceof WhileBlock && ((WhileBlock) stm).containsReturn())
         return true;
-      }
     }
     return false;
   }

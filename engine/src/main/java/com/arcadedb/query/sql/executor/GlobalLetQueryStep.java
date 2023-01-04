@@ -29,12 +29,9 @@ import java.util.*;
  * Created by luigidellaquila on 03/08/16.
  */
 public class GlobalLetQueryStep extends AbstractExecutionStep {
-
   private final Identifier            varName;
   private final InternalExecutionPlan subExecutionPlan;
-
   boolean executed = false;
-
 
   public GlobalLetQueryStep(final Identifier varName, final Statement query, final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
@@ -46,7 +43,8 @@ public class GlobalLetQueryStep extends AbstractExecutionStep {
     subExecutionPlan = query.createExecutionPlan(subCtx, profilingEnabled);
   }
 
-  @Override public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
+  @Override
+  public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
     getPrev().ifPresent(x -> x.syncPull(ctx, nRecords));
     calculate(ctx);
     return new InternalResultSet();
@@ -60,8 +58,6 @@ public class GlobalLetQueryStep extends AbstractExecutionStep {
     executed = true;
   }
 
-
-
   private List<Result> toList(final LocalResultSet oLocalResultSet) {
     final List<Result> result = new ArrayList<>();
     while (oLocalResultSet.hasNext()) {
@@ -71,10 +67,10 @@ public class GlobalLetQueryStep extends AbstractExecutionStep {
     return result;
   }
 
-  @Override public String prettyPrint(final int depth, final int indent) {
+  @Override
+  public String prettyPrint(final int depth, final int indent) {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
-    return spaces + "+ LET (once)\n" +
-        spaces + "  " + varName + " = \n" + box(spaces+"    ", this.subExecutionPlan.prettyPrint(0, indent));
+    return spaces + "+ LET (once)\n" + spaces + "  " + varName + " = \n" + box(spaces + "    ", this.subExecutionPlan.prettyPrint(0, indent));
   }
 
   @Override
@@ -87,7 +83,7 @@ public class GlobalLetQueryStep extends AbstractExecutionStep {
     final StringBuilder result = new StringBuilder();
     result.append(spaces);
     result.append("+-------------------------\n");
-    for(final String row:rows){
+    for (final String row : rows) {
       result.append(spaces);
       result.append("| ");
       result.append(row);

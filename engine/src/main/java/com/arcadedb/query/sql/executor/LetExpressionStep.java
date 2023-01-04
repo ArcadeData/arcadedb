@@ -38,9 +38,9 @@ public class LetExpressionStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    if (getPrev().isEmpty()) {
+    if (!getPrev().isPresent())
       throw new CommandExecutionException("Cannot execute a local LET on a query without a target");
-    }
+
     return new ResultSet() {
       final ResultSet source = getPrev().get().syncPull(ctx, nRecords);
 
@@ -62,9 +62,6 @@ public class LetExpressionStep extends AbstractExecutionStep {
       public void close() {
         source.close();
       }
-
-
-
 
     };
   }
