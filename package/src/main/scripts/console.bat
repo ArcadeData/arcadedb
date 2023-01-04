@@ -15,48 +15,35 @@
 @REM
 
 @echo off
-rem
-rem Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
-rem
-rem Licensed under the Apache License, Version 2.0 (the "License");
-rem you may not use this file except in compliance with the License.
-rem You may obtain a copy of the License at
-rem
-rem     http://www.apache.org/licenses/LICENSE-2.0
-rem
-rem Unless required by applicable law or agreed to in writing, software
-rem distributed under the License is distributed on an "AS IS" BASIS,
-rem WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-rem See the License for the specific language governing permissions and
-rem limitations under the License.
+echo ARCADEDB - PLAY WITH DATA - https://arcadedb.com
 
+@setlocal
 
-echo
-echo  █████╗ ██████╗  ██████╗ █████╗ ██████╗ ███████╗██████╗ ██████╗
-echo ██╔══██╗██╔══██╗██╔════╝██╔══██╗██╔══██╗██╔════╝██╔══██╗██╔══██╗
-echo ███████║██████╔╝██║     ███████║██║  ██║█████╗  ██║  ██║██████╔╝
-echo ██╔══██║██╔══██╗██║     ██╔══██║██║  ██║██╔══╝  ██║  ██║██╔══██╗
-echo ██║  ██║██║  ██║╚██████╗██║  ██║██████╔╝███████╗██████╔╝██████╔╝
-echo ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝╚═════╝ ╚══════╝╚═════╝ ╚═════╝
-echo PLAY WITH DATA                                    arcadedb.com
+set ERROR_CODE=0
+
+rem Validations
+if not "%JAVA_HOME%"=="" goto OkJHome
+
+rem Look for java executable
+for %%i in (java.exe) do set "JAVACMD=%%~$PATH:i"
+goto checkJCmd
+
+:OkJHome
+set "JAVACMD=%JAVA_HOME%\bin\java.exe"
+
+:checkJCmd
+if exist "%JAVACMD%" goto chkArcHome
+
+echo The JAVA_HOME environment variable is not defined correctly, >&2
+echo this environment variable is needed to run this program. >&2
+goto error
+
+:chkArcHome
+if not "%ARCADEDB_HOME%" == "" goto gotHome
 
 rem Guess ARCADEDB_HOME if not defined
-set CURRENT_DIR=%cd%
-
-if exist "%JAVA_HOME%\bin\java.exe" goto setJavaHome
-set JAVA="java"
-goto okJava
-
-:setJavaHome
-set JAVA="%JAVA_HOME%\bin\java"
-
-:okJava
-if not "%ARCADEDB_HOME%" == "" goto gotHome
-set ARCADEDB_HOME=%CURRENT_DIR%
-if exist "%ARCADEDB_HOME%\bin\console.bat" goto okHome
-cd ..
-set ARCADEDB_HOME=%cd%
-cd %CURRENT_DIR%
+set "ARCADEDB_HOME=%~dp0"
+set "ARCADEDB_HOME=%ARCADEDB_HOME:~0,-5%"
 
 :gotHome
 if exist "%ARCADEDB_HOME%\bin\console.bat" goto okHome
@@ -65,6 +52,12 @@ echo This environment variable is needed to run this program
 goto end
 
 :okHome
+echo ARCADEDB console script path = %~dpnx0
+echo ARCADEDB home directory      = %ARCADEDB_HOME%
+
+rem Always change directory to HOME directory
+cd /d %ARCADEDB_HOME%
+
 rem Get remaining unshifted command line arguments and save them in the
 set CMD_LINE_ARGS=
 
@@ -75,14 +68,17 @@ shift
 goto setArgs
 
 :doneSetArgs
-
 set JAVA_OPTS_SCRIPT=-XX:+HeapDumpOnOutOfMemoryError -Djava.awt.headless=true -Dfile.encoding=UTF8
 
-rem ARCADEDB memory options, default uses the available RAM. To set it to a specific value, like 2GB of heap, use "-Xms2G -Xmx2G"
-set ARCADEDB_OPTS_MEMORY=
-
-set ARCADEDB_SETTINGS=-Xmx1024m -Djna.nosys=true -Djava.util.logging.config.file="%ARCADEDB_HOME%\config\orientdb-client-log.properties" -Djava.awt.headless=true
-
-call %JAVA% -client %JAVA_OPTS% %ARCADEDB_OPTS_MEMORY% %JAVA_OPTS_SCRIPT% %ARCADEDB_JMX% %ARCADEDB_SETTINGS% -cp "%ARCADEDB_HOME%\lib\*" com.arcadedb.console.Console %CMD_LINE_ARGS%
+%JAVACMD% ^
+  -client ^
+  %JAVA_OPTS% ^
+  %JAVA_OPTS_SCRIPT% ^
+  %ARCADEDB_OPTS_MEMORY% ^
+  %ARCADEDB_JMX% ^
+  %ARCADEDB_SETTINGS% ^
+  -cp "%ARCADEDB_HOME%\lib\*" ^
+  %CMD_LINE_ARGS% ^
+  com.arcadedb.console.Console
 
 :end
