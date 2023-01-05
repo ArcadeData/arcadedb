@@ -94,11 +94,13 @@ public class ResultInternal implements Result {
   }
 
   public <T> T getProperty(final String name) {
-    T result = null;
+    T result;
     if (content != null && content.containsKey(name))
       result = (T) wrap(content.get(name));
     else if (element != null)
       result = (T) wrap(element.get(name));
+    else
+      result = null;
 
     if (!(result instanceof Record) && result instanceof Identifiable && ((Identifiable) result).getIdentity() != null)
       result = (T) ((Identifiable) result).getIdentity();
@@ -107,14 +109,16 @@ public class ResultInternal implements Result {
   }
 
   public <T> T getProperty(final String name, final Object defaultValue) {
-    T result = (T) defaultValue;
+    T result;
     if (content != null && content.containsKey(name))
       result = (T) wrap(content.get(name));
     else if (element != null && element.has(name))
       result = (T) wrap(element.get(name));
+    else
+      result = (T) defaultValue;
+
     if (!(result instanceof Record) && result instanceof Identifiable && ((Identifiable) result).getIdentity() != null)
       result = (T) ((Identifiable) result).getIdentity();
-
     return result;
   }
 

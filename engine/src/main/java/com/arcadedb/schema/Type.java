@@ -672,93 +672,93 @@ public enum Type {
     throw new IllegalArgumentException("Cannot decrement value '" + a + "' (" + a.getClass() + ") with '" + b + "' (" + b.getClass() + ")");
   }
 
-  public static Number[] castComparableNumber(Number context, Number max) {
+  public static Number[] castComparableNumber(Number left, Number right) {
     // CHECK FOR CONVERSION
-    if (context instanceof Short) {
+    if (left instanceof Short) {
       // SHORT
-      if (max instanceof Integer)
-        context = context.intValue();
-      else if (max instanceof Long)
-        context = context.longValue();
-      else if (max instanceof Float)
-        context = context.floatValue();
-      else if (max instanceof Double)
-        context = context.doubleValue();
-      else if (max instanceof BigDecimal)
-        context = new BigDecimal(context.intValue());
-      else if (max instanceof Byte)
-        context = context.byteValue();
+      if (right instanceof Integer)
+        left = left.intValue();
+      else if (right instanceof Long)
+        left = left.longValue();
+      else if (right instanceof Float)
+        left = left.floatValue();
+      else if (right instanceof Double)
+        left = left.doubleValue();
+      else if (right instanceof BigDecimal)
+        left = new BigDecimal(left.intValue());
+      else if (right instanceof Byte)
+        left = left.byteValue();
 
-    } else if (context instanceof Integer) {
+    } else if (left instanceof Integer) {
       // INTEGER
-      if (max instanceof Long)
-        context = context.longValue();
-      else if (max instanceof Float)
-        context = context.floatValue();
-      else if (max instanceof Double)
-        context = context.doubleValue();
-      else if (max instanceof BigDecimal)
-        context = new BigDecimal(context.intValue());
-      else if (max instanceof Short)
-        max = max.intValue();
-      else if (max instanceof Byte)
-        max = max.intValue();
+      if (right instanceof Long)
+        left = left.longValue();
+      else if (right instanceof Float)
+        left = left.floatValue();
+      else if (right instanceof Double)
+        left = left.doubleValue();
+      else if (right instanceof BigDecimal)
+        left = new BigDecimal(left.intValue());
+      else if (right instanceof Short)
+        right = right.intValue();
+      else if (right instanceof Byte)
+        right = right.intValue();
 
-    } else if (context instanceof Long) {
+    } else if (left instanceof Long) {
       // LONG
-      if (max instanceof Float)
-        context = context.floatValue();
-      else if (max instanceof Double)
-        context = context.doubleValue();
-      else if (max instanceof BigDecimal)
-        context = new BigDecimal(context.longValue());
-      else if (max instanceof Integer || max instanceof Byte || max instanceof Short)
-        max = max.longValue();
+      if (right instanceof Float)
+        left = left.floatValue();
+      else if (right instanceof Double)
+        left = left.doubleValue();
+      else if (right instanceof BigDecimal)
+        left = new BigDecimal(left.longValue());
+      else if (right instanceof Integer || right instanceof Byte || right instanceof Short)
+        right = right.longValue();
 
-    } else if (context instanceof Float) {
+    } else if (left instanceof Float) {
       // FLOAT
-      if (max instanceof Double)
-        context = context.doubleValue();
-      else if (max instanceof BigDecimal)
-        context = BigDecimal.valueOf(context.floatValue());
-      else if (max instanceof Byte || max instanceof Short || max instanceof Integer || max instanceof Long)
-        max = max.floatValue();
+      if (right instanceof Double)
+        left = left.doubleValue();
+      else if (right instanceof BigDecimal)
+        left = BigDecimal.valueOf(left.floatValue());
+      else if (right instanceof Byte || right instanceof Short || right instanceof Integer || right instanceof Long)
+        right = right.floatValue();
 
-    } else if (context instanceof Double) {
+    } else if (left instanceof Double) {
       // DOUBLE
-      if (max instanceof BigDecimal)
-        context = BigDecimal.valueOf(context.doubleValue());
-      else if (max instanceof Byte || max instanceof Short || max instanceof Integer || max instanceof Long || max instanceof Float)
-        max = max.doubleValue();
+      if (right instanceof BigDecimal)
+        left = BigDecimal.valueOf(left.doubleValue());
+      else if (right instanceof Byte || right instanceof Short || right instanceof Integer || right instanceof Long || right instanceof Float)
+        right = right.doubleValue();
 
-    } else if (context instanceof BigDecimal) {
+    } else if (left instanceof BigDecimal) {
       // DOUBLE
-      if (max instanceof Integer)
-        max = new BigDecimal((Integer) max);
-      else if (max instanceof Float)
-        max = BigDecimal.valueOf((Float) max);
-      else if (max instanceof Double)
-        max = BigDecimal.valueOf((Double) max);
-      else if (max instanceof Short)
-        max = new BigDecimal((Short) max);
-      else if (max instanceof Byte)
-        max = new BigDecimal((Byte) max);
-    } else if (context instanceof Byte) {
-      if (max instanceof Short)
-        context = context.shortValue();
-      else if (max instanceof Integer)
-        context = context.intValue();
-      else if (max instanceof Long)
-        context = context.longValue();
-      else if (max instanceof Float)
-        context = context.floatValue();
-      else if (max instanceof Double)
-        context = context.doubleValue();
-      else if (max instanceof BigDecimal)
-        context = new BigDecimal(context.intValue());
+      if (right instanceof Integer)
+        right = new BigDecimal((Integer) right);
+      else if (right instanceof Float)
+        right = BigDecimal.valueOf((Float) right);
+      else if (right instanceof Double)
+        right = BigDecimal.valueOf((Double) right);
+      else if (right instanceof Short)
+        right = new BigDecimal((Short) right);
+      else if (right instanceof Byte)
+        right = new BigDecimal((Byte) right);
+    } else if (left instanceof Byte) {
+      if (right instanceof Short)
+        left = left.shortValue();
+      else if (right instanceof Integer)
+        left = left.intValue();
+      else if (right instanceof Long)
+        left = left.longValue();
+      else if (right instanceof Float)
+        left = left.floatValue();
+      else if (right instanceof Double)
+        left = left.doubleValue();
+      else if (right instanceof BigDecimal)
+        left = new BigDecimal(left.intValue());
     }
 
-    return new Number[] { context, max };
+    return new Number[] { left, right };
   }
 
   /**

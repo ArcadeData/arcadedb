@@ -63,4 +63,21 @@ public class ResultSetTest {
     final Optional<Integer> result = rs.vertexStream().map(x -> (int) x.get("i")).reduce((a, b) -> a + b);
     Assertions.assertFalse(result.isPresent());
   }
+
+  @Test
+  public void testResultConversion() {
+    final ResultInternal item = new ResultInternal();
+    item.setProperty("int", 10);
+    item.setProperty("long", 10L);
+    item.setProperty("short", (short) 10);
+
+    Assertions.assertEquals(10, (int) item.getProperty("int", 10));
+    Assertions.assertEquals(10L, (int) item.getProperty("int", 10L));
+
+    Assertions.assertEquals(10L, (long) item.getProperty("long", 10));
+    Assertions.assertEquals(10L, (long) item.getProperty("long", 10L));
+
+    Assertions.assertEquals(10, (int) item.getProperty("absent", 10));
+    Assertions.assertEquals(10L, (long) item.getProperty("absent", 10L));
+  }
 }
