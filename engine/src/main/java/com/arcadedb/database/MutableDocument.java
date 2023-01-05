@@ -22,7 +22,7 @@ import com.arcadedb.exception.ValidationException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
 

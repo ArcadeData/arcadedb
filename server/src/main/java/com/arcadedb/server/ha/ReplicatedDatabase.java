@@ -69,7 +69,7 @@ import com.arcadedb.server.ha.message.DatabaseAlignResponse;
 import com.arcadedb.server.ha.message.DatabaseChangeStructureRequest;
 import com.arcadedb.server.ha.message.TxForwardRequest;
 import com.arcadedb.server.ha.message.TxRequest;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.*;
 import java.util.*;

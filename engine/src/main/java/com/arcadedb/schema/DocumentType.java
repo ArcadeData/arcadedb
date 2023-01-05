@@ -31,7 +31,7 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
 import java.util.concurrent.*;
@@ -283,7 +283,7 @@ public class DocumentType {
   }
 
   public Property createProperty(final String propName, final JSONObject prop) {
-    final Property p = createProperty(propName, (String) prop.get("type"));
+    final Property p = createProperty(propName, prop.getString("type"));
 
     if (prop.has("default"))
       p.setDefaultValue(prop.get("default"));

@@ -28,7 +28,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.*;
 import java.util.*;

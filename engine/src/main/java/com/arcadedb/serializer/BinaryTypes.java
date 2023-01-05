@@ -97,7 +97,24 @@ public class BinaryTypes {
     } else if (value instanceof Iterable || value.getClass().isArray())
       // TODO: SUPPORT SET SEMANTIC TOO
       type = TYPE_LIST;
-    else
+    else if (value instanceof Number) {
+      // GENERIC NUMBER IMPLEMENTATION. THIS HAPPENS WITH JSON NUMBERS
+      byte t;
+
+      try {
+        Integer.parseInt(value.toString());
+        t = TYPE_INT;
+      } catch (NumberFormatException e) {
+        try {
+          Long.parseLong(value.toString());
+          t = TYPE_LONG;
+        } catch (NumberFormatException e2) {
+          Double.parseDouble(value.toString());
+          t = TYPE_DOUBLE;
+        }
+      }
+      type = t;
+    } else
       throw new IllegalArgumentException("Cannot serialize value '" + value + "' of type " + value.getClass());
 
     return type;

@@ -25,7 +25,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -65,7 +65,8 @@ public class OrientDBImporterIT {
           final File securityFile = new File("./server-users.jsonl");
           Assertions.assertTrue(securityFile.exists());
 
-          final JSONObject security = new JSONObject(FileUtils.readFileAsString(securityFile, "UTF8"));
+          final String fileContent = FileUtils.readFileAsString(securityFile, "UTF8");
+          final JSONObject security = new JSONObject(fileContent.substring(0, fileContent.indexOf("\n")));
           Assertions.assertEquals("admin", security.getString("name"));
         }
       }

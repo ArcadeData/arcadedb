@@ -43,8 +43,8 @@ import de.bwaldvogel.mongo.wire.message.MongoInsert;
 import de.bwaldvogel.mongo.wire.message.MongoQuery;
 import de.bwaldvogel.mongo.wire.message.MongoUpdate;
 import io.netty.channel.Channel;
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
 import java.util.concurrent.*;

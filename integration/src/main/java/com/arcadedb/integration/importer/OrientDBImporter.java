@@ -37,8 +37,8 @@ import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.FileUtils;
 import com.google.gson.stream.JsonReader;
 import com.google.gson.stream.JsonToken;
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.*;
 import java.util.*;

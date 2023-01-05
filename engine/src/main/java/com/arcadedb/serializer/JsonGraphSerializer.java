@@ -22,8 +22,8 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
 
@@ -108,8 +108,8 @@ public class JsonGraphSerializer extends JsonSerializer {
 
     } else if (document instanceof Edge) {
       final Edge edge = ((Edge) document);
-      object.put("i", edge.getIn());
-      object.put("o", edge.getOut());
+      object.put("i", edge.getIn().toString());
+      object.put("o", edge.getOut().toString());
     }
   }
 

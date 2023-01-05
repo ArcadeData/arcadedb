@@ -19,7 +19,7 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.index.Index;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
 
@@ -224,7 +224,7 @@ public class Property {
   public JSONObject toJSON() {
     final JSONObject json = new JSONObject();
 
-    json.put("type", type);
+    json.put("type", type.name);
 
     final Object defValue = getDefaultValue();
     if (defValue != null)

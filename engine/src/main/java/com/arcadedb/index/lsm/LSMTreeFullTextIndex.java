@@ -38,7 +38,7 @@ import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.analysis.TokenStream;
 import org.apache.lucene.analysis.standard.StandardAnalyzer;
 import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.*;
 import java.util.*;

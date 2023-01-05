@@ -23,8 +23,8 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.security.SecurityManager;
 import com.arcadedb.security.SecurityUser;
 import com.arcadedb.server.ArcadeDBServer;
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
 import java.util.concurrent.*;

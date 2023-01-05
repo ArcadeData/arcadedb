@@ -26,7 +26,7 @@ import com.arcadedb.database.Record;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.serializer.BinaryTypes;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
 

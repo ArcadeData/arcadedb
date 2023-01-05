@@ -21,8 +21,8 @@ package com.arcadedb.server.security;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.security.SecurityManager;
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.*;
 import java.util.*;

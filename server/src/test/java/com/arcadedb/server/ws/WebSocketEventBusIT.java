@@ -23,7 +23,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.StaticBaseServerTest;
 import com.arcadedb.utility.CallableNoReturn;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.xnio.http.UpgradeFailedException;
@@ -81,7 +81,7 @@ public class WebSocketEventBusIT extends StaticBaseServerTest {
       try (final var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
         final var result = new JSONObject(client.send("42"));
         Assertions.assertEquals("error", result.get("result"));
-        Assertions.assertEquals("org.json.JSONException", result.get("exception"));
+        Assertions.assertEquals("com.arcadedb.serializer.json.JSONException", result.get("exception"));
       }
     }, "invalidJsonReturnsError");
   }
@@ -158,7 +158,8 @@ public class WebSocketEventBusIT extends StaticBaseServerTest {
   @Test
   public void twoSubscribersAreServiced() throws Throwable {
     execute(() -> {
-      final var clients = new WebSocketClientHelper[] { new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS),
+      final var clients = new WebSocketClientHelper[] {
+          new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS),
           new WebSocketClientHelper("ws://localhost:2480/ws", "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS) };
 
       for (final var client : clients) {
@@ -312,9 +313,9 @@ public class WebSocketEventBusIT extends StaticBaseServerTest {
   private static String buildActionMessage(final String action, final String database, final String type, final String[] changeTypes) {
     final var obj = new JSONObject();
     obj.put("action", action);
-    obj.putOpt("database", database);
-    obj.putOpt("type", type);
-    obj.putOpt("changeTypes", changeTypes);
+    obj.put("database", database);
+    obj.put("type", type);
+    obj.put("changeTypes", changeTypes);
     return obj.toString();
   }
 

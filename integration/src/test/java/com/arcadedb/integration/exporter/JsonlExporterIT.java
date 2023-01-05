@@ -24,7 +24,7 @@ import com.arcadedb.integration.TestHelper;
 import com.arcadedb.integration.importer.OrientDBImporter;
 import com.arcadedb.integration.importer.OrientDBImporterIT;
 import com.arcadedb.utility.FileUtils;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;

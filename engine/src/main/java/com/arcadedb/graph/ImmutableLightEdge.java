@@ -22,7 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.schema.DocumentType;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
 

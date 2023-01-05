@@ -22,7 +22,7 @@ import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONObject;
 
 public class PostCreateUserHandler extends AbstractHandler {
   public PostCreateUserHandler(final HttpServer httpServer) {

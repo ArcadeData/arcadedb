@@ -19,7 +19,7 @@
 package com.arcadedb;
 
 import com.arcadedb.utility.SystemVariableResolver;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.*;
 import java.util.*;

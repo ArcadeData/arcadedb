@@ -19,7 +19,7 @@
 package com.arcadedb.server;
 
 import com.arcadedb.log.LogManager;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 

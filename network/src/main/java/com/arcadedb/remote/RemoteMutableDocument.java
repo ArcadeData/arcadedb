@@ -25,7 +25,7 @@ import com.arcadedb.database.JSONSerializer;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
 

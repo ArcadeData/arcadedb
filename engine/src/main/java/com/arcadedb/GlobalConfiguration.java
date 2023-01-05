@@ -24,7 +24,7 @@ import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.utility.Callable;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.SystemVariableResolver;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.*;
 import java.util.*;

@@ -21,7 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.TestHelper;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.Type;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -55,7 +55,7 @@ public class AlterPropertyExecutionTest extends TestHelper {
     database = factory.open();
 
     Assertions.assertEquals("test", database.getSchema().getType("Car").getProperty("name").getCustomValue("description"));
-    Assertions.assertEquals(3, database.getSchema().getType("Car").getProperty("name").getCustomValue("age"));
+    Assertions.assertEquals(3, ((Number) database.getSchema().getType("Car").getProperty("name").getCustomValue("age")).intValue());
 
     database.command("sql", "ALTER PROPERTY Car.name CUSTOM age = null");
     Assertions.assertNull(database.getSchema().getType("Car").getProperty("name").getCustomValue("age"));

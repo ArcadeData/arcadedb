@@ -25,7 +25,7 @@ import com.arcadedb.database.JSONSerializer;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONObject;
 
 public class RemoteMutableEdge extends MutableEdge {
   protected final RemoteDatabase remoteDatabase;

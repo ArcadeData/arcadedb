@@ -23,8 +23,8 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.security.SecurityManager;
 import com.arcadedb.utility.Callable;
 import com.arcadedb.utility.FileUtils;
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.*;
 import java.util.*;

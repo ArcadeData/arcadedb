@@ -32,9 +32,9 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.Callable;
 import com.arcadedb.utility.Pair;
-import org.json.JSONArray;
-import org.json.JSONException;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONException;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.*;
 import java.math.*;

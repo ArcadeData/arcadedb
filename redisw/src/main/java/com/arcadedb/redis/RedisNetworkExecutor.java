@@ -35,8 +35,8 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.utility.NumberUtils;
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.*;
 import java.net.*;
@@ -552,7 +552,7 @@ public class RedisNetworkExecutor extends Thread {
         final String k = key.toString();
         final Object[] compositeKey;
         if (k.startsWith("[")) {
-          compositeKey = new JSONArray(key).toList().toArray();
+          compositeKey = new JSONArray((String[]) key).toList().toArray();
         } else if (k.startsWith("\"")) {
           compositeKey = new String[] { k.substring(1, k.length() - 1) };
         } else

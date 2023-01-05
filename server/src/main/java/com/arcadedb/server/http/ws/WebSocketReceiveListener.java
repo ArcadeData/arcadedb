@@ -27,8 +27,8 @@ import io.undertow.websockets.core.BufferedTextMessage;
 import io.undertow.websockets.core.StreamSourceFrameChannel;
 import io.undertow.websockets.core.WebSocketChannel;
 import io.undertow.websockets.core.WebSockets;
-import org.json.JSONException;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONException;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.*;
 import java.util.*;
@@ -59,7 +59,7 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
 
       switch (action) {
       case SUBSCRIBE:
-        final var jsonChangeTypes = message.optJSONArray("changeTypes");
+        final var jsonChangeTypes = message.has("changeTypes") ? message.getJSONArray("changeTypes") : null;
         final var changeTypes = jsonChangeTypes == null ?
             null :
             jsonChangeTypes.toList().stream().map(t -> ChangeEvent.TYPE.valueOf(t.toString().toUpperCase())).collect(Collectors.toSet());

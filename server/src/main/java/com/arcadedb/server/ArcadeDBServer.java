@@ -39,8 +39,8 @@ import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.FileUtils;
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.*;
 import java.lang.reflect.*;

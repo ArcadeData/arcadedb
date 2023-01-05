@@ -23,7 +23,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.method.misc.AbstractSQLMethod;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
 
@@ -47,8 +47,7 @@ public class SQLMethodToJSON extends AbstractSQLMethod {
   }
 
   @Override
-  public Object execute( final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult,
-      final Object[] iParams) {
+  public Object execute(final Object iThis, final Identifiable iCurrentRecord, final CommandContext iContext, final Object ioResult, final Object[] iParams) {
     if (iThis == null)
       return null;
 
@@ -58,7 +57,7 @@ public class SQLMethodToJSON extends AbstractSQLMethod {
 
     } else if (iThis instanceof Map) {
 
-      return new JSONObject(iThis);
+      return new JSONObject(iThis.toString());
 
     } else if (MultiValue.isMultiValue(iThis)) {
 

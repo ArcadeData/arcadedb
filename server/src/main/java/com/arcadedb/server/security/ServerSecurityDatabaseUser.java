@@ -23,8 +23,8 @@ import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityManager;
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
 

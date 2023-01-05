@@ -32,8 +32,8 @@ import com.arcadedb.server.security.credential.CredentialsValidator;
 import com.arcadedb.server.security.credential.DefaultCredentialsValidator;
 import com.arcadedb.utility.AnsiCode;
 import com.arcadedb.utility.LRUCache;
-import org.json.JSONException;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONException;
+import com.arcadedb.serializer.json.JSONObject;
 
 import javax.crypto.SecretKey;
 import javax.crypto.SecretKeyFactory;

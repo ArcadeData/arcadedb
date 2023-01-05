@@ -25,8 +25,8 @@ import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.Pair;
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
 

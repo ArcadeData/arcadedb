@@ -25,7 +25,7 @@ import com.arcadedb.database.JSONSerializer;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONObject;
 
 public class RemoteMutableVertex extends MutableVertex {
   protected final RemoteDatabase remoteDatabase;

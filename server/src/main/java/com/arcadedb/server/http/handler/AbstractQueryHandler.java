@@ -32,8 +32,8 @@ import com.arcadedb.schema.VertexType;
 import com.arcadedb.serializer.JsonGraphSerializer;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.server.http.HttpServer;
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
 import java.util.stream.*;

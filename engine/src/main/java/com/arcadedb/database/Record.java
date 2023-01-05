@@ -18,7 +18,7 @@
  */
 package com.arcadedb.database;
 
-import org.json.JSONObject;
+import com.arcadedb.serializer.json.JSONObject;
 
 /**
  * Generic interface representing a record as an entry in the database.
