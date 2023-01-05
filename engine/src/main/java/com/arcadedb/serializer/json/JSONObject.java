@@ -20,7 +20,7 @@
  */
 package com.arcadedb.serializer.json;
 
-import com.google.gson.GsonBuilder;
+import com.arcadedb.database.RID;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
@@ -102,6 +102,13 @@ public class JSONObject {
       object.add(name, array.getInternal());
     } else if (value instanceof Enum) {
       object.addProperty(name, ((Enum) value).name());
+    } else if (value instanceof Date) {
+      object.addProperty(name, ((Date) value).getTime());
+    } else if (value instanceof RID) {
+      object.addProperty(name, value.toString());
+    } else if (value instanceof Map) {
+      final JSONObject embedded = new JSONObject((Map<String, Object>) value);
+      object.add(name, embedded.getInternal());
     } else
       throw new JSONException("Type '" + value.getClass() + "' not supported for JSONObject");
     return this;
@@ -197,12 +204,12 @@ public class JSONObject {
   }
 
   public String toString(final int indent) {
-    return new GsonBuilder().serializeNulls().setPrettyPrinting().create().toJson(object);
+    return JSONFactory.INSTANCE.getGsonPrettyPrint().toJson(object);
   }
 
   @Override
   public String toString() {
-    return new GsonBuilder().serializeNulls().create().toJson(object);
+    return JSONFactory.INSTANCE.getGson().toJson(object);
   }
 
   public boolean isEmpty() {
@@ -281,6 +288,8 @@ public class JSONObject {
       return ((JSONArray) object).getInternal();
     else if (object instanceof Map)
       return new JSONObject((Map) object).getInternal();
+    else if (object instanceof RID)
+      return new JsonPrimitive(object.toString());
 
     throw new IllegalArgumentException("Object of type " + object.getClass() + " not supported");
   }
