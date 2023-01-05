@@ -51,7 +51,11 @@ public class JSONObject {
   }
 
   public JSONObject(final String input) {
-    object = (JsonObject) JsonParser.parseString(input);
+    try {
+      object = (JsonObject) JsonParser.parseString(input);
+    } catch (Exception e) {
+      throw new JSONException("Invalid JSON object format");
+    }
   }
 
   public JSONObject(final Map<String, ? extends Object> map) {
@@ -159,8 +163,8 @@ public class JSONObject {
   }
 
   public String optString(final String name, final String defaultValue) {
-    final Object object = this.opt(name);
-    return NULL.equals(object) ? defaultValue : object.toString();
+    final Object value = this.opt(name);
+    return value == null || NULL.equals(value) ? defaultValue : value.toString();
   }
 
   public Object opt(final String name) {

@@ -59,7 +59,7 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
 
       switch (action) {
       case SUBSCRIBE:
-        final var jsonChangeTypes = message.has("changeTypes") ? message.getJSONArray("changeTypes") : null;
+        final var jsonChangeTypes = !message.isNull("changeTypes") ? message.getJSONArray("changeTypes") : null;
         final var changeTypes = jsonChangeTypes == null ?
             null :
             jsonChangeTypes.toList().stream().map(t -> ChangeEvent.TYPE.valueOf(t.toString().toUpperCase())).collect(Collectors.toSet());

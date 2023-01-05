@@ -47,7 +47,11 @@ public class JSONArray implements Iterable<Object> {
   }
 
   public JSONArray(final String input) {
-    array = (JsonArray) JsonParser.parseString(input);
+    try {
+      array = (JsonArray) JsonParser.parseString(input);
+    } catch (Exception e) {
+      throw new JSONException("Invalid JSON array format");
+    }
   }
 
   public JSONArray(final Collection<? extends Object> input) {
