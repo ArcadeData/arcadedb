@@ -32,7 +32,7 @@ import java.util.*;
  * <br>
  * Immutable class.
  */
-public class RID implements Identifiable, Comparable<Identifiable>, Serializable {
+public class RID implements Identifiable, Comparable<Object>, Serializable {
   private transient final Database database;
   protected final         int      bucketId;
   protected final         long     offset;
@@ -161,8 +161,16 @@ public class RID implements Identifiable, Comparable<Identifiable>, Serializable
   }
 
   @Override
-  public int compareTo(final Identifiable o) {
-    final Database otherDb = o.getIdentity().getDatabase();
+  public int compareTo(final Object o) {
+    RID otherRID;
+    if (o instanceof RID)
+      otherRID = (RID) o;
+    else if (o instanceof String)
+      otherRID = new RID(database, (String) o);
+    else
+      return -1;
+
+    final Database otherDb = otherRID.getDatabase();
     if (database != null) {
       if (otherDb != null) {
         final int res = database.getName().compareTo(otherDb.getName());
@@ -173,15 +181,14 @@ public class RID implements Identifiable, Comparable<Identifiable>, Serializable
     } else if (otherDb != null)
       return 1;
 
-    final RID other = o.getIdentity();
-    if (bucketId > other.bucketId)
+    if (bucketId > otherRID.bucketId)
       return 1;
-    else if (bucketId < other.bucketId)
+    else if (bucketId < otherRID.bucketId)
       return -1;
 
-    if (offset > other.offset)
+    if (offset > otherRID.offset)
       return 1;
-    else if (offset < other.offset)
+    else if (offset < otherRID.offset)
       return -1;
 
     return 0;
