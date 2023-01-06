@@ -185,8 +185,15 @@ public class JSONObject {
   public Map<String, Object> toMap() {
     final Map<String, JsonElement> map = object.asMap();
     final Map<String, Object> result = new LinkedHashMap<>(map.size());
-    for (Map.Entry<String, JsonElement> entry : map.entrySet())
-      result.put(entry.getKey(), elementToObject(entry.getValue()));
+    for (Map.Entry<String, JsonElement> entry : map.entrySet()) {
+      Object value = elementToObject(entry.getValue());
+      if (value instanceof JSONObject)
+        value = ((JSONObject) value).toMap();
+      else if (value instanceof JSONArray)
+        value = ((JSONArray) value).toList();
+
+      result.put(entry.getKey(), value);
+    }
 
     return result;
   }
