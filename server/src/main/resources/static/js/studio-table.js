@@ -31,9 +31,9 @@ function renderTable(){
     tableFitInPageChecked = "";
 
   if( tableFitInPage == true)
-    $("#result").css({"width": "100%", "table-layout": "fixed"});
+    $("#result").css({"width": "100%", "table-layout": "fixed", "white-space": "normal"});
   else
-    $("#result").css({"table-layout": "auto"});
+    $("#result").css({"width": "100%", "table-layout": "auto", "white-space": "nowrap"});
 
   if ( $.fn.dataTable.isDataTable( '#result' ) )
     try{ $('#result').DataTable().destroy(); $('#result').empty(); } catch(e){};
