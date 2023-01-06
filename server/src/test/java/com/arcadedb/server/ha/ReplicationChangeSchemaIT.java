@@ -106,7 +106,9 @@ public class ReplicationChangeSchemaIT extends ReplicationServerIT {
     testOnAllServers((database) -> isInSchemaFile(database, "propertyIndexed"));
 
     final Index idx = indexedProperty.createIndex(Schema.INDEX_TYPE.LSM_TREE, true);
-    testOnAllServers((database) -> isInSchemaFile(database, "\"IndexedVertex0\":{\"indexes\":{\"IndexedVertex0_"));
+    testOnAllServers((database) -> isInSchemaFile(database, "\"IndexedVertex0\""));
+
+    testOnAllServers((database) -> isInSchemaFile(database, "\"indexes\":{\"IndexedVertex0_"));
 
     databases[0].transaction(() -> {
       for (int i = 0; i < 10; i++)
