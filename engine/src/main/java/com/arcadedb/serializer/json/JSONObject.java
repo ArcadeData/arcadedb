@@ -20,6 +20,7 @@
  */
 package com.arcadedb.serializer.json;
 
+import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
@@ -301,6 +302,8 @@ public class JSONObject {
       return new JSONObject((Map) object).getInternal();
     else if (object instanceof RID)
       return new JsonPrimitive(object.toString());
+    else if (object instanceof Document)
+      return ((Document) object).toJSON().getInternal();
 
     throw new IllegalArgumentException("Object of type " + object.getClass() + " not supported");
   }
