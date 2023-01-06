@@ -32,6 +32,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -63,11 +64,10 @@ public class SelectOrderRIDTest {
       Database database = arcadeDBServer.getDatabase("test");
       String customBucketName = "O202203";
       Bucket customBucket;
-      System.out.println();
+
       if (!database.getSchema().existsBucket(customBucketName)) {
         customBucket = database.getSchema().createBucket(customBucketName);
         database.getSchema().getType("Order").addBucket(customBucket);
-        System.out.println("created bucket " + customBucketName);
       }
       String processor = "SIR1LRM-7.1";
       String vstart = "20220319_002905.423534";
@@ -75,181 +75,86 @@ public class SelectOrderRIDTest {
       String status = "PENDING";
       String UPSERT_ORDER = "UPDATE BUCKET:{bucket_name} SET processor = ?, vstart = ?, vstop = ?, status = ? UPSERT RETURN AFTER WHERE processor = ? AND vstart = ? AND vstop = ?";
       String sqlString = UPSERT_ORDER.replace("{bucket_name}", customBucketName);
-      try {
-        database.begin();
-        try (ResultSet resultSet = database.command("sql", sqlString, processor, vstart, vstop, status, processor, vstart, vstop)) {
-          System.out.print("insert record: sqlString = " + sqlString);
-          System.out.println(", result = " + resultSet.next().toJSON());
-        }
-        vstart = "20220319_002624.404379";
-        vstop = "20220319_002826.525650";
-        try (ResultSet resultSet = database.command("sql", sqlString, processor, vstart, vstop, status, processor, vstart, vstop)) {
-          System.out.print("insert record: sqlString = " + sqlString);
-          System.out.println(", result = " + resultSet.next().toJSON());
-        }
-        database.commit();
-      } catch (Exception e) {
-        System.out.println(e.getMessage());
-        database.rollback();
+
+      final RID[] rids = new RID[2];
+      database.begin();
+      try (ResultSet resultSet = database.command("sql", sqlString, processor, vstart, vstop, status, processor, vstart, vstop)) {
+        rids[0] = resultSet.next().getElement().get().getIdentity();
       }
-      System.out.println("Test 1: select with @rid < #3:1 (as String) using prepared statement");
-      Object parameter = "#3:1";
+      vstart = "20220319_002624.404379";
+      vstop = "20220319_002826.525650";
+      try (ResultSet resultSet = database.command("sql", sqlString, processor, vstart, vstop, status, processor, vstart, vstop)) {
+        rids[1] = resultSet.next().getElement().get().getIdentity();
+      }
+      database.commit();
+
+      Object parameter = rids[1].toString();
       sqlString = "SELECT from Order WHERE @rid < ? ORDER BY @rid DESC LIMIT 10";
-      System.out.println("sqlString = " + sqlString);
+
       Result result;
-      try {
-        database.begin();
-        try (ResultSet resultSet = database.query("sql", sqlString, parameter)) {
-          System.out.print("result: ");
-          while (resultSet.hasNext()) {
-            result = resultSet.next();
-            System.out.print("@rid = " + result.getIdentity().get() + ", ");
-            System.out.print("processor = " + result.getProperty("processor") + ", ");
-            System.out.print("vstart = " + result.getProperty("vstart") + ", ");
-            System.out.print("vstop = " + result.getProperty("vstop") + ", ");
-            System.out.print("pstart = " + result.getProperty("pstart") + ", ");
-            System.out.print("pstop = " + result.getProperty("pstop") + ", ");
-            System.out.print("status = " + result.getProperty("status") + ", ");
-            System.out.println("node = " + result.getProperty("node"));
-          }
-          System.out.println();
+
+      database.begin();
+      try (ResultSet resultSet = database.query("sql", sqlString, parameter)) {
+        while (resultSet.hasNext()) {
+          Assertions.assertEquals(rids[0], resultSet.next().getIdentity().get());
         }
-        database.commit();
-      } catch (Exception e) {
-        System.out.println(e.getMessage());
-        database.rollback();
       }
-      System.out.println("Test 2: select with @rid > #3:0 (as String) using prepared statement");
-      parameter = "#3:0";
+      database.commit();
+
+      parameter = rids[0].toString();
       sqlString = "SELECT from Order WHERE @rid > ? ORDER BY @rid DESC LIMIT 10";
-      System.out.println("sqlString = " + sqlString);
-      try {
-        database.begin();
-        try (ResultSet resultSet = database.query("sql", sqlString, parameter)) {
-          System.out.print("result: ");
-          while (resultSet.hasNext()) {
-            result = resultSet.next();
-            System.out.print("@rid = " + result.getIdentity().get() + ", ");
-            System.out.print("processor = " + result.getProperty("processor") + ", ");
-            System.out.print("vstart = " + result.getProperty("vstart") + ", ");
-            System.out.print("vstop = " + result.getProperty("vstop") + ", ");
-            System.out.print("pstart = " + result.getProperty("pstart") + ", ");
-            System.out.print("pstop = " + result.getProperty("pstop") + ", ");
-            System.out.print("status = " + result.getProperty("status") + ", ");
-            System.out.println("node = " + result.getProperty("node"));
-          }
-          System.out.println();
+
+      database.begin();
+      try (ResultSet resultSet = database.query("sql", sqlString, parameter)) {
+        while (resultSet.hasNext()) {
+          Assertions.assertEquals(rids[1], resultSet.next().getIdentity().get());
         }
-        database.commit();
-      } catch (Exception e) {
-        System.out.println(e.getMessage());
-        database.rollback();
       }
-      System.out.println("Test 3: select with @rid = #3:0 (as String) using prepared statement");
-      parameter = "#3:0";
+      database.commit();
+
+      parameter = rids[0].toString();
       sqlString = "SELECT from Order WHERE @rid = ? ORDER BY @rid DESC LIMIT 10";
-      System.out.println("sqlString = " + sqlString);
-      try {
-        database.begin();
-        try (ResultSet resultSet = database.query("sql", sqlString, parameter)) {
-          System.out.print("result: ");
-          while (resultSet.hasNext()) {
-            result = resultSet.next();
-            System.out.print("@rid = " + result.getIdentity().get() + ", ");
-            System.out.print("processor = " + result.getProperty("processor") + ", ");
-            System.out.print("vstart = " + result.getProperty("vstart") + ", ");
-            System.out.print("vstop = " + result.getProperty("vstop") + ", ");
-            System.out.print("pstart = " + result.getProperty("pstart") + ", ");
-            System.out.print("pstop = " + result.getProperty("pstop") + ", ");
-            System.out.print("status = " + result.getProperty("status") + ", ");
-            System.out.println("node = " + result.getProperty("node"));
-          }
-          System.out.println();
+
+      database.begin();
+      try (ResultSet resultSet = database.query("sql", sqlString, parameter)) {
+        while (resultSet.hasNext()) {
+          Assertions.assertEquals(rids[0], resultSet.next().getIdentity().get());
         }
-        database.commit();
-      } catch (Exception e) {
-        System.out.println(e.getMessage());
-        database.rollback();
       }
-      System.out.println("Test 4: select with @rid < #3:1 using simple statement");
+      database.commit();
+
       sqlString = "SELECT from Order WHERE @rid < #3:1 ORDER BY @rid DESC LIMIT 10";
-      System.out.println("sqlString = " + sqlString);
-      try {
-        database.begin();
-        try (ResultSet resultSet = database.query("sql", sqlString)) {
-          System.out.print("result: ");
-          while (resultSet.hasNext()) {
-            result = resultSet.next();
-            System.out.print("@rid = " + result.getIdentity().get() + ", ");
-            System.out.print("processor = " + result.getProperty("processor") + ", ");
-            System.out.print("vstart = " + result.getProperty("vstart") + ", ");
-            System.out.print("vstop = " + result.getProperty("vstop") + ", ");
-            System.out.print("pstart = " + result.getProperty("pstart") + ", ");
-            System.out.print("pstop = " + result.getProperty("pstop") + ", ");
-            System.out.print("status = " + result.getProperty("status") + ", ");
-            System.out.println("node = " + result.getProperty("node"));
-          }
-          System.out.println();
+
+      database.begin();
+      try (ResultSet resultSet = database.query("sql", sqlString)) {
+        while (resultSet.hasNext()) {
+          Assertions.assertEquals(rids[0], resultSet.next().getIdentity().get());
         }
-        database.commit();
-      } catch (Exception e) {
-        System.out.println(e.getMessage());
-        database.rollback();
       }
-      System.out.println("Test 5: select with @rid = '#3:0' using simple statement");
+      database.commit();
+
       sqlString = "SELECT from Order WHERE @rid = '#3:0' ORDER BY @rid DESC LIMIT 10";
-      System.out.println("sqlString = " + sqlString);
-      try {
-        database.begin();
-        try (ResultSet resultSet = database.query("sql", sqlString)) {
-          System.out.print("result: ");
-          while (resultSet.hasNext()) {
-            result = resultSet.next();
-            System.out.print("@rid = " + result.getIdentity().get() + ", ");
-            System.out.print("processor = " + result.getProperty("processor") + ", ");
-            System.out.print("vstart = " + result.getProperty("vstart") + ", ");
-            System.out.print("vstop = " + result.getProperty("vstop") + ", ");
-            System.out.print("pstart = " + result.getProperty("pstart") + ", ");
-            System.out.print("pstop = " + result.getProperty("pstop") + ", ");
-            System.out.print("status = " + result.getProperty("status") + ", ");
-            System.out.println("node = " + result.getProperty("node"));
-          }
-          System.out.println();
+
+      database.begin();
+      try (ResultSet resultSet = database.query("sql", sqlString)) {
+        while (resultSet.hasNext()) {
+          Assertions.assertEquals(rids[0], resultSet.next().getIdentity().get());
         }
-        database.commit();
-      } catch (Exception e) {
-        System.out.println(e.getMessage());
-        database.rollback();
       }
-      System.out.println("Test 6: select with @rid < #3:1 (as RID object) using prepared statement");
+      database.commit();
+
       sqlString = "SELECT from Order WHERE @rid < ? ORDER BY @rid DESC LIMIT 10";
       parameter = new RID(database, "#3:1");
-      System.out.println("sqlString = " + sqlString);
-      try {
-        database.begin();
-        try (ResultSet resultSet = database.query("sql", sqlString, parameter)) {
-          System.out.print("result: ");
-          while (resultSet.hasNext()) {
-            result = resultSet.next();
-            System.out.print("@rid = " + result.getIdentity().get() + ", ");
-            System.out.print("processor = " + result.getProperty("processor") + ", ");
-            System.out.print("vstart = " + result.getProperty("vstart") + ", ");
-            System.out.print("vstop = " + result.getProperty("vstop") + ", ");
-            System.out.print("pstart = " + result.getProperty("pstart") + ", ");
-            System.out.print("pstop = " + result.getProperty("pstop") + ", ");
-            System.out.print("status = " + result.getProperty("status") + ", ");
-            System.out.println("node = " + result.getProperty("node"));
-          }
-          System.out.println();
+
+      database.begin();
+      try (ResultSet resultSet = database.query("sql", sqlString, parameter)) {
+        while (resultSet.hasNext()) {
+          Assertions.assertEquals(rids[0], resultSet.next().getIdentity().get());
         }
-        database.commit();
-      } catch (Exception e) {
-        System.out.println(e.getMessage());
-        database.rollback();
       }
+      database.commit();
+
       arcadeDBServer.stop();
-    } catch (Exception e) {
-      System.out.println(e.getMessage());
     }
   }
 }
