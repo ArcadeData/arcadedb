@@ -64,7 +64,7 @@ public class PostQueryHandler extends DatabaseAbstractHandler {
     try {
       final ResultSet qResult = command(database, language, command, paramMap);
       final JsonSerializer serializer = httpServer.getJsonSerializer();
-      final String result = qResult.stream().map(r -> serializer.serializeResult(r).toString()).collect(Collectors.joining(","));
+      final String result = qResult.stream().map(r -> serializer.serializeResult(r, database).toString()).collect(Collectors.joining(","));
 
       exchange.setStatusCode(200);
       exchange.getResponseSender().send("{ \"result\" : [" + result + "] }");

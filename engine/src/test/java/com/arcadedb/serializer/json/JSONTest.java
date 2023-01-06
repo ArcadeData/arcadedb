@@ -42,6 +42,17 @@ public class JSONTest extends TestHelper {
   }
 
   @Test
+  public void testDatesWithFormat() {
+    final Date date = new Date();
+    JSONObject json = new JSONObject().setDateFormat(database.getSchema().getDateTimeFormat()).put("date", date);
+
+    final String serialized = json.toString();
+    JSONObject deserialized = new JSONObject(serialized);
+
+    Assertions.assertEquals(json, deserialized);
+  }
+
+  @Test
   public void testEmbeddedMaps() {
     final Map<String, Object> map = new HashMap<>();
     map.put("first", 1);

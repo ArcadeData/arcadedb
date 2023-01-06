@@ -30,6 +30,7 @@ import com.google.gson.JsonPrimitive;
 
 import java.io.*;
 import java.math.*;
+import java.text.*;
 import java.util.*;
 
 /**
@@ -40,8 +41,9 @@ import java.util.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class JSONObject {
-  public static final JsonNull   NULL = JsonNull.INSTANCE;
-  private final       JsonObject object;
+  public static final JsonNull         NULL       = JsonNull.INSTANCE;
+  private final       JsonObject       object;
+  private             SimpleDateFormat dateFormat = null;
 
   public JSONObject() {
     this.object = new JsonObject();
@@ -108,7 +110,12 @@ public class JSONObject {
     } else if (value instanceof Enum) {
       object.addProperty(name, ((Enum) value).name());
     } else if (value instanceof Date) {
-      object.addProperty(name, ((Date) value).getTime());
+      if (dateFormat == null)
+        // SAVE AS TIMESTAMP
+        object.addProperty(name, ((Date) value).getTime());
+      else
+        // SAVE AS STRING
+        object.addProperty(name, dateFormat.format((Date) value));
     } else if (value instanceof RID) {
       object.addProperty(name, value.toString());
     } else if (value instanceof Map) {
@@ -238,6 +245,16 @@ public class JSONObject {
 
   public void write(final FileWriter writer) throws IOException {
     writer.write(toString(0));
+  }
+
+  /**
+   * Sets the format for dates. Null means using the timestamp, otherwise it follows the syntax of Java SimpleDateFormat.
+   *
+   * @return
+   */
+  public JSONObject setDateFormat(final String dateFormat) {
+    this.dateFormat = new SimpleDateFormat(dateFormat);
+    return this;
   }
 
   @Override

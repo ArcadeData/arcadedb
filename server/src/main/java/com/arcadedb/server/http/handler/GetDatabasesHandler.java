@@ -39,7 +39,7 @@ public class GetDatabasesHandler extends AbstractHandler {
     if (!allowedDatabases.contains("*"))
       installedDatabases.retainAll(allowedDatabases);
 
-    final JSONObject result = createResult(user).put("result", new JSONArray(installedDatabases));
+    final JSONObject result = createResult(user, null).put("result", new JSONArray(installedDatabases));
 
     exchange.setStatusCode(200);
     exchange.getResponseSender().send(result.toString());

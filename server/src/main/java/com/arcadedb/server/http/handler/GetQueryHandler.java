@@ -66,7 +66,7 @@ public class GetQueryHandler extends AbstractQueryHandler {
     else
       limit = Integer.parseInt(limitPar.getFirst());
 
-    final JSONObject response = createResult(user);
+    final JSONObject response = createResult(user, database);
 
     final ServerMetrics.MetricTimer timer = httpServer.getServer().getServerMetrics().timer("http.query");
     try {

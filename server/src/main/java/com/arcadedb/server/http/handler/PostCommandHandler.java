@@ -92,7 +92,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
       if (qResult == null)
         throw new CommandExecutionException("Error on executing command");
 
-      final JSONObject response = createResult(user);
+      final JSONObject response = createResult(user, database);
 
       serializeResultSet(database, serializer, limit, response, qResult);
 

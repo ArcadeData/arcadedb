@@ -20,6 +20,7 @@ package com.arcadedb.server.http.handler;
 
 import com.arcadedb.Constants;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
@@ -31,6 +32,7 @@ import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.security.SecurityUser;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ServerMetrics;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityException;
@@ -39,7 +41,6 @@ import io.undertow.server.HttpHandler;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HeaderValues;
 import io.undertow.util.Headers;
-import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
 import java.util.logging.*;
@@ -161,8 +162,12 @@ public abstract class AbstractHandler implements HttpHandler {
     return httpServer.getServer().getSecurity().authenticate(userName, userPassword, null);
   }
 
-  protected JSONObject createResult(final SecurityUser user) {
-    return new JSONObject().put("user", user.getName()).put("version", Constants.getVersion());
+  protected JSONObject createResult(final SecurityUser user, final Database database) {
+    final JSONObject json = new JSONObject();
+    if (database != null)
+      json.setDateFormat(database.getSchema().getDateTimeFormat());
+    json.put("user", user.getName()).put("version", Constants.getVersion());
+    return json;
   }
 
   protected String decode(final String command) {

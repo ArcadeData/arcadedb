@@ -18,6 +18,7 @@
  */
 package com.arcadedb.serializer;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
@@ -35,7 +36,8 @@ public class JsonSerializer {
   private boolean useCollectionSizeForEdges = true;
 
   public JSONObject serializeDocument(final Document document) {
-    final JSONObject object = new JSONObject();
+    final Database database = document.getDatabase();
+    final JSONObject object = new JSONObject().setDateFormat(database.getSchema().getDateTimeFormat());
 
     if (document.getIdentity() != null)
       object.put("@rid", document.getIdentity().toString());
@@ -64,13 +66,13 @@ public class JsonSerializer {
         if (useCollectionSize) {
           value = ((Map) value).size();
         } else {
-          final JSONObject map = new JSONObject();
+          final JSONObject map = new JSONObject().setDateFormat(database.getSchema().getDateTimeFormat());
           for (final Map.Entry<Object, Object> entry : ((Map<Object, Object>) value).entrySet()) {
             Object o = entry.getValue();
             if (entry.getValue() instanceof Document)
               o = serializeDocument((Document) o);
             else if (entry.getValue() instanceof Result)
-              o = serializeResult((Result) o);
+              o = serializeResult((Result) o, database);
             map.put(entry.getKey().toString(), o);
           }
           value = map;
@@ -84,8 +86,8 @@ public class JsonSerializer {
     return object;
   }
 
-  public JSONObject serializeResult(final Result result) {
-    final JSONObject object = new JSONObject();
+  public JSONObject serializeResult(final Result result, final Database database) {
+    final JSONObject object = new JSONObject().setDateFormat(database.getSchema().getDateTimeFormat());
 
     if (result.isElement()) {
       final Document document = result.toElement();
@@ -104,7 +106,7 @@ public class JsonSerializer {
       else if (value instanceof Document)
         value = serializeDocument((Document) value);
       else if (value instanceof Result)
-        value = serializeResult((Result) value);
+        value = serializeResult((Result) value, database);
       else if (value instanceof Collection) {
         if (!((Collection<?>) value).isEmpty()) {
           if (useCollectionSizeForEdges && ((Collection<?>) value).iterator().next() instanceof Edge)
@@ -117,13 +119,13 @@ public class JsonSerializer {
               if (o instanceof Document)
                 o = serializeDocument((Document) o);
               else if (o instanceof Result)
-                o = serializeResult((Result) o);
+                o = serializeResult((Result) o, database);
               else if (o instanceof ResultSet) {
                 final ResultSet resultSet = (ResultSet) o;
                 final JSONArray array = new JSONArray();
                 while (resultSet.hasNext()) {
                   final Result row = resultSet.next();
-                  array.put(serializeResult(row));
+                  array.put(serializeResult(row, database));
                 }
                 o = array;
               }
@@ -137,13 +139,13 @@ public class JsonSerializer {
         if (useCollectionSize) {
           value = ((Map) value).size();
         } else {
-          final JSONObject map = new JSONObject();
+          final JSONObject map = new JSONObject().setDateFormat(database.getSchema().getDateTimeFormat());
           for (final Map.Entry<Object, Object> entry : ((Map<Object, Object>) value).entrySet()) {
             Object o = entry.getValue();
             if (entry.getValue() instanceof Document)
               o = serializeDocument((Document) o);
             else if (entry.getValue() instanceof Result)
-              o = serializeResult((Result) o);
+              o = serializeResult((Result) o, database);
             map.put(entry.getKey().toString(), o);
           }
           value = map;
