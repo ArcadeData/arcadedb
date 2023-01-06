@@ -420,7 +420,7 @@ public enum Type {
               return new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS").parse(valueAsString);
           }
         }
-      } else if (iTargetClass.equals(Identifiable.class)) {
+      } else if (iTargetClass.equals(Identifiable.class) || iTargetClass.equals(RID.class)) {
         if (MultiValue.isMultiValue(iValue)) {
           final List<Identifiable> result = new ArrayList<>();
           for (final Object o : MultiValue.getMultiValueIterable(iValue)) {
