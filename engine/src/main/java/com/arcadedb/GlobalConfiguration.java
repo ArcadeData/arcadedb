@@ -134,6 +134,10 @@ public enum GlobalConfiguration {
 
   FLUSH_ONLY_AT_CLOSE("arcadedb.flushOnlyAtClose", "Never flushes pages on disk until the database closing", Boolean.class, false),
 
+  DATE_FORMAT("arcadedb.dateFormat", "Default date format using Java SimpleDateFormat syntax", String.class, "yyyy-MM-dd"),
+
+  DATE_TIME_FORMAT("arcadedb.dateTimeFormat", "Default date time format using Java SimpleDateFormat syntax", String.class, "yyyy-MM-dd HH:mm:ss"),
+
   TX_WAL("arcadedb.txWAL", "Uses the WAL", Boolean.class, true),
 
   TX_WAL_FLUSH("arcadedb.txWalFlush", "Flushes the WAL on disk at commit time. It can be 0 = no flush, 1 = flush without metadata and 2 = full flush (fsync)",

@@ -30,6 +30,7 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.io.*;
@@ -59,23 +60,32 @@ public class AlterDatabaseStatement extends DDLStatement {
     final DatabaseInternal db = ctx.getDatabase();
     db.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_DATABASE_SETTINGS);
 
-    final GlobalConfiguration cfg = GlobalConfiguration.findByKey(settingName.getStringValue());
+    final String settingNameAsString = settingName.getStringValue();
+    final GlobalConfiguration cfg = GlobalConfiguration.findByKey(settingNameAsString);
     if (cfg == null)
-      throw new DatabaseOperationException("Database setting '" + settingName.getStringValue() + "' not found");
+      throw new DatabaseOperationException("Database setting '" + settingNameAsString + "' not found");
 
     final Object oldValue = db.getConfiguration().getValue(cfg);
     final Object finalValue = settingValue.execute((Identifiable) null, ctx);
 
-    db.getConfiguration().setValue(cfg, finalValue);
-    try {
-      db.saveConfiguration();
-    } catch (final IOException e) {
-      throw new CommandExecutionException("Error on saving database configuration");
+    if ("arcadedb.dateFormat".equals(settingNameAsString)) {
+      db.getSchema().setDateFormat(finalValue.toString());
+      ((EmbeddedSchema) db.getSchema()).saveConfiguration();
+    } else if ("arcadedb.dateTimeFormat".equals(settingNameAsString)) {
+      db.getSchema().setDateTimeFormat(finalValue.toString());
+      ((EmbeddedSchema) db.getSchema()).saveConfiguration();
+    } else {
+      db.getConfiguration().setValue(cfg, finalValue);
+      try {
+        db.saveConfiguration();
+      } catch (final IOException e) {
+        throw new CommandExecutionException("Error on saving database configuration");
+      }
     }
 
     final ResultInternal result = new ResultInternal();
     result.setProperty("operation", "alter database");
-    result.setProperty("attribute", settingName.getStringValue());
+    result.setProperty("attribute", settingNameAsString);
     result.setProperty("oldValue", oldValue);
     result.setProperty("newValue", finalValue);
     return result;
