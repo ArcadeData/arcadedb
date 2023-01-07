@@ -16,26 +16,19 @@
  * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.arcadedb.server;
+package com.arcadedb.server.ha;
 
-/**
- * Mock implementation of server metrics.
- */
-public class NoServerMetrics implements ServerMetrics {
+import com.arcadedb.server.BaseGraphServerTest;
+import org.junit.jupiter.api.Test;
+
+public class ManualClusterTests extends BaseGraphServerTest {
   @Override
-  public void stop() {
-    // NO ACTIONS
+  protected int getServerCount() {
+    return 2;
   }
 
-  @Override
-  public MetricTimer timer(final String s) {
-    return () -> {
-    };
-  }
-
-  @Override
-  public MetricMeter meter(final String name) {
-    return () -> {
-    };
+  @Test
+  public void runServers() throws Exception {
+    Thread.sleep(1000000);
   }
 }

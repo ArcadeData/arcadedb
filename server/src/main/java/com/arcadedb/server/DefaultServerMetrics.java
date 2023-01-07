@@ -19,26 +19,47 @@
 package com.arcadedb.server;
 
 import com.codahale.metrics.Meter;
+import com.codahale.metrics.MetricRegistry;
 import com.codahale.metrics.Timer;
 
 import java.util.*;
 
-public interface ServerMetrics {
-  SortedMap<String, Timer> getTimers();
+/**
+ * Stores the metrics in RAM.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+public class DefaultServerMetrics implements ServerMetrics {
+  protected MetricRegistry metricsRegistry;
 
-  SortedMap<String, Meter> getMeters();
-
-  interface MetricMeter {
-    void mark();
+  public DefaultServerMetrics() {
+    metricsRegistry = new MetricRegistry();
   }
 
-  interface MetricTimer {
-    void stop();
+  @Override
+  public void stop() {
+    metricsRegistry = null;
   }
 
-  void stop();
+  @Override
+  public MetricTimer timer(final String name) {
+    final Timer.Context t = metricsRegistry.timer(name).time();
+    return () -> t.stop();
+  }
 
-  MetricTimer timer(String name);
+  @Override
+  public MetricMeter meter(final String name) {
+    final Meter m = metricsRegistry.meter(name);
+    return () -> m.mark();
+  }
 
-  MetricMeter meter(String name);
+  @Override
+  public SortedMap<String, Timer> getTimers() {
+    return metricsRegistry.getTimers();
+  }
+
+  @Override
+  public SortedMap<String, Meter> getMeters() {
+    return metricsRegistry.getMeters();
+  }
 }

@@ -66,7 +66,7 @@ public class ArcadeDBServer {
   private final       ConcurrentMap<String, DatabaseInternal> databases                            = new ConcurrentHashMap<>();
   private final       List<TestCallback>                      testEventListeners                   = new ArrayList<>();
   private volatile    STATUS                                  status                               = STATUS.OFFLINE;
-  private             ServerMetrics                           serverMetrics                        = new NoServerMetrics();
+  private             ServerMetrics                           serverMetrics                        = new DefaultServerMetrics();
 
   public ArcadeDBServer() {
     this.configuration = new ContextConfiguration();
@@ -235,7 +235,7 @@ public class ArcadeDBServer {
     CodeUtils.executeIgnoringExceptions(() -> {
       LogManager.instance().log(this, Level.INFO, "- Stop JMX Metrics");
       serverMetrics.stop();
-      serverMetrics = new NoServerMetrics();
+      serverMetrics = new DefaultServerMetrics();
     }, "Error on stopping JMX Metrics");
 
     LogManager.instance().log(this, Level.INFO, "ArcadeDB Server is down");

@@ -32,9 +32,10 @@ import com.arcadedb.server.http.handler.GetDynamicContentHandler;
 import com.arcadedb.server.http.handler.GetExistsDatabaseHandler;
 import com.arcadedb.server.http.handler.GetQueryHandler;
 import com.arcadedb.server.http.handler.GetReadyHandler;
-import com.arcadedb.server.http.handler.GetServersHandler;
+import com.arcadedb.server.http.handler.GetServerHandler;
 import com.arcadedb.server.http.handler.PostBeginHandler;
 import com.arcadedb.server.http.handler.PostCloseDatabaseHandler;
+import com.arcadedb.server.http.handler.PostServerCommandHandler;
 import com.arcadedb.server.http.handler.PostCommandHandler;
 import com.arcadedb.server.http.handler.PostCommitHandler;
 import com.arcadedb.server.http.handler.PostCreateDatabaseHandler;
@@ -134,7 +135,8 @@ public class HttpServer implements ServerPlugin {
             .post("/rollback/{database}", new PostRollbackHandler(this))//
             .post("/user", new PostCreateUserHandler(this))//
             .delete("/user/{userName}", new DeleteDropUserHandler(this))//
-            .get("/server", new GetServersHandler(this))//
+            .get("/server", new GetServerHandler(this))//
+            .post("/server/{command}", new PostServerCommandHandler(this))//
             .get("/ready", new GetReadyHandler(this))//
     );
 

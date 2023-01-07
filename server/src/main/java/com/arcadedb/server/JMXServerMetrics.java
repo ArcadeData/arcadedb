@@ -19,17 +19,18 @@
 package com.arcadedb.server;
 
 import com.arcadedb.Constants;
-import com.codahale.metrics.Meter;
-import com.codahale.metrics.MetricRegistry;
-import com.codahale.metrics.Timer;
 import com.codahale.metrics.jmx.JmxReporter;
 
-public class JMXServerMetrics implements ServerMetrics {
-  private       MetricRegistry metricsRegistry;
-  private final JmxReporter    jmxReporter;
+/**
+ * Exposes server metrics via JMX.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+public class JMXServerMetrics extends DefaultServerMetrics {
+  private final JmxReporter jmxReporter;
 
   public JMXServerMetrics() {
-    metricsRegistry = new MetricRegistry();
+    super();
     jmxReporter = JmxReporter.forRegistry(metricsRegistry).inDomain(Constants.PRODUCT).build();
     jmxReporter.start();
   }
@@ -37,18 +38,6 @@ public class JMXServerMetrics implements ServerMetrics {
   @Override
   public void stop() {
     jmxReporter.stop();
-    metricsRegistry = null;
-  }
-
-  @Override
-  public MetricTimer timer(final String name) {
-    final Timer.Context t = metricsRegistry.timer(name).time();
-    return () -> t.stop();
-  }
-
-  @Override
-  public MetricMeter meter(final String name) {
-    final Meter m = metricsRegistry.meter(name);
-    return () -> m.mark();
+    super.stop();
   }
 }

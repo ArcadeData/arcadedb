@@ -46,7 +46,8 @@
 
   <script src="js/studio-utils.js"></script>
   <script src="js/studio-database.js"></script>
-  <script src="js/studio-servers.js"></script>
+  <script src="js/studio-server.js"></script>
+  <script src="js/studio-cluster.js"></script>
   <script src="js/studio-table.js"></script>
   <script src="js/studio-graph.js"></script>
   <script src="js/studio-graph-widget.js"></script>
@@ -84,12 +85,16 @@
               <center><i class="fa fa-database"></i></center>
             </h3>
           </a></li>
-          <li class="nav-item"><a data-toggle="tab" href="#tab-servers" class="vertical-tab nav-link" id="tab-servers-sel">
+          <li class="nav-item"><a data-toggle="tab" href="#tab-server" class="vertical-tab nav-link" id="tab-server-sel">
             <h3>
               <center><i class="fa fa-server"></i></center>
             </h3>
-          </a>
-          </li>
+          </a></li>
+          <li class="nav-item"><a data-toggle="tab" href="#tab-cluster" class="vertical-tab nav-link" id="tab-cluster-sel">
+            <h3>
+              <center><i class="fa fa-network-wired"></i></center>
+            </h3>
+          </a></li>
           <li class="nav-item"><a data-toggle="tab" href="#tab-api" class="vertical-tab nav-link" id="tab-api-sel">
             <h3>
               <center><i class="fa fa-plug"></i></center>
@@ -99,8 +104,7 @@
             <h3>
               <center><i class="fa fa-info-circle"></i></center>
             </h3>
-          </a>
-          </li>
+          </a></li>
         </ul>
       </div>
 
@@ -108,7 +112,8 @@
         <div class="tab-content">
           ${include:query.html}
           ${include:database.html}
-          ${include:servers.html}
+          ${include:server.html}
+          ${include:cluster.html}
           ${include:api.html}
           ${include:resources.html}
         </div>
@@ -149,8 +154,10 @@ $(function () {
     var activeTab = this.id;
     if( activeTab == "tab-query-sel" )
       editorFocus();
-    else if( activeTab == "tab-servers-sel" )
-      updateServers();
+    else if( activeTab == "tab-server-sel" )
+      updateServer();
+    else if( activeTab == "tab-cluster-sel" )
+      updateCluster();
   });
 
   $('#loginPopup').on('shown.bs.modal', function () {

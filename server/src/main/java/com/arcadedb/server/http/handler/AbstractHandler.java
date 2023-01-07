@@ -192,6 +192,15 @@ public abstract class AbstractHandler implements HttpHandler {
     return message.replaceAll("\\\\", " ").replaceAll("\n", " ");//.replaceAll("\"", "'");
   }
 
+  protected String getQueryParameter(final HttpServerExchange exchange, final String name) {
+    return getQueryParameter(exchange, name, null);
+  }
+
+  protected String getQueryParameter(final HttpServerExchange exchange, final String name, final String defaultValue) {
+    final Deque<String> par = exchange.getQueryParameters().get(name);
+    return par == null || par.isEmpty() ? defaultValue : par.getFirst();
+  }
+
   private Level getErrorLogLevel() {
     return "development".equals(httpServer.getServer().getConfiguration().getValueAsString(GlobalConfiguration.SERVER_MODE)) ? Level.INFO : Level.FINE;
   }

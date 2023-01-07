@@ -1,19 +1,12 @@
-function updateServers( callback ){
+function updateCluster( callback ){
   jQuery.ajax({
     type: "GET",
-    url: "/api/v1/server",
+    url: "/api/v1/server?mode=cluster",
     beforeSend: function (xhr){
       xhr.setRequestHeader('Authorization', globalCredentials);
     }
   })
   .done(function(data){
-    let version = data.version;
-    let pos = data.version.indexOf("(build");
-    if( pos > -1 ) {
-      version = version.substring( 0, pos ) + " <span style='font-size: 70%'>" + version.substring( pos ) + "</span>";
-    }
-    $("#serverVersion").html(version);
-
     if( data.ha != null ){
       $("#serverInfo").html("Server <b>" + data.ha.network.leader.serverName + "</b> in cluster <b>" + data.ha.clusterName +
       "</b> joined on <b>" + data.ha.network.leader.joinedOn + "</b> (election=<b>" + data.ha.electionStatus + "</b>)" );
@@ -55,8 +48,6 @@ function updateServers( callback ){
         });
       }
     }
-
-    $("#serverCfg").html(JSON.stringify( data ) );
 
     if( callback )
       callback();
