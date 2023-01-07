@@ -19,7 +19,11 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.log.LogManager;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.ha.HAServer;
+import com.arcadedb.server.ha.ReplicatedDatabase;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
@@ -39,12 +43,35 @@ public class GetServersHandler extends AbstractHandler {
     if (ha == null) {
       exchange.getResponseSender().send("{}");
     } else {
+      final JSONObject response = createResult(user, null);
+
+      final JSONObject haJSON = new JSONObject();
+      response.put("ha", haJSON);
+
+      haJSON.put("clusterName", ha.getClusterName());
+      haJSON.put("onlineReplicas", ha.getOnlineReplicas());
+      haJSON.put("electionStatus", ha.getElectionStatus().toString());
+
+      haJSON.put("network", ha.getStats());
+
+      final JSONArray databases = new JSONArray();
+      haJSON.put("databases", databases);
+
+      for (String dbName : httpServer.getServer().getDatabaseNames()) {
+        final ServerDatabase db = (ServerDatabase) httpServer.getServer().getDatabase(dbName);
+        final ReplicatedDatabase rdb = ((ReplicatedDatabase) db.getWrappedDatabaseInstance());
+
+        final JSONObject databaseJSON = new JSONObject();
+        databaseJSON.put("name", rdb.getName());
+        databaseJSON.put("quorum", rdb.getQuorum());
+        databases.put(databaseJSON);
+      }
+
       final String leaderServer = ha.isLeader() ? ha.getServer().getHttpServer().getListeningAddress() : ha.getLeader().getRemoteHTTPAddress();
       final String replicaServers = ha.getReplicaServersHTTPAddressesList();
-
       LogManager.instance().log(this, Level.INFO, "Returning configuration leaderServer=%s replicaServers=[%s]", leaderServer, replicaServers);
 
-      exchange.getResponseSender().send("{ \"leaderServer\": \"" + leaderServer + "\", \"replicaServers\" : \"" + replicaServers + "\"}");
+      exchange.getResponseSender().send(response.toString());
     }
   }
 }

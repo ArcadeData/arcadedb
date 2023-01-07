@@ -32,6 +32,8 @@ import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.TestCallback;
@@ -874,6 +876,43 @@ public class HAServer implements ServerPlugin {
     lastConfigurationOutputHash = hash;
 
     LogManager.instance().log(this, Level.INFO, output + "\n");
+  }
+
+  public JSONObject getStats() {
+    final String dateTimeFormat = GlobalConfiguration.DATE_TIME_FORMAT.getValueAsString();
+
+    final JSONObject result = new JSONObject().setDateFormat(dateTimeFormat);
+
+    final JSONObject leader = new JSONObject().setDateFormat(dateTimeFormat);
+    result.put("leader", leader);
+
+    leader.put("serverName", getServerName());
+    leader.put("serverAddress", getServerAddress());
+    leader.put("role", "Leader");
+    leader.put("status", "ONLINE");
+    leader.put("joinedOn", new Date(startedOn));
+
+    final JSONArray replicas = new JSONArray();
+
+    for (final Leader2ReplicaNetworkExecutor c : replicaConnections.values()) {
+      final Leader2ReplicaNetworkExecutor.STATUS status = c.getStatus();
+
+      final JSONObject replica = new JSONObject().setDateFormat(dateTimeFormat);
+      replicas.put(replica);
+
+      replica.put("serverName", c.getRemoteServerName());
+      replica.put("serverAddress", c.getRemoteServerAddress());
+      replica.put("role", "Replica");
+      replica.put("status", status);
+      replica.put("joinedOn", c.getJoinedOn() > 0 ? new Date(c.getJoinedOn()) : "");
+      replica.put("leftOn", c.getLeftOn() > 0 ? new Date(c.getLeftOn()) : "");
+      replica.put("throughput", c.getThroughputStats());
+      replica.put("latency", c.getLatencyStats());
+    }
+
+    result.put("replicas", replicas);
+
+    return result;
   }
 
   public String getServerAddress() {

@@ -730,6 +730,10 @@ public class ReplicatedDatabase implements DatabaseInternal {
     proxied.saveConfiguration();
   }
 
+  public HAServer.QUORUM getQuorum() {
+    return quorum;
+  }
+
   /**
    * Aligns the database against all the replicas. This fixes any replication problem occurred by overwriting the database content of replicas. This process
    * first calculates the checksum of every files in the database. Then sends the checksums to the replicas, waiting for a response from each of them about

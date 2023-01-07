@@ -46,6 +46,7 @@
 
   <script src="js/studio-utils.js"></script>
   <script src="js/studio-database.js"></script>
+  <script src="js/studio-servers.js"></script>
   <script src="js/studio-table.js"></script>
   <script src="js/studio-graph.js"></script>
   <script src="js/studio-graph-widget.js"></script>
@@ -83,6 +84,12 @@
               <center><i class="fa fa-database"></i></center>
             </h3>
           </a></li>
+          <li class="nav-item"><a data-toggle="tab" href="#tab-servers" class="vertical-tab nav-link" id="tab-servers-sel">
+            <h3>
+              <center><i class="fa fa-server"></i></center>
+            </h3>
+          </a>
+          </li>
           <li class="nav-item"><a data-toggle="tab" href="#tab-api" class="vertical-tab nav-link" id="tab-api-sel">
             <h3>
               <center><i class="fa fa-plug"></i></center>
@@ -101,6 +108,7 @@
         <div class="tab-content">
           ${include:query.html}
           ${include:database.html}
+          ${include:servers.html}
           ${include:api.html}
           ${include:resources.html}
         </div>
@@ -139,9 +147,10 @@ $(function () {
 
   $('a[data-toggle="tab"]').on('shown.bs.tab', function (e) {
     var activeTab = this.id;
-    if( activeTab == "tab-query-sel" ) {
+    if( activeTab == "tab-query-sel" )
       editorFocus();
-    }
+    else if( activeTab == "tab-servers-sel" )
+      updateServers();
   });
 
   $('#loginPopup').on('shown.bs.modal', function () {
