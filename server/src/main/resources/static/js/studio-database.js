@@ -10,11 +10,11 @@ function make_base_auth(user, password) {
 }
 
 function login(){
-  var userName = escapeHtml( $("#inputUserName").val().trim() );
+  var userName = $("#inputUserName").val().trim();
   if( userName.length == 0 )
     return;
 
-  var userPassword = escapeHtml( $("#inputUserPassword").val().trim() );
+  var userPassword = $("#inputUserPassword").val().trim();
   if( userPassword.length == 0 )
     return;
 
