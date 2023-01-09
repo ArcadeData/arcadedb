@@ -78,7 +78,7 @@ goto setArgs
 
 :doneSetArgs
 
-set JAVA_OPTS_SCRIPT=-XX:+HeapDumpOnOutOfMemoryError -Djava.awt.headless=true -Dfile.encoding=UTF8
+set JAVA_OPTS_SCRIPT=-XX:+HeapDumpOnOutOfMemoryError -Djava.awt.headless=true -Dfile.encoding=UTF8 -Dpolyglot.engine.WarnInterpreterOnly=false
 
 rem ARCADEDB memory options, default uses the available RAM. To set it to a specific value, like 2GB of heap, use "-Xms2G -Xmx2G"
 set ARCADEDB_OPTS_MEMORY=

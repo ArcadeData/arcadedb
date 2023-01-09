@@ -51,7 +51,7 @@ fi
 
 
 if [ -z "$JAVA_OPTS_SCRIPT" ] ; then
-    JAVA_OPTS_SCRIPT="-XX:+HeapDumpOnOutOfMemoryError -Djava.awt.headless=true -Dfile.encoding=UTF8"
+    JAVA_OPTS_SCRIPT="-XX:+HeapDumpOnOutOfMemoryError -Djava.awt.headless=true -Dfile.encoding=UTF8 -Dpolyglot.engine.WarnInterpreterOnly=false"
 fi
 
 exec "$JAVA" $JAVA_OPTS \
