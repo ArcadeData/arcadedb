@@ -18,12 +18,16 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
+import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.ha.Leader2ReplicaNetworkExecutor;
+import com.arcadedb.server.ha.message.ServerShutdownRequest;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
-import java.util.*;
+import java.io.*;
 
 public class PostServerCommandHandler extends DatabaseAbstractHandler {
   public PostServerCommandHandler(final HttpServer httpServer) {
@@ -36,12 +40,10 @@ public class PostServerCommandHandler extends DatabaseAbstractHandler {
   }
 
   @Override
-  public void execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database) {
-    final Deque<String> commandPar = exchange.getQueryParameters().get("command");
-    String command = commandPar.isEmpty() ? null : commandPar.getFirst().trim();
-    if (command.isEmpty())
-      command = null;
+  public void execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database) throws IOException {
+    final JSONObject payload = new JSONObject(parseRequestPayload(exchange));
 
+    final String command = payload.has("command") ? payload.getString("command") : null;
     if (command == null) {
       exchange.setStatusCode(400);
       exchange.getResponseSender().send("{ \"error\" : \"Server command is null\"}");
@@ -50,10 +52,38 @@ public class PostServerCommandHandler extends DatabaseAbstractHandler {
 
     httpServer.getServer().getServerMetrics().meter("http.server-command").mark();
 
-
+    if (command.startsWith("shutdown"))
+      shutdownServer(command);
+    else if (command.startsWith("disconnect "))
+      disconnectServer(command);
+    else {
+      exchange.setStatusCode(400);
+      exchange.getResponseSender().send("{ \"error\" : \"Server command not valid\"}");
+      return;
+    }
 
     exchange.setStatusCode(200);
     exchange.getResponseSender().send("{ \"result\" : \"ok\"}");
+  }
+
+  private void shutdownServer(final String command) throws IOException {
+    if (command.equals("shutdown")) {
+      // SHUTDOWN CURRENT SERVER
+      httpServer.getServer().stop();
+    } else if (command.startsWith("shutdown ")) {
+      final String serverName = command.substring("shutdown ".length());
+      final Leader2ReplicaNetworkExecutor replica = httpServer.getServer().getHA().getReplica(serverName);
+
+      final Binary buffer = new Binary();
+      httpServer.getServer().getHA().getMessageFactory().serializeCommand(new ServerShutdownRequest(), buffer, -1);
+      replica.sendMessage(buffer);
+    }
+  }
+
+  private void disconnectServer(final String command) {
+    final String serverName = command.substring("disconnect ".length());
+    final Leader2ReplicaNetworkExecutor replica = httpServer.getServer().getHA().getReplica(serverName);
+    replica.close();
   }
 
   @Override

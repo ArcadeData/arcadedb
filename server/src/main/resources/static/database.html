@@ -1,21 +1,17 @@
 <div class="tab-pane fade" id="tab-database" role="tabpanel">
 
   <div class="row">
-    <div class="col-2">
-      <label for="user">User</label>
-    </div>
-
-    <div class="col-10">
-      <span id="user"></span>
-    </div>
+    <div class="col-12"><h4><i class="fa fa-database"></i> Database</h4></div>
   </div>
 
   <div class="row">
-    <div class="col-2">
-      <label for="inputDatabase" class="form-label">Current database</label>
-    </div>
-    <div class="col-7">
-      <select id="inputDatabase" class="form-control"></select>
+    <div class="col-9">
+      <div class="form-inline">
+        <div class="form-group">
+          <label for="inputDatabase" id="user"></label>@
+          <select id="inputDatabase" class="form-control"></select>
+        </div>
+      </div>
     </div>
     <div class="col-3">
       <button class="btn btn-pill" onclick="createDatabase()"><i class="fa fa-plus"></i> Create</button>
@@ -23,6 +19,8 @@
       <button class="btn btn-pill" onclick="backupDatabase()"><i class="fa fa-archive"></i> Backup</button>
     </div>
   </div>
+
+  <hr>
 
   <div class="row">
     <div class="col-12">

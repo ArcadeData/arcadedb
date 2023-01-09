@@ -1,19 +1,17 @@
 <div class="tab-pane fade" id="tab-server" role="tabpanel">
   <div class="row">
-    <div class="col-2">
-      <label for="serverVersion">Server Version</label>
-    </div>
-    <div class="col-10">
-      <span id="serverVersion"></span>
-    </div>
+    <div class="col-12"><h4><i class="fa fa-server"></i> Server</h4></div>
   </div>
 
   <div class="row">
     <div class="col-2">
-      <label for="serverUser">User</label>
+      <label for="serverConnection">Connected to</label>
     </div>
-    <div class="col-10">
-      <span id="serverUser"></span>
+    <div class="col-8">
+      <span id="serverConnection"></span>
+    </div>
+    <div class="col-2 text-right">
+      <button class="btn" onclick="shutdownServer()">Shutdown <i class="fas fa-power-off" style="color: red;"></i></button>
     </div>
   </div>
 

@@ -136,7 +136,7 @@ public class HttpServer implements ServerPlugin {
             .post("/user", new PostCreateUserHandler(this))//
             .delete("/user/{userName}", new DeleteDropUserHandler(this))//
             .get("/server", new GetServerHandler(this))//
-            .post("/server/{command}", new PostServerCommandHandler(this))//
+            .post("/server", new PostServerCommandHandler(this))//
             .get("/ready", new GetReadyHandler(this))//
     );
 

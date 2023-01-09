@@ -12,7 +12,7 @@ function updateServer( callback ){
     if( pos > -1 ) {
       version = version.substring( 0, pos ) + " <span style='font-size: 70%'>" + version.substring( pos ) + "</span>";
     }
-    $("#serverVersion").html(version);
+    $("#serverConnection").html( data.user + "@" + data.serverName + " - v." + version);
 
     if ( $.fn.dataTable.isDataTable( '#serverMetrics' ) )
       try{ $('#serverMetrics').DataTable().destroy(); $('#serverMetrics').empty(); } catch(e){};

@@ -173,7 +173,7 @@ public abstract class AbstractHandler implements HttpHandler {
     final JSONObject json = new JSONObject();
     if (database != null)
       json.setDateFormat(database.getSchema().getDateTimeFormat());
-    json.put("user", user.getName()).put("version", Constants.getVersion());
+    json.put("user", user.getName()).put("version", Constants.getVersion()).put("serverName", httpServer.getServer().getServerName());
     return json;
   }
 

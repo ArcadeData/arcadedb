@@ -28,6 +28,8 @@ function updateCluster( callback ){
           record.push( escapeHtml( row.leftOn ) );
           record.push( escapeHtml( row.throughput ) );
           record.push( escapeHtml( row.latency ) );
+          record.push( "<button class='btn' onclick='shutdownServer(\""+ row.name + "\")'><i class='fas fa-power-off' style='color: red;'></i></button>" );
+
           tableRecords.push( record );
         }
 
@@ -42,7 +44,8 @@ function updateCluster( callback ){
             {title: "Joined On"},
             {title: "Left On"},
             {title: "Throughput"},
-            {title: "Latency"}
+            {title: "Latency"},
+            {title: "Commands"},
           ],
           data: tableRecords,
         });
@@ -70,6 +73,33 @@ function renderDatabases(databases){
     result += "<tr><td>"+db.name+"</td><td><button enabled='false'></td>";
   }
   result += '</table>';
-
   return result;
+}
+
+function shutdownServer(serverName){
+  let command = serverName != null ? "shutdown " + serverName : "shutdown";
+  let message = serverName != null ? "Are you sure to shut down the server '"+serverName+"'?" : "Are you sure to shut down the current server?";
+  globalConfirm( "Shutdown Server", message, "warning", function(){ executeServerCommand(command, "Server shutdown request sent successfully");} );
+}
+
+function executeServerCommand(command, successMessage) {
+  if( command == null || command == "" )
+    return;
+
+  jQuery.ajax({
+    type: "POST",
+    url: "/api/v1/server",
+    data: JSON.stringify({
+      command: command,
+    }),
+    beforeSend: function (xhr){
+      xhr.setRequestHeader('Authorization', globalCredentials);
+    }
+  })
+  .done(function(data){
+    globalNotify( successMessage, data.result, "success");
+  })
+  .fail(function( jqXHR, textStatus, errorThrown ){
+    globalNotify( "Error", jqXHR.responseJSON.detail, "danger");
+  });
 }
