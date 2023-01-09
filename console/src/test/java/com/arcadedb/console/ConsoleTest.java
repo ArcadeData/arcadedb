@@ -18,6 +18,7 @@
  */
 package com.arcadedb.console;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.exception.DatabaseOperationException;
@@ -43,7 +44,8 @@ public class ConsoleTest {
   @BeforeEach
   public void populate() throws IOException {
     FileUtils.deleteRecursively(new File("./target/databases"));
-    console = new Console(false).setRootPath("./target");
+    GlobalConfiguration.SERVER_ROOT_PATH.setValue("./target");
+    console = new Console(false);
     Assertions.assertTrue(console.parse("create database " + DB_NAME + "; close", false));
   }
 
@@ -228,7 +230,7 @@ public class ConsoleTest {
 
     Console.main(new String[] { "create database " + DATABASE_PATH + ";import database file://src/test/resources/neo4j-export-mini.jsonl" });
 
-    try (final DatabaseFactory factory = new DatabaseFactory("databases/" + DATABASE_PATH)) {
+    try (final DatabaseFactory factory = new DatabaseFactory("./target/databases/" + DATABASE_PATH)) {
       try (final Database database = factory.open()) {
         final DocumentType personType = database.getSchema().getType("User");
         Assertions.assertNotNull(personType);

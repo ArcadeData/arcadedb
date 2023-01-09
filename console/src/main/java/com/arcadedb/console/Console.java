@@ -19,6 +19,7 @@
 package com.arcadedb.console;
 
 import com.arcadedb.Constants;
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
@@ -27,6 +28,7 @@ import com.arcadedb.database.TransactionContext;
 import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.integration.misc.IntegrationUtils;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -51,24 +53,25 @@ import java.io.*;
 import java.util.*;
 
 public class Console {
-  private static final String           PROMPT               = "%n%s> ";
-  private static final String           REMOTE_PREFIX        = "remote:";
-  private static final String           SQL_LANGUAGE         = "SQL";
-  private final        boolean          system               = System.console() != null;
-  private final        Terminal         terminal;
-  private final        TerminalParser   parser               = new TerminalParser();
-  private              RemoteDatabase   remoteDatabase;
-  private              ConsoleOutput    output;
-  private              DatabaseFactory  databaseFactory;
-  private              DatabaseInternal localDatabase;
-  private              int              limit                = 20;
-  private              int              maxMultiValueEntries = 10;
-  private              int              maxWidth             = TableFormatter.DEFAULT_MAX_WIDTH;
-  private              Boolean          expandResultSet;
-  private              ResultSet        resultSet;
-  private              String           databaseDirectory;
-  private              int              verboseLevel         = 1;
-  private              String           language             = SQL_LANGUAGE;
+  private static final String               PROMPT               = "%n%s> ";
+  private static final String               REMOTE_PREFIX        = "remote:";
+  private static final String               SQL_LANGUAGE         = "SQL";
+  private final        boolean              system               = System.console() != null;
+  private final        Terminal             terminal;
+  private final        TerminalParser       parser               = new TerminalParser();
+  private              RemoteDatabase       remoteDatabase;
+  private              ConsoleOutput        output;
+  private              DatabaseFactory      databaseFactory;
+  private              DatabaseInternal     localDatabase;
+  private              int                  limit                = 20;
+  private              int                  maxMultiValueEntries = 10;
+  private              int                  maxWidth             = TableFormatter.DEFAULT_MAX_WIDTH;
+  private              Boolean              expandResultSet;
+  private              ResultSet            resultSet;
+  private              String               databaseDirectory;
+  private              int                  verboseLevel         = 1;
+  private              String               language             = SQL_LANGUAGE;
+  private final        ContextConfiguration configuration        = new ContextConfiguration();
 
   public Console(final DatabaseInternal database) throws IOException {
     this(false);
@@ -76,7 +79,10 @@ public class Console {
   }
 
   public Console(final boolean interactive) throws IOException {
-    setRootPath(".");
+    IntegrationUtils.setRootPath(configuration);
+    databaseDirectory = configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY);
+    if (!databaseDirectory.endsWith(File.separator))
+      databaseDirectory += File.separator;
 
     GlobalConfiguration.PROFILE.setValue("low-cpu");
 
@@ -153,21 +159,6 @@ public class Console {
       databaseFactory.close();
       databaseFactory = null;
     }
-  }
-
-  public Console setRootPath(final String rootDirectory) {
-    String root = rootDirectory;
-    if (root == null || root.isEmpty())
-      root = ".";
-    else if (root.endsWith(File.separator))
-      root = root.substring(0, root.length() - 1);
-
-    if (!new File(root + File.separator + "config").exists() && new File(root + File.separator + ".." + File.separator + "config").exists()) {
-      databaseDirectory = new File(root).getAbsoluteFile().getParentFile().getPath() + File.separator + "databases" + File.separator;
-    } else
-      databaseDirectory = root + File.separator + "databases" + File.separator;
-
-    return this;
   }
 
   public void setOutput(final ConsoleOutput output) {

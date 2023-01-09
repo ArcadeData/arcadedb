@@ -29,6 +29,7 @@ import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.exception.DatabaseIsClosedException;
+import com.arcadedb.integration.misc.IntegrationUtils;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngineManager;
 import com.arcadedb.server.ha.HAServer;
@@ -70,7 +71,7 @@ public class ArcadeDBServer {
 
   public ArcadeDBServer() {
     this.configuration = new ContextConfiguration();
-    setRootPath(configuration);
+    serverRootPath = IntegrationUtils.setRootPath(configuration);
     loadConfiguration();
     this.serverName = configuration.getValueAsString(GlobalConfiguration.SERVER_NAME);
     this.testEnabled = configuration.getValueAsBoolean(GlobalConfiguration.TEST);
@@ -79,7 +80,7 @@ public class ArcadeDBServer {
 
   public ArcadeDBServer(final ContextConfiguration configuration) {
     this.configuration = configuration;
-    setRootPath(configuration);
+    serverRootPath = IntegrationUtils.setRootPath(configuration);
     this.serverName = configuration.getValueAsString(GlobalConfiguration.SERVER_NAME);
     this.testEnabled = configuration.getValueAsBoolean(GlobalConfiguration.TEST);
     init();
@@ -536,14 +537,6 @@ public class ArcadeDBServer {
       } catch (final IOException e) {
         LogManager.instance().log(this, Level.SEVERE, "Error on loading configuration from file '%s'", e, file);
       }
-    }
-  }
-
-  private void setRootPath(final ContextConfiguration configuration) {
-    serverRootPath = configuration.getValueAsString(GlobalConfiguration.SERVER_ROOT_PATH);
-    if (serverRootPath == null) {
-      serverRootPath = new File("config").exists() ? "." : new File("../config").exists() ? ".." : ".";
-      configuration.setValue(GlobalConfiguration.SERVER_ROOT_PATH, serverRootPath);
     }
   }
 
