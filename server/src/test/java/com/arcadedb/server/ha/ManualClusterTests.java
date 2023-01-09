@@ -19,7 +19,6 @@
 package com.arcadedb.server.ha;
 
 import com.arcadedb.server.BaseGraphServerTest;
-import org.junit.jupiter.api.Test;
 
 public class ManualClusterTests extends BaseGraphServerTest {
   @Override
@@ -27,7 +26,7 @@ public class ManualClusterTests extends BaseGraphServerTest {
     return 2;
   }
 
-  @Test
+  //@Test
   public void runServers() throws Exception {
     Thread.sleep(1000000);
   }
