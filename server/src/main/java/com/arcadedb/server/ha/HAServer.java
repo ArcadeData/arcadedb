@@ -883,34 +883,36 @@ public class HAServer implements ServerPlugin {
 
     final JSONObject result = new JSONObject().setDateFormat(dateTimeFormat);
 
-    final JSONObject leader = new JSONObject().setDateFormat(dateTimeFormat);
-    result.put("leader", leader);
+    final JSONObject current = new JSONObject().setDateFormat(dateTimeFormat);
+    current.put("name", getServerName());
+    current.put("address", getServerAddress());
+    current.put("role", isLeader() ? "Leader" : "Replica");
+    current.put("status", "ONLINE");
+    current.put("joinedOn", new Date(startedOn));
 
-    leader.put("serverName", getServerName());
-    leader.put("serverAddress", getServerAddress());
-    leader.put("role", "Leader");
-    leader.put("status", "ONLINE");
-    leader.put("joinedOn", new Date(startedOn));
+    result.put("current", current);
 
-    final JSONArray replicas = new JSONArray();
+    if (isLeader()) {
+      final JSONArray replicas = new JSONArray();
 
-    for (final Leader2ReplicaNetworkExecutor c : replicaConnections.values()) {
-      final Leader2ReplicaNetworkExecutor.STATUS status = c.getStatus();
+      for (final Leader2ReplicaNetworkExecutor c : replicaConnections.values()) {
+        final Leader2ReplicaNetworkExecutor.STATUS status = c.getStatus();
 
-      final JSONObject replica = new JSONObject().setDateFormat(dateTimeFormat);
-      replicas.put(replica);
+        final JSONObject replica = new JSONObject().setDateFormat(dateTimeFormat);
+        replicas.put(replica);
 
-      replica.put("serverName", c.getRemoteServerName());
-      replica.put("serverAddress", c.getRemoteServerAddress());
-      replica.put("role", "Replica");
-      replica.put("status", status);
-      replica.put("joinedOn", c.getJoinedOn() > 0 ? new Date(c.getJoinedOn()) : "");
-      replica.put("leftOn", c.getLeftOn() > 0 ? new Date(c.getLeftOn()) : "");
-      replica.put("throughput", c.getThroughputStats());
-      replica.put("latency", c.getLatencyStats());
+        replica.put("name", c.getRemoteServerName());
+        replica.put("address", c.getRemoteServerAddress());
+        replica.put("role", "Replica");
+        replica.put("status", status);
+        replica.put("joinedOn", c.getJoinedOn() > 0 ? new Date(c.getJoinedOn()) : "");
+        replica.put("leftOn", c.getLeftOn() > 0 ? new Date(c.getLeftOn()) : "");
+        replica.put("throughput", c.getThroughputStats());
+        replica.put("latency", c.getLatencyStats());
+      }
+
+      result.put("replicas", replicas);
     }
-
-    result.put("replicas", replicas);
 
     return result;
   }

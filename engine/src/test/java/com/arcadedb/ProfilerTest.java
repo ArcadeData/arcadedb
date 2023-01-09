@@ -18,6 +18,7 @@
  */
 package com.arcadedb;
 
+import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -30,5 +31,14 @@ public class ProfilerTest {
     final ByteArrayOutputStream out = new ByteArrayOutputStream();
     Profiler.INSTANCE.dumpMetrics(new PrintStream(out));
     Assertions.assertTrue(out.size() > 0);
+  }
+
+  @Test
+  public void testMetricsToJSON() {
+    JSONObject json = Profiler.INSTANCE.toJSON();
+    Assertions.assertTrue(json.has("diskFreeSpace"));
+    Assertions.assertTrue(json.has("diskTotalSpace"));
+    Assertions.assertTrue(json.has("updateRecord"));
+    Assertions.assertTrue(json.has("totalDatabases"));
   }
 }

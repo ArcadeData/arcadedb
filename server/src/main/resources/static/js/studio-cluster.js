@@ -8,8 +8,8 @@ function updateCluster( callback ){
   })
   .done(function(data){
     if( data.ha != null ){
-      $("#serverInfo").html("Server <b>" + data.ha.network.leader.serverName + "</b> in cluster <b>" + data.ha.clusterName +
-      "</b> joined on <b>" + data.ha.network.leader.joinedOn + "</b> (election=<b>" + data.ha.electionStatus + "</b>)" );
+      $("#serverInfo").html("Server <b>" + data.ha.network.current.name + "</b> works as <b>" + data.ha.network.current.role + "</b> in cluster <b>" + data.ha.clusterName +
+      "</b> joined on <b>" + data.ha.network.current.joinedOn + "</b> (election=<b>" + data.ha.electionStatus + "</b>)" );
 
       if ( $.fn.dataTable.isDataTable( '#serverOnlineReplicaTable' ) )
         try{ $('#serverOnlineReplicaTable').DataTable().destroy(); $('#serverOnlineReplicaTable').empty(); } catch(e){};
@@ -21,8 +21,8 @@ function updateCluster( callback ){
           let row = data.ha.network.replicas[i];
 
           let record = [];
-          record.push( escapeHtml( row.serverName ) );
-          record.push( escapeHtml( row.serverAddress ) );
+          record.push( escapeHtml( row.name ) );
+          record.push( escapeHtml( row.address ) );
           record.push( escapeHtml( row.status ) );
           record.push( escapeHtml( row.joinedOn ) );
           record.push( escapeHtml( row.leftOn ) );

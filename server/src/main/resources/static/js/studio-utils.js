@@ -216,3 +216,63 @@ function getURLParameter(param) {
         return paramName[1];
   }
 }
+
+function globalFormatDouble(x,decimals) {
+  if (typeof x == 'undefined')
+    return "";
+
+  if (typeof decimals == 'undefined')
+    decimals = 3;
+
+  let transformed = globalFormatDoubleNoCommas(x,decimals);
+
+  let pos = transformed.indexOf(".");
+  let integer = pos > -1 ? transformed.substr( 0, pos ) : transformed;
+  let decimal = pos > -1 ? transformed.substr( pos ) : "";
+
+  return integer.replace(/\B(?=(\d{3})+(?!\d))/g, ",") + decimal;
+}
+
+function globalFormatDoubleNoCommas(x,decimals) {
+  if (typeof x == 'undefined')
+    return "";
+
+  if( decimals == undefined )
+    decimals = 2;
+
+  x = x.toString();
+  var sep = x.indexOf('.');
+
+  if( decimals > 0 ) {
+    if( sep == -1 )
+      x += ".";
+
+    for( let i = 0; i < decimals; ++i ){
+      x += "0";
+    }
+  }
+
+  sep = x.indexOf('.');
+  if( sep > -1 ){
+    if( decimals == 0 )
+      x = x.substring(0, sep);
+    else
+      x = x.substring(0, sep + decimals + 1);
+  }
+
+  return x;
+}
+
+function globalFormatSpace(value){
+  if (typeof value == 'undefined' || value == "")
+    return "";
+  if( value > 1000000000000)
+    return globalFormatDouble(value/1000000000000) + "TB";
+  if( value > 1000000000)
+    return globalFormatDouble(value/1000000000) + "GB";
+  if( value > 1000000)
+    return globalFormatDouble(value/1000000) + "MB";
+  if( value > 1000)
+    return globalFormatDouble(value/1000) + "KB";
+  return value;
+}

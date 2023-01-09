@@ -24,12 +24,13 @@ function updateServer( callback ){
 
       let record = [];
       record.push( escapeHtml( name ) );
+      record.push( "" );
       record.push( escapeHtml( timer.count ) );
-      record.push( escapeHtml( timer.oneMinRate ) );
-      record.push( escapeHtml( timer.perc99 ) );
+      record.push( escapeHtml( globalFormatDouble( timer.oneMinRate ) ) );
+      record.push( escapeHtml( globalFormatDouble( timer.mean ) ) );
+      record.push( escapeHtml( globalFormatDouble( timer.perc99 ) ) );
       record.push( escapeHtml( timer.min ) );
       record.push( escapeHtml( timer.max ) );
-      record.push( escapeHtml( timer.mean ) );
       tableRecords.push( record );
     }
 
@@ -38,8 +39,66 @@ function updateServer( callback ){
 
       let record = [];
       record.push( escapeHtml( name ) );
+      record.push( "" );
       record.push( escapeHtml( meter.count ) );
       record.push( escapeHtml( meter.oneMinRate ) );
+      tableRecords.push( record );
+    }
+
+    for( let name in data.metrics.profiler ){
+      let record = [];
+
+      let entry = data.metrics.profiler[name];
+      if( entry.count == null || entry.count == 0 )
+        continue;
+
+      record.push( escapeHtml( name ) );
+      record.push( "" );
+      record.push( globalFormatDouble( entry.count, 0 ) );
+      record.push( "" );
+      record.push( "" );
+      record.push( "" );
+      record.push( "" );
+      record.push( "" );
+
+      tableRecords.push( record );
+    }
+
+    for( let name in data.metrics.profiler ){
+      let record = [];
+
+      let entry = data.metrics.profiler[name];
+      if( entry.value == null || entry.value == 0 )
+        continue;
+
+      record.push( escapeHtml( name ) );
+      record.push( globalFormatDouble( entry.value, 0 ) );
+      record.push( "" );
+      record.push( "" );
+      record.push( "" );
+      record.push( "" );
+      record.push( "" );
+      record.push( "" );
+
+      tableRecords.push( record );
+    }
+
+    for( let name in data.metrics.profiler ){
+      let record = [];
+
+      let entry = data.metrics.profiler[name];
+      if( entry.space == null || entry.space == 0 )
+        continue;
+
+      record.push( escapeHtml( name ) );
+      record.push( globalFormatSpace( entry.space ) );
+      record.push( "" );
+      record.push( "" );
+      record.push( "" );
+      record.push( "" );
+      record.push( "" );
+      record.push( "" );
+
       tableRecords.push( record );
     }
 
@@ -48,12 +107,13 @@ function updateServer( callback ){
       ordering: false,
       columns: [
         {title: "Metric Name"},
+        {title: "Value"},
         {title: "Count"},
         {title: "1 Minute Rate"},
-        {title: "99 Percentile"},
-        {title: "Minimum"},
-        {title: "Maximum"},
-        {title: "Mean"},
+        {title: "Mean (ms)"},
+        {title: "99 Percentile (ms)"},
+        {title: "Minimum (ms)"},
+        {title: "Maximum (ms)"},
       ],
       data: tableRecords,
     });

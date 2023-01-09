@@ -86,24 +86,31 @@ public abstract class AbstractHandler implements HttpHandler {
 
       ServerSecurityUser user = null;
       if (authorization != null) {
-        final String auth = authorization.getFirst();
-        if (!auth.startsWith(AUTHORIZATION_BASIC)) {
-          sendErrorResponse(exchange, 403, "Authentication not supported", null, null);
-          return;
+        try {
+          final String auth = authorization.getFirst();
+          if (!auth.startsWith(AUTHORIZATION_BASIC)) {
+            sendErrorResponse(exchange, 403, "Authentication not supported", null, null);
+            return;
+          }
+
+          final String authPairCypher = auth.substring(AUTHORIZATION_BASIC.length() + 1);
+
+          final String authPairClear = new String(Base64.getDecoder().decode(authPairCypher), DatabaseFactory.getDefaultCharset());
+
+          final String[] authPair = authPairClear.split(":");
+
+          if (authPair.length != 2) {
+            sendErrorResponse(exchange, 403, "Basic authentication error", null, null);
+            return;
+          }
+
+          user = authenticate(authPair[0], authPair[1]);
+        } catch (ServerSecurityException e) {
+          // PASS THROUGH
+          throw e;
+        } catch (Exception e) {
+          throw new ServerSecurityException("Authentication error");
         }
-
-        final String authPairCypher = auth.substring(AUTHORIZATION_BASIC.length() + 1);
-
-        final String authPairClear = new String(Base64.getDecoder().decode(authPairCypher), DatabaseFactory.getDefaultCharset());
-
-        final String[] authPair = authPairClear.split(":");
-
-        if (authPair.length != 2) {
-          sendErrorResponse(exchange, 403, "Basic authentication error", null, null);
-          return;
-        }
-
-        user = authenticate(authPair[0], authPair[1]);
       }
 
       final ServerMetrics.MetricTimer timer = httpServer.getServer().getServerMetrics().timer("http.request");

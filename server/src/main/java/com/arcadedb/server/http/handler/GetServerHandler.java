@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.Profiler;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -32,6 +33,8 @@ import com.codahale.metrics.Snapshot;
 import com.codahale.metrics.Timer;
 import io.undertow.server.HttpServerExchange;
 
+import java.io.*;
+import java.net.*;
 import java.util.*;
 import java.util.logging.*;
 
@@ -48,48 +51,74 @@ public class GetServerHandler extends AbstractHandler {
 
     final String mode = getQueryParameter(exchange, "mode", "default");
 
-    final JSONObject metricsJSON = new JSONObject();
-    response.put("metrics", metricsJSON);
+    if ("default".equals(mode)) {
+      final JSONObject metricsJSON = new JSONObject();
+      response.put("metrics", metricsJSON);
 
-    final JSONObject timersJSON = new JSONObject();
-    metricsJSON.put("timers", timersJSON);
+      metricsJSON.put("profiler", Profiler.INSTANCE.toJSON());
 
-    final ServerMetrics metrics = httpServer.getServer().getServerMetrics();
-    for (Map.Entry<String, Timer> entry : metrics.getTimers().entrySet()) {
-      final Timer timer = entry.getValue();
-      final Snapshot snapshot = timer.getSnapshot();
+      final JSONObject timersJSON = new JSONObject();
+      metricsJSON.put("timers", timersJSON);
 
-      timersJSON.put(entry.getKey(), new JSONObject().put("count", timer.getCount())//
-          .put("oneMinRate", timer.getOneMinuteRate())//
-          .put("min", snapshot.getMin())//
-          .put("max", snapshot.getMax())//
-          .put("mean", snapshot.getMean())//
-          .put("perc99", snapshot.get99thPercentile())//
-      );
-    }
+      final ServerMetrics metrics = httpServer.getServer().getServerMetrics();
+      for (Map.Entry<String, Timer> entry : metrics.getTimers().entrySet()) {
+        final Timer timer = entry.getValue();
+        final Snapshot snapshot = timer.getSnapshot();
 
-    final JSONObject metersJSON = new JSONObject();
-    metricsJSON.put("meters", metersJSON);
+        timersJSON.put(entry.getKey(), new JSONObject().put("count", timer.getCount())//
+            .put("oneMinRate", timer.getOneMinuteRate())//
+            .put("mean", snapshot.getMean() / 1000000)//
+            .put("perc99", snapshot.get99thPercentile() / 1000000)//
+            .put("min", snapshot.getMin() / 1000000)//
+            .put("max", snapshot.getMax() / 1000000)//
+        );
+      }
 
-    for (Map.Entry<String, Meter> entry : metrics.getMeters().entrySet()) {
-      final Meter meter = entry.getValue();
+      final JSONObject metersJSON = new JSONObject();
+      metricsJSON.put("meters", metersJSON);
 
-      metersJSON.put(entry.getKey(), new JSONObject().put("count", meter.getCount())//
-          .put("oneMinRate", meter.getOneMinuteRate())//
-      );
-    }
+      for (Map.Entry<String, Meter> entry : metrics.getMeters().entrySet()) {
+        final Meter meter = entry.getValue();
 
-    if ("cluster".equals(mode)) {
+        metersJSON.put(entry.getKey(), new JSONObject().put("count", meter.getCount())//
+            .put("oneMinRate", meter.getOneMinuteRate())//
+        );
+      }
+    } else if ("cluster".equals(mode)) {
       final HAServer ha = httpServer.getServer().getHA();
       if (ha != null) {
         final JSONObject haJSON = new JSONObject();
         response.put("ha", haJSON);
 
         haJSON.put("clusterName", ha.getClusterName());
-        haJSON.put("onlineReplicas", ha.getOnlineReplicas());
+        haJSON.put("leader", ha.getLeaderName());
         haJSON.put("electionStatus", ha.getElectionStatus().toString());
-
         haJSON.put("network", ha.getStats());
+
+        if (!ha.isLeader()) {
+          // ASK TO THE LEADER THE NETWORK COMPOSITION
+          try {
+            HttpURLConnection connection = (HttpURLConnection) new URL(
+                "http://" + ha.getLeader().getRemoteHTTPAddress() + "/api/v1/server?mode=cluster").openConnection();
+
+            try {
+              connection.setRequestMethod("GET");
+              connection.setRequestProperty("Authorization", exchange.getRequestHeaders().get("Authorization").getFirst());
+              connection.connect();
+
+              JSONObject leaderResponse = new JSONObject(readResponse(connection));
+              final JSONObject network = leaderResponse.getJSONObject("ha").getJSONObject("network");
+              haJSON.getJSONObject("network").put("replicas", network.getJSONArray("replicas"));
+
+            } catch (Exception e) {
+              throw new RuntimeException(e);
+            } finally {
+              connection.disconnect();
+            }
+          } catch (Exception e) {
+            throw new RuntimeException(e);
+          }
+        }
 
         final JSONArray databases = new JSONArray();
         haJSON.put("databases", databases);
@@ -111,5 +140,18 @@ public class GetServerHandler extends AbstractHandler {
       }
     }
     exchange.getResponseSender().send(response.toString());
+  }
+
+  protected String readResponse(final HttpURLConnection connection) throws IOException {
+    final InputStream in = connection.getInputStream();
+    final Scanner scanner = new Scanner(in);
+
+    final StringBuilder buffer = new StringBuilder();
+
+    while (scanner.hasNext()) {
+      buffer.append(scanner.next().replace('\n', ' '));
+    }
+
+    return buffer.toString();
   }
 }

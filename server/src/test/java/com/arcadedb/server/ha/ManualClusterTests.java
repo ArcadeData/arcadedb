@@ -26,8 +26,10 @@ public class ManualClusterTests extends BaseGraphServerTest {
     return 2;
   }
 
-  //@Test
-  public void runServers() throws Exception {
+  public static void main(String[] args) throws Exception {
+    ManualClusterTests test = new ManualClusterTests();
+    test.beginTest();
     Thread.sleep(1000000);
+    test.endTest();
   }
 }
