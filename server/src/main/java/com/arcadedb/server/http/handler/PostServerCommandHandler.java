@@ -18,10 +18,16 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.PaginatedFile;
+import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.Leader2ReplicaNetworkExecutor;
+import com.arcadedb.server.ha.ReplicatedDatabase;
 import com.arcadedb.server.ha.message.ServerShutdownRequest;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -29,18 +35,15 @@ import io.undertow.server.HttpServerExchange;
 
 import java.io.*;
 
-public class PostServerCommandHandler extends DatabaseAbstractHandler {
+public class PostServerCommandHandler extends AbstractHandler {
   public PostServerCommandHandler(final HttpServer httpServer) {
     super(httpServer);
   }
 
   @Override
-  protected boolean requiresDatabase() {
-    return false;
-  }
+  public void execute(final HttpServerExchange exchange, final ServerSecurityUser user) throws IOException {
+    checkRootUser(user);
 
-  @Override
-  public void execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database) throws IOException {
     final JSONObject payload = new JSONObject(parseRequestPayload(exchange));
 
     final String command = payload.has("command") ? payload.getString("command") : null;
@@ -50,13 +53,18 @@ public class PostServerCommandHandler extends DatabaseAbstractHandler {
       return;
     }
 
-    httpServer.getServer().getServerMetrics().meter("http.server-command").mark();
-
     if (command.startsWith("shutdown"))
       shutdownServer(command);
     else if (command.startsWith("disconnect "))
       disconnectServer(command);
+    else if (command.startsWith("create database "))
+      createDatabase(command);
+    else if (command.startsWith("drop database "))
+      dropDatabase(command);
+    else if (command.startsWith("drop user "))
+      dropUser(command);
     else {
+      httpServer.getServer().getServerMetrics().meter("http.server-command.invalid").mark();
       exchange.setStatusCode(400);
       exchange.getResponseSender().send("{ \"error\" : \"Server command not valid\"}");
       return;
@@ -67,11 +75,13 @@ public class PostServerCommandHandler extends DatabaseAbstractHandler {
   }
 
   private void shutdownServer(final String command) throws IOException {
+    httpServer.getServer().getServerMetrics().meter("http.server-shutdown").mark();
+
     if (command.equals("shutdown")) {
       // SHUTDOWN CURRENT SERVER
       httpServer.getServer().stop();
     } else if (command.startsWith("shutdown ")) {
-      final String serverName = command.substring("shutdown ".length());
+      final String serverName = command.substring("shutdown ".length()).trim();
       final Leader2ReplicaNetworkExecutor replica = httpServer.getServer().getHA().getReplica(serverName);
 
       final Binary buffer = new Binary();
@@ -81,13 +91,50 @@ public class PostServerCommandHandler extends DatabaseAbstractHandler {
   }
 
   private void disconnectServer(final String command) {
+    httpServer.getServer().getServerMetrics().meter("http.server-disconnect").mark();
+
     final String serverName = command.substring("disconnect ".length());
     final Leader2ReplicaNetworkExecutor replica = httpServer.getServer().getHA().getReplica(serverName);
     replica.close();
   }
 
-  @Override
-  protected boolean requiresTransaction() {
-    return false;
+  private void createDatabase(final String command) {
+    final String databaseName = command.substring("create database ".length()).trim();
+
+    final ArcadeDBServer server = httpServer.getServer();
+    if (!server.getHA().isLeader())
+      // NOT THE LEADER
+      throw new ServerIsNotTheLeaderException("Creation of database can be executed only on the leader server", server.getHA().getLeaderName());
+
+    server.getServerMetrics().meter("http.create-database").mark();
+
+    final DatabaseInternal db = server.createDatabase(databaseName, PaginatedFile.MODE.READ_WRITE);
+
+    if (server.getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
+      ((ReplicatedDatabase) db).createInReplicas();
+  }
+
+  private void dropDatabase(final String command) {
+    final String databaseName = command.substring("drop database ".length()).trim();
+
+    final Database database = httpServer.getServer().getDatabase(databaseName);
+
+    httpServer.getServer().getServerMetrics().meter("http.drop-database").mark();
+
+    ((DatabaseInternal) database).getEmbedded().drop();
+    httpServer.getServer().removeDatabase(database.getName());
+  }
+
+  private void dropUser(final String command) {
+    final String userName = command.substring("drop user ".length()).trim();
+
+    if (userName.isEmpty())
+      throw new IllegalArgumentException("User name was missing");
+
+    httpServer.getServer().getServerMetrics().meter("http.drop-user").mark();
+
+    final boolean result = httpServer.getServer().getSecurity().dropUser(userName);
+    if (!result)
+      throw new RuntimeException("User '" + userName + "' not found on server");
   }
 }

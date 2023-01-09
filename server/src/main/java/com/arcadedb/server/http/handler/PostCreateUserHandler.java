@@ -24,6 +24,13 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 import com.arcadedb.serializer.json.JSONObject;
 
+/**
+ * Creates a new server user.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ * @Deprecated Use the generic @see PostServerCommandHandler
+ */
+@Deprecated
 public class PostCreateUserHandler extends AbstractHandler {
   public PostCreateUserHandler(final HttpServer httpServer) {
     super(httpServer);
@@ -31,6 +38,8 @@ public class PostCreateUserHandler extends AbstractHandler {
 
   @Override
   public void execute(final HttpServerExchange exchange, final ServerSecurityUser user) {
+    checkRootUser(user);
+
     final String payload = parseRequestPayload(exchange);
     if (payload == null || payload.isEmpty()) {
       exchange.setStatusCode(400);

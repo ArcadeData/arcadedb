@@ -34,6 +34,8 @@ public class PostCloseDatabaseHandler extends DatabaseAbstractHandler {
 
   @Override
   public void execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database) {
+    checkRootUser(user);
+
     ((DatabaseInternal) database).getEmbedded().close();
 
     httpServer.getServer().getServerMetrics().meter("http.close-database").mark();

@@ -24,6 +24,13 @@ import io.undertow.server.HttpServerExchange;
 
 import java.util.*;
 
+/**
+ * Drops a server user.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ * @Deprecated Use the generic @see PostServerCommandHandler
+ */
+@Deprecated
 public class DeleteDropUserHandler extends AbstractHandler {
   public DeleteDropUserHandler(final HttpServer httpServer) {
     super(httpServer);
@@ -31,6 +38,8 @@ public class DeleteDropUserHandler extends AbstractHandler {
 
   @Override
   public void execute(final HttpServerExchange exchange, final ServerSecurityUser user) {
+    checkRootUser(user);
+
     final Deque<String> userNamePar = exchange.getQueryParameters().get("userName");
     String userName = userNamePar.isEmpty() ? null : userNamePar.getFirst().trim();
     if (userName.isEmpty())

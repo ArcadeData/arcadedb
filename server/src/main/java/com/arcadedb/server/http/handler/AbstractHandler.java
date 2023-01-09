@@ -169,6 +169,11 @@ public abstract class AbstractHandler implements HttpHandler {
     return httpServer.getServer().getSecurity().authenticate(userName, userPassword, null);
   }
 
+  protected static void checkRootUser(ServerSecurityUser user) {
+    if (!"root".equals(user.getName()))
+      throw new ServerSecurityException("Only root user is authorized to execute server commands");
+  }
+
   protected JSONObject createResult(final SecurityUser user, final Database database) {
     final JSONObject json = new JSONObject();
     if (database != null)

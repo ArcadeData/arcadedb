@@ -19,7 +19,6 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.PaginatedFile;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
@@ -31,18 +30,22 @@ import io.undertow.server.HttpServerExchange;
 
 import java.util.*;
 
-public class PostCreateDatabaseHandler extends DatabaseAbstractHandler {
+/**
+ * Creates a new database on a server.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ * @Deprecated Use the generic @see PostServerCommandHandler
+ */
+@Deprecated
+public class PostCreateDatabaseHandler extends AbstractHandler {
   public PostCreateDatabaseHandler(final HttpServer httpServer) {
     super(httpServer);
   }
 
   @Override
-  protected boolean requiresDatabase() {
-    return false;
-  }
+  public void execute(final HttpServerExchange exchange, final ServerSecurityUser user) {
+    checkRootUser(user);
 
-  @Override
-  public void execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database) {
     final Deque<String> databaseNamePar = exchange.getQueryParameters().get("database");
     String databaseName = databaseNamePar.isEmpty() ? null : databaseNamePar.getFirst().trim();
     if (databaseName.isEmpty())
@@ -68,10 +71,5 @@ public class PostCreateDatabaseHandler extends DatabaseAbstractHandler {
 
     exchange.setStatusCode(200);
     exchange.getResponseSender().send("{ \"result\" : \"ok\"}");
-  }
-
-  @Override
-  protected boolean requiresTransaction() {
-    return false;
   }
 }
