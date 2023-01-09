@@ -120,6 +120,11 @@ function updateServer( callback ){
 
     if( callback )
       callback();
+
+    setTimeout(function() {
+      if( studioCurrentTab == "server" )
+        updateServer();
+    }, 60000);
   })
   .fail(function( jqXHR, textStatus, errorThrown ){
     globalNotifyError( jqXHR.responseText );

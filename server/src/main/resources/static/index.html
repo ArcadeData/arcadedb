@@ -143,6 +143,8 @@ ${include:popup-login.html}
 </div>
 
 <script>
+var studioCurrentTab = "query";
+
 $(function () {
   $('#loginForm').keypress(function(e){
     if(e.which == 13) {
@@ -152,12 +154,22 @@ $(function () {
 
   $('a[data-toggle="tab"]').on('shown.bs.tab', function (e) {
     var activeTab = this.id;
-    if( activeTab == "tab-query-sel" )
+    if( activeTab == "tab-query-sel" ) {
+      studioCurrentTab = "query";
       editorFocus();
-    else if( activeTab == "tab-server-sel" )
+    } else if( activeTab == "tab-server-sel" ) {
+      studioCurrentTab = "server";
       updateServer();
-    else if( activeTab == "tab-cluster-sel" )
+    } else if( activeTab == "tab-cluster-sel" ) {
+      studioCurrentTab = "cluster";
       updateCluster();
+    } else if( activeTab == "tab-database-sel" ) {
+      studioCurrentTab = "database";
+    } else if( activeTab == "tab-api-sel" ) {
+      studioCurrentTab = "api";
+    } else if( activeTab == "tab-resources-sel" ) {
+      studioCurrentTab = "resources";
+    }
   });
 
   $('#loginPopup').on('shown.bs.modal', function () {

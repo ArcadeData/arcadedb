@@ -51,6 +51,11 @@ function updateCluster( callback ){
 
     if( callback )
       callback();
+
+    setTimeout(function() {
+      if( studioCurrentTab == "cluster" )
+        updateCluster();
+    }, 60000);
   })
   .fail(function( jqXHR, textStatus, errorThrown ){
     globalNotifyError( jqXHR.responseText );
