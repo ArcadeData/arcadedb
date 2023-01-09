@@ -124,7 +124,18 @@ public class RemoteDatabase extends RWLockContext {
   }
 
   public void drop() {
-    databaseCommand("drop", "SQL", null, null, true, null);
+    try {
+      final HttpURLConnection connection = createConnection("POST", getUrl("server"));
+      setRequestPayload(connection, new JSONObject().put("command", "drop database " + databaseName));
+      connection.connect();
+      if (connection.getResponseCode() != 200) {
+        manageException(connection, "drop database");
+        throw new RuntimeException("Error on deleting database: " + connection.getResponseMessage());
+      }
+
+    } catch (final Exception e) {
+      throw new RuntimeException("Error on deleting database", e);
+    }
     close();
   }
 
@@ -264,28 +275,25 @@ public class RemoteDatabase extends RWLockContext {
 
   public void createUser(final String userName, final String password, final List<String> databases) {
     try {
-      final HttpURLConnection connection = createConnection("POST", getUrl("user"));
-      connection.setDoOutput(true);
+      final HttpURLConnection connection = createConnection("POST", getUrl("server"));
 
-      final JSONObject jsonRequest = new JSONObject();
-      jsonRequest.put("name", userName);
-      jsonRequest.put("password", password);
+      final JSONObject jsonUser = new JSONObject();
+      jsonUser.put("name", userName);
+      jsonUser.put("password", password);
       if (databases != null && !databases.isEmpty()) {
         final JSONObject databasesJson = new JSONObject();
         for (final String dbName : databases)
           databasesJson.put(dbName, new String[] { "admin" });
-        jsonRequest.put("databases", databasesJson);
+        jsonUser.put("databases", databasesJson);
       }
 
-      final byte[] postData = jsonRequest.toString().getBytes(StandardCharsets.UTF_8);
-      connection.setRequestProperty("Content-Length", Integer.toString(postData.length));
-      try (final DataOutputStream wr = new DataOutputStream(connection.getOutputStream())) {
-        wr.write(postData);
-      }
+      setRequestPayload(connection, new JSONObject().put("command", "create user " + jsonUser));
 
       connection.connect();
-      if (connection.getResponseCode() != 204)
-        throw new RuntimeException("Error on creating user: " + connection.getResponseMessage());
+      if (connection.getResponseCode() != 200) {
+        manageException(connection, "create user");
+        throw new SecurityException("Error on creating user: " + connection.getResponseMessage());
+      }
 
     } catch (final Exception e) {
       throw new RuntimeException("Error on creating user", e);
@@ -294,10 +302,13 @@ public class RemoteDatabase extends RWLockContext {
 
   public void dropUser(final String userName) {
     try {
-      final HttpURLConnection connection = createConnection("DELETE", getUrl("user") + "/" + userName);
+      final HttpURLConnection connection = createConnection("POST", getUrl("server"));
+      setRequestPayload(connection, new JSONObject().put("command", "drop user " + userName));
       connection.connect();
-      if (connection.getResponseCode() != 204)
+      if (connection.getResponseCode() != 200) {
+        manageException(connection, "drop user");
         throw new RuntimeException("Error on deleting user: " + connection.getResponseMessage());
+      }
 
     } catch (final Exception e) {
       throw new RuntimeException("Error on deleting user", e);
@@ -343,88 +354,21 @@ public class RemoteDatabase extends RWLockContext {
             jsonRequest.put("command", payloadCommand);
             jsonRequest.put("serializer", "record");
 
-            if (params != null) {
-              final JSONObject jsonParams = new JSONObject(params);
-              jsonRequest.put("params", jsonParams);
-            }
+            if (params != null)
+              jsonRequest.put("params", new JSONObject(params));
 
-            final byte[] postData = jsonRequest.toString().getBytes(StandardCharsets.UTF_8);
-            connection.setRequestProperty("Content-Length", Integer.toString(postData.length));
-            try (final DataOutputStream wr = new DataOutputStream(connection.getOutputStream())) {
-              wr.write(postData);
-            }
+            setRequestPayload(connection, jsonRequest);
           }
 
           connection.connect();
 
           if (connection.getResponseCode() != 200) {
-            String detail = null;
-            String reason = null;
-            String exception = null;
-            String exceptionArgs = null;
-            String responsePayload = null;
-
-            if (connection.getErrorStream() != null) {
-              try {
-                responsePayload = FileUtils.readStreamAsString(connection.getErrorStream(), charset);
-                final JSONObject response = new JSONObject(responsePayload);
-                reason = response.getString("error");
-                detail = response.has("detail") ? response.getString("detail") : null;
-                exception = response.has("exception") ? response.getString("exception") : null;
-                exceptionArgs = response.has("exceptionArgs") ? response.getString("exceptionArgs") : null;
-              } catch (final Exception e) {
-                lastException = e;
-                // TODO CHECK IF THE COMMAND NEEDS TO BE RE-EXECUTED OR NOT
-                LogManager.instance()
-                    .log(this, Level.WARNING, "Error on executing command, retrying... (payload=%s, error=%s)", null, responsePayload, e.toString());
-                continue;
-              }
-            }
-
-            String cmd = payloadCommand;
-            if (cmd == null)
-              cmd = operation;
-
-            if (exception != null) {
-              if (detail == null)
-                detail = "Unknown";
-
-              if (exception.equals(ServerIsNotTheLeaderException.class.getName())) {
-                final int sep = detail.lastIndexOf('.');
-                throw new ServerIsNotTheLeaderException(sep > -1 ? detail.substring(0, sep) : detail, exceptionArgs);
-              } else if (exception.equals(QuorumNotReachedException.class.getName())) {
-                lastException = new QuorumNotReachedException(detail);
-                continue;
-              } else if (exception.equals(DuplicatedKeyException.class.getName()) && exceptionArgs != null) {
-                final String[] exceptionArgsParts = exceptionArgs.split("\\|");
-                throw new DuplicatedKeyException(exceptionArgsParts[0], exceptionArgsParts[1], new RID(null, exceptionArgsParts[2]));
-              } else if (exception.equals(ConcurrentModificationException.class.getName())) {
-                throw new ConcurrentModificationException(detail);
-              } else if (exception.equals(TransactionException.class.getName())) {
-                throw new TransactionException(detail);
-              } else if (exception.equals(TimeoutException.class.getName())) {
-                throw new TimeoutException(detail);
-              } else if (exception.equals(SchemaException.class.getName())) {
-                throw new SchemaException(detail);
-              } else if (exception.equals(NoSuchElementException.class.getName())) {
-                throw new NoSuchElementException(detail);
-              } else
-                // ELSE
-                throw new RemoteException("Error on executing remote operation " + operation + " (cause:" + exception + " detail:" + detail + ")");
-            }
-
-            final String httpErrorDescription = connection.getResponseMessage();
-
-            // TEMPORARY FIX FOR AN ISSUE WITH THE CLIENT/SERVER COMMUNICATION WHERE THE PAYLOAD ARRIVES AS EMPTY
-            if (connection.getResponseCode() == 400 && "Bad Request".equals(httpErrorDescription) && "Command text is null".equals(reason)) {
-              // RETRY
-              LogManager.instance().log(this, Level.FINE, "Empty payload received, retrying (retry=%d/%d)...", null, retry, maxRetry);
+            lastException = manageException(connection, payloadCommand != null ? payloadCommand : operation);
+            if (lastException != null) {
+              if (lastException instanceof RuntimeException && lastException.getMessage().equals("Empty payload received"))
+                LogManager.instance().log(this, Level.FINE, "Empty payload received, retrying (retry=%d/%d)...", null, retry, maxRetry);
               continue;
             }
-
-            throw new RemoteException(
-                "Error on executing remote command '" + cmd + "' (httpErrorCode=" + connection.getResponseCode() + " httpErrorDescription="
-                    + httpErrorDescription + " reason=" + reason + " detail=" + detail + " exception=" + exception + ")");
           }
 
           final JSONObject response = new JSONObject(FileUtils.readStreamAsString(connection.getInputStream(), charset));
@@ -647,5 +591,76 @@ public class RemoteDatabase extends RWLockContext {
       }
     }
     return null;
+  }
+
+  private static void setRequestPayload(final HttpURLConnection connection, final JSONObject jsonRequest) throws IOException {
+    connection.setDoOutput(true);
+    final byte[] postData = jsonRequest.toString().getBytes(StandardCharsets.UTF_8);
+    connection.setRequestProperty("Content-Length", Integer.toString(postData.length));
+    try (final DataOutputStream wr = new DataOutputStream(connection.getOutputStream())) {
+      wr.write(postData);
+    }
+  }
+
+  private Exception manageException(final HttpURLConnection connection, final String operation) throws IOException {
+    String detail = null;
+    String reason = null;
+    String exception = null;
+    String exceptionArgs = null;
+    String responsePayload = null;
+
+    if (connection.getErrorStream() != null) {
+      try {
+        responsePayload = FileUtils.readStreamAsString(connection.getErrorStream(), charset);
+        final JSONObject response = new JSONObject(responsePayload);
+        reason = response.getString("error");
+        detail = response.has("detail") ? response.getString("detail") : null;
+        exception = response.has("exception") ? response.getString("exception") : null;
+        exceptionArgs = response.has("exceptionArgs") ? response.getString("exceptionArgs") : null;
+      } catch (final Exception e) {
+        // TODO CHECK IF THE COMMAND NEEDS TO BE RE-EXECUTED OR NOT
+        LogManager.instance().log(this, Level.WARNING, "Error on executing command, retrying... (payload=%s, error=%s)", null, responsePayload, e.toString());
+        return e;
+      }
+    }
+
+    if (exception != null) {
+      if (detail == null)
+        detail = "Unknown";
+
+      if (exception.equals(ServerIsNotTheLeaderException.class.getName())) {
+        final int sep = detail.lastIndexOf('.');
+        throw new ServerIsNotTheLeaderException(sep > -1 ? detail.substring(0, sep) : detail, exceptionArgs);
+      } else if (exception.equals(QuorumNotReachedException.class.getName())) {
+        return new QuorumNotReachedException(detail);
+      } else if (exception.equals(DuplicatedKeyException.class.getName()) && exceptionArgs != null) {
+        final String[] exceptionArgsParts = exceptionArgs.split("\\|");
+        throw new DuplicatedKeyException(exceptionArgsParts[0], exceptionArgsParts[1], new RID(null, exceptionArgsParts[2]));
+      } else if (exception.equals(ConcurrentModificationException.class.getName())) {
+        throw new ConcurrentModificationException(detail);
+      } else if (exception.equals(TransactionException.class.getName())) {
+        throw new TransactionException(detail);
+      } else if (exception.equals(TimeoutException.class.getName())) {
+        throw new TimeoutException(detail);
+      } else if (exception.equals(SchemaException.class.getName())) {
+        throw new SchemaException(detail);
+      } else if (exception.equals(NoSuchElementException.class.getName())) {
+        throw new NoSuchElementException(detail);
+      } else
+        // ELSE
+        throw new RemoteException("Error on executing remote operation " + operation + " (cause:" + exception + " detail:" + detail + ")");
+    }
+
+    final String httpErrorDescription = connection.getResponseMessage();
+
+    // TEMPORARY FIX FOR AN ISSUE WITH THE CLIENT/SERVER COMMUNICATION WHERE THE PAYLOAD ARRIVES AS EMPTY
+    if (connection.getResponseCode() == 400 && "Bad Request".equals(httpErrorDescription) && "Command text is null".equals(reason)) {
+      // RETRY
+      return new RuntimeException("Empty payload received");
+    }
+
+    throw new RemoteException(
+        "Error on executing remote command '" + operation + "' (httpErrorCode=" + connection.getResponseCode() + " httpErrorDescription=" + httpErrorDescription
+            + " reason=" + reason + " detail=" + detail + " exception=" + exception + ")");
   }
 }

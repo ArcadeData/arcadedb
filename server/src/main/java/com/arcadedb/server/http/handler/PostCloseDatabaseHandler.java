@@ -26,7 +26,11 @@ import io.undertow.server.HttpServerExchange;
 
 /**
  * Closes a database on the server. This command is useful in case of restore or to simply free resources.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ * @Deprecated Use the generic @see PostServerCommandHandler
  */
+@Deprecated
 public class PostCloseDatabaseHandler extends DatabaseAbstractHandler {
   public PostCloseDatabaseHandler(final HttpServer httpServer) {
     super(httpServer);

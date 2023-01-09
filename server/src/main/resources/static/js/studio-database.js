@@ -84,7 +84,6 @@ function updateDatabases( callback ){
   });
 }
 
-
 function createDatabase(){
   let html = "<label for='inputCreateDatabaseName'>Enter the database name:&nbsp;&nbsp;</label><input onkeydown='if (event.which === 13) Swal.clickConfirm()' id='inputCreateDatabaseName'>";
 
@@ -108,8 +107,8 @@ function createDatabase(){
 
       jQuery.ajax({
         type: "POST",
-        url: "/api/v1/create/" + database,
-        data: "",
+        url: "/api/v1/server",
+        data: "{ 'command': 'create database " + database + "' }",
         beforeSend: function (xhr){
           xhr.setRequestHeader('Authorization', globalCredentials);
         }
@@ -137,8 +136,8 @@ function dropDatabase(){
   globalConfirm("Drop database", "Are you sure you want to drop the database '"+database+"'?<br>WARNING: The operation cannot be undone.", "warning", function(){
     jQuery.ajax({
       type: "POST",
-      url: "/api/v1/drop/" + database,
-      data: "",
+      url: "/api/v1/server",
+      data: "{ 'command': 'drop database " + database + "' }",
       beforeSend: function (xhr){
         xhr.setRequestHeader('Authorization', globalCredentials);
       }

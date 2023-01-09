@@ -289,7 +289,6 @@ public abstract class BaseGraphServerTest {
 
   protected void formatPayload(final HttpURLConnection connection, final String language, final String payloadCommand, final String serializer,
       final Map<String, Object> params) throws Exception {
-    connection.setDoOutput(true);
     if (payloadCommand != null) {
       final JSONObject jsonRequest = new JSONObject();
       jsonRequest.put("language", language);
@@ -302,11 +301,17 @@ public abstract class BaseGraphServerTest {
         jsonRequest.put("params", jsonParams);
       }
 
-      final byte[] data = jsonRequest.toString().getBytes(StandardCharsets.UTF_8);
-      connection.setRequestProperty("Content-Length", Integer.toString(data.length));
-      try (final DataOutputStream wr = new DataOutputStream(connection.getOutputStream())) {
-        wr.write(data);
-      }
+      formatPayload(connection, jsonRequest);
+    } else
+      connection.setDoOutput(true);
+  }
+
+  protected void formatPayload(final HttpURLConnection connection, final JSONObject payload) throws Exception {
+    connection.setDoOutput(true);
+    final byte[] data = payload.toString().getBytes(StandardCharsets.UTF_8);
+    connection.setRequestProperty("Content-Length", Integer.toString(data.length));
+    try (final DataOutputStream wr = new DataOutputStream(connection.getOutputStream())) {
+      wr.write(data);
     }
   }
 
@@ -362,7 +367,7 @@ public abstract class BaseGraphServerTest {
 
   protected String readResponse(final HttpURLConnection connection) throws IOException {
     final InputStream in = connection.getInputStream();
-    final   String buffer = FileUtils.readStreamAsString(in, "utf8");
+    final String buffer = FileUtils.readStreamAsString(in, "utf8");
     return buffer.replace('\n', ' ');
   }
 

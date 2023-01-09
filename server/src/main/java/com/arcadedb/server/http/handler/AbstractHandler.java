@@ -136,6 +136,9 @@ public abstract class AbstractHandler implements HttpHandler {
     } catch (final RecordNotFoundException e) {
       LogManager.instance().log(this, getErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
       sendErrorResponse(exchange, 404, "Record not found", e, null);
+    } catch (final IllegalArgumentException e) {
+      LogManager.instance().log(this, getErrorLogLevel(), "Error on command execution (%s)", e, getClass().getSimpleName());
+      sendErrorResponse(exchange, 400, "Cannot execute command", e, null);
     } catch (final CommandExecutionException | CommandSQLParsingException | QueryParsingException e) {
       Throwable realException = e;
       if (e.getCause() != null)
