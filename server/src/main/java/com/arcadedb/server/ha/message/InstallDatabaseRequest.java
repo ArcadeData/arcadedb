@@ -21,45 +21,42 @@ package com.arcadedb.server.ha.message;
 import com.arcadedb.database.Binary;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.HAServer;
+import com.arcadedb.server.ha.ReplicationException;
 
-import java.util.*;
+import java.io.*;
 
-public class ReplicaConnectFullResyncResponse extends HAAbstractCommand {
-  private Set<String> databases;
+public class InstallDatabaseRequest extends HAAbstractCommand {
+  private String databaseName;
 
-  public ReplicaConnectFullResyncResponse() {
+  public InstallDatabaseRequest() {
   }
 
-  public ReplicaConnectFullResyncResponse(final Set<String> databases) {
-    this.databases = databases;
+  public InstallDatabaseRequest(final String databaseName) {
+    this.databaseName = databaseName;
   }
 
   @Override
   public HACommand execute(final HAServer server, final String remoteServerName, final long messageNumber) {
-    return null;
+    try {
+      server.getLeader().requestInstallDatabase(new Binary(), databaseName);
+      return null;
+    } catch (IOException e) {
+      throw new ReplicationException("Error on installing database '" + databaseName + "' on replica '" + server.getServerName() + "'", e);
+    }
   }
 
   @Override
   public void toStream(final Binary stream) {
-    stream.putUnsignedNumber(databases.size());
-    for (final String db : databases)
-      stream.putString(db);
+    stream.putString(databaseName);
   }
 
   @Override
   public void fromStream(final ArcadeDBServer server, final Binary stream) {
-    databases = new HashSet<>();
-    final int fileCount = (int) stream.getUnsignedNumber();
-    for (int i = 0; i < fileCount; ++i)
-      databases.add(stream.getString());
-  }
-
-  public Set<String> getDatabases() {
-    return databases;
+    databaseName = stream.getString();
   }
 
   @Override
   public String toString() {
-    return "fullResync(dbs=" + databases + ")";
+    return "installDatabase(" + databaseName + ")";
   }
 }

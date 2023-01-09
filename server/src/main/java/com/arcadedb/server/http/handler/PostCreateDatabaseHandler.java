@@ -18,8 +18,13 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.PaginatedFile;
+import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
+import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.ha.ReplicatedDatabase;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
@@ -49,9 +54,17 @@ public class PostCreateDatabaseHandler extends DatabaseAbstractHandler {
       return;
     }
 
-    httpServer.getServer().getServerMetrics().meter("http.create-database").mark();
+    final ArcadeDBServer server = httpServer.getServer();
+    if (!server.getHA().isLeader())
+      // NOT THE LEADER
+      throw new ServerIsNotTheLeaderException("Creation of database can be executed only on the leader server", server.getHA().getLeaderName());
 
-    httpServer.getServer().createDatabase(databaseName, PaginatedFile.MODE.READ_WRITE);
+    server.getServerMetrics().meter("http.create-database").mark();
+
+    final DatabaseInternal db = server.createDatabase(databaseName, PaginatedFile.MODE.READ_WRITE);
+
+    if (server.getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
+      ((ReplicatedDatabase) db).createInReplicas();
 
     exchange.setStatusCode(200);
     exchange.getResponseSender().send("{ \"result\" : \"ok\"}");

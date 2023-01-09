@@ -145,12 +145,14 @@ public class Replica2LeaderNetworkExecutor extends Thread {
       } catch (final SocketTimeoutException e) {
         // IGNORE IT
       } catch (final Exception e) {
-        LogManager.instance().log(this, Level.INFO, "Exception during execution of request %d (shutdown=%s name=%s error=%s)", reqId, shutdown, getName(), e.toString());
+        LogManager.instance()
+            .log(this, Level.INFO, "Exception during execution of request %d (shutdown=%s name=%s error=%s)", reqId, shutdown, getName(), e.toString());
         reconnect(e);
       }
     }
 
-    LogManager.instance().log(this, Level.INFO, "Replica message thread closed (shutdown=%s name=%s threadId=%d)", shutdown, getName(), Thread.currentThread().getId());
+    LogManager.instance()
+        .log(this, Level.INFO, "Replica message thread closed (shutdown=%s name=%s threadId=%d)", shutdown, getName(), Thread.currentThread().getId());
   }
 
   public String getRemoteServerName() {
@@ -176,7 +178,8 @@ public class Replica2LeaderNetworkExecutor extends Thread {
         return;
       }
 
-      LogManager.instance().log(this, Level.SEVERE, "Error on communication between current replica and the Leader ('%s'), reconnecting... (error=%s)", getRemoteServerName(),
+      LogManager.instance()
+          .log(this, Level.SEVERE, "Error on communication between current replica and the Leader ('%s'), reconnecting... (error=%s)", getRemoteServerName(),
               e);
 
       if (!shutdown) {
@@ -304,7 +307,8 @@ public class Replica2LeaderNetworkExecutor extends Thread {
           case ReplicationProtocol.ERROR_CONNECT_NOLEADER:
             final String leaderServerName = channel.readString();
             final String leaderAddress = channel.readString();
-            LogManager.instance().log(this, Level.INFO, "Cannot accept incoming connections: remote server is not a Leader, connecting to the current Leader '%s' (%s)",
+            LogManager.instance()
+                .log(this, Level.INFO, "Cannot accept incoming connections: remote server is not a Leader, connecting to the current Leader '%s' (%s)",
                     leaderServerName, leaderAddress);
             closeChannel();
             throw new ServerIsNotTheLeaderException(
@@ -316,15 +320,18 @@ public class Replica2LeaderNetworkExecutor extends Thread {
             throw new ReplicationException("An election for the Leader server is pending");
 
           case ReplicationProtocol.ERROR_CONNECT_UNSUPPORTEDPROTOCOL:
-            LogManager.instance().log(this, Level.INFO, "Cannot accept incoming connections: remote server does not support protocol %d", ReplicationProtocol.PROTOCOL_VERSION);
+            LogManager.instance()
+                .log(this, Level.INFO, "Cannot accept incoming connections: remote server does not support protocol %d", ReplicationProtocol.PROTOCOL_VERSION);
             break;
 
           case ReplicationProtocol.ERROR_CONNECT_WRONGCLUSTERNAME:
-            LogManager.instance().log(this, Level.INFO, "Cannot accept incoming connections: remote server joined a different cluster than '%s'", server.getClusterName());
+            LogManager.instance()
+                .log(this, Level.INFO, "Cannot accept incoming connections: remote server joined a different cluster than '%s'", server.getClusterName());
             break;
 
           case ReplicationProtocol.ERROR_CONNECT_SAME_SERVERNAME:
-            LogManager.instance().log(this, Level.INFO, "Cannot accept incoming connections: remote server has the same name as the local server '%s'", server.getServerName());
+            LogManager.instance()
+                .log(this, Level.INFO, "Cannot accept incoming connections: remote server has the same name as the local server '%s'", server.getServerName());
             break;
 
           default:
@@ -384,14 +391,8 @@ public class Replica2LeaderNetworkExecutor extends Thread {
 
         final Set<String> databases = fullSync.getDatabases();
 
-        for (final String db : databases) {
-          sendCommandToLeader(buffer, new DatabaseStructureRequest(db), -1);
-          final DatabaseStructureResponse dbStructure = (DatabaseStructureResponse) receiveCommandFromLeaderDuringJoin(buffer);
-
-          final DatabaseInternal database = (DatabaseInternal) server.getServer().getOrCreateDatabase(db);
-
-          installDatabase(buffer, db, dbStructure, database);
-        }
+        for (final String db : databases)
+          requestInstallDatabase(buffer, db);
 
         sendCommandToLeader(buffer, new ReplicaReadyRequest(), -1);
 
@@ -409,6 +410,13 @@ public class Replica2LeaderNetworkExecutor extends Thread {
       LogManager.instance().log(this, Level.SEVERE, "Error starting HA service (error=%s)", e);
       throw new ServerException("Cannot start HA service", e);
     }
+  }
+
+  public void requestInstallDatabase(final Binary buffer, final String db) throws IOException {
+    sendCommandToLeader(buffer, new DatabaseStructureRequest(db), -1);
+    final DatabaseStructureResponse dbStructure = (DatabaseStructureResponse) receiveCommandFromLeaderDuringJoin(buffer);
+    final DatabaseInternal database = (DatabaseInternal) server.getServer().getOrCreateDatabase(db);
+    installDatabase(buffer, db, dbStructure, database);
   }
 
   private void installDatabase(final Binary buffer, final String db, final DatabaseStructureResponse dbStructure, final DatabaseInternal database)

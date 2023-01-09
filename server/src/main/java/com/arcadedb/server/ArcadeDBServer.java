@@ -300,6 +300,7 @@ public class ArcadeDBServer {
     if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
       db = new ReplicatedDatabase(this, (EmbeddedDatabase) db);
 
+    // FORCE LOADING INTO THE SERVER
     databases.put(databaseName, db);
 
     return db;

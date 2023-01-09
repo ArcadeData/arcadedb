@@ -102,7 +102,7 @@
 
 <script>
   $("#inputDatabase").change( function() {
-    setCurrentDatabase( escapeHtml( $("#inputDatabase").val() ) );
+    setCurrentDatabase( $("#inputDatabase").val() );
     loadQueryHistory();
     displaySchema();
   });

@@ -44,7 +44,7 @@ public class ReplicaConnectRequest extends HAAbstractCommand {
     }
 
     // IN ANY OTHER CASE EXECUTE FULL SYNC
-    return new ReplicaConnectFullResyncResponse(server.getReplicationLogFile().getLastMessageNumber(), server.getServer().getDatabaseNames());
+    return new ReplicaConnectFullResyncResponse(server.getServer().getDatabaseNames());
   }
 
   @Override

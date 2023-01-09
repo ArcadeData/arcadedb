@@ -62,14 +62,15 @@ import com.arcadedb.query.sql.parser.StatementCache;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.BinarySerializer;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.message.CommandForwardRequest;
 import com.arcadedb.server.ha.message.DatabaseAlignRequest;
 import com.arcadedb.server.ha.message.DatabaseAlignResponse;
 import com.arcadedb.server.ha.message.DatabaseChangeStructureRequest;
+import com.arcadedb.server.ha.message.InstallDatabaseRequest;
 import com.arcadedb.server.ha.message.TxForwardRequest;
 import com.arcadedb.server.ha.message.TxRequest;
-import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.*;
 import java.util.*;
@@ -789,6 +790,24 @@ public class ReplicatedDatabase implements DatabaseInternal {
     });
 
     return result;
+  }
+
+  /**
+   * Creates the new database to all the replicas by executing a full sync backup of the database.
+   */
+  public void createInReplicas() {
+    final HAServer ha = server.getHA();
+    if (!ha.isLeader())
+      // NOT THE LEADER
+      throw new ServerIsNotTheLeaderException("Creation of database can be executed only on the leader server", ha.getLeaderName());
+
+    final int quorum = ha.getConfiguredServers();
+    if (quorum == 1)
+      // NO ACTIVE NODES
+      return;
+
+    final InstallDatabaseRequest request = new InstallDatabaseRequest(getName());
+    final List<Object> responsePayloads = ha.sendCommandToReplicasWithQuorum(request, quorum, 30_000);
   }
 
   private DatabaseChangeStructureRequest getChangeStructure(final long schemaVersionBefore) {
