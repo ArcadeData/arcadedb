@@ -35,17 +35,13 @@ import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.Sort;
 import org.apache.lucene.store.FSDirectory;
 import org.junit.jupiter.api.Assertions;
-import org.junit.jupiter.api.Test;
 
 import java.io.*;
 import java.nio.file.*;
 import java.util.stream.*;
 
 public class PlainLuceneFullTextIndexTest {
-
-  @Test
-  void rename_me() throws IOException, ParseException {
-
+  public static void main(String[] args) throws IOException, ParseException {
     final Path path = Paths.get("./target/databases/testIndex");
 
     try {
