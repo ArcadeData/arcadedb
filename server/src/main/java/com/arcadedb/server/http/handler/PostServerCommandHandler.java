@@ -28,6 +28,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ha.HAServer;
 import com.arcadedb.server.ha.Leader2ReplicaNetworkExecutor;
+import com.arcadedb.server.ha.Replica2LeaderNetworkExecutor;
 import com.arcadedb.server.ha.ReplicatedDatabase;
 import com.arcadedb.server.ha.message.ServerShutdownRequest;
 import com.arcadedb.server.http.HttpServer;
@@ -57,8 +58,6 @@ public class PostServerCommandHandler extends AbstractHandler {
 
     if (command.startsWith("shutdown"))
       shutdownServer(command);
-    else if (command.startsWith("disconnect "))
-      disconnectServer(command);
     else if (command.startsWith("create database "))
       createDatabase(command);
     else if (command.startsWith("drop database "))
@@ -69,6 +68,10 @@ public class PostServerCommandHandler extends AbstractHandler {
       createUser(command);
     else if (command.startsWith("drop user "))
       dropUser(command);
+    else if (command.startsWith("connect cluster "))
+      connectCluster(command);
+    else if (command.equals("disconnect cluster"))
+      disconnectCluster();
     else {
       httpServer.getServer().getServerMetrics().meter("http.server-command.invalid").mark();
       exchange.setStatusCode(400);
@@ -96,12 +99,20 @@ public class PostServerCommandHandler extends AbstractHandler {
     }
   }
 
-  private void disconnectServer(final String command) {
+  private void disconnectCluster() {
     httpServer.getServer().getServerMetrics().meter("http.server-disconnect").mark();
+    final Replica2LeaderNetworkExecutor leader = httpServer.getServer().getHA().getLeader();
+    if (leader != null)
+      leader.close();
+    else
+      httpServer.getServer().getHA().disconnectAllReplicas();
+  }
 
-    final String serverName = command.substring("disconnect ".length());
-    final Leader2ReplicaNetworkExecutor replica = httpServer.getServer().getHA().getReplica(serverName);
-    replica.close();
+  private void connectCluster(final String command) {
+    httpServer.getServer().getServerMetrics().meter("http.connect-cluster").mark();
+
+    final String serverAddress = command.substring("connect cluster ".length());
+    httpServer.getServer().getHA().connectToLeader(serverAddress);
   }
 
   private void createDatabase(final String command) {

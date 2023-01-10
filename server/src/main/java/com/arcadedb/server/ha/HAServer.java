@@ -55,7 +55,6 @@ import java.util.logging.*;
 
 // TODO: REFACTOR LEADER/REPLICA IN 2 USERTYPEES
 public class HAServer implements ServerPlugin {
-
   public enum QUORUM {
     NONE, ONE, TWO, THREE, MAJORITY, ALL
   }
@@ -440,6 +439,21 @@ public class HAServer implements ServerPlugin {
 
   public Leader2ReplicaNetworkExecutor getReplica(final String replicaName) {
     return replicaConnections.get(replicaName);
+  }
+
+  public void disconnectAllReplicas() {
+    final List<Leader2ReplicaNetworkExecutor> replicas = new ArrayList<>(replicaConnections.values());
+    replicaConnections.clear();
+
+    for (Leader2ReplicaNetworkExecutor replica : replicas) {
+      try {
+        replica.close();
+        setReplicaStatus(replica.getRemoteServerName(), false);
+      } catch (Exception e) {
+        // IGNORE IT
+      }
+    }
+    configuredServers = 1;
   }
 
   public void setReplicaStatus(final String remoteServerName, final boolean online) {
@@ -972,10 +986,10 @@ public class HAServer implements ServerPlugin {
         .log(this, Level.INFO, "Recovering completed. Sent %d message(s) to replica '%s' (%d-%d)", totalSentMessages.get(), replicaName, min, max);
   }
 
-  protected boolean connectToLeader(final String serverEntry) {
-    final String[] serverParts = serverEntry.split(":");
-    if (serverParts.length != 2)
-      throw new ConfigurationException("Found invalid server/port entry in server address '" + serverEntry + "'");
+  public boolean connectToLeader(final String serverEntry) {
+    String[] serverParts = serverEntry.split(":");
+    if (serverParts.length == 1)
+      serverParts = new String[] { serverParts[0], "2424" };
 
     try {
       connectToLeader(serverParts[0], Integer.parseInt(serverParts[1]));

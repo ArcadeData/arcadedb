@@ -4,8 +4,13 @@
   </div>
 
   <div class="row">
-    <div class="col-12">
+    <div class="col-9">
       <span id="serverInfo"></span>
+    </div>
+    <div class="col-3 text-right">
+      <button id="clusterConnectButton" type="button" class="btn btn-secondary" onclick="connectToCluster()">Connect <i class="fas fa-wifi"></i></button>
+      <button id="clusterDisconnectButton" type="button" class="btn btn-secondary" onclick="disconnectFromCluster()" style="display: none;">Disconnect <i
+              class="fas fa-wifi"></i></button>
     </div>
   </div>
 

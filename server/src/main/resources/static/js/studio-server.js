@@ -25,12 +25,12 @@ function updateServer( callback ){
       let record = [];
       record.push( escapeHtml( name ) );
       record.push( "" );
-      record.push( escapeHtml( timer.count ) );
-      record.push( escapeHtml( globalFormatDouble( timer.oneMinRate ) ) );
-      record.push( escapeHtml( globalFormatDouble( timer.mean ) ) );
-      record.push( escapeHtml( globalFormatDouble( timer.perc99 ) ) );
-      record.push( escapeHtml( timer.min ) );
-      record.push( escapeHtml( timer.max ) );
+      record.push( timer.count );
+      record.push( globalFormatDouble( timer.oneMinRate ) );
+      record.push( globalFormatDouble( timer.mean ) );
+      record.push( globalFormatDouble( timer.perc99 ) );
+      record.push(  timer.min );
+      record.push( timer.max );
       tableRecords.push( record );
     }
 
@@ -40,8 +40,12 @@ function updateServer( callback ){
       let record = [];
       record.push( escapeHtml( name ) );
       record.push( "" );
-      record.push( escapeHtml( meter.count ) );
-      record.push( escapeHtml( meter.oneMinRate ) );
+      record.push( meter.count );
+      record.push( globalFormatDouble( meter.oneMinRate ) );
+      record.push( "" );
+      record.push( "" );
+      record.push( "" );
+      record.push( "" );
       tableRecords.push( record );
     }
 

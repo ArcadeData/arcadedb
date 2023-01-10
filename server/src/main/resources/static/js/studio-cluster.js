@@ -17,6 +17,9 @@ function updateCluster( callback ){
       var tableRecords = [];
 
       if( data.ha.network.replicas.length > 0 ) {
+        $("#clusterConnectButton").hide();
+        $("#clusterDisconnectButton").show();
+
         for( let i in data.ha.network.replicas ){
           let row = data.ha.network.replicas[i];
 
@@ -49,6 +52,9 @@ function updateCluster( callback ){
           ],
           data: tableRecords,
         });
+      } else {
+        $("#clusterConnectButton").show();
+        $("#clusterDisconnectButton").hide();
       }
     }
 
@@ -58,7 +64,7 @@ function updateCluster( callback ){
     setTimeout(function() {
       if( studioCurrentTab == "cluster" )
         updateCluster();
-    }, 60000);
+    }, 10000);
   })
   .fail(function( jqXHR, textStatus, errorThrown ){
     globalNotifyError( jqXHR.responseText );
@@ -80,6 +86,53 @@ function shutdownServer(serverName){
   let command = serverName != null ? "shutdown " + serverName : "shutdown";
   let message = serverName != null ? "Are you sure to shut down the server '"+serverName+"'?" : "Are you sure to shut down the current server?";
   globalConfirm( "Shutdown Server", message, "warning", function(){ executeServerCommand(command, "Server shutdown request sent successfully");} );
+}
+
+function disconnectFromCluster(){
+  globalConfirm( "Shutdown Server", "Are you sure to disconnect current server from the cluster?", "warning", function(){
+    executeServerCommand("disconnect cluster", "Disconnection from the cluster request sent successfully");
+  });
+}
+
+function connectToCluster(){
+  let html = "<label for='clusterServerAddress'>Enter the server name/ip-address and the optional port with the format &lt;ip&gt;[:&lt;port&gt;].<br>The default port for replication is 2424.&nbsp;&nbsp;</label><input onkeydown='if (event.which === 13) Swal.clickConfirm()' id='clusterServerAddress'>";
+
+  Swal.fire({
+    title: 'Connect to a cluster',
+    html: html,
+    inputAttributes: {
+      autocapitalize: 'off'
+    },
+    confirmButtonColor: '#3ac47d',
+    cancelButtonColor: 'red',
+    showCancelButton: true,
+    confirmButtonText: 'Send',
+  }).then((result) => {
+    if (result.value) {
+      let serverAddress = encodeURI( $("#clusterServerAddress").val().trim() );
+      if( serverAddress == "" ){
+        globalNotify( "Error", "Server address is empty", "danger");
+        return;
+      }
+
+      jQuery.ajax({
+        type: "POST",
+        url: "/api/v1/server",
+        data: "{ 'command': 'connect cluster " + serverAddress + "' }",
+        beforeSend: function (xhr){
+          xhr.setRequestHeader('Authorization', globalCredentials);
+        }
+      })
+      .done(function(data){
+        updateCluster();
+      })
+      .fail(function( jqXHR, textStatus, errorThrown ){
+        globalNotifyError( jqXHR.responseText );
+      });
+    }
+  });
+
+  $("#clusterServerAddress").focus();
 }
 
 function executeServerCommand(command, successMessage) {

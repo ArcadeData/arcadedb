@@ -135,8 +135,7 @@ public class GetServerHandler extends AbstractHandler {
 
         final String leaderServer = ha.isLeader() ? ha.getServer().getHttpServer().getListeningAddress() : ha.getLeader().getRemoteHTTPAddress();
         final String replicaServers = ha.getReplicaServersHTTPAddressesList();
-        LogManager.instance().log(this, Level.INFO, "Returning configuration leaderServer=%s replicaServers=[%s]", leaderServer, replicaServers);
-
+        LogManager.instance().log(this, Level.FINE, "Returning configuration leaderServer=%s replicaServers=[%s]", leaderServer, replicaServers);
       }
     }
     exchange.getResponseSender().send(response.toString());
