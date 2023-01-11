@@ -224,7 +224,7 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
     if (additionalParams instanceof Map)
       mapParams = (Map) additionalParams;
     else if (additionalParams instanceof Identifiable)
-      mapParams = ((Document) ((Identifiable) additionalParams).getRecord()).propertiesAsMap();
+      mapParams = ((Document) ((Identifiable) additionalParams).getRecord()).toMap();
 
     if (mapParams != null) {
       ctx.maxDepth = integer(mapParams.get("maxDepth"));

@@ -185,31 +185,21 @@ public class MongoDBToSqlTranslator {
 
   protected static Document convertDocumentToMongoDB(final com.arcadedb.database.Document doc) {
     final Document result = new Document();
-
-    for (final String p : doc.getPropertyNames()) {
-      final Object value = doc.get(p);
-
-      if ("_id".equals(p)) {
-        result.put(p, getObjectId((String) value));
-      } else
-        result.put(p, value);
+    for (final Map.Entry<String, Object> entry : doc.toMap().entrySet()) {
+      final String p = entry.getKey();
+      final Object value = entry.getValue();
+      result.put(p, "_id".equals(p) ? getObjectId((String) value) : value);
     }
-
     return result;
   }
 
   protected static Document convertDocumentToMongoDB(final Result doc) {
     final Document result = new Document();
-
-    for (final String p : doc.getPropertyNames()) {
-      final Object value = doc.getProperty(p);
-
-      if ("_id".equals(p)) {
-        result.put(p, getObjectId((String) value));
-      } else
-        result.put(p, value);
+    for (final Map.Entry<String, Object> entry : doc.toMap().entrySet()) {
+      final String p = entry.getKey();
+      final Object value = entry.getValue();
+      result.put(p, "_id".equals(p) ? getObjectId((String) value) : value);
     }
-
     return result;
   }
 

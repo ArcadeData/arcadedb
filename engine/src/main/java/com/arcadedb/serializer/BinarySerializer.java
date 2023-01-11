@@ -71,7 +71,7 @@ public class BinarySerializer {
     case Edge.RECORD_TYPE:
       return serializeEdge(database, (MutableEdge) record);
     case EdgeSegment.RECORD_TYPE:
-      return serializeEdgeContainer(database, (EdgeSegment) record);
+      return serializeEdgeContainer((EdgeSegment) record);
     default:
       throw new IllegalArgumentException("Cannot serialize a record of type=" + record.getRecordType());
     }
@@ -163,7 +163,7 @@ public class BinarySerializer {
     return header;
   }
 
-  public Binary serializeEdgeContainer(final Database database, final EdgeSegment record) {
+  public Binary serializeEdgeContainer(final EdgeSegment record) {
     return record.getContent();
   }
 
@@ -189,6 +189,9 @@ public class BinarySerializer {
 
     if (properties < 0)
       throw new SerializationException("Error on deserialize record. It may be corrupted (properties=" + properties + ")");
+    else if (properties == 0)
+      // EMPTY: NOT FOUND
+      return new LinkedHashMap<>();
 
     final Map<String, Object> values = new LinkedHashMap<>(properties);
 
@@ -245,12 +248,13 @@ public class BinarySerializer {
     return values;
   }
 
-  public boolean hasProperty(final Database database, final Binary buffer, final EmbeddedModifier embeddedModifier, final String fieldName) {
+  public boolean hasProperty(final Database database, final Binary buffer, final String fieldName) {
     buffer.getInt(); // headerEndOffset
     final int properties = (int) buffer.getUnsignedNumber();
     if (properties < 0)
       throw new SerializationException("Error on deserialize record. It may be corrupted (properties=" + properties + ")");
     else if (properties == 0)
+      // EMPTY: NOT FOUND
       return false;
 
     final int fieldId = database.getSchema().getDictionary().getIdByName(fieldName, false);
@@ -270,6 +274,9 @@ public class BinarySerializer {
 
     if (properties < 0)
       throw new SerializationException("Error on deserialize record. It may be corrupted (properties=" + properties + ")");
+    else if (properties == 0)
+      // EMPTY: NOT FOUND
+      return null;
 
     final Dictionary dictionary = database.getSchema().getDictionary();
     final int fieldId = dictionary.getIdByName(fieldName, false);

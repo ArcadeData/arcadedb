@@ -43,7 +43,7 @@ public class ImmutableDocument extends BaseDocument {
       return false;
 
     checkForLazyLoading();
-    return database.getSerializer().hasProperty(database, buffer, new EmbeddedModifierProperty(this, propertyName), propertyName);
+    return database.getSerializer().hasProperty(database, buffer, propertyName);
   }
 
   @Override

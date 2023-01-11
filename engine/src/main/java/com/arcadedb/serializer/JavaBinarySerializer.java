@@ -48,13 +48,15 @@ public class JavaBinarySerializer {
     final Binary buffer = db.getContext().getTemporaryBuffer1();
 
     // PROPERTY COUNT
-    final Set<String> properties = document.getPropertyNames();
+    final Map<String, Object> properties = document.toMap();
     out.writeInt(properties.size());
-    for (final String propName : properties) {
+    for (final Map.Entry<String, Object> prop : properties.entrySet()) {
+      final String propName = prop.getKey();
+      final Object propValue = prop.getValue();
+
       // PROPERTY NAME
       out.writeUTF(propName);
 
-      final Object propValue = document.get(propName);
       if (propValue != null) {
         // PROPERTY VALUE
         buffer.clear();
