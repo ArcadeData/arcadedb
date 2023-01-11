@@ -51,6 +51,7 @@ import io.undertow.Handlers;
 import io.undertow.Undertow;
 import io.undertow.server.RoutingHandler;
 import io.undertow.server.handlers.PathHandler;
+import org.xnio.Options;
 
 import java.net.*;
 import java.util.logging.*;
@@ -150,7 +151,9 @@ public class HttpServer implements ServerPlugin {
 
     for (portListening = portFrom; portListening <= portTo; ++portListening) {
       try {
-        undertow = Undertow.builder().addHttpListener(portListening, host).setHandler(routes).setServerOption(SHUTDOWN_TIMEOUT, 1000).build();
+        undertow = Undertow.builder().addHttpListener(portListening, host).setHandler(routes)
+            .setSocketOption(Options.READ_TIMEOUT, configuration.getValueAsInteger(GlobalConfiguration.NETWORK_SOCKET_TIMEOUT))
+            .setServerOption(SHUTDOWN_TIMEOUT, 1000).build();
         undertow.start();
 
         LogManager.instance().log(this, Level.INFO, "- HTTP Server started (host=%s port=%d)", host, portListening);
