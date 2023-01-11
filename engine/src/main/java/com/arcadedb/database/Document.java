@@ -24,6 +24,11 @@ import com.arcadedb.serializer.json.JSONObject;
 import java.math.*;
 import java.util.*;
 
+/**
+ * Document interface. Vertex and Edge both extend the Document interface.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
 public interface Document extends Record {
   byte RECORD_TYPE = 0;
 
@@ -67,7 +72,19 @@ public interface Document extends Record {
 
   JSONObject toJSON();
 
-  Map<String, Object> toMap();
+  /**
+   * Returns a map containing the document properties, including metadata such as `@rid`, `@type` and `@cat`.
+   */
+  default Map<String, Object> toMap() {
+    return toMap(true);
+  }
+
+  /**
+   * Returns a map containing the document properties.
+   *
+   * @param includeMetadata true to include metadata such as `@rid`, `@type` and `@cat`, otherwise only the document properties
+   */
+  Map<String, Object> toMap(boolean includeMetadata);
 
   Map<String, Object> propertiesAsMap();
 

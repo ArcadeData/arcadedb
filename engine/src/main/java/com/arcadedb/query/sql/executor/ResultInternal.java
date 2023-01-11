@@ -142,7 +142,7 @@ public class ResultInternal implements Result {
   private Object wrap(final Object input) {
     if (input instanceof Document && ((Document) input).getIdentity() == null) {
       final Document elem = ((Document) input);
-      final ResultInternal result = new ResultInternal(elem.toMap());
+      final ResultInternal result = new ResultInternal(elem.toMap(false));
       if (elem.getTypeName() != null)
         result.setProperty("@type", elem.getTypeName());
       return result;

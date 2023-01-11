@@ -43,27 +43,22 @@ public class SQLMethodAsMap extends AbstractSQLMethod {
     if (ioResult instanceof Map)
       // ALREADY A MAP
       return ioResult;
-
-    if (ioResult == null) {
+    else if (ioResult == null)
       // NULL VALUE, RETURN AN EMPTY MAP
       return Collections.emptyMap();
-    }
-
-    if (ioResult instanceof Document) {
+    else if (ioResult instanceof Document)
       // CONVERT DOCUMENT TO MAP
-      return ((Document) ioResult).toMap();
-    }
+      return ((Document) ioResult).toMap(false);
 
     final Iterator<Object> iter;
-    if (ioResult instanceof Iterator<?>) {
+    if (ioResult instanceof Iterator<?>)
       iter = (Iterator<Object>) ioResult;
-    } else if (ioResult instanceof Iterable<?>) {
+    else if (ioResult instanceof Iterable<?>)
       iter = ((Iterable<Object>) ioResult).iterator();
-    } else {
+    else
       return null;
-    }
 
-    final HashMap<String, Object> map = new HashMap<String, Object>();
+    final HashMap<String, Object> map = new HashMap<>();
     while (iter.hasNext()) {
       final Object key = iter.next();
       if (iter.hasNext()) {
