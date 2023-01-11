@@ -27,14 +27,10 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import java.util.*;
 
 public class NestedProjectionItem extends SimpleNode {
-
-  protected boolean exclude = false;
-
-  protected boolean star = false;
-
-  protected Expression expression;
-  protected boolean    rightWildcard = false;
-
+  protected boolean          exclude       = false;
+  protected boolean          star          = false;
+  protected Expression       expression;
+  protected boolean          rightWildcard = false;
   protected NestedProjection expansion;
   protected Identifier       alias;
 
@@ -108,13 +104,13 @@ public class NestedProjectionItem extends SimpleNode {
   }
 
   @Override
-  public boolean equals( final Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    final  NestedProjectionItem that = (NestedProjectionItem) o;
+    final NestedProjectionItem that = (NestedProjectionItem) o;
 
     if (exclude != that.exclude)
       return false;

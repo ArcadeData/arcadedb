@@ -176,43 +176,13 @@ public class MatchesCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean refersToParent() {
-    if (expression != null && expression.refersToParent()) {
-      return true;
-    }
-    return rightExpression != null && rightExpression.refersToParent();
-  }
-
-  @Override
-  public boolean equals( final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final MatchesCondition that = (MatchesCondition) o;
-
-    if (!Objects.equals(expression, that.expression))
-      return false;
-    if (!Objects.equals(right, that.right))
-      return false;
-    if (!Objects.equals(rightExpression, that.rightExpression))
-      return false;
-    return Objects.equals(rightParam, that.rightParam);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = expression != null ? expression.hashCode() : 0;
-    result = 31 * result + (right != null ? right.hashCode() : 0);
-    result = 31 * result + (rightExpression != null ? rightExpression.hashCode() : 0);
-    result = 31 * result + (rightParam != null ? rightParam.hashCode() : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return new Object[] { expression, right, rightExpression, rightParam };
   }
 
   @Override
   public List<String> getMatchPatternInvolvedAliases() {
-      final List<String> result = new ArrayList<>(expression.getMatchPatternInvolvedAliases());
+    final List<String> result = new ArrayList<>(expression.getMatchPatternInvolvedAliases());
     if (rightExpression != null) {
       result.addAll(rightExpression.getMatchPatternInvolvedAliases());
     }
@@ -220,12 +190,8 @@ public class MatchesCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean isCacheable() {
-    if (!expression.isCacheable()) {
-      return false;
-    }
-    return rightExpression == null || rightExpression.isCacheable();
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { expression, rightExpression };
   }
-
 }
 /* JavaCC - OriginalChecksum=68712f476e2e633c2bbfc34cb6c39356 (do not edit this line) */

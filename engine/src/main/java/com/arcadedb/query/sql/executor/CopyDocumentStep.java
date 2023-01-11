@@ -65,7 +65,7 @@ public class CopyDocumentStep extends AbstractExecutionStep {
               } else {
                 resultDoc = getContext().getDatabase().newDocument(((Document) docToCopy).getTypeName());
               }
-              ((MutableDocument) resultDoc).set(((Document) docToCopy).propertiesAsMap());
+              ((MutableDocument) resultDoc).set(((Document) docToCopy).toMap(false));
             }
           } else {
             resultDoc = toCopy.toElement().getRecord();
@@ -83,9 +83,6 @@ public class CopyDocumentStep extends AbstractExecutionStep {
         upstream.close();
       }
 
-
-
-
     };
   }
 
@@ -100,6 +97,5 @@ public class CopyDocumentStep extends AbstractExecutionStep {
     }
     return result.toString();
   }
-
 
 }

@@ -56,6 +56,7 @@ public abstract class BasePage {
    */
   public ImmutablePage createImmutableView() {
     try {
+      // THIS WILL NOT BE NECESSARY AFTER SWITCHING TO JKD13 (https://bugs.java.com/bugdatabase/view_bug.do?bug_id=JDK-5029431)
       return (ImmutablePage) content.executeInLock(
           () -> new ImmutablePage(manager, pageId, getPhysicalSize(), content.getByteBuffer().array(), version, content.size()));
     } catch (final RuntimeException e) {
@@ -194,8 +195,17 @@ public abstract class BasePage {
    * Returns the underlying ByteBuffer. If any changes occur bypassing the page object, must be tracked by calling #updateModifiedRange() method.
    */
   public ByteBuffer slice() {
-    content.getByteBuffer().position(PAGE_HEADER_SIZE);
-    return content.getByteBuffer().slice();
+    try {
+      // THIS WILL NOT BE NECESSARY AFTER SWITCHING TO JKD13 (https://bugs.java.com/bugdatabase/view_bug.do?bug_id=JDK-5029431)
+      return (ByteBuffer) content.executeInLock(() -> {
+        content.getByteBuffer().position(PAGE_HEADER_SIZE);
+        return content.getByteBuffer().slice();
+      });
+    } catch (final RuntimeException e) {
+      throw e;
+    } catch (final Exception e) {
+      throw new ArcadeDBException("Cannot slice the page " + this, e);
+    }
   }
 
   public long getLastAccessed() {

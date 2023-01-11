@@ -43,9 +43,7 @@ public class ImmutableDocument extends BaseDocument {
       return false;
 
     checkForLazyLoading();
-    final Map<String, Object> map = database.getSerializer()
-        .deserializeProperties(database, buffer, new EmbeddedModifierProperty(this, propertyName), propertyName);
-    return map.containsKey(propertyName);
+    return database.getSerializer().hasProperty(database, buffer, propertyName);
   }
 
   @Override
@@ -54,9 +52,7 @@ public class ImmutableDocument extends BaseDocument {
       return null;
 
     checkForLazyLoading();
-    final Map<String, Object> map = database.getSerializer()
-        .deserializeProperties(database, buffer, new EmbeddedModifierProperty(this, propertyName), propertyName);
-    return map.get(propertyName);
+    return database.getSerializer().deserializeProperty(database, buffer, new EmbeddedModifierProperty(this, propertyName), propertyName);
   }
 
   @Override
@@ -92,12 +88,19 @@ public class ImmutableDocument extends BaseDocument {
 
   @Override
   public synchronized Map<String, Object> toMap() {
+    return toMap(true);
+  }
+
+  @Override
+  public synchronized Map<String, Object> toMap(final boolean includeMetadata) {
     checkForLazyLoading();
     final Map<String, Object> result = database.getSerializer().deserializeProperties(database, buffer, new EmbeddedModifierObject(this));
-    result.put("@cat", "d");
-    result.put("@type", type.getName());
-    if (getIdentity() != null)
-      result.put("@rid", getIdentity().toString());
+    if (includeMetadata) {
+      result.put("@cat", "d");
+      result.put("@type", type.getName());
+      if (getIdentity() != null)
+        result.put("@rid", getIdentity().toString());
+    }
     return result;
   }
 

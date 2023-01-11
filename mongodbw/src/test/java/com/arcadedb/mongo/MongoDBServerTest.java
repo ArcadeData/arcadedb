@@ -44,7 +44,7 @@ public class MongoDBServerTest extends BaseGraphServerTest {
   private static final int                       DEF_PORT = 27017;
   private              MongoCollection<Document> collection;
   private              MongoClient               client;
-  private              Document                                              obj;
+  private              Document                  obj;
 
   @Override
   public void setTestConfiguration() {
@@ -79,26 +79,33 @@ public class MongoDBServerTest extends BaseGraphServerTest {
     super.endTest();
   }
 
+  private Document stripMetadata(Document doc) {
+    doc.remove("@rid");
+    doc.remove("@type");
+    doc.remove("@cat");
+    return doc;
+  }
+
   @Test
   public void testSimpleInsertQuery() {
     assertEquals(10, collection.countDocuments());
-    assertEquals(obj, collection.find().first());
-    assertEquals(obj, collection.find(BsonDocument.parse("{ name: \"Jay\" } ")).first());
+    assertEquals(obj, stripMetadata(collection.find().first()));
+    assertEquals(obj, stripMetadata(collection.find(BsonDocument.parse("{ name: \"Jay\" } ")).first()));
     assertNull(collection.find(BsonDocument.parse("{ name: \"Jay2\" } ")).first());
-    assertEquals(obj, collection.find(BsonDocument.parse("{ name: { $eq: \"Jay\" } } ")).first());
-    assertEquals(obj, collection.find(BsonDocument.parse("{ name: { $ne: \"Jay2\" } } ")).first());
-    assertEquals(obj, collection.find(BsonDocument.parse("{ name: { $in: [ \"Jay\", \"John\" ] } } ")).first());
-    assertEquals(obj, collection.find(BsonDocument.parse("{ name: { $nin: [ \"Jay2\", \"John\" ] } } ")).first());
-    assertEquals(obj, collection.find(BsonDocument.parse("{ name: { $lt: \"Jay2\" } } ")).first());
-    assertEquals(obj, collection.find(BsonDocument.parse("{ name: { $lte: \"Jay2\" } } ")).first());
-    assertEquals(obj, collection.find(BsonDocument.parse("{ name: { $gt: \"A\" } } ")).first());
-    assertEquals(obj, collection.find(BsonDocument.parse("{ name: { $gte: \"A\" } } ")).first());
-    assertEquals(obj, collection.find(and(gt("name", "A"), lte("name", "Jay"))).first());
-    assertEquals(obj, collection.find(BsonDocument.parse("{ $or: [ { name: { $eq: 'Jay' } }, { lastName: 'Miner222'} ] }")).first());
-    assertEquals(obj, collection.find(BsonDocument.parse("{ $not: { name: { $eq: 'Jay2' } } }")).first());
-    assertEquals(obj, collection.find(BsonDocument.parse(
-        "{ $and: [ { name: { $eq: 'Jay' } }, { lastName: { $exists: true } }, { lastName: { $eq: 'Miner' } }, { lastName: { $ne: 'Miner22' } } ] }")).first());
-    assertEquals(obj, collection.find(and(eq("name", "Jay"), exists("lastName"), eq("lastName", "Miner"), ne("lastName", "Miner22"))).first());
+    assertEquals(obj, stripMetadata(collection.find(BsonDocument.parse("{ name: { $eq: \"Jay\" } } ")).first()));
+    assertEquals(obj, stripMetadata(collection.find(BsonDocument.parse("{ name: { $ne: \"Jay2\" } } ")).first()));
+    assertEquals(obj, stripMetadata(collection.find(BsonDocument.parse("{ name: { $in: [ \"Jay\", \"John\" ] } } ")).first()));
+    assertEquals(obj, stripMetadata(collection.find(BsonDocument.parse("{ name: { $nin: [ \"Jay2\", \"John\" ] } } ")).first()));
+    assertEquals(obj, stripMetadata(collection.find(BsonDocument.parse("{ name: { $lt: \"Jay2\" } } ")).first()));
+    assertEquals(obj, stripMetadata(collection.find(BsonDocument.parse("{ name: { $lte: \"Jay2\" } } ")).first()));
+    assertEquals(obj, stripMetadata(collection.find(BsonDocument.parse("{ name: { $gt: \"A\" } } ")).first()));
+    assertEquals(obj, stripMetadata(collection.find(BsonDocument.parse("{ name: { $gte: \"A\" } } ")).first()));
+    assertEquals(obj, stripMetadata(collection.find(and(gt("name", "A"), lte("name", "Jay"))).first()));
+    assertEquals(obj, stripMetadata(collection.find(BsonDocument.parse("{ $or: [ { name: { $eq: 'Jay' } }, { lastName: 'Miner222'} ] }")).first()));
+    assertEquals(obj, stripMetadata(collection.find(BsonDocument.parse("{ $not: { name: { $eq: 'Jay2' } } }")).first()));
+    assertEquals(obj, stripMetadata(collection.find(BsonDocument.parse(
+        "{ $and: [ { name: { $eq: 'Jay' } }, { lastName: { $exists: true } }, { lastName: { $eq: 'Miner' } }, { lastName: { $ne: 'Miner22' } } ] }")).first()));
+    assertEquals(obj, stripMetadata(collection.find(and(eq("name", "Jay"), exists("lastName"), eq("lastName", "Miner"), ne("lastName", "Miner22"))).first()));
   }
 
   @Test

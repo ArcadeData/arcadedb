@@ -156,26 +156,24 @@ public class Expression extends SimpleNode {
     return false;
   }
 
-  public boolean isEarlyCalculated() {
-    if (this.mathExpression != null) {
-      return this.mathExpression.isEarlyCalculated();
-    }
-    if (this.arrayConcatExpression != null) {
-      return this.arrayConcatExpression.isEarlyCalculated();
-    }
+  public boolean isEarlyCalculated(final CommandContext ctx) {
+    if (this.mathExpression != null)
+      return this.mathExpression.isEarlyCalculated(ctx);
 
-    if (booleanValue != null) {
+    if (this.arrayConcatExpression != null)
+      return this.arrayConcatExpression.isEarlyCalculated(ctx);
+
+    if (booleanValue != null)
       return true;
-    }
-    if (value instanceof Number) {
+
+    if (value instanceof Number)
       return true;
-    }
-    if (value instanceof String) {
+
+    if (value instanceof String)
       return true;
-    }
-    if (value instanceof MathExpression) {
-      return ((MathExpression) value).isEarlyCalculated();
-    }
+
+    if (value instanceof MathExpression)
+      return ((MathExpression) value).isEarlyCalculated(ctx);
 
     return false;
   }
@@ -391,11 +389,11 @@ public class Expression extends SimpleNode {
     return json != null && json.isAggregate();
   }
 
-  public Expression splitForAggregation(final AggregateProjectionSplit aggregateSplit) {
+  public Expression splitForAggregation(final AggregateProjectionSplit aggregateSplit, final CommandContext ctx) {
     if (isAggregate()) {
       final Expression result = new Expression(-1);
       if (mathExpression != null) {
-        final SimpleNode splitResult = mathExpression.splitForAggregation(aggregateSplit);
+        final SimpleNode splitResult = mathExpression.splitForAggregation(aggregateSplit, ctx);
         if (splitResult instanceof MathExpression) {
           result.mathExpression = (MathExpression) splitResult;
         } else if (splitResult instanceof Expression) {
@@ -414,9 +412,9 @@ public class Expression extends SimpleNode {
           throw new IllegalStateException("something went wrong while splitting expression for aggregate " + this);
         }
       }
-      if (json != null) {
-        result.json = json.splitForAggregation(aggregateSplit);
-      }
+      if (json != null)
+        result.json = json.splitForAggregation(aggregateSplit, ctx);
+
       return result;
     } else {
       return this;
@@ -446,45 +444,6 @@ public class Expression extends SimpleNode {
     return result;
   }
 
-  @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final Expression that = (Expression) o;
-
-    if (isNull != that.isNull)
-      return false;
-    if (!Objects.equals(singleQuotes, that.singleQuotes))
-      return false;
-    if (!Objects.equals(doubleQuotes, that.doubleQuotes))
-      return false;
-    if (!Objects.equals(rid, that.rid))
-      return false;
-    if (!Objects.equals(mathExpression, that.mathExpression))
-      return false;
-    if (!Objects.equals(arrayConcatExpression, that.arrayConcatExpression))
-      return false;
-    if (!Objects.equals(json, that.json))
-      return false;
-    return Objects.equals(booleanValue, that.booleanValue);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = singleQuotes != null ? singleQuotes.hashCode() : 0;
-    result = 31 * result + (doubleQuotes != null ? doubleQuotes.hashCode() : 0);
-    result = 31 * result + (isNull ? 1 : 0);
-    result = 31 * result + (rid != null ? rid.hashCode() : 0);
-    result = 31 * result + (mathExpression != null ? mathExpression.hashCode() : 0);
-    result = 31 * result + (arrayConcatExpression != null ? arrayConcatExpression.hashCode() : 0);
-    result = 31 * result + (json != null ? json.hashCode() : 0);
-    result = 31 * result + (booleanValue != null ? booleanValue.hashCode() : 0);
-    return result;
-  }
-
   public void setMathExpression(final MathExpression mathExpression) {
     this.mathExpression = mathExpression;
   }
@@ -511,16 +470,6 @@ public class Expression extends SimpleNode {
     if (json != null) {
       json.extractSubQueries(collector);
     }
-  }
-
-  public boolean refersToParent() {
-    if (mathExpression != null && mathExpression.refersToParent()) {
-      return true;
-    }
-    if (arrayConcatExpression != null && arrayConcatExpression.refersToParent()) {
-      return true;
-    }
-    return json != null && json.refersToParent();
   }
 
   public Rid getRid() {
@@ -633,18 +582,14 @@ public class Expression extends SimpleNode {
     }
   }
 
-  public boolean isCacheable() {
-    if (mathExpression != null) {
-      return mathExpression.isCacheable();
-    }
-    if (arrayConcatExpression != null) {
-      return arrayConcatExpression.isCacheable();
-    }
-    if (json != null) {
-      return json.isCacheable();
-    }
+  @Override
+  protected Object[] getIdentityElements() {
+    return new Object[] { isNull, singleQuotes, doubleQuotes, rid, mathExpression, arrayConcatExpression, json, booleanValue };
+  }
 
-    return true;
+  @Override
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { mathExpression, arrayConcatExpression, json };
   }
 }
 /* JavaCC - OriginalChecksum=9c860224b121acdc89522ae97010be01 (do not edit this line) */

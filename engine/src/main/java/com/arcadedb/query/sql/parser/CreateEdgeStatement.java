@@ -126,42 +126,8 @@ public class CreateEdgeStatement extends Statement {
   }
 
   @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final CreateEdgeStatement that = (CreateEdgeStatement) o;
-
-    if (!Objects.equals(targetType, that.targetType))
-      return false;
-    if (!Objects.equals(targetBucketName, that.targetBucketName))
-      return false;
-    if (!Objects.equals(leftExpression, that.leftExpression))
-      return false;
-    if (!Objects.equals(rightExpression, that.rightExpression))
-      return false;
-    if (ifNotExists != that.ifNotExists)
-      return false;
-    if (!Objects.equals(body, that.body))
-      return false;
-    if (!Objects.equals(retry, that.retry))
-      return false;
-    return Objects.equals(wait, that.wait);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = targetType != null ? targetType.hashCode() : 0;
-    result = 31 * result + (targetBucketName != null ? targetBucketName.hashCode() : 0);
-    result = 31 * result + (leftExpression != null ? leftExpression.hashCode() : 0);
-    result = 31 * result + (rightExpression != null ? rightExpression.hashCode() : 0);
-    result = 31 * result + (ifNotExists ? 1 : 0);
-    result = 31 * result + (body != null ? body.hashCode() : 0);
-    result = 31 * result + (retry != null ? retry.hashCode() : 0);
-    result = 31 * result + (wait != null ? wait.hashCode() : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return new Object[] { targetType, targetBucketName, leftExpression, rightExpression, ifNotExists, body, retry, wait };
   }
 
   public Identifier getTargetType() {

@@ -37,10 +37,16 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
 import java.io.*;
+import java.rmi.*;
 
 public class PostServerCommandHandler extends AbstractHandler {
   public PostServerCommandHandler(final HttpServer httpServer) {
     super(httpServer);
+  }
+
+  @Override
+  protected boolean isParsingRequestPayload() {
+    return true;
   }
 
   @Override
@@ -64,6 +70,8 @@ public class PostServerCommandHandler extends AbstractHandler {
       dropDatabase(command);
     else if (command.startsWith("close database "))
       closeDatabase(command);
+    else if (command.startsWith("open database "))
+      openDatabase(command);
     else if (command.startsWith("create user "))
       createUser(command);
     else if (command.startsWith("drop user "))
@@ -92,6 +100,8 @@ public class PostServerCommandHandler extends AbstractHandler {
     } else if (command.startsWith("shutdown ")) {
       final String serverName = command.substring("shutdown ".length()).trim();
       final Leader2ReplicaNetworkExecutor replica = httpServer.getServer().getHA().getReplica(serverName);
+      if (replica == null)
+        throw new ServerException("Cannot contact server '" + serverName + "' from the current server");
 
       final Binary buffer = new Binary();
       httpServer.getServer().getHA().getMessageFactory().serializeCommand(new ServerShutdownRequest(), buffer, -1);
@@ -154,6 +164,16 @@ public class PostServerCommandHandler extends AbstractHandler {
 
     httpServer.getServer().getServerMetrics().meter("http.close-database").mark();
     httpServer.getServer().removeDatabase(database.getName());
+  }
+
+  private void openDatabase(final String command) {
+    final String databaseName = command.substring("open database ".length()).trim();
+    if (databaseName.isEmpty())
+      throw new IllegalArgumentException("Database name empty");
+
+    httpServer.getServer().getDatabase(databaseName);
+
+    httpServer.getServer().getServerMetrics().meter("http.open-database").mark();
   }
 
   private void createUser(final String command) {

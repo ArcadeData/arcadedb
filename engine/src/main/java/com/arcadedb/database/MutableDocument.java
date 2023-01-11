@@ -89,13 +89,15 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
   }
 
   @Override
-  public synchronized Map<String, Object> toMap() {
+  public synchronized Map<String, Object> toMap(final boolean includeMetadata) {
     checkForLazyLoadingProperties();
     final Map<String, Object> result = new HashMap<>(map);
-    result.put("@cat", "d");
-    result.put("@type", type.getName());
-    if (getIdentity() != null)
-      result.put("@rid", getIdentity().toString());
+    if (includeMetadata) {
+      result.put("@cat", "d");
+      result.put("@type", type.getName());
+      if (getIdentity() != null)
+        result.put("@rid", getIdentity().toString());
+    }
     return result;
   }
 

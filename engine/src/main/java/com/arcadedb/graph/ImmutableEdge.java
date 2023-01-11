@@ -119,11 +119,13 @@ public class ImmutableEdge extends ImmutableDocument implements Edge {
   }
 
   @Override
-  public synchronized Map<String, Object> toMap() {
-    final Map<String, Object> map = super.toMap();
-    map.put("@cat", "e");
-    map.put("@in", in);
-    map.put("@out", out);
+  public synchronized Map<String, Object> toMap(final boolean includeMetadata) {
+    final Map<String, Object> map = super.toMap(includeMetadata);
+    if (includeMetadata) {
+      map.put("@cat", "e");
+      map.put("@in", in);
+      map.put("@out", out);
+    }
     return map;
   }
 

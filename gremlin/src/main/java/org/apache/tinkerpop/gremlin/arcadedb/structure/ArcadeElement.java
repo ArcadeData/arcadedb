@@ -62,12 +62,11 @@ public abstract class ArcadeElement<T extends Document> implements Element {
   public <V> Iterator<V> values(final String... propertyKeys) {
     final List<V> props;
     if (propertyKeys == null || propertyKeys.length == 0) {
-      final Set<String> propNames = baseElement.getPropertyNames();
-      props = new ArrayList<>(propNames.size());
-      for (final String p : propNames) {
-        final V value = (V) baseElement.get(p);
-        if (value != null)
-          props.add(value);
+      final Map<String, Object> properties = baseElement.toMap(false);
+      props = new ArrayList<>(properties.size());
+      for (final Map.Entry<String, Object> p : properties.entrySet()) {
+        if (p.getValue() != null)
+          props.add((V) p.getValue());
       }
     } else {
       props = new ArrayList<>(propertyKeys.length);

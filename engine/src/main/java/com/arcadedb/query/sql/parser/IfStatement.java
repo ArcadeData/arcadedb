@@ -169,27 +169,8 @@ public class IfStatement extends Statement {
   }
 
   @Override
-  public boolean equals( final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final  IfStatement that = (IfStatement) o;
-
-    if (!Objects.equals(expression, that.expression))
-      return false;
-    if (!Objects.equals(statements, that.statements))
-      return false;
-    return Objects.equals(elseStatements, that.elseStatements);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = expression != null ? expression.hashCode() : 0;
-    result = 31 * result + (statements != null ? statements.hashCode() : 0);
-    result = 31 * result + (elseStatements != null ? elseStatements.hashCode() : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return new Object[] { expression, statements, elseStatements };
   }
 
   public List<Statement> getStatements() {

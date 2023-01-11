@@ -111,9 +111,9 @@ public class ArrayConcatExpression extends SimpleNode {
     return result;
   }
 
-  public boolean isEarlyCalculated() {
+  public boolean isEarlyCalculated(final CommandContext ctx) {
     for (final ArrayConcatExpressionElement element : childExpressions) {
-      if (!element.isEarlyCalculated()) {
+      if (!element.isEarlyCalculated(ctx)) {
         return false;
       }
     }
@@ -171,15 +171,6 @@ public class ArrayConcatExpression extends SimpleNode {
     }
   }
 
-  public boolean refersToParent() {
-    for (final ArrayConcatExpressionElement expr : this.childExpressions) {
-      if (expr.refersToParent()) {
-        return true;
-      }
-    }
-    return false;
-  }
-
   public List<String> getMatchPatternInvolvedAliases() {
     final List<String> result = new ArrayList<>();
     for (final ArrayConcatExpressionElement exp : childExpressions) {
@@ -203,23 +194,6 @@ public class ArrayConcatExpression extends SimpleNode {
     }
   }
 
-  @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final ArrayConcatExpression that = (ArrayConcatExpression) o;
-
-    return Objects.equals(childExpressions, that.childExpressions);
-  }
-
-  @Override
-  public int hashCode() {
-    return childExpressions != null ? childExpressions.hashCode() : 0;
-  }
-
   public Result serialize() {
     final ResultInternal result = new ResultInternal();
     if (childExpressions != null) {
@@ -229,7 +203,6 @@ public class ArrayConcatExpression extends SimpleNode {
   }
 
   public void deserialize(final Result fromResult) {
-
     if (fromResult.getProperty("childExpressions") != null) {
       final List<Result> ser = fromResult.getProperty("childExpressions");
       childExpressions = new ArrayList<>();
@@ -241,13 +214,14 @@ public class ArrayConcatExpression extends SimpleNode {
     }
   }
 
-  public boolean isCacheable() {
-    for (final ArrayConcatExpressionElement exp : childExpressions) {
-      if (!exp.isCacheable()) {
-        return false;
-      }
-    }
-    return true;
+  @Override
+  protected Object[] getIdentityElements() {
+    return getCacheableElements();
+  }
+
+  @Override
+  protected SimpleNode[] getCacheableElements() {
+    return childExpressions.toArray(new SimpleNode[childExpressions.size()]);
   }
 }
 /* JavaCC - OriginalChecksum=8d976a02f84460bf21c4304009135345 (do not edit this line) */

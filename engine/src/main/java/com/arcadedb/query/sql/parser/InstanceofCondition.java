@@ -153,32 +153,8 @@ public class InstanceofCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean refersToParent() {
-    return left != null && left.refersToParent();
-  }
-
-  @Override
-  public boolean equals( final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final  InstanceofCondition that = (InstanceofCondition) o;
-
-    if (!Objects.equals(left, that.left))
-      return false;
-    if (!Objects.equals(right, that.right))
-      return false;
-    return Objects.equals(rightString, that.rightString);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = left != null ? left.hashCode() : 0;
-    result = 31 * result + (right != null ? right.hashCode() : 0);
-    result = 31 * result + (rightString != null ? rightString.hashCode() : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return new Object[] { left, right, rightString };
   }
 
   @Override
@@ -187,9 +163,8 @@ public class InstanceofCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean isCacheable() {
-    return left.isCacheable();
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { left };
   }
-
 }
 /* JavaCC - OriginalChecksum=0b5eb529744f307228faa6b26f0592dc (do not edit this line) */

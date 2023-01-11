@@ -69,7 +69,6 @@ public class ConsoleStatement extends SimpleExecStatement {
     item.setProperty("message", msg);
     result.add(item);
     return result;
-
   }
 
   @Override
@@ -89,24 +88,8 @@ public class ConsoleStatement extends SimpleExecStatement {
   }
 
   @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final ConsoleStatement that = (ConsoleStatement) o;
-
-    if (!Objects.equals(logLevel, that.logLevel))
-      return false;
-    return Objects.equals(message, that.message);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = logLevel != null ? logLevel.hashCode() : 0;
-    result = 31 * result + (message != null ? message.hashCode() : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return new Object[] { logLevel, message };
   }
 }
 /* JavaCC - OriginalChecksum=626c09cda52a1a8a63eeefcb37bd66a1 (do not edit this line) */

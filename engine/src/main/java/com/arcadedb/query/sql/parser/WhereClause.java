@@ -22,12 +22,15 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
+import com.arcadedb.utility.CollectionUtils;
 
 import java.util.*;
 import java.util.stream.*;
@@ -46,16 +49,16 @@ public class WhereClause extends SimpleNode {
   }
 
   public boolean matchesFilters(final Identifiable currentRecord, final CommandContext ctx) {
-    if (baseExpression == null) {
+    if (baseExpression == null)
       return true;
-    }
+
     return baseExpression.evaluate(currentRecord, ctx);
   }
 
   public boolean matchesFilters(final Result currentRecord, final CommandContext ctx) {
-    if (baseExpression == null) {
+    if (baseExpression == null)
       return true;
-    }
+
     return baseExpression.evaluate(currentRecord, ctx);
   }
 
@@ -138,26 +141,19 @@ public class WhereClause extends SimpleNode {
     if (nMatchingKeys < 1) {
       throw new IllegalArgumentException("Cannot estimate from an index with zero keys");
     }
-//    String[] definitionFields = index.getPropertyNames();
-//    Object[] key = new Object[nMatchingKeys];
-//    for (int i = 0; i < nMatchingKeys; i++) {
-//      Object keyValue = convert(conditions.get(definitionFields.get(i)), definition.getTypes()[i]);
-//      key[i] = keyValue;
-//    }
-//    if (key != null) {
-//      if (conditions.size() == definitionFields.size()) {
-//        try (Stream<RID> rids = index.getInternal().getRids(key)) {
-//          return rids.count();
-//        }
-//      } else if (index.supportsOrderedIterations()) {
-//        final Spliterator<ORawPair<Object, RID>> spliterator;
-//
-//        try (Stream<ORawPair<Object, RID>> stream = index.streamEntriesBetween(key, true, key, true, true)) {
-//          spliterator = stream.spliterator();
-//          return spliterator.estimateSize();
-//        }
-//      }
-//    }
+    List<String> definitionFields = index.getPropertyNames();
+    Object[] key = new Object[nMatchingKeys];
+    for (int i = 0; i < nMatchingKeys; i++) {
+      Object keyValue = convert(conditions.get(definitionFields.get(i)), ((IndexInternal) index).getKeyTypes()[i]);
+      key[i] = keyValue;
+    }
+    if (key != null) {
+      if (conditions.size() == definitionFields.size()) {
+        CollectionUtils.countEntries(index.get(key));
+      } else if (index.supportsOrderedIterations()) {
+        return ((TypeIndex) index).range(true, key, true, key, true).size();
+      }
+    }
     return Long.MAX_VALUE;
   }
 
@@ -167,7 +163,7 @@ public class WhereClause extends SimpleNode {
       if (expression instanceof BinaryCondition) {
         final BinaryCondition b = (BinaryCondition) expression;
         if (b.operator instanceof EqualsCompareOperator) {
-          if (b.left.isBaseIdentifier() && b.right.isEarlyCalculated()) {
+          if (b.left.isBaseIdentifier() && b.right.isEarlyCalculated(ctx)) {
             result.put(b.left.toString(), b.right.execute((Result) null, ctx));
           }
         }
@@ -203,24 +199,8 @@ public class WhereClause extends SimpleNode {
   }
 
   @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final WhereClause that = (WhereClause) o;
-
-    if (!Objects.equals(baseExpression, that.baseExpression))
-      return false;
-    return Objects.equals(flattened, that.flattened);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = baseExpression != null ? baseExpression.hashCode() : 0;
-    result = 31 * result + (flattened != null ? flattened.hashCode() : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return new Object[] { baseExpression, flattened };
   }
 
   public void extractSubQueries(final SubQueryCollector collector) {
@@ -228,10 +208,6 @@ public class WhereClause extends SimpleNode {
       baseExpression.extractSubQueries(collector);
 
     flattened = null;
-  }
-
-  public boolean refersToParent() {
-    return baseExpression != null && baseExpression.refersToParent();
   }
 
   public BooleanExpression getBaseExpression() {
@@ -264,8 +240,13 @@ public class WhereClause extends SimpleNode {
     }
   }
 
-  public boolean isCacheable() {
-    return baseExpression.isCacheable();
+  @Override
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { baseExpression };
+  }
+
+  public static Object convert(final Object o, final Type oType) {
+    return Type.convert(null, o, oType.getDefaultJavaType());
   }
 }
 /* JavaCC - OriginalChecksum=e8015d01ce1ab2bc337062e9e3f2603e (do not edit this line) */

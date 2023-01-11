@@ -92,25 +92,8 @@ public class ParenthesisBlock extends BooleanExpression {
   }
 
   @Override
-  public boolean refersToParent() {
-    return subElement.refersToParent();
-  }
-
-  @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final ParenthesisBlock that = (ParenthesisBlock) o;
-
-    return Objects.equals(subElement, that.subElement);
-  }
-
-  @Override
-  public int hashCode() {
-    return subElement != null ? subElement.hashCode() : 0;
+  protected Object[] getIdentityElements() {
+    return new Object[] { subElement };
   }
 
   @Override
@@ -119,8 +102,13 @@ public class ParenthesisBlock extends BooleanExpression {
   }
 
   @Override
-  public boolean isCacheable() {
-    return subElement.isCacheable();
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { subElement };
+  }
+
+  @Override
+  public boolean isAlwaysTrue() {
+    return subElement.isAlwaysTrue();
   }
 }
 /* JavaCC - OriginalChecksum=9a16b6cf7d051382acb94c45067631a9 (do not edit this line) */

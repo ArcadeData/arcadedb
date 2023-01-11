@@ -47,20 +47,8 @@ public class CommandLineOption extends SimpleNode {
   }
 
   @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final CommandLineOption that = (CommandLineOption) o;
-
-    return Objects.equals(name, that.name);
-  }
-
-  @Override
-  public int hashCode() {
-    return name != null ? name.hashCode() : 0;
+  protected Object[] getIdentityElements() {
+    return new Object[] { name };
   }
 }
 /* JavaCC - OriginalChecksum=7fcb8de8a1f99a2737aac85933d074d9 (do not edit this line) */

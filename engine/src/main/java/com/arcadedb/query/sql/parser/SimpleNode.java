@@ -22,7 +22,7 @@ package com.arcadedb.query.sql.parser;
 
 import java.util.*;
 
-public class SimpleNode implements Node {
+public abstract class SimpleNode implements Node {
   protected Node      parent;
   protected Node[]    children;
   protected int       id;
@@ -158,6 +158,69 @@ public class SimpleNode implements Node {
     }
   }
 
+  @Override
+  public boolean equals(final Object other) {
+    if (this == other)
+      return true;
+    if (other == null || getClass() != other.getClass())
+      return false;
+
+    final Object[] ownElements = getIdentityElements();
+    if (ownElements.length == 0)
+      // NOT IMPLEMENTED, USE THE DEFAULT IMPLEMENTATION
+      return super.equals(other);
+
+    final Object[] otherElements = ((SimpleNode) other).getIdentityElements();
+
+    for (int i = 0; i < ownElements.length; i++)
+      if (!Objects.equals(ownElements[i], otherElements[i]))
+        return false;
+
+    Objects.equals(1,2);
+
+    return true;
+  }
+
+  @Override
+  public int hashCode() {
+    final Object[] elements = getIdentityElements();
+    if (elements.length == 0)
+      // NOT IMPLEMENTED, USE THE DEFAULT IMPLEMENTATION
+      return super.hashCode();
+
+    return Objects.hashCode(elements);
+  }
+
+  protected Object[] getIdentityElements() {
+    return new Object[0];
+  }
+
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[0];
+  }
+
+  public boolean isCacheable() {
+    final SimpleNode[] elements = getCacheableElements();
+    if (elements.length == 0)
+      return false;
+
+    for (SimpleNode e : elements)
+      if (e != null && !e.isCacheable())
+        return false;
+    return true;
+  }
+
+  public boolean refersToParent() {
+    final SimpleNode[] elements = getCacheableElements();
+    if (elements.length == 0)
+      return false;
+
+    for (SimpleNode e : elements)
+      if (e != null && e.refersToParent())
+        return true;
+    return false;
+  }
+
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     throw new UnsupportedOperationException("Not implemented in " + getClass().getSimpleName());
   }
@@ -170,5 +233,4 @@ public class SimpleNode implements Node {
     throw new UnsupportedOperationException();
   }
 }
-
 /* JavaCC - OriginalChecksum=d5ed710e8a3f29d574adbb1d37e08f3b (do not edit this line) */

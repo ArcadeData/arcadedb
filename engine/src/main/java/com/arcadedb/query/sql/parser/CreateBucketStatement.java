@@ -67,14 +67,13 @@ public class CreateBucketStatement extends DDLStatement {
   @Override
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("CREATE ");
-    if (blob) {
+    if (blob)
       builder.append("BLOB ");
-    }
+
     builder.append("BUCKET ");
     name.toString(params, builder);
-    if (ifNotExists) {
+    if (ifNotExists)
       builder.append(" IF NOT EXISTS");
-    }
   }
 
   @Override
@@ -87,29 +86,8 @@ public class CreateBucketStatement extends DDLStatement {
   }
 
   @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final CreateBucketStatement that = (CreateBucketStatement) o;
-
-    if (ifNotExists != that.ifNotExists)
-      return false;
-    if (blob != that.blob)
-      return false;
-    if (!Objects.equals(name, that.name))
-      return false;
-    return Objects.equals(id, that.id);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = name != null ? name.hashCode() : 0;
-    result = 31 * result + (ifNotExists ? 1 : 0);
-    result = 31 * result + (blob ? 1 : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return new Object[] { name, ifNotExists, blob, id };
   }
 }
 /* JavaCC - OriginalChecksum=6011a26678f2175aa456a0a6c094cb13 (do not edit this line) */

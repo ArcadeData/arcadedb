@@ -22,18 +22,16 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.IndexSearchInfo;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 
 import java.util.*;
 
 public class ContainsAnyCondition extends BooleanExpression {
-
   protected Expression left;
-
   protected Expression right;
-
-  protected OrBlock rightBlock;
+  protected OrBlock    rightBlock;
 
   public ContainsAnyCondition(final int id) {
     super(id);
@@ -235,47 +233,16 @@ public class ContainsAnyCondition extends BooleanExpression {
   @Override
   public void extractSubQueries(final SubQueryCollector collector) {
     left.extractSubQueries(collector);
-    if (right != null) {
+    if (right != null)
       right.extractSubQueries(collector);
-    }
-    if (rightBlock != null) {
+
+    if (rightBlock != null)
       rightBlock.extractSubQueries(collector);
-    }
   }
 
   @Override
-  public boolean refersToParent() {
-    if (left != null && left.refersToParent()) {
-      return true;
-    }
-    if (right != null && right.refersToParent()) {
-      return true;
-    }
-    return rightBlock != null && rightBlock.refersToParent();
-  }
-
-  @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final ContainsAnyCondition that = (ContainsAnyCondition) o;
-
-    if (!Objects.equals(left, that.left))
-      return false;
-    if (!Objects.equals(right, that.right))
-      return false;
-    return Objects.equals(rightBlock, that.rightBlock);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = left != null ? left.hashCode() : 0;
-    result = 31 * result + (right != null ? right.hashCode() : 0);
-    result = 31 * result + (rightBlock != null ? rightBlock.hashCode() : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return new Object[] { left, right, rightBlock };
   }
 
   @Override
@@ -299,16 +266,20 @@ public class ContainsAnyCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean isCacheable() {
-    if (left != null && !left.isCacheable()) {
-      return false;
-    }
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { left, right, rightBlock };
+  }
 
-    if (right != null && !right.isCacheable()) {
-      return false;
+  @Override
+  public boolean isIndexAware(final IndexSearchInfo info) {
+    if (left.isBaseIdentifier()) {
+      if (info.getField().equals(left.getDefaultAlias().getStringValue())) {
+        if (right.isEarlyCalculated(info.getCtx())) {
+          return true;
+        }
+      }
     }
-
-    return rightBlock == null || rightBlock.isCacheable();
+    return false;
   }
 }
 /* JavaCC - OriginalChecksum=7992ab9e8e812c6d9358ede8b67b4506 (do not edit this line) */

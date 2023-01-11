@@ -217,42 +217,8 @@ public class CreateIndexStatement extends DDLStatement {
   }
 
   @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final CreateIndexStatement that = (CreateIndexStatement) o;
-
-    if (!Objects.equals(name, that.name))
-      return false;
-    if (!Objects.equals(typeName, that.typeName))
-      return false;
-    if (!Objects.equals(propertyList, that.propertyList))
-      return false;
-    if (!Objects.equals(type, that.type))
-      return false;
-    if (!Objects.equals(engine, that.engine))
-      return false;
-    if (!Objects.equals(nullStrategy, that.nullStrategy))
-      return false;
-    if (!Objects.equals(keyTypes, that.keyTypes))
-      return false;
-    return Objects.equals(schema, that.schema);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = name != null ? name.hashCode() : 0;
-    result = 31 * result + (typeName != null ? typeName.hashCode() : 0);
-    result = 31 * result + (propertyList != null ? propertyList.hashCode() : 0);
-    result = 31 * result + (type != null ? type.hashCode() : 0);
-    result = 31 * result + (engine != null ? engine.hashCode() : 0);
-    result = 31 * result + (nullStrategy != null ? nullStrategy.hashCode() : 0);
-    result = 31 * result + (keyTypes != null ? keyTypes.hashCode() : 0);
-    result = 31 * result + (schema != null ? schema.hashCode() : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return new Object[] { name, typeName, propertyList, type, engine, nullStrategy, keyTypes, schema };
   }
 
   public static class Property {

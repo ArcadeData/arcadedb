@@ -32,11 +32,11 @@ public class ContainsTextCondition extends BooleanExpression {
   protected Expression left;
   protected Expression right;
 
-  public ContainsTextCondition( final int id) {
+  public ContainsTextCondition(final int id) {
     super(id);
   }
 
-  public ContainsTextCondition( final SqlParser p, int id) {
+  public ContainsTextCondition(final SqlParser p, int id) {
     super(p, id);
   }
 
@@ -54,7 +54,7 @@ public class ContainsTextCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean evaluate(final Result currentRecord,final  CommandContext ctx) {
+  public boolean evaluate(final Result currentRecord, final CommandContext ctx) {
     final Object leftValue = left.execute(currentRecord, ctx);
     if (!(leftValue instanceof String))
       return false;
@@ -124,35 +124,14 @@ public class ContainsTextCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean refersToParent() {
-    return left.refersToParent() || right.refersToParent();
-  }
-
-  @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final ContainsTextCondition that = (ContainsTextCondition) o;
-
-    if (left != null ? !left.equals(that.left) : that.left != null)
-      return false;
-    return right != null ? right.equals(that.right) : that.right == null;
-  }
-
-  @Override
-  public int hashCode() {
-    int result = left != null ? left.hashCode() : 0;
-    result = 31 * result + (right != null ? right.hashCode() : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return new Object[] { left, right };
   }
 
   @Override
   public List<String> getMatchPatternInvolvedAliases() {
-    final  List<String> leftX = left == null ? null : left.getMatchPatternInvolvedAliases();
-    final  List<String> rightX = right == null ? null : right.getMatchPatternInvolvedAliases();
+    final List<String> leftX = left == null ? null : left.getMatchPatternInvolvedAliases();
+    final List<String> rightX = right == null ? null : right.getMatchPatternInvolvedAliases();
 
     final List<String> result = new ArrayList<String>();
     if (leftX != null) {
@@ -166,11 +145,8 @@ public class ContainsTextCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean isCacheable() {
-    if (left != null && !left.isCacheable()) {
-      return false;
-    }
-    return right == null || right.isCacheable();
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { left, right };
   }
 
   public void setLeft(Expression left) {

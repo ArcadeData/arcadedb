@@ -20,7 +20,6 @@ package com.arcadedb.graph;
 
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
-import com.arcadedb.database.EmbeddedModifierProperty;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.RID;
@@ -70,17 +69,6 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
     checkForLazyLoading();
     buffer.rewind();
     return new MutableVertex(database, (VertexType) type, rid, buffer.copy());
-  }
-
-  @Override
-  public synchronized Object get(final String propertyName) {
-    if (propertyName == null)
-      return null;
-
-    checkForLazyLoading();
-    final Map<String, Object> map = database.getSerializer()
-        .deserializeProperties(database, buffer, new EmbeddedModifierProperty(this, propertyName), propertyName);
-    return map.get(propertyName);
   }
 
   @Override
@@ -159,9 +147,10 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
   }
 
   @Override
-  public synchronized Map<String, Object> toMap() {
-    final Map<String, Object> map = super.toMap();
-    map.put("@cat", "v");
+  public synchronized Map<String, Object> toMap(final boolean includeMetadata) {
+    final Map<String, Object> map = super.toMap(includeMetadata);
+    if (includeMetadata)
+      map.put("@cat", "v");
     return map;
   }
 

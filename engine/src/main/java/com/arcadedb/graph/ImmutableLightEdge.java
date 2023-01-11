@@ -94,7 +94,7 @@ public class ImmutableLightEdge extends ImmutableDocument implements LightEdge {
   }
 
   @Override
-  public synchronized Map<String, Object> toMap() {
+  public synchronized Map<String, Object> toMap(final boolean includeMetadata) {
     return Collections.emptyMap();
   }
 

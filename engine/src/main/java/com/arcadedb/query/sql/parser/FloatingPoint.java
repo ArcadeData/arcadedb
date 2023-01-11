@@ -103,24 +103,8 @@ public class FloatingPoint extends PNumber {
   }
 
   @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final FloatingPoint that = (FloatingPoint) o;
-
-    if (sign != that.sign)
-      return false;
-    return Objects.equals(stringValue, that.stringValue);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = sign;
-    result = 31 * result + (stringValue != null ? stringValue.hashCode() : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return new Object[] { sign, stringValue };
   }
 
   public Result serialize() {

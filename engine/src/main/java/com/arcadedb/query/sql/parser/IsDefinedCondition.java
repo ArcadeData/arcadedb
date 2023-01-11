@@ -86,25 +86,8 @@ public class IsDefinedCondition extends BooleanExpression implements SimpleBoole
   }
 
   @Override
-  public boolean refersToParent() {
-    return expression != null && expression.refersToParent();
-  }
-
-  @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final IsDefinedCondition that = (IsDefinedCondition) o;
-
-    return Objects.equals(expression, that.expression);
-  }
-
-  @Override
-  public int hashCode() {
-    return expression != null ? expression.hashCode() : 0;
+  protected Object[] getIdentityElements() {
+    return new Object[] { expression };
   }
 
   @Override
@@ -113,8 +96,8 @@ public class IsDefinedCondition extends BooleanExpression implements SimpleBoole
   }
 
   @Override
-  public boolean isCacheable() {
-    return expression.isCacheable();
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { expression };
   }
 }
 /* JavaCC - OriginalChecksum=075954b212c8cb44c8538bf5dea047d3 (do not edit this line) */

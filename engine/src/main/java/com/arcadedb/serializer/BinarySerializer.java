@@ -71,7 +71,7 @@ public class BinarySerializer {
     case Edge.RECORD_TYPE:
       return serializeEdge(database, (MutableEdge) record);
     case EdgeSegment.RECORD_TYPE:
-      return serializeEdgeContainer(database, (EdgeSegment) record);
+      return serializeEdgeContainer((EdgeSegment) record);
     default:
       throw new IllegalArgumentException("Cannot serialize a record of type=" + record.getRecordType());
     }
@@ -163,7 +163,7 @@ public class BinarySerializer {
     return header;
   }
 
-  public Binary serializeEdgeContainer(final Database database, final EdgeSegment record) {
+  public Binary serializeEdgeContainer(final EdgeSegment record) {
     return record.getContent();
   }
 
@@ -189,6 +189,9 @@ public class BinarySerializer {
 
     if (properties < 0)
       throw new SerializationException("Error on deserialize record. It may be corrupted (properties=" + properties + ")");
+    else if (properties == 0)
+      // EMPTY: NOT FOUND
+      return new LinkedHashMap<>();
 
     final Map<String, Object> values = new LinkedHashMap<>(properties);
 
@@ -245,8 +248,65 @@ public class BinarySerializer {
     return values;
   }
 
+  public boolean hasProperty(final Database database, final Binary buffer, final String fieldName) {
+    buffer.getInt(); // headerEndOffset
+    final int properties = (int) buffer.getUnsignedNumber();
+    if (properties < 0)
+      throw new SerializationException("Error on deserialize record. It may be corrupted (properties=" + properties + ")");
+    else if (properties == 0)
+      // EMPTY: NOT FOUND
+      return false;
+
+    final int fieldId = database.getSchema().getDictionary().getIdByName(fieldName, false);
+
+    for (int i = 0; i < properties; ++i) {
+      if (fieldId == (int) buffer.getUnsignedNumber())
+        return true;
+      buffer.getUnsignedNumber(); // contentPosition
+    }
+
+    return false;
+  }
+
+  public Object deserializeProperty(final Database database, final Binary buffer, final EmbeddedModifier embeddedModifier, final String fieldName) {
+    final int headerEndOffset = buffer.getInt();
+    final int properties = (int) buffer.getUnsignedNumber();
+
+    if (properties < 0)
+      throw new SerializationException("Error on deserialize record. It may be corrupted (properties=" + properties + ")");
+    else if (properties == 0)
+      // EMPTY: NOT FOUND
+      return null;
+
+    final Dictionary dictionary = database.getSchema().getDictionary();
+    final int fieldId = dictionary.getIdByName(fieldName, false);
+
+    for (int i = 0; i < properties; ++i) {
+      final int nameId = (int) buffer.getUnsignedNumber();
+      final int contentPosition = (int) buffer.getUnsignedNumber();
+
+      if (fieldId != nameId)
+        continue;
+
+      buffer.position(headerEndOffset + contentPosition);
+
+      final byte type = buffer.getByte();
+
+      final EmbeddedModifierProperty propertyModifier = embeddedModifier != null ? new EmbeddedModifierProperty(embeddedModifier.getOwner(), fieldName) : null;
+
+      Object propertyValue = deserializeValue(database, buffer, type, propertyModifier);
+
+      if (type == BinaryTypes.TYPE_COMPRESSED_STRING)
+        propertyValue = dictionary.getNameById(((Long) propertyValue).intValue());
+
+      return propertyValue;
+    }
+
+    return null;
+  }
+
   public void serializeValue(final Database database, final Binary content, final byte type, Object value) {
-    if( value==null)
+    if (value == null)
       return;
 
     switch (type) {

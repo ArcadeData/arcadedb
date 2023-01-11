@@ -81,25 +81,14 @@ public class IsNotDefinedCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean refersToParent() {
-    return expression != null && expression.refersToParent();
-  }
-
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     expression.toString(params, builder);
     builder.append(" is not defined");
   }
 
   @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final IsNotDefinedCondition that = (IsNotDefinedCondition) o;
-
-    return Objects.equals(expression, that.expression);
+  protected Object[] getIdentityElements() {
+    return new Object[] { expression };
   }
 
   @Override
@@ -108,8 +97,8 @@ public class IsNotDefinedCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean isCacheable() {
-    return expression.isCacheable();
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { expression };
   }
 
   @Override

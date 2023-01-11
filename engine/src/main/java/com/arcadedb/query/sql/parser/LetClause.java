@@ -65,29 +65,8 @@ public class LetClause extends SimpleNode {
   }
 
   @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final LetClause that = (LetClause) o;
-
-    return Objects.equals(items, that.items);
-  }
-
-  @Override
-  public int hashCode() {
-    return items != null ? items.hashCode() : 0;
-  }
-
-  public boolean refersToParent() {
-    for (final LetItem item : items) {
-      if (item.refersToParent()) {
-        return true;
-      }
-    }
-    return false;
+  protected Object[] getIdentityElements() {
+    return getCacheableElements();
   }
 
   public void extractSubQueries(final SubQueryCollector collector) {
@@ -116,13 +95,9 @@ public class LetClause extends SimpleNode {
     }
   }
 
-  public boolean isCacheable() {
-    for (final LetItem item : items) {
-      if (!item.isCacheable()) {
-        return false;
-      }
-    }
-    return true;
+  @Override
+  protected SimpleNode[] getCacheableElements() {
+    return items.toArray(new LetItem[items.size()]);
   }
 }
 

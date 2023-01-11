@@ -70,18 +70,14 @@ public class AndBlock extends BooleanExpression {
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
-    if (subBlocks == null || subBlocks.size() == 0) {
+    if (subBlocks == null || subBlocks.size() == 0)
       return;
-    }
-    // if (subBlocks.size() == 1) {
-    // subBlocks.get(0).toString(params, builder);
-    // }
 
     boolean first = true;
-    for (final BooleanExpression expr : subBlocks) {
-      if (!first) {
+    for (BooleanExpression expr : subBlocks) {
+      if (!first)
         builder.append(" AND ");
-      }
+
       expr.toString(params, builder);
       first = false;
     }
@@ -183,23 +179,6 @@ public class AndBlock extends BooleanExpression {
   }
 
   @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final AndBlock andBlock = (AndBlock) o;
-
-    return Objects.equals(subBlocks, andBlock.subBlocks);
-  }
-
-  @Override
-  public int hashCode() {
-    return subBlocks != null ? subBlocks.hashCode() : 0;
-  }
-
-  @Override
   public boolean isEmpty() {
     if (subBlocks.isEmpty()) {
       return true;
@@ -220,16 +199,6 @@ public class AndBlock extends BooleanExpression {
   }
 
   @Override
-  public boolean refersToParent() {
-    for (final BooleanExpression exp : subBlocks) {
-      if (exp.refersToParent()) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  @Override
   public List<String> getMatchPatternInvolvedAliases() {
     final List<String> result = new ArrayList<>();
     for (final BooleanExpression exp : subBlocks) {
@@ -242,9 +211,22 @@ public class AndBlock extends BooleanExpression {
   }
 
   @Override
-  public boolean isCacheable() {
-    for (final BooleanExpression exp : subBlocks) {
-      if (!exp.isCacheable()) {
+  protected Object[] getIdentityElements() {
+    return getCacheableElements();
+  }
+
+  @Override
+  protected SimpleNode[] getCacheableElements() {
+    return subBlocks.toArray(new SimpleNode[subBlocks.size()]);
+  }
+
+  @Override
+  public boolean isAlwaysTrue() {
+    if (subBlocks.isEmpty())
+      return true;
+
+    for (BooleanExpression exp : subBlocks) {
+      if (!exp.isAlwaysTrue()) {
         return false;
       }
     }

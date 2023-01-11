@@ -115,24 +115,8 @@ public class DropTypeStatement extends DDLStatement {
   }
 
   @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final DropTypeStatement that = (DropTypeStatement) o;
-
-    if (unsafe != that.unsafe)
-      return false;
-    if (ifExists != that.ifExists)
-      return false;
-    return ifExists == that.ifExists && unsafe == that.unsafe && Objects.equals(name, that.name) && Objects.equals(nameParam, that.nameParam);
-  }
-
-  @Override
-  public int hashCode() {
-    return Objects.hash(name, nameParam, ifExists, unsafe);
+  protected Object[] getIdentityElements() {
+    return new Object[] { name, nameParam, ifExists, unsafe };
   }
 }
 /* JavaCC - OriginalChecksum=8c475e1225074f68be37fce610987d54 (do not edit this line) */

@@ -56,9 +56,8 @@ public class OrBlock extends BooleanExpression {
 
   @Override
   public boolean evaluate(final Result currentRecord, final CommandContext ctx) {
-    if (getSubBlocks() == null) {
+    if (getSubBlocks() == null)
       return true;
-    }
 
     for (final BooleanExpression block : subBlocks) {
       if (block.evaluate(currentRecord, ctx)) {
@@ -94,13 +93,9 @@ public class OrBlock extends BooleanExpression {
     if (subBlocks == null || subBlocks.size() == 0) {
       return;
     }
-    // if (subBlocks.size() == 1) {
-    // subBlocks.get(0).toString(params, builder);
-    // return;
-    // }
 
     boolean first = true;
-    for (final BooleanExpression expr : subBlocks) {
+    for (BooleanExpression expr : subBlocks) {
       if (!first) {
         builder.append(" OR ");
       }
@@ -180,23 +175,6 @@ public class OrBlock extends BooleanExpression {
   }
 
   @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final OrBlock oOrBlock = (OrBlock) o;
-
-    return Objects.equals(subBlocks, oOrBlock.subBlocks);
-  }
-
-  @Override
-  public int hashCode() {
-    return subBlocks != null ? subBlocks.hashCode() : 0;
-  }
-
-  @Override
   public boolean isEmpty() {
     if (subBlocks.isEmpty()) {
       return true;
@@ -217,16 +195,6 @@ public class OrBlock extends BooleanExpression {
   }
 
   @Override
-  public boolean refersToParent() {
-    for (final BooleanExpression exp : subBlocks) {
-      if (exp != null && exp.refersToParent()) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  @Override
   public List<String> getMatchPatternInvolvedAliases() {
     final List<String> result = new ArrayList<String>();
     for (final BooleanExpression exp : subBlocks) {
@@ -238,15 +206,26 @@ public class OrBlock extends BooleanExpression {
     return result.isEmpty() ? null : result;
   }
 
-  @Override
-  public boolean isCacheable() {
-    for (final BooleanExpression block : this.subBlocks) {
-      if (!block.isCacheable()) {
-        return false;
-      }
-    }
-    return true;
+  protected Object[] getIdentityElements() {
+    return getCacheableElements();
   }
 
+  @Override
+  protected SimpleNode[] getCacheableElements() {
+    return subBlocks.toArray(new BooleanExpression[subBlocks.size()]);
+  }
+
+  @Override
+  public boolean isAlwaysTrue() {
+    if (subBlocks.isEmpty())
+      return true;
+
+    for (BooleanExpression exp : subBlocks) {
+      if (exp.isAlwaysTrue()) {
+        return true;
+      }
+    }
+    return false;
+  }
 }
 /* JavaCC - OriginalChecksum=98d3077303a598705894dbb7bd4e1573 (do not edit this line) */

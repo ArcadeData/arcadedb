@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.IndexSearchInfo;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.schema.DocumentType;
@@ -229,8 +230,6 @@ public abstract class BooleanExpression extends SimpleNode {
 
   public abstract void extractSubQueries(final SubQueryCollector collector);
 
-  public abstract boolean refersToParent();
-
   /**
    * returns the equivalent of current condition as an UPDATE expression with the same syntax, if possible.
    * <p>
@@ -265,5 +264,22 @@ public abstract class BooleanExpression extends SimpleNode {
     throw new UnsupportedOperationException();
   }
 
-  public abstract boolean isCacheable();
+  public boolean createRangeWith(final BooleanExpression match) {
+    return false;
+  }
+
+  /**
+   * returns true only if the expression does not need any further evaluation (eg. "true") and
+   * always evaluates to true. It is supposed to be used as and optimization, and is allowed to
+   * return false negatives
+   *
+   * @return
+   */
+  public boolean isAlwaysTrue() {
+    return false;
+  }
+
+  public boolean isIndexAware(final IndexSearchInfo info) {
+    return false;
+  }
 }

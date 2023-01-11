@@ -32,7 +32,6 @@ public class FilterStep extends AbstractExecutionStep {
 
   ResultSet prevResult = null;
 
-
   public FilterStep(final WhereClause whereClause, final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
     this.whereClause = whereClause;
@@ -40,9 +39,9 @@ public class FilterStep extends AbstractExecutionStep {
 
   @Override
   public ResultSet syncPull(final CommandContext ctx, final int nRecords) throws TimeoutException {
-    if (prev.isEmpty()) {
+    if (prev.isEmpty())
       throw new IllegalStateException("filter step requires a previous step");
-    }
+
     final ExecutionStepInternal prevStep = prev.get();
 
     return new ResultSet() {
@@ -89,29 +88,26 @@ public class FilterStep extends AbstractExecutionStep {
 
       @Override
       public boolean hasNext() {
-
-        if (fetched >= nRecords || finished) {
+        if (fetched >= nRecords || finished)
           return false;
-        }
-        if (nextItem == null) {
+
+        if (nextItem == null)
           fetchNextItem();
-        }
 
         return nextItem != null;
-
       }
 
       @Override
       public Result next() {
-        if (fetched >= nRecords || finished) {
+        if (fetched >= nRecords || finished)
           throw new NoSuchElementException();
-        }
-        if (nextItem == null) {
+
+        if (nextItem == null)
           fetchNextItem();
-        }
-        if (nextItem == null) {
+
+        if (nextItem == null)
           throw new NoSuchElementException();
-        }
+
         final Result result = nextItem;
         nextItem = null;
         fetched++;
@@ -122,21 +118,16 @@ public class FilterStep extends AbstractExecutionStep {
       public void close() {
         FilterStep.this.close();
       }
-
-
-
-
     };
-
   }
 
   @Override
   public String prettyPrint(final int depth, final int indent) {
     final StringBuilder result = new StringBuilder();
     result.append(ExecutionStepInternal.getIndent(depth, indent)).append("+ FILTER ITEMS WHERE ");
-    if (profilingEnabled) {
+    if (profilingEnabled)
       result.append(" (").append(getCostFormatted()).append(")");
-    }
+
     result.append("\n");
     result.append(ExecutionStepInternal.getIndent(depth, indent));
     result.append("  ");
@@ -147,9 +138,8 @@ public class FilterStep extends AbstractExecutionStep {
   @Override
   public Result serialize() {
     final ResultInternal result = ExecutionStepInternal.basicSerialize(this);
-    if (whereClause != null) {
+    if (whereClause != null)
       result.setProperty("whereClause", whereClause.serialize());
-    }
 
     return result;
   }
@@ -164,8 +154,6 @@ public class FilterStep extends AbstractExecutionStep {
       throw new CommandExecutionException(e);
     }
   }
-
-
 
   @Override
   public boolean canBeCached() {

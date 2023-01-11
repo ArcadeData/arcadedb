@@ -245,14 +245,9 @@ public class Projection extends SimpleNode {
     }
   }
 
-  public boolean isCacheable() {
-    if (items != null) {
-      for (final ProjectionItem item : items) {
-        if (!item.isCacheable())
-          return false;
-      }
-    }
-    return true;
+  @Override
+  protected SimpleNode[] getCacheableElements() {
+    return items.toArray(new ProjectionItem[items.size()]);
   }
 }
 /* JavaCC - OriginalChecksum=3a650307b53bae626dc063c4b35e62c3 (do not edit this line) */

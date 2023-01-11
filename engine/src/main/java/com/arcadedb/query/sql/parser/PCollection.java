@@ -91,12 +91,12 @@ public class PCollection extends SimpleNode {
     return false;
   }
 
-  public PCollection splitForAggregation(final AggregateProjectionSplit aggregateProj) {
+  public PCollection splitForAggregation(final AggregateProjectionSplit aggregateProj, final CommandContext ctx) {
     if (isAggregate()) {
       final PCollection result = new PCollection(-1);
       for (final Expression exp : this.expressions) {
-        if (exp.isAggregate() || exp.isEarlyCalculated()) {
-          result.expressions.add(exp.splitForAggregation(aggregateProj));
+        if (exp.isAggregate() || exp.isEarlyCalculated(ctx)) {
+          result.expressions.add(exp.splitForAggregation(aggregateProj, ctx));
         } else {
           throw new CommandExecutionException("Cannot mix aggregate and non-aggregate operations in a collection: " + this);
         }
@@ -107,9 +107,9 @@ public class PCollection extends SimpleNode {
     }
   }
 
-  public boolean isEarlyCalculated() {
+  public boolean isEarlyCalculated(final CommandContext ctx) {
     for (final Expression exp : expressions) {
-      if (!exp.isEarlyCalculated()) {
+      if (!exp.isEarlyCalculated(ctx)) {
         return false;
       }
     }
@@ -123,31 +123,8 @@ public class PCollection extends SimpleNode {
   }
 
   @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final PCollection that = (PCollection) o;
-
-    return Objects.equals(expressions, that.expressions);
-  }
-
-  @Override
-  public int hashCode() {
-    return expressions != null ? expressions.hashCode() : 0;
-  }
-
-  public boolean refersToParent() {
-    if (expressions != null) {
-      for (final Expression exp : expressions) {
-        if (exp != null && exp.refersToParent()) {
-          return true;
-        }
-      }
-    }
-    return false;
+  protected Object[] getIdentityElements() {
+    return new Object[] { expressions };
   }
 
   public Result serialize() {
@@ -170,13 +147,9 @@ public class PCollection extends SimpleNode {
     }
   }
 
-  public boolean isCacheable() {
-    for (final Expression exp : expressions) {
-      if (!exp.isCacheable()) {
-        return false;
-      }
-    }
-    return true;
+  @Override
+  protected SimpleNode[] getCacheableElements() {
+    return expressions.toArray(new SimpleNode[expressions.size()]);
   }
 
   public List<Expression> getExpressions() {

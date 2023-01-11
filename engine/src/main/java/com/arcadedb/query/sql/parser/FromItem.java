@@ -366,6 +366,7 @@ public class FromItem extends SimpleNode {
     }
   }
 
+  @Override
   public boolean isCacheable() {
     if (modifier != null) {
       return false;

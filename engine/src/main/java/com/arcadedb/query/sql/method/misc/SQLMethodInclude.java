@@ -135,13 +135,14 @@ public class SQLMethodInclude extends AbstractSQLMethod {
         if (fieldName.endsWith("*")) {
           final String fieldPart = fieldName.substring(0, fieldName.length() - 1);
           final List<String> toInclude = new ArrayList<>();
-          for (final String f : document.getPropertyNames()) {
-            if (f.startsWith(fieldPart))
-              toInclude.add(f);
+          final Map<String, Object> map = document.toMap(false);
+          for (final Map.Entry<String, Object> f : map.entrySet()) {
+            if (f.getKey().startsWith(fieldPart))
+              toInclude.add(f.getKey());
           }
 
           for (final String f : toInclude)
-            doc.set(fieldName, document.get(f));
+            doc.set(fieldName, map.get(f));
 
         } else
           doc.set(fieldName, document.get(fieldName));

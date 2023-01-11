@@ -131,10 +131,8 @@ public class IndexMatchCondition extends BooleanExpression {
     final IndexMatchCondition result = new IndexMatchCondition(-1);
     result.operator = operator == null ? null : operator.copy();
     result.between = between;
-
     result.leftExpressions = leftExpressions == null ? null : leftExpressions.stream().map(x -> x.copy()).collect(Collectors.toList());
     result.rightExpressions = rightExpressions == null ? null : rightExpressions.stream().map(x -> x.copy()).collect(Collectors.toList());
-
     return result;
   }
 
@@ -153,75 +151,18 @@ public class IndexMatchCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean refersToParent() {
-    if (leftExpressions != null) {
-      for (final Expression exp : leftExpressions) {
-        if (exp != null && exp.refersToParent()) {
-          return true;
-        }
-      }
-    }
-    if (rightExpressions != null) {
-      for (final Expression exp : rightExpressions) {
-        if (exp != null && exp.refersToParent()) {
-          return true;
-        }
-      }
-    }
-    return false;
-  }
-
-  @Override
-  public boolean equals( final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final   IndexMatchCondition that = (IndexMatchCondition) o;
-
-    if (!Objects.equals(operator, that.operator))
-      return false;
-    if (!Objects.equals(between, that.between))
-      return false;
-    if (!Objects.equals(leftExpressions, that.leftExpressions))
-      return false;
-    return Objects.equals(rightExpressions, that.rightExpressions);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = operator != null ? operator.hashCode() : 0;
-    result = 31 * result + (between != null ? between.hashCode() : 0);
-    result = 31 * result + (leftExpressions != null ? leftExpressions.hashCode() : 0);
-    result = 31 * result + (rightExpressions != null ? rightExpressions.hashCode() : 0);
-    return result;
-  }
-
-  @Override
   public List<String> getMatchPatternInvolvedAliases() {
     return null;
   }
 
   @Override
-  public boolean isCacheable() {
-
-    if (leftExpressions != null) {
-      for (final Expression exp : leftExpressions) {
-        if (!exp.isCacheable()) {
-          return false;
-        }
-      }
-    }
-    if (rightExpressions != null) {
-      for (final Expression exp : rightExpressions) {
-        if (!exp.isCacheable()) {
-          return false;
-        }
-      }
-    }
-    return true;
+  protected Object[] getIdentityElements() {
+    return new Object[] { operator, between, leftExpressions, rightExpressions };
   }
 
+  @Override
+  protected SimpleNode[] getCacheableElements() {
+    return Stream.concat(Arrays.stream(leftExpressions.toArray()), Arrays.stream(rightExpressions.toArray())).toArray(SimpleNode[]::new);
+  }
 }
 /* JavaCC - OriginalChecksum=702e9ab959e87b043b519844a7d31224 (do not edit this line) */

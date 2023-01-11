@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
@@ -67,12 +68,12 @@ public class JsonItem {
     return right.isAggregate();
   }
 
-  public JsonItem splitForAggregation(final AggregateProjectionSplit aggregateSplit) {
+  public JsonItem splitForAggregation(final AggregateProjectionSplit aggregateSplit, final CommandContext ctx) {
     if (isAggregate()) {
       final JsonItem item = new JsonItem();
       item.leftIdentifier = leftIdentifier;
       item.leftString = leftString;
-      item.right = right.splitForAggregation(aggregateSplit);
+      item.right = right.splitForAggregation(aggregateSplit, ctx);
       return item;
     } else {
       return this;
@@ -96,13 +97,13 @@ public class JsonItem {
   }
 
   @Override
-  public boolean equals( final Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    final  JsonItem oJsonItem = (JsonItem) o;
+    final JsonItem oJsonItem = (JsonItem) o;
 
     if (!Objects.equals(leftIdentifier, oJsonItem.leftIdentifier))
       return false;

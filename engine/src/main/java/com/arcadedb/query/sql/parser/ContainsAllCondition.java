@@ -28,12 +28,9 @@ import com.arcadedb.query.sql.executor.Result;
 import java.util.*;
 
 public class ContainsAllCondition extends BooleanExpression {
-
   protected Expression left;
-
   protected Expression right;
-
-  protected OrBlock rightBlock;
+  protected OrBlock    rightBlock;
 
   public ContainsAllCondition(final int id) {
     super(id);
@@ -253,38 +250,8 @@ public class ContainsAllCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean refersToParent() {
-    if (left != null && left.refersToParent()) {
-      return true;
-    }
-    if (right != null && right.refersToParent()) {
-      return true;
-    }
-    return rightBlock != null && rightBlock.refersToParent();
-  }
-
-  @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final ContainsAllCondition that = (ContainsAllCondition) o;
-
-    if (!Objects.equals(left, that.left))
-      return false;
-    if (!Objects.equals(right, that.right))
-      return false;
-    return Objects.equals(rightBlock, that.rightBlock);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = left != null ? left.hashCode() : 0;
-    result = 31 * result + (right != null ? right.hashCode() : 0);
-    result = 31 * result + (rightBlock != null ? rightBlock.hashCode() : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return new Object[] { left, right, rightBlock };
   }
 
   @Override
@@ -308,16 +275,8 @@ public class ContainsAllCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean isCacheable() {
-    if (left != null && !left.isCacheable()) {
-      return false;
-    }
-
-    if (right != null && !right.isCacheable()) {
-      return false;
-    }
-
-    return rightBlock == null || rightBlock.isCacheable();
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { left, right, rightBlock };
   }
 }
 /* JavaCC - OriginalChecksum=ab7b4e192a01cda09a82d5b80ef4ec60 (do not edit this line) */

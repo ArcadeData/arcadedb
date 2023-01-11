@@ -22,6 +22,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.IndexSearchInfo;
 import com.arcadedb.query.sql.executor.Result;
 
 import java.util.*;
@@ -147,41 +148,8 @@ public class ContainsValueCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean refersToParent() {
-    if (left != null && left.refersToParent())
-      return true;
-
-    if (condition != null && condition.refersToParent())
-      return true;
-
-    return expression != null && condition.refersToParent();
-  }
-
-  @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final ContainsValueCondition that = (ContainsValueCondition) o;
-
-    if (!Objects.equals(left, that.left))
-      return false;
-    if (!Objects.equals(operator, that.operator))
-      return false;
-    if (!Objects.equals(condition, that.condition))
-      return false;
-    return Objects.equals(expression, that.expression);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = left != null ? left.hashCode() : 0;
-    result = 31 * result + (operator != null ? operator.hashCode() : 0);
-    result = 31 * result + (condition != null ? condition.hashCode() : 0);
-    result = 31 * result + (expression != null ? expression.hashCode() : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return new Object[] { left, operator, condition, expression };
   }
 
   @Override
@@ -204,14 +172,19 @@ public class ContainsValueCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean isCacheable() {
-    if (left != null && !left.isCacheable())
-      return false;
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { left, condition, expression };
+  }
 
-    if (condition != null && !condition.isCacheable())
-      return false;
-
-    return expression == null || expression.isCacheable();
+  public boolean isIndexAware(final IndexSearchInfo info) {
+    if (left.isBaseIdentifier()) {
+      if (info.getField().equals(left.getDefaultAlias().getStringValue())) {
+        if (expression != null && expression.isEarlyCalculated(info.getCtx()) && info.isMap() && info.isIndexByValue()) {
+          return true;
+        }
+      }
+    }
+    return false;
   }
 }
 /* JavaCC - OriginalChecksum=6fda752f10c8d8731f43efa706e39459 (do not edit this line) */

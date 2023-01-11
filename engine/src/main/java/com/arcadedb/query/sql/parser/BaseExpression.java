@@ -238,11 +238,11 @@ public class BaseExpression extends MathExpression {
     return identifier != null && modifier == null && identifier.isBaseIdentifier();
   }
 
-  public boolean isEarlyCalculated() {
+  public boolean isEarlyCalculated(CommandContext ctx) {
     if (number != null || inputParam != null || string != null)
       return true;
 
-    return identifier != null && identifier.isEarlyCalculated();
+    return identifier != null && identifier.isEarlyCalculated(ctx);
   }
 
   @Override
@@ -274,9 +274,9 @@ public class BaseExpression extends MathExpression {
     return identifier != null && identifier.isCount();
   }
 
-  public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateProj) {
+  public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateProj, final CommandContext ctx) {
     if (isAggregate()) {
-      final SimpleNode splitResult = identifier.splitForAggregation(aggregateProj);
+      final SimpleNode splitResult = identifier.splitForAggregation(aggregateProj, ctx);
       if (splitResult instanceof BaseIdentifier) {
         final BaseExpression result = new BaseExpression(-1);
         result.identifier = (BaseIdentifier) splitResult;
@@ -314,37 +314,6 @@ public class BaseExpression extends MathExpression {
       return true;
 
     return modifier != null && modifier.refersToParent();
-  }
-
-  @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final BaseExpression that = (BaseExpression) o;
-
-    if (!Objects.equals(number, that.number))
-      return false;
-    if (!Objects.equals(identifier, that.identifier))
-      return false;
-    if (!Objects.equals(inputParam, that.inputParam))
-      return false;
-    if (!Objects.equals(string, that.string))
-      return false;
-    return Objects.equals(modifier, that.modifier);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = number != null ? number.hashCode() : 0;
-    result = 31 * result + (identifier != null ? identifier.hashCode() : 0);
-    result = 31 * result + (inputParam != null ? inputParam.hashCode() : 0);
-    result = 31 * result + (string != null ? string.hashCode() : 0);
-    result = 31 * result + (modifier != null ? modifier.hashCode() : 0);
-    result = 31 * result + (isNull ? 1 : 0);
-    return result;
   }
 
   public void setIdentifier(final BaseIdentifier identifier) {
@@ -454,13 +423,14 @@ public class BaseExpression extends MathExpression {
       this.identifier.extractSubQueries(collector);
   }
 
-  public boolean isCacheable() {
-    if (modifier != null && !modifier.isCacheable())
-      return false;
-    if (identifier != null)
-      return identifier.isCacheable();
+  @Override
+  protected Object[] getIdentityElements() {
+    return new Object[] { identifier, inputParam, string, modifier, isNull };
+  }
 
-    return true;
+  @Override
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { modifier, identifier };
   }
 
   public void setInputParam(final InputParameter inputParam) {

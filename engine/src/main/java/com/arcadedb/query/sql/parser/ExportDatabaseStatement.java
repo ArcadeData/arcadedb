@@ -53,7 +53,7 @@ public class ExportDatabaseStatement extends SimpleExecStatement {
     result.setProperty("toUrl", targetUrl);
 
     String fileName = targetUrl.startsWith("file://") ? targetUrl.substring("file://".length()) : targetUrl;
-    if (fileName.contains("..") || fileName.contains(File.separator) )
+    if (fileName.contains("..") || fileName.contains(File.separator))
       throw new IllegalArgumentException("Export file cannot contain path change because the directory is specified");
 
     fileName = "exports" + File.separator + fileName;
@@ -92,18 +92,8 @@ public class ExportDatabaseStatement extends SimpleExecStatement {
   }
 
   @Override
-  public boolean equals( final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-    final ExportDatabaseStatement that = (ExportDatabaseStatement) o;
-    return Objects.equals(url, that.url);
-  }
-
-  @Override
-  public int hashCode() {
-    return Objects.hash(url);
+  protected Object[] getIdentityElements() {
+    return new Object[] { url };
   }
 
   @Override
@@ -111,6 +101,11 @@ public class ExportDatabaseStatement extends SimpleExecStatement {
     final ExportDatabaseStatement result = new ExportDatabaseStatement(-1);
     result.url = this.url;
     return result;
+  }
+
+  @Override
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { url };
   }
 }
 /* ParserGeneratorCC - OriginalChecksum=7a41f26bd0c3d48aafcf45752ac28521 (do not edit this line) */

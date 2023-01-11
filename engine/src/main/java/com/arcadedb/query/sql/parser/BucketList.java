@@ -52,7 +52,7 @@ public class BucketList extends SimpleNode {
   }
 
   public List<Bucket> toListOfClusters() {
-    final  List<Bucket> result = new ArrayList<>();
+    final List<Bucket> result = new ArrayList<>();
     for (final Identifier id : buckets) {
       final Bucket bucket = new Bucket(-1);
       bucket.bucketName = id.getStringValue();
@@ -62,26 +62,14 @@ public class BucketList extends SimpleNode {
   }
 
   public BucketList copy() {
-    final  BucketList result = new BucketList(-1);
+    final BucketList result = new BucketList(-1);
     result.buckets = buckets.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;
   }
 
   @Override
-  public boolean equals( final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final BucketList that = (BucketList) o;
-
-    return Objects.equals(buckets, that.buckets);
-  }
-
-  @Override
-  public int hashCode() {
-    return buckets != null ? buckets.hashCode() : 0;
+  protected Object[] getIdentityElements() {
+    return new Object[] { buckets };
   }
 
   public Result serialize() {

@@ -128,7 +128,7 @@ public class SelectExecutionPlanner {
     if (info.expand && info.distinct)
       throw new CommandExecutionException("Cannot execute a statement with DISTINCT expand(), please use a subquery");
 
-    optimizeQuery(info);
+    optimizeQuery(info, ctx);
 
     if (handleHardwiredOptimizations(result, ctx, enableProfiling))
       return result;
@@ -406,8 +406,8 @@ public class SelectExecutionPlanner {
     }
   }
 
-  protected static void optimizeQuery(final QueryPlanningInfo info) {
-    splitLet(info);
+  protected static void optimizeQuery(final QueryPlanningInfo info, final CommandContext ctx) {
+    splitLet(info, ctx);
     extractSubQueries(info);
     if (info.projection != null && info.projection.isExpand()) {
       info.expand = true;
@@ -419,19 +419,19 @@ public class SelectExecutionPlanner {
       info.flattenedWhereClause = moveFlattenedEqualitiesLeft(info.flattenedWhereClause);
     }
 
-    splitProjectionsForGroupBy(info);
+    splitProjectionsForGroupBy(info, ctx);
     addOrderByProjections(info);
   }
 
   /**
    * splits LET clauses in global (executed once) and local (executed once per record)
    */
-  private static void splitLet(final QueryPlanningInfo info) {
+  private static void splitLet(final QueryPlanningInfo info, final CommandContext ctx) {
     if (info.perRecordLetClause != null && info.perRecordLetClause.getItems() != null) {
       final Iterator<LetItem> iterator = info.perRecordLetClause.getItems().iterator();
       while (iterator.hasNext()) {
         final LetItem item = iterator.next();
-        if (item.getExpression() != null && item.getExpression().isEarlyCalculated()) {
+        if (item.getExpression() != null && item.getExpression().isEarlyCalculated(ctx)) {
           iterator.remove();
           addGlobalLet(info, item.getVarName(), item.getExpression());
         } else if (item.getQuery() != null && !item.getQuery().refersToParent()) {
@@ -550,7 +550,7 @@ public class SelectExecutionPlanner {
   /**
    * splits projections in three parts (pre-aggregate, aggregate and final) to efficiently manage aggregations
    */
-  private static void splitProjectionsForGroupBy(final QueryPlanningInfo info) {
+  private static void splitProjectionsForGroupBy(final QueryPlanningInfo info, final CommandContext ctx) {
     if (info.projection == null)
       return;
 
@@ -569,7 +569,7 @@ public class SelectExecutionPlanner {
       result.reset();
       if (isAggregate(item)) {
         isSplitted = true;
-        final ProjectionItem post = item.splitForAggregation(result);
+        final ProjectionItem post = item.splitForAggregation(result, ctx);
         Identifier postAlias = item.getProjectionAlias();
         postAlias = new Identifier(postAlias, true);
         post.setAlias(postAlias);
@@ -1724,7 +1724,7 @@ public class SelectExecutionPlanner {
       final DocumentType typez) {
     final Iterator<IndexSearchDescriptor> it = indexes.stream()
         //.filter(index -> index.getInternal().canBeUsedInEqualityOperators())
-        .map(index -> buildIndexSearchDescriptor(index, block)).filter(Objects::nonNull).filter(x -> x.keyCondition != null)
+        .map(index -> buildIndexSearchDescriptor(ctx, index, block)).filter(Objects::nonNull).filter(x -> x.keyCondition != null)
         .filter(x -> x.keyCondition.getSubBlocks().size() > 0).sorted(Comparator.comparing(x -> x.cost(ctx))).iterator();
 
     final List<IndexSearchDescriptor> list = new ArrayList<>();
@@ -1748,7 +1748,7 @@ public class SelectExecutionPlanner {
   private IndexSearchDescriptor findBestIndexFor(final CommandContext ctx, final Collection<TypeIndex> indexes, final AndBlock block,
       final DocumentType clazz) {
     // get all valid index descriptors
-    List<IndexSearchDescriptor> descriptors = indexes.stream().map(index -> buildIndexSearchDescriptor(index, block)).filter(Objects::nonNull)
+    List<IndexSearchDescriptor> descriptors = indexes.stream().map(index -> buildIndexSearchDescriptor(ctx, index, block)).filter(Objects::nonNull)
         .filter(x -> x.keyCondition != null).filter(x -> x.keyCondition.getSubBlocks().size() > 0).collect(Collectors.toList());
 
     final List<IndexSearchDescriptor> fullTextIndexDescriptors = indexes.stream().filter(idx -> idx.getType().equals(FULL_TEXT))
@@ -1926,7 +1926,7 @@ public class SelectExecutionPlanner {
    *
    * @return
    */
-  private IndexSearchDescriptor buildIndexSearchDescriptor(final Index index, final AndBlock block) {
+  private IndexSearchDescriptor buildIndexSearchDescriptor(final CommandContext ctx, final Index index, final AndBlock block) {
     final List<String> indexFields = index.getPropertyNames();
     final BinaryCondition keyCondition = new BinaryCondition(-1);
     final Identifier key = new Identifier("key");
@@ -1953,7 +1953,7 @@ public class SelectExecutionPlanner {
             final String fieldName = left.getDefaultAlias().getStringValue();
             if (indexField.equals(fieldName)) {
               final BinaryCompareOperator operator = ((BinaryCondition) singleExp).getOperator();
-              if (!((BinaryCondition) singleExp).getRight().isEarlyCalculated()) {
+              if (!((BinaryCondition) singleExp).getRight().isEarlyCalculated(ctx)) {
                 continue; //this cannot be used because the value depends on single record
               }
               if (operator instanceof EqualsCompareOperator) {
@@ -1994,7 +1994,7 @@ public class SelectExecutionPlanner {
           if (left.isBaseIdentifier()) {
             final String fieldName = left.getDefaultAlias().getStringValue();
             if (indexField.equals(fieldName)) {
-              if (!((ContainsAnyCondition) singleExp).getRight().isEarlyCalculated()) {
+              if (!((ContainsAnyCondition) singleExp).getRight().isEarlyCalculated(ctx)) {
                 continue; //this cannot be used because the value depends on single record
               }
               found = true;
@@ -2014,7 +2014,7 @@ public class SelectExecutionPlanner {
             if (indexField.equals(fieldName)) {
               if (((InCondition) singleExp).getRightMathExpression() != null) {
 
-                if (!((InCondition) singleExp).getRightMathExpression().isEarlyCalculated()) {
+                if (!((InCondition) singleExp).getRightMathExpression().isEarlyCalculated(ctx)) {
                   continue; //this cannot be used because the value depends on single record
                 }
                 found = true;

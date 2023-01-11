@@ -43,8 +43,10 @@ public class JsonSerializer {
       object.put("@rid", document.getIdentity().toString());
     object.put("@type", document.getTypeName());
 
-    for (final String p : document.getPropertyNames()) {
-      Object value = document.get(p);
+    final Map<String, Object> documentAsMap = document.toMap();
+    for (final Map.Entry<String, Object> documentEntry : documentAsMap.entrySet()) {
+      final String p = documentEntry.getKey();
+      Object value = documentEntry.getValue();
 
       if (value == null)
         value = JSONObject.NULL;

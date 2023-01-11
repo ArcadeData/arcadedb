@@ -68,10 +68,7 @@ public class IsNullCondition extends BooleanExpression {
 
   @Override
   protected int getNumberOfExternalCalculations() {
-    if (expression.supportsBasicCalculation()) {
-      return 0;
-    }
-    return 1;
+    return expression.supportsBasicCalculation() ? 0 : 1;
   }
 
   @Override
@@ -100,25 +97,8 @@ public class IsNullCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean refersToParent() {
-    return expression != null && expression.refersToParent();
-  }
-
-  @Override
-  public boolean equals( final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final  IsNullCondition that = (IsNullCondition) o;
-
-    return Objects.equals(expression, that.expression);
-  }
-
-  @Override
-  public int hashCode() {
-    return expression != null ? expression.hashCode() : 0;
+  protected Object[] getIdentityElements() {
+    return getCacheableElements();
   }
 
   @Override
@@ -127,9 +107,8 @@ public class IsNullCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean isCacheable() {
-    return expression.isCacheable();
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { expression };
   }
-
 }
 /* JavaCC - OriginalChecksum=29ebbc506a98f90953af91a66a03aa1e (do not edit this line) */

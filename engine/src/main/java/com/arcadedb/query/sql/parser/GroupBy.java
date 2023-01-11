@@ -58,20 +58,8 @@ public class GroupBy extends SimpleNode {
   }
 
   @Override
-  public boolean equals( final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final GroupBy oGroupBy = (GroupBy) o;
-
-    return Objects.equals(items, oGroupBy.items);
-  }
-
-  @Override
-  public int hashCode() {
-    return items != null ? items.hashCode() : 0;
+  protected Object[] getIdentityElements() {
+    return new Object[] { items };
   }
 
   public void extractSubQueries(final SubQueryCollector collector) {
@@ -79,12 +67,9 @@ public class GroupBy extends SimpleNode {
       item.extractSubQueries(collector);
   }
 
-  public boolean refersToParent() {
-    for (final Expression item : items) {
-      if (item.refersToParent())
-        return true;
-    }
-    return false;
+  @Override
+  protected SimpleNode[] getCacheableElements() {
+    return items.toArray(new Expression[items.size()]);
   }
 
   public Result serialize() {

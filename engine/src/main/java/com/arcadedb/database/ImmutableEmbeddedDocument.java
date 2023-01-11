@@ -76,29 +76,18 @@ public class ImmutableEmbeddedDocument extends ImmutableDocument implements Embe
       return false;
     final Document that = (Document) o;
 
-    final Set<String> props = me.getPropertyNames();
-    if (!props.equals(that.getPropertyNames()))
+    final Map<String, Object> propsMap = me.toMap();
+    final Map<String, Object> thatMap = that.toMap();
+    if (!propsMap.equals(thatMap))
       return false;
-
-    for (final String prop : props) {
-      final Object v1 = me.get(prop);
-      final Object v2 = that.get(prop);
-
-      if (v1 == null && v2 == null)
-        continue;
-      else if (v1 != null && !v1.equals(v2))
-        return false;
-    }
 
     return true;
   }
 
   static int hashCode(final EmbeddedDocument me) {
     int hash = 0;
-    final Set<String> props = me.getPropertyNames();
-    for (final String prop : props) {
-      final Object value = me.get(prop);
-      hash += value != null ? value.hashCode() : 0;
+    for (final Map.Entry<String, Object> prop : me.toMap().entrySet()) {
+      hash += prop.getValue() != null ? prop.getValue().hashCode() : 0;
     }
     return hash;
   }

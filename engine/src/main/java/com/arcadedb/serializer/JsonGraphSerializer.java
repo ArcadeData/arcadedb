@@ -56,8 +56,8 @@ public class JsonGraphSerializer extends JsonSerializer {
       object.put("r", rid.toString());
     object.put("t", document.getTypeName());
 
-    for (final String p : document.getPropertyNames()) {
-      Object value = document.get(p);
+    for (final Map.Entry<String, Object> prop : document.toMap().entrySet()) {
+      Object value = prop.getValue();
 
       if (value instanceof Document)
         value = serializeGraphElement((Document) value, new JSONObject());
@@ -70,7 +70,7 @@ public class JsonGraphSerializer extends JsonSerializer {
         }
         value = list;
       }
-      properties.put(p, value);
+      properties.put(prop.getKey(), value);
     }
 
     setMetadata(document, object);

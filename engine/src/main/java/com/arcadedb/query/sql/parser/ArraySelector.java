@@ -102,39 +102,10 @@ public class ArraySelector extends SimpleNode {
 
   public ArraySelector copy() {
     final ArraySelector result = new ArraySelector(-1);
-
     result.rid = rid == null ? null : rid.copy();
     result.inputParam = inputParam == null ? null : inputParam.copy();
     result.expression = expression == null ? null : expression.copy();
     result.integer = integer == null ? null : integer.copy();
-
-    return result;
-  }
-
-  @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final ArraySelector that = (ArraySelector) o;
-
-    if (!Objects.equals(rid, that.rid))
-      return false;
-    if (!Objects.equals(inputParam, that.inputParam))
-      return false;
-    if (!Objects.equals(expression, that.expression))
-      return false;
-    return Objects.equals(integer, that.integer);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = rid != null ? rid.hashCode() : 0;
-    result = 31 * result + (inputParam != null ? inputParam.hashCode() : 0);
-    result = 31 * result + (expression != null ? expression.hashCode() : 0);
-    result = 31 * result + (integer != null ? integer.hashCode() : 0);
     return result;
   }
 
@@ -144,8 +115,14 @@ public class ArraySelector extends SimpleNode {
     }
   }
 
-  public boolean refersToParent() {
-    return expression != null && expression.refersToParent();
+  @Override
+  protected Object[] getIdentityElements() {
+    return getCacheableElements();
+  }
+
+  @Override
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { inputParam, expression, inputParam };
   }
 
   public void setValue(final Result currentRecord, final Object target, final Object value, final CommandContext ctx) {
