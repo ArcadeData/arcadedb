@@ -66,20 +66,9 @@ public class CommitStatement extends SimpleExecStatement {
   }
 
   @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final CommitStatement that = (CommitStatement) o;
-
-    return Objects.equals(retry, that.retry);
+  protected Object[] getIdentityElements() {
+    return new Object[] { retry };
   }
 
-  @Override
-  public int hashCode() {
-    return retry != null ? retry.hashCode() : 0;
-  }
 }
 /* JavaCC - OriginalChecksum=eaa0bc8f765fdaa017789953861bc0aa (do not edit this line) */

@@ -31,6 +31,7 @@ import com.arcadedb.query.sql.executor.IndexableSQLFunction;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.SQLFunction;
+import com.arcadedb.query.sql.function.graph.SQLFunctionMove;
 
 import java.util.*;
 import java.util.stream.*;
@@ -158,7 +159,8 @@ public class FunctionCall extends SimpleNode {
    *
    * @return
    */
-  public Iterable<Record> executeIndexedFunction(final FromClause target, final CommandContext ctx, final BinaryCompareOperator operator, final Object rightValue) {
+  public Iterable<Record> executeIndexedFunction(final FromClause target, final CommandContext ctx, final BinaryCompareOperator operator,
+      final Object rightValue) {
     final SQLFunction function = getFunction();
     if (function instanceof IndexableSQLFunction)
       return ((IndexableSQLFunction) function).searchFromTarget(target, operator, rightValue, ctx, this.getParams().toArray(new Expression[] {}));
@@ -193,7 +195,8 @@ public class FunctionCall extends SimpleNode {
    * @return true if current function is an indexed function AND that function can also be executed without using the index, false
    * otherwise
    */
-  public boolean canExecuteIndexedFunctionWithoutIndex(final FromClause target, final CommandContext context, final BinaryCompareOperator operator, final Object right) {
+  public boolean canExecuteIndexedFunctionWithoutIndex(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
+      final Object right) {
     final SQLFunction function = getCachedFunction();
     if (function instanceof IndexableSQLFunction)
       return ((IndexableSQLFunction) function).canExecuteInline(target, operator, right, context, this.getParams().toArray(new Expression[] {}));
@@ -211,8 +214,8 @@ public class FunctionCall extends SimpleNode {
    *
    * @return true if current function is an indexed function AND that function can be used on this target, false otherwise
    */
-  public boolean allowsIndexedFunctionExecutionOnTarget(
-      final FromClause target, final CommandContext context, final BinaryCompareOperator operator, final Object right) {
+  public boolean allowsIndexedFunctionExecutionOnTarget(final FromClause target, final CommandContext context, final BinaryCompareOperator operator,
+      final Object right) {
     final SQLFunction function = getCachedFunction();
     if (function instanceof IndexableSQLFunction)
       return ((IndexableSQLFunction) function).allowsIndexedExecution(target, operator, right, context, this.getParams().toArray(new Expression[] {}));
@@ -266,7 +269,7 @@ public class FunctionCall extends SimpleNode {
     return false;
   }
 
-  public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateProj) {
+  public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateProj, final CommandContext ctx) {
     if (isAggregate()) {
       final FunctionCall newFunct = new FunctionCall(parser, -1);
       newFunct.name = this.name;
@@ -300,7 +303,7 @@ public class FunctionCall extends SimpleNode {
           }
         } else {
           for (final Expression param : params) {
-            newFunct.getParams().add(param.splitForAggregation(aggregateProj));
+            newFunct.getParams().add(param.splitForAggregation(aggregateProj, ctx));
           }
         }
       }
@@ -328,13 +331,24 @@ public class FunctionCall extends SimpleNode {
     return item;
   }
 
-  public boolean isEarlyCalculated() {
+  public boolean isEarlyCalculated(final CommandContext ctx) {
+    if (isTraverseFunction())
+      return false;
+
     for (final Expression param : params) {
-      if (!param.isEarlyCalculated()) {
+      if (!param.isEarlyCalculated(ctx)) {
         return false;
       }
     }
     return true;
+  }
+
+  private boolean isTraverseFunction() {
+    if (name == null)
+      return false;
+
+    final SQLFunction function = getFunction();
+    return function instanceof SQLFunctionMove;
   }
 
   public AggregationContext getAggregationContext(final CommandContext ctx) {
@@ -349,26 +363,11 @@ public class FunctionCall extends SimpleNode {
   }
 
   @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final FunctionCall that = (FunctionCall) o;
-
-    if (!Objects.equals(name, that.name))
-      return false;
-    return Objects.equals(params, that.params);
+  protected Object[] getIdentityElements() {
+    return new Object[] { name, params };
   }
 
   @Override
-  public int hashCode() {
-    int result = name != null ? name.hashCode() : 0;
-    result = 31 * result + (params != null ? params.hashCode() : 0);
-    return result;
-  }
-
   public boolean refersToParent() {
     if (params != null) {
       for (final Expression param : params) {

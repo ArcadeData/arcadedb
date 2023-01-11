@@ -79,20 +79,13 @@ public class OrderBy extends SimpleNode {
   }
 
   @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final OrderBy oOrderBy = (OrderBy) o;
-
-    return Objects.equals(items, oOrderBy.items);
+  protected Object[] getIdentityElements() {
+    return getCacheableElements();
   }
 
   @Override
-  public int hashCode() {
-    return items != null ? items.hashCode() : 0;
+  protected SimpleNode[] getCacheableElements() {
+    return items.toArray(new SimpleNode[items.size()]);
   }
 
   public void extractSubQueries(final SubQueryCollector collector) {
@@ -101,17 +94,6 @@ public class OrderBy extends SimpleNode {
         item.extractSubQueries(collector);
       }
     }
-  }
-
-  public boolean refersToParent() {
-    if (items != null) {
-      for (final OrderByItem item : items) {
-        if (item.refersToParent()) {
-          return true;
-        }
-      }
-    }
-    return false;
   }
 
   public Result serialize() {

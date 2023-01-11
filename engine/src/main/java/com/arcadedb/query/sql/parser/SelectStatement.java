@@ -241,48 +241,8 @@ public class SelectStatement extends Statement {
   }
 
   @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final SelectStatement that = (SelectStatement) o;
-
-    if (!Objects.equals(target, that.target))
-      return false;
-    if (!Objects.equals(projection, that.projection))
-      return false;
-    if (!Objects.equals(whereClause, that.whereClause))
-      return false;
-    if (!Objects.equals(groupBy, that.groupBy))
-      return false;
-    if (!Objects.equals(orderBy, that.orderBy))
-      return false;
-    if (!Objects.equals(unwind, that.unwind))
-      return false;
-    if (!Objects.equals(skip, that.skip))
-      return false;
-    if (!Objects.equals(limit, that.limit))
-      return false;
-    if (!Objects.equals(letClause, that.letClause))
-      return false;
-    return Objects.equals(timeout, that.timeout);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = target != null ? target.hashCode() : 0;
-    result = 31 * result + (projection != null ? projection.hashCode() : 0);
-    result = 31 * result + (whereClause != null ? whereClause.hashCode() : 0);
-    result = 31 * result + (groupBy != null ? groupBy.hashCode() : 0);
-    result = 31 * result + (orderBy != null ? orderBy.hashCode() : 0);
-    result = 31 * result + (unwind != null ? unwind.hashCode() : 0);
-    result = 31 * result + (skip != null ? skip.hashCode() : 0);
-    result = 31 * result + (limit != null ? limit.hashCode() : 0);
-    result = 31 * result + (letClause != null ? letClause.hashCode() : 0);
-    result = 31 * result + (timeout != null ? timeout.hashCode() : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return new Object[] { target, projection, whereClause, groupBy, orderBy, unwind, skip, limit, letClause, timeout };
   }
 
   @Override

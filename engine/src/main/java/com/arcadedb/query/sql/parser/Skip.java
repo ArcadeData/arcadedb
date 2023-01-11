@@ -72,24 +72,8 @@ public class Skip extends SimpleNode {
   }
 
   @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final Skip oSkip = (Skip) o;
-
-    if (!Objects.equals(num, oSkip.num))
-      return false;
-    return Objects.equals(inputParam, oSkip.inputParam);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = num != null ? num.hashCode() : 0;
-    result = 31 * result + (inputParam != null ? inputParam.hashCode() : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return new Object[] { num, inputParam };
   }
 
   public Result serialize() {

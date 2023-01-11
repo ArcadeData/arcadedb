@@ -38,8 +38,7 @@ public class Modifier extends SimpleNode {
   RightBinaryCondition      rightBinaryCondition;
   MethodCall                methodCall;
   SuffixIdentifier          suffix;
-
-  Modifier next;
+  Modifier                  next;
 
   public Modifier(final int id) {
     super(id);
@@ -187,42 +186,8 @@ public class Modifier extends SimpleNode {
   }
 
   @Override
-  public boolean equals( final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final Modifier oModifier = (Modifier) o;
-
-    if (squareBrackets != oModifier.squareBrackets)
-      return false;
-    if (!Objects.equals(arrayRange, oModifier.arrayRange))
-      return false;
-    if (!Objects.equals(condition, oModifier.condition))
-      return false;
-    if (!Objects.equals(arraySingleValues, oModifier.arraySingleValues))
-      return false;
-    if (!Objects.equals(rightBinaryCondition, oModifier.rightBinaryCondition))
-      return false;
-    if (!Objects.equals(methodCall, oModifier.methodCall))
-      return false;
-    if (!Objects.equals(suffix, oModifier.suffix))
-      return false;
-    return Objects.equals(next, oModifier.next);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = (squareBrackets ? 1 : 0);
-    result = 31 * result + (arrayRange != null ? arrayRange.hashCode() : 0);
-    result = 31 * result + (condition != null ? condition.hashCode() : 0);
-    result = 31 * result + (arraySingleValues != null ? arraySingleValues.hashCode() : 0);
-    result = 31 * result + (rightBinaryCondition != null ? rightBinaryCondition.hashCode() : 0);
-    result = 31 * result + (methodCall != null ? methodCall.hashCode() : 0);
-    result = 31 * result + (suffix != null ? suffix.hashCode() : 0);
-    result = 31 * result + (next != null ? next.hashCode() : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return new Object[] { squareBrackets, arrayRange, condition, arraySingleValues, rightBinaryCondition, methodCall, suffix, next };
   }
 
   public void extractSubQueries(final SubQueryCollector collector) {
@@ -247,27 +212,11 @@ public class Modifier extends SimpleNode {
     if (next != null) {
       next.extractSubQueries(collector);
     }
-
   }
 
-  public boolean refersToParent() {
-    if (arrayRange != null && arrayRange.refersToParent()) {
-      return true;
-    }
-    if (condition != null && condition.refersToParent()) {
-      return true;
-    }
-
-    if (arraySingleValues != null && arraySingleValues.refersToParent()) {
-      return true;
-    }
-    if (rightBinaryCondition != null && rightBinaryCondition.refersToParent()) {
-      return true;
-    }
-    if (methodCall != null && methodCall.refersToParent()) {
-      return true;
-    }
-    return suffix != null && suffix.refersToParent();
+  @Override
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { arrayRange, condition, arraySingleValues, rightBinaryCondition, methodCall, suffix };
   }
 
   protected void setValue(final Result currentRecord, final Object target, final Object value, final CommandContext ctx) {
@@ -414,23 +363,6 @@ public class Modifier extends SimpleNode {
       next = new Modifier(-1);
       next.deserialize(fromResult.getProperty("next"));
     }
-  }
-
-  public boolean isCacheable() {
-    if (arrayRange != null || arraySingleValues != null || rightBinaryCondition != null) {
-      return false;//TODO enhance a bit
-    }
-    if (condition != null && !condition.isCacheable()) {
-      return false;
-    }
-    if (methodCall != null && !methodCall.isCacheable()) {
-      return false;
-    }
-    if (suffix != null && !suffix.isCacheable()) {
-      return false;
-    }
-    return next == null || next.isCacheable();
-
   }
 }
 /* JavaCC - OriginalChecksum=39c21495d02f9b5007b4a2d6915496e1 (do not edit this line) */

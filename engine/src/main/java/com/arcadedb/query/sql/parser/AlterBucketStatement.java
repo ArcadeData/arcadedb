@@ -96,7 +96,7 @@ public class AlterBucketStatement extends DDLStatement {
     throw new UnsupportedOperationException();
   }
 
-//  private OCluster.ATTRIBUTES getClusterAttribute(OIdentifier attributeName) {
+  //  private OCluster.ATTRIBUTES getClusterAttribute(OIdentifier attributeName) {
 //    return null;
 //  }
 //
@@ -119,32 +119,9 @@ public class AlterBucketStatement extends DDLStatement {
 //      return Collections.singletonList(bucket);
 //    }
 //  }
-
   @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final AlterBucketStatement that = (AlterBucketStatement) o;
-
-    if (starred != that.starred)
-      return false;
-    if (!Objects.equals(name, that.name))
-      return false;
-    if (!Objects.equals(attributeName, that.attributeName))
-      return false;
-    return Objects.equals(attributeValue, that.attributeValue);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = name != null ? name.hashCode() : 0;
-    result = 31 * result + (attributeName != null ? attributeName.hashCode() : 0);
-    result = 31 * result + (starred ? 1 : 0);
-    result = 31 * result + (attributeValue != null ? attributeValue.hashCode() : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return new Object[] { name, attributeName, starred, attributeValue };
   }
 }
 /* JavaCC - OriginalChecksum=ed78ea0f1a05b0963db625ed1f338bd6 (do not edit this line) */

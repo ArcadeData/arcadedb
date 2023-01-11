@@ -180,11 +180,6 @@ public class BinaryCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean refersToParent() {
-    return left.refersToParent() || right.refersToParent();
-  }
-
-  @Override
   public Optional<UpdateItem> transformToUpdateItem() {
     if (!checkCanTransformToUpdate()) {
       return Optional.empty();
@@ -234,27 +229,8 @@ public class BinaryCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final BinaryCondition that = (BinaryCondition) o;
-
-    if (Objects.equals(left, that.left))
-      return false;
-    if (Objects.equals(operator, that.operator))
-      return false;
-    return Objects.equals(right, that.right);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = left != null ? left.hashCode() : 0;
-    result = 31 * result + (operator != null ? operator.hashCode() : 0);
-    result = 31 * result + (right != null ? right.hashCode() : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return new Object[] { left, operator, right };
   }
 
   @Override
@@ -295,9 +271,28 @@ public class BinaryCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean isCacheable() {
-    return left.isCacheable() && right.isCacheable();
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { left, right };
   }
 
+  @Override
+  public boolean createRangeWith(final BooleanExpression match) {
+    if (!(match instanceof BinaryCondition))
+      return false;
+
+    final BinaryCondition metchingCondition = (BinaryCondition) match;
+    if (!metchingCondition.getLeft().equals(this.getLeft()))
+      return false;
+
+    final BinaryCompareOperator leftOperator = metchingCondition.getOperator();
+    final BinaryCompareOperator rightOperator = this.getOperator();
+    if (leftOperator instanceof GeOperator || leftOperator instanceof GtOperator)
+      return rightOperator instanceof LeOperator || rightOperator instanceof LtOperator;
+
+    if (leftOperator instanceof LeOperator || leftOperator instanceof LtOperator)
+      return rightOperator instanceof GeOperator || rightOperator instanceof GtOperator;
+
+    return false;
+  }
 }
 /* JavaCC - OriginalChecksum=99ed1dd2812eb730de8e1931b1764da5 (do not edit this line) */

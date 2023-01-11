@@ -182,7 +182,7 @@ public class MatchExecutionPlanner {
       info.skip = this.skip;
       info.limit = this.limit;
 
-      SelectExecutionPlanner.optimizeQuery(info);
+      SelectExecutionPlanner.optimizeQuery(info, context);
       SelectExecutionPlanner.handleProjectionsBlock(result, info, context, enableProfiling);
     }
 
@@ -190,8 +190,8 @@ public class MatchExecutionPlanner {
 
   }
 
-  private void manageNotPatterns(final SelectExecutionPlan result, final Pattern pattern, final List<MatchExpression> notMatchExpressions, final CommandContext context,
-      final boolean enableProfiling) {
+  private void manageNotPatterns(final SelectExecutionPlan result, final Pattern pattern, final List<MatchExpression> notMatchExpressions,
+      final CommandContext context, final boolean enableProfiling) {
     for (final MatchExpression exp : notMatchExpressions) {
       if (pattern.aliasToNode.get(exp.getOrigin().getAlias()) == null) {
         throw new CommandExecutionException(
@@ -480,7 +480,8 @@ public class MatchExecutionPlanner {
     this.subPatterns = pattern.getDisjointPatterns();
   }
 
-  private void addStepsFor(final SelectExecutionPlan plan, final EdgeTraversal edge, final CommandContext context, final boolean first, final boolean profilingEnabled) {
+  private void addStepsFor(final SelectExecutionPlan plan, final EdgeTraversal edge, final CommandContext context, final boolean first,
+      final boolean profilingEnabled) {
     if (first) {
       final PatternNode patternNode = edge.out ? edge.edge.out : edge.edge.in;
       final String typez = this.aliasTypes.get(patternNode.alias);
@@ -510,7 +511,8 @@ public class MatchExecutionPlanner {
     }
   }
 
-  private void addPrefetchSteps(final SelectExecutionPlan result, final Set<String> aliasesToPrefetch, final CommandContext context, final boolean profilingEnabled) {
+  private void addPrefetchSteps(final SelectExecutionPlan result, final Set<String> aliasesToPrefetch, final CommandContext context,
+      final boolean profilingEnabled) {
     for (final String alias : aliasesToPrefetch) {
       final String targetClass = aliasTypes.get(alias);
       final String targetCluster = aliasBuckets.get(alias);
@@ -578,8 +580,8 @@ public class MatchExecutionPlanner {
     }
   }
 
-  private void addAliases(final MatchExpression expr, final Map<String, WhereClause> aliasFilters, final Map<String, String> aliasUserTypes, final Map<String, String> aliasClusters,
-      final Map<String, Rid> aliasRids, final CommandContext context) {
+  private void addAliases(final MatchExpression expr, final Map<String, WhereClause> aliasFilters, final Map<String, String> aliasUserTypes,
+      final Map<String, String> aliasClusters, final Map<String, Rid> aliasRids, final CommandContext context) {
     addAliases(expr.getOrigin(), aliasFilters, aliasUserTypes, aliasClusters, aliasRids, context);
     for (final MatchPathItem item : expr.getItems()) {
       if (item.getFilter() != null) {
@@ -588,8 +590,8 @@ public class MatchExecutionPlanner {
     }
   }
 
-  private void addAliases(final MatchFilter matchFilter, final Map<String, WhereClause> aliasFilters, final Map<String, String> aliasUserTypes, final Map<String, String> aliasClusters,
-      final Map<String, Rid> aliasRids, final CommandContext context) {
+  private void addAliases(final MatchFilter matchFilter, final Map<String, WhereClause> aliasFilters, final Map<String, String> aliasUserTypes,
+      final Map<String, String> aliasClusters, final Map<String, Rid> aliasRids, final CommandContext context) {
     final String alias = matchFilter.getAlias();
     final WhereClause filter = matchFilter.getFilter();
     if (alias != null) {
@@ -675,8 +677,8 @@ public class MatchExecutionPlanner {
     }
   }
 
-  private Map<String, Long> estimateRootEntries(final Map<String, String> aliasUserTypes, final Map<String, String> aliasClusters, final Map<String, Rid> aliasRids,
-      final Map<String, WhereClause> aliasFilters, final CommandContext ctx) {
+  private Map<String, Long> estimateRootEntries(final Map<String, String> aliasUserTypes, final Map<String, String> aliasClusters,
+      final Map<String, Rid> aliasRids, final Map<String, WhereClause> aliasFilters, final CommandContext ctx) {
     final Set<String> allAliases = new LinkedHashSet<>();
     allAliases.addAll(aliasUserTypes.keySet());
     allAliases.addAll(aliasFilters.keySet());

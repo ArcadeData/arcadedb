@@ -99,42 +99,8 @@ public class AlterTypeStatement extends DDLStatement {
   }
 
   @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final AlterTypeStatement that = (AlterTypeStatement) o;
-
-    if (!Objects.equals(name, that.name))
-      return false;
-    if (property != that.property)
-      return false;
-    if (!identifierListValue.equals(that.identifierListValue))
-      return false;
-    if (!identifierListAddRemove.equals(that.identifierListAddRemove))
-      return false;
-    if (!Objects.equals(numberValue, that.numberValue))
-      return false;
-    if (!Objects.equals(booleanValue, that.booleanValue))
-      return false;
-    if (!Objects.equals(customKey, that.customKey))
-      return false;
-    return Objects.equals(customValue, that.customValue);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = name != null ? name.hashCode() : 0;
-    result = 31 * result + (property != null ? property.hashCode() : 0);
-    result = 31 * result + identifierListValue.hashCode();
-    result = 31 * result + identifierListAddRemove.hashCode();
-    result = 31 * result + (numberValue != null ? numberValue.hashCode() : 0);
-    result = 31 * result + (booleanValue != null ? booleanValue.hashCode() : 0);
-    result = 31 * result + (customKey != null ? customKey.hashCode() : 0);
-    result = 31 * result + (customValue != null ? customValue.hashCode() : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return new Object[] { name, property, identifierListValue, identifierListAddRemove, numberValue, booleanValue, customKey, customValue };
   }
 
   @Override

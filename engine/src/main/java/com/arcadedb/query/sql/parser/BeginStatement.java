@@ -65,20 +65,9 @@ public class BeginStatement extends SimpleExecStatement {
   }
 
   @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final BeginStatement that = (BeginStatement) o;
-
-    return Objects.equals(isolation, that.isolation);
+  protected Object[] getIdentityElements() {
+    return new Object[] { isolation };
   }
 
-  @Override
-  public int hashCode() {
-    return isolation != null ? isolation.hashCode() : 0;
-  }
 }
 /* JavaCC - OriginalChecksum=aaa994acbe63cc4169fe33144d412fed (do not edit this line) */

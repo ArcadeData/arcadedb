@@ -30,8 +30,7 @@ import java.util.*;
 public class ArrayNumberSelector extends SimpleNode {
   InputParameter inputValue;
   MathExpression expressionValue;
-
-  Integer integer;
+  Integer        integer;
 
   public ArrayNumberSelector(final int id) {
     super(id);
@@ -104,38 +103,15 @@ public class ArrayNumberSelector extends SimpleNode {
     return result;
   }
 
-  @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final ArrayNumberSelector that = (ArrayNumberSelector) o;
-
-    if (!Objects.equals(inputValue, that.inputValue))
-      return false;
-    if (!Objects.equals(expressionValue, that.expressionValue))
-      return false;
-    return Objects.equals(integer, that.integer);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = inputValue != null ? inputValue.hashCode() : 0;
-    result = 31 * result + (expressionValue != null ? expressionValue.hashCode() : 0);
-    result = 31 * result + (integer != null ? integer.hashCode() : 0);
-    return result;
-  }
-
   public void extractSubQueries(final SubQueryCollector collector) {
     if (expressionValue != null) {
       expressionValue.extractSubQueries(collector);
     }
   }
 
-  public boolean refersToParent() {
-    return expressionValue != null && expressionValue.refersToParent();
+  @Override
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { expressionValue };
   }
 
   public Result serialize() {
@@ -160,5 +136,11 @@ public class ArrayNumberSelector extends SimpleNode {
     }
     integer = fromResult.getProperty("integer");
   }
+
+  @Override
+  protected Object[] getIdentityElements() {
+    return new Object[] { inputValue, expressionValue, integer };
+  }
+
 }
 /* JavaCC - OriginalChecksum=5b2e495391ede3ccdc6c25aa63c8e591 (do not edit this line) */

@@ -147,9 +147,8 @@ public class NotInCondition extends BooleanExpression {
 
   @Override
   public boolean needsAliases(final Set<String> aliases) {
-    if (left.needsAliases(aliases)) {
+    if (left.needsAliases(aliases))
       return true;
-    }
 
     return rightMathExpression != null && rightMathExpression.needsAliases(aliases);
   }
@@ -168,9 +167,8 @@ public class NotInCondition extends BooleanExpression {
 
   @Override
   public void extractSubQueries(final SubQueryCollector collector) {
-    if (left != null) {
+    if (left != null)
       left.extractSubQueries(collector);
-    }
 
     if (rightMathExpression != null) {
       rightMathExpression.extractSubQueries(collector);
@@ -182,51 +180,8 @@ public class NotInCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean refersToParent() {
-    if (left != null && left.refersToParent()) {
-      return true;
-    }
-    if (rightStatement != null && rightStatement.refersToParent()) {
-      return true;
-    }
-    return rightMathExpression != null && rightMathExpression.refersToParent();
-  }
-
-  @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final NotInCondition that = (NotInCondition) o;
-
-    if (!Objects.equals(left, that.left))
-      return false;
-    if (!Objects.equals(operator, that.operator))
-      return false;
-    if (!Objects.equals(rightStatement, that.rightStatement))
-      return false;
-    if (!Objects.equals(right, that.right))
-      return false;
-    if (!Objects.equals(rightParam, that.rightParam))
-      return false;
-    if (!Objects.equals(rightMathExpression, that.rightMathExpression))
-      return false;
-    final boolean b = inputFinalValue != null ? inputFinalValue.equals(that.inputFinalValue) : that.inputFinalValue == null;
-    return b;
-  }
-
-  @Override
-  public int hashCode() {
-    int result = left != null ? left.hashCode() : 0;
-    result = 31 * result + (operator != null ? operator.hashCode() : 0);
-    result = 31 * result + (rightStatement != null ? rightStatement.hashCode() : 0);
-    result = 31 * result + (right != null ? right.hashCode() : 0);
-    result = 31 * result + (rightParam != null ? rightParam.hashCode() : 0);
-    result = 31 * result + (rightMathExpression != null ? rightMathExpression.hashCode() : 0);
-    result = 31 * result + (inputFinalValue != null ? inputFinalValue.hashCode() : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return new Object[] { left, operator, rightStatement, right, rightParam, rightMathExpression, inputFinalValue };
   }
 
   @Override
@@ -246,17 +201,8 @@ public class NotInCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean isCacheable() {
-    if (left != null && !left.isCacheable()) {
-      return false;
-    }
-
-    if (rightStatement != null && !rightStatement.executionPlanCanBeCached()) {
-      return false;
-    }
-
-    return rightMathExpression == null || rightMathExpression.isCacheable();
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { left, rightStatement, rightMathExpression };
   }
-
 }
 /* JavaCC - OriginalChecksum=8fb82bf72cc7d9cbdf2f9e2323ca8ee1 (do not edit this line) */

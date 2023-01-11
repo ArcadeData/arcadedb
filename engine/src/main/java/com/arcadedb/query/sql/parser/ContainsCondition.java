@@ -22,6 +22,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.IndexSearchInfo;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.QueryOperatorEquals;
 import com.arcadedb.query.sql.executor.Result;
@@ -197,27 +198,27 @@ public class ContainsCondition extends BooleanExpression {
 
   @Override
   public boolean supportsBasicCalculation() {
-    if (!left.supportsBasicCalculation()) {
+    if (!left.supportsBasicCalculation())
       return false;
-    }
-    if (!right.supportsBasicCalculation()) {
+
+    if (!right.supportsBasicCalculation())
       return false;
-    }
+
     return condition.supportsBasicCalculation();
   }
 
   @Override
   protected int getNumberOfExternalCalculations() {
     int total = 0;
-    if (condition != null) {
+    if (condition != null)
       total += condition.getNumberOfExternalCalculations();
-    }
-    if (!left.supportsBasicCalculation()) {
+
+    if (!left.supportsBasicCalculation())
       total++;
-    }
-    if (right != null && !right.supportsBasicCalculation()) {
+
+    if (right != null && !right.supportsBasicCalculation())
       total++;
-    }
+
     return total;
   }
 
@@ -225,26 +226,26 @@ public class ContainsCondition extends BooleanExpression {
   protected List<Object> getExternalCalculationConditions() {
     final List<Object> result = new ArrayList<Object>();
 
-    if (condition != null) {
+    if (condition != null)
       result.addAll(condition.getExternalCalculationConditions());
-    }
-    if (!left.supportsBasicCalculation()) {
+
+    if (!left.supportsBasicCalculation())
       result.add(left);
-    }
-    if (right != null && !right.supportsBasicCalculation()) {
+
+    if (right != null && !right.supportsBasicCalculation())
       result.add(right);
-    }
+
     return result;
   }
 
   @Override
   public boolean needsAliases(final Set<String> aliases) {
-    if (left != null && left.needsAliases(aliases)) {
+    if (left != null && left.needsAliases(aliases))
       return true;
-    }
-    if (right != null && right.needsAliases(aliases)) {
+
+    if (right != null && right.needsAliases(aliases))
       return true;
-    }
+
     return condition != null && condition.needsAliases(aliases);
   }
 
@@ -255,55 +256,23 @@ public class ContainsCondition extends BooleanExpression {
     result.right = right == null ? null : right.copy();
     result.condition = condition == null ? null : condition.copy();
     return result;
-
   }
 
   @Override
   public void extractSubQueries(final SubQueryCollector collector) {
-    if (left != null) {
+    if (left != null)
       left.extractSubQueries(collector);
-    }
-    if (right != null) {
+
+    if (right != null)
       right.extractSubQueries(collector);
-    }
-    if (condition != null) {
+
+    if (condition != null)
       condition.extractSubQueries(collector);
-    }
   }
 
   @Override
-  public boolean refersToParent() {
-    if (left != null && left.refersToParent()) {
-      return true;
-    }
-    if (right != null && right.refersToParent()) {
-      return true;
-    }
-    return condition != null && condition.refersToParent();
-  }
-
-  @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final ContainsCondition that = (ContainsCondition) o;
-
-    if (!Objects.equals(left, that.left))
-      return false;
-    if (!Objects.equals(right, that.right))
-      return false;
-    return Objects.equals(condition, that.condition);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = left != null ? left.hashCode() : 0;
-    result = 31 * result + (right != null ? right.hashCode() : 0);
-    result = 31 * result + (condition != null ? condition.hashCode() : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return new Object[] { left, right, condition };
   }
 
   @Override
@@ -313,29 +282,36 @@ public class ContainsCondition extends BooleanExpression {
     final List<String> conditionX = condition == null ? null : condition.getMatchPatternInvolvedAliases();
 
     final List<String> result = new ArrayList<String>();
-    if (leftX != null) {
+    if (leftX != null)
       result.addAll(leftX);
-    }
-    if (rightX != null) {
+
+    if (rightX != null)
       result.addAll(rightX);
-    }
-    if (conditionX != null) {
+
+    if (conditionX != null)
       result.addAll(conditionX);
-    }
 
     return result.isEmpty() ? null : result;
   }
 
   @Override
-  public boolean isCacheable() {
-    if (left != null && !left.isCacheable()) {
-      return false;
-    }
-    if (right != null && !right.isCacheable()) {
-      return false;
-    }
-    return condition == null || condition.isCacheable();
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { left, right, condition };
   }
 
+  public boolean isIndexAware(final IndexSearchInfo info) {
+    if (left.isBaseIdentifier()) {
+      if (info.getField().equals(left.getDefaultAlias().getStringValue())) {
+        if (right != null) {
+          return right.isEarlyCalculated(info.getCtx());
+        }
+      }
+    }
+    return false;
+  }
+
+  public Expression getRight() {
+    return right;
+  }
 }
 /* JavaCC - OriginalChecksum=bad1118296ea74860e88d66bfe9fa222 (do not edit this line) */

@@ -92,25 +92,8 @@ public class IsNotNullCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean refersToParent() {
-    return expression != null && expression.refersToParent();
-  }
-
-  @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final IsNotNullCondition that = (IsNotNullCondition) o;
-
-    return Objects.equals(expression, that.expression);
-  }
-
-  @Override
-  public int hashCode() {
-    return expression != null ? expression.hashCode() : 0;
+  protected Object[] getIdentityElements() {
+    return new Object[] { expression };
   }
 
   @Override
@@ -119,9 +102,8 @@ public class IsNotNullCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean isCacheable() {
-    return expression.isCacheable();
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { expression };
   }
-
 }
 /* JavaCC - OriginalChecksum=a292fa8a629abb7f6fe72a627fc91361 (do not edit this line) */

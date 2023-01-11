@@ -138,11 +138,10 @@ public class ArrayRangeSelector extends SimpleNode {
       return arrayResult;
     }
     lFrom = Math.max(lFrom, 0);
-    if (arrayResult.length < lFrom) {
+    if (arrayResult.length < lFrom)
       return null;
-    }
-    lFrom = Math.min(lFrom, arrayResult.length - 1);
 
+    lFrom = Math.min(lFrom, arrayResult.length - 1);
     lTo = Math.min(lTo, arrayResult.length);
 
     return Arrays.asList(Arrays.copyOfRange(arrayResult, lFrom, lTo));
@@ -161,43 +160,8 @@ public class ArrayRangeSelector extends SimpleNode {
     result.to = to;
     result.newRange = newRange;
     result.included = included;
-
     result.fromSelector = fromSelector == null ? null : fromSelector.copy();
     result.toSelector = toSelector == null ? null : toSelector.copy();
-
-    return result;
-  }
-
-  @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final ArrayRangeSelector that = (ArrayRangeSelector) o;
-
-    if (newRange != that.newRange)
-      return false;
-    if (included != that.included)
-      return false;
-    if (!Objects.equals(from, that.from))
-      return false;
-    if (!Objects.equals(to, that.to))
-      return false;
-    if (!Objects.equals(fromSelector, that.fromSelector))
-      return false;
-    return Objects.equals(toSelector, that.toSelector);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = from != null ? from.hashCode() : 0;
-    result = 31 * result + (to != null ? to.hashCode() : 0);
-    result = 31 * result + (newRange ? 1 : 0);
-    result = 31 * result + (included ? 1 : 0);
-    result = 31 * result + (fromSelector != null ? fromSelector.hashCode() : 0);
-    result = 31 * result + (toSelector != null ? toSelector.hashCode() : 0);
     return result;
   }
 
@@ -210,11 +174,9 @@ public class ArrayRangeSelector extends SimpleNode {
     }
   }
 
-  public boolean refersToParent() {
-    if (fromSelector != null && fromSelector.refersToParent()) {
-      return true;
-    }
-    return toSelector != null && toSelector.refersToParent();
+  @Override
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { fromSelector, toSelector };
   }
 
   public void setValue(final Object target, final Object value, final CommandContext ctx) {

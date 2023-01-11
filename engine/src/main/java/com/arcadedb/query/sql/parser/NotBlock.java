@@ -139,30 +139,8 @@ public class NotBlock extends BooleanExpression {
     sub.extractSubQueries(collector);
   }
 
-  @Override
-  public boolean refersToParent() {
-    return sub.refersToParent();
-  }
-
-  @Override
-  public boolean equals( final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final NotBlock oNotBlock = (NotBlock) o;
-
-    if (negate != oNotBlock.negate)
-      return false;
-    return Objects.equals(sub, oNotBlock.sub);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = sub != null ? sub.hashCode() : 0;
-    result = 31 * result + (negate ? 1 : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return new Object[] { sub };
   }
 
   @Override
@@ -171,8 +149,16 @@ public class NotBlock extends BooleanExpression {
   }
 
   @Override
-  public boolean isCacheable() {
-    return sub.isCacheable();
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { sub };
+  }
+
+  @Override
+  public boolean isAlwaysTrue() {
+    if (negate)
+      return false;
+
+    return sub.isAlwaysTrue();
   }
 }
 /* JavaCC - OriginalChecksum=1926313b3f854235aaa20811c22d583b (do not edit this line) */

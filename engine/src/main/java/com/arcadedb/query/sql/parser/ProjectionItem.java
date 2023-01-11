@@ -203,11 +203,11 @@ public class ProjectionItem extends SimpleNode {
    *
    * @param aggregateSplit
    */
-  public ProjectionItem splitForAggregation(final AggregateProjectionSplit aggregateSplit) {
+  public ProjectionItem splitForAggregation(final AggregateProjectionSplit aggregateSplit, final CommandContext ctx) {
     if (isAggregate()) {
       final ProjectionItem result = new ProjectionItem(-1);
       result.alias = getProjectionAlias();
-      result.expression = expression.splitForAggregation(aggregateSplit);
+      result.expression = expression.splitForAggregation(aggregateSplit, ctx);
       result.nestedProjection = nestedProjection;
       return result;
     } else {
@@ -303,11 +303,9 @@ public class ProjectionItem extends SimpleNode {
     this.nestedProjection = nestedProjection;
   }
 
-  public boolean isCacheable() {
-    if (expression != null) {
-      return expression.isCacheable();
-    }
-    return true;
+  @Override
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { expression };
   }
 }
 /* JavaCC - OriginalChecksum=6d6010734c7434a6f516e2eac308e9ce (do not edit this line) */

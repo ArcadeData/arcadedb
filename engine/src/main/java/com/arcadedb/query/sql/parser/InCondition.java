@@ -23,6 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.IndexSearchInfo;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.QueryOperatorEquals;
 import com.arcadedb.query.sql.executor.Result;
@@ -248,50 +249,8 @@ public class InCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean refersToParent() {
-    if (left != null && left.refersToParent())
-      return true;
-
-    if (rightStatement != null && rightStatement.refersToParent())
-      return true;
-
-    return rightMathExpression != null && rightMathExpression.refersToParent();
-  }
-
-  @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final InCondition that = (InCondition) o;
-
-    if (!Objects.equals(left, that.left))
-      return false;
-    if (!Objects.equals(operator, that.operator))
-      return false;
-    if (!Objects.equals(rightStatement, that.rightStatement))
-      return false;
-    if (!Objects.equals(rightParam, that.rightParam))
-      return false;
-    if (!Objects.equals(rightMathExpression, that.rightMathExpression))
-      return false;
-    if (!Objects.equals(right, that.right))
-      return false;
-    return inputFinalValue != null ? inputFinalValue.equals(that.inputFinalValue) : that.inputFinalValue == null;
-  }
-
-  @Override
-  public int hashCode() {
-    int result = left != null ? left.hashCode() : 0;
-    result = 31 * result + (operator != null ? operator.hashCode() : 0);
-    result = 31 * result + (rightStatement != null ? rightStatement.hashCode() : 0);
-    result = 31 * result + (rightParam != null ? rightParam.hashCode() : 0);
-    result = 31 * result + (rightMathExpression != null ? rightMathExpression.hashCode() : 0);
-    result = 31 * result + (right != null ? right.hashCode() : 0);
-    result = 31 * result + (inputFinalValue != null ? inputFinalValue.hashCode() : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return new Object[] { left, operator, rightStatement, rightParam, rightMathExpression, right, inputFinalValue };
   }
 
   @Override
@@ -310,14 +269,8 @@ public class InCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean isCacheable() {
-    if (left != null && !left.isCacheable())
-      return false;
-
-    if (rightStatement != null && !rightStatement.executionPlanCanBeCached())
-      return false;
-
-    return rightMathExpression == null || rightMathExpression.isCacheable();
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { left, rightStatement, rightMathExpression };
   }
 
   public Expression getLeft() {
@@ -346,6 +299,19 @@ public class InCondition extends BooleanExpression {
 
   public void setRightMathExpression(final MathExpression rightMathExpression) {
     this.rightMathExpression = rightMathExpression;
+  }
+
+  public boolean isIndexAware(final IndexSearchInfo info) {
+    if (left.isBaseIdentifier()) {
+      if (info.getField().equals(left.getDefaultAlias().getStringValue())) {
+        if (rightMathExpression != null) {
+          return rightMathExpression.isEarlyCalculated(info.getCtx());
+        } else if (rightParam != null) {
+          return true;
+        }
+      }
+    }
+    return false;
   }
 }
 /* JavaCC - OriginalChecksum=00df7cb1877c0a12d24205c1700653c7 (do not edit this line) */

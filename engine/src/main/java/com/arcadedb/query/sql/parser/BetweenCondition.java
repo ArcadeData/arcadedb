@@ -169,32 +169,8 @@ public class BetweenCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean refersToParent() {
-    return first.refersToParent() || second.refersToParent() || third.refersToParent();
-  }
-
-  @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final BetweenCondition that = (BetweenCondition) o;
-
-    if (!Objects.equals(first, that.first))
-      return false;
-    if (!Objects.equals(second, that.second))
-      return false;
-    return Objects.equals(third, that.third);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = first != null ? first.hashCode() : 0;
-    result = 31 * result + (second != null ? second.hashCode() : 0);
-    result = 31 * result + (third != null ? third.hashCode() : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return getCacheableElements();
   }
 
   @Override
@@ -220,14 +196,8 @@ public class BetweenCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean isCacheable() {
-    if (first != null && !first.isCacheable()) {
-      return false;
-    }
-    if (second != null && !second.isCacheable()) {
-      return false;
-    }
-    return third == null || third.isCacheable();
+  protected Expression[] getCacheableElements() {
+    return new Expression[] { first, second, third };
   }
 }
 /* JavaCC - OriginalChecksum=f94f4779c4a6c6d09539446045ceca89 (do not edit this line) */

@@ -108,23 +108,9 @@ public class AlterDatabaseStatement extends DDLStatement {
   }
 
   @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final AlterDatabaseStatement that = (AlterDatabaseStatement) o;
-    if (!Objects.equals(settingName, that.settingName))
-      return false;
-    return Objects.equals(settingValue, that.settingValue);
+  protected Object[] getIdentityElements() {
+    return new Object[] { settingName, settingValue };
   }
 
-  @Override
-  public int hashCode() {
-    int result = settingName != null ? settingName.hashCode() : 0;
-    result = 31 * result + (settingValue != null ? settingValue.hashCode() : 0);
-    return result;
-  }
 }
 /* JavaCC - OriginalChecksum=8fec57db8dd2a3b52aaa52dec7367cd4 (do not edit this line) */

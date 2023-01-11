@@ -176,17 +176,17 @@ public class BaseIdentifier extends SimpleNode {
     return suffix != null && suffix.isCount();
   }
 
-  public boolean isEarlyCalculated() {
-    if (levelZero != null && levelZero.isEarlyCalculated())
+  public boolean isEarlyCalculated(final CommandContext ctx) {
+    if (levelZero != null && levelZero.isEarlyCalculated(ctx))
       return true;
     return suffix != null && suffix.isEarlyCalculated();
   }
 
-  public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateProj) {
+  public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateProj, final CommandContext ctx) {
     if (isAggregate()) {
       final BaseIdentifier result = new BaseIdentifier(-1);
       if (levelZero != null) {
-        final SimpleNode splitResult = levelZero.splitForAggregation(aggregateProj);
+        final SimpleNode splitResult = levelZero.splitForAggregation(aggregateProj, ctx);
         if (splitResult instanceof LevelZeroIdentifier) {
           result.levelZero = (LevelZeroIdentifier) splitResult;
         } else {
@@ -225,33 +225,6 @@ public class BaseIdentifier extends SimpleNode {
     result.levelZero = levelZero == null ? null : levelZero.copy();
     result.suffix = suffix == null ? null : suffix.copy();
     return result;
-  }
-
-  @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final BaseIdentifier that = (BaseIdentifier) o;
-
-    if (!Objects.equals(levelZero, that.levelZero))
-      return false;
-    return Objects.equals(suffix, that.suffix);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = levelZero != null ? levelZero.hashCode() : 0;
-    result = 31 * result + (suffix != null ? suffix.hashCode() : 0);
-    return result;
-  }
-
-  public boolean refersToParent() {
-    if (levelZero != null && levelZero.refersToParent())
-      return true;
-    return suffix != null && suffix.refersToParent();
   }
 
   public SuffixIdentifier getSuffix() {
@@ -311,12 +284,14 @@ public class BaseIdentifier extends SimpleNode {
       this.levelZero.extractSubQueries(collector);
   }
 
-  public boolean isCacheable() {
-    if (levelZero != null)
-      return levelZero.isCacheable();
-    if (suffix != null)
-      return suffix.isCacheable();
-    return true;
+  @Override
+  protected Object[] getIdentityElements() {
+    return getCacheableElements();
+  }
+
+  @Override
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { levelZero, suffix };
   }
 }
 /* JavaCC - OriginalChecksum=ed89af10d8be41a83428c5608a4834f6 (do not edit this line) */

@@ -34,11 +34,11 @@ public class Bucket extends SimpleNode {
     this.bucketName = bucketName;
   }
 
-  public Bucket( final int id) {
+  public Bucket(final int id) {
     super(id);
   }
 
-  public Bucket( final SqlParser p,  final int id) {
+  public Bucket(final SqlParser p, final int id) {
     super(p, id);
   }
 
@@ -64,30 +64,9 @@ public class Bucket extends SimpleNode {
   }
 
   public Bucket copy() {
-    final  Bucket result = new Bucket(-1);
+    final Bucket result = new Bucket(-1);
     result.bucketName = bucketName;
     result.bucketNumber = bucketNumber;
-    return result;
-  }
-
-  @Override
-  public boolean equals( final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final Bucket oCluster = (Bucket) o;
-
-    if (!Objects.equals(bucketName, oCluster.bucketName))
-      return false;
-    return Objects.equals(bucketNumber, oCluster.bucketNumber);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = bucketName != null ? bucketName.hashCode() : 0;
-    result = 31 * result + (bucketNumber != null ? bucketNumber.hashCode() : 0);
     return result;
   }
 
@@ -102,5 +81,11 @@ public class Bucket extends SimpleNode {
     bucketName = fromResult.getProperty("bucketName");
     bucketNumber = fromResult.getProperty("bucketNumber");
   }
+
+  @Override
+  protected Object[] getIdentityElements() {
+    return new Object[] { bucketName, bucketNumber };
+  }
+
 }
 /* JavaCC - OriginalChecksum=d27abf009fe7db482fbcaac9d52ba192 (do not edit this line) */

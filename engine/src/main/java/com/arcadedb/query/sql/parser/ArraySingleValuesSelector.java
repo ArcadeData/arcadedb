@@ -152,20 +152,13 @@ public class ArraySingleValuesSelector extends SimpleNode {
   }
 
   @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final ArraySingleValuesSelector that = (ArraySingleValuesSelector) o;
-
-    return Objects.equals(items, that.items);
+  protected Object[] getIdentityElements() {
+    return new Object[] { items };
   }
 
   @Override
-  public int hashCode() {
-    return items != null ? items.hashCode() : 0;
+  protected SimpleNode[] getCacheableElements() {
+    return items.toArray(new ArraySelector[items.size()]);
   }
 
   public void extractSubQueries(final SubQueryCollector collector) {
@@ -174,17 +167,6 @@ public class ArraySingleValuesSelector extends SimpleNode {
         item.extractSubQueries(collector);
       }
     }
-  }
-
-  public boolean refersToParent() {
-    if (items != null) {
-      for (final ArraySelector item : items) {
-        if (item.refersToParent()) {
-          return true;
-        }
-      }
-    }
-    return false;
   }
 
   public void setValue(final Result currentRecord, final Object target, final Object value, final CommandContext ctx) {

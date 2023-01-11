@@ -600,13 +600,9 @@ public class MathExpression extends SimpleNode {
     super(p, id);
   }
 
-  public boolean isCacheable() {
-    for (final MathExpression exp : childExpressions) {
-      if (!exp.isCacheable()) {
-        return false;
-      }
-    }
-    return true;
+  @Override
+  protected SimpleNode[] getCacheableElements() {
+    return childExpressions.toArray(new MathExpression[childExpressions.size()]);
   }
 
   public Object execute(final Identifiable iCurrentRecord, final CommandContext ctx) {
@@ -882,15 +878,15 @@ public class MathExpression extends SimpleNode {
   }
 
   public boolean isBaseIdentifier() {
-    if (childExpressions.size() == 1) {
+    if (this.childExpressions != null && childExpressions.size() == 1)
       return childExpressions.get(0).isBaseIdentifier();
-    }
+
     return false;
   }
 
-  public boolean isEarlyCalculated() {
+  public boolean isEarlyCalculated(final CommandContext ctx) {
     for (final MathExpression exp : childExpressions) {
-      if (!exp.isEarlyCalculated()) {
+      if (!exp.isEarlyCalculated(ctx)) {
         return false;
       }
     }
@@ -934,18 +930,18 @@ public class MathExpression extends SimpleNode {
     return this.childExpressions.get(0).isCount();
   }
 
-  public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateProj) {
+  public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateProj, final CommandContext ctx) {
     if (isAggregate()) {
       final MathExpression result = new MathExpression(-1);
       int i = 0;
       for (final MathExpression expr : this.childExpressions) {
-        if (i > 0) {
+        if (i > 0)
           result.operators.add(operators.get(i - 1));
-        }
-        final SimpleNode splitResult = expr.splitForAggregation(aggregateProj);
+
+        final SimpleNode splitResult = expr.splitForAggregation(aggregateProj, ctx);
         if (splitResult instanceof MathExpression) {
           final MathExpression res = (MathExpression) splitResult;
-          if (res.isEarlyCalculated() || res.isAggregate()) {
+          if (res.isEarlyCalculated(ctx) || res.isAggregate()) {
             result.childExpressions.add(res);
           } else {
             throw new CommandExecutionException("Cannot mix aggregate and single record attribute values in the same projection");
@@ -989,34 +985,8 @@ public class MathExpression extends SimpleNode {
     }
   }
 
-  public boolean refersToParent() {
-    for (final MathExpression expr : this.childExpressions) {
-      if (expr.refersToParent()) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final MathExpression that = (MathExpression) o;
-
-    if (!Objects.equals(childExpressions, that.childExpressions))
-      return false;
-    return Objects.equals(operators, that.operators);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = childExpressions != null ? childExpressions.hashCode() : 0;
-    result = 31 * result + (operators != null ? operators.hashCode() : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return new Object[] { childExpressions, operators };
   }
 
   public List<String> getMatchPatternInvolvedAliases() {

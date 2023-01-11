@@ -144,11 +144,11 @@ public class Json extends SimpleNode {
     return false;
   }
 
-  public Json splitForAggregation(final AggregateProjectionSplit aggregateSplit) {
+  public Json splitForAggregation(final AggregateProjectionSplit aggregateSplit, final CommandContext ctx) {
     if (isAggregate()) {
       final Json result = new Json(-1);
       for (final JsonItem item : items) {
-        result.items.add(item.splitForAggregation(aggregateSplit));
+        result.items.add(item.splitForAggregation(aggregateSplit, ctx));
       }
       return result;
     } else {
@@ -163,35 +163,14 @@ public class Json extends SimpleNode {
   }
 
   @Override
-  public boolean equals( final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final Json oJson = (Json) o;
-
-    return Objects.equals(items, oJson.items);
+  protected Object[] getIdentityElements() {
+    return new Object[] { items };
   }
 
-  @Override
-  public int hashCode() {
-    return items != null ? items.hashCode() : 0;
-  }
-
-  public void extractSubQueries( final SubQueryCollector collector) {
+  public void extractSubQueries(final SubQueryCollector collector) {
     for (final JsonItem item : items) {
       item.extractSubQueries(collector);
     }
-  }
-
-  public boolean refersToParent() {
-    for (final JsonItem item : items) {
-      if (item.refersToParent()) {
-        return true;
-      }
-    }
-    return false;
   }
 
   public Result serialize() {
@@ -203,7 +182,6 @@ public class Json extends SimpleNode {
   }
 
   public void deserialize(final Result fromResult) {
-
     if (fromResult.getProperty("items") != null) {
       final List<Result> ser = fromResult.getProperty("items");
       items = new ArrayList<>();
@@ -215,8 +193,9 @@ public class Json extends SimpleNode {
     }
   }
 
-  public boolean isCacheable() {
-    return false;//TODO optimize
+  @Override
+  protected SimpleNode[] getCacheableElements() {
+    return items.toArray(new SimpleNode[items.size()]);
   }
 }
 /* JavaCC - OriginalChecksum=3beec9f6db486de944498588b51a505d (do not edit this line) */

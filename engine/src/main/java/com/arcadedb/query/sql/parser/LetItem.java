@@ -72,34 +72,8 @@ public class LetItem extends SimpleNode {
   }
 
   @Override
-  public boolean equals( final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final  LetItem oLetItem = (LetItem) o;
-
-    if (!Objects.equals(varName, oLetItem.varName))
-      return false;
-    if (!Objects.equals(expression, oLetItem.expression))
-      return false;
-    return Objects.equals(query, oLetItem.query);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = varName != null ? varName.hashCode() : 0;
-    result = 31 * result + (expression != null ? expression.hashCode() : 0);
-    result = 31 * result + (query != null ? query.hashCode() : 0);
-    return result;
-  }
-
-  public boolean refersToParent() {
-    if (expression != null && expression.refersToParent()) {
-      return true;
-    }
-    return query != null && query.refersToParent();
+  protected Object[] getIdentityElements() {
+    return new Object[] { varName, expression, query };
   }
 
   public Identifier getVarName() {
@@ -150,15 +124,9 @@ public class LetItem extends SimpleNode {
     }
   }
 
-  public boolean isCacheable() {
-    if (expression != null) {
-      return expression.isCacheable();
-    }
-    if (query != null) {
-      return expression.isCacheable();
-    }
-
-    return true;
+  @Override
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { expression, query };
   }
 }
 /* JavaCC - OriginalChecksum=bb3cd298d79f50d72f6842e6d6ea4fb2 (do not edit this line) */

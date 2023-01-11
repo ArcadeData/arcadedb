@@ -58,20 +58,8 @@ public class FromClause extends SimpleNode {
   }
 
   @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final FromClause that = (FromClause) o;
-
-    return Objects.equals(item, that.item);
-  }
-
-  @Override
-  public int hashCode() {
-    return item != null ? item.hashCode() : 0;
+  protected Object[] getIdentityElements() {
+    return new Object[] { item };
   }
 
   public Result serialize() {
@@ -85,8 +73,9 @@ public class FromClause extends SimpleNode {
     item.deserialize(fromResult.getProperty("item"));
   }
 
-  public boolean isCacheable() {
-    return item.isCacheable();
+  @Override
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { item };
   }
 
   public boolean refersToParent() {

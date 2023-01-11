@@ -25,6 +25,8 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.AggregationContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -81,9 +83,19 @@ public class SuffixIdentifier extends SimpleNode {
       return null;
     }
     if (recordAttribute != null) {
-      if ("@rid".equalsIgnoreCase(recordAttribute.name)) {
+      if ("@rid".equalsIgnoreCase(recordAttribute.name))
         return iCurrentRecord.getIdentity();
+      else if ("@type".equalsIgnoreCase(recordAttribute.name))
+        return iCurrentRecord.asDocument().getTypeName();
+      else if ("@cat".equalsIgnoreCase(recordAttribute.name)) {
+        final Document doc = iCurrentRecord.asDocument();
+        if (doc instanceof Vertex)
+          return "v";
+        else if (doc instanceof Edge)
+          return "e";
+        return "d";
       }
+
       return ((Document) iCurrentRecord.getRecord()).get(recordAttribute.name);
     }
     return null;
@@ -275,33 +287,15 @@ public class SuffixIdentifier extends SimpleNode {
   }
 
   @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final SuffixIdentifier that = (SuffixIdentifier) o;
-
-    if (star != that.star)
-      return false;
-    if (!Objects.equals(identifier, that.identifier))
-      return false;
-    return Objects.equals(recordAttribute, that.recordAttribute);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = identifier != null ? identifier.hashCode() : 0;
-    result = 31 * result + (recordAttribute != null ? recordAttribute.hashCode() : 0);
-    result = 31 * result + (star ? 1 : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return new Object[] { identifier, recordAttribute, star };
   }
 
   public void extractSubQueries(final SubQueryCollector collector) {
     // EMPTY METHOD
   }
 
+  @Override
   public boolean refersToParent() {
     return identifier != null && identifier.getStringValue().equalsIgnoreCase("$parent");
   }

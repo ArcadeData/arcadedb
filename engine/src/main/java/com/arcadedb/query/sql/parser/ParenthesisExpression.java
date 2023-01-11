@@ -101,9 +101,9 @@ public class ParenthesisExpression extends MathExpression {
   }
 
   @Override
-  public boolean isEarlyCalculated() {
+  public boolean isEarlyCalculated(final CommandContext ctx) {
     // TODO implement query execution and early calculation;
-    return expression != null && expression.isEarlyCalculated();
+    return expression != null && expression.isEarlyCalculated(ctx);
   }
 
   public boolean needsAliases(final Set<String> aliases) {
@@ -125,16 +125,16 @@ public class ParenthesisExpression extends MathExpression {
   }
 
   public boolean isCount() {
-    if (expression != null) {
+    if (expression != null)
       return expression.isCount();
-    }
+
     return false;
   }
 
-  public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateProj) {
+  public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateProj, final CommandContext ctx) {
     if (isAggregate()) {
       final ParenthesisExpression result = new ParenthesisExpression(-1);
-      result.expression = expression.splitForAggregation(aggregateProj);
+      result.expression = expression.splitForAggregation(aggregateProj, ctx);
       return result;
     } else {
       return this;
@@ -241,14 +241,9 @@ public class ParenthesisExpression extends MathExpression {
   }
 
   @Override
-  public boolean isCacheable() {
-    if (expression != null) {
-      return expression.isCacheable();
-    }
-    if (statement != null) {
-      return statement.executionPlanCanBeCached();
-    }
-    return true;
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { expression, statement };
   }
+
 }
 /* JavaCC - OriginalChecksum=4656e5faf4f54dc3fc45a06d8e375c35 (do not edit this line) */

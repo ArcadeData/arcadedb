@@ -165,24 +165,8 @@ public class MethodCall extends SimpleNode {
   }
 
   @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final MethodCall that = (MethodCall) o;
-
-    if (!Objects.equals(methodName, that.methodName))
-      return false;
-    return Objects.equals(params, that.params);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = methodName != null ? methodName.hashCode() : 0;
-    result = 31 * result + (params != null ? params.hashCode() : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return new Object[] { methodName, params };
   }
 
   public void extractSubQueries(final SubQueryCollector collector) {

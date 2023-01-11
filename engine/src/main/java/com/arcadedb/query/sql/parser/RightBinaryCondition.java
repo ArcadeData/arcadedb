@@ -29,13 +29,10 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import java.util.*;
 
 public class RightBinaryCondition extends SimpleNode {
-
   BinaryCompareOperator operator;
-
-  boolean    not = false;
-  InOperator inOperator;
-
-  Expression right;
+  boolean               not = false;
+  InOperator            inOperator;
+  Expression            right;
 
   public RightBinaryCondition(final int id) {
     super(id);
@@ -174,12 +171,17 @@ public class RightBinaryCondition extends SimpleNode {
     }
   }
 
-  public boolean refersToParent() {
-    return right != null && right.refersToParent();
+  @Override
+  protected Object[] getIdentityElements() {
+    return new Object[] { operator, not, inOperator, right };
+  }
+
+  @Override
+  protected SimpleNode[] getCacheableElements() {
+    return new SimpleNode[] { right };
   }
 
   public Result serialize() {
-
     final ResultInternal result = new ResultInternal();
     result.setProperty("operator", operator.getClass().getName());
     result.setProperty("not", not);

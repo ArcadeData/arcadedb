@@ -130,36 +130,8 @@ public class AlterPropertyStatement extends DDLStatement {
   }
 
   @Override
-  public boolean equals(final Object o) {
-    if (this == o)
-      return true;
-    if (o == null || getClass() != o.getClass())
-      return false;
-
-    final AlterPropertyStatement that = (AlterPropertyStatement) o;
-
-    if (!Objects.equals(typeName, that.typeName))
-      return false;
-    if (!Objects.equals(propertyName, that.propertyName))
-      return false;
-    if (!Objects.equals(customPropertyName, that.customPropertyName))
-      return false;
-    if (!Objects.equals(customPropertyValue, that.customPropertyValue))
-      return false;
-    if (!Objects.equals(settingName, that.settingName))
-      return false;
-    return Objects.equals(settingValue, that.settingValue);
-  }
-
-  @Override
-  public int hashCode() {
-    int result = typeName != null ? typeName.hashCode() : 0;
-    result = 31 * result + (propertyName != null ? propertyName.hashCode() : 0);
-    result = 31 * result + (customPropertyName != null ? customPropertyName.hashCode() : 0);
-    result = 31 * result + (customPropertyValue != null ? customPropertyValue.hashCode() : 0);
-    result = 31 * result + (settingName != null ? settingName.hashCode() : 0);
-    result = 31 * result + (settingValue != null ? settingValue.hashCode() : 0);
-    return result;
+  protected Object[] getIdentityElements() {
+    return new Object[] { typeName, propertyName, customPropertyName, customPropertyValue, settingName, settingValue };
   }
 }
 /* JavaCC - OriginalChecksum=2421f6ad3b5f1f8e18149650ff80f1e7 (do not edit this line) */
