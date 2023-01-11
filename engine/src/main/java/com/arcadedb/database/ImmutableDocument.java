@@ -54,6 +54,7 @@ public class ImmutableDocument extends BaseDocument {
       return null;
 
     checkForLazyLoading();
+    // TODO: AVOID CREATING A MAP FOR ONLY ONE PROPERTY
     final Map<String, Object> map = database.getSerializer()
         .deserializeProperties(database, buffer, new EmbeddedModifierProperty(this, propertyName), propertyName);
     return map.get(propertyName);
