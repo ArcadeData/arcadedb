@@ -625,6 +625,9 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
       size = offset + bytesToWrite;
   }
 
+  /**
+   * THIS WILL NOT BE NECESSARY AFTER SWITCHING TO JKD13 (https://bugs.java.com/bugdatabase/view_bug.do?bug_id=JDK-5029431)
+   */
   public Object executeInLock(final Callable<Object> callable) throws Exception {
     return callable.call();
   }
