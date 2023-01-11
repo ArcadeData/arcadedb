@@ -70,6 +70,8 @@ public class PostServerCommandHandler extends AbstractHandler {
       dropDatabase(command);
     else if (command.startsWith("close database "))
       closeDatabase(command);
+    else if (command.startsWith("open database "))
+      openDatabase(command);
     else if (command.startsWith("create user "))
       createUser(command);
     else if (command.startsWith("drop user "))
@@ -162,6 +164,16 @@ public class PostServerCommandHandler extends AbstractHandler {
 
     httpServer.getServer().getServerMetrics().meter("http.close-database").mark();
     httpServer.getServer().removeDatabase(database.getName());
+  }
+
+  private void openDatabase(final String command) {
+    final String databaseName = command.substring("open database ".length()).trim();
+    if (databaseName.isEmpty())
+      throw new IllegalArgumentException("Database name empty");
+
+    httpServer.getServer().getDatabase(databaseName);
+
+    httpServer.getServer().getServerMetrics().meter("http.open-database").mark();
   }
 
   private void createUser(final String command) {

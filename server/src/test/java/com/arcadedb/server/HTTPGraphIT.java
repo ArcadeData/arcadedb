@@ -532,10 +532,11 @@ public class HTTPGraphIT extends BaseGraphServerTest {
       }
 
       // RE-OPEN DATABASE
-      connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/open/closeAndReopen").openConnection();
+      connection = (HttpURLConnection) new URL("http://127.0.0.1:248" + serverIndex + "/api/v1/server").openConnection();
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      formatPayload(connection, new JSONObject().put("command", "open database closeAndReopen"));
       connection.connect();
 
       try {
