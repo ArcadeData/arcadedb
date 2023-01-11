@@ -56,8 +56,13 @@ public abstract class AbstractHandler implements HttpHandler {
   protected abstract void execute(HttpServerExchange exchange, ServerSecurityUser user) throws Exception;
 
   protected String parseRequestPayload(final HttpServerExchange e) {
+    return parseRequestPayload(e, true);
+  }
+
+  protected String parseRequestPayload(final HttpServerExchange e, final boolean blocking) {
     final StringBuilder result = new StringBuilder();
-    //e.startBlocking();
+    if (blocking)
+      e.startBlocking();
     e.getRequestReceiver().receiveFullBytes(
         // OK
         (exchange, data) -> result.append(new String(data, DatabaseFactory.getDefaultCharset())),
