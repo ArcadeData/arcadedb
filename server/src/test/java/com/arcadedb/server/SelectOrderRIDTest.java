@@ -35,6 +35,8 @@ import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
+import static com.arcadedb.server.BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
+
 /**
  * From Issue https://github.com/ArcadeData/arcadedb/issues/741
  */
@@ -42,6 +44,7 @@ public class SelectOrderRIDTest {
 
   @Test
   public void testRIDOrdering() {
+    GlobalConfiguration.SERVER_ROOT_PASSWORD.setValue(DEFAULT_PASSWORD_FOR_TESTS);
     GlobalConfiguration.TYPE_DEFAULT_BUCKETS.setValue(1);
     try (DatabaseFactory databaseFactory = new DatabaseFactory("databases/test")) {
       if (!databaseFactory.exists()) {
