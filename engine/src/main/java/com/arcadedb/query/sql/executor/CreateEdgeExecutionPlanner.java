@@ -82,7 +82,7 @@ public class CreateEdgeExecutionPlanner {
 //    if (ctx.getDatabase().getSchema().existsType(targetClass.getStringValue())) {
 //      final EdgeType clazz = (EdgeType) ctx.getDatabase().getSchema().getType(targetClass.getStringValue());
 //      uniqueIndexName = clazz.getAllIndexes(true).stream().filter(x -> x.isUnique())
-//          .filter(x -> x.getPropertyNames().size() == 2 && x.getPropertyNames().contains("@out") && x.getPropertyNames().contains("@in")).map(x -> x.getName())
+//          .filter(x -> x.getPropertyNames().size() == 2 && x.has("@out") && x.has("@in")).map(x -> x.getName())
 //          .findFirst().orElse(null);
 //    } else
     uniqueIndexName = null;
@@ -96,7 +96,8 @@ public class CreateEdgeExecutionPlanner {
     return result;
   }
 
-  private void handleGlobalLet(final InsertExecutionPlan result, final Identifier name, final Expression expression, final CommandContext ctx, final boolean profilingEnabled) {
+  private void handleGlobalLet(final InsertExecutionPlan result, final Identifier name, final Expression expression, final CommandContext ctx,
+      final boolean profilingEnabled) {
     result.chain(new GlobalLetExpressionStep(name, expression, ctx, profilingEnabled));
   }
 

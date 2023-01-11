@@ -406,7 +406,7 @@ public class SuffixIdentifier extends SimpleNode {
 
   public boolean isDefinedFor(final Record currentRecord) {
     if (identifier != null)
-      return ((Document) currentRecord.getRecord()).getPropertyNames().contains(identifier.getStringValue());
+      return ((Document) currentRecord.getRecord()).has(identifier.getStringValue());
 
     return true;
   }

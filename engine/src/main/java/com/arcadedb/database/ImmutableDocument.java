@@ -43,9 +43,7 @@ public class ImmutableDocument extends BaseDocument {
       return false;
 
     checkForLazyLoading();
-    final Map<String, Object> map = database.getSerializer()
-        .deserializeProperties(database, buffer, new EmbeddedModifierProperty(this, propertyName), propertyName);
-    return map.containsKey(propertyName);
+    return database.getSerializer().hasProperty(database, buffer, new EmbeddedModifierProperty(this, propertyName), propertyName);
   }
 
   @Override
@@ -54,10 +52,7 @@ public class ImmutableDocument extends BaseDocument {
       return null;
 
     checkForLazyLoading();
-    // TODO: AVOID CREATING A MAP FOR ONLY ONE PROPERTY
-    final Map<String, Object> map = database.getSerializer()
-        .deserializeProperties(database, buffer, new EmbeddedModifierProperty(this, propertyName), propertyName);
-    return map.get(propertyName);
+    return database.getSerializer().deserializeProperty(database, buffer, new EmbeddedModifierProperty(this, propertyName), propertyName);
   }
 
   @Override

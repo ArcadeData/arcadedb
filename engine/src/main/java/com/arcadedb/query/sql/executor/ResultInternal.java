@@ -224,7 +224,7 @@ public class ResultInternal implements Result {
   }
 
   public boolean hasProperty(final String propName) {
-    if (element != null && element.getPropertyNames().contains(propName))
+    if (element != null && element.has(propName))
       return true;
 
     return content != null && content.containsKey(propName);
