@@ -18,7 +18,6 @@
  */
 package com.arcadedb.database;
 
-import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.UnsignedBytesComparator;
@@ -26,7 +25,6 @@ import com.arcadedb.serializer.UnsignedBytesComparator;
 import java.io.*;
 import java.nio.*;
 import java.util.*;
-import java.util.concurrent.*;
 import java.util.logging.*;
 
 /**
@@ -500,16 +498,10 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
    * @return the binary copy
    */
   public Binary slice() {
-    try {
-      // THIS WILL NOT BE NECESSARY AFTER SWITCHING TO JKD13 (https://bugs.java.com/bugdatabase/view_bug.do?bug_id=JDK-5029431)
-      return (Binary) executeInLock(() -> {
-        buffer.rewind();
-        return new Binary(buffer.slice());
-      });
-    } catch (final RuntimeException e) {
-      throw e;
-    } catch (final Exception e) {
-      throw new ArcadeDBException("Cannot slice the buffer " + this, e);
+    // THIS WILL NOT BE NECESSARY AFTER SWITCHING TO JKD13 (https://bugs.java.com/bugdatabase/view_bug.do?bug_id=JDK-5029431)
+    synchronized (buffer) {
+      buffer.rewind();
+      return new Binary(buffer.slice());
     }
   }
 
@@ -521,16 +513,10 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
    * @return the binary copy
    */
   public Binary slice(final int position) {
-    try {
-      // THIS WILL NOT BE NECESSARY AFTER SWITCHING TO JKD13 (https://bugs.java.com/bugdatabase/view_bug.do?bug_id=JDK-5029431)
-      return (Binary) executeInLock(() -> {
-        buffer.position(position);
-        return new Binary(buffer.slice());
-      });
-    } catch (final RuntimeException e) {
-      throw e;
-    } catch (final Exception e) {
-      throw new ArcadeDBException("Cannot slice the buffer " + this, e);
+    // THIS WILL NOT BE NECESSARY AFTER SWITCHING TO JKD13 (https://bugs.java.com/bugdatabase/view_bug.do?bug_id=JDK-5029431)
+    synchronized (buffer) {
+      buffer.position(position);
+      return new Binary(buffer.slice());
     }
   }
 
@@ -543,20 +529,15 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
    * @return the binary copy
    */
   public Binary slice(final int position, final int length) {
-    try {
-      // THIS WILL NOT BE NECESSARY AFTER SWITCHING TO JKD13 (https://bugs.java.com/bugdatabase/view_bug.do?bug_id=JDK-5029431)
-      final ByteBuffer result = (ByteBuffer) executeInLock(() -> {
-        buffer.position(position);
-        return buffer.slice();
-      });
-      result.position(length);
-      result.flip();
-      return new Binary(result);
-    } catch (final RuntimeException e) {
-      throw e;
-    } catch (final Exception e) {
-      throw new ArcadeDBException("Cannot slice the buffer " + this, e);
+    // THIS WILL NOT BE NECESSARY AFTER SWITCHING TO JKD13 (https://bugs.java.com/bugdatabase/view_bug.do?bug_id=JDK-5029431)
+    final ByteBuffer result;
+    synchronized (buffer) {
+      buffer.position(position);
+      result = buffer.slice();
     }
+    result.position(length);
+    result.flip();
+    return new Binary(result);
   }
 
   @Override
@@ -651,15 +632,6 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
 
     if (offset + bytesToWrite > size)
       size = offset + bytesToWrite;
-  }
-
-  /**
-   * THIS WILL NOT BE NECESSARY AFTER SWITCHING TO JKD13 (https://bugs.java.com/bugdatabase/view_bug.do?bug_id=JDK-5029431)
-   */
-  public Object executeInLock(final Callable<Object> callable) throws Exception {
-    synchronized (buffer) {
-      return callable.call();
-    }
   }
 
   public int capacity() {

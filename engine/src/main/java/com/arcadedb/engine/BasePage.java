@@ -20,14 +20,13 @@ package com.arcadedb.engine;
 
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.exception.ArcadeDBException;
 
 import java.nio.*;
 import java.util.*;
 
 /**
  * Low level base page implementation of (default) 65536 bytes (2 exp 16 = 65Kb). The first 4 bytes (the header) are reserved to
- * store the page version (MVCC), then 4 bytes more for the actual page content size. Content size is stored in PBinary object. The
+ * store the page version (MVCC), then 4 bytes more for the actual page content size. Content size is stored in Binary object. The
  * maximum content for a page is pageSize - 16.
  */
 public abstract class BasePage {
@@ -55,14 +54,10 @@ public abstract class BasePage {
    * Creates an immutable copy. The content is not copied (the same byte[] is used), because after invoking this method the original page is never modified.
    */
   public ImmutablePage createImmutableView() {
-    try {
-      // THIS WILL NOT BE NECESSARY AFTER SWITCHING TO JKD13 (https://bugs.java.com/bugdatabase/view_bug.do?bug_id=JDK-5029431)
-      return (ImmutablePage) content.executeInLock(
-          () -> new ImmutablePage(manager, pageId, getPhysicalSize(), content.getByteBuffer().array(), version, content.size()));
-    } catch (final RuntimeException e) {
-      throw e;
-    } catch (final Exception e) {
-      throw new ArcadeDBException("Cannot create an immutable copy of page " + this, e);
+    // THIS WILL NOT BE NECESSARY AFTER SWITCHING TO JKD13 (https://bugs.java.com/bugdatabase/view_bug.do?bug_id=JDK-5029431)
+    final ByteBuffer buffer = content.getByteBuffer();
+    synchronized (buffer) {
+      return new ImmutablePage(manager, pageId, getPhysicalSize(), buffer.array(), version, content.size());
     }
   }
 
@@ -195,16 +190,11 @@ public abstract class BasePage {
    * Returns the underlying ByteBuffer. If any changes occur bypassing the page object, must be tracked by calling #updateModifiedRange() method.
    */
   public ByteBuffer slice() {
-    try {
-      // THIS WILL NOT BE NECESSARY AFTER SWITCHING TO JKD13 (https://bugs.java.com/bugdatabase/view_bug.do?bug_id=JDK-5029431)
-      return (ByteBuffer) content.executeInLock(() -> {
-        content.getByteBuffer().position(PAGE_HEADER_SIZE);
-        return content.getByteBuffer().slice();
-      });
-    } catch (final RuntimeException e) {
-      throw e;
-    } catch (final Exception e) {
-      throw new ArcadeDBException("Cannot slice the page " + this, e);
+    // THIS WILL NOT BE NECESSARY AFTER SWITCHING TO JKD13 (https://bugs.java.com/bugdatabase/view_bug.do?bug_id=JDK-5029431)
+    final ByteBuffer buffer = content.getByteBuffer();
+    synchronized (buffer) {
+      buffer.position(PAGE_HEADER_SIZE);
+      return buffer.slice();
     }
   }
 

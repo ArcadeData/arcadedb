@@ -19,7 +19,6 @@
 package com.arcadedb.database;
 
 import com.arcadedb.engine.TrackableContent;
-import com.arcadedb.exception.ArcadeDBException;
 
 import java.nio.*;
 
@@ -55,33 +54,22 @@ public class TrackableBinary extends Binary implements TrackableContent {
   }
 
   public Binary slice(final int position) {
-    try {
-      // THIS WILL NOT BE NECESSARY AFTER SWITCHING TO JKD13 (https://bugs.java.com/bugdatabase/view_bug.do?bug_id=JDK-5029431)
-      return (Binary) executeInLock(() -> {
-        buffer.position(position);
-        return new TrackableBinary(this, buffer.slice());
-      });
-    } catch (final RuntimeException e) {
-      throw e;
-    } catch (final Exception e) {
-      throw new ArcadeDBException("Cannot slice the buffer " + this, e);
+    // THIS WILL NOT BE NECESSARY AFTER SWITCHING TO JKD13 (https://bugs.java.com/bugdatabase/view_bug.do?bug_id=JDK-5029431)
+    synchronized (buffer) {
+      buffer.position(position);
+      return new TrackableBinary(this, buffer.slice());
     }
   }
 
   public Binary slice(final int position, final int length) {
-    try {
-      // THIS WILL NOT BE NECESSARY AFTER SWITCHING TO JKD13 (https://bugs.java.com/bugdatabase/view_bug.do?bug_id=JDK-5029431)
-      final ByteBuffer result = (ByteBuffer) executeInLock(() -> {
-        buffer.position(position);
-        return buffer.slice();
-      });
-      result.position(length);
-      result.flip();
-      return new TrackableBinary(this, result);
-    } catch (final RuntimeException e) {
-      throw e;
-    } catch (final Exception e) {
-      throw new ArcadeDBException("Cannot slice the buffer " + this, e);
+    // THIS WILL NOT BE NECESSARY AFTER SWITCHING TO JKD13 (https://bugs.java.com/bugdatabase/view_bug.do?bug_id=JDK-5029431)
+    final ByteBuffer result;
+    synchronized (buffer) {
+      buffer.position(position);
+      result = buffer.slice();
     }
+    result.position(length);
+    result.flip();
+    return new TrackableBinary(this, result);
   }
 }

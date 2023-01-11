@@ -185,6 +185,7 @@ public class TypeLSMTreeIndexTest extends TestHelper {
         final ResultSet iterator;
         try {
           iterator = database.command("sql", "select from " + TYPE_NAME + " where id >= " + i + " and id <= " + (i + 1));
+
           Assertions.assertNotNull(iterator);
 
           while (iterator.hasNext()) {

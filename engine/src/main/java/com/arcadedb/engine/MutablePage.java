@@ -21,7 +21,8 @@ package com.arcadedb.engine;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.TrackableBinary;
-import com.arcadedb.exception.ArcadeDBException;
+
+import java.nio.*;
 
 /**
  * Mutable page that accepts updates. It keeps track of the modified bytes.
@@ -41,16 +42,11 @@ public class MutablePage extends BasePage implements TrackableContent {
   }
 
   public TrackableBinary getTrackable() {
-    try {
-      // THIS WILL NOT BE NECESSARY AFTER SWITCHING TO JKD13 (https://bugs.java.com/bugdatabase/view_bug.do?bug_id=JDK-5029431)
-      return (TrackableBinary) content.executeInLock(() -> {
-        content.getByteBuffer().position(PAGE_HEADER_SIZE);
-        return new TrackableBinary(this, content.getByteBuffer().slice());
-      });
-    } catch (final RuntimeException e) {
-      throw e;
-    } catch (final Exception e) {
-      throw new ArcadeDBException("Cannot slice the buffer " + this, e);
+    final ByteBuffer buffer = content.getByteBuffer();
+    // THIS WILL NOT BE NECESSARY AFTER SWITCHING TO JKD13 (https://bugs.java.com/bugdatabase/view_bug.do?bug_id=JDK-5029431)
+    synchronized (buffer) {
+      buffer.position(PAGE_HEADER_SIZE);
+      return new TrackableBinary(this, buffer.slice());
     }
   }
 
