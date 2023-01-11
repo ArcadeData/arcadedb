@@ -70,8 +70,10 @@ public class LeaderNetworkListener extends Thread {
           handleConnection(socket);
 
         } catch (final Exception e) {
-          if (active)
-            LogManager.instance().log(this, Level.WARNING, "Error on connection from another server (error=%s)", e.getMessage());
+          if (active) {
+            final String message = e.getMessage() != null ? e.getMessage() : e.toString();
+            LogManager.instance().log(this, Level.WARNING, "Error on connection from another server (error=%s)", message);
+          }
         }
       }
     } finally {
@@ -247,7 +249,8 @@ public class LeaderNetworkListener extends Thread {
     channel.flush();
   }
 
-  private void connect(final ChannelBinaryServer channel, final String remoteServerName, final String remoteServerAddress, final String remoteServerHTTPAddress) throws IOException {
+  private void connect(final ChannelBinaryServer channel, final String remoteServerName, final String remoteServerAddress, final String remoteServerHTTPAddress)
+      throws IOException {
     if (remoteServerName.equals(ha.getServerName())) {
       channel.writeBoolean(false);
       channel.writeByte(ReplicationProtocol.ERROR_CONNECT_SAME_SERVERNAME);

@@ -55,6 +55,31 @@ import java.util.logging.*;
 
 // TODO: REFACTOR LEADER/REPLICA IN 2 USERTYPEES
 public class HAServer implements ServerPlugin {
+  public static final String                                     DEFAULT_PORT                      = "2424";
+  private final       HAMessageFactory                           messageFactory;
+  private final       ArcadeDBServer                             server;
+  private final       ContextConfiguration                       configuration;
+  private final       String                                     bucketName;
+  private final       long                                       startedOn;
+  private volatile    int                                        configuredServers                 = 1;
+  private final       Map<String, Leader2ReplicaNetworkExecutor> replicaConnections                = new ConcurrentHashMap<>();
+  private final       AtomicLong                                 lastDistributedOperationNumber    = new AtomicLong(-1);
+  private final       AtomicLong                                 lastForwardOperationNumber        = new AtomicLong(0);
+  protected final     String                                     replicationPath;
+  protected           ReplicationLogFile                         replicationLogFile;
+  private volatile    Replica2LeaderNetworkExecutor              leaderConnection;
+  private             LeaderNetworkListener                      listener;
+  private final       Map<Long, QuorumMessage>                   messagesWaitingForQuorum          = new ConcurrentHashMap<>(1024);
+  private final       Map<Long, ForwardedMessage>                forwardMessagesWaitingForResponse = new ConcurrentHashMap<>(1024);
+  private             long                                       lastConfigurationOutputHash       = 0;
+  private final       Object                                     sendingLock                       = new Object();
+  private             String                                     serverAddress;
+  private final       Set<String>                                serverAddressList                 = new HashSet<>();
+  private             String                                     replicasHTTPAddresses;
+  protected           Pair<Long, String>                         lastElectionVote;
+  private volatile    ELECTION_STATUS                            electionStatus                    = ELECTION_STATUS.DONE;
+  private             boolean                                    started;
+
   public enum QUORUM {
     NONE, ONE, TWO, THREE, MAJORITY, ALL
   }
@@ -62,30 +87,6 @@ public class HAServer implements ServerPlugin {
   public enum ELECTION_STATUS {
     DONE, VOTING_FOR_ME, VOTING_FOR_OTHERS, LEADER_WAITING_FOR_QUORUM
   }
-
-  private final    HAMessageFactory                           messageFactory;
-  private final    ArcadeDBServer                             server;
-  private final    ContextConfiguration                       configuration;
-  private final    String                                     bucketName;
-  private final    long                                       startedOn;
-  private volatile int                                        configuredServers                 = 1;
-  private final    Map<String, Leader2ReplicaNetworkExecutor> replicaConnections                = new ConcurrentHashMap<>();
-  private final    AtomicLong                                 lastDistributedOperationNumber    = new AtomicLong(-1);
-  private final    AtomicLong                                 lastForwardOperationNumber        = new AtomicLong(0);
-  protected final  String                                     replicationPath;
-  protected        ReplicationLogFile                         replicationLogFile;
-  private volatile Replica2LeaderNetworkExecutor              leaderConnection;
-  private          LeaderNetworkListener                      listener;
-  private final    Map<Long, QuorumMessage>                   messagesWaitingForQuorum          = new ConcurrentHashMap<>(1024);
-  private final    Map<Long, ForwardedMessage>                forwardMessagesWaitingForResponse = new ConcurrentHashMap<>(1024);
-  private          long                                       lastConfigurationOutputHash       = 0;
-  private final    Object                                     sendingLock                       = new Object();
-  private          String                                     serverAddress;
-  private final    Set<String>                                serverAddressList                 = new HashSet<>();
-  private          String                                     replicasHTTPAddresses;
-  protected        Pair<Long, String>                         lastElectionVote;
-  private volatile ELECTION_STATUS                            electionStatus                    = ELECTION_STATUS.DONE;
-  private          boolean                                    started;
 
   private static class QuorumMessage {
     public final long           sentOn = System.currentTimeMillis();
@@ -162,11 +163,12 @@ public class HAServer implements ServerPlugin {
 
     serverAddress = listener.getHost();
     if (serverAddress.equals("0.0.0.0")) {
-//      try {
-      serverAddress = "localhost";//InetAddress.getLocalHost().getHostAddress();
-//      } catch (UnknownHostException e) {
-//        // IGNORE IT
-//      }
+      try {
+        serverAddress = InetAddress.getLocalHost().getHostAddress();
+      } catch (UnknownHostException e) {
+        // IGNORE IT
+        serverAddress = "localhost";
+      }
     }
 
     if (GlobalConfiguration.HA_K8S.getValueAsBoolean()) {
@@ -217,9 +219,12 @@ public class HAServer implements ServerPlugin {
     final String[] localServerParts = serverAddress.split(":");
 
     try {
-      final String[] serverParts = serverEntry.split(":");
-      if (serverParts.length != 2)
-        throw new ConfigurationException("Found invalid server/port entry in server address '" + serverEntry + "'");
+      String[] serverParts = serverEntry.split(":");
+      if (serverParts.length < 2)
+        serverParts = new String[] { serverParts[0], DEFAULT_PORT };
+
+      if (localServerParts[0].equals(serverParts[0]) && localServerParts[1].equals(serverParts[1]))
+        return true;
 
       final InetAddress localhostAddress = InetAddress.getLocalHost();
 
@@ -295,14 +300,14 @@ public class HAServer implements ServerPlugin {
 
       final HashSet<String> serverAddressListCopy = new HashSet<>(serverAddressList);
 
-      for (final String serverAddress : serverAddressListCopy) {
-        if (isCurrentServer(serverAddress))
+      for (final String serverAddressCopy : serverAddressListCopy) {
+        if (isCurrentServer(serverAddressCopy))
           // SKIP LOCAL SERVER
           continue;
 
         try {
 
-          final String[] parts = serverAddress.split(":");
+          final String[] parts = serverAddressCopy.split(":");
 
           final ChannelBinaryClient channel = createNetworkConnection(parts[0], Integer.parseInt(parts[1]), ReplicationProtocol.COMMAND_VOTE_FOR_ME);
           channel.writeLong(electionTurn);
@@ -315,7 +320,7 @@ public class HAServer implements ServerPlugin {
             // RECEIVED VOTE
             ++totalVotes;
             LogManager.instance()
-                .log(this, Level.INFO, "Received the vote from server %s (turn=%d totalVotes=%d majority=%d)", serverAddress, electionTurn, totalVotes,
+                .log(this, Level.INFO, "Received the vote from server %s (turn=%d totalVotes=%d majority=%d)", serverAddressCopy, electionTurn, totalVotes,
                     majorityOfVotes);
 
           } else {
@@ -329,7 +334,7 @@ public class HAServer implements ServerPlugin {
             if (vote == 1) {
               // NO VOTE, IT ALREADY VOTED FOR SOMEBODY ELSE
               LogManager.instance()
-                  .log(this, Level.INFO, "Did not receive the vote from server %s (turn=%d totalVotes=%d majority=%d itsLeader=%s)", serverAddress,
+                  .log(this, Level.INFO, "Did not receive the vote from server %s (turn=%d totalVotes=%d majority=%d itsLeader=%s)", serverAddressCopy,
                       electionTurn, totalVotes, majorityOfVotes, otherLeaderName);
 
             } else if (vote == 2) {
@@ -337,13 +342,13 @@ public class HAServer implements ServerPlugin {
               electionAborted = true;
               LogManager.instance()
                   .log(this, Level.INFO, "Aborting election because server %s has a higher LSN (turn=%d lastReplicationMessage=%d totalVotes=%d majority=%d)",
-                      serverAddress, electionTurn, lastReplicationMessage, totalVotes, majorityOfVotes);
+                      serverAddressCopy, electionTurn, lastReplicationMessage, totalVotes, majorityOfVotes);
             }
           }
 
           channel.close();
         } catch (final Exception e) {
-          LogManager.instance().log(this, Level.INFO, "Error contacting server %s for election", serverAddress);
+          LogManager.instance().log(this, Level.INFO, "Error contacting server %s for election", serverAddressCopy);
         }
       }
 
@@ -989,7 +994,7 @@ public class HAServer implements ServerPlugin {
   public boolean connectToLeader(final String serverEntry) {
     String[] serverParts = serverEntry.split(":");
     if (serverParts.length == 1)
-      serverParts = new String[] { serverParts[0], "2424" };
+      serverParts = new String[] { serverParts[0], DEFAULT_PORT };
 
     try {
       connectToLeader(serverParts[0], Integer.parseInt(serverParts[1]));

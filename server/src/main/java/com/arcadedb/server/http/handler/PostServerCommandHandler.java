@@ -37,6 +37,7 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 
 import java.io.*;
+import java.rmi.*;
 
 public class PostServerCommandHandler extends AbstractHandler {
   public PostServerCommandHandler(final HttpServer httpServer) {
@@ -92,6 +93,8 @@ public class PostServerCommandHandler extends AbstractHandler {
     } else if (command.startsWith("shutdown ")) {
       final String serverName = command.substring("shutdown ".length()).trim();
       final Leader2ReplicaNetworkExecutor replica = httpServer.getServer().getHA().getReplica(serverName);
+      if (replica == null)
+        throw new ServerException("Cannot contact server '" + serverName + "' from the current server");
 
       final Binary buffer = new Binary();
       httpServer.getServer().getHA().getMessageFactory().serializeCommand(new ServerShutdownRequest(), buffer, -1);
