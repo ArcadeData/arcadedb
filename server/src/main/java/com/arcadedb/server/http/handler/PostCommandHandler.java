@@ -37,8 +37,12 @@ public class PostCommandHandler extends AbstractQueryHandler {
   }
 
   @Override
-  public void execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database) throws IOException {
+  protected boolean isParsingRequestPayload() {
+    return true;
+  }
 
+  @Override
+  public void execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database) throws IOException {
     final String payload = parseRequestPayload(exchange);
     if (payload == null || payload.isEmpty()) {
       exchange.setStatusCode(400);

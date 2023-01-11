@@ -131,10 +131,8 @@ public class IndexMatchCondition extends BooleanExpression {
     final IndexMatchCondition result = new IndexMatchCondition(-1);
     result.operator = operator == null ? null : operator.copy();
     result.between = between;
-
     result.leftExpressions = leftExpressions == null ? null : leftExpressions.stream().map(x -> x.copy()).collect(Collectors.toList());
     result.rightExpressions = rightExpressions == null ? null : rightExpressions.stream().map(x -> x.copy()).collect(Collectors.toList());
-
     return result;
   }
 

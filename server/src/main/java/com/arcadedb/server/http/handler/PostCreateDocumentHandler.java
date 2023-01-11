@@ -43,6 +43,11 @@ public class PostCreateDocumentHandler extends DatabaseAbstractHandler {
   }
 
   @Override
+  protected boolean isParsingRequestPayload() {
+    return true;
+  }
+
+  @Override
   public void execute(final HttpServerExchange exchange, final ServerSecurityUser user, final Database database) throws IOException {
     final String payload = parseRequestPayload(exchange);
 

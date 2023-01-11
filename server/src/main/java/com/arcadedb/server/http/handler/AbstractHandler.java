@@ -56,13 +56,8 @@ public abstract class AbstractHandler implements HttpHandler {
   protected abstract void execute(HttpServerExchange exchange, ServerSecurityUser user) throws Exception;
 
   protected String parseRequestPayload(final HttpServerExchange e) {
-    return parseRequestPayload(e, true);
-  }
-
-  protected String parseRequestPayload(final HttpServerExchange e, final boolean blocking) {
     final StringBuilder result = new StringBuilder();
-    if (blocking)
-      e.startBlocking();
+    e.startBlocking();
     e.getRequestReceiver().receiveFullBytes(
         // OK
         (exchange, data) -> result.append(new String(data, DatabaseFactory.getDefaultCharset())),
@@ -77,6 +72,11 @@ public abstract class AbstractHandler implements HttpHandler {
 
   @Override
   public void handleRequest(final HttpServerExchange exchange) {
+    if (isParsingRequestPayload() && exchange.isInIoThread()) {
+      exchange.dispatch(this);
+      return;
+    }
+
     LogManager.instance().setContext(httpServer.getServer().getServerName());
 
     try {
@@ -206,6 +206,13 @@ public abstract class AbstractHandler implements HttpHandler {
     if (help != null)
       json.put("help", help);
     return json.toString();
+  }
+
+  /**
+   * Returns true if the handler is reading the payload in the request. In this case, the execution is delegated to the worker thread.
+   */
+  protected boolean isParsingRequestPayload() {
+    return false;
   }
 
   protected String encodeError(final String message) {

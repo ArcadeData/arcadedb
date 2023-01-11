@@ -37,6 +37,11 @@ public class PostCreateUserHandler extends AbstractHandler {
   }
 
   @Override
+  protected boolean isParsingRequestPayload() {
+    return true;
+  }
+
+  @Override
   public void execute(final HttpServerExchange exchange, final ServerSecurityUser user) {
     checkRootUser(user);
 
