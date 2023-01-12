@@ -199,7 +199,7 @@ public class PerformanceVertexIndexTest {
       for (long id = 0; id < TOT; id += step) {
         final IndexCursor records = database.lookupByKey(TYPE_NAME, new String[] { "id" }, new Object[] { id });
         Assertions.assertNotNull(records);
-        Assertions.assertEquals(1, records.size(), "Wrong result for lookup of key " + id);
+        Assertions.assertTrue(records.hasNext(), "Wrong result for lookup of key " + id);
 
         final Document record = (Document) records.next().getRecord();
         Assertions.assertEquals("" + id, record.get("id"));

@@ -119,7 +119,6 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
         subIndex = (LSMTreeIndexCompacted) database.getSchema().getFileById(subIndexFileId);
         subIndex.mainIndex = mainIndex;
         subIndex.binaryKeyTypes = binaryKeyTypes;
-
       }
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE,
@@ -173,17 +172,18 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
    */
   public IndexCursor range(final Object[] fromKeys, final boolean beginKeysInclusive, final Object[] toKeys, final boolean endKeysInclusive)
       throws IOException {
-    boolean ascending = true;
-
+    final boolean ascending;
     if (fromKeys != null && toKeys != null)
       ascending = LSMTreeIndexMutable.compareKeys(comparator, binaryKeyTypes, fromKeys, toKeys) <= 0;
+    else
+      ascending = true;
 
-    return new LSMTreeIndexCursor(this, ascending, fromKeys, beginKeysInclusive, toKeys, endKeysInclusive);
+    return mainIndex.getLock().executeInReadLock(() -> new LSMTreeIndexCursor(this, ascending, fromKeys, beginKeysInclusive, toKeys, endKeysInclusive));
   }
 
   public IndexCursor range(final boolean ascending, final Object[] fromKeys, final boolean beginKeysInclusive, final Object[] toKeys,
       final boolean endKeysInclusive) throws IOException {
-    return new LSMTreeIndexCursor(this, ascending, fromKeys, beginKeysInclusive, toKeys, endKeysInclusive);
+    return mainIndex.getLock().executeInReadLock(() -> new LSMTreeIndexCursor(this, ascending, fromKeys, beginKeysInclusive, toKeys, endKeysInclusive));
   }
 
   public LSMTreeIndexUnderlyingPageCursor newPageIterator(final int pageId, final int currentEntryInPage, final boolean ascendingOrder) throws IOException {
@@ -421,7 +421,6 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     database.checkTransactionIsActive(database.isAutoTransaction());
 
     final int txPageCounter = getTotalPages();
-
     if (txPageCounter < 1)
       throw new IllegalArgumentException("Cannot update the index '" + name + "' because the file is invalid");
 

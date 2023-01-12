@@ -157,10 +157,10 @@ public class MultiIndexCursor implements IndexCursor {
   }
 
   @Override
-  public long size() {
-    long tot = 0;
+  public long estimateSize() {
+    long tot = 0L;
     for (final IndexCursor cursor : cursors)
-      tot += cursor.size();
+      tot += cursor.estimateSize();
     return tot;
   }
 
@@ -189,19 +189,12 @@ public class MultiIndexCursor implements IndexCursor {
 
   private void initCursors() {
     cursorsNextValues = new ArrayList<>(cursors.size());
-    for (int i = 0; i < cursors.size(); ++i) {
-      cursorsNextValues.add(null);
-
-      final IndexCursor cursor = cursors.get(i);
-      if (cursor == null)
-        continue;
-
-      if (!cursor.hasNext()) {
-        cursors.set(i, null);
-        continue;
-      }
-
-      cursorsNextValues.set(i, cursor.next());
+    for (Iterator<IndexCursor> c = cursors.iterator(); c.hasNext(); ) {
+      final IndexCursor cursor = c.next();
+      if (cursor == null || !cursor.hasNext()) {
+        c.remove();
+      } else
+        cursorsNextValues.add(cursor.next());
     }
   }
 }

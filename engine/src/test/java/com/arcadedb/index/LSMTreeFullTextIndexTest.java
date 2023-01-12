@@ -96,7 +96,7 @@ public class LSMTreeFullTextIndexTest extends TestHelper {
               ++totalPerIndex;
             }
 
-            Assertions.assertEquals(result.size(), totalPerIndex);
+            Assertions.assertEquals(result.estimateSize(), totalPerIndex);
 
             totalPerKeyword += totalPerIndex;
           }

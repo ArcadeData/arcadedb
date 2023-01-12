@@ -70,7 +70,7 @@ public class TempIndexCursor implements IndexCursor {
   }
 
   @Override
-  public long size() {
+  public long estimateSize() {
     return size;
   }
 

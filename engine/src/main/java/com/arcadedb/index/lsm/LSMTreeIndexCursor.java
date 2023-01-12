@@ -85,7 +85,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
 
     if (compacted != null)
       // INCLUDE COMPACTED
-      compactedSeriesIterators = compacted.newIterators(ascendingOrder, serializedFromKeys);
+      compactedSeriesIterators = compacted.newIterators(ascendingOrder, serializedFromKeys, serializedToKeys);
     else
       compactedSeriesIterators = Collections.emptyList();
 
@@ -248,8 +248,8 @@ public class LSMTreeIndexCursor implements IndexCursor {
   }
 
   @Override
-  public long size() {
-    return 0;
+  public long estimateSize() {
+    return -1L;
   }
 
   @Override
@@ -332,7 +332,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
         else if (tempCurrentValues.length > 0) {
           // MERGE VALUES
           final RID[] newArray = Arrays.copyOf(currentValues, currentValues.length + tempCurrentValues.length);
-          System.arraycopy(tempCurrentValues, currentValues.length, newArray, currentValues.length, newArray.length - currentValues.length);
+          System.arraycopy(tempCurrentValues, 0, newArray, currentValues.length, newArray.length - currentValues.length);
           currentValues = newArray;
         }
 

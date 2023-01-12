@@ -676,16 +676,21 @@ public class LSMTreeIndexTest extends TestHelper {
           iterator = ((RangeIndex) index).iterator(false);
           Assertions.assertNotNull(iterator);
 
+          Object prevKey = null;
           while (iterator.hasNext()) {
             Assertions.assertNotNull(iterator.next());
 
-            Assertions.assertNotNull(iterator.getKeys());
-            Assertions.assertEquals(1, iterator.getKeys().length);
+            final Object[] keys = iterator.getKeys();
+            Assertions.assertNotNull(keys);
+            Assertions.assertEquals(1, keys.length);
 
-            //LogManager.instance().log(this, Level.INFO, "Index %s Key %s", null, index, Arrays.toString(iterator.getKeys()));
+            if (prevKey != null)
+              Assertions.assertTrue(((Comparable) keys[0]).compareTo(prevKey) < 0, "Key " + keys[0] + " is not minor than " + prevKey);
 
-            total++;
+            prevKey = keys[0];
+            ++total;
           }
+
         } catch (final Exception e) {
           Assertions.fail(e);
         }

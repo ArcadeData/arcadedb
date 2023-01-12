@@ -323,7 +323,11 @@ public class TransactionIndexContext {
       final IndexCursor found = idx.get(key.keyValues, 2);
       if (found.hasNext()) {
         final Identifiable firstEntry = found.next();
-        if (found.size() > 1 || (found.size() == 1 && !firstEntry.equals(key.rid))) {
+        int totalEntries = 1;
+        if (found.hasNext())
+          ++totalEntries;
+
+        if (found.hasNext() || (totalEntries == 1 && !firstEntry.equals(key.rid))) {
           if (firstEntry.equals(deleted))
             // DELETED IN TX
             return;

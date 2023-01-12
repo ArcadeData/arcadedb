@@ -106,7 +106,7 @@ public class TransactionTypeTest extends TestHelper {
     for (int i = 0; i < TOT; i++) {
       final IndexCursor result = database.lookupByKey(TYPE_NAME, new String[] { "id" }, new Object[] { i });
       Assertions.assertNotNull(result);
-      Assertions.assertEquals(1, result.size());
+      Assertions.assertTrue(result.hasNext());
 
       final Document record2 = (Document) result.next().getRecord();
 

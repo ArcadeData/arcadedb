@@ -58,7 +58,8 @@ public class IndexCursorCollection implements IndexCursor {
     return new byte[0];
   }
 
-  public long size() {
+  @Override
+  public long estimateSize() {
     return collection.size();
   }
 

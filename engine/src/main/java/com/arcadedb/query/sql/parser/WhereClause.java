@@ -151,7 +151,7 @@ public class WhereClause extends SimpleNode {
       if (conditions.size() == definitionFields.size()) {
         CollectionUtils.countEntries(index.get(key));
       } else if (index.supportsOrderedIterations()) {
-        return ((TypeIndex) index).range(true, key, true, key, true).size();
+        return ((TypeIndex) index).range(true, key, true, key, true).estimateSize();
       }
     }
     return Long.MAX_VALUE;

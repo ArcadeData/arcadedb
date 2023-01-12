@@ -61,7 +61,7 @@ public class EmptyIndexCursor implements IndexCursor {
   }
 
   @Override
-  public long size() {
+  public long estimateSize() {
     return 0l;
   }
 
