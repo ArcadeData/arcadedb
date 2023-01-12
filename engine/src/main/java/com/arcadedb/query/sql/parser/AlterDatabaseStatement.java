@@ -32,6 +32,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.EmbeddedSchema;
 import com.arcadedb.security.SecurityDatabaseUser;
+import com.arcadedb.utility.FileUtils;
 
 import java.io.*;
 import java.util.*;
@@ -66,7 +67,7 @@ public class AlterDatabaseStatement extends DDLStatement {
       throw new DatabaseOperationException("Database setting '" + settingNameAsString + "' not found");
 
     final Object oldValue = db.getConfiguration().getValue(cfg);
-    final Object finalValue = settingValue.execute((Identifiable) null, ctx);
+    Object finalValue = settingValue.execute((Identifiable) null, ctx);
 
     if ("arcadedb.dateFormat".equals(settingNameAsString)) {
       db.getSchema().setDateFormat(finalValue.toString());
@@ -75,6 +76,25 @@ public class AlterDatabaseStatement extends DDLStatement {
       db.getSchema().setDateTimeFormat(finalValue.toString());
       ((EmbeddedSchema) db.getSchema()).saveConfiguration();
     } else {
+      if ("arcadedb.dateTimeImplementation".equals(settingNameAsString)) {
+        try {
+          finalValue = FileUtils.getStringContent(settingValue);
+          ctx.getDatabase().getSerializer().setDateTimeImplementation(Class.forName(finalValue.toString()));
+        } catch (ClassNotFoundException e) {
+          throw new DatabaseOperationException("Invalid datetime implementation '" + finalValue + "'", e);
+        }
+      } else if ("arcadedb.dateImplementation".equals(settingNameAsString)) {
+        try {
+          finalValue = FileUtils.getStringContent(settingValue);
+          ctx.getDatabase().getSerializer().setDateImplementation(Class.forName(finalValue.toString()));
+        } catch (ClassNotFoundException e) {
+          throw new DatabaseOperationException("Invalid datetime implementation '" + finalValue + "'", e);
+        }
+      } else if ("arcadedb.dateTimePrecision".equals(settingNameAsString)) {
+        finalValue = FileUtils.getStringContent(settingValue);
+        ctx.getDatabase().getSerializer().setDateTimePrecision(finalValue.toString());
+      }
+
       db.getConfiguration().setValue(cfg, finalValue);
       try {
         db.saveConfiguration();

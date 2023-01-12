@@ -34,6 +34,7 @@ import com.arcadedb.utility.MultiIterator;
 
 import java.math.*;
 import java.text.*;
+import java.time.*;
 import java.util.*;
 import java.util.logging.*;
 
@@ -56,7 +57,8 @@ public enum Type {
 
   DOUBLE("Double", 5, BinaryTypes.TYPE_DOUBLE, Double.class, new Class<?>[] { Number.class }),
 
-  DATETIME("Datetime", 6, BinaryTypes.TYPE_DATETIME, Date.class, new Class<?>[] { Date.class, Number.class }),
+  DATETIME("Datetime", 6, BinaryTypes.TYPE_DATETIME, Date.class,
+      new Class<?>[] { Date.class, LocalDateTime.class, ZonedDateTime.class, Instant.class, Number.class }),
 
   STRING("String", 7, BinaryTypes.TYPE_STRING, String.class, new Class<?>[] { Enum.class }),
 
@@ -70,7 +72,7 @@ public enum Type {
 
   BYTE("Byte", 12, BinaryTypes.TYPE_BYTE, Byte.class, new Class<?>[] { Number.class }),
 
-  DATE("Date", 13, BinaryTypes.TYPE_DATE, Date.class, new Class<?>[] { Number.class }),
+  DATE("Date", 13, BinaryTypes.TYPE_DATE, Date.class, new Class<?>[] { LocalDate.class, Number.class }),
 
   DECIMAL("Decimal", 14, BinaryTypes.TYPE_DECIMAL, BigDecimal.class, new Class<?>[] { BigDecimal.class, Number.class }),
 

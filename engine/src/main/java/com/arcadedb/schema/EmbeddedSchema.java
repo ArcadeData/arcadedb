@@ -54,6 +54,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
 
 import java.io.*;
+import java.time.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
@@ -85,6 +86,7 @@ public class EmbeddedSchema implements Schema {
   private              String                                 dateFormat            = GlobalConfiguration.DATE_FORMAT.getValueAsString();
   private              String                                 dateTimeFormat        = GlobalConfiguration.DATE_TIME_FORMAT.getValueAsString();
   private              TimeZone                               timeZone              = TimeZone.getDefault();
+  private              ZoneId                                 zoneId                = ZoneId.systemDefault();
   private              boolean                                readingFromFile       = false;
   private              boolean                                dirtyConfiguration    = false;
   private              boolean                                loadInRamCompleted    = false;
@@ -184,6 +186,15 @@ public class EmbeddedSchema implements Schema {
   @Override
   public void setTimeZone(final TimeZone timeZone) {
     this.timeZone = timeZone;
+  }
+
+  @Override
+  public ZoneId getZoneId() {
+    return zoneId;
+  }
+
+  public void setZoneId(final ZoneId zoneId) {
+    this.zoneId = zoneId;
   }
 
   @Override
@@ -1093,7 +1104,14 @@ public class EmbeddedSchema implements Schema {
 
       final JSONObject settings = root.getJSONObject("settings");
 
-      timeZone = TimeZone.getTimeZone(settings.getString("timeZone"));
+      if (settings.has("timeZone")) {
+        timeZone = TimeZone.getTimeZone(settings.getString("timeZone"));
+        zoneId = timeZone.toZoneId();
+      } else if (settings.has("zoneId")) {
+        zoneId = ZoneId.of(settings.getString("zoneId"));
+        timeZone = TimeZone.getTimeZone(zoneId);
+      }
+
       dateFormat = settings.getString("dateFormat");
       dateTimeFormat = settings.getString("dateTimeFormat");
 
@@ -1305,7 +1323,7 @@ public class EmbeddedSchema implements Schema {
     final JSONObject settings = new JSONObject();
     root.put("settings", settings);
 
-    settings.put("timeZone", timeZone.getID());
+    settings.put("zoneId", zoneId.getId());
     settings.put("dateFormat", dateFormat);
     settings.put("dateTimeFormat", dateTimeFormat);
 

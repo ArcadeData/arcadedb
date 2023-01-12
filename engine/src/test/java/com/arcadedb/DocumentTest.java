@@ -19,6 +19,7 @@
 package com.arcadedb;
 
 import com.arcadedb.database.DetachedDocument;
+import com.arcadedb.database.EmbeddedDatabase;
 import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.schema.DocumentType;
@@ -28,6 +29,9 @@ import org.junit.jupiter.api.Test;
 
 import java.math.*;
 import java.text.*;
+import java.time.*;
+import java.time.chrono.*;
+import java.time.temporal.*;
 import java.util.*;
 
 public class DocumentTest extends TestHelper {
@@ -53,6 +57,8 @@ public class DocumentTest extends TestHelper {
       final MutableDocument doc = database.newDocument("ConversionTest");
 
       final Date now = new Date();
+      final LocalDate localDate = LocalDate.now();
+      final LocalDateTime localDateTime = LocalDateTime.now();
 
       doc.set("string", "test");
       doc.set("int", 33);
@@ -62,6 +68,8 @@ public class DocumentTest extends TestHelper {
       doc.set("decimal", new BigDecimal("33.33"));
       doc.set("date", now);
       doc.set("datetime", now);
+      doc.set("localDate", localDate);
+      doc.set("localDateTime", localDateTime);
 
       Assertions.assertEquals(33, doc.get("int"));
       Assertions.assertEquals(33l, doc.get("long"));
@@ -70,6 +78,8 @@ public class DocumentTest extends TestHelper {
       Assertions.assertEquals(new BigDecimal("33.33"), doc.get("decimal"));
       Assertions.assertEquals(now, doc.get("date"));
       Assertions.assertEquals(now, doc.get("datetime"));
+      Assertions.assertEquals(localDate, doc.get("localDate"));
+      Assertions.assertEquals(localDateTime, doc.get("localDateTime"));
     });
   }
 
@@ -114,7 +124,217 @@ public class DocumentTest extends TestHelper {
       doc.set("datetime", df.format(now));
       Assertions.assertEquals(df.format(now), df.format(doc.get("date")));
       Assertions.assertEquals(df.format(now), df.format(doc.get("datetime")));
+
+      final LocalDate localDate = LocalDate.now();
+      final LocalDateTime localDateTime = LocalDateTime.now();
+      doc.set("date", localDate);
+      doc.set("datetime", localDateTime);
+      Assertions.assertEquals(localDate, doc.get("date"));
+      Assertions.assertEquals(localDateTime, doc.get("datetime"));
     });
+  }
+
+  @Test
+  public void testDateAndDateTimeSettingsAreSavedInDatabase() {
+    database.command("sql", "alter database `arcadedb.dateTimeImplementation` `java.time.LocalDateTime`");
+    database.command("sql", "alter database `arcadedb.dateImplementation` `java.time.LocalDate`");
+    database.command("sql", "alter database `arcadedb.dateTimePrecision` nanosecond");
+
+    Assertions.assertEquals(java.time.LocalDateTime.class, ((EmbeddedDatabase) database).getSerializer().getDateTimeImplementation());
+    Assertions.assertEquals(java.time.LocalDate.class, ((EmbeddedDatabase) database).getSerializer().getDateImplementation());
+    Assertions.assertEquals(ChronoUnit.NANOS, ((EmbeddedDatabase) database).getSerializer().getDateTimePrecision());
+
+    database.close();
+
+    database = factory.open();
+
+    Assertions.assertEquals(java.time.LocalDateTime.class, ((EmbeddedDatabase) database).getSerializer().getDateTimeImplementation());
+    Assertions.assertEquals(java.time.LocalDate.class, ((EmbeddedDatabase) database).getSerializer().getDateImplementation());
+    Assertions.assertEquals(ChronoUnit.NANOS, ((EmbeddedDatabase) database).getSerializer().getDateTimePrecision());
+
+    database.command("sql", "alter database `arcadedb.dateTimeImplementation` `java.util.Date`");
+    database.command("sql", "alter database `arcadedb.dateImplementation` `java.util.Date`");
+    database.command("sql", "alter database `arcadedb.dateTimePrecision` millisecond");
+
+    Assertions.assertEquals(java.util.Date.class, ((EmbeddedDatabase) database).getSerializer().getDateTimeImplementation());
+    Assertions.assertEquals(java.util.Date.class, ((EmbeddedDatabase) database).getSerializer().getDateImplementation());
+    Assertions.assertEquals(ChronoUnit.MILLIS, ((EmbeddedDatabase) database).getSerializer().getDateTimePrecision());
+  }
+
+  @Test
+  public void testLocalDateTime() throws ClassNotFoundException {
+    ((EmbeddedDatabase) database).getSerializer().setDateTimeImplementation(LocalDateTime.class);
+
+    final LocalDateTime localDateTime = LocalDateTime.now();
+
+    try {
+      final MutableDocument doc = database.newDocument("ConversionTest");
+
+      database.transaction(() -> {
+        // TEST MILLISECONDS PRECISION
+        ((EmbeddedDatabase) database).getSerializer().setDateTimePrecision("millisecond");
+        doc.set("datetime", localDateTime);
+        doc.save();
+      });
+
+      doc.reload();
+      Assertions.assertEquals(localDateTime.truncatedTo(ChronoUnit.MILLIS), doc.get("datetime"));
+
+      // TEST MICROSECONDS PRECISION
+      ((EmbeddedDatabase) database).getSerializer().setDateTimePrecision("microsecond");
+      database.transaction(() -> {
+        doc.set("datetime", localDateTime);
+        doc.save();
+      });
+
+      doc.reload();
+      Assertions.assertEquals(localDateTime.truncatedTo(ChronoUnit.MICROS), doc.get("datetime"));
+
+      // TEST NANOSECOND PRECISION
+      ((EmbeddedDatabase) database).getSerializer().setDateTimePrecision("nanosecond");
+      database.transaction(() -> {
+        doc.set("datetime", localDateTime);
+        doc.save();
+      });
+      doc.reload();
+      Assertions.assertEquals(localDateTime.truncatedTo(ChronoUnit.NANOS), doc.get("datetime"));
+
+    } finally {
+      ((EmbeddedDatabase) database).getSerializer().setDateTimeImplementation(Date.class);
+      ((EmbeddedDatabase) database).getSerializer().setDateTimePrecision("millisecond");
+    }
+  }
+
+  @Test
+  public void testCalendar() throws ClassNotFoundException {
+    ((EmbeddedDatabase) database).getSerializer().setDateTimeImplementation(Calendar.class);
+
+    final Calendar calendar = Calendar.getInstance();
+
+    try {
+      final MutableDocument doc = database.newDocument("ConversionTest");
+
+      database.transaction(() -> {
+        doc.set("datetime", calendar);
+        doc.save();
+      });
+
+      doc.reload();
+      Assertions.assertEquals(calendar, doc.get("datetime"));
+
+    } finally {
+      ((EmbeddedDatabase) database).getSerializer().setDateTimeImplementation(Date.class);
+    }
+  }
+
+  @Test
+  public void testLocalDate() throws ClassNotFoundException {
+    ((EmbeddedDatabase) database).getSerializer().setDateImplementation(LocalDate.class);
+
+    final LocalDate localDate = LocalDate.now();
+
+    try {
+      final MutableDocument doc = database.newDocument("ConversionTest");
+
+      database.transaction(() -> {
+        doc.set("date", localDate);
+        doc.save();
+      });
+
+      doc.reload();
+      Assertions.assertEquals(localDate, doc.get("date"));
+
+    } finally {
+      ((EmbeddedDatabase) database).getSerializer().setDateImplementation(Date.class);
+    }
+  }
+
+  @Test
+  public void testZonedDateTime() throws ClassNotFoundException {
+    ((EmbeddedDatabase) database).getSerializer().setDateTimeImplementation(ZonedDateTime.class);
+
+    final ZonedDateTime zonedDateTime = ZonedDateTime.now();
+
+    try {
+      final MutableDocument doc = database.newDocument("ConversionTest");
+
+      database.transaction(() -> {
+        // TEST MILLISECONDS PRECISION
+        ((EmbeddedDatabase) database).getSerializer().setDateTimePrecision("millisecond");
+        doc.set("datetime", zonedDateTime);
+        doc.save();
+      });
+
+      doc.reload();
+      Assertions.assertTrue(zonedDateTime.truncatedTo(ChronoUnit.MILLIS).isEqual((ChronoZonedDateTime<?>) doc.get("datetime")));
+
+      // TEST MICROSECONDS PRECISION
+      ((EmbeddedDatabase) database).getSerializer().setDateTimePrecision("microsecond");
+      database.transaction(() -> {
+        doc.set("datetime", zonedDateTime);
+        doc.save();
+      });
+
+      doc.reload();
+      Assertions.assertTrue(zonedDateTime.truncatedTo(ChronoUnit.MICROS).isEqual((ChronoZonedDateTime<?>) doc.get("datetime")));
+
+      // TEST NANOSECOND PRECISION
+      ((EmbeddedDatabase) database).getSerializer().setDateTimePrecision("nanosecond");
+      database.transaction(() -> {
+        doc.set("datetime", zonedDateTime);
+        doc.save();
+      });
+      doc.reload();
+      Assertions.assertTrue(zonedDateTime.truncatedTo(ChronoUnit.NANOS).isEqual((ChronoZonedDateTime<?>) doc.get("datetime")));
+
+    } finally {
+      ((EmbeddedDatabase) database).getSerializer().setDateTimeImplementation(Date.class);
+      ((EmbeddedDatabase) database).getSerializer().setDateTimePrecision("millisecond");
+    }
+  }
+
+  @Test
+  public void testInstant() throws ClassNotFoundException {
+    ((EmbeddedDatabase) database).getSerializer().setDateTimeImplementation(Instant.class);
+
+    final Instant instant = Instant.now();
+
+    try {
+      final MutableDocument doc = database.newDocument("ConversionTest");
+
+      database.transaction(() -> {
+        // TEST MILLISECONDS PRECISION
+        ((EmbeddedDatabase) database).getSerializer().setDateTimePrecision("millisecond");
+        doc.set("datetime", instant);
+        doc.save();
+      });
+
+      doc.reload();
+      Assertions.assertEquals(instant.truncatedTo(ChronoUnit.MILLIS), doc.get("datetime"));
+
+      // TEST MICROSECONDS PRECISION
+      ((EmbeddedDatabase) database).getSerializer().setDateTimePrecision("microsecond");
+      database.transaction(() -> {
+        doc.set("datetime", instant);
+        doc.save();
+      });
+
+      doc.reload();
+      Assertions.assertEquals(instant.truncatedTo(ChronoUnit.MICROS), doc.get("datetime"));
+
+      // TEST NANOSECOND PRECISION
+      ((EmbeddedDatabase) database).getSerializer().setDateTimePrecision("nanosecond");
+      database.transaction(() -> {
+        doc.set("datetime", instant);
+        doc.save();
+      });
+      doc.reload();
+      Assertions.assertEquals(instant.truncatedTo(ChronoUnit.NANOS), doc.get("datetime"));
+
+    } finally {
+      ((EmbeddedDatabase) database).getSerializer().setDateTimeImplementation(Date.class);
+      ((EmbeddedDatabase) database).getSerializer().setDateTimePrecision("millisecond");
+    }
   }
 
   @Test

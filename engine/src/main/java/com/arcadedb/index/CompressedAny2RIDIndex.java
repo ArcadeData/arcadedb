@@ -103,7 +103,7 @@ public class CompressedAny2RIDIndex<K> {
     }
   }
 
-  public CompressedAny2RIDIndex(final Database database, final Type keyType, final int expectedSize) {
+  public CompressedAny2RIDIndex(final Database database, final Type keyType, final int expectedSize) throws ClassNotFoundException {
     this.database = database;
 
     this.keys = expectedSize;
@@ -112,7 +112,7 @@ public class CompressedAny2RIDIndex<K> {
     this.chunk.setAllocationChunkSize(expectedSize);
     this.chunk.fill((byte) 0, keys * Binary.INT_SERIALIZED_SIZE);
 
-    this.serializer = new BinarySerializer();
+    this.serializer = new BinarySerializer(database.getConfiguration());
 
     this.keyType = keyType;
     this.keyBinaryType = keyType.getBinaryType();

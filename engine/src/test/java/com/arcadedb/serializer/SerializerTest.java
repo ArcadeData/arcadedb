@@ -142,8 +142,8 @@ public class SerializerTest extends TestHelper {
   }
 
   @Test
-  public void testLiteralPropertiesInDocument() {
-    final BinarySerializer serializer = new BinarySerializer();
+  public void testLiteralPropertiesInDocument() throws ClassNotFoundException {
+    final BinarySerializer serializer = new BinarySerializer(database.getConfiguration());
 
     database.transaction(() -> {
       database.getSchema().createDocumentType("Test");
@@ -192,8 +192,8 @@ public class SerializerTest extends TestHelper {
   }
 
   @Test
-  public void testListPropertiesInDocument() {
-    final BinarySerializer serializer = new BinarySerializer();
+  public void testListPropertiesInDocument() throws ClassNotFoundException {
+    final BinarySerializer serializer = new BinarySerializer(database.getConfiguration());
 
     database.transaction(() -> {
       database.getSchema().createDocumentType("Test");
@@ -297,8 +297,8 @@ public class SerializerTest extends TestHelper {
   }
 
   @Test
-  public void testMapPropertiesInDocument() {
-    final BinarySerializer serializer = new BinarySerializer();
+  public void testMapPropertiesInDocument() throws ClassNotFoundException {
+    final BinarySerializer serializer = new BinarySerializer(database.getConfiguration());
 
     database.transaction(() -> {
       database.getSchema().createDocumentType("Test");
@@ -372,8 +372,8 @@ public class SerializerTest extends TestHelper {
   }
 
   @Test
-  public void testEmbedded() {
-    final BinarySerializer serializer = new BinarySerializer();
+  public void testEmbedded() throws ClassNotFoundException {
+    final BinarySerializer serializer = new BinarySerializer(database.getConfiguration());
 
     database.transaction(() -> {
       final DocumentType test = database.getSchema().createDocumentType("Test");
@@ -409,8 +409,8 @@ public class SerializerTest extends TestHelper {
   }
 
   @Test
-  public void testListOfEmbedded() {
-    final BinarySerializer serializer = new BinarySerializer();
+  public void testListOfEmbedded() throws ClassNotFoundException {
+    final BinarySerializer serializer = new BinarySerializer(database.getConfiguration());
 
     database.transaction(() -> {
       final DocumentType test = database.getSchema().createDocumentType("Test");
@@ -456,8 +456,8 @@ public class SerializerTest extends TestHelper {
   }
 
   @Test
-  public void testMapOfEmbedded() {
-    final BinarySerializer serializer = new BinarySerializer();
+  public void testMapOfEmbedded() throws ClassNotFoundException {
+    final BinarySerializer serializer = new BinarySerializer(database.getConfiguration());
 
     database.transaction(() -> {
       final DocumentType test = database.getSchema().createDocumentType("Test");
@@ -506,5 +506,4 @@ public class SerializerTest extends TestHelper {
       }
     });
   }
-
 }

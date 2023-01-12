@@ -18,6 +18,8 @@
  */
 package com.arcadedb.serializer;
 
+import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.BaseRecord;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
@@ -44,7 +46,10 @@ import com.arcadedb.query.sql.executor.Result;
 
 import java.lang.reflect.*;
 import java.math.*;
+import java.time.*;
+import java.time.temporal.*;
 import java.util.*;
+import java.util.concurrent.*;
 import java.util.logging.*;
 
 /**
@@ -55,10 +60,17 @@ import java.util.logging.*;
  * TODO: efficient, because it doesn't need to unmarshall all the values first.
  */
 public class BinarySerializer {
-  private final BinaryComparator comparator = new BinaryComparator(this);
+  public static final long             MS_IN_A_DAY = 24 * 60 * 60 * 1000L; // 86_400_000
+  private final       BinaryComparator comparator  = new BinaryComparator(this);
+  private             Class            dateImplementation;
+  private             Class            dateTimeImplementation;
+  private             ChronoUnit       dateTimePrecision;
+  private             ZoneId           UTC_ZONE_ID = ZoneId.of("UTC");
 
-  public BinaryComparator getComparator() {
-    return comparator;
+  public BinarySerializer(final ContextConfiguration configuration) throws ClassNotFoundException {
+    setDateImplementation(configuration.getValue(GlobalConfiguration.DATE_IMPLEMENTATION));
+    setDateTimeImplementation(configuration.getValue(GlobalConfiguration.DATE_TIME_IMPLEMENTATION));
+    setDateTimePrecision(configuration.getValue(GlobalConfiguration.DATE_TIME_PRECISION));
   }
 
   public Binary serialize(final Database database, final Record record) {
@@ -351,8 +363,14 @@ public class BinarySerializer {
       content.putNumber(dg);
       break;
     case BinaryTypes.TYPE_DATE:
+      if (value instanceof Date)
+        content.putUnsignedNumber(((Date) value).getTime() / MS_IN_A_DAY);
+      else if (value instanceof LocalDate)
+        content.putUnsignedNumber(((LocalDate) value).toEpochDay());
+      break;
+
     case BinaryTypes.TYPE_DATETIME:
-      content.putUnsignedNumber(((Date) value).getTime());
+      serializeDateTime(content, value);
       break;
     case BinaryTypes.TYPE_DECIMAL:
       content.putNumber(((BigDecimal) value).scale());
@@ -505,10 +523,19 @@ public class BinarySerializer {
     case BinaryTypes.TYPE_DOUBLE:
       value = Double.longBitsToDouble(content.getNumber());
       break;
-    case BinaryTypes.TYPE_DATE:
-    case BinaryTypes.TYPE_DATETIME:
-      value = new Date(content.getUnsignedNumber());
+    case BinaryTypes.TYPE_DATE: {
+      if (dateImplementation.equals(java.util.Date.class))
+        value = new Date(content.getUnsignedNumber());
+      else if (dateImplementation.equals(java.time.LocalDate.class))
+        value = LocalDate.ofEpochDay(content.getUnsignedNumber());
+      else
+        throw new SerializationException("Error on deserialize date. Configured class '" + dateImplementation + "' is not supported");
       break;
+    }
+    case BinaryTypes.TYPE_DATETIME: {
+      value = deserializeDateTime(database, content);
+      break;
+    }
     case BinaryTypes.TYPE_DECIMAL:
       final int scale = (int) content.getNumber();
       final byte[] unscaledValue = content.getBytes();
@@ -664,5 +691,138 @@ public class BinarySerializer {
     header.position(header.size());
     header.flip();
     return header;
+  }
+
+  public Class getDateImplementation() {
+    return dateImplementation;
+  }
+
+  public void setDateImplementation(final Object dateImplementation) throws ClassNotFoundException {
+    this.dateImplementation = dateImplementation instanceof Class ? (Class) dateImplementation : Class.forName(dateImplementation.toString());
+  }
+
+  public Class getDateTimeImplementation() {
+    return dateTimeImplementation;
+  }
+
+  public void setDateTimeImplementation(final Object dateTimeImplementation) throws ClassNotFoundException {
+    this.dateTimeImplementation = dateTimeImplementation instanceof Class ? (Class) dateTimeImplementation : Class.forName(dateTimeImplementation.toString());
+  }
+
+  public ChronoUnit getDateTimePrecision() {
+    return dateTimePrecision;
+  }
+
+  public void setDateTimePrecision(final String precision) {
+    switch (precision) {
+    case "millisecond":
+      dateTimePrecision = ChronoUnit.MILLIS;
+      break;
+    case "microsecond":
+      dateTimePrecision = ChronoUnit.MICROS;
+      break;
+    case "nanosecond":
+      dateTimePrecision = ChronoUnit.NANOS;
+      break;
+    default:
+      throw new SerializationException("Unsupported datetime precision '" + precision + "'");
+    }
+  }
+
+  public BinaryComparator getComparator() {
+    return comparator;
+  }
+
+  private void serializeDateTime(final Binary content, final Object value) {
+    final long timestamp;
+    if (value instanceof Date)
+      // WRITE MILLISECONDS
+      timestamp = ((Date) value).getTime();
+    else if (value instanceof Calendar)
+      // WRITE MILLISECONDS
+      timestamp = ((Calendar) value).getTimeInMillis();
+    else if (value instanceof LocalDateTime) {
+      final LocalDateTime localDateTime = (LocalDateTime) value;
+      if (dateTimePrecision.equals(ChronoUnit.MILLIS))
+        timestamp =
+            TimeUnit.MILLISECONDS.convert(localDateTime.toEpochSecond(ZoneOffset.UTC), TimeUnit.SECONDS) + localDateTime.getLong(ChronoField.MILLI_OF_SECOND);
+      else if (dateTimePrecision.equals(ChronoUnit.MICROS))
+        timestamp = TimeUnit.MICROSECONDS.convert(localDateTime.toEpochSecond(ZoneOffset.UTC), TimeUnit.SECONDS) + (localDateTime.getNano() / 1000);
+      else if (dateTimePrecision.equals(ChronoUnit.NANOS))
+        timestamp = TimeUnit.NANOSECONDS.convert(localDateTime.toEpochSecond(ZoneOffset.UTC), TimeUnit.SECONDS) + localDateTime.getNano();
+      else
+        // NOT SUPPORTED
+        timestamp = 0;
+    } else if (value instanceof ZonedDateTime) {
+      final ZonedDateTime zonedDateTime = (ZonedDateTime) value;
+      if (dateTimePrecision.equals(ChronoUnit.MILLIS))
+        timestamp = zonedDateTime.toInstant().toEpochMilli();
+      else if (dateTimePrecision.equals(ChronoUnit.MICROS))
+        timestamp = TimeUnit.MICROSECONDS.convert(zonedDateTime.toEpochSecond(), TimeUnit.SECONDS) + (zonedDateTime.getNano() / 1000);
+      else if (dateTimePrecision.equals(ChronoUnit.NANOS))
+        timestamp = TimeUnit.NANOSECONDS.convert(zonedDateTime.toEpochSecond(), TimeUnit.SECONDS) + zonedDateTime.getNano();
+      else
+        // NOT SUPPORTED
+        timestamp = 0;
+    } else if (value instanceof Instant) {
+      final Instant instant = (Instant) value;
+      if (dateTimePrecision.equals(ChronoUnit.MILLIS))
+        timestamp = instant.toEpochMilli();
+      else if (dateTimePrecision.equals(ChronoUnit.MICROS))
+        timestamp = TimeUnit.MICROSECONDS.convert(instant.getEpochSecond(), TimeUnit.SECONDS) + (instant.getNano() / 1000);
+      else if (dateTimePrecision.equals(ChronoUnit.NANOS))
+        timestamp = TimeUnit.NANOSECONDS.convert(instant.getEpochSecond(), TimeUnit.SECONDS) + instant.getNano();
+      else
+        // NOT SUPPORTED
+        timestamp = 0;
+    } else if (value instanceof Number)
+      timestamp = ((Number) value).longValue();
+    else
+      // UNSUPPORTED
+      timestamp = 0;
+    content.putUnsignedNumber(timestamp);
+  }
+
+  private Object deserializeDateTime(final Database database, final Binary content) {
+    final Object value;
+    final long timestamp = content.getUnsignedNumber();
+    if (dateTimeImplementation.equals(Date.class))
+      value = new Date(timestamp);
+    else if (dateTimeImplementation.equals(Calendar.class)) {
+      value = Calendar.getInstance(database.getSchema().getTimeZone());
+      ((Calendar) value).setTimeInMillis(timestamp);
+    } else if (dateTimeImplementation.equals(LocalDateTime.class)) {
+      if (dateTimePrecision.equals(ChronoUnit.MILLIS))
+        value = LocalDateTime.ofInstant(Instant.ofEpochMilli(timestamp), UTC_ZONE_ID);
+      else if (dateTimePrecision.equals(ChronoUnit.MICROS))
+        value = LocalDateTime.ofInstant(Instant.ofEpochSecond(TimeUnit.MICROSECONDS.toSeconds(timestamp),
+            TimeUnit.MICROSECONDS.toNanos(Math.floorMod(timestamp, TimeUnit.SECONDS.toMicros(1)))), UTC_ZONE_ID);
+      else if (dateTimePrecision.equals(ChronoUnit.NANOS))
+        value = LocalDateTime.ofInstant(Instant.ofEpochSecond(0L, timestamp), UTC_ZONE_ID);
+      else
+        value = 0;
+    } else if (dateTimeImplementation.equals(ZonedDateTime.class)) {
+      if (dateTimePrecision.equals(ChronoUnit.MILLIS))
+        value = ZonedDateTime.ofInstant(Instant.ofEpochMilli(timestamp), UTC_ZONE_ID);
+      else if (dateTimePrecision.equals(ChronoUnit.MICROS))
+        value = ZonedDateTime.ofInstant(Instant.ofEpochSecond(TimeUnit.MICROSECONDS.toSeconds(timestamp),
+            TimeUnit.MICROSECONDS.toNanos(Math.floorMod(timestamp, TimeUnit.SECONDS.toMicros(1)))), UTC_ZONE_ID);
+      else if (dateTimePrecision.equals(ChronoUnit.NANOS))
+        value = ZonedDateTime.ofInstant(Instant.ofEpochSecond(0L, timestamp), UTC_ZONE_ID);
+      else
+        value = 0;
+    } else if (dateTimeImplementation.equals(Instant.class)) {
+      if (dateTimePrecision.equals(ChronoUnit.MILLIS))
+        value = Instant.ofEpochMilli(timestamp);
+      else if (dateTimePrecision.equals(ChronoUnit.MICROS))
+        value = Instant.ofEpochSecond(TimeUnit.MICROSECONDS.toSeconds(timestamp),
+            TimeUnit.MICROSECONDS.toNanos(Math.floorMod(timestamp, TimeUnit.SECONDS.toMicros(1))));
+      else if (dateTimePrecision.equals(ChronoUnit.NANOS))
+        value = Instant.ofEpochSecond(0L, timestamp);
+      else
+        value = 0;
+    } else
+      throw new SerializationException("Error on deserialize datetime. Configured class '" + dateTimeImplementation + "' is not supported");
+    return value;
   }
 }

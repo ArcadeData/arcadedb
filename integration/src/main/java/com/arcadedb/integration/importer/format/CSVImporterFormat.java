@@ -183,8 +183,12 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     else if (expectedVertices > Integer.MAX_VALUE)
       expectedVertices = Integer.MAX_VALUE;
 
-    context.graphImporter = new GraphImporter((DatabaseInternal) database, (int) expectedVertices, (int) settings.expectedEdges,
-        Type.valueOf(settings.typeIdType.toUpperCase()));
+    try {
+      context.graphImporter = new GraphImporter((DatabaseInternal) database, (int) expectedVertices, (int) settings.expectedEdges,
+          Type.valueOf(settings.typeIdType.toUpperCase()));
+    } catch (ClassNotFoundException e) {
+      throw new ImportException("Error on creating internal component", e);
+    }
 
     final AbstractParser csvParser = createCSVParser(settings, ",");
 
@@ -308,7 +312,11 @@ public class CSVImporterFormat extends AbstractImporterFormat {
     LogManager.instance()
         .log(this, Level.INFO, "Started importing edges from CSV source (expectedVertices=%d expectedEdges=%d)", null, expectedVertices, expectedEdges);
 
-    context.graphImporter = new GraphImporter(database, (int) expectedVertices, (int) expectedEdges, Type.valueOf(settings.typeIdType.toUpperCase()));
+    try {
+      context.graphImporter = new GraphImporter(database, (int) expectedVertices, (int) expectedEdges, Type.valueOf(settings.typeIdType.toUpperCase()));
+    } catch (ClassNotFoundException e) {
+      throw new ImportException("Error on creating internal component", e);
+    }
     context.graphImporter.startImportingEdges();
 
     database.async().onError(exception -> LogManager.instance().log(this, Level.SEVERE, "Error on inserting edges", exception));

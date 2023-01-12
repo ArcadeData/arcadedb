@@ -98,7 +98,7 @@ public class BaseExpression extends MathExpression {
     else if (number != null)
       result = number.getValue();
     else if (identifier != null)
-      result = identifier.execute(iCurrentRecord.getRecord(), ctx);
+      result = identifier.execute(iCurrentRecord != null ? iCurrentRecord.getRecord() : null, ctx);
     else if (string != null && string.length() > 1)
       result = decode(string.substring(1, string.length() - 1));
     else if (inputParam != null)

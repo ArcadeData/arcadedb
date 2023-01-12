@@ -27,6 +27,7 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 
+import java.time.*;
 import java.util.*;
 
 public interface Schema {
@@ -148,6 +149,8 @@ public interface Schema {
   EdgeType getOrCreateEdgeType(String typeName, int buckets, int pageSize);
 
   TimeZone getTimeZone();
+
+  ZoneId getZoneId();
 
   void setTimeZone(TimeZone timeZone);
 

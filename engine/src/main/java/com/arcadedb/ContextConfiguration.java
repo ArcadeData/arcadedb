@@ -103,9 +103,9 @@ public class ContextConfiguration implements Serializable {
     return config.put(iName, iValue);
   }
 
-  public Object getValue(final GlobalConfiguration iConfig) {
+  public <T> T getValue(final GlobalConfiguration iConfig) {
     if (config.containsKey(iConfig.getKey()))
-      return config.get(iConfig.getKey());
+      return (T) config.get(iConfig.getKey());
     return iConfig.getValue();
   }
 

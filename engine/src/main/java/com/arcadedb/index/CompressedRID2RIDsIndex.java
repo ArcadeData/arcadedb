@@ -139,10 +139,10 @@ public class CompressedRID2RIDsIndex {
     }
   }
 
-  public CompressedRID2RIDsIndex(final Database database, final int expectedVertices, int expectedEdges) {
+  public CompressedRID2RIDsIndex(final Database database, final int expectedVertices, int expectedEdges) throws ClassNotFoundException {
     this.database = database;
     this.keys = expectedVertices;
-    this.serializer = new BinarySerializer();
+    this.serializer = new BinarySerializer(database.getConfiguration());
 
     if (expectedEdges <= 0)
       expectedEdges = expectedVertices;
@@ -155,10 +155,10 @@ public class CompressedRID2RIDsIndex {
     this.totalUsedSlots = 0;
   }
 
-  public CompressedRID2RIDsIndex(final Database database, final Binary buffer) {
+  public CompressedRID2RIDsIndex(final Database database, final Binary buffer) throws ClassNotFoundException {
     this.database = database;
     this.keys = buffer.size();
-    this.serializer = new BinarySerializer();
+    this.serializer = new BinarySerializer(database.getConfiguration());
     this.chunk = buffer;
   }
 
