@@ -40,20 +40,30 @@ import java.util.*;
 public class ConsoleTest {
   private static final String  DB_NAME = "console";
   private static       Console console;
+  private static       String  absoluteDBPath;
 
   @BeforeEach
   public void populate() throws IOException {
-    FileUtils.deleteRecursively(new File("./target/databases"));
+    File dbFile = new File("./target/databases");
+    absoluteDBPath = dbFile.getAbsolutePath();
+    FileUtils.deleteRecursively(dbFile);
     GlobalConfiguration.SERVER_ROOT_PATH.setValue("./target");
     console = new Console(false);
     Assertions.assertTrue(console.parse("create database " + DB_NAME + "; close", false));
   }
 
   @AfterEach
-  public void drop() {
+  public void drop() throws IOException {
     console.close();
     TestServerHelper.checkActiveDatabases();
-    FileUtils.deleteRecursively(new File("target/databases"));
+    Assertions.assertTrue(console.parse("drop database " + DB_NAME + "; close", false));
+  }
+
+  @Test
+  public void testDropCreateWithLocalUrl() throws IOException {
+    String localUrl = "local:/" + absoluteDBPath + "/" + DB_NAME;
+    Assertions.assertTrue(console.parse("drop database " + localUrl + "; close", false));
+    Assertions.assertTrue(console.parse("create database " + localUrl + "; close", false));
   }
 
   @Test
@@ -89,6 +99,11 @@ public class ConsoleTest {
   @Test
   public void testConnect() throws IOException {
     Assertions.assertTrue(console.parse("connect " + DB_NAME + ";info types", false));
+  }
+
+  @Test
+  public void testLocalConnect() throws IOException {
+    Assertions.assertTrue(console.parse("connect local:/" + absoluteDBPath + "/" + DB_NAME + ";info types", false));
   }
 
   @Test
