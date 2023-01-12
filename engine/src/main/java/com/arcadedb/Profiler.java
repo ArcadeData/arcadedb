@@ -141,16 +141,16 @@ public class Profiler {
       walTotalFiles += (Long) walStats.get("logFiles");
     }
 
-    json.put("readCacheUsed", new JSONObject().put("value", readCacheUsed));
-    json.put("writeCacheUsed", new JSONObject().put("value", writeCacheUsed));
+    json.put("readCacheUsed", new JSONObject().put("space", readCacheUsed));
+    json.put("writeCacheUsed", new JSONObject().put("space", writeCacheUsed));
     json.put("cacheMax", new JSONObject().put("space", cacheMax));
     json.put("pagesRead", new JSONObject().put("count", pagesRead));
     json.put("pagesWritten", new JSONObject().put("count", pagesWritten));
-    json.put("pagesReadSize", new JSONObject().put("value", pagesReadSize));
-    json.put("pagesWrittenSize", new JSONObject().put("value", pagesWrittenSize));
+    json.put("pagesReadSize", new JSONObject().put("space", pagesReadSize));
+    json.put("pagesWrittenSize", new JSONObject().put("space", pagesWrittenSize));
     json.put("pageFlushQueueLength", new JSONObject().put("value", pageFlushQueueLength));
     json.put("asyncQueueLength", new JSONObject().put("value", asyncQueueLength));
-    json.put("asyncParallelLevel", new JSONObject().put("value", asyncParallelLevel));
+    json.put("asyncParallelLevel", new JSONObject().put("count", asyncParallelLevel));
     json.put("pageCacheHits", new JSONObject().put("count", pageCacheHits));
     json.put("pageCacheMiss", new JSONObject().put("count", pageCacheMiss));
     json.put("totalOpenFiles", new JSONObject().put("count", totalOpenFiles));
@@ -180,7 +180,7 @@ public class Profiler {
     json.put("writeCachePages", new JSONObject().put("count", writeCachePages));
     json.put("indexCompactions", new JSONObject().put("count", indexCompactions));
 
-    json.put("gcTime", new JSONObject().put("value", getGarbageCollectionTime()));
+    json.put("gcTime", new JSONObject().put("count", getGarbageCollectionTime()));
 
     final Runtime runtime = Runtime.getRuntime();
     json.put("ramHeapUsed", new JSONObject().put("space", runtime.totalMemory() - runtime.freeMemory()));
@@ -202,6 +202,7 @@ public class Profiler {
     }
 
     json.put("totalDatabases", new JSONObject().put("count", databases.size()));
+    json.put("cpuCores", new JSONObject().put("count", Runtime.getRuntime().availableProcessors()));
 
     return json;
   }
