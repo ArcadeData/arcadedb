@@ -29,13 +29,17 @@ import com.arcadedb.database.RID;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.serializer.BinaryTypes;
+import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.MultiIterator;
 
 import java.math.*;
 import java.text.*;
 import java.time.*;
+import java.time.format.*;
+import java.time.temporal.*;
 import java.util.*;
+import java.util.concurrent.*;
 import java.util.logging.*;
 
 /**
@@ -398,29 +402,95 @@ public enum Type {
         }
 
       } else if (iTargetClass.equals(Date.class)) {
+        return convertToDate(database, iValue);
+      } else if (iTargetClass.equals(Calendar.class)) {
+        final Calendar cal = Calendar.getInstance();
+        cal.setTime(convertToDate(database, iValue));
+        return cal;
+      } else if (iTargetClass.equals(LocalDate.class)) {
         if (iValue instanceof Number)
-          return new Date(((Number) iValue).longValue());
-        if (iValue instanceof Calendar)
-          return ((Calendar) iValue).getTime();
-        if (iValue instanceof String) {
+          return DateUtils.date(database, ((Number) iValue).longValue(), LocalDate.class);
+        else if (iValue instanceof Date)
+          return DateUtils.date(database, ((Date) iValue).getTime() / DateUtils.MS_IN_A_DAY, LocalDate.class);
+        else if (iValue instanceof Calendar)
+          return DateUtils.date(database, ((Calendar) iValue).getTimeInMillis() / DateUtils.MS_IN_A_DAY, LocalDate.class);
+        else if (iValue instanceof String) {
           final String valueAsString = (String) iValue;
           if (FileUtils.isLong(valueAsString))
-            return new Date(Long.parseLong(iValue.toString()));
-          if (database != null)
+            return DateUtils.date(database, Long.parseLong(iValue.toString()), LocalDate.class);
+          else if (database != null)
             try {
-              return new SimpleDateFormat(database.getSchema().getDateTimeFormat()).parse(valueAsString);
-            } catch (final ParseException ignore) {
-              return new SimpleDateFormat(database.getSchema().getDateFormat()).parse(valueAsString);
+              return LocalDate.parse(valueAsString, DateTimeFormatter.ofPattern((database.getSchema().getDateTimeFormat())));
+            } catch (final DateTimeParseException ignore) {
+              return LocalDate.parse(valueAsString, DateTimeFormatter.ofPattern((database.getSchema().getDateFormat())));
             }
           else {
             // GUESS FORMAT BY STRING LENGTH
             if (valueAsString.length() == "yyyy-MM-dd".length())
-              return new SimpleDateFormat("yyyy-MM-dd").parse(valueAsString);
-            else if (valueAsString.length() == "yyyy-MM-dd HH:mm:ss".length())
-              return new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").parse(valueAsString);
-            else if (valueAsString.length() == "yyyy-MM-dd HH:mm:ss.SSS".length())
-              return new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS").parse(valueAsString);
+              return LocalDateTime.parse(valueAsString, DateTimeFormatter.ofPattern("yyyy-MM-dd"));
           }
+        }
+      } else if (iTargetClass.equals(LocalDateTime.class)) {
+        if (iValue instanceof Number)
+          return DateUtils.dateTime(database, ((Number) iValue).longValue(), LocalDateTime.class, ChronoUnit.MILLIS);
+        else if (iValue instanceof Date)
+          return DateUtils.dateTime(database, ((Date) iValue).getTime(), LocalDateTime.class, ChronoUnit.MILLIS);
+        else if (iValue instanceof Calendar)
+          return DateUtils.dateTime(database, ((Calendar) iValue).getTimeInMillis(), LocalDateTime.class, ChronoUnit.MILLIS);
+        else if (iValue instanceof String) {
+          final String valueAsString = (String) iValue;
+          if (FileUtils.isLong(valueAsString))
+            return DateUtils.dateTime(database, Long.parseLong(iValue.toString()), LocalDateTime.class, ChronoUnit.MILLIS);
+          else if (database != null)
+            try {
+              return LocalDateTime.parse(valueAsString, DateTimeFormatter.ofPattern((database.getSchema().getDateTimeFormat())));
+            } catch (final DateTimeParseException ignore) {
+              return LocalDateTime.parse(valueAsString, DateTimeFormatter.ofPattern((database.getSchema().getDateFormat())));
+            }
+          else {
+            // GUESS FORMAT BY STRING LENGTH
+            if (valueAsString.length() == "yyyy-MM-dd".length())
+              return LocalDateTime.parse(valueAsString, DateTimeFormatter.ofPattern("yyyy-MM-dd"));
+            else if (valueAsString.length() == "yyyy-MM-dd HH:mm:ss".length())
+              return LocalDateTime.parse(valueAsString, DateTimeFormatter.ofPattern("yyyyyyyy-MM-dd HH:mm:ss"));
+            else if (valueAsString.length() == "yyyy-MM-dd HH:mm:ss.SSS".length())
+              return LocalDateTime.parse(valueAsString, DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS"));
+          }
+        }
+      } else if (iTargetClass.equals(ZonedDateTime.class)) {
+        if (iValue instanceof Number)
+          return DateUtils.dateTime(database, ((Number) iValue).longValue(), ZonedDateTime.class, ChronoUnit.MILLIS);
+        if (iValue instanceof Calendar)
+          return DateUtils.dateTime(database, ((Calendar) iValue).getTimeInMillis(), ZonedDateTime.class, ChronoUnit.MILLIS);
+        if (iValue instanceof String) {
+          final String valueAsString = (String) iValue;
+          if (FileUtils.isLong(valueAsString))
+            return DateUtils.dateTime(database, Long.parseLong(iValue.toString()), ZonedDateTime.class, ChronoUnit.MILLIS);
+          if (database != null)
+            try {
+              return ZonedDateTime.parse(valueAsString, DateTimeFormatter.ofPattern((database.getSchema().getDateTimeFormat())));
+            } catch (final DateTimeParseException ignore) {
+              return ZonedDateTime.parse(valueAsString, DateTimeFormatter.ofPattern((database.getSchema().getDateFormat())));
+            }
+          else {
+            // GUESS FORMAT BY STRING LENGTH
+            if (valueAsString.length() == "yyyy-MM-dd".length())
+              return ZonedDateTime.parse(valueAsString, DateTimeFormatter.ofPattern("yyyy-MM-dd"));
+            else if (valueAsString.length() == "yyyy-MM-dd HH:mm:ss".length())
+              return ZonedDateTime.parse(valueAsString, DateTimeFormatter.ofPattern("yyyyyyyy-MM-dd HH:mm:ss"));
+            else if (valueAsString.length() == "yyyy-MM-dd HH:mm:ss.SSS".length())
+              return ZonedDateTime.parse(valueAsString, DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS"));
+          }
+        }
+      } else if (iTargetClass.equals(Instant.class)) {
+        if (iValue instanceof Number)
+          return DateUtils.dateTime(database, ((Number) iValue).longValue(), Instant.class, ChronoUnit.MILLIS);
+        if (iValue instanceof Calendar)
+          return DateUtils.dateTime(database, ((Calendar) iValue).getTimeInMillis(), Instant.class, ChronoUnit.MILLIS);
+        if (iValue instanceof String) {
+          final String valueAsString = (String) iValue;
+          if (FileUtils.isLong(valueAsString))
+            return DateUtils.dateTime(database, Long.parseLong(iValue.toString()), Instant.class, ChronoUnit.MILLIS);
         }
       } else if (iTargetClass.equals(Identifiable.class) || iTargetClass.equals(RID.class)) {
         if (MultiValue.isMultiValue(iValue)) {
@@ -874,5 +944,45 @@ public enum Type {
 
   public Object newInstance(final Object value) {
     return convert(null, value, javaDefaultType);
+  }
+
+  private static Date convertToDate(final Database database, final Object iValue) throws ParseException {
+    if (iValue instanceof Date)
+      return (Date) iValue;
+    if (iValue instanceof Number)
+      return new Date(((Number) iValue).longValue());
+    else if (iValue instanceof Calendar)
+      return ((Calendar) iValue).getTime();
+    else if (iValue instanceof LocalDateTime)
+      return new Date(TimeUnit.MILLISECONDS.convert(((LocalDateTime) iValue).toEpochSecond(ZoneOffset.UTC), TimeUnit.SECONDS) +//
+          ((LocalDateTime) iValue).getLong(ChronoField.MILLI_OF_SECOND));
+    else if (iValue instanceof Instant)
+      return new Date(((Instant) iValue).toEpochMilli());
+    else if (iValue instanceof ZonedDateTime)
+      return new Date(TimeUnit.MILLISECONDS.convert(((ZonedDateTime) iValue).toEpochSecond(), TimeUnit.SECONDS) +//
+          ((ZonedDateTime) iValue).getLong(ChronoField.MILLI_OF_SECOND));
+    else if (iValue instanceof LocalDate)
+      return new Date(((LocalDate) iValue).toEpochDay() * DateUtils.MS_IN_A_DAY);
+    else if (iValue instanceof String) {
+      final String valueAsString = (String) iValue;
+      if (FileUtils.isLong(valueAsString))
+        return new Date(Long.parseLong(iValue.toString()));
+      else if (database != null)
+        try {
+          return new SimpleDateFormat(database.getSchema().getDateTimeFormat()).parse(valueAsString);
+        } catch (final ParseException ignore) {
+          return new SimpleDateFormat(database.getSchema().getDateFormat()).parse(valueAsString);
+        }
+      else {
+        // GUESS FORMAT BY STRING LENGTH
+        if (valueAsString.length() == "yyyy-MM-dd".length())
+          return new SimpleDateFormat("yyyy-MM-dd").parse(valueAsString);
+        else if (valueAsString.length() == "yyyy-MM-dd HH:mm:ss".length())
+          return new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").parse(valueAsString);
+        else if (valueAsString.length() == "yyyy-MM-dd HH:mm:ss.SSS".length())
+          return new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS").parse(valueAsString);
+      }
+    }
+    throw new IllegalArgumentException("Object of class " + iValue.getClass() + " cannot be converted to Date");
   }
 }

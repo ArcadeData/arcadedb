@@ -33,6 +33,7 @@ import java.time.*;
 import java.time.chrono.*;
 import java.time.temporal.*;
 import java.util.*;
+import java.util.concurrent.*;
 
 public class DocumentTest extends TestHelper {
   @Override
@@ -129,8 +130,12 @@ public class DocumentTest extends TestHelper {
       final LocalDateTime localDateTime = LocalDateTime.now();
       doc.set("date", localDate);
       doc.set("datetime", localDateTime);
-      Assertions.assertEquals(localDate, doc.get("date"));
-      Assertions.assertEquals(localDateTime, doc.get("datetime"));
+      Assertions.assertEquals(localDate, doc.getLocalDate("date"));
+      Assertions.assertEquals(localDateTime.truncatedTo(ChronoUnit.MILLIS), doc.getLocalDateTime("datetime"));
+
+      Assertions.assertEquals(
+          TimeUnit.MILLISECONDS.convert(localDateTime.toEpochSecond(ZoneOffset.UTC), TimeUnit.SECONDS) + localDateTime.getLong(ChronoField.MILLI_OF_SECOND),
+          doc.getCalendar("datetime").getTime().getTime());
     });
   }
 
@@ -198,6 +203,10 @@ public class DocumentTest extends TestHelper {
       });
       doc.reload();
       Assertions.assertEquals(localDateTime.truncatedTo(ChronoUnit.NANOS), doc.get("datetime"));
+
+      Assertions.assertEquals(
+          TimeUnit.MILLISECONDS.convert(localDateTime.toEpochSecond(ZoneOffset.UTC), TimeUnit.SECONDS) + localDateTime.getLong(ChronoField.MILLI_OF_SECOND),
+          doc.getDate("datetime").getTime());
 
     } finally {
       ((EmbeddedDatabase) database).getSerializer().setDateTimeImplementation(Date.class);

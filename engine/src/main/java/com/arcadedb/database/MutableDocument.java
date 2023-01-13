@@ -378,7 +378,17 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     final Property prop = type.getPolymorphicPropertyIfExists(name);
     if (prop != null)
       try {
-        return Type.convert(database, value, prop.getType().getDefaultJavaType());
+        final Class javaImplementation;
+
+        final Type propType = prop.getType();
+        if (propType.equals(Type.DATETIME))
+          javaImplementation = database.getSerializer().getDateTimeImplementation();
+        else if (propType.equals(Type.DATE))
+          javaImplementation = database.getSerializer().getDateImplementation();
+        else
+          javaImplementation = propType.getDefaultJavaType();
+
+        return Type.convert(database, value, javaImplementation);
       } catch (final Exception e) {
         throw new IllegalArgumentException("Cannot convert type '" + value.getClass() + "' to '" + prop.getType().name() + "' found in property '" + name + "'",
             e);

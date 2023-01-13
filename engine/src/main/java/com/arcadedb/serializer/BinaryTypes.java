@@ -74,7 +74,7 @@ public class BinaryTypes {
       type = TYPE_FLOAT;
     else if (value instanceof Double)
       type = TYPE_DOUBLE;
-    else if (value instanceof LocalDateTime || value instanceof ZonedDateTime || value instanceof Instant)
+    else if (value instanceof LocalDateTime || value instanceof ZonedDateTime || value instanceof Instant || value instanceof Calendar)
       type = TYPE_DATETIME;
     else if (value instanceof LocalDate)
       type = TYPE_DATE;
