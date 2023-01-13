@@ -161,24 +161,37 @@ public class HAServer implements ServerPlugin {
         configuration.getValueAsString(GlobalConfiguration.HA_REPLICATION_INCOMING_HOST),
         configuration.getValueAsString(GlobalConfiguration.HA_REPLICATION_INCOMING_PORTS));
 
-    serverAddress = listener.getHost();
-    if (serverAddress.equals("0.0.0.0")) {
-      try {
-        serverAddress = InetAddress.getLocalHost().getHostAddress();
-      } catch (UnknownHostException e) {
-        // IGNORE IT
-        serverAddress = "localhost";
-      }
-    }
+    // GET THE HOST NAME FROM ENV VARIABLE
+    String hostNameEnvVariable = System.getenv("HOSTNAME");
+    if (hostNameEnvVariable != null && !hostNameEnvVariable.trim().isEmpty())
+      hostNameEnvVariable = hostNameEnvVariable.trim();
+    else
+      hostNameEnvVariable = null;
 
     if (GlobalConfiguration.HA_K8S.getValueAsBoolean()) {
-      // GET THE HOST NAME FROM ENV VARIABLE SET BY KUBERNETES, IF ANY
-      final String k8sServer = System.getenv("HOSTNAME");
-      if (k8sServer == null || k8sServer.isEmpty())
-        LogManager.instance().log(this, Level.SEVERE, "Error: HOSTNAME environment variable not found but needed when running inside Kubernetes");
-      else {
-        serverAddress = k8sServer + GlobalConfiguration.HA_K8S_DNS_SUFFIX.getValueAsString();
-        LogManager.instance().log(this, Level.INFO, "Server is running inside Kubernetes. Hostname: %s", null, serverAddress);
+      if (hostNameEnvVariable == null) {
+        LogManager.instance()
+            .log(this, Level.SEVERE, "Error: HOSTNAME environment variable not found but needed when running inside Kubernetes. The server will be halted");
+        server.stop();
+        System.exit(1);
+        return;
+      }
+
+      serverAddress = hostNameEnvVariable + GlobalConfiguration.HA_K8S_DNS_SUFFIX.getValueAsString();
+      LogManager.instance().log(this, Level.INFO, "Server is running inside Kubernetes. Hostname: %s", null, serverAddress);
+
+    } else if (hostNameEnvVariable != null) {
+      serverAddress = hostNameEnvVariable;
+    } else {
+      // READ HOST FROM NETWORK INTERFACE
+      serverAddress = listener.getHost();
+      if (serverAddress.equals("0.0.0.0")) {
+        try {
+          serverAddress = InetAddress.getLocalHost().getHostAddress();
+        } catch (UnknownHostException e) {
+          // IGNORE IT
+          serverAddress = "localhost";
+        }
       }
     }
 
