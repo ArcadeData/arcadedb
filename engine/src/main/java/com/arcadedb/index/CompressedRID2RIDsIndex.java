@@ -139,10 +139,10 @@ public class CompressedRID2RIDsIndex {
     }
   }
 
-  public CompressedRID2RIDsIndex(final Database database, final int expectedVertices, int expectedEdges) {
+  public CompressedRID2RIDsIndex(final Database database, final int expectedVertices, int expectedEdges) throws ClassNotFoundException {
     this.database = database;
     this.keys = expectedVertices;
-    this.serializer = new BinarySerializer();
+    this.serializer = new BinarySerializer(database.getConfiguration());
 
     if (expectedEdges <= 0)
       expectedEdges = expectedVertices;
@@ -155,10 +155,10 @@ public class CompressedRID2RIDsIndex {
     this.totalUsedSlots = 0;
   }
 
-  public CompressedRID2RIDsIndex(final Database database, final Binary buffer) {
+  public CompressedRID2RIDsIndex(final Database database, final Binary buffer) throws ClassNotFoundException {
     this.database = database;
     this.keys = buffer.size();
-    this.serializer = new BinarySerializer();
+    this.serializer = new BinarySerializer(database.getConfiguration());
     this.chunk = buffer;
   }
 
@@ -256,7 +256,7 @@ public class CompressedRID2RIDsIndex {
       // WRITE -> RID|INT|INT|RID|RID
 
       // WRITE THE KEY FIRST
-      serializer.serializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, key);
+      serializer.serializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, key, null);
 
       // LEAVE AN INT AS EMPTY SLOT FOR THE NEXT KEY
       chunk.putInt(0);
@@ -265,8 +265,8 @@ public class CompressedRID2RIDsIndex {
       chunk.putInt(0);
 
       // WRITE THE VALUE
-      serializer.serializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, edgeRID);
-      serializer.serializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, vertexRID);
+      serializer.serializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, edgeRID, null);
+      serializer.serializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, vertexRID, null);
 
       ++totalUsedSlots;
 
@@ -289,8 +289,8 @@ public class CompressedRID2RIDsIndex {
 
           // WRITE -> RID|RID|INT
 
-          serializer.serializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, edgeRID);
-          serializer.serializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, vertexRID);
+          serializer.serializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, edgeRID, null);
+          serializer.serializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, vertexRID, null);
 
           if (previousEntryPos > 0)
             // THIS IS THE 3RD OR MAJOR ENTRY. APPEND THE POSITION OF THE PREVIOUS ENTRY
@@ -317,7 +317,7 @@ public class CompressedRID2RIDsIndex {
       final int entryPosition = chunk.position();
 
       // WRITE THE KEY FIRST
-      serializer.serializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, key);
+      serializer.serializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, key, null);
 
       // LEAVE AN INT AS EMPTY SLOT FOR THE NEXT KEY
       chunk.putInt(0);
@@ -326,8 +326,8 @@ public class CompressedRID2RIDsIndex {
       chunk.putInt(0);
 
       // WRITE THE VALUE
-      serializer.serializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, edgeRID);
-      serializer.serializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, vertexRID);
+      serializer.serializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, edgeRID, null);
+      serializer.serializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, vertexRID, null);
 
       // WRITE THIS ENTRY POSITION TO THE PREVIOUS NEXT POSITION FIELD
       chunk.putInt(lastNextPos, entryPosition);

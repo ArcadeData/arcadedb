@@ -27,6 +27,8 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Property;
 
 import java.io.*;
 import java.util.*;
@@ -42,6 +44,7 @@ public class JavaBinarySerializer {
     out.writeLong(rid != null ? rid.getPosition() : -1);
 
     final DatabaseInternal db = ((DatabaseInternal) document.getDatabase());
+    final DocumentType documentType = document.getType();
 
     final BinarySerializer serializer = db.getSerializer();
 
@@ -61,9 +64,11 @@ public class JavaBinarySerializer {
         // PROPERTY VALUE
         buffer.clear();
 
+        final Property property = documentType.getPropertyIfExists(propName);
+
         final byte type = BinaryTypes.getTypeFromValue(propValue);
         buffer.putByte(type);
-        serializer.serializeValue(db, buffer, type, propValue);
+        serializer.serializeValue(db, buffer, type, propValue, property);
         buffer.flip();
 
         out.writeInt(buffer.size());

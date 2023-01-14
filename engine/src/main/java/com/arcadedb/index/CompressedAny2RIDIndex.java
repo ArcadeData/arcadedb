@@ -103,7 +103,7 @@ public class CompressedAny2RIDIndex<K> {
     }
   }
 
-  public CompressedAny2RIDIndex(final Database database, final Type keyType, final int expectedSize) {
+  public CompressedAny2RIDIndex(final Database database, final Type keyType, final int expectedSize) throws ClassNotFoundException {
     this.database = database;
 
     this.keys = expectedSize;
@@ -112,7 +112,7 @@ public class CompressedAny2RIDIndex<K> {
     this.chunk.setAllocationChunkSize(expectedSize);
     this.chunk.fill((byte) 0, keys * Binary.INT_SERIALIZED_SIZE);
 
-    this.serializer = new BinarySerializer();
+    this.serializer = new BinarySerializer(database.getConfiguration());
 
     this.keyType = keyType;
     this.keyBinaryType = keyType.getBinaryType();
@@ -194,13 +194,13 @@ public class CompressedAny2RIDIndex<K> {
         chunk.putInt(hash * Binary.INT_SERIALIZED_SIZE, chunk.position());
 
         // WRITE THE KEY FIRST
-        serializer.serializeValue(database, chunk, keyBinaryType, key);
+        serializer.serializeValue(database, chunk, keyBinaryType, key, null);
 
         // LEAVE AN INT AS EMPTY SLOT FOR THE NEXT KEY
         chunk.putInt(0);
 
         // WRITE THE VALUE
-        serializer.serializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, value);
+        serializer.serializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, value, null);
 
         ++totalUsedSlots;
 
@@ -228,13 +228,13 @@ public class CompressedAny2RIDIndex<K> {
         final int entryPosition = chunk.position();
 
         // WRITE THE KEY FIRST
-        serializer.serializeValue(database, chunk, keyBinaryType, key);
+        serializer.serializeValue(database, chunk, keyBinaryType, key, null);
 
         // LEAVE AN INT AS EMPTY SLOT FOR THE NEXT KEY
         chunk.putInt(0);
 
         // WRITE THE VALUE
-        serializer.serializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, value);
+        serializer.serializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, value, null);
 
         // WRITE THIS ENTRY POSITION TO THE PREVIOUS NEXT POSITION FIELD
         chunk.putInt(lastNextPos, entryPosition);

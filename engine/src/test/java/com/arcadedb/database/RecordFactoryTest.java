@@ -96,8 +96,8 @@ class RecordFactoryTest extends TestHelper {
 
     binary.clear();
     binary.putByte(Edge.RECORD_TYPE);
-    ((DatabaseInternal) database).getSerializer().serializeValue(database, binary, BinaryTypes.TYPE_COMPRESSED_RID, EMPTY_RID);
-    ((DatabaseInternal) database).getSerializer().serializeValue(database, binary, BinaryTypes.TYPE_COMPRESSED_RID, EMPTY_RID);
+    ((DatabaseInternal) database).getSerializer().serializeValue(database, binary, BinaryTypes.TYPE_COMPRESSED_RID, EMPTY_RID, null);
+    ((DatabaseInternal) database).getSerializer().serializeValue(database, binary, BinaryTypes.TYPE_COMPRESSED_RID, EMPTY_RID, null);
     binary.flip();
 
     final EdgeType edgeType = database.getSchema().createEdgeType("Edge");
@@ -116,7 +116,8 @@ class RecordFactoryTest extends TestHelper {
     binary.flip();
 
     final DocumentType embeddedDocumentType = database.getSchema().createDocumentType("EmbeddedDocument");
-    final Record embeddedDocument = ((DatabaseInternal) database).getRecordFactory().newImmutableRecord(database, embeddedDocumentType, EMPTY_RID, binary, null);
+    final Record embeddedDocument = ((DatabaseInternal) database).getRecordFactory()
+        .newImmutableRecord(database, embeddedDocumentType, EMPTY_RID, binary, null);
     Assertions.assertTrue(embeddedDocument instanceof EmbeddedDocument);
 
     binary.clear();
@@ -157,8 +158,8 @@ class RecordFactoryTest extends TestHelper {
 
     binary.clear();
     binary.putByte(Edge.RECORD_TYPE);
-    ((DatabaseInternal) database).getSerializer().serializeValue(database, binary, BinaryTypes.TYPE_COMPRESSED_RID, EMPTY_RID);
-    ((DatabaseInternal) database).getSerializer().serializeValue(database, binary, BinaryTypes.TYPE_COMPRESSED_RID, EMPTY_RID);
+    ((DatabaseInternal) database).getSerializer().serializeValue(database, binary, BinaryTypes.TYPE_COMPRESSED_RID, EMPTY_RID, null);
+    ((DatabaseInternal) database).getSerializer().serializeValue(database, binary, BinaryTypes.TYPE_COMPRESSED_RID, EMPTY_RID, null);
     binary.flip();
 
     final EdgeType edgeType = database.getSchema().createEdgeType("Edge");

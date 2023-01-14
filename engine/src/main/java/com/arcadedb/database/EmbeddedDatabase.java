@@ -104,7 +104,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   protected final      PaginatedFile.MODE                        mode;
   protected final      ContextConfiguration                      configuration;
   protected final      String                                    databasePath;
-  protected final      BinarySerializer                          serializer                           = new BinarySerializer();
+  protected final      BinarySerializer                          serializer;
   protected final      RecordFactory                             recordFactory                        = new RecordFactory();
   protected final      GraphEngine                               graphEngine;
   protected final      WALFileFactory                            walFactory;
@@ -132,8 +132,8 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   private              RandomAccessFile                          lockFileIO;
   private              FileChannel                               lockFileIOChannel;
   private              FileLock                                  lockFileLock;
-  private final RecordEventsRegistry                   events               = new RecordEventsRegistry();
-  private final ConcurrentHashMap<String, QueryEngine> reusableQueryEngines = new ConcurrentHashMap<>();
+  private final        RecordEventsRegistry                      events                               = new RecordEventsRegistry();
+  private final        ConcurrentHashMap<String, QueryEngine>    reusableQueryEngines                 = new ConcurrentHashMap<>();
 
   protected EmbeddedDatabase(final String path, final PaginatedFile.MODE mode, final ContextConfiguration configuration, final SecurityManager security,
       final Map<CALLBACK_EVENT, List<Callable<Void>>> callbacks) {
@@ -142,6 +142,7 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
       this.configuration = configuration;
       this.security = security;
       this.callbacks = callbacks;
+      this.serializer = new BinarySerializer(configuration);
       this.walFactory = mode == PaginatedFile.MODE.READ_WRITE ? new WALFileFactoryEmbedded() : null;
       this.statementCache = new StatementCache(this, configuration.getValueAsInteger(GlobalConfiguration.SQL_STATEMENT_CACHE));
       this.executionPlanCache = new ExecutionPlanCache(this, configuration.getValueAsInteger(GlobalConfiguration.SQL_STATEMENT_CACHE));

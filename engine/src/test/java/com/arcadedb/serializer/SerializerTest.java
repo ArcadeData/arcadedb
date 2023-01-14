@@ -142,8 +142,8 @@ public class SerializerTest extends TestHelper {
   }
 
   @Test
-  public void testLiteralPropertiesInDocument() {
-    final BinarySerializer serializer = new BinarySerializer();
+  public void testLiteralPropertiesInDocument() throws ClassNotFoundException {
+    final BinarySerializer serializer = new BinarySerializer(database.getConfiguration());
 
     database.transaction(() -> {
       database.getSchema().createDocumentType("Test");
@@ -171,7 +171,7 @@ public class SerializerTest extends TestHelper {
 
       final Binary buffer3 = new Binary(buffer2);
       buffer3.getByte(); // SKIP RECORD TYPE
-      final Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, null);
+      final Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, null, null);
 
       Assertions.assertEquals(Integer.MIN_VALUE, record2.get("minInt"));
       Assertions.assertEquals(Integer.MAX_VALUE, record2.get("maxInt"));
@@ -192,8 +192,8 @@ public class SerializerTest extends TestHelper {
   }
 
   @Test
-  public void testListPropertiesInDocument() {
-    final BinarySerializer serializer = new BinarySerializer();
+  public void testListPropertiesInDocument() throws ClassNotFoundException {
+    final BinarySerializer serializer = new BinarySerializer(database.getConfiguration());
 
     database.transaction(() -> {
       database.getSchema().createDocumentType("Test");
@@ -268,7 +268,7 @@ public class SerializerTest extends TestHelper {
 
       final Binary buffer3 = new Binary(buffer2);
       buffer3.getByte(); // SKIP RECORD TYPE
-      final Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, null);
+      final Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, null, null);
 
       Assertions.assertIterableEquals(listOfBooleans, (Iterable<?>) record2.get("listOfBooleans"));
       Assertions.assertIterableEquals(listOfBooleans, (Iterable<?>) record2.get("arrayOfBooleans"));
@@ -297,8 +297,8 @@ public class SerializerTest extends TestHelper {
   }
 
   @Test
-  public void testMapPropertiesInDocument() {
-    final BinarySerializer serializer = new BinarySerializer();
+  public void testMapPropertiesInDocument() throws ClassNotFoundException {
+    final BinarySerializer serializer = new BinarySerializer(database.getConfiguration());
 
     database.transaction(() -> {
       database.getSchema().createDocumentType("Test");
@@ -358,7 +358,7 @@ public class SerializerTest extends TestHelper {
 
       final Binary buffer3 = new Binary(buffer2);
       buffer3.getByte(); // SKIP RECORD TYPE
-      final Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, null);
+      final Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, null, null);
 
       Assertions.assertEquals(mapOfStringsBooleans, record2.get("mapOfStringsBooleans"));
       Assertions.assertEquals(mapOfIntegers, record2.get("mapOfIntegers"));
@@ -372,8 +372,8 @@ public class SerializerTest extends TestHelper {
   }
 
   @Test
-  public void testEmbedded() {
-    final BinarySerializer serializer = new BinarySerializer();
+  public void testEmbedded() throws ClassNotFoundException {
+    final BinarySerializer serializer = new BinarySerializer(database.getConfiguration());
 
     database.transaction(() -> {
       final DocumentType test = database.getSchema().createDocumentType("Test");
@@ -398,7 +398,7 @@ public class SerializerTest extends TestHelper {
 
       final Binary buffer3 = new Binary(buffer2);
       buffer3.getByte(); // SKIP RECORD TYPE
-      final Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, new EmbeddedModifierProperty(testDocument, "embedded"));
+      final Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, new EmbeddedModifierProperty(testDocument, "embedded"), null);
 
       Assertions.assertEquals(0, record2.get("id"));
 
@@ -409,8 +409,8 @@ public class SerializerTest extends TestHelper {
   }
 
   @Test
-  public void testListOfEmbedded() {
-    final BinarySerializer serializer = new BinarySerializer();
+  public void testListOfEmbedded() throws ClassNotFoundException {
+    final BinarySerializer serializer = new BinarySerializer(database.getConfiguration());
 
     database.transaction(() -> {
       final DocumentType test = database.getSchema().createDocumentType("Test");
@@ -442,7 +442,7 @@ public class SerializerTest extends TestHelper {
 
       final Binary buffer3 = new Binary(buffer2);
       buffer3.getByte(); // SKIP RECORD TYPE
-      final Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, new EmbeddedModifierProperty(testDocument, "embedded"));
+      final Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, new EmbeddedModifierProperty(testDocument, "embedded"), null);
 
       Assertions.assertEquals(0, record2.get("id"));
 
@@ -456,8 +456,8 @@ public class SerializerTest extends TestHelper {
   }
 
   @Test
-  public void testMapOfEmbedded() {
-    final BinarySerializer serializer = new BinarySerializer();
+  public void testMapOfEmbedded() throws ClassNotFoundException {
+    final BinarySerializer serializer = new BinarySerializer(database.getConfiguration());
 
     database.transaction(() -> {
       final DocumentType test = database.getSchema().createDocumentType("Test");
@@ -492,7 +492,7 @@ public class SerializerTest extends TestHelper {
 
       final Binary buffer3 = new Binary(buffer2);
       buffer3.getByte(); // SKIP RECORD TYPE
-      final Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, null);
+      final Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, null, null);
 
       Assertions.assertEquals(0, record2.get("id"));
 
@@ -506,5 +506,4 @@ public class SerializerTest extends TestHelper {
       }
     });
   }
-
 }

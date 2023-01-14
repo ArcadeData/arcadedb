@@ -18,6 +18,7 @@
  */
 package com.arcadedb.serializer;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
@@ -26,6 +27,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.Type;
 
 import java.math.*;
+import java.time.*;
 import java.util.*;
 
 public class BinaryTypes {
@@ -72,6 +74,10 @@ public class BinaryTypes {
       type = TYPE_FLOAT;
     else if (value instanceof Double)
       type = TYPE_DOUBLE;
+    else if (value instanceof LocalDateTime || value instanceof ZonedDateTime || value instanceof Instant || value instanceof Calendar)
+      type = TYPE_DATETIME;
+    else if (value instanceof LocalDate)
+      type = TYPE_DATE;
     else if (value instanceof Date) // CAN'T DETERMINE IF DATE OR DATETIME, USE DATETIME
       type = TYPE_DATETIME;
     else if (value instanceof BigDecimal)
@@ -175,6 +181,10 @@ public class BinaryTypes {
       type = TYPE_DOUBLE;
     else if (typez == Date.class) // CAN'T DETERMINE IF DATE OR DATETIME, USE DATETIME
       type = TYPE_DATETIME;
+    else if (typez == LocalDate.class)
+      type = TYPE_DATE;
+    else if (typez == LocalDateTime.class || typez == ZonedDateTime.class || typez == Instant.class)
+      type = TYPE_DATETIME;
     else if (typez == BigDecimal.class)
       type = TYPE_DECIMAL;
     else if (typez == Boolean.class)
@@ -230,8 +240,10 @@ public class BinaryTypes {
       return Double.class;
 
     case BinaryTypes.TYPE_DATETIME:
+      return GlobalConfiguration.DATE_TIME_IMPLEMENTATION.getValue();
+
     case BinaryTypes.TYPE_DATE:
-      return Date.class;
+      return GlobalConfiguration.DATE_IMPLEMENTATION.getValue();
 
     case BinaryTypes.TYPE_RID:
     case BinaryTypes.TYPE_UUID:

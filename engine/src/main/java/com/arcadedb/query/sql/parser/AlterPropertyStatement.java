@@ -82,6 +82,9 @@ public class AlterPropertyStatement extends DDLStatement {
       if ("default".equals(setting)) {
         oldValue = property.getDefaultValue();
         property.setDefaultValue(finalValue);
+      } else if ("precision".equals(setting)) {
+        oldValue = property.getPrecision();
+        property.setPrecision(finalValue.toString());
       } else {
         throw new CommandExecutionException("Setting '" + setting + "' not supported");
       }

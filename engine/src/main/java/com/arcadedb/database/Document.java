@@ -22,6 +22,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.math.*;
+import java.time.*;
 import java.util.*;
 
 /**
@@ -61,6 +62,41 @@ public interface Document extends Record {
   byte[] getBinary(String propertyName);
 
   Date getDate(String propertyName);
+
+  /**
+   * Returns a java.util.Calendar object from a datetime property.
+   *
+   * @since 23.1.1
+   */
+  Calendar getCalendar(String propertyName);
+
+  /**
+   * Returns a java.time.LocalDate object from a date property.
+   *
+   * @since 23.1.1
+   */
+  LocalDate getLocalDate(String propertyName);
+
+  /**
+   * Returns a java.time.LocalDateTime object from a datetime property.
+   *
+   * @since 23.1.1
+   */
+  LocalDateTime getLocalDateTime(String propertyName);
+
+  /**
+   * Returns a java.time.ZonedDateTime object from a datetime property.
+   *
+   * @since 23.1.1
+   */
+  ZonedDateTime getZonedDateTime(String propertyName);
+
+  /**
+   * Returns a java.time.Instant object from a datetime property.
+   *
+   * @since 23.1.1
+   */
+  Instant getInstant(String propertyName);
 
   EmbeddedDocument getEmbedded(String propertyName);
 

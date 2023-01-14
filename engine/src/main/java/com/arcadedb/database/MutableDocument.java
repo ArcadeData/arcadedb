@@ -23,6 +23,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.DateUtils;
 
 import java.util.*;
 
@@ -367,7 +368,7 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
         return;
 
       buffer.position(propertiesStartingPosition);
-      this.map = this.database.getSerializer().deserializeProperties(this.database, buffer, new EmbeddedModifierObject(this));
+      this.map = this.database.getSerializer().deserializeProperties(this.database, buffer, new EmbeddedModifierObject(this), type);
     }
   }
 
@@ -375,13 +376,26 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     if (value == null || value == JSONObject.NULL)
       return null;
 
-    final Property prop = type.getPolymorphicPropertyIfExists(name);
-    if (prop != null)
+    final Property property = type.getPolymorphicPropertyIfExists(name);
+    if (property != null)
       try {
-        return Type.convert(database, value, prop.getType().getDefaultJavaType());
+        final Type propType = property.getType();
+        Class javaImplementation = propType.getDefaultJavaType();
+        if (propType == Type.DATE) {
+          javaImplementation = database.getSerializer().getDateImplementation();
+          if (DateUtils.getPrecisionLevel(value.getClass()) > DateUtils.getPrecisionLevel(javaImplementation))
+            javaImplementation = value.getClass();
+        }
+        if (propType == Type.DATETIME) {
+          javaImplementation = database.getSerializer().getDateTimeImplementation();
+          if (DateUtils.getPrecisionLevel(value.getClass()) > DateUtils.getPrecisionLevel(javaImplementation))
+            javaImplementation = value.getClass();
+        }
+
+        return Type.convert(database, value, javaImplementation, property);
       } catch (final Exception e) {
-        throw new IllegalArgumentException("Cannot convert type '" + value.getClass() + "' to '" + prop.getType().name() + "' found in property '" + name + "'",
-            e);
+        throw new IllegalArgumentException(
+            "Cannot convert type '" + value.getClass() + "' to '" + property.getType().name() + "' found in property '" + name + "'", e);
       }
 
     return value;

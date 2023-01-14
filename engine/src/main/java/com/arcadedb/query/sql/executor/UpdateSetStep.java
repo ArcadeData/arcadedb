@@ -58,10 +58,6 @@ public class UpdateSetStep extends AbstractExecutionStep {
       public void close() {
         upstream.close();
       }
-
-
-
-
     };
   }
 

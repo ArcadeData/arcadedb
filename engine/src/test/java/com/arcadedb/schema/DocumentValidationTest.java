@@ -555,7 +555,7 @@ public class DocumentValidationTest extends TestHelper {
     database = factory.open();
 
     final DocumentType clazzLoaded = database.getSchema().getType("Validation");
-    final Property property = clazzLoaded.getProperty("string");
+    final Property property = clazzLoaded.getPropertyIfExists("string");
 
     Assertions.assertTrue(property.isMandatory());
     Assertions.assertTrue(property.isReadonly());

@@ -53,6 +53,7 @@ import com.arcadedb.query.sql.method.misc.SQLMethodKeys;
 import com.arcadedb.query.sql.method.misc.SQLMethodLastIndexOf;
 import com.arcadedb.query.sql.method.misc.SQLMethodLeft;
 import com.arcadedb.query.sql.method.misc.SQLMethodNormalize;
+import com.arcadedb.query.sql.method.misc.SQLMethodPrecision;
 import com.arcadedb.query.sql.method.misc.SQLMethodPrefix;
 import com.arcadedb.query.sql.method.misc.SQLMethodRemove;
 import com.arcadedb.query.sql.method.misc.SQLMethodRemoveAll;
@@ -104,6 +105,7 @@ public class DefaultSQLMethodFactory implements SQLMethodFactory {
     register(SQLMethodLeft.NAME, new SQLMethodLeft());
     register(SQLMethodLength.NAME, new SQLMethodLength());
     register(SQLMethodNormalize.NAME, new SQLMethodNormalize());
+    register(SQLMethodPrecision.NAME, new SQLMethodPrecision());
     register(SQLMethodPrefix.NAME, new SQLMethodPrefix());
     register(SQLMethodRemove.NAME, new SQLMethodRemove());
     register(SQLMethodRemoveAll.NAME, new SQLMethodRemoveAll());

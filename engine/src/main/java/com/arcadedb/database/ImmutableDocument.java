@@ -52,7 +52,7 @@ public class ImmutableDocument extends BaseDocument {
       return null;
 
     checkForLazyLoading();
-    return database.getSerializer().deserializeProperty(database, buffer, new EmbeddedModifierProperty(this, propertyName), propertyName);
+    return database.getSerializer().deserializeProperty(database, buffer, new EmbeddedModifierProperty(this, propertyName), propertyName, type);
   }
 
   @Override
@@ -69,7 +69,7 @@ public class ImmutableDocument extends BaseDocument {
   @Override
   public synchronized JSONObject toJSON() {
     checkForLazyLoading();
-    final Map<String, Object> map = database.getSerializer().deserializeProperties(database, buffer, new EmbeddedModifierObject(this));
+    final Map<String, Object> map = database.getSerializer().deserializeProperties(database, buffer, new EmbeddedModifierObject(this), type);
 
     final JSONObject result = new JSONSerializer(database).map2json(map);
     result.put("@cat", "d");
@@ -83,7 +83,7 @@ public class ImmutableDocument extends BaseDocument {
   public Map<String, Object> propertiesAsMap() {
     if (database == null || buffer == null)
       return Collections.emptyMap();
-    return database.getSerializer().deserializeProperties(database, buffer, new EmbeddedModifierObject(this));
+    return database.getSerializer().deserializeProperties(database, buffer, new EmbeddedModifierObject(this), type);
   }
 
   @Override
@@ -94,7 +94,7 @@ public class ImmutableDocument extends BaseDocument {
   @Override
   public synchronized Map<String, Object> toMap(final boolean includeMetadata) {
     checkForLazyLoading();
-    final Map<String, Object> result = database.getSerializer().deserializeProperties(database, buffer, new EmbeddedModifierObject(this));
+    final Map<String, Object> result = database.getSerializer().deserializeProperties(database, buffer, new EmbeddedModifierObject(this), type);
     if (includeMetadata) {
       result.put("@cat", "d");
       result.put("@type", type.getName());
@@ -116,7 +116,7 @@ public class ImmutableDocument extends BaseDocument {
       final int currPosition = buffer.position();
 
       buffer.position(propertiesStartingPosition);
-      final Map<String, Object> map = this.database.getSerializer().deserializeProperties(database, buffer, new EmbeddedModifierObject(this));
+      final Map<String, Object> map = this.database.getSerializer().deserializeProperties(database, buffer, new EmbeddedModifierObject(this), type);
 
       buffer.position(currPosition);
 

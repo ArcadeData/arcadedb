@@ -121,6 +121,8 @@ public class JSONObject {
     } else if (value instanceof Map) {
       final JSONObject embedded = new JSONObject((Map<String, Object>) value);
       object.add(name, embedded.getInternal());
+    } else if (value instanceof Class) {
+      object.addProperty(name, value.toString());
     } else
       throw new JSONException("Type '" + value.getClass() + "' not supported for JSONObject");
     return this;
