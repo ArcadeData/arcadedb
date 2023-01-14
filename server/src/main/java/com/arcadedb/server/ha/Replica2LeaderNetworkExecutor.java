@@ -117,6 +117,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
             // SKIP
             closeChannel();
             connect();
+            startup();
             continue;
           }
         }
@@ -130,6 +131,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
             // ERROR IN THE SEQUENCE, FORCE A RECONNECTION
             closeChannel();
             connect();
+            startup();
             continue;
           }
         }
@@ -184,6 +186,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
       if (!shutdown) {
         try {
           connect();
+          startup();
         } catch (final Exception e1) {
           LogManager.instance().log(this, Level.SEVERE, "Error on re-connecting to the Leader ('%s') (error=%s)", getRemoteServerName(), e1);
 
@@ -202,6 +205,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
                 port = Integer.parseInt(parts[1]);
 
                 connect();
+                startup();
                 return;
               } catch (final Exception e2) {
                 LogManager.instance().log(this, Level.SEVERE, "Error on re-connecting to the server '%s' (error=%s)", getRemoteAddress(), e2);
