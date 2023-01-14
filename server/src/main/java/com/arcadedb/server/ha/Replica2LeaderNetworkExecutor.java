@@ -67,7 +67,6 @@ public class Replica2LeaderNetworkExecutor extends Thread {
 
     this.host = host;
     this.port = port;
-
     connect();
   }
 
@@ -288,7 +287,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
     }
   }
 
-  private void connect() {
+  public void connect() {
     LogManager.instance().log(this, Level.FINE, "Connecting to server %s:%d...", host, port);
 
     try {
@@ -352,20 +351,22 @@ public class Replica2LeaderNetworkExecutor extends Thread {
         server.setServerAddresses(memberList);
       }
 
-      LogManager.instance().log(this, Level.INFO, "Server connected to the Leader server %s:%d, members=[%s]", host, port, server.getServerAddressList());
-
-      setName(Constants.PRODUCT + "-ha-replica2leader/" + server.getServerName() + "/" + getRemoteServerName());
-
-      LogManager.instance().log(this, Level.INFO, "Server started as Replica in HA mode (cluster=%s leader=%s:%d)", server.getClusterName(), host, port);
-
-      installDatabases();
-
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.FINE, "Error on connecting to the server %s:%d (cause=%s)", host, port, e.toString());
 
       //shutdown();
       throw new ConnectionException(host + ":" + port, e);
     }
+  }
+
+  public void startup() {
+    LogManager.instance().log(this, Level.INFO, "Server connected to the Leader server %s:%d, members=[%s]", host, port, server.getServerAddressList());
+
+    setName(Constants.PRODUCT + "-ha-replica2leader/" + server.getServerName() + "/" + getRemoteServerName());
+
+    LogManager.instance().log(this, Level.INFO, "Server started as Replica in HA mode (cluster=%s leader=%s:%d)", server.getClusterName(), host, port);
+
+    installDatabases();
   }
 
   private void installDatabases() {

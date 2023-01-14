@@ -557,7 +557,7 @@ public class HAServer implements ServerPlugin {
 
   public void registerIncomingConnection(final String replicaServerName, final Leader2ReplicaNetworkExecutor connection) {
     final Leader2ReplicaNetworkExecutor previousConnection = replicaConnections.put(replicaServerName, connection);
-    if (previousConnection != null) {
+    if (previousConnection != null && previousConnection != connection) {
       // MERGE CONNECTIONS
       connection.mergeFrom(previousConnection);
     }
@@ -1048,6 +1048,8 @@ public class HAServer implements ServerPlugin {
     replicaConnections.clear();
 
     leaderConnection = new Replica2LeaderNetworkExecutor(this, host, port);
+    leaderConnection.startup();
+
 
     // START SEPARATE THREAD TO EXECUTE LEADER'S REQUESTS
     leaderConnection.start();
