@@ -55,30 +55,30 @@ import java.util.logging.*;
 
 // TODO: REFACTOR LEADER/REPLICA IN 2 USERTYPEES
 public class HAServer implements ServerPlugin {
-  public static final String                                     DEFAULT_PORT                      = "2424";
-  private final       HAMessageFactory                           messageFactory;
-  private final       ArcadeDBServer                             server;
-  private final       ContextConfiguration                       configuration;
-  private final       String                                     bucketName;
-  private final       long                                       startedOn;
-  private volatile    int                                        configuredServers                 = 1;
-  private final       Map<String, Leader2ReplicaNetworkExecutor> replicaConnections                = new ConcurrentHashMap<>();
-  private final       AtomicLong                                 lastDistributedOperationNumber    = new AtomicLong(-1);
-  private final       AtomicLong                                 lastForwardOperationNumber        = new AtomicLong(0);
-  protected final     String                                     replicationPath;
-  protected           ReplicationLogFile                         replicationLogFile;
-  private volatile    Replica2LeaderNetworkExecutor              leaderConnection;
-  private             LeaderNetworkListener                      listener;
-  private final       Map<Long, QuorumMessage>                   messagesWaitingForQuorum          = new ConcurrentHashMap<>(1024);
-  private final       Map<Long, ForwardedMessage>                forwardMessagesWaitingForResponse = new ConcurrentHashMap<>(1024);
-  private             long                                       lastConfigurationOutputHash       = 0;
-  private final       Object                                     sendingLock                       = new Object();
-  private             String                                     serverAddress;
-  private final       Set<String>                                serverAddressList                 = new HashSet<>();
-  private             String                                     replicasHTTPAddresses;
-  protected           Pair<Long, String>                         lastElectionVote;
-  private volatile    ELECTION_STATUS                            electionStatus                    = ELECTION_STATUS.DONE;
-  private             boolean                                    started;
+  public static final String                                         DEFAULT_PORT                      = "2424";
+  private final       HAMessageFactory                               messageFactory;
+  private final       ArcadeDBServer                                 server;
+  private final       ContextConfiguration                           configuration;
+  private final       String                                         bucketName;
+  private final       long                                           startedOn;
+  private volatile    int                                            configuredServers                 = 1;
+  private final       Map<String, Leader2ReplicaNetworkExecutor>     replicaConnections                = new ConcurrentHashMap<>();
+  private final       AtomicLong                                     lastDistributedOperationNumber    = new AtomicLong(-1);
+  private final       AtomicLong                                     lastForwardOperationNumber        = new AtomicLong(0);
+  protected final     String                                         replicationPath;
+  protected           ReplicationLogFile                             replicationLogFile;
+  private final       AtomicReference<Replica2LeaderNetworkExecutor> leaderConnection                  = new AtomicReference<>();
+  private             LeaderNetworkListener                          listener;
+  private final       Map<Long, QuorumMessage>                       messagesWaitingForQuorum          = new ConcurrentHashMap<>(1024);
+  private final       Map<Long, ForwardedMessage>                    forwardMessagesWaitingForResponse = new ConcurrentHashMap<>(1024);
+  private             long                                           lastConfigurationOutputHash       = 0;
+  private final       Object                                         sendingLock                       = new Object();
+  private             String                                         serverAddress;
+  private final       Set<String>                                    serverAddressList                 = new HashSet<>();
+  private             String                                         replicasHTTPAddresses;
+  protected           Pair<Long, String>                             lastElectionVote;
+  private volatile    ELECTION_STATUS                                electionStatus                    = ELECTION_STATUS.DONE;
+  private             boolean                                        started;
 
   public enum QUORUM {
     NONE, ONE, TWO, THREE, MAJORITY, ALL
@@ -215,7 +215,7 @@ public class HAServer implements ServerPlugin {
       }
     }
 
-    if (leaderConnection == null) {
+    if (leaderConnection.get() == null) {
       final int majorityOfVotes = (configuredServers / 2) + 1;
       LogManager.instance().log(this, Level.INFO, "Unable to find any Leader, start election (cluster=%s configuredServers=%d majorityOfVotes=%d)", bucketName,
           configuredServers, majorityOfVotes);
@@ -259,10 +259,10 @@ public class HAServer implements ServerPlugin {
     if (listener != null)
       listener.close();
 
-    final Replica2LeaderNetworkExecutor lc = leaderConnection;
+    final Replica2LeaderNetworkExecutor lc = leaderConnection.get();
     if (lc != null) {
       lc.close();
-      leaderConnection = null;
+      leaderConnection.set(null);
     }
 
     if (!replicaConnections.isEmpty()) {
@@ -287,16 +287,16 @@ public class HAServer implements ServerPlugin {
 
     long electionTurn = lastElectionVote == null ? 1 : lastElectionVote.getFirst() + 1;
 
-    final Replica2LeaderNetworkExecutor lc = leaderConnection;
+    final Replica2LeaderNetworkExecutor lc = leaderConnection.get();
     if (lc != null) {
       // CLOSE ANY LEADER CONNECTION STILL OPEN
       lc.close();
-      leaderConnection = null;
+      leaderConnection.set(null);
     }
 
     // TODO: IF A LEADER START THE ELECTION, SHOULD IT CLOSE THE EXISTENT CONNECTIONS TO THE REPLICAS?
 
-    for (int retry = 0; leaderConnection == null && started; ++retry) {
+    for (int retry = 0; !checkForExistentLeaderConnection(electionTurn) && started; ++retry) {
       final int majorityOfVotes = (configuredServers / 2) + 1;
 
       int totalVotes = 1;
@@ -418,7 +418,7 @@ public class HAServer implements ServerPlugin {
   }
 
   private boolean checkForExistentLeaderConnection(final long electionTurn) {
-    final Replica2LeaderNetworkExecutor lc = leaderConnection;
+    final Replica2LeaderNetworkExecutor lc = leaderConnection.get();
     if (lc != null) {
       // I AM A REPLICA, NO LEADER ELECTION IS NEEDED
       LogManager.instance()
@@ -488,6 +488,12 @@ public class HAServer implements ServerPlugin {
     } catch (final Exception e) {
       // IGNORE IT
     }
+
+    if (electionStatus == ELECTION_STATUS.LEADER_WAITING_FOR_QUORUM) {
+      if (1 + getOnlineReplicas() >= configuredServers / 2 + 1)
+        // ELECTION COMPLETED
+        setElectionStatus(ELECTION_STATUS.DONE);
+    }
   }
 
   public void receivedResponse(final String remoteServerName, final long messageNumber, final Object payload) {
@@ -536,15 +542,15 @@ public class HAServer implements ServerPlugin {
   }
 
   public boolean isLeader() {
-    return leaderConnection == null;
+    return leaderConnection.get() == null;
   }
 
   public String getLeaderName() {
-    return leaderConnection == null ? getServerName() : leaderConnection.getRemoteServerName();
+    return leaderConnection.get() == null ? getServerName() : leaderConnection.get().getRemoteServerName();
   }
 
   public Replica2LeaderNetworkExecutor getLeader() {
-    return leaderConnection;
+    return leaderConnection.get();
   }
 
   public String getServerName() {
@@ -566,12 +572,6 @@ public class HAServer implements ServerPlugin {
     if (1 + totReplicas > configuredServers)
       // UPDATE SERVER COUNT
       configuredServers = 1 + totReplicas;
-
-    if (electionStatus == ELECTION_STATUS.LEADER_WAITING_FOR_QUORUM) {
-      if (1 + getOnlineReplicas() > configuredServers / 2 + 1)
-        // ELECTION COMPLETED
-        setElectionStatus(ELECTION_STATUS.DONE);
-    }
 
     sendCommandToReplicasNoLog(new UpdateClusterConfiguration(getServerAddressList(), getReplicaServersHTTPAddressesList()));
 
@@ -624,12 +624,12 @@ public class HAServer implements ServerPlugin {
     // REGISTER THE REQUEST TO WAIT FOR
     final ForwardedMessage forwardedMessage = new ForwardedMessage();
 
-    if (leaderConnection == null)
+    if (leaderConnection.get() == null)
       throw new ReplicationException("Leader not available");
 
     forwardMessagesWaitingForResponse.put(opNumber, forwardedMessage);
     try {
-      leaderConnection.sendCommandToLeader(buffer, command, opNumber);
+      leaderConnection.get().sendCommandToLeader(buffer, command, opNumber);
       if (timeout > 0) {
         try {
           if (forwardedMessage.semaphore.await(timeout, TimeUnit.MILLISECONDS)) {
@@ -1024,6 +1024,9 @@ public class HAServer implements ServerPlugin {
 
       connectToLeader(leader[0], Integer.parseInt(leader[1]));
 
+      // OK, CONNECTED
+      return true;
+
     } catch (final Exception e) {
       LogManager.instance()
           .log(this, Level.INFO, "Error connecting to the remote Leader server %s:%d (error=%s)", serverParts[0], Integer.parseInt(serverParts[1]), e);
@@ -1035,11 +1038,11 @@ public class HAServer implements ServerPlugin {
    * Connects to a remote server. The connection succeed only if the remote server is the leader.
    */
   private void connectToLeader(final String host, final int port) {
-    final Replica2LeaderNetworkExecutor lc = leaderConnection;
+    final Replica2LeaderNetworkExecutor lc = leaderConnection.get();
     if (lc != null) {
       // CLOSE ANY LEADER CONNECTION STILL OPEN
       lc.kill();
-      leaderConnection = null;
+      leaderConnection.set(null);
     }
 
     // KILL ANY ACTIVE REPLICA CONNECTION
@@ -1047,12 +1050,11 @@ public class HAServer implements ServerPlugin {
       r.close();
     replicaConnections.clear();
 
-    leaderConnection = new Replica2LeaderNetworkExecutor(this, host, port);
-    leaderConnection.startup();
-
+    leaderConnection.set(new Replica2LeaderNetworkExecutor(this, host, port));
+    leaderConnection.get().startup();
 
     // START SEPARATE THREAD TO EXECUTE LEADER'S REQUESTS
-    leaderConnection.start();
+    leaderConnection.get().start();
   }
 
   protected ChannelBinaryClient createNetworkConnection(final String host, final int port, final short commandId) throws IOException {
