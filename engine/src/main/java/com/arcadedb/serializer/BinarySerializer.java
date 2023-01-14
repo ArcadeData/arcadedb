@@ -677,6 +677,9 @@ public class BinarySerializer {
   }
 
   public void setDateImplementation(final Object dateImplementation) throws ClassNotFoundException {
+    // THIS IS ONLY TO FIX TESTS WHEN java.util.Date, FOR SOME REASON, CANNOT BE FOUND
+    final Class[] earlyLoadedJDK = new Class[] { java.util.Date.class, java.time.LocalDateTime.class, java.time.LocalDate.class, java.time.Instant.class,
+        java.util.Calendar.class };
     this.dateImplementation = dateImplementation instanceof Class ? (Class) dateImplementation : Class.forName(dateImplementation.toString());
   }
 
