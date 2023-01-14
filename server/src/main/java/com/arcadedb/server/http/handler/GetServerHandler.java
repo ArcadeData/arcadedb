@@ -44,6 +44,11 @@ public class GetServerHandler extends AbstractHandler {
   }
 
   @Override
+  protected boolean mustExecuteOnWorkerThread() {
+    return true;
+  }
+
+  @Override
   public void execute(final HttpServerExchange exchange, final ServerSecurityUser user) {
     exchange.setStatusCode(200);
 
