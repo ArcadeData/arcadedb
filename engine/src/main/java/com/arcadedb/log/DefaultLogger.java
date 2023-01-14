@@ -68,7 +68,8 @@ public class DefaultLogger implements Logger {
           // USE DEFAULT SETTINGS
           System.err.println("Error on loading logging configuration file '" + defaultLogConfigurationFile + "'. Using default settings");
         }
-      }
+      } else
+        System.err.println("Error on loading logging configuration file '" + defaultLogConfigurationFile + "': file not found. Using default settings");
     }
 
     if (stream == null) {

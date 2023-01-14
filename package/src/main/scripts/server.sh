@@ -72,7 +72,7 @@ if [ -z "$ARCADEDB_OPTS_MEMORY" ] ; then
 fi
 
 if [ -z "$JAVA_OPTS_SCRIPT" ] ; then
-    JAVA_OPTS_SCRIPT="-XX:+HeapDumpOnOutOfMemoryError -Djava.awt.headless=true -Dfile.encoding=UTF8 -Dpolyglot.engine.WarnInterpreterOnly=false"
+    JAVA_OPTS_SCRIPT="-XX:+HeapDumpOnOutOfMemoryError -Djava.awt.headless=true -Dfile.encoding=UTF8 -Dpolyglot.engine.WarnInterpreterOnly=false -Djava.util.logging.config.file=config/arcadedb-log.properties"
 fi
 
 if [ -z "$ARCADEDB_JMX" ] ; then

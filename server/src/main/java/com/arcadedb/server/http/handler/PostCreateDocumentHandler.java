@@ -43,7 +43,7 @@ public class PostCreateDocumentHandler extends DatabaseAbstractHandler {
   }
 
   @Override
-  protected boolean isParsingRequestPayload() {
+  protected boolean mustExecuteOnWorkerThread() {
     return true;
   }
 

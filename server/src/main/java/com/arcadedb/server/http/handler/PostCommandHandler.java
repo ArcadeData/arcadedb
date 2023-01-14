@@ -37,7 +37,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
   }
 
   @Override
-  protected boolean isParsingRequestPayload() {
+  protected boolean mustExecuteOnWorkerThread() {
     return true;
   }
 

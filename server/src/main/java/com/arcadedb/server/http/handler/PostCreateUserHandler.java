@@ -37,7 +37,7 @@ public class PostCreateUserHandler extends AbstractHandler {
   }
 
   @Override
-  protected boolean isParsingRequestPayload() {
+  protected boolean mustExecuteOnWorkerThread() {
     return true;
   }
 

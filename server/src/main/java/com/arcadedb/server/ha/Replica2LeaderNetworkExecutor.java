@@ -67,7 +67,6 @@ public class Replica2LeaderNetworkExecutor extends Thread {
 
     this.host = host;
     this.port = port;
-
     connect();
   }
 
@@ -118,6 +117,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
             // SKIP
             closeChannel();
             connect();
+            startup();
             continue;
           }
         }
@@ -131,6 +131,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
             // ERROR IN THE SEQUENCE, FORCE A RECONNECTION
             closeChannel();
             connect();
+            startup();
             continue;
           }
         }
@@ -185,6 +186,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
       if (!shutdown) {
         try {
           connect();
+          startup();
         } catch (final Exception e1) {
           LogManager.instance().log(this, Level.SEVERE, "Error on re-connecting to the Leader ('%s') (error=%s)", getRemoteServerName(), e1);
 
@@ -203,6 +205,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
                 port = Integer.parseInt(parts[1]);
 
                 connect();
+                startup();
                 return;
               } catch (final Exception e2) {
                 LogManager.instance().log(this, Level.SEVERE, "Error on re-connecting to the server '%s' (error=%s)", getRemoteAddress(), e2);
@@ -288,7 +291,7 @@ public class Replica2LeaderNetworkExecutor extends Thread {
     }
   }
 
-  private void connect() {
+  public void connect() {
     LogManager.instance().log(this, Level.FINE, "Connecting to server %s:%d...", host, port);
 
     try {
@@ -352,20 +355,22 @@ public class Replica2LeaderNetworkExecutor extends Thread {
         server.setServerAddresses(memberList);
       }
 
-      LogManager.instance().log(this, Level.INFO, "Server connected to the Leader server %s:%d, members=[%s]", host, port, server.getServerAddressList());
-
-      setName(Constants.PRODUCT + "-ha-replica2leader/" + server.getServerName() + "/" + getRemoteServerName());
-
-      LogManager.instance().log(this, Level.INFO, "Server started as Replica in HA mode (cluster=%s leader=%s:%d)", server.getClusterName(), host, port);
-
-      installDatabases();
-
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.FINE, "Error on connecting to the server %s:%d (cause=%s)", host, port, e.toString());
 
       //shutdown();
       throw new ConnectionException(host + ":" + port, e);
     }
+  }
+
+  public void startup() {
+    LogManager.instance().log(this, Level.INFO, "Server connected to the Leader server %s:%d, members=[%s]", host, port, server.getServerAddressList());
+
+    setName(Constants.PRODUCT + "-ha-replica2leader/" + server.getServerName() + "/" + getRemoteServerName());
+
+    LogManager.instance().log(this, Level.INFO, "Server started as Replica in HA mode (cluster=%s leader=%s:%d)", server.getClusterName(), host, port);
+
+    installDatabases();
   }
 
   private void installDatabases() {
@@ -428,18 +433,31 @@ public class Replica2LeaderNetworkExecutor extends Thread {
       schemaFile.write(dbStructure.getSchemaJson());
     }
 
+    long databaseSize = 0L;
     // WRITE ALL THE FILES
-    for (final Map.Entry<Integer, String> f : dbStructure.getFileNames().entrySet()) {
-      installFile(buffer, db, f.getKey(), f.getValue(), 0, -1);
+    final List<Map.Entry<Integer, String>> list = new ArrayList<>(dbStructure.getFileNames().entrySet());
+    for (int i = 0; i < list.size(); i++) {
+      final Map.Entry<Integer, String> f = list.get(i);
+      try {
+        databaseSize += installFile(buffer, db, f.getKey(), f.getValue(), 0, -1);
+      } catch (Exception e) {
+        LogManager.instance()
+            .log(this, Level.SEVERE, "Error on installing file '%s' (%s %d/%d files)", e, f.getKey(), FileUtils.getSizeAsString(databaseSize), i, list.size());
+        database.getEmbedded().drop();
+        throw new ReplicationException("Error on installing database '" + db + "'", e);
+      }
     }
 
     // RELOAD THE SCHEMA
     database.getSchema().getEmbedded().close();
     DatabaseContext.INSTANCE.init(database);
     database.getSchema().getEmbedded().load(PaginatedFile.MODE.READ_WRITE, true);
+
+    LogManager.instance()
+        .log(this, Level.INFO, "Database '%s' installed from the cluster (%s - %d files)", null, db, FileUtils.getSizeAsString(databaseSize), list.size());
   }
 
-  private void installFile(final Binary buffer, final String db, final int fileId, final String fileName, final int pageFromInclusive,
+  private long installFile(final Binary buffer, final String db, final int fileId, final String fileName, final int pageFromInclusive,
       final int pageToInclusive) throws IOException {
 
     int from = pageFromInclusive;
@@ -447,10 +465,12 @@ public class Replica2LeaderNetworkExecutor extends Thread {
     LogManager.instance().log(this, Level.FINE, "Installing file '%s'...", fileName);
 
     int pagesWritten = 0;
-    final long fileSize = 0;
+    long fileSize = 0;
     while (true) {
       sendCommandToLeader(buffer, new FileContentRequest(db, fileId, from, pageToInclusive), -1);
       final FileContentResponse fileChunk = (FileContentResponse) receiveCommandFromLeaderDuringJoin(buffer);
+
+      fileSize += fileChunk.getPagesContent().size();
 
       fileChunk.execute(server, null, -1);
 
@@ -466,6 +486,8 @@ public class Replica2LeaderNetworkExecutor extends Thread {
     }
 
     LogManager.instance().log(this, Level.FINE, "File '%s' installed (pagesWritten=%d size=%s)", fileName, pagesWritten, FileUtils.getSizeAsString(fileSize));
+
+    return fileSize;
   }
 
   private HACommand receiveCommandFromLeaderDuringJoin(final Binary buffer) throws IOException {

@@ -72,7 +72,7 @@ public abstract class AbstractHandler implements HttpHandler {
 
   @Override
   public void handleRequest(final HttpServerExchange exchange) {
-    if (isParsingRequestPayload() && exchange.isInIoThread()) {
+    if (mustExecuteOnWorkerThread() && exchange.isInIoThread()) {
       exchange.dispatch(this);
       return;
     }
@@ -211,7 +211,7 @@ public abstract class AbstractHandler implements HttpHandler {
   /**
    * Returns true if the handler is reading the payload in the request. In this case, the execution is delegated to the worker thread.
    */
-  protected boolean isParsingRequestPayload() {
+  protected boolean mustExecuteOnWorkerThread() {
     return false;
   }
 

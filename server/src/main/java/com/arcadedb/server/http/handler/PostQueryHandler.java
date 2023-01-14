@@ -37,7 +37,7 @@ public class PostQueryHandler extends DatabaseAbstractHandler {
   }
 
   @Override
-  protected boolean isParsingRequestPayload() {
+  protected boolean mustExecuteOnWorkerThread() {
     return true;
   }
 

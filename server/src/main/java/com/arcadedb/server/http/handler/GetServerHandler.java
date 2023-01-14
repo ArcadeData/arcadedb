@@ -44,6 +44,11 @@ public class GetServerHandler extends AbstractHandler {
   }
 
   @Override
+  protected boolean mustExecuteOnWorkerThread() {
+    return true;
+  }
+
+  @Override
   public void execute(final HttpServerExchange exchange, final ServerSecurityUser user) {
     exchange.setStatusCode(200);
 
@@ -139,9 +144,12 @@ public class GetServerHandler extends AbstractHandler {
       }
     }
     exchange.getResponseSender().send(response.toString());
+    exchange.endExchange();
   }
 
   protected String readResponse(final HttpURLConnection connection) throws IOException {
+    connection.setConnectTimeout(5000);
+    connection.setReadTimeout(5000);
     final InputStream in = connection.getInputStream();
     final Scanner scanner = new Scanner(in);
 
