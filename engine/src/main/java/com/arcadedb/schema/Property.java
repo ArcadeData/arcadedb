@@ -20,7 +20,9 @@ package com.arcadedb.schema;
 
 import com.arcadedb.index.Index;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.DateUtils;
 
+import java.time.temporal.*;
 import java.util.*;
 
 public class Property {
@@ -28,14 +30,16 @@ public class Property {
   private final   String              name;
   private final   Type                type;
   private final   int                 id;
-  protected final Map<String, Object> custom    = new HashMap<>();
+  protected final Map<String, Object> custom            = new HashMap<>();
   private         Object              defaultValue;
-  private         boolean             readonly  = false;
-  private         boolean             mandatory = false;
-  private         boolean             notNull   = false;
-  private         String              max       = null;
-  private         String              min       = null;
-  private         String              regexp    = null;
+  private         boolean             readonly          = false;
+  private         boolean             mandatory         = false;
+  private         boolean             notNull           = false;
+  private         String              max               = null;
+  private         String              min               = null;
+  private         String              regexp            = null;
+  private         String              precision         = null;
+  private         ChronoUnit          dateTimePrecision = null;
 
   public Property(final DocumentType owner, final String name, final Type type) {
     this.owner = owner;
@@ -185,12 +189,60 @@ public class Property {
     return regexp;
   }
 
+  public String getPrecision() {
+    return precision;
+  }
+
+  public Property setPrecision(final String precision) {
+    final boolean changed = !Objects.equals(this.precision, precision);
+    if (changed) {
+      this.precision = precision;
+      if (type == Type.DATETIME)
+        dateTimePrecision = DateUtils.parsePrecision(precision);
+      owner.getSchema().getEmbedded().saveConfiguration();
+    }
+    return this;
+  }
+
+  public ChronoUnit getDateTimePrecision() {
+    return dateTimePrecision;
+  }
+
   public Set<String> getCustomKeys() {
     return Collections.unmodifiableSet(custom.keySet());
   }
 
   public Object getCustomValue(final String key) {
     return custom.get(key);
+  }
+
+  public JSONObject toJSON() {
+    final JSONObject json = new JSONObject();
+
+    json.put("type", type.name);
+
+    final Object defValue = getDefaultValue();
+    if (defValue != null)
+      json.put("default", defValue);
+
+    if (readonly)
+      json.put("readonly", readonly);
+    if (mandatory)
+      json.put("mandatory", mandatory);
+    if (notNull)
+      json.put("notNull", notNull);
+    if (max != null)
+      json.put("max", max);
+    if (min != null)
+      json.put("min", min);
+    if (regexp != null)
+      json.put("regexp", regexp);
+    if (precision != null)
+      json.put("precision", precision);
+
+    json.put("custom", new JSONObject(custom));
+
+    return json;
   }
 
   public Object setCustomValue(final String key, final Object value) {
@@ -219,32 +271,5 @@ public class Property {
   @Override
   public int hashCode() {
     return id;
-  }
-
-  public JSONObject toJSON() {
-    final JSONObject json = new JSONObject();
-
-    json.put("type", type.name);
-
-    final Object defValue = getDefaultValue();
-    if (defValue != null)
-      json.put("default", defValue);
-
-    if (readonly)
-      json.put("readonly", readonly);
-    if (mandatory)
-      json.put("mandatory", mandatory);
-    if (notNull)
-      json.put("notNull", notNull);
-    if (max != null)
-      json.put("max", max);
-    if (min != null)
-      json.put("min", min);
-    if (regexp != null)
-      json.put("regexp", regexp);
-
-    json.put("custom", new JSONObject(custom));
-
-    return json;
   }
 }

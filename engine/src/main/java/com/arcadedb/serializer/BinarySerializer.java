@@ -43,6 +43,8 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Property;
 import com.arcadedb.utility.DateUtils;
 
 import java.lang.reflect.*;
@@ -165,8 +167,8 @@ public class BinarySerializer {
     }
 
     // WRITE OUT AND IN EDGES POINTER FIRST, THEN SERIALIZE THE VERTEX PROPERTIES (AS A DOCUMENT)
-    serializeValue(database, header, BinaryTypes.TYPE_COMPRESSED_RID, edge.getOut());
-    serializeValue(database, header, BinaryTypes.TYPE_COMPRESSED_RID, edge.getIn());
+    serializeValue(database, header, BinaryTypes.TYPE_COMPRESSED_RID, edge.getOut(), null);
+    serializeValue(database, header, BinaryTypes.TYPE_COMPRESSED_RID, edge.getIn(), null);
 
     if (serializeProperties)
       return serializeProperties(database, edge, header, ((EmbeddedDatabase) database).getContext().getTemporaryBuffer2());
@@ -194,7 +196,7 @@ public class BinarySerializer {
   }
 
   public Map<String, Object> deserializeProperties(final Database database, final Binary buffer, final EmbeddedModifier embeddedModifier,
-      final String... fieldNames) {
+      final DocumentType documentType, final String... fieldNames) {
     final int headerEndOffset = buffer.getInt();
     final int properties = (int) buffer.getUnsignedNumber();
 
@@ -242,7 +244,13 @@ public class BinarySerializer {
       final EmbeddedModifierProperty propertyModifier =
           embeddedModifier != null ? new EmbeddedModifierProperty(embeddedModifier.getOwner(), propertyName) : null;
 
-      Object propertyValue = deserializeValue(database, buffer, type, propertyModifier);
+      final Property property;
+      if (type == BinaryTypes.TYPE_DATETIME && documentType != null)
+        property = documentType != null ? documentType.getPropertyIfExists(propertyName) : null;
+      else
+        property = null;
+
+      Object propertyValue = deserializeValue(database, buffer, type, propertyModifier, property);
 
       if (type == BinaryTypes.TYPE_COMPRESSED_STRING)
         propertyValue = dictionary.getNameById(((Long) propertyValue).intValue());
@@ -279,7 +287,8 @@ public class BinarySerializer {
     return false;
   }
 
-  public Object deserializeProperty(final Database database, final Binary buffer, final EmbeddedModifier embeddedModifier, final String fieldName) {
+  public Object deserializeProperty(final Database database, final Binary buffer, final EmbeddedModifier embeddedModifier, final String fieldName,
+      final DocumentType documentType) {
     final int headerEndOffset = buffer.getInt();
     final int properties = (int) buffer.getUnsignedNumber();
 
@@ -304,8 +313,12 @@ public class BinarySerializer {
       final byte type = buffer.getByte();
 
       final EmbeddedModifierProperty propertyModifier = embeddedModifier != null ? new EmbeddedModifierProperty(embeddedModifier.getOwner(), fieldName) : null;
+      Property property = null;
+      if (type == BinaryTypes.TYPE_DATETIME)
+        // NEED THIS ONLY FOR PRECISION
+        property = documentType.getPropertyIfExists(fieldName);
 
-      Object propertyValue = deserializeValue(database, buffer, type, propertyModifier);
+      Object propertyValue = deserializeValue(database, buffer, type, propertyModifier, property);
 
       if (type == BinaryTypes.TYPE_COMPRESSED_STRING)
         propertyValue = dictionary.getNameById(((Long) propertyValue).intValue());
@@ -316,7 +329,7 @@ public class BinarySerializer {
     return null;
   }
 
-  public void serializeValue(final Database database, final Binary content, final byte type, Object value) {
+  public void serializeValue(final Database database, final Binary content, final byte type, Object value, final Property property) {
     if (value == null)
       return;
 
@@ -367,9 +380,8 @@ public class BinarySerializer {
       else if (value instanceof LocalDate)
         content.putUnsignedNumber(((LocalDate) value).toEpochDay());
       break;
-
     case BinaryTypes.TYPE_DATETIME:
-      serializeDateTime(content, value);
+      serializeDateTime(content, value, property);
       break;
     case BinaryTypes.TYPE_DECIMAL:
       content.putNumber(((BigDecimal) value).scale());
@@ -405,7 +417,7 @@ public class BinarySerializer {
           final Object entryValue = it.next();
           final byte entryType = BinaryTypes.getTypeFromValue(entryValue);
           content.putByte(entryType);
-          serializeValue(database, content, entryType, entryValue);
+          serializeValue(database, content, entryType, entryValue, property);
         }
       } else if (value instanceof Object[]) {
         // ARRAY
@@ -414,7 +426,7 @@ public class BinarySerializer {
         for (final Object entryValue : array) {
           final byte entryType = BinaryTypes.getTypeFromValue(entryValue);
           content.putByte(entryType);
-          serializeValue(database, content, entryType, entryValue);
+          serializeValue(database, content, entryType, entryValue, property);
         }
       } else if (value instanceof Iterable) {
         final Iterable iter = (Iterable) value;
@@ -428,7 +440,7 @@ public class BinarySerializer {
           final Object entryValue = it.next();
           final byte entryType = BinaryTypes.getTypeFromValue(entryValue);
           content.putByte(entryType);
-          serializeValue(database, content, entryType, entryValue);
+          serializeValue(database, content, entryType, entryValue, property);
         }
       } else {
         // ARRAY
@@ -438,7 +450,7 @@ public class BinarySerializer {
           final Object entryValue = Array.get(value, i);
           final byte entryType = BinaryTypes.getTypeFromValue(entryValue);
           content.putByte(entryType);
-          serializeValue(database, content, entryType, entryValue);
+          serializeValue(database, content, entryType, entryValue, property);
         }
       }
       break;
@@ -451,13 +463,13 @@ public class BinarySerializer {
         final Object entryKey = entry.getKey();
         final byte entryKeyType = BinaryTypes.getTypeFromValue(entryKey);
         content.putByte(entryKeyType);
-        serializeValue(database, content, entryKeyType, entryKey);
+        serializeValue(database, content, entryKeyType, entryKey, property);
 
         // WRITE THE VALUE
         final Object entryValue = entry.getValue();
         final byte entryValueType = BinaryTypes.getTypeFromValue(entryValue);
         content.putByte(entryValueType);
-        serializeValue(database, content, entryValueType, entryValue);
+        serializeValue(database, content, entryValueType, entryValue, property);
       }
       break;
     }
@@ -487,6 +499,11 @@ public class BinarySerializer {
   }
 
   public Object deserializeValue(final Database database, final Binary content, final byte type, final EmbeddedModifier embeddedModifier) {
+    return deserializeValue(database, content, type, embeddedModifier, null);
+  }
+
+  public Object deserializeValue(final Database database, final Binary content, final byte type, final EmbeddedModifier embeddedModifier,
+      final Property property) {
     final Object value;
     switch (type) {
     case BinaryTypes.TYPE_NULL:
@@ -526,7 +543,19 @@ public class BinarySerializer {
       value = DateUtils.date(database, content.getUnsignedNumber(), dateImplementation);
       break;
     case BinaryTypes.TYPE_DATETIME:
-      value = DateUtils.dateTime(database, content.getUnsignedNumber(), dateTimeImplementation, dateTimePrecision);
+      ChronoUnit precisionToUse = property != null ? property.getDateTimePrecision() : null;
+      if (precisionToUse == null)
+        precisionToUse = dateTimePrecision;
+      if (precisionToUse == null)
+        precisionToUse = ChronoUnit.MILLIS;
+
+      if (precisionToUse != ChronoUnit.MILLIS &&//
+          !dateTimeImplementation.equals(LocalDateTime.class) && !dateTimeImplementation.equals(ZonedDateTime.class) && !dateTimeImplementation.equals(
+          Instant.class))
+        // OVERRIDE THE DATETIME IMPLEMENTATION TO SUPPORT HIGHER PRECISION THAN MILLISECOND
+        dateTimeImplementation = LocalDateTime.class;
+
+      value = DateUtils.dateTime(database, content.getUnsignedNumber(), dateTimeImplementation, precisionToUse);
       break;
     case BinaryTypes.TYPE_DECIMAL:
       final int scale = (int) content.getNumber();
@@ -597,9 +626,13 @@ public class BinarySerializer {
 
     final Dictionary dictionary = database.getSchema().getDictionary();
 
+    final DocumentType documentType = record.getType();
+
     for (final Map.Entry<String, Object> entry : properties.entrySet()) {
+      final String propertyName = entry.getKey();
+
       // WRITE PROPERTY ID FROM THE DICTIONARY
-      header.putUnsignedNumber(dictionary.getIdByName(entry.getKey(), true));
+      header.putUnsignedNumber(dictionary.getIdByName(propertyName, true));
 
       Object value = entry.getValue();
 
@@ -616,56 +649,10 @@ public class BinarySerializer {
         }
       }
 
-      content.putByte(type);
-      serializeValue(database, content, type, value);
-
-      // WRITE PROPERTY CONTENT POSITION
-      header.putUnsignedNumber(startContentPosition);
-    }
-
-    content.flip();
-
-    final int headerEndOffset = header.position();
-
-    header.append(content);
-
-    // UPDATE HEADER SIZE
-    header.putInt(headerSizePosition, headerEndOffset);
-
-    header.position(header.size());
-    header.flip();
-    return header;
-  }
-
-  public Binary serializeProperties(final Database database, final Map<String, Object> properties, final Binary header, final Binary content) {
-    final int headerSizePosition = header.position();
-    header.putInt(0); // TEMPORARY PLACEHOLDER FOR HEADER SIZE
-
-    header.putUnsignedNumber(properties.size());
-
-    final Dictionary dictionary = database.getSchema().getDictionary();
-
-    for (final Map.Entry<String, Object> entry : properties.entrySet()) {
-      // WRITE PROPERTY ID FROM THE DICTIONARY
-      header.putUnsignedNumber(dictionary.getIdByName(entry.getKey(), true));
-
-      Object value = entry.getValue();
-
-      final int startContentPosition = content.position();
-
-      byte type = BinaryTypes.getTypeFromValue(value);
-
-      if (value != null && type == BinaryTypes.TYPE_STRING) {
-        final int id = dictionary.getIdByName((String) value, false);
-        if (id > -1) {
-          // WRITE THE COMPRESSED STRING
-          type = BinaryTypes.TYPE_COMPRESSED_STRING;
-          value = id;
-        }
-      }
+      final Property property = documentType.getPropertyIfExists(propertyName);
 
       content.putByte(type);
-      serializeValue(database, content, type, value);
+      serializeValue(database, content, type, value, property);
 
       // WRITE PROPERTY CONTENT POSITION
       header.putUnsignedNumber(startContentPosition);
@@ -725,7 +712,7 @@ public class BinarySerializer {
     return comparator;
   }
 
-  private void serializeDateTime(final Binary content, final Object value) {
+  private void serializeDateTime(final Binary content, final Object value, final Property property) {
     final long timestamp;
     if (value instanceof Date)
       // WRITE MILLISECONDS
@@ -734,33 +721,39 @@ public class BinarySerializer {
       // WRITE MILLISECONDS
       timestamp = ((Calendar) value).getTimeInMillis();
     else if (value instanceof LocalDateTime) {
+      final ChronoUnit precisionToUse = property != null && property.getDateTimePrecision() != null ? property.getDateTimePrecision() : dateTimePrecision;
+
       final LocalDateTime localDateTime = (LocalDateTime) value;
-      if (dateTimePrecision.equals(ChronoUnit.MILLIS))
+      if (precisionToUse.equals(ChronoUnit.MILLIS))
         timestamp =
             TimeUnit.MILLISECONDS.convert(localDateTime.toEpochSecond(ZoneOffset.UTC), TimeUnit.SECONDS) + localDateTime.getLong(ChronoField.MILLI_OF_SECOND);
-      else if (dateTimePrecision.equals(ChronoUnit.MICROS))
+      else if (precisionToUse.equals(ChronoUnit.MICROS))
         timestamp = TimeUnit.MICROSECONDS.convert(localDateTime.toEpochSecond(ZoneOffset.UTC), TimeUnit.SECONDS) + (localDateTime.getNano() / 1000);
-      else if (dateTimePrecision.equals(ChronoUnit.NANOS))
+      else if (precisionToUse.equals(ChronoUnit.NANOS))
         timestamp = TimeUnit.NANOSECONDS.convert(localDateTime.toEpochSecond(ZoneOffset.UTC), TimeUnit.SECONDS) + localDateTime.getNano();
       else
         // NOT SUPPORTED
         timestamp = 0;
     } else if (value instanceof ZonedDateTime) {
+      final ChronoUnit precisionToUse = property != null && property.getDateTimePrecision() != null ? property.getDateTimePrecision() : dateTimePrecision;
+
       final ZonedDateTime zonedDateTime = (ZonedDateTime) value;
-      if (dateTimePrecision.equals(ChronoUnit.MILLIS))
+      if (precisionToUse.equals(ChronoUnit.MILLIS))
         timestamp = zonedDateTime.toInstant().toEpochMilli();
-      else if (dateTimePrecision.equals(ChronoUnit.MICROS))
+      else if (precisionToUse.equals(ChronoUnit.MICROS))
         timestamp = TimeUnit.MICROSECONDS.convert(zonedDateTime.toEpochSecond(), TimeUnit.SECONDS) + (zonedDateTime.getNano() / 1000);
-      else if (dateTimePrecision.equals(ChronoUnit.NANOS))
+      else if (precisionToUse.equals(ChronoUnit.NANOS))
         timestamp = TimeUnit.NANOSECONDS.convert(zonedDateTime.toEpochSecond(), TimeUnit.SECONDS) + zonedDateTime.getNano();
       else
         // NOT SUPPORTED
         timestamp = 0;
     } else if (value instanceof Instant) {
+      final ChronoUnit precisionToUse = property != null && property.getDateTimePrecision() != null ? property.getDateTimePrecision() : dateTimePrecision;
+
       final Instant instant = (Instant) value;
-      if (dateTimePrecision.equals(ChronoUnit.MILLIS))
+      if (precisionToUse.equals(ChronoUnit.MILLIS))
         timestamp = instant.toEpochMilli();
-      else if (dateTimePrecision.equals(ChronoUnit.MICROS))
+      else if (precisionToUse.equals(ChronoUnit.MICROS))
         timestamp = TimeUnit.MICROSECONDS.convert(instant.getEpochSecond(), TimeUnit.SECONDS) + (instant.getNano() / 1000);
       else if (dateTimePrecision.equals(ChronoUnit.NANOS))
         timestamp = TimeUnit.NANOSECONDS.convert(instant.getEpochSecond(), TimeUnit.SECONDS) + instant.getNano();

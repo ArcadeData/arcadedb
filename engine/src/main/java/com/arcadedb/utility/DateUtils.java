@@ -30,8 +30,7 @@ public class DateUtils {
   public static final  long   MS_IN_A_DAY = 24 * 60 * 60 * 1000L; // 86_400_000
   private static final ZoneId UTC_ZONE_ID = ZoneId.of("UTC");
 
-  public static Object dateTime(final Database database, final long timestamp, final Class dateTimeImplementation,
-      final ChronoUnit dateTimePrecision) {
+  public static Object dateTime(final Database database, final long timestamp, final Class dateTimeImplementation, final ChronoUnit dateTimePrecision) {
     final Object value;
     if (dateTimeImplementation.equals(Date.class))
       value = new Date(timestamp);
@@ -85,5 +84,49 @@ public class DateUtils {
     } else
       throw new SerializationException("Error on deserialize date. Configured class '" + dateImplementation + "' is not supported");
     return value;
+  }
+
+  public static ChronoUnit parsePrecision(final String precision) {
+    switch (precision) {
+    case "millisecond":
+      return ChronoUnit.MILLIS;
+    case "microsecond":
+      return ChronoUnit.MICROS;
+    case "nanosecond":
+      return ChronoUnit.NANOS;
+    default:
+      throw new SerializationException("Unsupported datetime precision '" + precision + "'");
+    }
+  }
+
+  public static ChronoUnit getPrecision(final int nanos) {
+    if (nanos % 1_000_000 == 0)
+      return ChronoUnit.MILLIS;
+    if (nanos % 1_000 == 0)
+      return ChronoUnit.MICROS;
+    else
+      return ChronoUnit.NANOS;
+  }
+
+  public static final int getPrecisionLevel(final Class cls) {
+    if (Number.class.isAssignableFrom(cls))
+      // ALWAYS CONVERT IN SOMETHING MORE APPROPRIATE
+      return 0;
+    else if (String.class.isAssignableFrom(cls))
+      // ALWAYS CONVERT IN SOMETHING MORE APPROPRIATE
+      return 0;
+    else if (LocalDate.class.isAssignableFrom(cls))
+      return 1;
+    else if (java.util.Date.class.equals(cls))
+      return 2;
+    else if (java.util.Calendar.class.isAssignableFrom(cls))
+      return 2;
+    else if (LocalDateTime.class.isAssignableFrom(cls))
+      return 3;
+    else if (ZonedDateTime.class.isAssignableFrom(cls))
+      return 3;
+    else if (Instant.class.isAssignableFrom(cls))
+      return 3;
+    throw new IllegalArgumentException("Illegal date type object of class " + cls);
   }
 }

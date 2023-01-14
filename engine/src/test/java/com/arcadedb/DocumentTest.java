@@ -24,6 +24,7 @@ import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
+import com.arcadedb.utility.DateUtils;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -131,7 +132,7 @@ public class DocumentTest extends TestHelper {
       doc.set("date", localDate);
       doc.set("datetime", localDateTime);
       Assertions.assertEquals(localDate, doc.getLocalDate("date"));
-      Assertions.assertEquals(localDateTime.truncatedTo(ChronoUnit.MILLIS), doc.getLocalDateTime("datetime"));
+      Assertions.assertEquals(localDateTime.truncatedTo(DateUtils.getPrecision(localDateTime.getNano())), doc.getLocalDateTime("datetime"));
 
       Assertions.assertEquals(
           TimeUnit.MILLISECONDS.convert(localDateTime.toEpochSecond(ZoneOffset.UTC), TimeUnit.SECONDS) + localDateTime.getLong(ChronoField.MILLI_OF_SECOND),
@@ -164,6 +165,53 @@ public class DocumentTest extends TestHelper {
     Assertions.assertEquals(java.util.Date.class, ((EmbeddedDatabase) database).getSerializer().getDateTimeImplementation());
     Assertions.assertEquals(java.util.Date.class, ((EmbeddedDatabase) database).getSerializer().getDateImplementation());
     Assertions.assertEquals(ChronoUnit.MILLIS, ((EmbeddedDatabase) database).getSerializer().getDateTimePrecision());
+  }
+
+  @Test
+  public void testDateAndDateTimeSettingsAreSavedInProperties() {
+    database.command("sql", "create document type LogEvent");
+    database.command("sql", "create property LogEvent.date datetime (precision 'nanosecond')");
+
+    Assertions.assertEquals("nanosecond", database.getSchema().getType("LogEvent").getProperty("date").getPrecision());
+    Assertions.assertEquals(ChronoUnit.NANOS, database.getSchema().getType("LogEvent").getProperty("date").getDateTimePrecision());
+
+    final LocalDateTime now = LocalDateTime.now();
+
+    database.transaction(() -> {
+      MutableDocument doc = database.newDocument("LogEvent").set("date", now).save();
+      Assertions.assertEquals(now.truncatedTo(ChronoUnit.NANOS), doc.getLocalDateTime("date"));
+    });
+
+    database.transaction(() -> {
+      database.command("sql", "update LogEvent set date = date.precision('microsecond')");
+      database.command("sql", "alter property LogEvent.date precision 'microsecond'");
+    });
+
+    Assertions.assertEquals("microsecond", database.getSchema().getType("LogEvent").getProperty("date").getPrecision());
+    Assertions.assertEquals(ChronoUnit.MICROS, database.getSchema().getType("LogEvent").getProperty("date").getDateTimePrecision());
+
+    Assertions.assertEquals(now.truncatedTo(ChronoUnit.MICROS),
+        database.iterateType("LogEvent", false).next().getRecord().asDocument().getLocalDateTime("date"));
+
+    database.close();
+    database = factory.open();
+
+    database.transaction(() -> {
+      database.command("sql", "update LogEvent set date = date.precision('millisecond')");
+      database.command("sql", "alter property LogEvent.date precision 'millisecond'");
+    });
+
+    Assertions.assertEquals("millisecond", database.getSchema().getType("LogEvent").getProperty("date").getPrecision());
+    Assertions.assertEquals(ChronoUnit.MILLIS, database.getSchema().getType("LogEvent").getProperty("date").getDateTimePrecision());
+
+    Assertions.assertEquals(now.truncatedTo(ChronoUnit.MILLIS),
+        database.iterateType("LogEvent", false).next().getRecord().asDocument().getLocalDateTime("date"));
+
+    database.close();
+    database = factory.open();
+
+    Assertions.assertEquals("millisecond", database.getSchema().getType("LogEvent").getProperty("date").getPrecision());
+    Assertions.assertEquals(ChronoUnit.MILLIS, database.getSchema().getType("LogEvent").getProperty("date").getDateTimePrecision());
   }
 
   @Test
@@ -208,6 +256,8 @@ public class DocumentTest extends TestHelper {
           TimeUnit.MILLISECONDS.convert(localDateTime.toEpochSecond(ZoneOffset.UTC), TimeUnit.SECONDS) + localDateTime.getLong(ChronoField.MILLI_OF_SECOND),
           doc.getDate("datetime").getTime());
 
+      Assertions.assertTrue(localDateTime.isEqual(doc.getLocalDateTime("datetime")));
+
     } finally {
       ((EmbeddedDatabase) database).getSerializer().setDateTimeImplementation(Date.class);
       ((EmbeddedDatabase) database).getSerializer().setDateTimePrecision("millisecond");
@@ -230,6 +280,7 @@ public class DocumentTest extends TestHelper {
 
       doc.reload();
       Assertions.assertEquals(calendar, doc.get("datetime"));
+      Assertions.assertEquals(calendar, doc.getCalendar("datetime"));
 
     } finally {
       ((EmbeddedDatabase) database).getSerializer().setDateTimeImplementation(Date.class);
@@ -252,6 +303,7 @@ public class DocumentTest extends TestHelper {
 
       doc.reload();
       Assertions.assertEquals(localDate, doc.get("date"));
+      Assertions.assertTrue(localDate.isEqual(doc.getLocalDate("date")));
 
     } finally {
       ((EmbeddedDatabase) database).getSerializer().setDateImplementation(Date.class);
@@ -295,6 +347,7 @@ public class DocumentTest extends TestHelper {
       });
       doc.reload();
       Assertions.assertTrue(zonedDateTime.truncatedTo(ChronoUnit.NANOS).isEqual((ChronoZonedDateTime<?>) doc.get("datetime")));
+      Assertions.assertTrue(zonedDateTime.isEqual(doc.getZonedDateTime("datetime")));
 
     } finally {
       ((EmbeddedDatabase) database).getSerializer().setDateTimeImplementation(Date.class);
@@ -339,6 +392,7 @@ public class DocumentTest extends TestHelper {
       });
       doc.reload();
       Assertions.assertEquals(instant.truncatedTo(ChronoUnit.NANOS), doc.get("datetime"));
+      Assertions.assertEquals(instant, doc.getInstant("datetime"));
 
     } finally {
       ((EmbeddedDatabase) database).getSerializer().setDateTimeImplementation(Date.class);

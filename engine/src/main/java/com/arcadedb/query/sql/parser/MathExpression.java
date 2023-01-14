@@ -517,15 +517,14 @@ public class MathExpression extends SimpleNode {
     public abstract Number apply(final BigDecimal left, final BigDecimal right);
 
     public Object apply(final Object left, final Object right) {
-      if (left == null) {
+      if (left == null)
         return right;
-      }
-      if (right == null) {
+
+      if (right == null)
         return left;
-      }
-      if (left instanceof Number && right instanceof Number) {
+
+      if (left instanceof Number && right instanceof Number)
         return apply((Number) left, this, (Number) right);
-      }
 
       return null;
     }

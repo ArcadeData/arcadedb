@@ -105,19 +105,19 @@ public abstract class BaseDocument extends BaseRecord implements Document, Seria
   }
 
   public LocalDate getLocalDate(final String propertyName) {
-    return (LocalDate) Type.convert(database, get(propertyName), LocalDate.class);
+    return (LocalDate) Type.convert(database, get(propertyName), LocalDate.class, type.getPropertyIfExists(propertyName));
   }
 
   public LocalDateTime getLocalDateTime(final String propertyName) {
-    return (LocalDateTime) Type.convert(database, get(propertyName), LocalDateTime.class);
+    return (LocalDateTime) Type.convert(database, get(propertyName), LocalDateTime.class, type.getPropertyIfExists(propertyName));
   }
 
   public ZonedDateTime getZonedDateTime(final String propertyName) {
-    return (ZonedDateTime) Type.convert(database, get(propertyName), ZonedDateTime.class);
+    return (ZonedDateTime) Type.convert(database, get(propertyName), ZonedDateTime.class, type.getPropertyIfExists(propertyName));
   }
 
   public Instant getInstant(final String propertyName) {
-    return (Instant) Type.convert(database, get(propertyName), Instant.class);
+    return (Instant) Type.convert(database, get(propertyName), Instant.class, type.getPropertyIfExists(propertyName));
   }
 
   @Override

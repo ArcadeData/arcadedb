@@ -72,7 +72,7 @@ public class CommandForwardRequest extends HAAbstractCommand {
 
         final byte type = Type.getTypeByValue(entry.getValue()).getBinaryType();
         stream.putByte(type);
-        database.getSerializer().serializeValue(database, stream, type, entry.getValue());
+        database.getSerializer().serializeValue(database, stream, type, entry.getValue(), null);
       }
     }
 
@@ -83,7 +83,7 @@ public class CommandForwardRequest extends HAAbstractCommand {
       for (final Object entry : ordinalParameters) {
         final byte type = Type.getTypeByValue(entry).getBinaryType();
         stream.putByte(type);
-        database.getSerializer().serializeValue(database, stream, type, entry);
+        database.getSerializer().serializeValue(database, stream, type, entry, null);
       }
     }
   }

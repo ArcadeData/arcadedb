@@ -21,6 +21,7 @@ package com.arcadedb.schema;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.EmbeddedDatabase;
 import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.ImmutableEmbeddedDocument;
@@ -265,39 +266,50 @@ public enum Type {
   /**
    * Convert types based on the iTargetClass parameter.
    *
-   * @param iValue       Value to convert
-   * @param iTargetClass Expected class
+   * @param value       Value to convert
+   * @param targetClass Expected class
    *
    * @return The converted value or the original if no conversion was applied
    */
   @SuppressWarnings({ "unchecked", "rawtypes" })
-  public static Object convert(final Database database, final Object iValue, final Class<?> iTargetClass) {
+  public static Object convert(final Database database, final Object value, final Class<?> targetClass) {
+    return convert(database, value, targetClass, null);
+  }
+
+  public static Object convert(final Database database, final Object iValue, Class<?> targetClass, final Property property) {
     if (iValue == null)
       return null;
 
-    if (iTargetClass == null)
+    if (targetClass == null)
       return iValue;
 
-    if (iValue.getClass().equals(iTargetClass))
+    if (iValue.getClass().equals(targetClass))
       // SAME TYPE: DON'T CONVERT IT
       return iValue;
 
-    if (iTargetClass.isAssignableFrom(iValue.getClass()))
+    if (targetClass.isAssignableFrom(iValue.getClass()))
       // COMPATIBLE TYPES: DON'T CONVERT IT
       return iValue;
 
     try {
-      if (iTargetClass.equals(String.class))
+//      if (targetClass.equals(Date.class)) {
+//        final ChronoUnit precision = getPrecision((EmbeddedDatabase) database, property);
+//        if (precision != ChronoUnit.MILLIS)
+//          // OVERRIDE DATE TO LOCAL DATE TIME TO SUPPORT PRECISION
+//          targetClass = LocalDateTime.class;
+//      }
+
+      if (targetClass.equals(String.class))
         return iValue.toString();
-      else if (iValue instanceof Binary && iTargetClass.isAssignableFrom(byte[].class))
+      else if (iValue instanceof Binary && targetClass.isAssignableFrom(byte[].class))
         return ((Binary) iValue).toByteArray();
       else if (byte[].class.isAssignableFrom(iValue.getClass())) {
         return iValue;
-      } else if (iTargetClass.isEnum()) {
+      } else if (targetClass.isEnum()) {
         if (iValue instanceof Number)
-          return ((Class<Enum>) iTargetClass).getEnumConstants()[((Number) iValue).intValue()];
-        return Enum.valueOf((Class<Enum>) iTargetClass, iValue.toString());
-      } else if (iTargetClass.equals(Byte.TYPE) || iTargetClass.equals(Byte.class)) {
+          return ((Class<Enum>) targetClass).getEnumConstants()[((Number) iValue).intValue()];
+        return Enum.valueOf((Class<Enum>) targetClass, iValue.toString());
+      } else if (targetClass.equals(Byte.TYPE) || targetClass.equals(Byte.class)) {
         if (iValue instanceof Byte)
           return iValue;
         else if (iValue instanceof String)
@@ -305,7 +317,7 @@ public enum Type {
         else
           return ((Number) iValue).byteValue();
 
-      } else if (iTargetClass.equals(Short.TYPE) || iTargetClass.equals(Short.class)) {
+      } else if (targetClass.equals(Short.TYPE) || targetClass.equals(Short.class)) {
         if (iValue instanceof Short)
           return iValue;
         else if (iValue instanceof String)
@@ -313,7 +325,7 @@ public enum Type {
         else
           return ((Number) iValue).shortValue();
 
-      } else if (iTargetClass.equals(Integer.TYPE) || iTargetClass.equals(Integer.class)) {
+      } else if (targetClass.equals(Integer.TYPE) || targetClass.equals(Integer.class)) {
         if (iValue instanceof Integer)
           return iValue;
         else if (iValue instanceof String)
@@ -321,7 +333,7 @@ public enum Type {
         else
           return ((Number) iValue).intValue();
 
-      } else if (iTargetClass.equals(Long.TYPE) || iTargetClass.equals(Long.class)) {
+      } else if (targetClass.equals(Long.TYPE) || targetClass.equals(Long.class)) {
         if (iValue instanceof Long)
           return iValue;
         else if (iValue instanceof String)
@@ -331,7 +343,7 @@ public enum Type {
         else
           return ((Number) iValue).longValue();
 
-      } else if (iTargetClass.equals(Float.TYPE) || iTargetClass.equals(Float.class)) {
+      } else if (targetClass.equals(Float.TYPE) || targetClass.equals(Float.class)) {
         if (iValue instanceof Float)
           return iValue;
         else if (iValue instanceof String)
@@ -339,13 +351,13 @@ public enum Type {
         else
           return ((Number) iValue).floatValue();
 
-      } else if (iTargetClass.equals(BigDecimal.class)) {
+      } else if (targetClass.equals(BigDecimal.class)) {
         if (iValue instanceof String)
           return new BigDecimal((String) iValue);
         else if (iValue instanceof Number)
           return new BigDecimal(iValue.toString());
 
-      } else if (iTargetClass.equals(Double.TYPE) || iTargetClass.equals(Double.class)) {
+      } else if (targetClass.equals(Double.TYPE) || targetClass.equals(Double.class)) {
         if (iValue instanceof Double)
           return iValue;
         else if (iValue instanceof String)
@@ -356,7 +368,7 @@ public enum Type {
         else
           return ((Number) iValue).doubleValue();
 
-      } else if (iTargetClass.equals(Boolean.TYPE) || iTargetClass.equals(Boolean.class)) {
+      } else if (targetClass.equals(Boolean.TYPE) || targetClass.equals(Boolean.class)) {
         if (iValue instanceof Boolean)
           return iValue;
         else if (iValue instanceof String) {
@@ -368,7 +380,7 @@ public enum Type {
         } else if (iValue instanceof Number)
           return ((Number) iValue).intValue() != 0;
 
-      } else if (Set.class.isAssignableFrom(iTargetClass)) {
+      } else if (Set.class.isAssignableFrom(targetClass)) {
         // The caller specifically wants a Set.  If the value is a collection
         // we will add all of the items in the collection to a set.  Otherwise
         // we will create a singleton set with only the value in it.
@@ -379,7 +391,7 @@ public enum Type {
           return Collections.singleton(iValue);
         }
 
-      } else if (List.class.isAssignableFrom(iTargetClass)) {
+      } else if (List.class.isAssignableFrom(targetClass)) {
         // The caller specifically wants a List.  If the value is a collection
         // we will add all of the items in the collection to a List.  Otherwise
         // we will create a singleton List with only the value in it.
@@ -390,7 +402,7 @@ public enum Type {
           return Collections.singletonList(iValue);
         }
 
-      } else if (Collection.class.equals(iTargetClass)) {
+      } else if (Collection.class.equals(targetClass)) {
         // The caller specifically wants a Collection of any type.
         // we will return a list if the value is a collection or
         // a singleton set if the value is not a collection.
@@ -401,13 +413,13 @@ public enum Type {
           return Collections.singleton(iValue);
         }
 
-      } else if (iTargetClass.equals(Date.class)) {
+      } else if (targetClass.equals(Date.class)) {
         return convertToDate(database, iValue);
-      } else if (iTargetClass.equals(Calendar.class)) {
+      } else if (targetClass.equals(Calendar.class)) {
         final Calendar cal = Calendar.getInstance();
         cal.setTime(convertToDate(database, iValue));
         return cal;
-      } else if (iTargetClass.equals(LocalDate.class)) {
+      } else if (targetClass.equals(LocalDate.class)) {
         if (iValue instanceof Number)
           return DateUtils.date(database, ((Number) iValue).longValue(), LocalDate.class);
         else if (iValue instanceof Date)
@@ -430,9 +442,11 @@ public enum Type {
               return LocalDateTime.parse(valueAsString, DateTimeFormatter.ofPattern("yyyy-MM-dd"));
           }
         }
-      } else if (iTargetClass.equals(LocalDateTime.class)) {
+      } else if (targetClass.equals(LocalDateTime.class)) {
+        final ChronoUnit precision = getPrecision((EmbeddedDatabase) database, property);
+
         if (iValue instanceof Number)
-          return DateUtils.dateTime(database, ((Number) iValue).longValue(), LocalDateTime.class, ChronoUnit.MILLIS);
+          return DateUtils.dateTime(database, ((Number) iValue).longValue(), LocalDateTime.class, precision);
         else if (iValue instanceof Date)
           return DateUtils.dateTime(database, ((Date) iValue).getTime(), LocalDateTime.class, ChronoUnit.MILLIS);
         else if (iValue instanceof Calendar)
@@ -440,7 +454,7 @@ public enum Type {
         else if (iValue instanceof String) {
           final String valueAsString = (String) iValue;
           if (FileUtils.isLong(valueAsString))
-            return DateUtils.dateTime(database, Long.parseLong(iValue.toString()), LocalDateTime.class, ChronoUnit.MILLIS);
+            return DateUtils.dateTime(database, Long.parseLong(iValue.toString()), LocalDateTime.class, precision);
           else if (database != null)
             try {
               return LocalDateTime.parse(valueAsString, DateTimeFormatter.ofPattern((database.getSchema().getDateTimeFormat())));
@@ -457,15 +471,17 @@ public enum Type {
               return LocalDateTime.parse(valueAsString, DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS"));
           }
         }
-      } else if (iTargetClass.equals(ZonedDateTime.class)) {
+      } else if (targetClass.equals(ZonedDateTime.class)) {
+        final ChronoUnit precision = getPrecision((EmbeddedDatabase) database, property);
+
         if (iValue instanceof Number)
-          return DateUtils.dateTime(database, ((Number) iValue).longValue(), ZonedDateTime.class, ChronoUnit.MILLIS);
+          return DateUtils.dateTime(database, ((Number) iValue).longValue(), ZonedDateTime.class, precision);
         if (iValue instanceof Calendar)
-          return DateUtils.dateTime(database, ((Calendar) iValue).getTimeInMillis(), ZonedDateTime.class, ChronoUnit.MILLIS);
+          return DateUtils.dateTime(database, ((Calendar) iValue).getTimeInMillis(), ZonedDateTime.class, precision);
         if (iValue instanceof String) {
           final String valueAsString = (String) iValue;
           if (FileUtils.isLong(valueAsString))
-            return DateUtils.dateTime(database, Long.parseLong(iValue.toString()), ZonedDateTime.class, ChronoUnit.MILLIS);
+            return DateUtils.dateTime(database, Long.parseLong(iValue.toString()), ZonedDateTime.class, precision);
           if (database != null)
             try {
               return ZonedDateTime.parse(valueAsString, DateTimeFormatter.ofPattern((database.getSchema().getDateTimeFormat())));
@@ -482,17 +498,19 @@ public enum Type {
               return ZonedDateTime.parse(valueAsString, DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS"));
           }
         }
-      } else if (iTargetClass.equals(Instant.class)) {
+      } else if (targetClass.equals(Instant.class)) {
+        final ChronoUnit precision = getPrecision((EmbeddedDatabase) database, property);
+
         if (iValue instanceof Number)
-          return DateUtils.dateTime(database, ((Number) iValue).longValue(), Instant.class, ChronoUnit.MILLIS);
+          return DateUtils.dateTime(database, ((Number) iValue).longValue(), Instant.class, precision);
         if (iValue instanceof Calendar)
-          return DateUtils.dateTime(database, ((Calendar) iValue).getTimeInMillis(), Instant.class, ChronoUnit.MILLIS);
+          return DateUtils.dateTime(database, ((Calendar) iValue).getTimeInMillis(), Instant.class, precision);
         if (iValue instanceof String) {
           final String valueAsString = (String) iValue;
           if (FileUtils.isLong(valueAsString))
-            return DateUtils.dateTime(database, Long.parseLong(iValue.toString()), Instant.class, ChronoUnit.MILLIS);
+            return DateUtils.dateTime(database, Long.parseLong(iValue.toString()), Instant.class, precision);
         }
-      } else if (iTargetClass.equals(Identifiable.class) || iTargetClass.equals(RID.class)) {
+      } else if (targetClass.equals(Identifiable.class) || targetClass.equals(RID.class)) {
         if (MultiValue.isMultiValue(iValue)) {
           final List<Identifiable> result = new ArrayList<>();
           for (final Object o : MultiValue.getMultiValueIterable(iValue)) {
@@ -502,7 +520,7 @@ public enum Type {
               try {
                 result.add(new RID(database, iValue.toString()));
               } catch (final Exception e) {
-                LogManager.instance().log(Type.class, Level.FINE, "Error in conversion of value '%s' to type '%s'", e, iValue, iTargetClass);
+                LogManager.instance().log(Type.class, Level.FINE, "Error in conversion of value '%s' to type '%s'", e, iValue, targetClass);
               }
             }
           }
@@ -511,7 +529,7 @@ public enum Type {
           try {
             return new RID(database, (String) iValue);
           } catch (final Exception e) {
-            LogManager.instance().log(Type.class, Level.FINE, "Error in conversion of value '%s' to type '%s'", e, iValue, iTargetClass);
+            LogManager.instance().log(Type.class, Level.FINE, "Error in conversion of value '%s' to type '%s'", e, iValue, targetClass);
           }
         }
       }
@@ -519,7 +537,7 @@ public enum Type {
       // PASS THROUGH
       throw e;
     } catch (final Exception e) {
-      LogManager.instance().log(Type.class, Level.FINE, "Error in conversion of value '%s' to type '%s'", e, iValue, iTargetClass);
+      LogManager.instance().log(Type.class, Level.FINE, "Error in conversion of value '%s' to type '%s'", e, iValue, targetClass);
       return null;
     }
 
@@ -984,5 +1002,14 @@ public enum Type {
       }
     }
     throw new IllegalArgumentException("Object of class " + iValue.getClass() + " cannot be converted to Date");
+  }
+
+  private static ChronoUnit getPrecision(final EmbeddedDatabase database, final Property property) {
+    ChronoUnit precision = property != null && property.getType() == DATETIME && property.getDateTimePrecision() != null ?
+        property.getDateTimePrecision() :
+        database.getSerializer().getDateTimePrecision();
+    if (precision == null)
+      precision = ChronoUnit.MILLIS;
+    return precision;
   }
 }

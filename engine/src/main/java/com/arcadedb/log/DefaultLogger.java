@@ -56,12 +56,29 @@ public class DefaultLogger implements Logger {
   }
 
   public void installCustomFormatter() {
-    InputStream stream = getClass().getClassLoader().getResourceAsStream(FILE_LOG_PROPERTIES);
+    InputStream stream = null;
+
+    final String defaultLogConfigurationFile = System.getProperty("java.util.logging.config.file");
+    if (defaultLogConfigurationFile != null) {
+      final File file = new File(defaultLogConfigurationFile);
+      if (file.exists()) {
+        try {
+          stream = new FileInputStream(file);
+        } catch (Exception e) {
+          // USE DEFAULT SETTINGS
+          System.err.println("Error on loading logging configuration file '" + defaultLogConfigurationFile + "'. Using default settings");
+        }
+      }
+    }
+
     if (stream == null) {
-      try {
-        stream = new FileInputStream(FILE_LOG_PROPERTIES);
-      } catch (final FileNotFoundException e) {
-        // USE DEFAULT SETTINGS
+      stream = getClass().getClassLoader().getResourceAsStream(FILE_LOG_PROPERTIES);
+      if (stream == null) {
+        try {
+          stream = new FileInputStream("config/" + FILE_LOG_PROPERTIES);
+        } catch (final FileNotFoundException e) {
+          // USE DEFAULT SETTINGS
+        }
       }
     }
 
@@ -101,9 +118,10 @@ public class DefaultLogger implements Logger {
     }
   }
 
-  public void log(final Object requester, final Level level, String message, final Throwable exception, final String context, final Object arg1, final Object arg2,
-      final Object arg3, final Object arg4, final Object arg5, final Object arg6, final Object arg7, final Object arg8, final Object arg9, final Object arg10,
-      final Object arg11, final Object arg12, final Object arg13, final Object arg14, final Object arg15, final Object arg16, final Object arg17) {
+  public void log(final Object requester, final Level level, String message, final Throwable exception, final String context, final Object arg1,
+      final Object arg2, final Object arg3, final Object arg4, final Object arg5, final Object arg6, final Object arg7, final Object arg8, final Object arg9,
+      final Object arg10, final Object arg11, final Object arg12, final Object arg13, final Object arg14, final Object arg15, final Object arg16,
+      final Object arg17) {
     if (message == null)
       return;
 

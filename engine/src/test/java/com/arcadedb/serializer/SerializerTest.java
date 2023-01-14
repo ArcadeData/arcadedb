@@ -171,7 +171,7 @@ public class SerializerTest extends TestHelper {
 
       final Binary buffer3 = new Binary(buffer2);
       buffer3.getByte(); // SKIP RECORD TYPE
-      final Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, null);
+      final Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, null, null);
 
       Assertions.assertEquals(Integer.MIN_VALUE, record2.get("minInt"));
       Assertions.assertEquals(Integer.MAX_VALUE, record2.get("maxInt"));
@@ -268,7 +268,7 @@ public class SerializerTest extends TestHelper {
 
       final Binary buffer3 = new Binary(buffer2);
       buffer3.getByte(); // SKIP RECORD TYPE
-      final Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, null);
+      final Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, null, null);
 
       Assertions.assertIterableEquals(listOfBooleans, (Iterable<?>) record2.get("listOfBooleans"));
       Assertions.assertIterableEquals(listOfBooleans, (Iterable<?>) record2.get("arrayOfBooleans"));
@@ -358,7 +358,7 @@ public class SerializerTest extends TestHelper {
 
       final Binary buffer3 = new Binary(buffer2);
       buffer3.getByte(); // SKIP RECORD TYPE
-      final Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, null);
+      final Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, null, null);
 
       Assertions.assertEquals(mapOfStringsBooleans, record2.get("mapOfStringsBooleans"));
       Assertions.assertEquals(mapOfIntegers, record2.get("mapOfIntegers"));
@@ -398,7 +398,7 @@ public class SerializerTest extends TestHelper {
 
       final Binary buffer3 = new Binary(buffer2);
       buffer3.getByte(); // SKIP RECORD TYPE
-      final Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, new EmbeddedModifierProperty(testDocument, "embedded"));
+      final Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, new EmbeddedModifierProperty(testDocument, "embedded"), null);
 
       Assertions.assertEquals(0, record2.get("id"));
 
@@ -442,7 +442,7 @@ public class SerializerTest extends TestHelper {
 
       final Binary buffer3 = new Binary(buffer2);
       buffer3.getByte(); // SKIP RECORD TYPE
-      final Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, new EmbeddedModifierProperty(testDocument, "embedded"));
+      final Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, new EmbeddedModifierProperty(testDocument, "embedded"), null);
 
       Assertions.assertEquals(0, record2.get("id"));
 
@@ -492,7 +492,7 @@ public class SerializerTest extends TestHelper {
 
       final Binary buffer3 = new Binary(buffer2);
       buffer3.getByte(); // SKIP RECORD TYPE
-      final Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, null);
+      final Map<String, Object> record2 = serializer.deserializeProperties(database, buffer3, null, null);
 
       Assertions.assertEquals(0, record2.get("id"));
 
