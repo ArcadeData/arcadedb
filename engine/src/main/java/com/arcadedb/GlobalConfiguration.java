@@ -438,7 +438,10 @@ public enum GlobalConfiguration {
     json.put("configuration", cfg);
 
     for (final GlobalConfiguration k : values()) {
-      cfg.put(k.key.substring(PREFIX.length()), (Object) k.getValue());
+      Object v = (Object) k.getValue();
+      if (v instanceof Class)
+        v = ((Class<?>) v).getName();
+      cfg.put(k.key.substring(PREFIX.length()), v);
     }
 
     return json.toString();

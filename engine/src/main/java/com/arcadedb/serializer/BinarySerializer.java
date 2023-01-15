@@ -69,12 +69,6 @@ public class BinarySerializer {
   private        ChronoUnit       dateTimePrecision;
   private static Class[]          earlyLoadedJDK;
 
-  static {
-    // THIS IS ONLY TO FIX TESTS WHEN java.util.Date, FOR SOME REASON, CANNOT BE FOUND
-    earlyLoadedJDK = new Class[] { Date.class, LocalDateTime.class, LocalDate.class, Instant.class, Calendar.class };
-
-  }
-
   public BinarySerializer(final ContextConfiguration configuration) throws ClassNotFoundException {
     setDateImplementation(configuration.getValue(GlobalConfiguration.DATE_IMPLEMENTATION));
     setDateTimeImplementation(configuration.getValue(GlobalConfiguration.DATE_TIME_IMPLEMENTATION));
