@@ -156,7 +156,13 @@ public class LeaderNetworkListener extends Thread {
   private void handleConnection(final Socket socket) throws IOException {
     final ChannelBinaryServer channel = new ChannelBinaryServer(socket, ha.getServer().getConfiguration());
 
-    final long mn = channel.readLong();
+    long mn = 0;
+    try {
+      mn = channel.readLong();
+    } catch (EOFException e) {
+      // IGNORE IT, TREAT IT AS BAD PROTOCOL
+    }
+
     if (mn != ReplicationProtocol.MAGIC_NUMBER) {
       // INVALID PROTOCOL, WAIT (TO AVOID SPOOFING) AND CLOSE THE SOCKET
       try {
@@ -166,7 +172,7 @@ public class LeaderNetworkListener extends Thread {
         // IGNORE IT
       }
       socket.close();
-      throw new ConnectionException(socket.getInetAddress().toString(), "Bad protocol");
+      throw new ConnectionException(socket.getInetAddress().toString(), "Bad replication protocol. The connected server is not an ArcadeDB Server");
     }
 
     readProtocolVersion(socket, channel);
