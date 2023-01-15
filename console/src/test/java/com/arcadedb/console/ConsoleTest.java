@@ -45,8 +45,8 @@ public class ConsoleTest {
   public void populate() throws IOException {
     FileUtils.deleteRecursively(new File("./target/databases"));
     GlobalConfiguration.SERVER_ROOT_PATH.setValue("./target");
-    console = new Console(false);
-    Assertions.assertTrue(console.parse("create database " + DB_NAME + "; close", false));
+    console = new Console();
+    Assertions.assertTrue(console.parse("create database " + DB_NAME + "; close"));
   }
 
   @AfterEach
@@ -58,43 +58,43 @@ public class ConsoleTest {
 
   @Test
   public void testNull() throws IOException {
-    Assertions.assertTrue(console.parse(null, false));
+    Assertions.assertTrue(console.parse(null));
   }
 
   @Test
   public void testEmpty() throws IOException {
-    Assertions.assertTrue(console.parse("", false));
+    Assertions.assertTrue(console.parse(""));
   }
 
   @Test
   public void testEmpty2() throws IOException {
-    Assertions.assertTrue(console.parse(" ", false));
+    Assertions.assertTrue(console.parse(" "));
   }
 
   @Test
   public void testEmpty3() throws IOException {
-    Assertions.assertTrue(console.parse(";", false));
+    Assertions.assertTrue(console.parse(";"));
   }
 
   @Test
   public void testComment() throws IOException {
-    Assertions.assertTrue(console.parse("-- This is a comment;", false));
+    Assertions.assertTrue(console.parse("-- This is a comment;"));
   }
 
   @Test
   public void testListDatabases() throws IOException {
-    Assertions.assertTrue(console.parse("list databases;", false));
+    Assertions.assertTrue(console.parse("list databases;"));
   }
 
   @Test
   public void testConnect() throws IOException {
-    Assertions.assertTrue(console.parse("connect " + DB_NAME + ";info types", false));
+    Assertions.assertTrue(console.parse("connect " + DB_NAME + ";info types"));
   }
 
   @Test
   public void testSetVerbose() throws IOException {
     try {
-      console.parse("set verbose = 2; close; connect " + DB_NAME + "XX", false);
+      console.parse("set verbose = 2; close; connect " + DB_NAME + "XX");
       Assertions.fail();
     } catch (final DatabaseOperationException e) {
       // EXPECTED
@@ -103,43 +103,43 @@ public class ConsoleTest {
 
   @Test
   public void testSetLanguage() throws IOException {
-    console.parse("connect " + DB_NAME + ";set language = sql; select 1", false);
+    console.parse("connect " + DB_NAME + ";set language = sql; select 1");
   }
 
   @Test
   public void testCreateClass() throws IOException {
-    Assertions.assertTrue(console.parse("connect " + DB_NAME, false));
-    Assertions.assertTrue(console.parse("create document type Person", false));
+    Assertions.assertTrue(console.parse("connect " + DB_NAME));
+    Assertions.assertTrue(console.parse("create document type Person"));
 
     final StringBuilder buffer = new StringBuilder();
     console.setOutput(output -> buffer.append(output));
-    Assertions.assertTrue(console.parse("info types", false));
+    Assertions.assertTrue(console.parse("info types"));
     Assertions.assertTrue(buffer.toString().contains("Person"));
   }
 
   @Test
   public void testInsertAndSelectRecord() throws IOException {
-    Assertions.assertTrue(console.parse("connect " + DB_NAME, false));
-    Assertions.assertTrue(console.parse("create document type Person", false));
-    Assertions.assertTrue(console.parse("insert into Person set name = 'Jay', lastname='Miner'", false));
+    Assertions.assertTrue(console.parse("connect " + DB_NAME));
+    Assertions.assertTrue(console.parse("create document type Person"));
+    Assertions.assertTrue(console.parse("insert into Person set name = 'Jay', lastname='Miner'"));
 
     final StringBuilder buffer = new StringBuilder();
     console.setOutput(output -> buffer.append(output));
-    Assertions.assertTrue(console.parse("select from Person", false));
+    Assertions.assertTrue(console.parse("select from Person"));
     Assertions.assertTrue(buffer.toString().contains("Jay"));
   }
 
   @Test
   public void testInsertAndRollback() throws IOException {
-    Assertions.assertTrue(console.parse("connect " + DB_NAME, false));
-    Assertions.assertTrue(console.parse("begin", false));
-    Assertions.assertTrue(console.parse("create document type Person", false));
-    Assertions.assertTrue(console.parse("insert into Person set name = 'Jay', lastname='Miner'", false));
-    Assertions.assertTrue(console.parse("rollback", false));
+    Assertions.assertTrue(console.parse("connect " + DB_NAME));
+    Assertions.assertTrue(console.parse("begin"));
+    Assertions.assertTrue(console.parse("create document type Person"));
+    Assertions.assertTrue(console.parse("insert into Person set name = 'Jay', lastname='Miner'"));
+    Assertions.assertTrue(console.parse("rollback"));
 
     final StringBuilder buffer = new StringBuilder();
     console.setOutput(output -> buffer.append(output));
-    Assertions.assertTrue(console.parse("select from Person", false));
+    Assertions.assertTrue(console.parse("select from Person"));
     Assertions.assertFalse(buffer.toString().contains("Jay"));
   }
 
@@ -147,15 +147,15 @@ public class ConsoleTest {
   public void testHelp() throws IOException {
     final StringBuilder buffer = new StringBuilder();
     console.setOutput(output -> buffer.append(output));
-    Assertions.assertTrue(console.parse("?", false));
+    Assertions.assertTrue(console.parse("?"));
     Assertions.assertTrue(buffer.toString().contains("quit"));
   }
 
   @Test
   public void testInfoError() throws IOException {
-    Assertions.assertTrue(console.parse("connect " + DB_NAME, false));
+    Assertions.assertTrue(console.parse("connect " + DB_NAME));
     try {
-      Assertions.assertTrue(console.parse("info blablabla", false));
+      Assertions.assertTrue(console.parse("info blablabla"));
       Assertions.fail();
     } catch (final ConsoleException e) {
       // EXPECTED
@@ -164,23 +164,23 @@ public class ConsoleTest {
 
   @Test
   public void testAllRecordTypes() throws IOException {
-    Assertions.assertTrue(console.parse("connect " + DB_NAME, false));
-    Assertions.assertTrue(console.parse("create document type D", false));
-    Assertions.assertTrue(console.parse("create vertex type V", false));
-    Assertions.assertTrue(console.parse("create edge type E", false));
+    Assertions.assertTrue(console.parse("connect " + DB_NAME));
+    Assertions.assertTrue(console.parse("create document type D"));
+    Assertions.assertTrue(console.parse("create vertex type V"));
+    Assertions.assertTrue(console.parse("create edge type E"));
 
-    Assertions.assertTrue(console.parse("insert into D set name = 'Jay', lastname='Miner'", false));
-    Assertions.assertTrue(console.parse("insert into V set name = 'Jay', lastname='Miner'", false));
-    Assertions.assertTrue(console.parse("insert into V set name = 'Elon', lastname='Musk'", false));
-    Assertions.assertTrue(console.parse("create edge E from (select from V where name ='Jay') to (select from V where name ='Elon')", false));
+    Assertions.assertTrue(console.parse("insert into D set name = 'Jay', lastname='Miner'"));
+    Assertions.assertTrue(console.parse("insert into V set name = 'Jay', lastname='Miner'"));
+    Assertions.assertTrue(console.parse("insert into V set name = 'Elon', lastname='Musk'"));
+    Assertions.assertTrue(console.parse("create edge E from (select from V where name ='Jay') to (select from V where name ='Elon')"));
 
     final StringBuilder buffer = new StringBuilder();
     console.setOutput(output -> buffer.append(output));
-    Assertions.assertTrue(console.parse("select from D", false));
+    Assertions.assertTrue(console.parse("select from D"));
     Assertions.assertTrue(buffer.toString().contains("Jay"));
 
-    Assertions.assertTrue(console.parse("select from V", false));
-    Assertions.assertTrue(console.parse("select from E", false));
+    Assertions.assertTrue(console.parse("select from V"));
+    Assertions.assertTrue(console.parse("select from E"));
     Assertions.assertTrue(buffer.toString().contains("Elon"));
   }
 
@@ -189,33 +189,33 @@ public class ConsoleTest {
    */
   @Test
   public void testNotStringProperties() throws IOException {
-    Assertions.assertTrue(console.parse("connect " + DB_NAME, false));
-    Assertions.assertTrue(console.parse("CREATE VERTEX TYPE v", false));
-    Assertions.assertTrue(console.parse("CREATE PROPERTY v.s STRING", false));
-    Assertions.assertTrue(console.parse("CREATE PROPERTY v.i INTEGER", false));
-    Assertions.assertTrue(console.parse("CREATE PROPERTY v.b BOOLEAN", false));
-    Assertions.assertTrue(console.parse("CREATE PROPERTY v.sh SHORT", false));
-    Assertions.assertTrue(console.parse("CREATE PROPERTY v.d DOUBLE", false));
-    Assertions.assertTrue(console.parse("CREATE PROPERTY v.da DATETIME", false));
+    Assertions.assertTrue(console.parse("connect " + DB_NAME));
+    Assertions.assertTrue(console.parse("CREATE VERTEX TYPE v"));
+    Assertions.assertTrue(console.parse("CREATE PROPERTY v.s STRING"));
+    Assertions.assertTrue(console.parse("CREATE PROPERTY v.i INTEGER"));
+    Assertions.assertTrue(console.parse("CREATE PROPERTY v.b BOOLEAN"));
+    Assertions.assertTrue(console.parse("CREATE PROPERTY v.sh SHORT"));
+    Assertions.assertTrue(console.parse("CREATE PROPERTY v.d DOUBLE"));
+    Assertions.assertTrue(console.parse("CREATE PROPERTY v.da DATETIME"));
 
     final StringBuilder buffer = new StringBuilder();
     console.setOutput(output -> buffer.append(output));
-    Assertions.assertTrue(console.parse("CREATE VERTEX v SET s=\"abc\", i=1, b=true, sh=2, d=3.5, da=\"2022-12-20 18:00\"", false));
+    Assertions.assertTrue(console.parse("CREATE VERTEX v SET s=\"abc\", i=1, b=true, sh=2, d=3.5, da=\"2022-12-20 18:00\""));
     Assertions.assertTrue(buffer.toString().contains("true"));
   }
 
   @Test
   public void testUserMgmtLocalError() throws IOException {
-    Assertions.assertTrue(console.parse("connect " + DB_NAME, false));
+    Assertions.assertTrue(console.parse("connect " + DB_NAME));
     try {
-      Assertions.assertTrue(console.parse("create user elon identified by musk", false));
+      Assertions.assertTrue(console.parse("create user elon identified by musk"));
       Assertions.fail("local connection allowed user creation");
     } catch (final Exception e) {
       // EXPECTED
     }
 
     try {
-      Assertions.assertTrue(console.parse("drop user jack", false));
+      Assertions.assertTrue(console.parse("drop user jack"));
       Assertions.fail("local connection allowed user deletion");
     } catch (final Exception e) {
       // EXPECTED
@@ -228,7 +228,7 @@ public class ConsoleTest {
 
     FileUtils.deleteRecursively(new File("databases/" + DATABASE_PATH));
 
-    Console.main(new String[] { "create database " + DATABASE_PATH + ";import database file://src/test/resources/neo4j-export-mini.jsonl" });
+    new Console().parse("create database " + DATABASE_PATH + ";import database file://src/test/resources/neo4j-export-mini.jsonl");
 
     try (final DatabaseFactory factory = new DatabaseFactory("./target/databases/" + DATABASE_PATH)) {
       try (final Database database = factory.open()) {
@@ -264,27 +264,27 @@ public class ConsoleTest {
 
   @Test
   public void testNullValues() throws IOException {
-    Assertions.assertTrue(console.parse("connect " + DB_NAME, false));
-    Assertions.assertTrue(console.parse("create document type Person", false));
-    Assertions.assertTrue(console.parse("insert into Person set name = 'Jay', lastname='Miner', nothing = null", false));
-    Assertions.assertTrue(console.parse("insert into Person set name = 'Thom', lastname='Yorke', nothing = 'something'", false));
+    Assertions.assertTrue(console.parse("connect " + DB_NAME));
+    Assertions.assertTrue(console.parse("create document type Person"));
+    Assertions.assertTrue(console.parse("insert into Person set name = 'Jay', lastname='Miner', nothing = null"));
+    Assertions.assertTrue(console.parse("insert into Person set name = 'Thom', lastname='Yorke', nothing = 'something'"));
 
     {
       final StringBuilder buffer = new StringBuilder();
       console.setOutput(output -> buffer.append(output));
-      Assertions.assertTrue(console.parse("select from Person where nothing is null", false));
+      Assertions.assertTrue(console.parse("select from Person where nothing is null"));
       Assertions.assertTrue(buffer.toString().contains("<null>"));
     }
     {
       final StringBuilder buffer = new StringBuilder();
       console.setOutput(output -> buffer.append(output));
-      Assertions.assertTrue(console.parse("select nothing, lastname, name from Person where nothing is null", false));
+      Assertions.assertTrue(console.parse("select nothing, lastname, name from Person where nothing is null"));
       Assertions.assertTrue(buffer.toString().contains("<null>"));
     }
     {
       final StringBuilder buffer = new StringBuilder();
       console.setOutput(output -> buffer.append(output));
-      Assertions.assertTrue(console.parse("select nothing, lastname, name from Person", false));
+      Assertions.assertTrue(console.parse("select nothing, lastname, name from Person"));
       Assertions.assertTrue(buffer.toString().contains("<null>"));
     }
   }
@@ -294,15 +294,15 @@ public class ConsoleTest {
    */
   @Test
   public void testProjectionOrder() throws IOException {
-    Assertions.assertTrue(console.parse("connect " + DB_NAME, false));
-    Assertions.assertTrue(console.parse("create document type Order", false));
+    Assertions.assertTrue(console.parse("connect " + DB_NAME));
+    Assertions.assertTrue(console.parse("create document type Order"));
     Assertions.assertTrue(console.parse(
-        "insert into Order set processor = 'SIR1LRM-7.1', vstart = '20220319_002624.404379', vstop = '20220319_002826.525650', status = 'PENDING'", false));
+        "insert into Order set processor = 'SIR1LRM-7.1', vstart = '20220319_002624.404379', vstop = '20220319_002826.525650', status = 'PENDING'"));
 
     {
       final StringBuilder buffer = new StringBuilder();
       console.setOutput(output -> buffer.append(output));
-      Assertions.assertTrue(console.parse("select processor, vstart, vstop, pstart, pstop, status, node from Order", false));
+      Assertions.assertTrue(console.parse("select processor, vstart, vstop, pstart, pstop, status, node from Order"));
 
       int pos = buffer.toString().indexOf("processor");
       Assertions.assertTrue(pos > -1);

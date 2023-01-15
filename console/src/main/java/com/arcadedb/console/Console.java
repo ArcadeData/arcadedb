@@ -74,11 +74,11 @@ public class Console {
   private final        ContextConfiguration configuration        = new ContextConfiguration();
 
   public Console(final DatabaseInternal database) throws IOException {
-    this(false);
+    this();
     this.localDatabase = database;
   }
 
-  public Console(final boolean interactive) throws IOException {
+  public Console() throws IOException {
     IntegrationUtils.setRootPath(configuration);
     databaseDirectory = configuration.getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY);
     if (!databaseDirectory.endsWith(File.separator))
@@ -87,17 +87,17 @@ public class Console {
     GlobalConfiguration.PROFILE.setValue("low-cpu");
 
     terminal = TerminalBuilder.builder().system(system).streams(System.in, System.out).jansi(true).build();
+
+    output("%s Console v.%s - %s (%s)", Constants.PRODUCT, Constants.getRawVersion(), Constants.COPYRIGHT, Constants.URL);
+  }
+
+  public void interactiveMode() throws IOException {
     final Completer completer = new StringsCompleter("align database", "begin", "rollback", "commit", "check database", "close", "connect", "create database",
         "create user", "drop database", "drop user", "export", "import", "help", "info types", "list databases", "load", "exit", "quit", "set", "match",
         "select", "insert into", "update", "delete", "pwd");
 
     final LineReader lineReader = LineReaderBuilder.builder().terminal(terminal).parser(parser).variable("history-file", ".history")
         .history(new DefaultHistory()).completer(completer).build();
-
-    output("%s Console v.%s - %s (%s)", Constants.PRODUCT, Constants.getRawVersion(), Constants.COPYRIGHT, Constants.URL);
-
-    if (!interactive)
-      return;
 
     Runtime.getRuntime().addShutdownHook(new Thread(() -> {
       close();
@@ -133,12 +133,17 @@ public class Console {
   }
 
   public static void main(final String[] args) throws IOException {
-    if (args.length > 0) {
-      final Console console = new Console(false);
-      console.parse(args[0], true);
+    final Console console = new Console();
+
+    if (args.length > 0 && "-b".equals(args[0])) {
+      // BATCH MODE
+      console.parse(args[1], true);
       console.parse("exit", true);
-    } else
-      new Console(true);
+    } else {
+      // INTERACTIVE MODE
+      if (console.parse(args[0], true))
+        console.interactiveMode();
+    }
   }
 
   public void close() {
@@ -583,6 +588,10 @@ public class Console {
       while (bufferedReader.ready())
         parse(bufferedReader.readLine(), true);
     }
+  }
+
+  public boolean parse(final String line) throws IOException {
+    return parse(line, false);
   }
 
   public boolean parse(final String line, final boolean printCommand) throws IOException {
