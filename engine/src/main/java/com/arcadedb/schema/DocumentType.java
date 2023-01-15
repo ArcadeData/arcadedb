@@ -245,6 +245,10 @@ public class DocumentType {
     return properties.keySet();
   }
 
+  public Collection<Property> getProperties() {
+    return properties.values();
+  }
+
   /**
    * Returns all the properties defined in the type and subtypes.
    *

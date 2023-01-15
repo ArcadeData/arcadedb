@@ -19,7 +19,6 @@
 package com.arcadedb.database;
 
 import com.arcadedb.exception.ValidationException;
-import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 
@@ -34,9 +33,8 @@ import java.util.*;
 public class DocumentValidator {
   public static void validate(final MutableDocument document) throws ValidationException {
     document.checkForLazyLoadingProperties();
-    final DocumentType type = document.getType();
-    for (final String pName : type.getPropertyNames())
-      validateField(document, type.getProperty(pName));
+    for (Property entry : document.getType().getProperties())
+      validateField(document, entry);
   }
 
   public static void validateField(final MutableDocument document, final Property p) throws ValidationException {
