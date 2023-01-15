@@ -23,14 +23,14 @@ import com.arcadedb.GlobalConfiguration;
 import java.util.*;
 import java.util.stream.*;
 
-public class DumpCfgTest {
+public class DumpCfgApp {
   public static void main(final String[] args) {
     System.out.printf("\n|Name|Description|Type|Default Value");
     final List<GlobalConfiguration> orderedList = Arrays.stream(GlobalConfiguration.values()).sorted(Comparator.comparing(Enum::name)).collect(Collectors.toList());
     orderedList.sort(Comparator.comparing(Enum::name));
 
     for (final GlobalConfiguration c : orderedList) {
-      System.out.printf("\n|%s|%s|%s|%s", c.getKey().substring("arcadedb".length() + 1), c.getDescription().replaceAll("\\|", "\\\\|"), c.getType().getSimpleName(), c.getDefValue());
+      System.out.printf("\n|`%s`|%s|%s|%s", c.getKey().substring("arcadedb".length() + 1), c.getDescription().replaceAll("\\|", "\\\\|"), c.getType().getSimpleName(), c.getDefValue());
     }
 
 //    System.out.printf("\n|Name|Java API ENUM name|Description|Type|Default Value");
