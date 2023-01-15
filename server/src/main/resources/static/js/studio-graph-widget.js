@@ -422,8 +422,8 @@ function loadNodeNeighbors( direction, rid ){
     data: JSON.stringify(
       {
         language: "sql",
-        command: "select "+direction+"E() from " + rid,
-        serializer: "graph"
+        command: "select expand( "+direction+"E() ) from " + rid,
+        serializer: "studio"
       }
     ),
     beforeSend: function (xhr){

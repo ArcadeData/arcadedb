@@ -405,4 +405,5 @@ server/backups
 .java-version
 .run/
 integration/server-users.jsonl
-server/replication/*
+server/replication/
+replication/
