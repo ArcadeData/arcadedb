@@ -63,10 +63,17 @@ import java.util.logging.*;
  * TODO: efficient, because it doesn't need to unmarshall all the values first.
  */
 public class BinarySerializer {
-  private final BinaryComparator comparator = new BinaryComparator(this);
-  private       Class            dateImplementation;
-  private       Class            dateTimeImplementation;
-  private       ChronoUnit       dateTimePrecision;
+  private final  BinaryComparator comparator = new BinaryComparator(this);
+  private        Class            dateImplementation;
+  private        Class            dateTimeImplementation;
+  private        ChronoUnit       dateTimePrecision;
+  private static Class[]          earlyLoadedJDK;
+
+  static {
+    // THIS IS ONLY TO FIX TESTS WHEN java.util.Date, FOR SOME REASON, CANNOT BE FOUND
+    earlyLoadedJDK = new Class[] { Date.class, LocalDateTime.class, LocalDate.class, Instant.class, Calendar.class };
+
+  }
 
   public BinarySerializer(final ContextConfiguration configuration) throws ClassNotFoundException {
     setDateImplementation(configuration.getValue(GlobalConfiguration.DATE_IMPLEMENTATION));
@@ -677,9 +684,6 @@ public class BinarySerializer {
   }
 
   public void setDateImplementation(final Object dateImplementation) throws ClassNotFoundException {
-    // THIS IS ONLY TO FIX TESTS WHEN java.util.Date, FOR SOME REASON, CANNOT BE FOUND
-    final Class[] earlyLoadedJDK = new Class[] { java.util.Date.class, java.time.LocalDateTime.class, java.time.LocalDate.class, java.time.Instant.class,
-        java.util.Calendar.class };
     this.dateImplementation = dateImplementation instanceof Class ? (Class) dateImplementation : Class.forName(dateImplementation.toString());
   }
 
