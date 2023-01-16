@@ -25,18 +25,30 @@ import java.util.stream.*;
 
 public class DumpCfgApp {
   public static void main(final String[] args) {
-    System.out.printf("\n|Name|Description|Type|Default Value");
-    final List<GlobalConfiguration> orderedList = Arrays.stream(GlobalConfiguration.values()).sorted(Comparator.comparing(Enum::name)).collect(Collectors.toList());
-    orderedList.sort(Comparator.comparing(Enum::name));
-
-    for (final GlobalConfiguration c : orderedList) {
-      System.out.printf("\n|`%s`|%s|%s|%s", c.getKey().substring("arcadedb".length() + 1), c.getDescription().replaceAll("\\|", "\\\\|"), c.getType().getSimpleName(), c.getDefValue());
-    }
+    for (GlobalConfiguration.SCOPE scope : GlobalConfiguration.SCOPE.values())
+      tableByScope(scope);
 
 //    System.out.printf("\n|Name|Java API ENUM name|Description|Type|Default Value");
 //    for (GlobalConfiguration c : GlobalConfiguration.values()) {
 //      System.out.printf("\n|%s|%s|%s|%s|%s", c.getKey().substring("arcadedb".length() + 1), c.name(), c.getDescription(), c.getType().getSimpleName(),
 //          c.getDefValue());
 //    }
+  }
+
+  private static void tableByScope(final GlobalConfiguration.SCOPE scope) {
+    System.out.printf("\n===== " + scope + "\n");
+
+    System.out.printf("\n[%%header,cols=\"20%%,55%%,10%%,15%%\",stripes=even]");
+    System.out.printf("\n|===");
+    System.out.printf("\n|Name|Description|Type|Default Value");
+    final List<GlobalConfiguration> orderedList = Arrays.stream(GlobalConfiguration.values()).filter((c) -> c.getScope() == scope)
+        .sorted(Comparator.comparing(Enum::name)).collect(Collectors.toList());
+    orderedList.sort(Comparator.comparing(Enum::name));
+
+    for (final GlobalConfiguration c : orderedList) {
+      System.out.printf("\n|`%s`|%s|%s|%s", c.getKey().substring("arcadedb".length() + 1), c.getDescription().replaceAll("\\|", "\\\\|"),
+          c.getType().getSimpleName(), c.getDefValue());
+    }
+    System.out.printf("\n|===");
   }
 }

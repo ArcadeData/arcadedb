@@ -142,9 +142,7 @@ public class Console {
         // SETTING
         final String[] parts = value.substring(2).split("=");
         System.setProperty(parts[0], parts[1]);
-        final GlobalConfiguration cfg = GlobalConfiguration.findByKey(parts[0]);
-        if (cfg != null)
-          cfg.setValue(parts[1]);
+        setGlobalConfiguration(parts[0], parts[1], true);
       } else if (value.equalsIgnoreCase("-b"))
         batchMode = true;
       else {
@@ -273,6 +271,9 @@ public class Console {
     } else if ("maxWidth".equalsIgnoreCase(key)) {
       maxWidth = Integer.parseInt(value);
       outputLine("Set maximum width to %d", maxWidth);
+    } else {
+      if (!setGlobalConfiguration(key, value, false))
+        outputLine("Setting '%s' is not supported by the console", key);
     }
 
     flushOutput();
@@ -789,7 +790,6 @@ public class Console {
   }
 
   private String getPrompt() {
-
     String databaseName = null;
 
     if (localDatabase != null)
@@ -799,4 +799,23 @@ public class Console {
 
     return String.format(PROMPT, databaseName != null ? "{" + databaseName + "}" : "");
   }
+
+  private static boolean setGlobalConfiguration(final String key, final String value, final boolean printError) {
+    final GlobalConfiguration cfg = GlobalConfiguration.findByKey(key);
+    if (cfg != null) {
+      if (cfg.getScope() == GlobalConfiguration.SCOPE.SERVER) {
+        if (printError)
+          System.err.println("Global configuration '" + key + "' is not available for console. The setting will be ignored");
+      } else {
+        cfg.setValue(value);
+        return true;
+      }
+    } else {
+      if (printError)
+        System.err.println("Global configuration '" + key + "' not found. The setting will be ignored");
+    }
+
+    return false;
+  }
+
 }
