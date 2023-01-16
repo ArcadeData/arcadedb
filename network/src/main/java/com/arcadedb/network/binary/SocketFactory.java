@@ -44,10 +44,10 @@ public class SocketFactory {
 
   private SocketFactory(final ContextConfiguration iConfig) {
     useSSL = iConfig.getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
-    keyStorePath = (String) iConfig.getValue(GlobalConfiguration.NETWORK_SSL_KEYSTORE);
-    keyStorePassword = (String) iConfig.getValue(GlobalConfiguration.NETWORK_SSL_KEYSTORE_PASSWORD);
-    trustStorePath = (String) iConfig.getValue(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE);
-    trustStorePassword = (String) iConfig.getValue(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE_PASSWORD);
+    keyStorePath = iConfig.getValueAsString(GlobalConfiguration.NETWORK_SSL_KEYSTORE);
+    keyStorePassword = iConfig.getValueAsString(GlobalConfiguration.NETWORK_SSL_KEYSTORE_PASSWORD);
+    trustStorePath = iConfig.getValueAsString(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE);
+    trustStorePassword = iConfig.getValueAsString(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE_PASSWORD);
   }
 
   public static SocketFactory instance(final ContextConfiguration iConfig) {
