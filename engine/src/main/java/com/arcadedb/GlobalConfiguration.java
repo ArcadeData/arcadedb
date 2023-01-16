@@ -252,6 +252,10 @@ public enum GlobalConfiguration {
       "TCP/IP port number used for incoming HTTP connections. Specify a single port or a range `<from-<to>`. Default is 2480-2489 to accept a range of ports in case they are occupied.",
       String.class, "2480-2489"),
 
+  SERVER_HTTPS_INCOMING_PORT("arcadedb.server.httpsIncomingPort",
+      "TCP/IP port number used for incoming HTTPS connections. Specify a single port or a range `<from-<to>`. Default is 2490-2499 to accept a range of ports in case they are occupied.",
+      String.class, "2490-2499"),
+
   SERVER_HTTP_TX_EXPIRE_TIMEOUT("arcadedb.server.httpTxExpireTimeout",
       "Timeout in seconds for a HTTP transaction to expire. This timeout is computed from the latest command against the transaction", Long.class, 30),
 

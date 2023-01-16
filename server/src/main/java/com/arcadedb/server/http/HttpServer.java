@@ -21,6 +21,7 @@ package com.arcadedb.server.http;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.network.binary.SocketFactory;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
@@ -35,7 +36,6 @@ import com.arcadedb.server.http.handler.GetReadyHandler;
 import com.arcadedb.server.http.handler.GetServerHandler;
 import com.arcadedb.server.http.handler.PostBeginHandler;
 import com.arcadedb.server.http.handler.PostCloseDatabaseHandler;
-import com.arcadedb.server.http.handler.PostServerCommandHandler;
 import com.arcadedb.server.http.handler.PostCommandHandler;
 import com.arcadedb.server.http.handler.PostCommitHandler;
 import com.arcadedb.server.http.handler.PostCreateDatabaseHandler;
@@ -45,15 +45,25 @@ import com.arcadedb.server.http.handler.PostDropDatabaseHandler;
 import com.arcadedb.server.http.handler.PostOpenDatabaseHandler;
 import com.arcadedb.server.http.handler.PostQueryHandler;
 import com.arcadedb.server.http.handler.PostRollbackHandler;
+import com.arcadedb.server.http.handler.PostServerCommandHandler;
 import com.arcadedb.server.http.ws.WebSocketConnectionHandler;
 import com.arcadedb.server.http.ws.WebSocketEventBus;
+import com.arcadedb.server.security.ServerSecurityException;
 import io.undertow.Handlers;
 import io.undertow.Undertow;
 import io.undertow.server.RoutingHandler;
 import io.undertow.server.handlers.PathHandler;
 import org.xnio.Options;
 
+import javax.net.ssl.KeyManager;
+import javax.net.ssl.KeyManagerFactory;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.TrustManagerFactory;
+import java.io.*;
 import java.net.*;
+import java.security.*;
+import java.security.cert.*;
 import java.util.logging.*;
 
 import static io.undertow.UndertowOptions.SHUTDOWN_TIMEOUT;
@@ -66,9 +76,7 @@ public class HttpServer implements ServerPlugin {
   private       Undertow           undertow;
   private       String             listeningAddress;
   private       String             host;
-  private       int                portListening;
-  private       int                portFrom;
-  private       int                portTo;
+  private       int                httpPortListening;
 
   public HttpServer(final ArcadeDBServer server) {
     this.server = server;
@@ -95,22 +103,15 @@ public class HttpServer implements ServerPlugin {
     final ContextConfiguration configuration = server.getConfiguration();
 
     host = configuration.getValueAsString(GlobalConfiguration.SERVER_HTTP_INCOMING_HOST);
-    final Object configuredPort = configuration.getValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT);
-    if (configuredPort instanceof Number)
-      portFrom = portTo = ((Number) configuredPort).intValue();
-    else {
-      final String[] parts = configuredPort.toString().split("-");
-      if (parts.length > 2)
-        throw new IllegalArgumentException("Invalid format for http server port range");
-      else if (parts.length == 1)
-        portFrom = portTo = Integer.parseInt(parts[0]);
-      else {
-        portFrom = Integer.parseInt(parts[0]);
-        portTo = Integer.parseInt(parts[1]);
-      }
-    }
 
-    LogManager.instance().log(this, Level.INFO, "- Starting HTTP Server (host=%s port=%s)...", host, configuredPort.toString());
+    final Object configuredHTTPPort = configuration.getValue(GlobalConfiguration.SERVER_HTTP_INCOMING_PORT);
+    final int[] httpPortRange = extractPortRange(configuredHTTPPort);
+
+    final Object configuredHTTPSPort = configuration.getValue(GlobalConfiguration.SERVER_HTTPS_INCOMING_PORT);
+    final int[] httpsPortRange = configuredHTTPSPort != null && !configuredHTTPSPort.toString().isEmpty() ? extractPortRange(configuredHTTPSPort) : null;
+
+    LogManager.instance().log(this, Level.INFO, "- Starting HTTP Server (host=%s port=%s httpsPort=%s)...", host, configuredHTTPPort,
+        httpsPortRange != null ? configuredHTTPSPort : "-");
 
     final PathHandler routes = new PathHandler();
 
@@ -149,15 +150,26 @@ public class HttpServer implements ServerPlugin {
     for (final ServerPlugin plugin : server.getPlugins())
       plugin.registerAPI(this, routes);
 
-    for (portListening = portFrom; portListening <= portTo; ++portListening) {
+    int httpsPortListening = httpsPortRange != null ? httpsPortRange[0] : 0;
+    for (httpPortListening = httpPortRange[0]; httpPortListening <= httpPortRange[1]; ++httpPortListening) {
       try {
-        undertow = Undertow.builder().addHttpListener(portListening, host).setHandler(routes)
+        final Undertow.Builder builder = Undertow.builder()//
+            .addHttpListener(httpPortListening, host)//
+            .setHandler(routes)//
             .setSocketOption(Options.READ_TIMEOUT, configuration.getValueAsInteger(GlobalConfiguration.NETWORK_SOCKET_TIMEOUT))
-            .setServerOption(SHUTDOWN_TIMEOUT, 1000).build();
+            .setServerOption(SHUTDOWN_TIMEOUT, 1000);
+
+        if (configuration.getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL)) {
+          final SSLContext sslContext = createSSLContext();
+          builder.addHttpsListener(httpsPortListening, host, sslContext);
+        }
+
+        undertow = builder.build();
         undertow.start();
 
-        LogManager.instance().log(this, Level.INFO, "- HTTP Server started (host=%s port=%d)", host, portListening);
-        listeningAddress = host + ":" + portListening;
+        LogManager.instance().log(this, Level.INFO, "- HTTP Server started (host=%s port=%d httpsPort=%s)", host, httpPortListening,
+            httpsPortListening > 0 ? httpsPortListening : "-");
+        listeningAddress = host + ":" + httpPortListening;
         return;
 
       } catch (final Exception e) {
@@ -165,7 +177,10 @@ public class HttpServer implements ServerPlugin {
 
         if (e.getCause() instanceof BindException) {
           // RETRY
-          LogManager.instance().log(this, Level.WARNING, "- HTTP Port %s not available", portListening);
+          LogManager.instance().log(this, Level.WARNING, "- HTTP Port %s not available", httpPortListening);
+          if (httpsPortListening > 0)
+            ++httpsPortListening;
+
           continue;
         }
 
@@ -173,10 +188,36 @@ public class HttpServer implements ServerPlugin {
       }
     }
 
-    portListening = -1;
-    final String msg = String.format("Unable to listen to a HTTP port in the configured port range %d - %d", portFrom, portTo);
-    LogManager.instance().log(this, Level.SEVERE, msg);
-    throw new ServerException("Error on starting HTTP Server: " + msg);
+    httpPortListening = -1;
+    final String msg = String.format("Unable to listen to a HTTP port in the configured port range %d - %d", httpPortRange[0], httpPortRange[1]);
+    LogManager.instance().
+
+        log(this, Level.SEVERE, msg);
+    throw new
+
+        ServerException("Error on starting HTTP Server: " + msg);
+
+  }
+
+  private int[] extractPortRange(final Object configuredPort) {
+    int portFrom;
+    int portTo;
+
+    if (configuredPort instanceof Number)
+      portFrom = portTo = ((Number) configuredPort).intValue();
+    else {
+      final String[] parts = configuredPort.toString().split("-");
+      if (parts.length > 2)
+        throw new IllegalArgumentException("Invalid format for http server port range");
+      else if (parts.length == 1)
+        portFrom = portTo = Integer.parseInt(parts[0]);
+      else {
+        portFrom = Integer.parseInt(parts[0]);
+        portTo = Integer.parseInt(parts[1]);
+      }
+    }
+
+    return new int[] { portFrom, portTo };
   }
 
   public HttpSessionManager getSessionManager() {
@@ -200,10 +241,55 @@ public class HttpServer implements ServerPlugin {
   }
 
   public int getPort() {
-    return portListening;
+    return httpPortListening;
   }
 
   public WebSocketEventBus getWebSocketEventBus() {
     return webSocketEventBus;
+  }
+
+  private SSLContext createSSLContext() throws Exception {
+    final ContextConfiguration configuration = server.getConfiguration();
+    final String keyStorePath = configuration.getValueAsString(GlobalConfiguration.NETWORK_SSL_KEYSTORE);
+    if (keyStorePath == null || keyStorePath.isEmpty())
+      throw new ServerSecurityException("SSL key store path is empty");
+
+    final String trustStorePath = configuration.getValueAsString(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE);
+    if (trustStorePath == null || trustStorePath.isEmpty())
+      throw new ServerSecurityException("SSL trust store path is empty");
+
+    final String trustStorePassword = configuration.getValueAsString(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE_PASSWORD);
+    if (trustStorePassword == null || trustStorePassword.isEmpty())
+      throw new ServerSecurityException("SSL trust store password is empty");
+
+    final KeyStore keyStore = configureSSL(keyStorePath, trustStorePassword);
+    final KeyStore trustStore = configureSSL(trustStorePath, trustStorePassword);
+
+    final KeyManagerFactory keyManagerFactory = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+    keyManagerFactory.init(keyStore, trustStorePassword.toCharArray());
+    final KeyManager[] keyManagers = keyManagerFactory.getKeyManagers();
+
+    final TrustManagerFactory trustManagerFactory = TrustManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+    trustManagerFactory.init(trustStore);
+    final TrustManager[] trustManagers = trustManagerFactory.getTrustManagers();
+
+    final SSLContext sslContext;
+    sslContext = SSLContext.getInstance("TLS");
+    sslContext.init(keyManagers, trustManagers, null);
+
+    return sslContext;
+  }
+
+  private KeyStore configureSSL(final String path, final String password)
+      throws IOException, KeyStoreException, CertificateException, NoSuchAlgorithmException {
+    final InputStream stream = SocketFactory.getAsStream(path);
+    if (stream == null)
+      throw new RuntimeException("Could not load keystore");
+
+    try (InputStream is = stream) {
+      KeyStore loadedKeystore = KeyStore.getInstance("JKS");
+      loadedKeystore.load(is, password.toCharArray());
+      return loadedKeystore;
+    }
   }
 }

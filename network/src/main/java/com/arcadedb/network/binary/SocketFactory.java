@@ -30,17 +30,15 @@ import java.net.*;
 import java.security.*;
 
 public class SocketFactory {
-
-  private javax.net.SocketFactory socketFactory;
-  private boolean                 useSSL  = false;
-  private SSLContext              context = null;
-
-  private final String keyStorePath;
-  private final String keyStorePassword;
-  private final String keyStoreType   = KeyStore.getDefaultType();
-  private final String trustStorePath;
-  private final String trustStorePassword;
-  private final String trustStoreType = KeyStore.getDefaultType();
+  private       javax.net.SocketFactory socketFactory;
+  private       boolean                 useSSL         = false;
+  private       SSLContext              context        = null;
+  private final String                  keyStorePath;
+  private final String                  keyStorePassword;
+  private final String                  keyStoreType   = KeyStore.getDefaultType();
+  private final String                  trustStorePath;
+  private final String                  trustStorePassword;
+  private final String                  trustStoreType = KeyStore.getDefaultType();
 
   private SocketFactory(final ContextConfiguration iConfig) {
     useSSL = iConfig.getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
@@ -110,8 +108,7 @@ public class SocketFactory {
 
   }
 
-  protected InputStream getAsStream(String path) throws IOException {
-
+  public static InputStream getAsStream(String path) throws IOException {
     InputStream input;
 
     try {
@@ -122,10 +119,10 @@ public class SocketFactory {
     }
 
     if (input == null)
-      input = getClass().getResourceAsStream(path);
+      input = SocketFactory.class.getResourceAsStream(path);
 
     if (input == null)
-      input = getClass().getClassLoader().getResourceAsStream(path);
+      input = SocketFactory.class.getClassLoader().getResourceAsStream(path);
 
     if (input == null) {
       try {
