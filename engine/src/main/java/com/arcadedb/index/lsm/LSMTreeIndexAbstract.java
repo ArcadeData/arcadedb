@@ -433,19 +433,19 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
 
   private void writeEntryValues(final Binary buffer, final Object[] values) {
     // WRITE NUMBER OF VALUES
-    serializer.serializeValue(database, buffer, BinaryTypes.TYPE_INT, values.length, null);
+    serializer.serializeValue(database, buffer, BinaryTypes.TYPE_INT, values.length);
 
     // WRITE VALUES
     for (int i = 0; i < values.length; ++i)
-      serializer.serializeValue(database, buffer, valueType, values[i], null);
+      serializer.serializeValue(database, buffer, valueType, values[i]);
   }
 
   private void writeEntryValue(final Binary buffer, final Object value) {
     // WRITE NUMBER OF VALUES
-    serializer.serializeValue(database, buffer, BinaryTypes.TYPE_INT, 1, null);
+    serializer.serializeValue(database, buffer, BinaryTypes.TYPE_INT, 1);
 
     // WRITE VALUES
-    serializer.serializeValue(database, buffer, valueType, value, null);
+    serializer.serializeValue(database, buffer, valueType, value);
   }
 
   protected RID[] readEntryValues(final Binary buffer) {
@@ -568,7 +568,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
       else {
         // WRITE 1 + THE ACTUAL VALUE
         buffer.putByte((byte) 1);
-        serializer.serializeValue(database, buffer, binaryKeyTypes[i], value, null);
+        serializer.serializeValue(database, buffer, binaryKeyTypes[i], value);
       }
     }
   }

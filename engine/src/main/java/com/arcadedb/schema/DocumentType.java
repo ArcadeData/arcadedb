@@ -303,8 +303,6 @@ public class DocumentType {
       p.setMin(prop.getString("min"));
     if (prop.has("regexp"))
       p.setRegexp(prop.getString("regexp"));
-    if (prop.has("precision"))
-      p.setPrecision(prop.getString("precision"));
 
     p.custom.clear();
     if (prop.has("custom"))

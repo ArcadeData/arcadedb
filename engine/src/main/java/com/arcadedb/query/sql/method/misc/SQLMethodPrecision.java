@@ -56,11 +56,11 @@ public class SQLMethodPrecision extends AbstractSQLMethod {
     else if (ioResult instanceof Date) {
       if (targetPrecision == ChronoUnit.MILLIS)
         return ioResult;
-      return DateUtils.dateTime(iContext.getDatabase(), ((Date) ioResult).getTime(), LocalDateTime.class, targetPrecision);
+      return DateUtils.dateTime(iContext.getDatabase(), ((Date) ioResult).getTime(), ChronoUnit.MILLIS, LocalDateTime.class, targetPrecision);
     } else if (ioResult instanceof Calendar) {
       if (targetPrecision == ChronoUnit.MILLIS)
         return ioResult;
-      return DateUtils.dateTime(iContext.getDatabase(), ((Calendar) ioResult).getTimeInMillis(), LocalDateTime.class, targetPrecision);
+      return DateUtils.dateTime(iContext.getDatabase(), ((Calendar) ioResult).getTimeInMillis(), ChronoUnit.MILLIS, LocalDateTime.class, targetPrecision);
     }
 
     throw new CommandExecutionException("Error on changing precision for unsupported type '" + ioResult.getClass() + "'");

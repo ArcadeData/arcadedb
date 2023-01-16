@@ -127,7 +127,7 @@ public class TxForwardRequest extends TxRequestAbstract {
         for (int k = 0; k < entryKey.values.length; ++k) {
           final byte keyType = BinaryTypes.getTypeFromValue(entryKey.values[k]);
           uniqueKeysBuffer.putByte(keyType);
-          serializer.serializeValue(database, uniqueKeysBuffer, keyType, entryKey.values[k], null);
+          serializer.serializeValue(database, uniqueKeysBuffer, keyType, entryKey.values[k]);
         }
 
         final Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey> entryValue = keyChange.getValue();

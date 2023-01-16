@@ -69,8 +69,6 @@ public class CreatePropertyAttributeStatement extends SimpleNode {
         internalProp.setMax("" + attrValue);
       } else if (attrName.equalsIgnoreCase("min")) {
         internalProp.setMin("" + attrValue);
-      } else if (attrName.equalsIgnoreCase("precision")) {
-        internalProp.setPrecision("" + attrValue);
       } else if (attrName.equalsIgnoreCase("default")) {
         if (this.settingValue == null)
           throw new CommandExecutionException("Default value not set");

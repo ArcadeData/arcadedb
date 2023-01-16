@@ -194,13 +194,13 @@ public class CompressedAny2RIDIndex<K> {
         chunk.putInt(hash * Binary.INT_SERIALIZED_SIZE, chunk.position());
 
         // WRITE THE KEY FIRST
-        serializer.serializeValue(database, chunk, keyBinaryType, key, null);
+        serializer.serializeValue(database, chunk, keyBinaryType, key);
 
         // LEAVE AN INT AS EMPTY SLOT FOR THE NEXT KEY
         chunk.putInt(0);
 
         // WRITE THE VALUE
-        serializer.serializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, value, null);
+        serializer.serializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, value);
 
         ++totalUsedSlots;
 
@@ -228,13 +228,13 @@ public class CompressedAny2RIDIndex<K> {
         final int entryPosition = chunk.position();
 
         // WRITE THE KEY FIRST
-        serializer.serializeValue(database, chunk, keyBinaryType, key, null);
+        serializer.serializeValue(database, chunk, keyBinaryType, key);
 
         // LEAVE AN INT AS EMPTY SLOT FOR THE NEXT KEY
         chunk.putInt(0);
 
         // WRITE THE VALUE
-        serializer.serializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, value, null);
+        serializer.serializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, value);
 
         // WRITE THIS ENTRY POSITION TO THE PREVIOUS NEXT POSITION FIELD
         chunk.putInt(lastNextPos, entryPosition);
