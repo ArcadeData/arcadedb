@@ -49,10 +49,12 @@ public class ConsoleBatchTest {
 
   @Test
   public void swallowSettings() throws IOException {
+    FileUtils.deleteRecursively(new File("./console"));
     Console.main(new String[] { "-Darcadedb.server.databaseDirectory=.", "create database console; create vertex type ConsoleOnlyVertex;exit;" });
     final Database db = new DatabaseFactory("./console").open();
     Assertions.assertTrue(db.getSchema().existsType("ConsoleOnlyVertex"));
     db.drop();
+    GlobalConfiguration.resetAll();
   }
 
   @BeforeEach
