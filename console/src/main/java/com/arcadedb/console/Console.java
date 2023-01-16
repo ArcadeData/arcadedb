@@ -133,15 +133,36 @@ public class Console {
   }
 
   public static void main(final String[] args) throws IOException {
+    final StringBuilder commands = new StringBuilder();
+    boolean batchMode = false;
+    // PARSE ARGUMENT, EXTRACT SETTING AND BATCH MODE AND COMPILE THE LINES TO EXECUTE
+    for (int i = 0; i < args.length; i++) {
+      final String value = args[i].trim();
+      if (value.startsWith("-D")) {
+        // SETTING
+        final String[] parts = value.substring(2).split("=");
+        System.setProperty(parts[0], parts[1]);
+        final GlobalConfiguration cfg = GlobalConfiguration.findByKey(parts[0]);
+        if (cfg != null)
+          cfg.setValue(parts[1]);
+      } else if (value.equalsIgnoreCase("-b"))
+        batchMode = true;
+      else {
+        commands.append(value);
+        if (!value.endsWith(";"))
+          commands.append(";");
+      }
+    }
+
     final Console console = new Console();
 
-    if (args.length > 0 && "-b".equals(args[0])) {
+    if (batchMode) {
       // BATCH MODE
-      console.parse(args[1], true);
+      console.parse(commands.toString(), true);
       console.parse("exit", true);
     } else {
       // INTERACTIVE MODE
-      if (console.parse(args[0], true))
+      if (console.parse(commands.toString(), true))
         console.interactiveMode();
     }
   }

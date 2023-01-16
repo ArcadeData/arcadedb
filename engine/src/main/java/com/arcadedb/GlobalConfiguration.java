@@ -482,7 +482,7 @@ public enum GlobalConfiguration {
   /**
    * Assign configuration values by reading system properties.
    */
-  private static void readConfiguration() {
+  public static void readConfiguration() {
     String prop;
 
     for (final GlobalConfiguration config : values()) {
