@@ -223,9 +223,11 @@ public abstract class BaseGraphServerTest {
   protected void checkArcadeIsTotallyDown() {
     if (servers != null)
       for (final ArcadeDBServer server : servers) {
-        Assertions.assertFalse(server.isStarted());
-        Assertions.assertEquals(ArcadeDBServer.STATUS.OFFLINE, server.getStatus());
-        Assertions.assertEquals(0, server.getHttpServer().getSessionManager().getActiveSessions());
+        if (server != null) {
+          Assertions.assertFalse(server.isStarted());
+          Assertions.assertEquals(ArcadeDBServer.STATUS.OFFLINE, server.getStatus());
+          Assertions.assertEquals(0, server.getHttpServer().getSessionManager().getActiveSessions());
+        }
       }
 
     final ByteArrayOutputStream os = new ByteArrayOutputStream();
@@ -236,24 +238,27 @@ public abstract class BaseGraphServerTest {
     Assertions.assertFalse(out.contains("ArcadeDB"), "Some thread is still up & running: \n" + out);
   }
 
-  protected void startServers() {
-    final int totalServers = getServerCount();
-    servers = new ArcadeDBServer[totalServers];
-
+  protected String getServerAddresses() {
     int port = 2424;
     String serverURLs = "";
-    for (int i = 0; i < totalServers; ++i) {
+    for (int i = 0; i < getServerCount(); ++i) {
       if (i > 0)
         serverURLs += ",";
 
       serverURLs += "localhost:" + (port++);
     }
+    return serverURLs;
+  }
+
+  protected void startServers() {
+    final int totalServers = getServerCount();
+    servers = new ArcadeDBServer[totalServers];
 
     for (int i = 0; i < totalServers; ++i) {
       final ContextConfiguration config = new ContextConfiguration();
       config.setValue(GlobalConfiguration.SERVER_NAME, Constants.PRODUCT + "_" + i);
       config.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, "./target/databases" + i);
-      config.setValue(GlobalConfiguration.HA_SERVER_LIST, serverURLs);
+      config.setValue(GlobalConfiguration.HA_SERVER_LIST, getServerAddresses());
       config.setValue(GlobalConfiguration.HA_REPLICATION_INCOMING_HOST, "localhost");
       config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_HOST, "localhost");
       config.setValue(GlobalConfiguration.HA_ENABLED, getServerCount() > 1);
@@ -338,7 +343,7 @@ public abstract class BaseGraphServerTest {
   }
 
   protected Database getServerDatabase(final int i, final String name) {
-    return servers[i].getDatabase(name);
+    return servers[i] != null ? servers[i].getDatabase(name) : null;
   }
 
   protected ArcadeDBServer getServer(final String name) {
@@ -450,6 +455,9 @@ public abstract class BaseGraphServerTest {
     for (int i = 1; i < servers2Check.length; ++i) {
       final Database db1 = getServerDatabase(servers2Check[0], getDatabaseName());
       final Database db2 = getServerDatabase(servers2Check[i], getDatabaseName());
+
+      if (db1 == null || db2 == null)
+        continue;
 
       LogManager.instance().log(this, Level.FINE, "TEST: Comparing databases '%s' and '%s' are identical...", db1.getDatabasePath(), db2.getDatabasePath());
       try {

@@ -35,6 +35,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.ServerException;
 import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.TestCallback;
 import com.arcadedb.server.ha.message.ErrorResponse;
@@ -204,6 +205,8 @@ public class HAServer implements ServerPlugin {
       configuredServers = serverEntries.length;
 
       LogManager.instance().log(this, Level.FINE, "Connecting to servers %s (cluster=%s configuredServers=%d)", cfgServerList, bucketName, configuredServers);
+
+      checkAllOrNoneAreLocalhosts(serverEntries);
 
       serverAddressList.clear();
       serverAddressList.addAll(Arrays.asList(serverEntries));
@@ -1104,5 +1107,17 @@ public class HAServer implements ServerPlugin {
   private void checkCurrentNodeIsTheLeader() {
     if (!isLeader())
       throw new ServerIsNotTheLeaderException("Cannot execute command", getLeader().getRemoteServerName());
+  }
+
+  private static void checkAllOrNoneAreLocalhosts(String[] serverEntries) {
+    int localHostServers = 0;
+    for (int i = 0; i < serverEntries.length; i++) {
+      final String serverEntry = serverEntries[i];
+      if (serverEntry.startsWith("localhost") || serverEntry.startsWith("127.0.0.1"))
+        ++localHostServers;
+    }
+
+    if (localHostServers > 0 && localHostServers < serverEntries.length)
+      throw new ServerException("Found a localhost (127.0.0.1) in the server list among non-localhost servers. Please fix the server list configuration.");
   }
 }
