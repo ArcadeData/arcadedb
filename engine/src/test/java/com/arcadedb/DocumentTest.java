@@ -21,12 +21,32 @@ package com.arcadedb;
 import com.arcadedb.database.DetachedDocument;
 import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
 
 public class DocumentTest extends TestHelper {
+  @Override
+  public void beginTest() {
+    database.transaction(() -> {
+      final DocumentType type = database.getSchema().createDocumentType("ConversionTest");
+
+      type.createProperty("string", Type.STRING);
+      type.createProperty("int", Type.INTEGER);
+      type.createProperty("long", Type.LONG);
+      type.createProperty("float", Type.FLOAT);
+      type.createProperty("double", Type.DOUBLE);
+      type.createProperty("decimal", Type.DECIMAL);
+      type.createProperty("date", Type.DATE);
+      type.createProperty("datetime_second", Type.DATETIME_SECOND);
+      type.createProperty("datetime_millis", Type.DATETIME);
+      type.createProperty("datetime_micros", Type.DATETIME_MICROS);
+      type.createProperty("datetime_nanos", Type.DATETIME_NANOS);
+    });
+  }
 
   @Test
   public void testDetached() {
