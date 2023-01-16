@@ -68,7 +68,7 @@ public class JavaBinarySerializer {
 
         final byte type = BinaryTypes.getTypeFromValue(propValue);
         buffer.putByte(type);
-        serializer.serializeValue(db, buffer, type, propValue, property);
+        serializer.serializeValue(db, buffer, type, propValue);
         buffer.flip();
 
         out.writeInt(buffer.size());

@@ -144,10 +144,6 @@ public enum GlobalConfiguration {
       "Default datetime implementation to use on deserialization. By default java.util.Date is used, but the following are supported: java.util.Calendar, java.time.LocalDateTime, java.time.ZonedDateTime",
       Class.class, java.util.Date.class),
 
-  DATE_TIME_PRECISION("arcadedb.dateTimePrecision",
-      "Precision to use with Datetime types on deserialization. Check the level of precision supported by your OS/JVM. By default is 'millisecond'. Supported are: 'millisecond', 'microsecond' and 'nanosecond'",
-      String.class, "millisecond"),
-
   DATE_TIME_FORMAT("arcadedb.dateTimeFormat", "Default date time format using Java SimpleDateFormat syntax", String.class, "yyyy-MM-dd HH:mm:ss"),
 
   TX_WAL("arcadedb.txWAL", "Uses the WAL", Boolean.class, true),

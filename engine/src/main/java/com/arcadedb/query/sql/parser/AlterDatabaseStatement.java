@@ -90,9 +90,6 @@ public class AlterDatabaseStatement extends DDLStatement {
         } catch (ClassNotFoundException e) {
           throw new DatabaseOperationException("Invalid datetime implementation '" + finalValue + "'", e);
         }
-      } else if ("arcadedb.dateTimePrecision".equals(settingNameAsString)) {
-        finalValue = FileUtils.getStringContent(settingValue);
-        ctx.getDatabase().getSerializer().setDateTimePrecision(finalValue.toString());
       }
 
       db.getConfiguration().setValue(cfg, finalValue);

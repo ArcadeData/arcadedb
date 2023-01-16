@@ -256,7 +256,7 @@ public class CompressedRID2RIDsIndex {
       // WRITE -> RID|INT|INT|RID|RID
 
       // WRITE THE KEY FIRST
-      serializer.serializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, key, null);
+      serializer.serializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, key);
 
       // LEAVE AN INT AS EMPTY SLOT FOR THE NEXT KEY
       chunk.putInt(0);
@@ -265,8 +265,8 @@ public class CompressedRID2RIDsIndex {
       chunk.putInt(0);
 
       // WRITE THE VALUE
-      serializer.serializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, edgeRID, null);
-      serializer.serializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, vertexRID, null);
+      serializer.serializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, edgeRID);
+      serializer.serializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, vertexRID);
 
       ++totalUsedSlots;
 
@@ -289,8 +289,8 @@ public class CompressedRID2RIDsIndex {
 
           // WRITE -> RID|RID|INT
 
-          serializer.serializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, edgeRID, null);
-          serializer.serializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, vertexRID, null);
+          serializer.serializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, edgeRID);
+          serializer.serializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, vertexRID);
 
           if (previousEntryPos > 0)
             // THIS IS THE 3RD OR MAJOR ENTRY. APPEND THE POSITION OF THE PREVIOUS ENTRY
@@ -317,7 +317,7 @@ public class CompressedRID2RIDsIndex {
       final int entryPosition = chunk.position();
 
       // WRITE THE KEY FIRST
-      serializer.serializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, key, null);
+      serializer.serializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, key);
 
       // LEAVE AN INT AS EMPTY SLOT FOR THE NEXT KEY
       chunk.putInt(0);
@@ -326,8 +326,8 @@ public class CompressedRID2RIDsIndex {
       chunk.putInt(0);
 
       // WRITE THE VALUE
-      serializer.serializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, edgeRID, null);
-      serializer.serializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, vertexRID, null);
+      serializer.serializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, edgeRID);
+      serializer.serializeValue(database, chunk, BinaryTypes.TYPE_COMPRESSED_RID, vertexRID);
 
       // WRITE THIS ENTRY POSITION TO THE PREVIOUS NEXT POSITION FIELD
       chunk.putInt(lastNextPos, entryPosition);

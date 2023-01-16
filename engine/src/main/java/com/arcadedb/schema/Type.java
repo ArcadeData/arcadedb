@@ -21,7 +21,6 @@ package com.arcadedb.schema;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
-import com.arcadedb.database.EmbeddedDatabase;
 import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.ImmutableEmbeddedDocument;
@@ -83,12 +82,21 @@ public enum Type {
 
   EMBEDDED("Embedded", 15, BinaryTypes.TYPE_EMBEDDED, Document.class,
       new Class<?>[] { EmbeddedDocument.class, ImmutableEmbeddedDocument.class, MutableEmbeddedDocument.class }),
+
+  DATETIME_MICROS("Datetime_micros", 16, BinaryTypes.TYPE_DATETIME_MICROS, LocalDateTime.class,
+      new Class<?>[] { Date.class, LocalDateTime.class, ZonedDateTime.class, Instant.class, Number.class }),
+
+  DATETIME_NANOS("Datetime_nanos", 17, BinaryTypes.TYPE_DATETIME_NANOS, LocalDateTime.class,
+      new Class<?>[] { Date.class, LocalDateTime.class, ZonedDateTime.class, Instant.class, Number.class }),
+
+  DATETIME_SECOND("Datetime_second", 18, BinaryTypes.TYPE_DATETIME_SECOND, LocalDateTime.class,
+      new Class<?>[] { Date.class, LocalDateTime.class, ZonedDateTime.class, Instant.class, Number.class }),
   ;
 
   // Don't change the order, the type discover get broken if you change the order.
   private static final Type[] TYPES = new Type[] { LIST, MAP, LINK, STRING, DATETIME };
 
-  private static final Type[]              TYPES_BY_ID       = new Type[17];
+  private static final Type[]              TYPES_BY_ID       = new Type[19];
   // Values previously stored in javaTypes
   private static final Map<Class<?>, Type> TYPES_BY_USERTYPE = new HashMap<Class<?>, Type>();
 
@@ -111,6 +119,10 @@ public enum Type {
     TYPES_BY_USERTYPE.put(Double.TYPE, DOUBLE);
     TYPES_BY_USERTYPE.put(Double.class, DOUBLE);
     TYPES_BY_USERTYPE.put(Date.class, DATETIME);
+    TYPES_BY_USERTYPE.put(Calendar.class, DATETIME);
+    TYPES_BY_USERTYPE.put(LocalDateTime.class, DATETIME);
+    TYPES_BY_USERTYPE.put(ZonedDateTime.class, DATETIME);
+    TYPES_BY_USERTYPE.put(Instant.class, DATETIME);
     TYPES_BY_USERTYPE.put(String.class, STRING);
     TYPES_BY_USERTYPE.put(Enum.class, STRING);
     TYPES_BY_USERTYPE.put(byte[].class, BINARY);
@@ -283,27 +295,25 @@ public enum Type {
     if (targetClass == null)
       return iValue;
 
-    if (iValue.getClass().equals(targetClass))
-      // SAME TYPE: DON'T CONVERT IT
-      return iValue;
+    final Class<?> valueClass = iValue.getClass();
 
-    if (targetClass.isAssignableFrom(iValue.getClass()))
-      // COMPATIBLE TYPES: DON'T CONVERT IT
-      return iValue;
+    if (property == null ||//
+        !(iValue instanceof LocalDateTime) && !(iValue instanceof ZonedDateTime) && !(iValue instanceof Instant)) {
+      if (valueClass.equals(targetClass))
+        // SAME TYPE: DON'T CONVERT IT
+        return iValue;
+
+      if (targetClass.isAssignableFrom(valueClass))
+        // COMPATIBLE TYPES: DON'T CONVERT IT
+        return iValue;
+    }
 
     try {
-//      if (targetClass.equals(Date.class)) {
-//        final ChronoUnit precision = getPrecision((EmbeddedDatabase) database, property);
-//        if (precision != ChronoUnit.MILLIS)
-//          // OVERRIDE DATE TO LOCAL DATE TIME TO SUPPORT PRECISION
-//          targetClass = LocalDateTime.class;
-//      }
-
       if (targetClass.equals(String.class))
         return iValue.toString();
       else if (iValue instanceof Binary && targetClass.isAssignableFrom(byte[].class))
         return ((Binary) iValue).toByteArray();
-      else if (byte[].class.isAssignableFrom(iValue.getClass())) {
+      else if (byte[].class.isAssignableFrom(valueClass)) {
         return iValue;
       } else if (targetClass.isEnum()) {
         if (iValue instanceof Number)
@@ -443,73 +453,75 @@ public enum Type {
           }
         }
       } else if (targetClass.equals(LocalDateTime.class)) {
-        final ChronoUnit precision = getPrecision((EmbeddedDatabase) database, property);
-
-        if (iValue instanceof Number)
-          return DateUtils.dateTime(database, ((Number) iValue).longValue(), LocalDateTime.class, precision);
-        else if (iValue instanceof Date)
-          return DateUtils.dateTime(database, ((Date) iValue).getTime(), LocalDateTime.class, ChronoUnit.MILLIS);
+        if (iValue instanceof LocalDateTime) {
+          if (property != null)
+            return ((LocalDateTime) iValue).truncatedTo(DateUtils.getPrecisionFromType(property.getType()));
+        } else if (iValue instanceof Date)
+          return DateUtils.dateTime(database, ((Date) iValue).getTime(), ChronoUnit.MILLIS, LocalDateTime.class,
+              property != null ? DateUtils.getPrecisionFromType(property.getType()) : ChronoUnit.MILLIS);
         else if (iValue instanceof Calendar)
-          return DateUtils.dateTime(database, ((Calendar) iValue).getTimeInMillis(), LocalDateTime.class, ChronoUnit.MILLIS);
+          return DateUtils.dateTime(database, ((Calendar) iValue).getTimeInMillis(), ChronoUnit.MILLIS, LocalDateTime.class,
+              property != null ? DateUtils.getPrecisionFromType(property.getType()) : ChronoUnit.MILLIS);
         else if (iValue instanceof String) {
           final String valueAsString = (String) iValue;
-          if (FileUtils.isLong(valueAsString))
-            return DateUtils.dateTime(database, Long.parseLong(iValue.toString()), LocalDateTime.class, precision);
-          else if (database != null)
-            try {
-              return LocalDateTime.parse(valueAsString, DateTimeFormatter.ofPattern((database.getSchema().getDateTimeFormat())));
-            } catch (final DateTimeParseException ignore) {
-              return LocalDateTime.parse(valueAsString, DateTimeFormatter.ofPattern((database.getSchema().getDateFormat())));
+          if (!FileUtils.isLong(valueAsString)) {
+            if (database != null)
+              try {
+                return LocalDateTime.parse(valueAsString, DateTimeFormatter.ofPattern((database.getSchema().getDateTimeFormat())));
+              } catch (final DateTimeParseException ignore) {
+                return LocalDateTime.parse(valueAsString, DateTimeFormatter.ofPattern((database.getSchema().getDateFormat())));
+              }
+            else {
+              // GUESS FORMAT BY STRING LENGTH
+              if (valueAsString.length() == "yyyy-MM-dd".length())
+                return LocalDateTime.parse(valueAsString, DateTimeFormatter.ofPattern("yyyy-MM-dd"));
+              else if (valueAsString.length() == "yyyy-MM-dd HH:mm:ss".length())
+                return LocalDateTime.parse(valueAsString, DateTimeFormatter.ofPattern("yyyyyyyy-MM-dd HH:mm:ss"));
+              else if (valueAsString.length() == "yyyy-MM-dd HH:mm:ss.SSS".length())
+                return LocalDateTime.parse(valueAsString, DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS"));
             }
-          else {
-            // GUESS FORMAT BY STRING LENGTH
-            if (valueAsString.length() == "yyyy-MM-dd".length())
-              return LocalDateTime.parse(valueAsString, DateTimeFormatter.ofPattern("yyyy-MM-dd"));
-            else if (valueAsString.length() == "yyyy-MM-dd HH:mm:ss".length())
-              return LocalDateTime.parse(valueAsString, DateTimeFormatter.ofPattern("yyyyyyyy-MM-dd HH:mm:ss"));
-            else if (valueAsString.length() == "yyyy-MM-dd HH:mm:ss.SSS".length())
-              return LocalDateTime.parse(valueAsString, DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS"));
           }
         }
       } else if (targetClass.equals(ZonedDateTime.class)) {
-        final ChronoUnit precision = getPrecision((EmbeddedDatabase) database, property);
-
-        if (iValue instanceof Number)
-          return DateUtils.dateTime(database, ((Number) iValue).longValue(), ZonedDateTime.class, precision);
-        if (iValue instanceof Calendar)
-          return DateUtils.dateTime(database, ((Calendar) iValue).getTimeInMillis(), ZonedDateTime.class, precision);
+        if (iValue instanceof ZonedDateTime) {
+          if (property != null)
+            return ((ZonedDateTime) iValue).truncatedTo(DateUtils.getPrecisionFromType(property.getType()));
+        } else if (iValue instanceof Date)
+          return DateUtils.dateTime(database, ((Date) iValue).getTime(), ChronoUnit.MILLIS, LocalDateTime.class,
+              property != null ? DateUtils.getPrecisionFromType(property.getType()) : ChronoUnit.MILLIS);
+        else if (iValue instanceof Calendar)
+          return DateUtils.dateTime(database, ((Calendar) iValue).getTimeInMillis(), ChronoUnit.MILLIS, ZonedDateTime.class,
+              property != null ? DateUtils.getPrecisionFromType(property.getType()) : ChronoUnit.MILLIS);
         if (iValue instanceof String) {
           final String valueAsString = (String) iValue;
-          if (FileUtils.isLong(valueAsString))
-            return DateUtils.dateTime(database, Long.parseLong(iValue.toString()), ZonedDateTime.class, precision);
-          if (database != null)
-            try {
-              return ZonedDateTime.parse(valueAsString, DateTimeFormatter.ofPattern((database.getSchema().getDateTimeFormat())));
-            } catch (final DateTimeParseException ignore) {
-              return ZonedDateTime.parse(valueAsString, DateTimeFormatter.ofPattern((database.getSchema().getDateFormat())));
+          if (!FileUtils.isLong(valueAsString)) {
+            if (database != null)
+              try {
+                return ZonedDateTime.parse(valueAsString, DateTimeFormatter.ofPattern((database.getSchema().getDateTimeFormat())));
+              } catch (final DateTimeParseException ignore) {
+                return ZonedDateTime.parse(valueAsString, DateTimeFormatter.ofPattern((database.getSchema().getDateFormat())));
+              }
+            else {
+              // GUESS FORMAT BY STRING LENGTH
+              if (valueAsString.length() == "yyyy-MM-dd".length())
+                return ZonedDateTime.parse(valueAsString, DateTimeFormatter.ofPattern("yyyy-MM-dd"));
+              else if (valueAsString.length() == "yyyy-MM-dd HH:mm:ss".length())
+                return ZonedDateTime.parse(valueAsString, DateTimeFormatter.ofPattern("yyyyyyyy-MM-dd HH:mm:ss"));
+              else if (valueAsString.length() == "yyyy-MM-dd HH:mm:ss.SSS".length())
+                return ZonedDateTime.parse(valueAsString, DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS"));
             }
-          else {
-            // GUESS FORMAT BY STRING LENGTH
-            if (valueAsString.length() == "yyyy-MM-dd".length())
-              return ZonedDateTime.parse(valueAsString, DateTimeFormatter.ofPattern("yyyy-MM-dd"));
-            else if (valueAsString.length() == "yyyy-MM-dd HH:mm:ss".length())
-              return ZonedDateTime.parse(valueAsString, DateTimeFormatter.ofPattern("yyyyyyyy-MM-dd HH:mm:ss"));
-            else if (valueAsString.length() == "yyyy-MM-dd HH:mm:ss.SSS".length())
-              return ZonedDateTime.parse(valueAsString, DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS"));
           }
         }
       } else if (targetClass.equals(Instant.class)) {
-        final ChronoUnit precision = getPrecision((EmbeddedDatabase) database, property);
-
-        if (iValue instanceof Number)
-          return DateUtils.dateTime(database, ((Number) iValue).longValue(), Instant.class, precision);
-        if (iValue instanceof Calendar)
-          return DateUtils.dateTime(database, ((Calendar) iValue).getTimeInMillis(), Instant.class, precision);
-        if (iValue instanceof String) {
-          final String valueAsString = (String) iValue;
-          if (FileUtils.isLong(valueAsString))
-            return DateUtils.dateTime(database, Long.parseLong(iValue.toString()), Instant.class, precision);
-        }
+        if (iValue instanceof Instant) {
+          if (property != null)
+            return ((Instant) iValue).truncatedTo(DateUtils.getPrecisionFromType(property.getType()));
+        } else if (iValue instanceof Date)
+          return DateUtils.dateTime(database, ((Date) iValue).getTime(), ChronoUnit.MILLIS, LocalDateTime.class,
+              property != null ? DateUtils.getPrecisionFromType(property.getType()) : ChronoUnit.MILLIS);
+        else if (iValue instanceof Calendar)
+          return DateUtils.dateTime(database, ((Calendar) iValue).getTimeInMillis(), ChronoUnit.MILLIS, Instant.class,
+              property != null ? DateUtils.getPrecisionFromType(property.getType()) : ChronoUnit.MILLIS);
       } else if (targetClass.equals(Identifiable.class) || targetClass.equals(RID.class)) {
         if (MultiValue.isMultiValue(iValue)) {
           final List<Identifiable> result = new ArrayList<>();
@@ -1002,14 +1014,5 @@ public enum Type {
       }
     }
     throw new IllegalArgumentException("Object of class " + iValue.getClass() + " cannot be converted to Date");
-  }
-
-  private static ChronoUnit getPrecision(final EmbeddedDatabase database, final Property property) {
-    ChronoUnit precision = property != null && property.getType() == DATETIME && property.getDateTimePrecision() != null ?
-        property.getDateTimePrecision() :
-        database.getSerializer().getDateTimePrecision();
-    if (precision == null)
-      precision = ChronoUnit.MILLIS;
-    return precision;
   }
 }

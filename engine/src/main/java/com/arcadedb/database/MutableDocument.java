@@ -23,7 +23,6 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.utility.DateUtils;
 
 import java.util.*;
 
@@ -380,17 +379,14 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     if (property != null)
       try {
         final Type propType = property.getType();
-        Class javaImplementation = propType.getDefaultJavaType();
-        if (propType == Type.DATE) {
+
+        final Class javaImplementation;
+        if (propType == Type.DATE)
           javaImplementation = database.getSerializer().getDateImplementation();
-          if (DateUtils.getPrecisionLevel(value.getClass()) > DateUtils.getPrecisionLevel(javaImplementation))
-            javaImplementation = value.getClass();
-        }
-        if (propType == Type.DATETIME) {
+        else if (propType == Type.DATETIME)
           javaImplementation = database.getSerializer().getDateTimeImplementation();
-          if (DateUtils.getPrecisionLevel(value.getClass()) > DateUtils.getPrecisionLevel(javaImplementation))
-            javaImplementation = value.getClass();
-        }
+        else
+          javaImplementation = propType.getDefaultJavaType();
 
         return Type.convert(database, value, javaImplementation, property);
       } catch (final Exception e) {
