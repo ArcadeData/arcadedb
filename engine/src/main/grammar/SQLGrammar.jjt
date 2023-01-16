@@ -343,14 +343,6 @@ TOKEN:
   |
   < DISTINCT: ("D"|"d")("I"|"i")("S"|"s")("T"|"t")("I"|"i")("N"|"n")("C"|"c")("T"|"t") >
   |
-  < HA: ("H"|"h")("A"|"a") >
-  |
-  < STATUS: ("S"|"s")("T"|"t")("A"|"a")("T"|"t")("U"|"u")("S"|"s") >
-  |
-  < SERVER: ("S"|"s")("E"|"e")("R"|"r")("V"|"v")("E"|"e")("R"|"r") >
-  |
-  < SYNC: ("S"|"s")("Y"|"y")("N"|"n")("C"|"c") >
-  |
   < EXISTS: ("E"|"e")("X"|"x")("i"|"I")("s"|"S")("t"|"T")("s"|"S")>
   |
   < FOREACH: ("F"|"f")("O"|"o")("R"|"r")("E"|"e")("A"|"a")("C"|"c")("H"|"h")>
@@ -861,14 +853,6 @@ Identifier Identifier():
   token = <OPTIONAL>
   |
   token = <COUNT>
-  |
-  token = <HA>
-  |
-  token = <STATUS>
-  |
-  token = <SERVER>
-  |
-  token = <SYNC>
   |
   token = <EXISTS>
   |
