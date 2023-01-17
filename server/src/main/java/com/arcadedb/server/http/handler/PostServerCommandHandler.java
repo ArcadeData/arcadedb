@@ -23,6 +23,7 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.PaginatedFile;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
@@ -123,30 +124,35 @@ public class PostServerCommandHandler extends AbstractHandler {
       httpServer.getServer().stop();
     } else if (command.startsWith("shutdown ")) {
       final String serverName = command.substring("shutdown ".length()).trim();
-      final Leader2ReplicaNetworkExecutor replica = httpServer.getServer().getHA().getReplica(serverName);
+      final HAServer ha = getHA();
+      final Leader2ReplicaNetworkExecutor replica = ha.getReplica(serverName);
       if (replica == null)
         throw new ServerException("Cannot contact server '" + serverName + "' from the current server");
 
       final Binary buffer = new Binary();
-      httpServer.getServer().getHA().getMessageFactory().serializeCommand(new ServerShutdownRequest(), buffer, -1);
+      ha.getMessageFactory().serializeCommand(new ServerShutdownRequest(), buffer, -1);
       replica.sendMessage(buffer);
     }
   }
 
   private void disconnectCluster() {
     httpServer.getServer().getServerMetrics().meter("http.server-disconnect").mark();
-    final Replica2LeaderNetworkExecutor leader = httpServer.getServer().getHA().getLeader();
+    final HAServer ha = getHA();
+
+    final Replica2LeaderNetworkExecutor leader = ha.getLeader();
     if (leader != null)
       leader.close();
     else
-      httpServer.getServer().getHA().disconnectAllReplicas();
+      ha.disconnectAllReplicas();
   }
 
   private void connectCluster(final String command) {
+    final HAServer ha = getHA();
+
     httpServer.getServer().getServerMetrics().meter("http.connect-cluster").mark();
 
     final String serverAddress = command.substring("connect cluster ".length());
-    httpServer.getServer().getHA().connectToLeader(serverAddress);
+    ha.connectToLeader(serverAddress);
   }
 
   private void createDatabase(final String command) {
@@ -233,10 +239,17 @@ public class PostServerCommandHandler extends AbstractHandler {
   }
 
   private void checkServerIsLeaderIfInHA() {
-    final HAServer ha = httpServer.getServer().getHA();
-    if (ha != null && !ha.isLeader())
+    final HAServer ha = getHA();
+    if (!ha.isLeader())
       // NOT THE LEADER
       throw new ServerIsNotTheLeaderException("Creation of database can be executed only on the leader server", ha.getLeaderName());
+  }
 
+  private HAServer getHA() {
+    final HAServer ha = httpServer.getServer().getHA();
+    if (ha == null)
+      throw new CommandExecutionException(
+          "ArcadeDB is not running with High Availability module enabled. Please add this setting at startup: -Darcadedb.ha.enabled=true");
+    return ha;
   }
 }
