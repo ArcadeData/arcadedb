@@ -8,7 +8,7 @@
     <div class="col-9">
       <div class="form-inline">
         <div class="form-group">
-          <label for="inputDatabase" id="user"></label>@
+          <label>Connected as&nbsp;</label><label for="inputDatabase" id="user"></label>@
           <select id="inputDatabase" class="form-control"></select>
         </div>
       </div>
@@ -23,80 +23,93 @@
   <hr>
 
   <div class="row">
-    <div class="col-12">
-      <br><br>
-      <h5>Schema
-        <button class="btn btn-pill" onclick="updateDatabases()"><i class="fa fa-sync"></i></button>
-      </h5>
-      <br>
+    <div class="col-6">
+      <button class="btn btn-pill" onclick="updateDatabases()">Refresh <i class="fa fa-sync"></i></button>
     </div>
-    <div class="col-12">
-      <ul class="nav nav-tabs" id="tabs-schema">
-        <li class="nav-item"><a data-toggle="tab" href="#tab-vertices" class="active show nav-link" id="tab-vertices-sel">
-          <center>Vertices</center>
-        </a></li>
-        <li class="nav-item"><a data-toggle="tab" href="#tab-edges" class="nav-link" id="tab-edges-sel">
-          <center>Edges</center>
-        </a></li>
-        <li class="nav-item"><a data-toggle="tab" href="#tab-documents" class="nav-link" id="tab-documents-sel">
-          <center>Documents</center>
-        </a></li>
+    <div class="col-6">
+      <ul class="nav nav-tabs text-center" id="tabs-database" style="float:right;">
+        <li class="nav-item"><a data-toggle="tab" href="#tab-schema" class="active show nav-link" id="tab-schema-sel">Database Schema</a></li>
+        <li class="nav-item text-center"><a data-toggle="tab" href="#tab-db-settings" class="nav-link" id="tab-db-settings-sel">Database Settings</a></li>
       </ul>
     </div>
-
     <div class="col-12">
       <div class="tab-content">
-        <div class="tab-pane fade show active" id="tab-vertices" role="tabpanel">
-          <div class="row">
-            <div class="col-12">
-              <br>Below you can find the declared Vertex Types with the number of defined properties in parentheses. Click on the type on the left to display it
-              properties and indexes.<br><br>
-            </div>
+        <div class="tab-pane fade show active" id="tab-schema" role="tabpanel">
+          <div class="col-12">
+            <ul class="nav nav-tabs" id="tabs-schema">
+              <li class="nav-item text-center"><a data-toggle="tab" href="#tab-vertices" class="active show nav-link" id="tab-vertices-sel">Vertices</a></li>
+              <li class="nav-item text-center"><a data-toggle="tab" href="#tab-edges" class="nav-link" id="tab-edges-sel">Edges</a></li>
+              <li class="nav-item text-center"><a data-toggle="tab" href="#tab-documents" class="nav-link" id="tab-documents-sel">Documents</a></li>
+            </ul>
           </div>
-          <div class="row">
-            <div class="col-3">
-              <ul id='vTypesTabs' class='nav nav-tabs flex-column'></ul>
-            </div>
-            <div class="col-9">
-              <div id='vTypesPanels' class="tab-content"></div>
+
+          <div class="col-12">
+            <div class="tab-content">
+              <div class="tab-pane show active" id="tab-vertices" role="tabpanel">
+                <div class="row">
+                  <div class="col-12">
+                    <br>Below you can find the declared Vertex Types with the number of defined properties in parentheses. Click on the type on the left to
+                    display it
+                    properties and indexes.<br><br>
+                  </div>
+                </div>
+                <div class="row">
+                  <div class="col-3">
+                    <ul id='vTypesTabs' class='nav nav-tabs flex-column'></ul>
+                  </div>
+                  <div class="col-9">
+                    <div id='vTypesPanels' class="tab-content"></div>
+                  </div>
+                </div>
+              </div>
+              <div class="tab-pane fade" id="tab-edges" role="tabpanel">
+                <div class="row">
+                  <div class="col-12">
+                    <br>Below you can find the declared Edge Types with the number of defined properties in parentheses. Click on the type on the left to
+                    display it
+                    properties and indexes.<br><br>
+                  </div>
+                </div>
+                <div class="row">
+                  <div class="col-3">
+                    <ul id='eTypesTabs' class='nav nav-tabs flex-column'></ul>
+                  </div>
+                  <div class="col-9">
+                    <div id='eTypesPanels' class="tab-content"></div>
+                  </div>
+                </div>
+              </div>
+              <div class="tab-pane fade" id="tab-documents" role="tabpanel">
+                <div class="row">
+                  <div class="col-12">
+                    <br>Below you can find the declared Document Types with the number of defined properties in parentheses. Click on the type on the left to
+                    display
+                    it properties and indexes.<br><br>
+                  </div>
+                </div>
+                <div class="row">
+                  <div class="col-3">
+                    <ul id='dTypesTabs' class='nav nav-tabs flex-column'></ul>
+                  </div>
+                  <div class="col-9">
+                    <div id='dTypesPanels' class="tab-content"></div>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         </div>
-        <div class="tab-pane fade" id="tab-edges" role="tabpanel">
-          <div class="row">
-            <div class="col-12">
-              <br>Below you can find the declared Edge Types with the number of defined properties in parentheses. Click on the type on the left to display it
-              properties and indexes.<br><br>
-            </div>
+
+        <div class="tab-pane fade" id="tab-db-settings" role="tabpanel">
+
+          <div class="table-responsive">
+            <table id="dbSettings" class="table table-striped table-sm" style="width: 100%; table-layout: fixed;"></table>
           </div>
-          <div class="row">
-            <div class="col-3">
-              <ul id='eTypesTabs' class='nav nav-tabs flex-column'></ul>
-            </div>
-            <div class="col-9">
-              <div id='eTypesPanels' class="tab-content"></div>
-            </div>
-          </div>
+
         </div>
-        <div class="tab-pane fade" id="tab-documents" role="tabpanel">
-          <div class="row">
-            <div class="col-12">
-              <br>Below you can find the declared Document Types with the number of defined properties in parentheses. Click on the type on the left to display
-              it properties and indexes.<br><br>
-            </div>
-          </div>
-          <div class="row">
-            <div class="col-3">
-              <ul id='dTypesTabs' class='nav nav-tabs flex-column'></ul>
-            </div>
-            <div class="col-9">
-              <div id='dTypesPanels' class="tab-content"></div>
-            </div>
-          </div>
-        </div>
+
       </div>
     </div>
-
   </div>
 </div>
 
@@ -105,5 +118,6 @@
     setCurrentDatabase( $("#inputDatabase").val() );
     loadQueryHistory();
     displaySchema();
+    displayDatabaseSettings();
   });
 </script>

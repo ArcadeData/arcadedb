@@ -18,6 +18,8 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.Profiler;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
@@ -89,6 +91,34 @@ public class GetServerHandler extends AbstractHandler {
             .put("oneMinRate", meter.getOneMinuteRate())//
         );
       }
+
+      final JSONObject settingsJSON = new JSONObject();
+      response.put("settings", settingsJSON);
+
+      final ContextConfiguration srvCfg = httpServer.getServer().getConfiguration();
+      final Set<String> contextKeys = srvCfg.getContextKeys();
+
+      final List<Map<String, Object>> settings = new ArrayList<>();
+      for (GlobalConfiguration cfg : GlobalConfiguration.values()) {
+        if (cfg.getScope() != GlobalConfiguration.SCOPE.DATABASE) {
+          final Map<String, Object> map = new LinkedHashMap<>();
+          map.put("key", cfg.getKey());
+
+          Object value = srvCfg.getValue(cfg);
+
+          if (cfg.getKey().toLowerCase().contains("password"))
+            // MASK SENSITIVE DATA
+            value = "*****";
+
+          map.put("value", value);
+          map.put("description", cfg.getDescription());
+          map.put("overridden", contextKeys.contains(cfg.getKey()));
+
+          settings.add(map);
+        }
+      }
+      response.put("settings", settings);
+
     } else if ("cluster".equals(mode)) {
       final HAServer ha = httpServer.getServer().getHA();
       if (ha != null) {

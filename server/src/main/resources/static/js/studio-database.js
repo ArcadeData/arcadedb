@@ -72,6 +72,7 @@ function updateDatabases( callback ){
     $("#studioPanel").show();
 
     displaySchema();
+    displayDatabaseSettings();
 
     if( callback )
       callback();
@@ -560,6 +561,62 @@ function displaySchema(){
     $("#vTypesPanels").html(panelVHtml != "" ? panelVHtml : "Not defined." );
     $("#eTypesPanels").html(panelEHtml != "" ? panelEHtml : "Not defined." );
     $("#dTypesPanels").html(panelDHtml != "" ? panelDHtml : "Not defined." );
+  })
+  .fail(function( jqXHR, textStatus, errorThrown ){
+    globalNotifyError( jqXHR.responseText );
+  })
+  .always(function(data) {
+    $("#executeSpinner").hide();
+  });
+}
+
+function displayDatabaseSettings(){
+  let database = getCurrentDatabase();
+  if( database == null || database == "" )
+    return;
+
+  jQuery.ajax({
+    type: "POST",
+    url: "/api/v1/query/" + database,
+    data: JSON.stringify(
+      {
+        language: "sql",
+        command: "select expand( settings ) from schema:database"
+      }
+    ),
+    beforeSend: function (xhr){
+      xhr.setRequestHeader('Authorization', globalCredentials);
+    }
+  })
+  .done(function(data){
+    if ( $.fn.dataTable.isDataTable( '#dbSettings' ) )
+      try{ $('#dbSettings').DataTable().destroy(); $('#serverMetrics').empty(); } catch(e){};
+
+    var tableRecords = [];
+
+    for( let i in data.result ){
+      let row = data.result[i];
+
+      let record = [];
+      record.push( row.key );
+      record.push( row.value );
+      record.push( row.description );
+      record.push( row.overridden );
+      tableRecords.push( record );
+    }
+
+   $("#dbSettings").DataTable({
+      paging: false,
+      ordering: false,
+      autoWidth: false,
+      columns: [
+        {title: "Key", width: "30%"},
+        {title: "Value", width: "22%"},
+        {title: "Description", width: "40%"},
+        {title: "Overridden", width: "8%"},
+      ],
+      data: tableRecords,
+    });
   })
   .fail(function( jqXHR, textStatus, errorThrown ){
     globalNotifyError( jqXHR.responseText );

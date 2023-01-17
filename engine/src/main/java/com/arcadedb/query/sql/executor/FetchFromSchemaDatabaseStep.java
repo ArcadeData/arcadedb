@@ -18,6 +18,8 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.TimeoutException;
 
@@ -29,7 +31,6 @@ import java.util.*;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class FetchFromSchemaDatabaseStep extends AbstractExecutionStep {
-
   boolean served = false;
   long    cost   = 0;
 
@@ -58,11 +59,27 @@ public class FetchFromSchemaDatabaseStep extends AbstractExecutionStep {
             result.setProperty("name", db.getName());
             result.setProperty("path", db.getDatabasePath());
             result.setProperty("mode", db.getMode());
-            result.setProperty("settings", db.getConfiguration().getContextKeys());
             result.setProperty("dateFormat", db.getSchema().getDateFormat());
             result.setProperty("dateTimeFormat", db.getSchema().getDateTimeFormat());
             result.setProperty("timezone", db.getSchema().getTimeZone().getDisplayName());
             result.setProperty("encoding", db.getSchema().getEncoding());
+
+            final ContextConfiguration dbCfg = db.getConfiguration();
+            final Set<String> contextKeys = dbCfg.getContextKeys();
+
+            final List<Map<String, Object>> settings = new ArrayList<>();
+            for (GlobalConfiguration cfg : GlobalConfiguration.values()) {
+              if (cfg.getScope() == GlobalConfiguration.SCOPE.DATABASE) {
+                final Map<String, Object> map = new LinkedHashMap<>();
+                map.put("key", cfg.getKey());
+                map.put("value", dbCfg.getValue(cfg));
+                map.put("description", cfg.getDescription());
+                map.put("overridden", contextKeys.contains(cfg.getKey()));
+
+                settings.add(map);
+              }
+            }
+            result.setProperty("settings", settings);
 
             served = true;
             return result;
@@ -74,12 +91,6 @@ public class FetchFromSchemaDatabaseStep extends AbstractExecutionStep {
           }
         }
       }
-
-
-
-
-
-
 
       @Override
       public void reset() {
@@ -97,6 +108,5 @@ public class FetchFromSchemaDatabaseStep extends AbstractExecutionStep {
     }
     return result;
   }
-
 
 }

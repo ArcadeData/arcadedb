@@ -31,9 +31,6 @@ import java.util.*;
  * The pre-requisite is that the input element contains only one field (no matter the name)
  */
 public class ExpandStep extends AbstractExecutionStep {
-
-
-
   ResultSet lastResult      = null;
   Iterator  nextSubsequence = null;
   Result    nextElement     = null;
@@ -52,26 +49,25 @@ public class ExpandStep extends AbstractExecutionStep {
 
       @Override
       public boolean hasNext() {
-        if (localCount >= nRecords) {
+        if (localCount >= nRecords)
           return false;
-        }
-        if (nextElement == null) {
+
+        if (nextElement == null)
           fetchNext(ctx, nRecords);
-        }
+
         return nextElement != null;
       }
 
       @Override
       public Result next() {
-        if (localCount >= nRecords) {
+        if (localCount >= nRecords)
           throw new NoSuchElementException();
-        }
-        if (nextElement == null) {
+
+        if (nextElement == null)
           fetchNext(ctx, nRecords);
-        }
-        if (nextElement == null) {
+
+        if (nextElement == null)
           throw new NoSuchElementException();
-        }
 
         final Result result = nextElement;
         localCount++;
@@ -79,11 +75,6 @@ public class ExpandStep extends AbstractExecutionStep {
         fetchNext(ctx, nRecords);
         return result;
       }
-
-
-
-
-
 
     };
   }
@@ -103,6 +94,8 @@ public class ExpandStep extends AbstractExecutionStep {
             }
             nextElement = new ResultInternal();
             ((ResultInternal) nextElement).setElement((Document) record);
+          } else if (nextElementObj instanceof Map) {
+            nextElement = new ResultInternal((Map) nextElementObj);
           } else {
             nextElement = new ResultInternal();
             ((ResultInternal) nextElement).setProperty("value", nextElementObj);
@@ -156,23 +149,19 @@ public class ExpandStep extends AbstractExecutionStep {
           nextSubsequence = ((Iterable) projValue).iterator();
         }
       } finally {
-        if (profilingEnabled) {
+        if (profilingEnabled)
           cost += (System.nanoTime() - begin);
-        }
       }
     } while (true);
-
   }
 
   @Override
   public String prettyPrint(final int depth, final int indent) {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
     String result = spaces + "+ EXPAND";
-    if (profilingEnabled) {
+    if (profilingEnabled)
       result += " (" + getCostFormatted() + ")";
-    }
+
     return result;
   }
-
-
 }

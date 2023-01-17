@@ -213,11 +213,11 @@ public enum GlobalConfiguration {
 
   NETWORK_SSL_KEYSTORE("arcadedb.ssl.keyStore", SCOPE.SERVER, "Path where the SSL certificates are stored", String.class, null),
 
-  NETWORK_SSL_KEYSTORE_PASSWORD("arcadedb.ssl.keyStorePass", SCOPE.SERVER, "Password to open the SSL key store", String.class, null),
+  NETWORK_SSL_KEYSTORE_PASSWORD("arcadedb.ssl.keyStorePassword", SCOPE.SERVER, "Password to open the SSL key store", String.class, null),
 
   NETWORK_SSL_TRUSTSTORE("arcadedb.ssl.trustStore", SCOPE.SERVER, "Path to the SSL trust store", String.class, null),
 
-  NETWORK_SSL_TRUSTSTORE_PASSWORD("arcadedb.ssl.trustStorePass", SCOPE.SERVER, "Password to open the SSL trust store", String.class, null),
+  NETWORK_SSL_TRUSTSTORE_PASSWORD("arcadedb.ssl.trustStorePassword", SCOPE.SERVER, "Password to open the SSL trust store", String.class, null),
 
   // SERVER
   SERVER_NAME("arcadedb.server.name", SCOPE.SERVER, "Server name", String.class, Constants.PRODUCT + "_0"),

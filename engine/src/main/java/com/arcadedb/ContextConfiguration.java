@@ -196,10 +196,6 @@ public class ContextConfiguration implements Serializable {
     return v instanceof Float ? (Float) v : Float.parseFloat(v.toString());
   }
 
-  public int getContextSize() {
-    return config.size();
-  }
-
   public Set<String> getContextKeys() {
     return config.keySet();
   }
