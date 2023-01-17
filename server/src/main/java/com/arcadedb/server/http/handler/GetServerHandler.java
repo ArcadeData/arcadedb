@@ -59,65 +59,8 @@ public class GetServerHandler extends AbstractHandler {
     final String mode = getQueryParameter(exchange, "mode", "default");
 
     if ("default".equals(mode)) {
-      final JSONObject metricsJSON = new JSONObject();
-      response.put("metrics", metricsJSON);
-
-      metricsJSON.put("profiler", Profiler.INSTANCE.toJSON());
-
-      final JSONObject timersJSON = new JSONObject();
-      metricsJSON.put("timers", timersJSON);
-
-      final ServerMetrics metrics = httpServer.getServer().getServerMetrics();
-      for (Map.Entry<String, Timer> entry : metrics.getTimers().entrySet()) {
-        final Timer timer = entry.getValue();
-        final Snapshot snapshot = timer.getSnapshot();
-
-        timersJSON.put(entry.getKey(), new JSONObject().put("count", timer.getCount())//
-            .put("oneMinRate", timer.getOneMinuteRate())//
-            .put("mean", snapshot.getMean() / 1000000)//
-            .put("perc99", snapshot.get99thPercentile() / 1000000)//
-            .put("min", snapshot.getMin() / 1000000)//
-            .put("max", snapshot.getMax() / 1000000)//
-        );
-      }
-
-      final JSONObject metersJSON = new JSONObject();
-      metricsJSON.put("meters", metersJSON);
-
-      for (Map.Entry<String, Meter> entry : metrics.getMeters().entrySet()) {
-        final Meter meter = entry.getValue();
-
-        metersJSON.put(entry.getKey(), new JSONObject().put("count", meter.getCount())//
-            .put("oneMinRate", meter.getOneMinuteRate())//
-        );
-      }
-
-      final JSONObject settingsJSON = new JSONObject();
-      response.put("settings", settingsJSON);
-
-      final ContextConfiguration srvCfg = httpServer.getServer().getConfiguration();
-      final Set<String> contextKeys = srvCfg.getContextKeys();
-
-      final List<Map<String, Object>> settings = new ArrayList<>();
-      for (GlobalConfiguration cfg : GlobalConfiguration.values()) {
-        if (cfg.getScope() != GlobalConfiguration.SCOPE.DATABASE) {
-          final Map<String, Object> map = new LinkedHashMap<>();
-          map.put("key", cfg.getKey());
-
-          Object value = srvCfg.getValue(cfg);
-
-          if (cfg.getKey().toLowerCase().contains("password"))
-            // MASK SENSITIVE DATA
-            value = "*****";
-
-          map.put("value", value);
-          map.put("description", cfg.getDescription());
-          map.put("overridden", contextKeys.contains(cfg.getKey()));
-
-          settings.add(map);
-        }
-      }
-      response.put("settings", settings);
+      exportMetrics(response);
+      exportSettings(response);
 
     } else if ("cluster".equals(mode)) {
       final HAServer ha = httpServer.getServer().getHA();
@@ -177,6 +120,60 @@ public class GetServerHandler extends AbstractHandler {
     exchange.endExchange();
   }
 
+  private void exportMetrics(final JSONObject response) {
+    final JSONObject metricsJSON = new JSONObject();
+    response.put("metrics", metricsJSON);
+
+    metricsJSON.put("profiler", Profiler.INSTANCE.toJSON());
+
+    final JSONObject timersJSON = new JSONObject();
+    metricsJSON.put("timers", timersJSON);
+
+    final ServerMetrics metrics = httpServer.getServer().getServerMetrics();
+    for (Map.Entry<String, Timer> entry : metrics.getTimers().entrySet()) {
+      final Timer timer = entry.getValue();
+      final Snapshot snapshot = timer.getSnapshot();
+
+      timersJSON.put(entry.getKey(), new JSONObject().put("count", timer.getCount())//
+          .put("oneMinRate", timer.getOneMinuteRate())//
+          .put("mean", snapshot.getMean() / 1000000)//
+          .put("perc99", snapshot.get99thPercentile() / 1000000)//
+          .put("min", snapshot.getMin() / 1000000)//
+          .put("max", snapshot.getMax() / 1000000)//
+      );
+    }
+
+    final JSONObject metersJSON = new JSONObject();
+    metricsJSON.put("meters", metersJSON);
+
+    for (Map.Entry<String, Meter> entry : metrics.getMeters().entrySet()) {
+      final Meter meter = entry.getValue();
+
+      metersJSON.put(entry.getKey(), new JSONObject().put("count", meter.getCount())//
+          .put("oneMinRate", meter.getOneMinuteRate())//
+      );
+    }
+  }
+
+  private void exportSettings(final JSONObject response) {
+    final ContextConfiguration srvCfg = httpServer.getServer().getConfiguration();
+    final Set<String> contextKeys = srvCfg.getContextKeys();
+
+    final List<Map<String, Object>> settings = new ArrayList<>();
+    for (GlobalConfiguration cfg : GlobalConfiguration.values()) {
+      if (cfg.getScope() != GlobalConfiguration.SCOPE.DATABASE) {
+        final Map<String, Object> map = new LinkedHashMap<>();
+        map.put("key", cfg.getKey());
+        map.put("value", convertValue(cfg.getKey(), cfg.getValue()));
+        map.put("description", cfg.getDescription());
+        map.put("overridden", contextKeys.contains(cfg.getKey()));
+        map.put("default", convertValue(cfg.getKey(), cfg.getDefValue()));
+        settings.add(map);
+      }
+    }
+    response.put("settings", settings);
+  }
+
   protected String readResponse(final HttpURLConnection connection) throws IOException {
     connection.setConnectTimeout(5000);
     connection.setReadTimeout(5000);
@@ -190,5 +187,16 @@ public class GetServerHandler extends AbstractHandler {
     }
 
     return buffer.toString();
+  }
+
+  private Object convertValue(final String key, Object value) {
+    if (key.toLowerCase().contains("password"))
+      // MASK SENSITIVE DATA
+      value = "*****";
+
+    if (value instanceof Class)
+      value = ((Class<?>) value).getName();
+
+    return value;
   }
 }

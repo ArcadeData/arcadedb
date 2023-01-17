@@ -72,9 +72,10 @@ public class FetchFromSchemaDatabaseStep extends AbstractExecutionStep {
               if (cfg.getScope() == GlobalConfiguration.SCOPE.DATABASE) {
                 final Map<String, Object> map = new LinkedHashMap<>();
                 map.put("key", cfg.getKey());
-                map.put("value", dbCfg.getValue(cfg));
+                map.put("value", convertValue(cfg.getKey(), dbCfg.getValue(cfg)));
                 map.put("description", cfg.getDescription());
                 map.put("overridden", contextKeys.contains(cfg.getKey()));
+                map.put("default", convertValue(cfg.getKey(), cfg.getDefValue()));
 
                 settings.add(map);
               }
@@ -109,4 +110,14 @@ public class FetchFromSchemaDatabaseStep extends AbstractExecutionStep {
     return result;
   }
 
+  private Object convertValue(final String key, Object value) {
+    if (key.toLowerCase().contains("password"))
+      // MASK SENSITIVE DATA
+      value = "*****";
+
+    if (value instanceof Class)
+      value = ((Class<?>) value).getName();
+
+    return value;
+  }
 }

@@ -601,6 +601,7 @@ function displayDatabaseSettings(){
       record.push( row.key );
       record.push( row.value );
       record.push( row.description );
+      record.push( row.default );
       record.push( row.overridden );
       tableRecords.push( record );
     }
@@ -610,10 +611,14 @@ function displayDatabaseSettings(){
       ordering: false,
       autoWidth: false,
       columns: [
-        {title: "Key", width: "30%"},
-        {title: "Value", width: "22%"},
-        {title: "Description", width: "40%"},
-        {title: "Overridden", width: "8%"},
+        {title: "Key", width: "25%"},
+        {title: "Value", width: "20%",
+         render: function ( data, type, row) {
+           return "<a href='#' onclick='updateDatabaseSetting(\""+row[0]+"\", \""+row[1]+"\")' style='color: green;'><b>"+data+"</b></a>";
+         }},
+        {title: "Description", width: "33%"},
+        {title: "Default", width: "15%"},
+        {title: "Overridden", width: "7%"},
       ],
       data: tableRecords,
     });
@@ -623,5 +628,43 @@ function displayDatabaseSettings(){
   })
   .always(function(data) {
     $("#executeSpinner").hide();
+  });
+}
+
+function updateDatabaseSetting(key, value){
+  let html = "<b>" + key + "</b> = <input id='updateSettingInput' value='"+value+"'>";
+  html += "<br><p><i>The setting will be saved in the database configuration.</i></p>";
+
+  Swal.fire({
+    title: "Update Database Setting",
+    html: html,
+    showCancelButton: true,
+    width: 600,
+    confirmButtonColor: '#3ac47d',
+    cancelButtonColor: 'red',
+  }).then((result) => {
+    if (result.value) {
+      jQuery.ajax({
+       type: "POST",
+       url: "/api/v1/server",
+       data: JSON.stringify(
+         {
+           language: "sql",
+           command: "set database setting " + getCurrentDatabase() + " " + key + " " +$("#updateSettingInput").val()
+         }
+       ),
+       beforeSend: function (xhr){
+         xhr.setRequestHeader('Authorization', globalCredentials);
+       }
+      })
+      .done(function(data){
+        if( data.error ) {
+          $("#authorizationCodeMessage").html(data.error);
+          return false;
+        }
+        displayDatabaseSettings();
+        return true;
+      });
+    }
   });
 }

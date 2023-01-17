@@ -80,6 +80,10 @@ public class PostServerCommandHandler extends AbstractHandler {
       connectCluster(command);
     else if (command.equals("disconnect cluster"))
       disconnectCluster();
+    else if (command.startsWith("set database setting "))
+      setDatabaseSetting(command);
+    else if (command.startsWith("set server setting "))
+      setServerSetting(command);
     else {
       httpServer.getServer().getServerMetrics().meter("http.server-command.invalid").mark();
       exchange.setStatusCode(400);
@@ -89,6 +93,26 @@ public class PostServerCommandHandler extends AbstractHandler {
 
     exchange.setStatusCode(200);
     exchange.getResponseSender().send("{ \"result\" : \"ok\"}");
+  }
+
+  private void setDatabaseSetting(final String command) throws IOException {
+    final String pair = command.substring("set database setting ".length());
+    final String[] dbKeyValue = pair.split(" ");
+    if (dbKeyValue.length != 3)
+      throw new IllegalArgumentException("Expected <database> <key> <value>");
+
+    final DatabaseInternal database = (DatabaseInternal) httpServer.getServer().getDatabase(dbKeyValue[0]);
+    database.getConfiguration().setValue(dbKeyValue[1], dbKeyValue[2]);
+    database.saveConfiguration();
+  }
+
+  private void setServerSetting(final String command) {
+    final String pair = command.substring("set server setting ".length());
+    final String[] keyValue = pair.split(" ");
+    if (keyValue.length != 2)
+      throw new IllegalArgumentException("Expected <key> <value>");
+
+    httpServer.getServer().getConfiguration().setValue(keyValue[0], keyValue[1]);
   }
 
   private void shutdownServer(final String command) throws IOException {

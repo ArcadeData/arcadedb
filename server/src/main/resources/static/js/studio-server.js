@@ -46,7 +46,6 @@ function renderDatabases(databases){
   return result;
 }
 
-
 function displayServerSettings(){
   if ( $.fn.dataTable.isDataTable( '#serverSettings' ) )
     try{ $('#serverSettings').DataTable().destroy(); $('#serverSettings').empty(); } catch(e){};
@@ -60,6 +59,7 @@ function displayServerSettings(){
     record.push( row.key );
     record.push( row.value );
     record.push( row.description );
+    record.push( row.default );
     record.push( row.overridden );
     tableRecords.push( record );
   }
@@ -69,10 +69,14 @@ function displayServerSettings(){
     ordering: false,
     autoWidth: false,
     columns: [
-      {title: "Key", width: "30%"},
-      {title: "Value", width: "22%"},
-      {title: "Description", width: "40%"},
-      {title: "Overridden", width: "8%"},
+      {title: "Key", width: "25%"},
+      {title: "Value", width: "20%",
+      render: function ( data, type, row) {
+        return "<a href='#' onclick='updateServerSetting(\""+row[0]+"\", \""+row[1]+"\")' style='color: green;'><b>"+data+"</b></a>";
+      }},
+      {title: "Description", width: "33%"},
+      {title: "Default", width: "15%"},
+      {title: "Overridden", width: "7%"},
     ],
     data: tableRecords,
   });
@@ -185,5 +189,43 @@ function displayMetrics(){
       {title: "Maximum (ms)"},
     ],
     data: tableRecords,
+  });
+}
+
+function updateServerSetting(key, value){
+  let html = "<b>" + key + "</b> = <input id='updateSettingInput' value='"+value+"'>";
+  html += "<br><p><i>The update will not be persistent and will be reset at the next restart of the server.</i></p>";
+
+  Swal.fire({
+    title: "Update Server Setting",
+    html: html,
+    showCancelButton: true,
+    width: 600,
+    confirmButtonColor: '#3ac47d',
+    cancelButtonColor: 'red',
+  }).then((result) => {
+    if (result.value) {
+      jQuery.ajax({
+       type: "POST",
+       url: "/api/v1/server",
+       data: JSON.stringify(
+         {
+           language: "sql",
+           command: "set server setting " + key + " " +$("#updateSettingInput").val()
+         }
+       ),
+       beforeSend: function (xhr){
+         xhr.setRequestHeader('Authorization', globalCredentials);
+       }
+      })
+      .done(function(data){
+        if( data.error ) {
+          $("#authorizationCodeMessage").html(data.error);
+          return false;
+        }
+        displayServerSettings();
+        return true;
+      });
+    }
   });
 }
