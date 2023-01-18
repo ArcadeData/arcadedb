@@ -239,8 +239,8 @@ public class PostServerCommandHandler extends AbstractHandler {
   }
 
   private void checkServerIsLeaderIfInHA() {
-    final HAServer ha = getHA();
-    if (!ha.isLeader())
+    final HAServer ha = httpServer.getServer().getHA();
+    if (ha != null && !ha.isLeader())
       // NOT THE LEADER
       throw new ServerIsNotTheLeaderException("Creation of database can be executed only on the leader server", ha.getLeaderName());
   }

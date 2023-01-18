@@ -31,8 +31,8 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
-import com.arcadedb.utility.FileUtils;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
@@ -482,7 +482,12 @@ public abstract class BaseGraphServerTest {
       LogManager.instance().log(this, Level.FINE, "***********************************************************************************");
       LogManager.instance().log(this, Level.FINE, "EXECUTING TEST ON SERVER %d/%d...", i, getServerCount());
       LogManager.instance().log(this, Level.FINE, "***********************************************************************************");
-      callback.call(i);
+      try {
+        callback.call(i);
+      } catch (Exception e) {
+        LogManager.instance().log(this, Level.SEVERE, "Error on executing test %s on server %d/%d", e, getClass().getName(), i + 1, getServerCount());
+        throw e;
+      }
     }
   }
 
