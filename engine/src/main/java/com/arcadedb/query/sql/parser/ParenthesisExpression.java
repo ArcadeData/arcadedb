@@ -113,6 +113,12 @@ public class ParenthesisExpression extends MathExpression {
     return false;
   }
 
+  @Override
+  public boolean isEarlyCalculated(final CommandContext ctx) {
+    // TODO implement query execution and early calculation;
+    return expression != null && expression.isEarlyCalculated(ctx);
+  }
+
   public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateProj, final CommandContext ctx) {
     if (isAggregate()) {
       final ParenthesisExpression result = new ParenthesisExpression(-1);
