@@ -65,10 +65,9 @@ public class SelectExecutionPlan implements InternalExecutionPlan {
   }
 
   public void chain(final ExecutionStepInternal nextStep) {
-    if (lastStep != null) {
-      lastStep.setNext(nextStep);
+    if (lastStep != null)
       nextStep.setPrevious(lastStep);
-    }
+
     lastStep = nextStep;
     steps.add(nextStep);
   }
@@ -131,9 +130,6 @@ public class SelectExecutionPlan implements InternalExecutionPlan {
     for (final ExecutionStepInternal step : this.steps) {
       final ExecutionStepInternal newStep = (ExecutionStepInternal) step.copy(ctx);
       newStep.setPrevious(lastStep);
-      if (lastStep != null) {
-        lastStep.setNext(newStep);
-      }
       lastStep = newStep;
       copy.getSteps().add(newStep);
     }

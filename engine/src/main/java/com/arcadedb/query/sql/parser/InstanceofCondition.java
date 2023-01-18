@@ -113,27 +113,6 @@ public class InstanceofCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean supportsBasicCalculation() {
-    return left.supportsBasicCalculation();
-  }
-
-  @Override
-  protected int getNumberOfExternalCalculations() {
-    if (!left.supportsBasicCalculation()) {
-      return 1;
-    }
-    return 0;
-  }
-
-  @Override
-  protected List<Object> getExternalCalculationConditions() {
-    if (!left.supportsBasicCalculation()) {
-      return Collections.singletonList(left);
-    }
-    return Collections.emptyList();
-  }
-
-  @Override
   public boolean needsAliases(final Set<String> aliases) {
     return left.needsAliases(aliases);
   }

@@ -88,21 +88,6 @@ public class NotBlock extends BooleanExpression {
     sub.toString(params, builder);
   }
 
-  @Override
-  public boolean supportsBasicCalculation() {
-    return true;
-  }
-
-  @Override
-  protected int getNumberOfExternalCalculations() {
-    return sub.getNumberOfExternalCalculations();
-  }
-
-  @Override
-  protected List<Object> getExternalCalculationConditions() {
-    return sub.getExternalCalculationConditions();
-  }
-
   public List<BinaryCondition> getIndexedFunctionConditions(final DocumentType iSchemaClass, final Database database) {
     if (sub == null) {
       return null;

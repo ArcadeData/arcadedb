@@ -110,8 +110,4 @@ public abstract class AbstractTraverseStep extends AbstractExecutionStep {
   protected abstract void fetchNextEntryPoints(CommandContext ctx, int nRecords);
 
   protected abstract void fetchNextResults(CommandContext ctx, int nRecords);
-
-  protected boolean isFinished() {
-    return entryPoints != null && entryPoints.isEmpty() && results.isEmpty();
-  }
 }

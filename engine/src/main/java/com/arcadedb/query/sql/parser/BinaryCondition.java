@@ -64,44 +64,6 @@ public class BinaryCondition extends BooleanExpression {
     right.toString(params, builder);
   }
 
-  protected boolean supportsBasicCalculation() {
-    if (!operator.supportsBasicCalculation()) {
-      return false;
-    }
-    return left.supportsBasicCalculation() && right.supportsBasicCalculation();
-
-  }
-
-  @Override
-  protected int getNumberOfExternalCalculations() {
-    int total = 0;
-    if (!operator.supportsBasicCalculation()) {
-      total++;
-    }
-    if (!left.supportsBasicCalculation()) {
-      total++;
-    }
-    if (!right.supportsBasicCalculation()) {
-      total++;
-    }
-    return total;
-  }
-
-  @Override
-  protected List<Object> getExternalCalculationConditions() {
-    final List<Object> result = new ArrayList<>();
-    if (!operator.supportsBasicCalculation()) {
-      result.add(this);
-    }
-    if (!left.supportsBasicCalculation()) {
-      result.add(left);
-    }
-    if (!right.supportsBasicCalculation()) {
-      result.add(right);
-    }
-    return result;
-  }
-
   public long estimateIndexed(final FromClause target, final CommandContext context) {
     return left.estimateIndexedFunction(target, context, operator, right.execute((Result) null, context));
   }

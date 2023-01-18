@@ -118,38 +118,6 @@ public class MatchesCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean supportsBasicCalculation() {
-    if (!expression.supportsBasicCalculation()) {
-      return false;
-    }
-    return rightExpression == null || rightExpression.supportsBasicCalculation();
-  }
-
-  @Override
-  protected int getNumberOfExternalCalculations() {
-    int result = 0;
-    if (expression != null && !expression.supportsBasicCalculation()) {
-      result++;
-    }
-    if (rightExpression != null && !rightExpression.supportsBasicCalculation()) {
-      result++;
-    }
-    return result;
-  }
-
-  @Override
-  protected List<Object> getExternalCalculationConditions() {
-    final List<Object> result = new ArrayList<>();
-    if (expression != null && !expression.supportsBasicCalculation()) {
-      result.add(expression);
-    }
-    if (rightExpression != null && !rightExpression.supportsBasicCalculation()) {
-      result.add(rightExpression);
-    }
-    return result;
-  }
-
-  @Override
   public boolean needsAliases(final Set<String> aliases) {
     if (expression.needsAliases(aliases)) {
       return true;

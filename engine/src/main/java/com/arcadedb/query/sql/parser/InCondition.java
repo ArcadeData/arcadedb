@@ -172,48 +172,6 @@ public class InCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean supportsBasicCalculation() {
-    if (!left.supportsBasicCalculation())
-      return false;
-
-    if (!rightMathExpression.supportsBasicCalculation())
-      return false;
-
-    return operator.supportsBasicCalculation();
-  }
-
-  @Override
-  protected int getNumberOfExternalCalculations() {
-    int total = 0;
-    if (operator != null && !operator.supportsBasicCalculation())
-      total++;
-
-    if (!left.supportsBasicCalculation())
-      total++;
-
-    if (rightMathExpression != null && !rightMathExpression.supportsBasicCalculation())
-      total++;
-
-    return total;
-  }
-
-  @Override
-  protected List<Object> getExternalCalculationConditions() {
-    final List<Object> result = new ArrayList<>();
-
-    if (operator != null)
-      result.add(this);
-
-    if (!left.supportsBasicCalculation())
-      result.add(left);
-
-    if (rightMathExpression != null && !rightMathExpression.supportsBasicCalculation())
-      result.add(rightMathExpression);
-
-    return result;
-  }
-
-  @Override
   public boolean needsAliases(final Set<String> aliases) {
     if (left.needsAliases(aliases))
       return true;

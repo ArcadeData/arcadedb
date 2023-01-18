@@ -177,47 +177,6 @@ public class ContainsAllCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean supportsBasicCalculation() {
-    if (left != null && !left.supportsBasicCalculation()) {
-      return false;
-    }
-    if (right != null && !right.supportsBasicCalculation()) {
-      return false;
-    }
-    return rightBlock == null || rightBlock.supportsBasicCalculation();
-  }
-
-  @Override
-  protected int getNumberOfExternalCalculations() {
-    int total = 0;
-    if (left != null && !left.supportsBasicCalculation()) {
-      total++;
-    }
-    if (right != null && !right.supportsBasicCalculation()) {
-      total++;
-    }
-    if (rightBlock != null && !rightBlock.supportsBasicCalculation()) {
-      total++;
-    }
-    return total;
-  }
-
-  @Override
-  protected List<Object> getExternalCalculationConditions() {
-    final List<Object> result = new ArrayList<Object>();
-    if (left != null && !left.supportsBasicCalculation()) {
-      result.add(left);
-    }
-    if (right != null && !right.supportsBasicCalculation()) {
-      result.add(right);
-    }
-    if (rightBlock != null) {
-      result.addAll(rightBlock.getExternalCalculationConditions());
-    }
-    return result;
-  }
-
-  @Override
   public boolean needsAliases(final Set<String> aliases) {
     if (left.needsAliases(aliases)) {
       return true;

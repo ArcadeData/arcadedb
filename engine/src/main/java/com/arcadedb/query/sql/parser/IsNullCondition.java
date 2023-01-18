@@ -62,24 +62,6 @@ public class IsNullCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean supportsBasicCalculation() {
-    return expression.supportsBasicCalculation();
-  }
-
-  @Override
-  protected int getNumberOfExternalCalculations() {
-    return expression.supportsBasicCalculation() ? 0 : 1;
-  }
-
-  @Override
-  protected List<Object> getExternalCalculationConditions() {
-    if (expression.supportsBasicCalculation()) {
-      return Collections.emptyList();
-    }
-    return Collections.singletonList(expression);
-  }
-
-  @Override
   public boolean needsAliases(final Set<String> aliases) {
     return expression.needsAliases(aliases);
   }

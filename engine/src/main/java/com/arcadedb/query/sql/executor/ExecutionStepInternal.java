@@ -101,8 +101,6 @@ public interface ExecutionStepInternal extends ExecutionStep {
 
   void setPrevious(ExecutionStepInternal step);
 
-  void setNext(ExecutionStepInternal step);
-
   void close();
 
   default String prettyPrint(final int depth, final int indent) {

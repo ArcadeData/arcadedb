@@ -54,27 +54,6 @@ public class IsNotNullCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean supportsBasicCalculation() {
-    return expression.supportsBasicCalculation();
-  }
-
-  @Override
-  protected int getNumberOfExternalCalculations() {
-    if (!expression.supportsBasicCalculation()) {
-      return 1;
-    }
-    return 0;
-  }
-
-  @Override
-  protected List<Object> getExternalCalculationConditions() {
-    if (!expression.supportsBasicCalculation()) {
-      return Collections.singletonList(expression);
-    }
-    return Collections.emptyList();
-  }
-
-  @Override
   public boolean needsAliases(final Set<String> aliases) {
     return expression.needsAliases(aliases);
   }

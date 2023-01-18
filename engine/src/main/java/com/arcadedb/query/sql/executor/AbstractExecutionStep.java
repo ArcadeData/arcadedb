@@ -28,7 +28,6 @@ public abstract class AbstractExecutionStep implements ExecutionStepInternal {
 
   protected final CommandContext                  ctx;
   protected       Optional<ExecutionStepInternal> prev     = Optional.empty();
-  protected       Optional<ExecutionStepInternal> next     = Optional.empty();
   protected       boolean                         timedOut = false;
   protected       long                            cost     = -1;
 
@@ -42,11 +41,6 @@ public abstract class AbstractExecutionStep implements ExecutionStepInternal {
   @Override
   public void setPrevious(final ExecutionStepInternal step) {
     this.prev = Optional.ofNullable(step);
-  }
-
-  @Override
-  public void setNext(final ExecutionStepInternal step) {
-    this.next = Optional.ofNullable(step);
   }
 
   public CommandContext getContext() {

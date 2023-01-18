@@ -106,46 +106,6 @@ public class NotInCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean supportsBasicCalculation() {
-
-    if (operator != null && !operator.supportsBasicCalculation()) {
-      return false;
-    }
-    if (left != null && !left.supportsBasicCalculation()) {
-      return false;
-    }
-    return rightMathExpression == null || rightMathExpression.supportsBasicCalculation();
-
-  }
-
-  @Override
-  protected int getNumberOfExternalCalculations() {
-    int total = 0;
-    if (operator != null && !operator.supportsBasicCalculation()) {
-      total++;
-    }
-    if (left != null && !left.supportsBasicCalculation()) {
-      total++;
-    }
-    if (rightMathExpression != null && !rightMathExpression.supportsBasicCalculation()) {
-      total++;
-    }
-    return total;
-  }
-
-  @Override
-  protected List<Object> getExternalCalculationConditions() {
-    final List<Object> result = new ArrayList<Object>();
-    if (operator != null && !operator.supportsBasicCalculation()) {
-      result.add(this);
-    }
-    if (rightMathExpression != null && !rightMathExpression.supportsBasicCalculation()) {
-      result.add(rightMathExpression);
-    }
-    return result;
-  }
-
-  @Override
   public boolean needsAliases(final Set<String> aliases) {
     if (left.needsAliases(aliases))
       return true;

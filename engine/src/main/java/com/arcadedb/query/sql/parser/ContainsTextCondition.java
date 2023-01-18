@@ -73,35 +73,6 @@ public class ContainsTextCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean supportsBasicCalculation() {
-    return true;
-  }
-
-  @Override
-  protected int getNumberOfExternalCalculations() {
-    int total = 0;
-    if (!left.supportsBasicCalculation()) {
-      total++;
-    }
-    if (!right.supportsBasicCalculation()) {
-      total++;
-    }
-    return total;
-  }
-
-  @Override
-  protected List<Object> getExternalCalculationConditions() {
-    final List<Object> result = new ArrayList<Object>();
-    if (!left.supportsBasicCalculation()) {
-      result.add(left);
-    }
-    if (!right.supportsBasicCalculation()) {
-      result.add(right);
-    }
-    return result;
-  }
-
-  @Override
   public boolean needsAliases(final Set<String> aliases) {
     if (!left.needsAliases(aliases)) {
       return true;

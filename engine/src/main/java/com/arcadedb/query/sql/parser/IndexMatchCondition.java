@@ -91,23 +91,6 @@ public class IndexMatchCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean supportsBasicCalculation() {
-    return false;
-  }
-
-  @Override
-  protected int getNumberOfExternalCalculations() {
-    return 1;
-  }
-
-  @Override
-  protected List<Object> getExternalCalculationConditions() {
-    final List<Object> result = new ArrayList<Object>();
-    result.add(this);
-    return result;
-  }
-
-  @Override
   public boolean needsAliases(final Set<String> aliases) {
     if (leftExpressions != null) {
       for (final Expression exp : leftExpressions) {

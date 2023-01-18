@@ -123,10 +123,9 @@ public class ScriptExecutionPlan implements InternalExecutionPlan {
   public void chain(final InternalExecutionPlan nextPlan, final boolean profilingEnabled) {
     final ScriptLineStep lastStep = steps.size() == 0 ? null : steps.get(steps.size() - 1);
     final ScriptLineStep nextStep = new ScriptLineStep(nextPlan, ctx, profilingEnabled);
-    if (lastStep != null) {
-      lastStep.setNext(nextStep);
+    if (lastStep != null)
       nextStep.setPrevious(lastStep);
-    }
+
     steps.add(nextStep);
     this.lastStep = nextStep;
   }

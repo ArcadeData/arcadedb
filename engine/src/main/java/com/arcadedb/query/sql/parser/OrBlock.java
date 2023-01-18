@@ -104,34 +104,6 @@ public class OrBlock extends BooleanExpression {
     }
   }
 
-  @Override
-  protected boolean supportsBasicCalculation() {
-    for (final BooleanExpression expr : subBlocks) {
-      if (!expr.supportsBasicCalculation()) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  @Override
-  protected int getNumberOfExternalCalculations() {
-    int result = 0;
-    for (final BooleanExpression expr : subBlocks) {
-      result += expr.getNumberOfExternalCalculations();
-    }
-    return result;
-  }
-
-  @Override
-  protected List<Object> getExternalCalculationConditions() {
-    final List<Object> result = new ArrayList<Object>();
-    for (final BooleanExpression expr : subBlocks) {
-      result.addAll(expr.getExternalCalculationConditions());
-    }
-    return result;
-  }
-
   public List<BinaryCondition> getIndexedFunctionConditions(final DocumentType iSchemaClass, final Database database) {
     if (subBlocks == null || subBlocks.size() > 1) {
       return null;

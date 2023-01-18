@@ -46,21 +46,6 @@ public abstract class BooleanExpression extends SimpleNode {
     }
 
     @Override
-    protected boolean supportsBasicCalculation() {
-      return true;
-    }
-
-    @Override
-    protected int getNumberOfExternalCalculations() {
-      return 0;
-    }
-
-    @Override
-    protected List<Object> getExternalCalculationConditions() {
-      return Collections.emptyList();
-    }
-
-    @Override
     public boolean needsAliases(final Set<String> aliases) {
       return false;
     }
@@ -114,21 +99,6 @@ public abstract class BooleanExpression extends SimpleNode {
     @Override
     public boolean evaluate(final Result currentRecord, final CommandContext ctx) {
       return false;
-    }
-
-    @Override
-    protected boolean supportsBasicCalculation() {
-      return true;
-    }
-
-    @Override
-    protected int getNumberOfExternalCalculations() {
-      return 0;
-    }
-
-    @Override
-    protected List<Object> getExternalCalculationConditions() {
-      return Collections.emptyList();
     }
 
     @Override
@@ -187,21 +157,6 @@ public abstract class BooleanExpression extends SimpleNode {
   public abstract boolean evaluate(final Identifiable currentRecord, final CommandContext ctx);
 
   public abstract boolean evaluate(final Result currentRecord, final CommandContext ctx);
-
-  /**
-   * @return true if this expression can be calculated in plain Java, false otherwise
-   */
-  protected abstract boolean supportsBasicCalculation();
-
-  /**
-   * @return the number of sub-expressions that have to be calculated using an external engine
-   */
-  protected abstract int getNumberOfExternalCalculations();
-
-  /**
-   * @return the sub-expressions that have to be calculated using an external engine
-   */
-  protected abstract List<Object> getExternalCalculationConditions();
 
   public List<BinaryCondition> getIndexedFunctionConditions(final DocumentType iSchemaClass, final Database database) {
     return null;

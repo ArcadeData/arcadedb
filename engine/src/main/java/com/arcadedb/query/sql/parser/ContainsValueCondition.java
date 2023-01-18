@@ -96,27 +96,6 @@ public class ContainsValueCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean supportsBasicCalculation() {
-    return true;
-  }
-
-  @Override
-  protected int getNumberOfExternalCalculations() {
-    if (condition == null)
-      return 0;
-
-    return condition.getNumberOfExternalCalculations();
-  }
-
-  @Override
-  protected List<Object> getExternalCalculationConditions() {
-    if (condition == null)
-      return Collections.emptyList();
-
-    return condition.getExternalCalculationConditions();
-  }
-
-  @Override
   public boolean needsAliases(final Set<String> aliases) {
     if (left != null && left.needsAliases(aliases))
       return true;

@@ -127,21 +127,6 @@ public class BetweenCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean supportsBasicCalculation() {
-    return true;
-  }
-
-  @Override
-  protected int getNumberOfExternalCalculations() {
-    return 0;
-  }
-
-  @Override
-  protected List<Object> getExternalCalculationConditions() {
-    return Collections.emptyList();
-  }
-
-  @Override
   public boolean needsAliases(final Set<String> aliases) {
     if (first.needsAliases(aliases)) {
       return true;

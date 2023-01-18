@@ -55,21 +55,6 @@ public class ParenthesisBlock extends BooleanExpression {
   }
 
   @Override
-  public boolean supportsBasicCalculation() {
-    return subElement.supportsBasicCalculation();
-  }
-
-  @Override
-  protected int getNumberOfExternalCalculations() {
-    return subElement.getNumberOfExternalCalculations();
-  }
-
-  @Override
-  protected List<Object> getExternalCalculationConditions() {
-    return subElement.getExternalCalculationConditions();
-  }
-
-  @Override
   public List<AndBlock> flatten() {
     return subElement.flatten();
   }

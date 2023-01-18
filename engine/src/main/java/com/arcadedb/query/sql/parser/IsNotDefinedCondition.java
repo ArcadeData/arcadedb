@@ -49,21 +49,6 @@ public class IsNotDefinedCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean supportsBasicCalculation() {
-    return true;
-  }
-
-  @Override
-  protected int getNumberOfExternalCalculations() {
-    return 0;
-  }
-
-  @Override
-  protected List<Object> getExternalCalculationConditions() {
-    return Collections.emptyList();
-  }
-
-  @Override
   public boolean needsAliases(final Set<String> aliases) {
     return expression.needsAliases(aliases);
   }
