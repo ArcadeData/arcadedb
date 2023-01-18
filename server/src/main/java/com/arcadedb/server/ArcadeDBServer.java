@@ -128,18 +128,18 @@ public class ArcadeDBServer {
 
     security.loadUsers();
 
-    loadDefaultDatabases();
-
     httpServer = new HttpServer(this);
-
-    registerPlugins();
-
-    httpServer.startService();
 
     if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED)) {
       haServer = new HAServer(this, configuration);
       haServer.startService();
     }
+
+    loadDefaultDatabases();
+
+    registerPlugins();
+
+    httpServer.startService();
 
     status = STATUS.ONLINE;
 

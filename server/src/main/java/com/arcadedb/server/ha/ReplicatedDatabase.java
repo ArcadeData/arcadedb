@@ -98,7 +98,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
   public void commit() {
     proxied.incrementStatsTxCommits();
 
-    final boolean isLeader = server.getHA().isLeader();
+    final boolean isLeader = isLeader();
 
     proxied.executeInReadLock(() -> {
       proxied.checkTransactionIsActive(false);
@@ -566,7 +566,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
 
   @Override
   public ResultSet command(final String language, final String query, final Object... args) {
-    if (!server.getHA().isLeader()) {
+    if (!isLeader()) {
       final QueryEngine.AnalyzedQuery analyzed = proxied.getQueryEngineManager().getInstance(language, this).analyze(query);
       if (analyzed.isDDL()) {
         // USE A BIGGER TIMEOUT CONSIDERING THE DOUBLE LATENCY
@@ -581,7 +581,7 @@ public class ReplicatedDatabase implements DatabaseInternal {
 
   @Override
   public ResultSet command(final String language, final String query, final Map<String, Object> args) {
-    if (!server.getHA().isLeader()) {
+    if (!isLeader()) {
       final QueryEngine.AnalyzedQuery analyzed = proxied.getQueryEngineManager().getInstance(language, this).analyze(query);
       if (analyzed.isDDL()) {
         // USE A BIGGER TIMEOUT CONSIDERING THE DOUBLE LATENCY
@@ -832,5 +832,9 @@ public class ReplicatedDatabase implements DatabaseInternal {
       serializedSchema = "";
 
     return new DatabaseChangeStructureRequest(proxied.getName(), serializedSchema, addFiles, removeFiles);
+  }
+
+  private boolean isLeader() {
+    return server.getHA() != null && server.getHA().isLeader();
   }
 }
