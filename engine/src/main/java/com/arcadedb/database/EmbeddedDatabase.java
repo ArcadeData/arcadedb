@@ -1070,7 +1070,8 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
     final DocumentType type = schema.getType(typeName);
     if (!type.getClass().equals(DocumentType.class))
-      throw new IllegalArgumentException("Cannot create an embedded document of type '" + typeName + "' because is not a document type");
+      throw new IllegalArgumentException(
+          "Cannot create an embedded document of type '" + typeName + "' because it is a " + type.getClass().getName() + " instead of a document type ");
 
     return new MutableEmbeddedDocument(wrappedDatabaseInstance, type, modifier);
   }
