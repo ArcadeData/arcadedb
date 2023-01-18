@@ -119,7 +119,7 @@ public class ServerSecurityIT {
     final ServerSecurity security = new ServerSecurity(null, new ContextConfiguration(), "./target");
 
     final JSONObject json = new JSONObject().put("name", "providedUser").put("password", security.encodePassword("MyPassword12345"))
-        .put("databases", new JSONObject());
+        .put("databases", new JSONObject().put("dbtest", new JSONObject()));
 
     repository.save(Collections.singletonList(json));
 
@@ -128,6 +128,10 @@ public class ServerSecurityIT {
     security.loadUsers();
 
     Assertions.assertTrue(security.existsUser("providedUser"));
+
+    ServerSecurityUser user2 = security.getUser("providedUser");
+    Assertions.assertEquals("providedUser", user2.getName());
+
     Assertions.assertFalse(security.existsUser("root"));
     passwordShouldMatch(security, "MyPassword12345", security.getUser("providedUser").getPassword());
 

@@ -58,10 +58,6 @@ final public class DatabaseEventWatcherThread extends Thread {
     }
   }
 
-  public boolean isRunning() {
-    return running;
-  }
-
   /**
    * Sends the shutdown signal to the thread and waits for termination.
    */

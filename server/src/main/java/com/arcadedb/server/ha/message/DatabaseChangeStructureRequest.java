@@ -48,18 +48,6 @@ public class DatabaseChangeStructureRequest extends HAAbstractCommand {
     this.filesToRemove = filesToRemove;
   }
 
-  public Map<Integer, String> getFilesToAdd() {
-    return filesToAdd;
-  }
-
-  public Map<Integer, String> getFilesToRemove() {
-    return filesToRemove;
-  }
-
-  public String getSchemaJson() {
-    return schemaJson;
-  }
-
   @Override
   public void toStream(final Binary stream) {
     stream.putString(databaseName);

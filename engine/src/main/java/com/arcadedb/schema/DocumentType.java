@@ -790,15 +790,6 @@ public class DocumentType {
     buckets.remove(bucket);
   }
 
-  protected Map<String, Property> getPolymorphicProperties() {
-    final Map<String, Property> allProperties = new HashMap<>(properties);
-
-    for (final DocumentType p : superTypes)
-      allProperties.putAll(p.getPolymorphicProperties());
-
-    return allProperties;
-  }
-
   public boolean hasBucket(final String bucketName) {
     for (final Bucket b : buckets)
       if (b.getName().equals(bucketName))

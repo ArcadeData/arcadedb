@@ -186,14 +186,6 @@ public class ReplicatedDatabase implements DatabaseInternal {
     tx.commit2ndPhase(phase1);
   }
 
-  public long getTimeout() {
-    return timeout;
-  }
-
-  public ArcadeDBServer getServer() {
-    return server;
-  }
-
   @Override
   public DatabaseInternal getWrappedDatabaseInstance() {
     return this;

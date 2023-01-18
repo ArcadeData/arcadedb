@@ -284,12 +284,15 @@ public class ServerProfilingIT {
     try {
       final DatabaseInternal database = (DatabaseInternal) SERVER.getDatabase(DATABASE_NAME);
 
-      checkElonUser(setCurrentUser("elon", database));
+      final ServerSecurityUser elon = setCurrentUser("elon", database);
+      checkElonUser(elon);
+      Assertions.assertTrue(elon.getAuthorizedDatabases().contains(database.getName()));
 
       createSchemaNotAllowed(database);
 
       // SWITCH TO ROOT TO CREATE SOME TYPES FOR FURTHER TESTS
-      setCurrentUser("root", database);
+      final ServerSecurityUser root = setCurrentUser("root", database);
+      Assertions.assertTrue(root.getAuthorizedDatabases().contains("*"));
 
       createSchema(database);
 
@@ -490,6 +493,7 @@ public class ServerProfilingIT {
     final SecurityDatabaseUser dbUser = user.getDatabaseUser(database);
     DatabaseContext.INSTANCE.init(database).setCurrentUser(dbUser);
     Assertions.assertEquals(dbUser, DatabaseContext.INSTANCE.getContext(database.getDatabasePath()).getCurrentUser());
+    Assertions.assertEquals(userName, dbUser.getName());
     return user;
   }
 

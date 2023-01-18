@@ -236,10 +236,6 @@ public class HttpServer implements ServerPlugin {
     return listeningAddress;
   }
 
-  public String getHost() {
-    return host;
-  }
-
   public int getPort() {
     return httpPortListening;
   }

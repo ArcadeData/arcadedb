@@ -53,10 +53,6 @@ public class EventWatcherSubscription {
     typeSubscriptions.computeIfAbsent(key, k -> new HashSet<>()).addAll(changeTypes == null ? allTypes : changeTypes);
   }
 
-  public String getDatabase() {
-    return database;
-  }
-
   public WebSocketChannel getChannel() {
     return channel;
   }

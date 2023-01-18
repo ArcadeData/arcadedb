@@ -38,11 +38,6 @@ public class LeaderNetworkListener extends Thread {
   private final static int                 protocolVersion = -1;
   private final        String              hostName;
   private              int                 port;
-  private              ClientConnected     callback;
-
-  public interface ClientConnected {
-    void connected();
-  }
 
   public LeaderNetworkListener(final HAServer ha, final ServerSocketFactory iSocketFactory, final String iHostName, final String iHostPortRange) {
     super(ha.getServerName() + " replication listen at " + iHostName + ":" + iHostPortRange);
@@ -103,10 +98,6 @@ public class LeaderNetworkListener extends Thread {
       } catch (final IOException e) {
         // IGNORE IT
       }
-  }
-
-  public void setCallback(final ClientConnected callback) {
-    this.callback = callback;
   }
 
   @Override
@@ -272,9 +263,6 @@ public class LeaderNetworkListener extends Thread {
     ha.registerIncomingConnection(connection.getRemoteServerName(), connection);
 
     connection.start();
-
-    if (callback != null)
-      callback.connected();
   }
 
   private void readClusterName(final Socket socket, final ChannelBinaryServer channel) throws IOException {
