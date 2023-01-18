@@ -14,7 +14,7 @@
 # limitations under the License.
 #
 
-FROM eclipse-temurin:19
+FROM eclipse-temurin:11
 
 LABEL maintainer="Arcade Data LTD (info@arcadedb.com)"
 
