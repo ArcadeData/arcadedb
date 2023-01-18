@@ -42,6 +42,8 @@ public class InternalResultSet implements ResultSet {
 
   @Override
   public Result next() {
+    if (!hasNext())
+      throw new NoSuchElementException();
     return content.get(next++);
   }
 
