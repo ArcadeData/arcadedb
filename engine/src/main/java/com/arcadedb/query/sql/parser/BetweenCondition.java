@@ -126,16 +126,6 @@ public class BetweenCondition extends BooleanExpression {
     third.toString(params, builder);
   }
 
-  private boolean needsAliases(final Set<String> aliases) {
-    if (first.needsAliases(aliases)) {
-      return true;
-    }
-    if (second.needsAliases(aliases)) {
-      return true;
-    }
-    return third.needsAliases(aliases);
-  }
-
   @Override
   public BooleanExpression copy() {
     final BetweenCondition result = new BetweenCondition(-1);

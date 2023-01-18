@@ -53,10 +53,6 @@ public class IsNotNullCondition extends BooleanExpression {
     builder.append(" IS NOT NULL");
   }
 
-  private boolean needsAliases(final Set<String> aliases) {
-    return expression.needsAliases(aliases);
-  }
-
   @Override
   public BooleanExpression copy() {
     final IsNotNullCondition result = new IsNotNullCondition(-1);

@@ -90,24 +90,6 @@ public class IndexMatchCondition extends BooleanExpression {
     }
   }
 
-  private boolean needsAliases(final Set<String> aliases) {
-    if (leftExpressions != null) {
-      for (final Expression exp : leftExpressions) {
-        if (exp.needsAliases(aliases)) {
-          return true;
-        }
-      }
-    }
-    if (rightExpressions != null) {
-      for (final Expression exp : rightExpressions) {
-        if (exp.needsAliases(aliases)) {
-          return true;
-        }
-      }
-    }
-    return false;
-  }
-
   @Override
   public IndexMatchCondition copy() {
     final IndexMatchCondition result = new IndexMatchCondition(-1);

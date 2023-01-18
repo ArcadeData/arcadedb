@@ -27,14 +27,12 @@ import de.bwaldvogel.mongo.backend.AbstractMongoBackend;
 import de.bwaldvogel.mongo.exception.MongoServerException;
 
 public class MongoDBProtocolPlugin implements ServerPlugin {
-  private MongoServer          mongoDBServer;
-  private ArcadeDBServer       server;
-  private ContextConfiguration configuration;
+  private MongoServer    mongoDBServer;
+  private ArcadeDBServer server;
 
   @Override
   public void configure(final ArcadeDBServer arcadeDBServer, final ContextConfiguration configuration) {
     this.server = arcadeDBServer;
-    this.configuration = configuration;
   }
 
   @Override

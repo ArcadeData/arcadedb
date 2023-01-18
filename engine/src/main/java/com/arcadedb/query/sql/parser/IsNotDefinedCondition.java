@@ -48,10 +48,6 @@ public class IsNotDefinedCondition extends BooleanExpression {
     return !expression.isDefinedFor(currentRecord);
   }
 
-  private boolean needsAliases(final Set<String> aliases) {
-    return expression.needsAliases(aliases);
-  }
-
   @Override
   public IsNotDefinedCondition copy() {
     final IsNotDefinedCondition result = new IsNotDefinedCondition(-1);

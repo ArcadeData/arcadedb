@@ -69,7 +69,7 @@ public class RecordFactory {
   public Record newMutableRecord(final Database database, final DocumentType type) {
     if (type instanceof VertexType)
       return new MutableVertex(database, (VertexType) type, null);
-    if (type instanceof VertexType)
+    if (type instanceof EdgeType)
       return new MutableEdge(database, (EdgeType) type, null);
     return new MutableDocument(database, type, null);
   }

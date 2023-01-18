@@ -59,10 +59,7 @@ public class DeleteFunctionStatement extends SimpleExecStatement {
 
     if (!Objects.equals(libraryName, that.libraryName))
       return false;
-    if (!Objects.equals(functionName, that.functionName))
-      return false;
-
-    return true;
+    return Objects.equals(functionName, that.functionName);
   }
 
   @Override

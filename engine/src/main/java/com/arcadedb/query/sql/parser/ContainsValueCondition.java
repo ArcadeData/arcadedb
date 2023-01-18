@@ -147,9 +147,7 @@ public class ContainsValueCondition extends BooleanExpression {
   public boolean isIndexAware(final IndexSearchInfo info) {
     if (left.isBaseIdentifier()) {
       if (info.getField().equals(left.getDefaultAlias().getStringValue())) {
-        if (expression != null && expression.isEarlyCalculated(info.getCtx()) && info.isMap() && info.isIndexByValue()) {
-          return true;
-        }
+        return expression != null && expression.isEarlyCalculated(info.getCtx()) && info.isMap() && info.isIndexByValue();
       }
     }
     return false;

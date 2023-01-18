@@ -120,24 +120,6 @@ public class ArrayConcatExpression extends SimpleNode {
     return true;
   }
 
-  protected boolean supportsBasicCalculation() {
-    for (final ArrayConcatExpressionElement expr : this.childExpressions) {
-      if (!expr.supportsBasicCalculation()) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  public boolean needsAliases(final Set<String> aliases) {
-    for (final ArrayConcatExpressionElement expr : childExpressions) {
-      if (expr.needsAliases(aliases)) {
-        return true;
-      }
-    }
-    return false;
-  }
-
   public boolean isAggregate() {
     for (final ArrayConcatExpressionElement expr : this.childExpressions) {
       if (expr.isAggregate()) {

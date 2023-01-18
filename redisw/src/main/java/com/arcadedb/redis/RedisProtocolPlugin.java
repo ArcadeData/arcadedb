@@ -26,13 +26,11 @@ import com.arcadedb.server.ha.network.DefaultServerSocketFactory;
 
 public class RedisProtocolPlugin implements ServerPlugin {
   private ArcadeDBServer       server;
-  private ContextConfiguration configuration;
   private RedisNetworkListener listener;
 
   @Override
   public void configure(final ArcadeDBServer arcadeDBServer, final ContextConfiguration configuration) {
     this.server = arcadeDBServer;
-    this.configuration = configuration;
   }
 
   @Override

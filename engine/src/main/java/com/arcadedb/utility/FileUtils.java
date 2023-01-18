@@ -225,7 +225,6 @@ public class FileUtils {
     return false;
   }
 
-  @SuppressWarnings("resource")
   public static final void copyFile(final File source, final File destination) throws IOException {
     try (final FileInputStream fis = new FileInputStream(source); final FileOutputStream fos = new FileOutputStream(destination)) {
       final FileChannel sourceChannel = fis.getChannel();

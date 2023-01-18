@@ -54,8 +54,7 @@ public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
     else
       labels = null;
 
-    return ((SQLQueryEngine) iContext.getDatabase().getQueryEngine("sql")).foreachRecord(iArgument -> move(iContext.getDatabase(), iArgument, labels), iThis,
-        iContext);
+    return SQLQueryEngine.foreachRecord(iArgument -> move(iContext.getDatabase(), iArgument, labels), iThis, iContext);
   }
 
   protected Object v2v(final Database graph, final Identifiable iRecord, final Vertex.DIRECTION iDirection, final String[] iLabels) {

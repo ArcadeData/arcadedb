@@ -29,8 +29,8 @@ import java.util.stream.*;
  * Created by luigidellaquila on 28/07/15.
  */
 public class Pattern {
-  public Map<String, PatternNode> aliasToNode = new LinkedHashMap<>();
-  public int                      numOfEdges  = 0;
+  public final Map<String, PatternNode> aliasToNode = new LinkedHashMap<>();
+  public       int                      numOfEdges  = 0;
 
   public void addExpression(final MatchExpression expression) {
     PatternNode originNode = getOrCreateNode(expression.origin);

@@ -73,9 +73,7 @@ public class RID implements Identifiable, Comparable<Object>, Serializable {
       final String valueAsString = value.toString();
       if (valueAsString.length() > 3 && valueAsString.charAt(0) == '#') {
         final String[] parts = valueAsString.substring(1).split(":");
-        if (parts.length == 2 && NumberUtils.isIntegerNumber(parts[0]) && NumberUtils.isIntegerNumber(parts[1])) {
-          return true;
-        }
+        return parts.length == 2 && NumberUtils.isIntegerNumber(parts[0]) && NumberUtils.isIntegerNumber(parts[1]);
       }
     }
 

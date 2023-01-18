@@ -117,13 +117,6 @@ public class MatchesCondition extends BooleanExpression {
     }
   }
 
-  private boolean needsAliases(final Set<String> aliases) {
-    if (expression.needsAliases(aliases)) {
-      return true;
-    }
-    return rightExpression.needsAliases(aliases);
-  }
-
   @Override
   public MatchesCondition copy() {
     final MatchesCondition result = new MatchesCondition(-1);

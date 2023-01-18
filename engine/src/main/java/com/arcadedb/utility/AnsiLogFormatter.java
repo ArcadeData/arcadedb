@@ -58,10 +58,6 @@ public class AnsiLogFormatter extends LogFormatter {
         buffer.append("$ANSI{yellow ");
       else if (level == Level.INFO)
         buffer.append("$ANSI{green ");
-      else if (level == Level.CONFIG)
-        buffer.append("$ANSI{green ");
-      else if (level == Level.CONFIG)
-        buffer.append("$ANSI{white ");
       else
         // DEFAULT
         buffer.append("$ANSI{white ");

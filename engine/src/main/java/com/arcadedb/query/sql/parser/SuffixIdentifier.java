@@ -240,20 +240,6 @@ public class SuffixIdentifier extends SimpleNode {
     return identifier != null;
   }
 
-  public boolean needsAliases(final Set<String> aliases) {
-    if (identifier != null)
-      return aliases.contains(identifier.getStringValue());
-
-    if (recordAttribute != null) {
-      for (final String s : aliases) {
-        if (s.equalsIgnoreCase(recordAttribute.name)) {
-          return true;
-        }
-      }
-    }
-    return false;
-  }
-
   public boolean isAggregate() {
     return false;
   }

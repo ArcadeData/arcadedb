@@ -47,9 +47,9 @@ public class TableFormatter {
   protected final Set<String>                      columnHidden         = new HashSet<String>();
   protected       Set<String>                      prefixedColumns      = new LinkedHashSet<>();
   protected final TableOutput                      out;
-  protected       int                              maxMultiValueEntries = 10;
-  protected       int                              minColumnSize        = 4;
-  protected       int                              maxWidthSize         = DEFAULT_MAX_WIDTH;
+  protected       int maxMultiValueEntries = 10;
+  protected final int minColumnSize        = 4;
+  protected       int maxWidthSize         = DEFAULT_MAX_WIDTH;
   protected       String                           nullValue            = "";
   protected       boolean                          leftBorder           = true;
   protected       boolean                          rightBorder          = true;

@@ -28,7 +28,7 @@ import java.util.logging.*;
 public class LogManager {
   public static final  LogContext CONTEXT_INSTANCE = new LogContext();
   private static final LogManager instance         = new LogManager();
-  private final        boolean    debug            = false;
+  private              boolean    debug            = false;
   private              Logger     logger;
 
   static class LogContext extends ThreadLocal<String> {
@@ -174,6 +174,10 @@ public class LogManager {
 
   public boolean isDebugEnabled() {
     return debug;
+  }
+
+  public void setDebugEnabled(boolean value) {
+    debug = value;
   }
 
   public void flush() {

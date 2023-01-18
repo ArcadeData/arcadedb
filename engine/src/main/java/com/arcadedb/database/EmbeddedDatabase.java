@@ -36,6 +36,7 @@ import com.arcadedb.engine.WALFile;
 import com.arcadedb.engine.WALFileFactory;
 import com.arcadedb.engine.WALFileFactoryEmbedded;
 import com.arcadedb.exception.ArcadeDBException;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.DatabaseIsClosedException;
 import com.arcadedb.exception.DatabaseIsReadOnlyException;
 import com.arcadedb.exception.DatabaseMetadataException;
@@ -115,9 +116,9 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
   protected            PageManager                               pageManager;
   protected            EmbeddedSchema                            schema;
   protected            TransactionManager                        transactionManager;
-  protected volatile   DatabaseAsyncExecutorImpl                 async                                = null;
-  protected            Lock                                      asyncLock                            = new ReentrantLock();
-  protected            boolean                                   autoTransaction                      = false;
+  protected volatile DatabaseAsyncExecutorImpl async           = null;
+  protected final    Lock                      asyncLock       = new ReentrantLock();
+  protected          boolean                   autoTransaction = false;
   protected volatile   boolean                                   open                                 = false;
   private              boolean                                   readYourWrites                       = true;
   private final        Map<CALLBACK_EVENT, List<Callable<Void>>> callbacks;
@@ -1251,25 +1252,31 @@ public class EmbeddedDatabase extends RWLockContext implements DatabaseInternal 
 
   @Override
   public ResultSet execute(final String language, final String script, final Map<String, Object> params) {
+    if (!language.equalsIgnoreCase("sql"))
+      throw new CommandExecutionException("Language '" + language + "' does not support script");
+
     checkDatabaseIsOpen();
 
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(getWrappedDatabaseInstance());
     context.setInputParameters(params);
 
-    final List<Statement> statements = ((SQLQueryEngine) getQueryEngine(language)).parseScript(script, wrappedDatabaseInstance);
+    final List<Statement> statements = SQLQueryEngine.parseScript(script, wrappedDatabaseInstance);
     return executeInternal(statements, context);
   }
 
   @Override
   public ResultSet execute(final String language, final String script, final Object... args) {
+    if (!language.equalsIgnoreCase("sql"))
+      throw new CommandExecutionException("Language '" + language + "' does not support script");
+
     checkDatabaseIsOpen();
 
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(getWrappedDatabaseInstance());
     context.setInputParameters(args);
 
-    final List<Statement> statements = ((SQLQueryEngine) getQueryEngine(language)).parseScript(script, wrappedDatabaseInstance);
+    final List<Statement> statements = SQLQueryEngine.parseScript(script, wrappedDatabaseInstance);
     return executeInternal(statements, context);
   }
 

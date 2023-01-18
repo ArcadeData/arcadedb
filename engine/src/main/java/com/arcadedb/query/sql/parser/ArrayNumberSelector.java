@@ -88,13 +88,6 @@ public class ArrayNumberSelector extends SimpleNode {
     return null;
   }
 
-  public boolean needsAliases(final Set<String> aliases) {
-    if (expressionValue != null) {
-      return expressionValue.needsAliases(aliases);
-    }
-    return false;
-  }
-
   public ArrayNumberSelector copy() {
     final ArrayNumberSelector result = new ArrayNumberSelector(-1);
     result.inputValue = inputValue == null ? null : inputValue.copy();

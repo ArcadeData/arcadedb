@@ -167,10 +167,7 @@ public class GraalPolyglotEngine implements AutoCloseable {
     if (msg.startsWith("ReferenceError:"))
       return true;
 
-    if (msg.contains("invalid literal"))
-      return true;
-
-    return false;
+    return msg.contains("invalid literal");
   }
 
   public static String endUserMessage(final Throwable e, final boolean includePosition) {

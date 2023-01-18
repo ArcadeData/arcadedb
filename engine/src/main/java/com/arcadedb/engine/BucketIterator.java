@@ -44,7 +44,7 @@ public class BucketIterator implements Iterator<Record> {
   Record   next                = null;
   int      currentRecordInPage = 0;
   long     browsed             = 0;
-  long     limit;
+  final long limit;
 
   BucketIterator(final Bucket bucket, final Database db) {
     ((DatabaseInternal) db).checkPermissionsOnFile(bucket.id, SecurityDatabaseUser.ACCESS.READ_RECORD);

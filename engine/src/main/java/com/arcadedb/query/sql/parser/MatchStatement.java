@@ -75,9 +75,9 @@ public class MatchStatement extends Statement {
   public static class MatchContext {
     int currentEdgeNumber = 0;
 
-    Map<String, Iterable>     candidates   = new LinkedHashMap<String, Iterable>();
-    Map<String, Identifiable> matched      = new LinkedHashMap<String, Identifiable>();
-    Map<PatternEdge, Boolean> matchedEdges = new IdentityHashMap<PatternEdge, Boolean>();
+    final Map<String, Iterable>     candidates   = new LinkedHashMap<String, Iterable>();
+    final Map<String, Identifiable> matched      = new LinkedHashMap<String, Identifiable>();
+    final Map<PatternEdge, Boolean> matchedEdges = new IdentityHashMap<PatternEdge, Boolean>();
 
     public MatchContext copy(final String alias, final Identifiable value) {
       final MatchContext result = new MatchContext();
@@ -101,7 +101,7 @@ public class MatchStatement extends Statement {
 
   public static class EdgeTraversal {
     boolean     out = true;
-    PatternEdge edge;
+    final PatternEdge edge;
 
     public EdgeTraversal(final PatternEdge edge, final boolean out) {
       this.edge = edge;

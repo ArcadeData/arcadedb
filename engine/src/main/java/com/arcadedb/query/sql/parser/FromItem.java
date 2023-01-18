@@ -394,10 +394,7 @@ public class FromItem extends SimpleNode {
     if (statement != null && statement.refersToParent()) {
       return true;
     }
-    if (functionCall != null && functionCall.refersToParent()) {
-      return true;
-    }
-    return false;
+    return functionCall != null && functionCall.refersToParent();
   }
 }
 /* JavaCC - OriginalChecksum=f64e3b4d2a2627a1b5d04a7dcb95fa94 (do not edit this line) */

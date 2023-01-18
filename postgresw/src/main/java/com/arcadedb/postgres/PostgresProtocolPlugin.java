@@ -26,7 +26,6 @@ import com.arcadedb.server.ha.network.DefaultServerSocketFactory;
 
 public class PostgresProtocolPlugin implements ServerPlugin {
   private ArcadeDBServer          server;
-  private ContextConfiguration    configuration;
   private PostgresNetworkListener listener;
   private String                  host;
   private int                     port;
@@ -34,7 +33,6 @@ public class PostgresProtocolPlugin implements ServerPlugin {
   @Override
   public void configure(final ArcadeDBServer arcadeDBServer, final ContextConfiguration configuration) {
     this.server = arcadeDBServer;
-    this.configuration = configuration;
     this.host = configuration.getValueAsString(GlobalConfiguration.POSTGRES_HOST);
     this.port = configuration.getValueAsInteger(GlobalConfiguration.POSTGRES_PORT);
   }

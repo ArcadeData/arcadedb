@@ -50,7 +50,6 @@ public class CompressedAny2RIDIndex<K> {
 
   public class EntryIterator implements Iterator<RID> {
     private int posInHashTable = 0;
-    private int posInChunk     = 0;
     private int nextKeyPos;
 
     private RID nextVertexRID;
@@ -75,7 +74,7 @@ public class CompressedAny2RIDIndex<K> {
 
       // NEXT POSITION IN HASHTABLE
       for (; posInHashTable < keys; ++posInHashTable) {
-        posInChunk = chunk.getInt(posInHashTable * Binary.INT_SERIALIZED_SIZE);
+        int posInChunk = chunk.getInt(posInHashTable * Binary.INT_SERIALIZED_SIZE);
         if (posInChunk > 0) {
           chunk.position(posInChunk);
 

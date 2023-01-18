@@ -169,13 +169,6 @@ public class LevelZeroIdentifier extends SimpleNode {
     return functionCall.getParams().get(0);
   }
 
-  public boolean needsAliases(final Set<String> aliases) {
-    if (functionCall != null && functionCall.needsAliases(aliases)) {
-      return true;
-    }
-    return collection != null && collection.needsAliases(aliases);
-  }
-
   public boolean isAggregate() {
     if (functionCall != null && functionCall.isAggregate()) {
       return true;

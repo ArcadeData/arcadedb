@@ -118,13 +118,6 @@ public class BinaryCondition extends BooleanExpression {
     return null;
   }
 
-  private boolean needsAliases(final Set<String> aliases) {
-    if (left.needsAliases(aliases)) {
-      return true;
-    }
-    return right.needsAliases(aliases);
-  }
-
   @Override
   public BinaryCondition copy() {
     final BinaryCondition result = new BinaryCondition(-1);

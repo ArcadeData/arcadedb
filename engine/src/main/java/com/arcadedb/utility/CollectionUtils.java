@@ -65,13 +65,13 @@ public class CollectionUtils {
   }
 
   public static Document getFirstResultAsDocument(final ResultSet resultset) {
-    while (resultset.hasNext())
+    if (resultset.hasNext())
       return resultset.next().toElement();
     return null;
   }
 
   public static Object getFirstResultValue(final ResultSet resultset, final String propertyName) {
-    while (resultset.hasNext())
+    if (resultset.hasNext())
       return resultset.next().getProperty(propertyName);
     return null;
   }

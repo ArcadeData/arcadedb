@@ -24,7 +24,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.sql.executor.QueryOperatorEquals;
 
 public class ScAndOperator extends SimpleNode implements BinaryCompareOperator {
-  QueryOperatorEquals lowLevelOperator = null;
+  final QueryOperatorEquals lowLevelOperator = null;
 
   public ScAndOperator(final int id) {
     super(id);

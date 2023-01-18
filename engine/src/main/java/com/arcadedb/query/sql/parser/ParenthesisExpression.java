@@ -92,24 +92,6 @@ public class ParenthesisExpression extends MathExpression {
     builder.append(")");
   }
 
-  @Override
-  protected boolean supportsBasicCalculation() {
-    if (expression != null) {
-      return expression.supportsBasicCalculation();
-    }
-    return true;
-  }
-
-  @Override
-  public boolean isEarlyCalculated(final CommandContext ctx) {
-    // TODO implement query execution and early calculation;
-    return expression != null && expression.isEarlyCalculated(ctx);
-  }
-
-  public boolean needsAliases(final Set<String> aliases) {
-    return expression.needsAliases(aliases);
-  }
-
   public boolean isExpand() {
     if (expression != null) {
       return expression.isExpand();

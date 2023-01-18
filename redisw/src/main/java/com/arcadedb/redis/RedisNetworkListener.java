@@ -34,8 +34,6 @@ public class RedisNetworkListener extends Thread {
   private              ServerSocket        serverSocket;
   private volatile     boolean             active          = true;
   private static final int                 protocolVersion = -1;
-  private final        String              hostName;
-  private              int                 port;
   private              ClientConnected     callback;
 
   public interface ClientConnected {
@@ -46,7 +44,6 @@ public class RedisNetworkListener extends Thread {
     super(server.getServerName() + " RedisW listening at " + iHostName + ":" + iHostPortRange);
 
     this.server = server;
-    this.hostName = iHostName;
     this.socketFactory = iSocketFactory == null ? ServerSocketFactory.getDefault() : iSocketFactory;
 
     listen(iHostName, iHostPortRange);
@@ -84,14 +81,6 @@ public class RedisNetworkListener extends Thread {
     }
   }
 
-  public String getHost() {
-    return hostName;
-  }
-
-  public int getPort() {
-    return port;
-  }
-
   public void close() {
     this.active = false;
 
@@ -120,6 +109,7 @@ public class RedisNetworkListener extends Thread {
    */
   private void listen(final String hostName, final String hostPortRange) {
 
+    int port;
     for (final int tryPort : getPorts(hostPortRange)) {
       final InetSocketAddress inboundAddr = new InetSocketAddress(hostName, tryPort);
       try {

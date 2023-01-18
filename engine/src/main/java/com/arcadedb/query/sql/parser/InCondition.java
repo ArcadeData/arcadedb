@@ -171,13 +171,6 @@ public class InCondition extends BooleanExpression {
     return o.toString();
   }
 
-  private boolean needsAliases(final Set<String> aliases) {
-    if (left.needsAliases(aliases))
-      return true;
-
-    return rightMathExpression != null && rightMathExpression.needsAliases(aliases);
-  }
-
   @Override
   public InCondition copy() {
     final InCondition result = new InCondition(-1);
@@ -263,9 +256,8 @@ public class InCondition extends BooleanExpression {
       if (info.getField().equals(left.getDefaultAlias().getStringValue())) {
         if (rightMathExpression != null) {
           return rightMathExpression.isEarlyCalculated(info.getCtx());
-        } else if (rightParam != null) {
-          return true;
-        }
+        } else
+          return rightParam != null;
       }
     }
     return false;

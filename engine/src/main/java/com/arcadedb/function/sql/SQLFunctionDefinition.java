@@ -30,20 +30,17 @@ public class SQLFunctionDefinition implements FunctionDefinition {
   private final Database database;
   private final String   functionName;
   private final String   implementation;
-  private final String[] parameters;
 
   /**
    * Creates the function with its name, implementation in form of text and optional parameters.
    *
    * @param functionName   Name of the function
    * @param implementation Implementation code as string
-   * @param parameters     optional positional parameter names
    */
-  public SQLFunctionDefinition(final Database database, final String functionName, final String implementation, final String... parameters) {
+  public SQLFunctionDefinition(final Database database, final String functionName, final String implementation) {
     this.database = database;
     this.functionName = functionName;
     this.implementation = implementation;
-    this.parameters = parameters;
   }
 
   @Override

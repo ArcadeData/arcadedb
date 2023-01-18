@@ -24,9 +24,9 @@ import java.util.*;
 
 public abstract class SimpleNode implements Node {
   protected Node      parent;
-  protected Node[]    children;
-  protected int       id;
-  protected Object    value;
+  protected       Node[] children;
+  protected final int    id;
+  protected       Object value;
   protected SqlParser parser;
   protected Token     firstToken;
   protected Token     lastToken;

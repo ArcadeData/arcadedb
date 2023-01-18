@@ -62,12 +62,12 @@ public class MatchExecutionPlanner {
   protected final List<Expression>       returnItems;
   protected final List<Identifier>       returnAliases;
   protected final List<NestedProjection> returnNestedProjections;
-  boolean returnElements;
-  boolean returnPaths;
-  boolean returnPatterns;
-  boolean returnPathElements;
-  boolean returnDistinct;
-  protected final Skip    skip;
+  final           boolean                returnElements;
+  final           boolean                returnPaths;
+  final           boolean                returnPatterns;
+  final           boolean                returnPathElements;
+  final           boolean                returnDistinct;
+  protected final Skip                   skip;
   private final   GroupBy groupBy;
   private final   OrderBy orderBy;
   private final   Unwind  unwind;

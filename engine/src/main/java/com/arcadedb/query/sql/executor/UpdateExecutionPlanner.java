@@ -40,11 +40,11 @@ import java.util.stream.*;
 public class UpdateExecutionPlanner {
   private final   FromClause             target;
   public final    WhereClause            whereClause;
-  protected       boolean                upsert;
-  protected       List<UpdateOperations> operations;
-  protected       boolean                returnBefore;
-  protected       boolean                returnAfter;
-  protected       boolean                returnCount;
+  protected final boolean                upsert;
+  protected final List<UpdateOperations> operations;
+  protected final boolean                returnBefore;
+  protected final boolean                returnAfter;
+  protected final boolean                returnCount;
   protected       boolean                updateEdge = false;
   protected final Projection             returnProjection;
   public final    Limit                  limit;

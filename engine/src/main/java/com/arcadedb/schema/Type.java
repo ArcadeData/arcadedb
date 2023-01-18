@@ -283,7 +283,6 @@ public enum Type {
    *
    * @return The converted value or the original if no conversion was applied
    */
-  @SuppressWarnings({ "unchecked", "rawtypes" })
   public static Object convert(final Database database, final Object value, final Class<?> targetClass) {
     return convert(database, value, targetClass, null);
   }

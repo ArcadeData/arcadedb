@@ -248,16 +248,6 @@ public class Expression extends SimpleNode {
     return builder.toString();
   }
 
-  public boolean supportsBasicCalculation() {
-    if (mathExpression != null) {
-      return mathExpression.supportsBasicCalculation();
-    }
-    if (arrayConcatExpression != null) {
-      return arrayConcatExpression.supportsBasicCalculation();
-    }
-    return true;
-  }
-
   public boolean isIndexedFunctionCal() {
     if (mathExpression != null) {
       return mathExpression.isIndexedFunctionCall();
@@ -364,19 +354,6 @@ public class Expression extends SimpleNode {
 
   public Expression getExpandContent() {
     return mathExpression.getExpandContent();
-  }
-
-  public boolean needsAliases(final Set<String> aliases) {
-    if (mathExpression != null) {
-      return mathExpression.needsAliases(aliases);
-    }
-    if (arrayConcatExpression != null) {
-      return arrayConcatExpression.needsAliases(aliases);
-    }
-    if (json != null) {
-      return json.needsAliases(aliases);
-    }
-    return false;
   }
 
   public boolean isAggregate() {

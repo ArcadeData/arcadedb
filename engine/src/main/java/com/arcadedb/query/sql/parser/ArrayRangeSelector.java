@@ -147,13 +147,6 @@ public class ArrayRangeSelector extends SimpleNode {
     return Arrays.asList(Arrays.copyOfRange(arrayResult, lFrom, lTo));
   }
 
-  public boolean needsAliases(final Set<String> aliases) {
-    if (fromSelector != null && fromSelector.needsAliases(aliases)) {
-      return true;
-    }
-    return toSelector != null && toSelector.needsAliases(aliases);
-  }
-
   public ArrayRangeSelector copy() {
     final ArrayRangeSelector result = new ArrayRangeSelector(-1);
     result.from = from;

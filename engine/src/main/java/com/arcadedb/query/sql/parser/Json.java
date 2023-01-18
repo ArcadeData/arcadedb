@@ -126,15 +126,6 @@ public class Json extends SimpleNode {
     return null;
   }
 
-  public boolean needsAliases(final Set<String> aliases) {
-    for (final JsonItem item : items) {
-      if (item.needsAliases(aliases)) {
-        return true;
-      }
-    }
-    return false;
-  }
-
   public boolean isAggregate() {
     for (final JsonItem item : items) {
       if (item.isAggregate()) {

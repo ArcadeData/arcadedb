@@ -31,7 +31,7 @@ public abstract class AbstractExecutionStep implements ExecutionStepInternal {
   protected       boolean                         timedOut = false;
   protected       long                            cost     = -1;
 
-  protected boolean profilingEnabled;
+  protected final boolean profilingEnabled;
 
   public AbstractExecutionStep(final CommandContext ctx, final boolean profilingEnabled) {
     this.ctx = ctx;

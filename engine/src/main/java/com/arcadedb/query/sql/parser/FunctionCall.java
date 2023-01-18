@@ -246,15 +246,6 @@ public class FunctionCall extends SimpleNode {
     return name.getStringValue().equals("expand");
   }
 
-  public boolean needsAliases(final Set<String> aliases) {
-    for (final Expression param : params) {
-      if (param.needsAliases(aliases)) {
-        return true;
-      }
-    }
-    return false;
-  }
-
   public boolean isAggregate() {
     if (isAggregateFunction()) {
       return true;

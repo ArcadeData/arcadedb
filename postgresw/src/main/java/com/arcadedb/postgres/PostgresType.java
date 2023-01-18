@@ -18,11 +18,10 @@
  */
 package com.arcadedb.postgres;
 
-import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseFactory;
 
-import java.nio.ByteBuffer;
-import java.util.Date;
+import java.nio.*;
+import java.util.*;
 
 public enum PostgresType {
   SMALLINT(21, Short.class, 2, -1), //
@@ -48,68 +47,68 @@ public enum PostgresType {
     this.modifier = modifier;
   }
 
-  public void serialize(final ByteBuffer typeBuffer, final Object value) {
-    if (value == null) {
-      typeBuffer.putInt(-1);
-      return;
-    }
-
-    switch (this) {
-    case VARCHAR:
-      final byte[] str = value.toString().getBytes(DatabaseFactory.getDefaultCharset());
-      typeBuffer.putInt(str.length);
-      typeBuffer.put(str);
-      break;
-
-    case SMALLINT:
-      typeBuffer.putInt(Binary.SHORT_SERIALIZED_SIZE);
-      typeBuffer.putShort(((Number) value).shortValue());
-      break;
-
-    case INTEGER:
-      typeBuffer.putInt(Binary.INT_SERIALIZED_SIZE);
-      typeBuffer.putInt(((Number) value).intValue());
-      break;
-
-    case LONG:
-      typeBuffer.putInt(Binary.LONG_SERIALIZED_SIZE);
-      typeBuffer.putLong(((Number) value).longValue());
-      break;
-
-    case REAL:
-      typeBuffer.putInt(Binary.INT_SERIALIZED_SIZE);
-      typeBuffer.putFloat(((Number) value).floatValue());
-      break;
-
-    case DOUBLE:
-      typeBuffer.putInt(Binary.LONG_SERIALIZED_SIZE);
-      typeBuffer.putDouble(((Number) value).doubleValue());
-      break;
-
-    case DATE:
-      typeBuffer.putInt(Binary.LONG_SERIALIZED_SIZE);
-      typeBuffer.putLong(((Date) value).getTime());
-      break;
-
-    case CHAR:
-      typeBuffer.putInt(Binary.BYTE_SERIALIZED_SIZE);
-      typeBuffer.put((byte) ((Character) value).charValue());
-      break;
-
-    case BOOLEAN:
-      typeBuffer.putInt(Binary.BYTE_SERIALIZED_SIZE);
-      typeBuffer.put((byte) (((Boolean) value) ? '1' : '0'));
-      break;
+//  public void serialize(final ByteBuffer typeBuffer, final Object value) {
+//    if (value == null) {
+//      typeBuffer.putInt(-1);
+//      return;
+//    }
 //
-//    case ANY:
+//    switch (this) {
+//    case VARCHAR:
+//      final byte[] str = value.toString().getBytes(DatabaseFactory.getDefaultCharset());
+//      typeBuffer.putInt(str.length);
+//      typeBuffer.put(str);
+//      break;
+//
+//    case SMALLINT:
+//      typeBuffer.putInt(Binary.SHORT_SERIALIZED_SIZE);
+//      typeBuffer.putShort(((Number) value).shortValue());
+//      break;
+//
+//    case INTEGER:
 //      typeBuffer.putInt(Binary.INT_SERIALIZED_SIZE);
 //      typeBuffer.putInt(((Number) value).intValue());
 //      break;
-
-    default:
-      throw new PostgresProtocolException("Type " + this + " not supported for serializing");
-    }
-  }
+//
+//    case LONG:
+//      typeBuffer.putInt(Binary.LONG_SERIALIZED_SIZE);
+//      typeBuffer.putLong(((Number) value).longValue());
+//      break;
+//
+//    case REAL:
+//      typeBuffer.putInt(Binary.INT_SERIALIZED_SIZE);
+//      typeBuffer.putFloat(((Number) value).floatValue());
+//      break;
+//
+//    case DOUBLE:
+//      typeBuffer.putInt(Binary.LONG_SERIALIZED_SIZE);
+//      typeBuffer.putDouble(((Number) value).doubleValue());
+//      break;
+//
+//    case DATE:
+//      typeBuffer.putInt(Binary.LONG_SERIALIZED_SIZE);
+//      typeBuffer.putLong(((Date) value).getTime());
+//      break;
+//
+//    case CHAR:
+//      typeBuffer.putInt(Binary.BYTE_SERIALIZED_SIZE);
+//      typeBuffer.put((byte) ((Character) value).charValue());
+//      break;
+//
+//    case BOOLEAN:
+//      typeBuffer.putInt(Binary.BYTE_SERIALIZED_SIZE);
+//      typeBuffer.put((byte) (((Boolean) value) ? '1' : '0'));
+//      break;
+////
+////    case ANY:
+////      typeBuffer.putInt(Binary.INT_SERIALIZED_SIZE);
+////      typeBuffer.putInt(((Number) value).intValue());
+////      break;
+//
+//    default:
+//      throw new PostgresProtocolException("Type " + this + " not supported for serializing");
+//    }
+//  }
 
   public void serializeAsText(final long code, final ByteBuffer typeBuffer, Object value) {
     if (value == null) {

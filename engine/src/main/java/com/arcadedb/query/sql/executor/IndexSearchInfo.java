@@ -1,12 +1,12 @@
 package com.arcadedb.query.sql.executor;
 
 public class IndexSearchInfo {
-  private boolean        allowsRangeQueries;
-  private boolean        map;
-  private boolean        indexByKey;
-  private String         field;
-  private CommandContext ctx;
-  private boolean        indexByValue;
+  private final boolean        allowsRangeQueries;
+  private final boolean        map;
+  private final boolean        indexByKey;
+  private final String         field;
+  private final CommandContext ctx;
+  private final boolean        indexByValue;
 
   public IndexSearchInfo(String indexField, boolean allowsRangeQueries, boolean map, boolean indexByKey, boolean indexByValue, CommandContext ctx) {
     this.field = indexField;

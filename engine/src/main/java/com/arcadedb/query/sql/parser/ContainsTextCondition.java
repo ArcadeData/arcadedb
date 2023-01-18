@@ -72,13 +72,6 @@ public class ContainsTextCondition extends BooleanExpression {
     right.toString(params, builder);
   }
 
-  private boolean needsAliases(final Set<String> aliases) {
-    if (!left.needsAliases(aliases)) {
-      return true;
-    }
-    return !right.needsAliases(aliases);
-  }
-
   @Override
   public ContainsTextCondition copy() {
     final ContainsTextCondition result = new ContainsTextCondition(-1);

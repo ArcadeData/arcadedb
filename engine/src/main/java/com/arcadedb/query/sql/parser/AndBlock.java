@@ -29,7 +29,7 @@ import com.arcadedb.schema.DocumentType;
 import java.util.*;
 
 public class AndBlock extends BooleanExpression {
-  List<BooleanExpression> subBlocks = new ArrayList<>();
+  final List<BooleanExpression> subBlocks = new ArrayList<>();
 
   public AndBlock(final int id) {
     super(id);

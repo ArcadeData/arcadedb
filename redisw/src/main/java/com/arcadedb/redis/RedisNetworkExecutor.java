@@ -96,14 +96,6 @@ public class RedisNetworkExecutor extends Thread {
       channel.close();
   }
 
-  public String getURL() {
-    return channel.getLocalSocketAddress();
-  }
-
-  public byte[] receiveResponse() throws IOException {
-    return channel.readBytes();
-  }
-
   private void executeCommand(final Object command) {
     value.setLength(0);
 

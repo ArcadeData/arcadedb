@@ -69,7 +69,7 @@ public class DefineFunctionStatement extends SimpleExecStatement {
       break;
 
     case "sql":
-      f = new SQLFunctionDefinition(database, functionName.getStringValue(), code, parameterArray);
+      f = new SQLFunctionDefinition(database, functionName.getStringValue(), code);
       break;
 
     default:
@@ -140,10 +140,7 @@ public class DefineFunctionStatement extends SimpleExecStatement {
       return false;
     if (!Objects.equals(parameters, that.parameters))
       return false;
-    if (!Objects.equals(language, that.language))
-      return false;
-
-    return true;
+    return Objects.equals(language, that.language);
   }
 
   @Override

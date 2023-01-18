@@ -34,9 +34,6 @@ public class PostgresNetworkListener extends Thread {
   private          ServerSocket        serverSocket;
   private volatile boolean             active          = true;
   private final    int                 protocolVersion = -1;
-  private final    String              hostName;
-  private          int                 port;
-  private          ClientConnected     callback;
 
   public interface ClientConnected {
     void connected();
@@ -46,11 +43,9 @@ public class PostgresNetworkListener extends Thread {
     super(server.getServerName() + " PostgresW listening at " + hostName + ":" + hostPortRange);
 
     this.server = server;
-    this.hostName = hostName;
     this.socketFactory = iSocketFactory == null ? ServerSocketFactory.getDefault() : iSocketFactory;
 
     listen(hostName, hostPortRange);
-
     start();
   }
 
@@ -68,9 +63,6 @@ public class PostgresNetworkListener extends Thread {
           final PostgresNetworkExecutor connection = new PostgresNetworkExecutor(server, socket, null);
           connection.start();
 
-          if (callback != null)
-            callback.connected();
-
         } catch (final Exception e) {
           if (active)
             LogManager.instance().log(this, Level.WARNING, "Error on client connection", e);
@@ -85,14 +77,6 @@ public class PostgresNetworkListener extends Thread {
     }
   }
 
-  public String getHost() {
-    return hostName;
-  }
-
-  public int getPort() {
-    return port;
-  }
-
   public void close() {
     this.active = false;
 
@@ -102,10 +86,6 @@ public class PostgresNetworkListener extends Thread {
       } catch (final IOException e) {
         // IGNORE IT
       }
-  }
-
-  public void setCallback(final ClientConnected callback) {
-    this.callback = callback;
   }
 
   @Override
@@ -121,6 +101,7 @@ public class PostgresNetworkListener extends Thread {
    */
   private void listen(final String hostName, final String hostPortRange) {
 
+    int port;
     for (final int tryPort : getPorts(hostPortRange)) {
       final InetSocketAddress inboundAddr = new InetSocketAddress(hostName, tryPort);
       try {

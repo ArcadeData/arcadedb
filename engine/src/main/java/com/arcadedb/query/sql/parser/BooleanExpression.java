@@ -45,10 +45,6 @@ public abstract class BooleanExpression extends SimpleNode {
       return true;
     }
 
-    private boolean needsAliases(final Set<String> aliases) {
-      return false;
-    }
-
     @Override
     public BooleanExpression copy() {
       return TRUE;
@@ -97,10 +93,6 @@ public abstract class BooleanExpression extends SimpleNode {
 
     @Override
     public boolean evaluate(final Result currentRecord, final CommandContext ctx) {
-      return false;
-    }
-
-    private boolean needsAliases(final Set<String> aliases) {
       return false;
     }
 

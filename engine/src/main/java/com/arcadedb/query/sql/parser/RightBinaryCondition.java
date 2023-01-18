@@ -161,10 +161,6 @@ public class RightBinaryCondition extends SimpleNode {
     return right.execute(currentRecord, ctx);
   }
 
-  public boolean needsAliases(final Set<String> aliases) {
-    return right != null && right.needsAliases(aliases);
-  }
-
   public void extractSubQueries(final SubQueryCollector collector) {
     if (right != null) {
       right.extractSubQueries(collector);

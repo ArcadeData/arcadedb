@@ -158,12 +158,6 @@ public class BaseIdentifier extends SimpleNode {
     return levelZero.getExpandContent();
   }
 
-  public boolean needsAliases(final Set<String> aliases) {
-    if (levelZero != null && levelZero.needsAliases(aliases))
-      return true;
-    return suffix != null && suffix.needsAliases(aliases);
-  }
-
   public boolean isAggregate() {
     if (levelZero != null && levelZero.isAggregate())
       return true;

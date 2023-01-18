@@ -73,15 +73,6 @@ public class PCollection extends SimpleNode {
     return result;
   }
 
-  public boolean needsAliases(final Set<String> aliases) {
-    for (final Expression expr : this.expressions) {
-      if (expr.needsAliases(aliases)) {
-        return true;
-      }
-    }
-    return false;
-  }
-
   public boolean isAggregate() {
     for (final Expression exp : this.expressions) {
       if (exp.isAggregate()) {

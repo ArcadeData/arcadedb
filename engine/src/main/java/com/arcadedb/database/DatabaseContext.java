@@ -164,5 +164,5 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
     }
   }
 
-  public static volatile DatabaseContext INSTANCE = new DatabaseContext();
+  public static final DatabaseContext INSTANCE = new DatabaseContext();
 }

@@ -153,11 +153,6 @@ public class BaseExpression extends MathExpression {
   }
 
   @Override
-  protected boolean supportsBasicCalculation() {
-    return true;
-  }
-
-  @Override
   public boolean isIndexedFunctionCall() {
     if (this.identifier == null)
       return false;

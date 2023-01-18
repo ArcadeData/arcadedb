@@ -136,15 +136,6 @@ public class ArraySingleValuesSelector extends SimpleNode {
     }
   }
 
-  public boolean needsAliases(final Set<String> aliases) {
-    for (final ArraySelector item : items) {
-      if (item.needsAliases(aliases)) {
-        return true;
-      }
-    }
-    return false;
-  }
-
   public ArraySingleValuesSelector copy() {
     final ArraySingleValuesSelector result = new ArraySingleValuesSelector(-1);
     result.items = items.stream().map(x -> x.copy()).collect(Collectors.toList());

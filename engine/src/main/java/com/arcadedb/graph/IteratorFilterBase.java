@@ -31,8 +31,8 @@ public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
   private   int          lastElementPosition = currentPosition.get();
   protected RID          nextEdge;
   protected RID          nextVertex;
-  protected RID          next;
-  protected Set<Integer> validBuckets;
+  protected       RID          next;
+  protected final Set<Integer> validBuckets;
 
   protected IteratorFilterBase(final DatabaseInternal database, final EdgeSegment current, final String[] edgeTypes) {
     super(database, current);

@@ -58,7 +58,6 @@ public class CompressedRID2RIDsIndex {
 
   public class EntryIterator {
     private int posInHashTable = 0;
-    private int posInChunk     = 0;
     private int nextEntryPos   = 0;
     private int nextKeyPos;
 
@@ -97,7 +96,7 @@ public class CompressedRID2RIDsIndex {
 
       // NEXT POSITION IN HASHTABLE
       for (; posInHashTable < keys; ++posInHashTable) {
-        posInChunk = chunk.getInt(posInHashTable * Binary.INT_SERIALIZED_SIZE);
+        int posInChunk = chunk.getInt(posInHashTable * Binary.INT_SERIALIZED_SIZE);
         if (posInChunk > 0) {
           chunk.position(posInChunk);
 

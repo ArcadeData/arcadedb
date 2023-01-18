@@ -53,10 +53,6 @@ public class IsDefinedCondition extends BooleanExpression implements SimpleBoole
     builder.append(" is defined");
   }
 
-  private boolean needsAliases(final Set<String> aliases) {
-    return expression.needsAliases(aliases);
-  }
-
   @Override
   public IsDefinedCondition copy() {
     final IsDefinedCondition result = new IsDefinedCondition(-1);

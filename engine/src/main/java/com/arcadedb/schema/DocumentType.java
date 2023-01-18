@@ -44,10 +44,10 @@ public class DocumentType {
   protected final List<DocumentType>                subTypes                     = new ArrayList<>();
   protected final List<Bucket>                      buckets                      = new ArrayList<>();
   protected       BucketSelectionStrategy           bucketSelectionStrategy      = new RoundRobinBucketSelectionStrategy();
-  protected final Map<String, Property>             properties                   = new HashMap<>();
-  protected       Map<Integer, List<IndexInternal>> bucketIndexesByBucket        = new HashMap<>();
-  protected       Map<List<String>, TypeIndex>      indexesByProperties          = new HashMap<>();
-  protected final RecordEventsRegistry              events                       = new RecordEventsRegistry();
+  protected final Map<String, Property>             properties            = new HashMap<>();
+  protected final Map<Integer, List<IndexInternal>> bucketIndexesByBucket = new HashMap<>();
+  protected final Map<List<String>, TypeIndex>      indexesByProperties   = new HashMap<>();
+  protected final RecordEventsRegistry              events                = new RecordEventsRegistry();
   protected final Map<String, Object>               custom                       = new HashMap<>();
   protected       Set<String>                       propertiesWithDefaultDefined = Collections.emptySet();
 

@@ -34,8 +34,8 @@ public class ImportDatabaseStatement extends SimpleExecStatement {
 
   protected Url                         url;
   protected Expression                  key;
-  protected Expression                  value;
-  protected Map<Expression, Expression> settings = new HashMap<>();
+  protected       Expression                  value;
+  protected final Map<Expression, Expression> settings = new HashMap<>();
 
   public ImportDatabaseStatement(final int id) {
     super(id);

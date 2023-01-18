@@ -46,13 +46,13 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
   public static final String NAME = "astar";
 
   private   String              paramWeightFieldName = "weight";
-  private   long                currentDepth         = 0;
-  protected Set<Vertex>         closedSet            = new HashSet<Vertex>();
-  protected Map<Vertex, Vertex> cameFrom             = new HashMap<Vertex, Vertex>();
+  private         long                currentDepth = 0;
+  protected final Set<Vertex>         closedSet    = new HashSet<Vertex>();
+  protected final Map<Vertex, Vertex> cameFrom     = new HashMap<Vertex, Vertex>();
 
-  protected Map<Vertex, Double>   gScore = new HashMap<Vertex, Double>();
-  protected Map<Vertex, Double>   fScore = new HashMap<Vertex, Double>();
-  protected PriorityQueue<Vertex> open   = new PriorityQueue<Vertex>(1, (nodeA, nodeB) -> Double.compare(fScore.get(nodeA), fScore.get(nodeB)));
+  protected final Map<Vertex, Double>   gScore = new HashMap<Vertex, Double>();
+  protected final Map<Vertex, Double>   fScore = new HashMap<Vertex, Double>();
+  protected final PriorityQueue<Vertex> open   = new PriorityQueue<Vertex>(1, (nodeA, nodeB) -> Double.compare(fScore.get(nodeA), fScore.get(nodeB)));
 
   public SQLFunctionAstar() {
     super(NAME);
@@ -140,7 +140,7 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
       Vertex current = open.poll();
 
       // we discussed about this feature in https://github.com/orientechnologies/orientdb/pull/6002#issuecomment-212492687
-      if (paramEmptyIfMaxDepth == true && currentDepth >= paramMaxDepth) {
+      if (paramEmptyIfMaxDepth && currentDepth >= paramMaxDepth) {
         route.clear(); // to ensure our result is empty
         return getPath();
       }

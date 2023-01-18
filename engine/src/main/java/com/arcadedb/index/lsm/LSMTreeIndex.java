@@ -67,10 +67,10 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   private              int                                                     associatedBucketId = -1;
   private              String                                                  typeName;
   protected            List<String>                                            propertyNames;
-  protected            LSMTreeIndexMutable                                     mutable;
-  protected            AtomicReference<LSMTreeIndexAbstract.COMPACTING_STATUS> compactingStatus   = new AtomicReference<>(
+  protected       LSMTreeIndexMutable                                     mutable;
+  protected final AtomicReference<LSMTreeIndexAbstract.COMPACTING_STATUS> compactingStatus = new AtomicReference<>(
       LSMTreeIndexAbstract.COMPACTING_STATUS.NO);
-  private              boolean                                                 valid              = true;
+  private         boolean                                                 valid            = true;
 
   public static class IndexFactoryHandler implements com.arcadedb.index.IndexFactoryHandler {
     @Override

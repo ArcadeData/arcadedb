@@ -95,10 +95,6 @@ public class ValueExpression extends Expression {
     return null;
   }
 
-  public boolean needsAliases(final Set<String> aliases) {
-    return false;
-  }
-
   public boolean isAggregate() {
     return false;
   }

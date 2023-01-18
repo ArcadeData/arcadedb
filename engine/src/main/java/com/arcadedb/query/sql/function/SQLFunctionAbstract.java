@@ -26,7 +26,7 @@ import com.arcadedb.query.sql.executor.SQLFunction;
  * @author Luca Garulli (l.garulli--(at)--gmail.com)
  */
 public abstract class SQLFunctionAbstract implements SQLFunction {
-  protected String name;
+  protected final String name;
 
   public SQLFunctionAbstract(final String name) {
     this.name = name;

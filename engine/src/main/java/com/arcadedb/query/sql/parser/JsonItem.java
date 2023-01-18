@@ -57,13 +57,6 @@ public class JsonItem {
     return null;
   }
 
-  public boolean needsAliases(final Set<String> aliases) {
-    if (aliases.contains(leftIdentifier.getStringValue())) {
-      return true;
-    }
-    return right.needsAliases(aliases);
-  }
-
   public boolean isAggregate() {
     return right.isAggregate();
   }

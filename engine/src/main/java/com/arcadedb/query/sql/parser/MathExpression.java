@@ -794,15 +794,6 @@ public class MathExpression extends SimpleNode {
     }
   }
 
-  protected boolean supportsBasicCalculation() {
-    for (final MathExpression expr : this.childExpressions) {
-      if (!expr.supportsBasicCalculation()) {
-        return false;
-      }
-    }
-    return true;
-  }
-
   public boolean isIndexedFunctionCall() {
     if (this.childExpressions.size() != 1) {
       return false;
@@ -883,24 +874,6 @@ public class MathExpression extends SimpleNode {
     return false;
   }
 
-  public boolean isEarlyCalculated(final CommandContext ctx) {
-    for (final MathExpression exp : childExpressions) {
-      if (!exp.isEarlyCalculated(ctx)) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  public boolean needsAliases(final Set<String> aliases) {
-    for (final MathExpression expr : childExpressions) {
-      if (expr.needsAliases(aliases)) {
-        return true;
-      }
-    }
-    return false;
-  }
-
   public boolean isExpand() {
     for (final MathExpression expr : this.childExpressions) {
       if (expr.isExpand()) {
@@ -911,6 +884,15 @@ public class MathExpression extends SimpleNode {
       }
     }
     return false;
+  }
+
+  public boolean isEarlyCalculated(final CommandContext ctx) {
+    for (final MathExpression exp : childExpressions) {
+      if (!exp.isEarlyCalculated(ctx)) {
+        return false;
+      }
+    }
+    return true;
   }
 
   public boolean isAggregate() {

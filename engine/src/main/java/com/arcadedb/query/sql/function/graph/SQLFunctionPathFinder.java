@@ -36,9 +36,9 @@ public abstract class SQLFunctionPathFinder extends SQLFunctionMathAbstract {
   protected Map<RID, Float>  distance;
 
   protected Vertex           paramSourceVertex;
-  protected Vertex           paramDestinationVertex;
-  protected Vertex.DIRECTION paramDirection = Vertex.DIRECTION.OUT;
-  protected CommandContext   context;
+  protected       Vertex           paramDestinationVertex;
+  protected final Vertex.DIRECTION paramDirection = Vertex.DIRECTION.OUT;
+  protected       CommandContext   context;
 
   protected static final float MIN = 0f;
 

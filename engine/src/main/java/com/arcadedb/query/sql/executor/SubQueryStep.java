@@ -25,7 +25,7 @@ import com.arcadedb.exception.TimeoutException;
  */
 public class SubQueryStep extends AbstractExecutionStep {
   private final InternalExecutionPlan subExecutionPlan;
-  private       boolean               sameContextAsParent;
+  private final boolean               sameContextAsParent;
 
   /**
    * executes a sub-query

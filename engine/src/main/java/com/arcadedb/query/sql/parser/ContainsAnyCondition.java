@@ -221,9 +221,7 @@ public class ContainsAnyCondition extends BooleanExpression {
   public boolean isIndexAware(final IndexSearchInfo info) {
     if (left.isBaseIdentifier()) {
       if (info.getField().equals(left.getDefaultAlias().getStringValue())) {
-        if (right.isEarlyCalculated(info.getCtx())) {
-          return true;
-        }
+        return right.isEarlyCalculated(info.getCtx());
       }
     }
     return false;

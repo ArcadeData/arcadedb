@@ -78,10 +78,7 @@ public class ImmutableEmbeddedDocument extends ImmutableDocument implements Embe
 
     final Map<String, Object> propsMap = me.toMap();
     final Map<String, Object> thatMap = that.toMap();
-    if (!propsMap.equals(thatMap))
-      return false;
-
-    return true;
+    return propsMap.equals(thatMap);
   }
 
   static int hashCode(final EmbeddedDocument me) {

@@ -112,10 +112,6 @@ public class InstanceofCondition extends BooleanExpression {
     }
   }
 
-  private boolean needsAliases(final Set<String> aliases) {
-    return left.needsAliases(aliases);
-  }
-
   @Override
   public InstanceofCondition copy() {
     final InstanceofCondition result = new InstanceofCondition(-1);

@@ -29,8 +29,6 @@ import org.junit.jupiter.api.Test;
 import java.io.*;
 
 public class ConsoleBatchTest {
-  private static final String DB_NAME = "console";
-
   @Test
   public void batchMode() throws IOException {
     Console.main(new String[] { "-b", "create database console; create vertex type ConsoleOnlyVertex;" });

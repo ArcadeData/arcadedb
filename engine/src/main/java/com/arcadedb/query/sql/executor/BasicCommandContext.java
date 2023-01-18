@@ -37,7 +37,7 @@ public class BasicCommandContext implements CommandContext {
   protected       CommandContext      child;
   protected       Map<String, Object> variables;
   protected       Map<String, Object> inputParameters;
-  protected       Set<String>         declaredScriptVariables = new HashSet<>();
+  protected final Set<String>         declaredScriptVariables = new HashSet<>();
   protected final AtomicLong          resultsProcessed        = new AtomicLong(0);
 
   public Object getVariable(final String name) {

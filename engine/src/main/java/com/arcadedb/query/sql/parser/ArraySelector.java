@@ -93,12 +93,6 @@ public class ArraySelector extends SimpleNode {
     return result;
   }
 
-  public boolean needsAliases(final Set<String> aliases) {
-    if (expression != null) {
-      return expression.needsAliases(aliases);
-    }
-    return false;
-  }
 
   public ArraySelector copy() {
     final ArraySelector result = new ArraySelector(-1);

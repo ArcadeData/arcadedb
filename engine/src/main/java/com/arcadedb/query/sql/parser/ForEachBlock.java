@@ -36,8 +36,8 @@ import java.util.stream.*;
 //import com.orientechnologies.orient.core.sql.executor.LetExpressionStep;
 
 public class ForEachBlock extends Statement {
-  protected static AtomicInteger   FOREACH_VARIABLE_PROGR = new AtomicInteger();
-  protected        Identifier      loopVariable;
+  protected static final AtomicInteger FOREACH_VARIABLE_PROGR = new AtomicInteger();
+  protected              Identifier    loopVariable;
   protected        Expression      loopValues;
   protected        List<Statement> statements             = new ArrayList<>();
 

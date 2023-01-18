@@ -35,7 +35,7 @@ import java.util.stream.*;
 
 public class MethodCall extends SimpleNode {
 
-  static Map<String, String> bidirectionalMethods = Map.of(//
+  static final Map<String, String> bidirectionalMethods = Map.of(//
       "out", "in",//
       "in", "out", //
       "both", "both", //
@@ -135,7 +135,6 @@ public class MethodCall extends SimpleNode {
       return method.execute(targetObjects, (Identifiable) val, ctx, targetObjects, paramValues.toArray());
     }
     throw new UnsupportedOperationException("OMethod call, something missing in the implementation...?");
-
   }
 
   public Object executeReverse(final Object targetObjects, final CommandContext ctx) {
@@ -146,15 +145,6 @@ public class MethodCall extends SimpleNode {
       return execute(targetObjects, ctx, inverseMethodName, params, null);
 
     throw new UnsupportedOperationException("Invalid reverse traversal: " + methodName);
-  }
-
-  public boolean needsAliases(final Set<String> aliases) {
-    for (final Expression param : params) {
-      if (param.needsAliases(aliases)) {
-        return true;
-      }
-    }
-    return false;
   }
 
   public MethodCall copy() {
