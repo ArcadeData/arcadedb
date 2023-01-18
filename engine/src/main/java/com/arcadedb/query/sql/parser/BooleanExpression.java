@@ -45,8 +45,7 @@ public abstract class BooleanExpression extends SimpleNode {
       return true;
     }
 
-    @Override
-    public boolean needsAliases(final Set<String> aliases) {
+    private boolean needsAliases(final Set<String> aliases) {
       return false;
     }
 
@@ -101,8 +100,7 @@ public abstract class BooleanExpression extends SimpleNode {
       return false;
     }
 
-    @Override
-    public boolean needsAliases(final Set<String> aliases) {
+    private boolean needsAliases(final Set<String> aliases) {
       return false;
     }
 
@@ -174,8 +172,6 @@ public abstract class BooleanExpression extends SimpleNode {
     result.subBlocks.add(item);
     return result;
   }
-
-  public abstract boolean needsAliases(final Set<String> aliases);
 
   public abstract BooleanExpression copy();
 

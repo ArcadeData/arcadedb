@@ -315,10 +315,6 @@ public class WALFile extends LockContext {
     return channel.size();
   }
 
-  public String getFilePath() {
-    return filePath;
-  }
-
   @Override
   public String toString() {
     return filePath;

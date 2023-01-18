@@ -27,6 +27,8 @@ import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.executor.SQLFunction;
+import com.arcadedb.query.sql.function.DefaultSQLFunctionFactory;
 import com.arcadedb.query.sql.function.SQLFunctionAbstract;
 import com.arcadedb.query.sql.function.text.SQLMethodHash;
 import com.arcadedb.schema.DocumentType;
@@ -414,7 +416,8 @@ public class SQLFunctionsTest {
       }
 
       @Override
-      public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams, final CommandContext iContext) {
+      public Object execute(final Object iThis, final Identifiable iCurrentRecord, final Object iCurrentResult, final Object[] iParams,
+          final CommandContext iContext) {
         if (iParams[0] == null || iParams[1] == null)
           // CHECK BOTH EXPECTED PARAMETERS
           return null;
@@ -555,6 +558,18 @@ public class SQLFunctionsTest {
       Assertions.assertEquals(array[0], "1");
       Assertions.assertEquals(array[1], "2");
       Assertions.assertEquals(array[2], "3");
+    }
+  }
+
+  @Test
+  public void CheckAllFunctions() {
+    final DefaultSQLFunctionFactory fFactory = ((SQLQueryEngine) database.getQueryEngine("sql")).getFunctionFactory();
+    for (String fName : fFactory.getFunctionNames()) {
+      final SQLFunction f = fFactory.getFunctionInstance(fName);
+      Assertions.assertNotNull(f);
+
+      Assertions.assertFalse(f.getName().isEmpty());
+      Assertions.assertFalse(f.getSyntax().isEmpty());
     }
   }
 

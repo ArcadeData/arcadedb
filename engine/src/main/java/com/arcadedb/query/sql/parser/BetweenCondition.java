@@ -126,8 +126,7 @@ public class BetweenCondition extends BooleanExpression {
     third.toString(params, builder);
   }
 
-  @Override
-  public boolean needsAliases(final Set<String> aliases) {
+  private boolean needsAliases(final Set<String> aliases) {
     if (first.needsAliases(aliases)) {
       return true;
     }

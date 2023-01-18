@@ -177,18 +177,6 @@ public class ContainsAllCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean needsAliases(final Set<String> aliases) {
-    if (left.needsAliases(aliases)) {
-      return true;
-    }
-
-    if (right != null && right.needsAliases(aliases)) {
-      return true;
-    }
-    return rightBlock != null && rightBlock.needsAliases(aliases);
-  }
-
-  @Override
   public ContainsAllCondition copy() {
     final ContainsAllCondition result = new ContainsAllCondition(-1);
     result.left = left.copy();

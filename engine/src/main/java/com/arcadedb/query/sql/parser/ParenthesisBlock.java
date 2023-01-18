@@ -60,11 +60,6 @@ public class ParenthesisBlock extends BooleanExpression {
   }
 
   @Override
-  public boolean needsAliases(final Set<String> aliases) {
-    return subElement.needsAliases(aliases);
-  }
-
-  @Override
   public ParenthesisBlock copy() {
     final ParenthesisBlock result = new ParenthesisBlock(-1);
     result.subElement = subElement.copy();

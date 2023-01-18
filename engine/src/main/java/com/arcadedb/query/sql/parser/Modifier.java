@@ -146,31 +146,6 @@ public class Modifier extends SimpleNode {
     return result;
   }
 
-  public boolean needsAliases(final Set<String> aliases) {
-    if (condition != null && condition.needsAliases(aliases)) {
-      return true;
-    }
-
-    if (arraySingleValues != null && arraySingleValues.needsAliases(aliases)) {
-      return true;
-    }
-
-    if (arrayRange != null && arrayRange.needsAliases(aliases)) {
-      return true;
-    }
-
-    if (rightBinaryCondition != null && rightBinaryCondition.needsAliases(aliases)) {
-      return true;
-    }
-
-    if (methodCall != null && methodCall.needsAliases(aliases)) {
-      return true;
-    }
-
-    return next != null && next.needsAliases(aliases);
-
-  }
-
   public Modifier copy() {
     final Modifier result = new Modifier(-1);
     result.squareBrackets = squareBrackets;

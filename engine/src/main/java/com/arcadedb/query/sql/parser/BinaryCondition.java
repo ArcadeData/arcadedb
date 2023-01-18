@@ -118,8 +118,7 @@ public class BinaryCondition extends BooleanExpression {
     return null;
   }
 
-  @Override
-  public boolean needsAliases(final Set<String> aliases) {
+  private boolean needsAliases(final Set<String> aliases) {
     if (left.needsAliases(aliases)) {
       return true;
     }

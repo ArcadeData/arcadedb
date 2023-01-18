@@ -96,17 +96,6 @@ public class ContainsValueCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean needsAliases(final Set<String> aliases) {
-    if (left != null && left.needsAliases(aliases))
-      return true;
-
-    if (condition != null && condition.needsAliases(aliases))
-      return true;
-
-    return expression != null && expression.needsAliases(aliases);
-  }
-
-  @Override
   public ContainsValueCondition copy() {
     final ContainsValueCondition result = new ContainsValueCondition(-1);
     result.left = left.copy();

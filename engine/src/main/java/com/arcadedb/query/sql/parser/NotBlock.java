@@ -107,11 +107,6 @@ public class NotBlock extends BooleanExpression {
   }
 
   @Override
-  public boolean needsAliases(final Set<String> aliases) {
-    return sub.needsAliases(aliases);
-  }
-
-  @Override
   public NotBlock copy() {
     final NotBlock result = new NotBlock(-1);
     result.sub = sub.copy();

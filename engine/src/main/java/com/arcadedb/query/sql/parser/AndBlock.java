@@ -132,16 +132,6 @@ public class AndBlock extends BooleanExpression {
     return result;
   }
 
-  @Override
-  public boolean needsAliases(final Set<String> aliases) {
-    for (final BooleanExpression block : subBlocks) {
-      if (block.needsAliases(aliases)) {
-        return true;
-      }
-    }
-    return false;
-  }
-
   public AndBlock copy() {
     final AndBlock result = new AndBlock(-1);
     for (final BooleanExpression exp : subBlocks) {

@@ -72,8 +72,7 @@ public class ContainsTextCondition extends BooleanExpression {
     right.toString(params, builder);
   }
 
-  @Override
-  public boolean needsAliases(final Set<String> aliases) {
+  private boolean needsAliases(final Set<String> aliases) {
     if (!left.needsAliases(aliases)) {
       return true;
     }

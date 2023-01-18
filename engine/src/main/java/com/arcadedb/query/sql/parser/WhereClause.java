@@ -183,10 +183,6 @@ public class WhereClause extends SimpleNode {
     return flattened;
   }
 
-  public boolean needsAliases(final Set<String> aliases) {
-    return this.baseExpression.needsAliases(aliases);
-  }
-
   public void setBaseExpression(final BooleanExpression baseExpression) {
     this.baseExpression = baseExpression;
   }

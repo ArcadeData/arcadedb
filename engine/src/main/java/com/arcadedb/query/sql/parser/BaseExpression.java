@@ -257,13 +257,6 @@ public class BaseExpression extends MathExpression {
     return this.identifier.getExpandContent();
   }
 
-  public boolean needsAliases(final Set<String> aliases) {
-    if (this.identifier != null && this.identifier.needsAliases(aliases))
-      return true;
-
-    return modifier != null && modifier.needsAliases(aliases);
-  }
-
   @Override
   public boolean isAggregate() {
     return identifier != null && identifier.isAggregate();

@@ -171,8 +171,7 @@ public class InCondition extends BooleanExpression {
     return o.toString();
   }
 
-  @Override
-  public boolean needsAliases(final Set<String> aliases) {
+  private boolean needsAliases(final Set<String> aliases) {
     if (left.needsAliases(aliases))
       return true;
 

@@ -106,14 +106,6 @@ public class NotInCondition extends BooleanExpression {
   }
 
   @Override
-  public boolean needsAliases(final Set<String> aliases) {
-    if (left.needsAliases(aliases))
-      return true;
-
-    return rightMathExpression != null && rightMathExpression.needsAliases(aliases);
-  }
-
-  @Override
   public NotInCondition copy() {
     final NotInCondition result = new NotInCondition(-1);
     result.operator = operator == null ? null : operator.copy();

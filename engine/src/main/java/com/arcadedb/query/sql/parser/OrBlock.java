@@ -130,16 +130,6 @@ public class OrBlock extends BooleanExpression {
   }
 
   @Override
-  public boolean needsAliases(final Set<String> aliases) {
-    for (final BooleanExpression expr : subBlocks) {
-      if (expr.needsAliases(aliases)) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  @Override
   public OrBlock copy() {
     final OrBlock result = new OrBlock(-1);
     result.subBlocks = subBlocks.stream().map(x -> x.copy()).collect(Collectors.toList());

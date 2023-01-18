@@ -117,8 +117,7 @@ public class MatchesCondition extends BooleanExpression {
     }
   }
 
-  @Override
-  public boolean needsAliases(final Set<String> aliases) {
+  private boolean needsAliases(final Set<String> aliases) {
     if (expression.needsAliases(aliases)) {
       return true;
     }

@@ -90,8 +90,7 @@ public class IndexMatchCondition extends BooleanExpression {
     }
   }
 
-  @Override
-  public boolean needsAliases(final Set<String> aliases) {
+  private boolean needsAliases(final Set<String> aliases) {
     if (leftExpressions != null) {
       for (final Expression exp : leftExpressions) {
         if (exp.needsAliases(aliases)) {
