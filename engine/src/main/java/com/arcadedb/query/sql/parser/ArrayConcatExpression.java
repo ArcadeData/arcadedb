@@ -26,10 +26,8 @@ import com.arcadedb.query.sql.executor.AggregationContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.*;
-import java.util.stream.*;
 
 public class ArrayConcatExpression extends SimpleNode {
 
@@ -173,26 +171,6 @@ public class ArrayConcatExpression extends SimpleNode {
         builder.append(" || ");
       }
       childExpressions.get(i).toString(params, builder);
-    }
-  }
-
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    if (childExpressions != null) {
-      result.setProperty("childExpressions", childExpressions.stream().map(x -> x.serialize()).collect(Collectors.toList()));
-    }
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    if (fromResult.getProperty("childExpressions") != null) {
-      final List<Result> ser = fromResult.getProperty("childExpressions");
-      childExpressions = new ArrayList<>();
-      for (final Result r : ser) {
-        final ArrayConcatExpressionElement exp = new ArrayConcatExpressionElement(-1);
-        exp.deserialize(r);
-        childExpressions.add(exp);
-      }
     }
   }
 

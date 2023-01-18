@@ -19,8 +19,6 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.*;
 
@@ -112,28 +110,4 @@ public class JsonItem {
     result = 31 * result + (right != null ? right.hashCode() : 0);
     return result;
   }
-
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    result.setProperty("leftIdentifier", leftIdentifier.serialize());
-    result.setProperty("leftString", leftString);
-    result.setProperty("right", right.serialize());
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    if (fromResult.getProperty("leftIdentifier") != null) {
-      leftIdentifier = new Identifier(-1);
-      Identifier.deserialize(fromResult.getProperty("leftIdentifier"));
-    }
-    if (fromResult.getProperty("leftString") != null) {
-      leftString = fromResult.getProperty("leftString");
-    }
-    if (fromResult.getProperty("right") != null) {
-      right = new Expression(-1);
-      right.deserialize(fromResult.getProperty("right"));
-    }
-
-  }
-
 }

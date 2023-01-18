@@ -200,28 +200,6 @@ public class ParenthesisExpression extends MathExpression {
     }
   }
 
-  public Result serialize() {
-    final ResultInternal result = (ResultInternal) super.serialize();
-    if (expression != null) {
-      result.setProperty("expression", expression.serialize());
-    }
-    if (statement != null) {
-      result.setProperty("statement", statement.serialize());
-    }
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    super.deserialize(fromResult);
-    if (fromResult.getProperty("expression") != null) {
-      expression = new Expression(-1);
-      expression.deserialize(fromResult.getProperty("expression"));
-    }
-    if (fromResult.getProperty("statement") != null) {
-      statement = Statement.deserializeFromOResult(fromResult.getProperty("statement"));
-    }
-  }
-
   @Override
   protected SimpleNode[] getCacheableElements() {
     return new SimpleNode[] { expression, statement };

@@ -20,9 +20,6 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
-
 import java.util.*;
 
 /**
@@ -53,10 +50,6 @@ public class Identifier extends SimpleNode {
 
   protected Identifier(final int id) {
     super(id);
-  }
-
-  public static Identifier deserialize(final Result fromResult) {
-    return new Identifier(fromResult.getProperty("value"), (boolean) fromResult.getProperty("quoted"));
   }
 
   public Identifier(final SqlParser p, final int id) {
@@ -144,13 +137,6 @@ public class Identifier extends SimpleNode {
     int result = value != null ? value.hashCode() : 0;
     result = 31 * result + (quoted ? 1 : 0);
     result = 31 * result + (internalAlias ? 1 : 0);
-    return result;
-  }
-
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    result.setProperty("value", value);
-    result.setProperty("quoted", quoted);
     return result;
   }
 }

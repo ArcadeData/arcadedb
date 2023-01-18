@@ -21,12 +21,10 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
 
 import java.util.*;
-import java.util.stream.*;
 
 /**
  * Created by luigidellaquila on 22/07/16.
@@ -111,27 +109,4 @@ public class FetchFromRidsStep extends AbstractExecutionStep {
     return ExecutionStepInternal.getIndent(depth, indent) + "+ FETCH FROM RIDs\n" + ExecutionStepInternal.getIndent(depth, indent) + "  " + rids;
   }
 
-  @Override
-  public Result serialize() {
-    final ResultInternal result = ExecutionStepInternal.basicSerialize(this);
-    if (rids != null)
-      result.setProperty("rids", rids.stream().map(x -> x.toString()).collect(Collectors.toList()));
-
-    return result;
-  }
-
-  @Override
-  public void deserialize(final Result fromResult) {
-    try {
-      ExecutionStepInternal.basicDeserialize(fromResult, this);
-      if (fromResult.getProperty("rids") != null) {
-//        List<String> ser = fromResult.getProperty("rids");
-        throw new UnsupportedOperationException();
-//        rids = ser.stream().map(x -> new PRID(x)).collect(Collectors.toList());
-      }
-      reset();
-    } catch (final Exception e) {
-      throw new CommandExecutionException(e);
-    }
-  }
 }

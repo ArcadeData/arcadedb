@@ -20,9 +20,6 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
-
 import java.util.*;
 
 public class PositionalParameter extends InputParameter {
@@ -96,16 +93,6 @@ public class PositionalParameter extends InputParameter {
   @Override
   public int hashCode() {
     return paramNumber;
-  }
-
-  public Result serialize() {
-    final ResultInternal result = (ResultInternal) super.serialize();
-    result.setProperty("paramNumber", paramNumber);
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    paramNumber = fromResult.getProperty("paramNumber");
   }
 }
 /* JavaCC - OriginalChecksum=f73bea7d9b3994a9d4e79d2c330d8ba2 (do not edit this line) */

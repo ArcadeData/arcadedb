@@ -29,7 +29,6 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.FunctionAggregationContext;
 import com.arcadedb.query.sql.executor.IndexableSQLFunction;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.SQLFunction;
 import com.arcadedb.query.sql.function.graph.SQLFunctionMove;
 
@@ -379,33 +378,6 @@ public class FunctionCall extends SimpleNode {
     result.methodName = name.copy();
     result.params = params.stream().map(x -> x.copy()).collect(Collectors.toList());
     return result;
-  }
-
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    if (name != null)
-      result.setProperty("name", name.serialize());
-
-    if (params != null)
-      result.setProperty("collection", params.stream().map(x -> x.serialize()).collect(Collectors.toList()));
-
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    if (fromResult.getProperty("name") != null) {
-      name = new Identifier(-1);
-      Identifier.deserialize(fromResult.getProperty("name"));
-    }
-    if (fromResult.getProperty("params") != null) {
-      params = new ArrayList<>();
-      final List<Result> ser = fromResult.getProperty("params");
-      for (final Result item : ser) {
-        final Expression exp = new Expression(-1);
-        exp.deserialize(item);
-        params.add(exp);
-      }
-    }
   }
 
   public void extractSubQueries(final Identifier letAlias, final SubQueryCollector collector) {

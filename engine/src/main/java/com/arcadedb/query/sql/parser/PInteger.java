@@ -20,9 +20,6 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
-
 import java.util.*;
 
 public class PInteger extends PNumber {
@@ -99,16 +96,6 @@ public class PInteger extends PNumber {
   @Override
   protected Object[] getIdentityElements() {
     return new Object[] { value };
-  }
-
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    result.setProperty("value", value);
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    value = fromResult.getProperty("value");
   }
 }
 /* JavaCC - OriginalChecksum=2e6eee6366ff4e864dd6c8184d2766f5 (do not edit this line) */

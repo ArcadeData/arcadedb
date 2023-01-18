@@ -19,7 +19,6 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 
 import java.util.*;
@@ -144,26 +143,6 @@ public class FilterByClustersStep extends AbstractExecutionStep {
   public String prettyPrint(final int depth, final int indent) {
     return ExecutionStepInternal.getIndent(depth, indent) + "+ FILTER ITEMS BY CLUSTERS \n" + ExecutionStepInternal.getIndent(depth, indent) + "  "
         + String.join(", ", clusters);
-  }
-
-  @Override
-  public Result serialize() {
-    final ResultInternal result = ExecutionStepInternal.basicSerialize(this);
-    if (clusters != null) {
-      result.setProperty("clusters", clusters);
-    }
-
-    return result;
-  }
-
-  @Override
-  public void deserialize(final Result fromResult) {
-    try {
-      ExecutionStepInternal.basicDeserialize(fromResult, this);
-      clusters = fromResult.getProperty("clusters");
-    } catch (final Exception e) {
-      throw new CommandExecutionException(e);
-    }
   }
 
 }

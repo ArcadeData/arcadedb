@@ -213,13 +213,13 @@ public class NestedProjection extends SimpleNode {
   }
 
   @Override
-  public boolean equals( final Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    final    NestedProjection that = (NestedProjection) o;
+    final NestedProjection that = (NestedProjection) o;
 
     if (!Objects.equals(includeItems, that.includeItems))
       return false;
@@ -246,48 +246,6 @@ public class NestedProjection extends SimpleNode {
 //      return result;
 //    }
     return value;
-  }
-
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    if (includeItems != null) {
-      result.setProperty("includeItems", includeItems.stream().map(x -> x.serialize()).collect(Collectors.toList()));
-    }
-    if (excludeItems != null) {
-      result.setProperty("excludeItems", excludeItems.stream().map(x -> x.serialize()).collect(Collectors.toList()));
-    }
-    if (starItem != null) {
-      result.setProperty("starItem", starItem.serialize());
-    }
-    result.setProperty("recursion", recursion);
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    if (fromResult.getProperty("includeItems") != null) {
-      includeItems = new ArrayList<>();
-      final List<Result> ser = fromResult.getProperty("includeItems");
-      for (final Result x : ser) {
-        final NestedProjectionItem item = new NestedProjectionItem(-1);
-        item.deserialize(x);
-        includeItems.add(item);
-      }
-    }
-    if (fromResult.getProperty("excludeItems") != null) {
-      excludeItems = new ArrayList<>();
-      final List<Result> ser = fromResult.getProperty("excludeItems");
-      for (final Result x : ser) {
-        final NestedProjectionItem item = new NestedProjectionItem(-1);
-        item.deserialize(x);
-        excludeItems.add(item);
-      }
-    }
-    if (fromResult.getProperty("starItem") != null) {
-      starItem = new NestedProjectionItem(-1);
-      starItem.deserialize(fromResult.getProperty("starItem"));
-    }
-    recursion = fromResult.getProperty("recursion");
-
   }
 }
 /* JavaCC - OriginalChecksum=a7faf9beb3c058e28999b17cb43b26f6 (do not edit this line) */

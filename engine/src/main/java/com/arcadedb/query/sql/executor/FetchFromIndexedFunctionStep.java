@@ -20,7 +20,6 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Record;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.BinaryCondition;
 import com.arcadedb.query.sql.parser.FromClause;
@@ -118,29 +117,4 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
     this.fullResult = null;
   }
 
-
-
-  @Override
-  public Result serialize() {
-    final ResultInternal result = ExecutionStepInternal.basicSerialize(this);
-    result.setProperty("functionCondition", this.functionCondition.serialize());
-    result.setProperty("queryTarget", this.queryTarget.serialize());
-
-    return result;
-  }
-
-  @Override
-  public void deserialize(final Result fromResult) {
-    try {
-      ExecutionStepInternal.basicDeserialize(fromResult, this);
-      functionCondition = new BinaryCondition(-1);
-      functionCondition.deserialize(fromResult.getProperty("functionCondition "));
-
-      queryTarget = new FromClause(-1);
-      queryTarget.deserialize(fromResult.getProperty("functionCondition "));
-
-    } catch (final Exception e) {
-      throw new CommandExecutionException(e);
-    }
-  }
 }

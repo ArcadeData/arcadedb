@@ -20,9 +20,6 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
-
 import java.util.*;
 
 public class Timeout extends SimpleNode {
@@ -84,22 +81,9 @@ public class Timeout extends SimpleNode {
     return failureStrategy;
   }
 
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    result.setProperty("val", val);
-    result.setProperty("failureStrategy", failureStrategy);
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    val = fromResult.getProperty("val");
-    failureStrategy = fromResult.getProperty("failureStrategy");
-  }
-
   public Timeout setValue(final Number val) {
     this.val = val;
     return this;
   }
-
 }
 /* JavaCC - OriginalChecksum=fef7f5d488f7fca1b6ad0b70c6841931 (do not edit this line) */

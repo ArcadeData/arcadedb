@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.schema.DocumentType;
@@ -34,7 +33,6 @@ public class FilterByClassStep extends AbstractExecutionStep {
   //runtime
 
   ResultSet prevResult = null;
-
 
   public FilterByClassStep(final Identifier identifier, final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
@@ -127,10 +125,6 @@ public class FilterByClassStep extends AbstractExecutionStep {
       public void close() {
         FilterByClassStep.this.close();
       }
-
-
-
-
     };
 
   }
@@ -149,26 +143,6 @@ public class FilterByClassStep extends AbstractExecutionStep {
     result.append(identifier.getStringValue());
     return result.toString();
   }
-
-  @Override
-  public Result serialize() {
-    final ResultInternal result = ExecutionStepInternal.basicSerialize(this);
-    result.setProperty("identifier", identifier.serialize());
-
-    return result;
-  }
-
-  @Override
-  public void deserialize(final Result fromResult) {
-    try {
-      ExecutionStepInternal.basicDeserialize(fromResult, this);
-      identifier = Identifier.deserialize(fromResult.getProperty("identifier"));
-    } catch (final Exception e) {
-      throw new CommandExecutionException(e);
-    }
-  }
-
-
 
   @Override
   public boolean canBeCached() {

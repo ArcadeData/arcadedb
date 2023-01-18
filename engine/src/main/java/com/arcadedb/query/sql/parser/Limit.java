@@ -22,8 +22,6 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.*;
 
@@ -97,27 +95,6 @@ public class Limit extends SimpleNode {
     int result = num != null ? num.hashCode() : 0;
     result = 31 * result + (inputParam != null ? inputParam.hashCode() : 0);
     return result;
-  }
-
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    if (num != null) {
-      result.setProperty("num", num.serialize());
-    }
-    if (inputParam != null) {
-      result.setProperty("inputParam", inputParam.serialize());
-    }
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    if (fromResult.getProperty("num") != null) {
-      num = new PInteger(-1);
-      num.deserialize(fromResult.getProperty("num"));
-    }
-    if (fromResult.getProperty("inputParam") != null) {
-      inputParam = InputParameter.deserializeFromOResult(fromResult.getProperty("inputParam"));
-    }
   }
 }
 /* JavaCC - OriginalChecksum=1063b9489290bb08de6048ba55013171 (do not edit this line) */

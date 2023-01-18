@@ -23,10 +23,8 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.schema.DocumentType;
 
 import java.util.*;
@@ -202,26 +200,6 @@ public class BinaryCondition extends BooleanExpression {
     result.addAll(leftX);
     result.addAll(rightX);
     return result;
-  }
-
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    result.setProperty("left", left.serialize());
-    result.setProperty("operator", operator.getClass().getName());
-    result.setProperty("right", right.serialize());
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    left = new Expression(-1);
-    left.deserialize(fromResult.getProperty("left"));
-    try {
-      operator = (BinaryCompareOperator) Class.forName(String.valueOf(fromResult.getProperty("operator"))).getConstructor().newInstance();
-    } catch (final Exception e) {
-      throw new CommandExecutionException(e);
-    }
-    right = new Expression(-1);
-    right.deserialize(fromResult.getProperty("right"));
   }
 
   @Override

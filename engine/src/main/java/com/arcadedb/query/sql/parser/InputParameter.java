@@ -21,10 +21,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.MultiValue;
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.math.*;
 import java.text.*;
@@ -157,26 +154,6 @@ public class InputParameter extends SimpleNode {
   }
 
   public InputParameter copy() {
-    throw new UnsupportedOperationException();
-  }
-
-  public static InputParameter deserializeFromOResult(final Result doc) {
-    try {
-      final InputParameter result = (InputParameter) Class.forName(doc.getProperty("__class")).getConstructor(Integer.class).newInstance(-1);
-      result.deserialize(doc);
-    } catch (final Exception e) {
-      throw new CommandExecutionException(e);
-    }
-    return null;
-  }
-
-  public Result serialize() {
-    final  ResultInternal result = new ResultInternal();
-    result.setProperty("__class", getClass().getName());
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
     throw new UnsupportedOperationException();
   }
 }

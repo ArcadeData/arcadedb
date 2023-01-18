@@ -28,7 +28,6 @@ import com.arcadedb.query.sql.executor.AggregationContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.*;
 import java.util.stream.*;
@@ -260,43 +259,6 @@ public class ProjectionItem extends SimpleNode {
       return expression.refersToParent();
     }
     return false;
-  }
-
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    result.setProperty("all", all);
-    if (alias != null) {
-      result.setProperty("alias", alias.serialize());
-    }
-    if (expression != null) {
-      result.setProperty("expression", expression.serialize());
-    }
-    result.setProperty("aggregate", aggregate);
-    if (nestedProjection != null) {
-      result.setProperty("nestedProjection", nestedProjection.serialize());
-    }
-    result.setProperty("exclude", exclude);
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    all = fromResult.getProperty("all");
-    if (fromResult.getProperty("alias") != null) {
-      alias = Identifier.deserialize(fromResult.getProperty("alias"));
-    }
-    if (fromResult.getProperty("expression") != null) {
-      expression = new Expression(-1);
-      expression.deserialize(fromResult.getProperty("expression"));
-    }
-    aggregate = fromResult.getProperty("aggregate");
-    if (fromResult.getProperty("nestedProjection") != null) {
-      nestedProjection = new NestedProjection(-1);
-      nestedProjection.deserialize(fromResult.getProperty("nestedProjection"));
-    }
-    if (Boolean.TRUE.equals(fromResult.getProperty("exclude"))) {
-      exclude = true;
-    }
-
   }
 
   public void setNestedProjection(final NestedProjection nestedProjection) {

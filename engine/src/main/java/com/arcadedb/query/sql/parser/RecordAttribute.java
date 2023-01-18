@@ -22,7 +22,6 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.*;
 
@@ -70,16 +69,6 @@ public class RecordAttribute extends SimpleNode {
 
   public void setName(final String name) {
     this.name = name;
-  }
-
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    result.setProperty("name", name);
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    name = fromResult.getProperty("name");
   }
 
   public Object evaluate(final Result iCurrentRecord, final CommandContext ctx) {

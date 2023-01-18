@@ -23,7 +23,6 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.*;
 
@@ -105,29 +104,6 @@ public class ArrayNumberSelector extends SimpleNode {
   @Override
   protected SimpleNode[] getCacheableElements() {
     return new SimpleNode[] { expressionValue };
-  }
-
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    if (inputValue != null) {
-      result.setProperty("inputValue", inputValue.serialize());
-    }
-    if (expressionValue != null) {
-      result.setProperty("expressionValue", expressionValue.serialize());
-    }
-    result.setProperty("integer", integer);
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    if (fromResult.getProperty("inputValue") != null) {
-      inputValue = InputParameter.deserializeFromOResult(fromResult.getProperty("inputValue"));
-    }
-    if (fromResult.getProperty("toSelector") != null) {
-      expressionValue = new MathExpression(-1);
-      expressionValue.deserialize(fromResult.getProperty("expressionValue"));
-    }
-    integer = fromResult.getProperty("integer");
   }
 
   @Override

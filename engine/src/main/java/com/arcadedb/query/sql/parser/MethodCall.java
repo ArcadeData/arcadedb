@@ -25,7 +25,6 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.SQLFunction;
 import com.arcadedb.query.sql.executor.SQLFunctionFiltered;
 import com.arcadedb.query.sql.executor.SQLMethod;
@@ -176,33 +175,6 @@ public class MethodCall extends SimpleNode {
       }
     }
     return false;
-  }
-
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    if (methodName != null)
-      result.setProperty("methodName", methodName.serialize());
-
-    if (params != null)
-      result.setProperty("items", params.stream().map(x -> x.serialize()).collect(Collectors.toList()));
-
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    if (fromResult.getProperty("methodName") != null) {
-      methodName = new Identifier(-1);
-      Identifier.deserialize(fromResult.getProperty("methodName"));
-    }
-    if (fromResult.getProperty("params") != null) {
-      final List<Result> ser = fromResult.getProperty("params");
-      params = new ArrayList<>();
-      for (final Result r : ser) {
-        final Expression exp = new Expression(-1);
-        exp.deserialize(r);
-        params.add(exp);
-      }
-    }
   }
 
   public boolean isCacheable() {

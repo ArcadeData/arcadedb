@@ -31,8 +31,6 @@ import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalExecutionPlan;
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.SelectExecutionPlanner;
 
@@ -278,84 +276,6 @@ public class SelectStatement extends Statement {
 
   public void setUnwind(final Unwind unwind) {
     this.unwind = unwind;
-  }
-
-  public Result serialize() {
-    final ResultInternal result = (ResultInternal) super.serialize();
-    if (target != null) {
-      result.setProperty("target", target.serialize());
-    }
-    if (projection != null) {
-      result.setProperty("projection", projection.serialize());
-    }
-    if (whereClause != null) {
-      result.setProperty("whereClause", whereClause.serialize());
-    }
-    if (groupBy != null) {
-      result.setProperty("groupBy", groupBy.serialize());
-    }
-    if (orderBy != null) {
-      result.setProperty("orderBy", orderBy.serialize());
-    }
-    if (unwind != null) {
-      result.setProperty("unwind", unwind.serialize());
-    }
-    if (skip != null) {
-      result.setProperty("skip", skip.serialize());
-    }
-    if (limit != null) {
-      result.setProperty("limit", limit.serialize());
-    }
-    if (letClause != null) {
-      result.setProperty("letClause", letClause.serialize());
-    }
-    if (timeout != null) {
-      result.setProperty("timeout", timeout.serialize());
-    }
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    if (fromResult.getProperty("target") != null) {
-      target = new FromClause(-1);
-      target.deserialize(fromResult.getProperty("target"));
-    }
-    if (fromResult.getProperty("projection") != null) {
-      projection = new Projection(-1);
-      projection.deserialize(fromResult.getProperty("projection"));
-    }
-    if (fromResult.getProperty("whereClause") != null) {
-      whereClause = new WhereClause(-1);
-      whereClause.deserialize(fromResult.getProperty("whereClause"));
-    }
-    if (fromResult.getProperty("groupBy") != null) {
-      groupBy = new GroupBy(-1);
-      groupBy.deserialize(fromResult.getProperty("groupBy"));
-    }
-    if (fromResult.getProperty("orderBy") != null) {
-      orderBy = new OrderBy(-1);
-      orderBy.deserialize(fromResult.getProperty("orderBy"));
-    }
-    if (fromResult.getProperty("unwind") != null) {
-      unwind = new Unwind(-1);
-      unwind.deserialize(fromResult.getProperty("unwind"));
-    }
-    if (fromResult.getProperty("skip") != null) {
-      skip = new Skip(-1);
-      skip.deserialize(fromResult.getProperty("skip"));
-    }
-    if (fromResult.getProperty("limit") != null) {
-      limit = new Limit(-1);
-      limit.deserialize(fromResult.getProperty("limit"));
-    }
-    if (fromResult.getProperty("letClause") != null) {
-      letClause = new LetClause(-1);
-      letClause.deserialize(fromResult.getProperty("letClause"));
-    }
-    if (fromResult.getProperty("timeout") != null) {
-      timeout = new Timeout(-1);
-      timeout.deserialize(fromResult.getProperty("timeout"));
-    }
   }
 
   private void setProfilingConstraints(final DatabaseInternal db) {

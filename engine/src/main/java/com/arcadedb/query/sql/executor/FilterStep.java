@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.WhereClause;
 
@@ -133,26 +132,6 @@ public class FilterStep extends AbstractExecutionStep {
     result.append("  ");
     result.append(whereClause.toString());
     return result.toString();
-  }
-
-  @Override
-  public Result serialize() {
-    final ResultInternal result = ExecutionStepInternal.basicSerialize(this);
-    if (whereClause != null)
-      result.setProperty("whereClause", whereClause.serialize());
-
-    return result;
-  }
-
-  @Override
-  public void deserialize(final Result fromResult) {
-    try {
-      ExecutionStepInternal.basicDeserialize(fromResult, this);
-      whereClause = new WhereClause(-1);
-      whereClause.deserialize(fromResult.getProperty("whereClause"));
-    } catch (final Exception e) {
-      throw new CommandExecutionException(e);
-    }
   }
 
   @Override

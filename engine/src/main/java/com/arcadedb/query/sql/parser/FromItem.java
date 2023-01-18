@@ -20,9 +20,6 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
-
 import java.util.*;
 import java.util.stream.*;
 
@@ -269,101 +266,6 @@ public class FromItem extends SimpleNode {
 
   public void setInputParams(final List<InputParameter> inputParams) {
     this.inputParams = inputParams;
-  }
-
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    if (rids != null) {
-      result.setProperty("rids", rids.stream().map(x -> x.serialize()).collect(Collectors.toList()));
-    }
-    if (inputParams != null) {
-      result.setProperty("inputParams", rids.stream().map(x -> x.serialize()).collect(Collectors.toList()));
-    }
-    if (bucket != null) {
-      result.setProperty("bucket", bucket.serialize());
-    }
-    if (bucketList != null) {
-      result.setProperty("bucketList", bucketList.serialize());
-    }
-    if (index != null) {
-      result.setProperty("index", index.serialize());
-    }
-    if (schema != null) {
-      result.setProperty("schema", schema.serialize());
-    }
-    if (statement != null) {
-      result.setProperty("statement", statement.serialize());
-    }
-    if (inputParam != null) {
-      result.setProperty("inputParam", inputParam.serialize());
-    }
-    if (identifier != null) {
-      result.setProperty("identifier", identifier.serialize());
-    }
-    if (functionCall != null) {
-      result.setProperty("functionCall", functionCall.serialize());
-    }
-    if (modifier != null) {
-      result.setProperty("modifier", modifier.serialize());
-    }
-
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    if (fromResult.getProperty("rids") != null) {
-      final List<Result> serRids = fromResult.getProperty("rids");
-      rids = new ArrayList<>();
-      for (final Result res : serRids) {
-        final Rid rid = new Rid(-1);
-        rid.deserialize(res);
-        rids.add(rid);
-      }
-    }
-
-    if (fromResult.getProperty("inputParams") != null) {
-      final List<Result> ser = fromResult.getProperty("inputParams");
-      inputParams = new ArrayList<>();
-      for (final Result res : ser) {
-        inputParams.add(InputParameter.deserializeFromOResult(res));
-      }
-    }
-
-    if (fromResult.getProperty("bucket") != null) {
-      bucket = new Bucket(-1);
-      bucket.deserialize(fromResult.getProperty("bucket"));
-    }
-    if (fromResult.getProperty("bucketList") != null) {
-      bucketList = new BucketList(-1);
-      bucketList.deserialize(fromResult.getProperty("bucketList"));
-    }
-
-    if (fromResult.getProperty("index") != null) {
-      index = new IndexIdentifier(-1);
-      index.deserialize(fromResult.getProperty("index"));
-    }
-    if (fromResult.getProperty("schema") != null) {
-      schema = new SchemaIdentifier(-1);
-      schema.deserialize(fromResult.getProperty("schema"));
-    }
-    if (fromResult.getProperty("statement") != null) {
-      statement = Statement.deserializeFromOResult(fromResult.getProperty("statement"));
-    }
-    if (fromResult.getProperty("inputParam") != null) {
-      inputParam = InputParameter.deserializeFromOResult(fromResult.getProperty("inputParam"));
-    }
-    if (fromResult.getProperty("identifier") != null) {
-      identifier = new Identifier(-1);
-      Identifier.deserialize(fromResult.getProperty("identifier"));
-    }
-    if (fromResult.getProperty("functionCall") != null) {
-      functionCall = new FunctionCall(parser, -1);
-      functionCall.deserialize(fromResult.getProperty("functionCall"));
-    }
-    if (fromResult.getProperty("modifier") != null) {
-      modifier = new Modifier(-1);
-      modifier.deserialize(fromResult.getProperty("modifier"));
-    }
   }
 
   @Override

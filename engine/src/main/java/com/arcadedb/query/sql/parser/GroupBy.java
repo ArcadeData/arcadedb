@@ -20,9 +20,6 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
-
 import java.util.*;
 import java.util.stream.*;
 
@@ -70,26 +67,6 @@ public class GroupBy extends SimpleNode {
   @Override
   protected SimpleNode[] getCacheableElements() {
     return items.toArray(new Expression[items.size()]);
-  }
-
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    if (items != null)
-      result.setProperty("items", items.stream().map(x -> x.serialize()).collect(Collectors.toList()));
-
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    if (fromResult.getProperty("items") != null) {
-      final List<Result> ser = fromResult.getProperty("items");
-      items = new ArrayList<>();
-      for (final Result r : ser) {
-        final Expression exp = new Expression(-1);
-        exp.deserialize(r);
-        items.add(exp);
-      }
-    }
   }
 }
 /* JavaCC - OriginalChecksum=4739190aa6c1a3533a89b76a15bd6fdf (do not edit this line) */

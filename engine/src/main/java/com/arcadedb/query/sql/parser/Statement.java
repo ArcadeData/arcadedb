@@ -21,12 +21,9 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalExecutionPlan;
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.*;
@@ -137,26 +134,6 @@ public class Statement extends SimpleNode {
 
   public boolean isDDL() {
     return this instanceof DDLStatement;
-  }
-
-  public static Statement deserializeFromOResult(final Result doc) {
-    try {
-      final Statement result = (Statement) Class.forName(doc.getProperty("__class")).getConstructor(Integer.class).newInstance(-1);
-      result.deserialize(doc);
-    } catch (final Exception e) {
-      throw new CommandExecutionException(e);
-    }
-    return null;
-  }
-
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    result.setProperty("__class", getClass().getName());
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    throw new UnsupportedOperationException();
   }
 
   public boolean executionPlanCanBeCached() {

@@ -20,9 +20,6 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
-
 import java.util.*;
 import java.util.stream.*;
 
@@ -70,26 +67,6 @@ public class BucketList extends SimpleNode {
   @Override
   protected Object[] getIdentityElements() {
     return new Object[] { buckets };
-  }
-
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    if (buckets != null) {
-      result.setProperty("buckets", buckets.stream().map(x -> x.serialize()).collect(Collectors.toList()));
-    }
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    if (fromResult.getProperty("buckets") != null) {
-      buckets = new ArrayList<>();
-      final List<Result> ser = fromResult.getProperty("buckets");
-      for (final Result item : ser) {
-        final Identifier id = new Identifier(-1);
-        Identifier.deserialize(item);
-        buckets.add(id);
-      }
-    }
   }
 }
 /* JavaCC - OriginalChecksum=bd90ffa0b9d17f204b3cf2d47eedb409 (do not edit this line) */

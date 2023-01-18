@@ -680,40 +680,6 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     return result;
   }
 
-
-
-  @Override
-  public Result serialize() {
-    final ResultInternal result = ExecutionStepInternal.basicSerialize(this);
-    result.setProperty("indexName", index.getName());
-    if (condition != null) {
-      result.setProperty("condition", condition.serialize());
-    }
-    if (additionalRangeCondition != null) {
-      result.setProperty("additionalRangeCondition", additionalRangeCondition.serialize());
-    }
-    result.setProperty("orderAsc", orderAsc);
-    return result;
-  }
-
-  @Override
-  public void deserialize(final Result fromResult) {
-    try {
-      ExecutionStepInternal.basicDeserialize(fromResult, this);
-      indexName = fromResult.getProperty("indexName");
-      if (fromResult.getProperty("condition") != null) {
-        condition = BooleanExpression.deserializeFromOResult(fromResult.getProperty("condition"));
-      }
-      if (fromResult.getProperty("additionalRangeCondition") != null) {
-        additionalRangeCondition = new BinaryCondition(-1);
-        additionalRangeCondition.deserialize(fromResult.getProperty("additionalRangeCondition"));
-      }
-      orderAsc = fromResult.getProperty("orderAsc");
-    } catch (final Exception e) {
-      throw new CommandExecutionException(e);
-    }
-  }
-
   @Override
   public void reset() {
     index = null;

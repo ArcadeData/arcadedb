@@ -29,7 +29,7 @@ public interface InternalExecutionPlan extends ExecutionPlan {
 
   String JAVA_TYPE = "javaType";
 
-  default void close(){
+  default void close() {
     // NO ACTION
   }
 
@@ -45,16 +45,8 @@ public interface InternalExecutionPlan extends ExecutionPlan {
 
   void reset(CommandContext ctx);
 
-  default long getCost(){
+  default long getCost() {
     return -1;
-  }
-
-  default Result serialize() {
-    throw new UnsupportedOperationException();
-  }
-
-  default void deserialize(final Result serializedExecutionPlan) {
-    throw new UnsupportedOperationException();
   }
 
   default InternalExecutionPlan copy(final CommandContext ctx) {

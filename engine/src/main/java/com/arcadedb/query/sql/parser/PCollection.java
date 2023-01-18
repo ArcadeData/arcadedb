@@ -24,7 +24,6 @@ import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.*;
 import java.util.stream.*;
@@ -116,26 +115,6 @@ public class PCollection extends SimpleNode {
   @Override
   protected Object[] getIdentityElements() {
     return new Object[] { expressions };
-  }
-
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    if (expressions != null) {
-      result.setProperty("expressions", expressions.stream().map(x -> x.serialize()).collect(Collectors.toList()));
-    }
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    if (fromResult.getProperty("expressions") != null) {
-      expressions = new ArrayList<>();
-      final List<Result> ser = fromResult.getProperty("expressions");
-      for (final Result item : ser) {
-        final Expression exp = new Expression(-1);
-        exp.deserialize(item);
-        expressions.add(exp);
-      }
-    }
   }
 
   @Override

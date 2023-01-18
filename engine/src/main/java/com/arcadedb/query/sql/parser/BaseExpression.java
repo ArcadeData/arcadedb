@@ -337,50 +337,6 @@ public class BaseExpression extends MathExpression {
     }
   }
 
-  public Result serialize() {
-    final ResultInternal result = (ResultInternal) super.serialize();
-    if (isNull)
-      result.setProperty("isNull", true);
-    if (number != null)
-      result.setProperty("number", number.serialize());
-    if (identifier != null)
-      result.setProperty("identifier", identifier.serialize());
-    if (inputParam != null)
-      result.setProperty("inputParam", inputParam.serialize());
-    if (string != null)
-      result.setProperty("string", string);
-    if (modifier != null)
-      result.setProperty("modifier", modifier.serialize());
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    super.deserialize(fromResult);
-
-    if (fromResult.getProperty("isNull") != null)
-      isNull = true;
-
-    if (fromResult.getProperty("number") != null) {
-      number = new PNumber(-1);
-      number.deserialize(fromResult.getProperty("number"));
-    }
-    if (fromResult.getProperty("identifier") != null) {
-      identifier = new BaseIdentifier(-1);
-      identifier.deserialize(fromResult.getProperty("identifier"));
-    }
-    if (fromResult.getProperty("inputParam") != null) {
-      inputParam = InputParameter.deserializeFromOResult(fromResult.getProperty("inputParam"));
-    }
-
-    if (fromResult.getProperty("string") != null) {
-      string = fromResult.getProperty("string");
-    }
-    if (fromResult.getProperty("modifier") != null) {
-      modifier = new Modifier(-1);
-      modifier.deserialize(fromResult.getProperty("modifier"));
-    }
-  }
-
   @Override
   public boolean isDefinedFor(final Result currentRecord) {
     if (this.identifier != null) {

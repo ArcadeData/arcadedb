@@ -222,29 +222,6 @@ public class Projection extends SimpleNode {
     return false;
   }
 
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    result.setProperty("distinct", distinct);
-    if (items != null)
-      result.setProperty("items", items.stream().map(x -> x.serialize()).collect(Collectors.toList()));
-
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    distinct = fromResult.getProperty("distinct");
-    if (fromResult.getProperty("items") != null) {
-      items = new ArrayList<>();
-
-      final List<Result> ser = fromResult.getProperty("items");
-      for (final Result x : ser) {
-        final ProjectionItem item = new ProjectionItem(-1);
-        item.deserialize(x);
-        items.add(item);
-      }
-    }
-  }
-
   @Override
   protected SimpleNode[] getCacheableElements() {
     return items.toArray(new ProjectionItem[items.size()]);

@@ -21,10 +21,8 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.*;
 
@@ -175,29 +173,6 @@ public class RightBinaryCondition extends SimpleNode {
   @Override
   protected SimpleNode[] getCacheableElements() {
     return new SimpleNode[] { right };
-  }
-
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    result.setProperty("operator", operator.getClass().getName());
-    result.setProperty("not", not);
-    result.setProperty("in", inOperator != null);
-    result.setProperty("right", right.serialize());
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    try {
-      operator = (BinaryCompareOperator) Class.forName(String.valueOf(fromResult.getProperty("operator"))).getConstructor().newInstance();
-    } catch (final Exception e) {
-      throw new CommandExecutionException(e);
-    }
-    not = fromResult.getProperty("not");
-    if (Boolean.TRUE.equals(fromResult.getProperty("in"))) {
-      inOperator = new InOperator(-1);
-    }
-    right = new Expression(-1);
-    right.deserialize(fromResult.getProperty("right"));
   }
 }
 /* JavaCC - OriginalChecksum=29d59ae04778eb611547292a27863da4 (do not edit this line) */

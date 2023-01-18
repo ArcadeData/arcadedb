@@ -21,7 +21,6 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.serializer.BinaryComparator;
 
 import java.util.*;
@@ -155,27 +154,6 @@ public class OrderByItem {
 
   public Modifier getModifier() {
     return modifier;
-  }
-
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    result.setProperty("alias", alias);
-    if (modifier != null)
-      result.setProperty("modifier", modifier.serialize());
-
-    result.setProperty("recordAttr", recordAttr);
-    result.setProperty("type", type);
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    alias = fromResult.getProperty("alias");
-    if (fromResult.getProperty("modifier") != null) {
-      modifier = new Modifier(-1);
-      modifier.deserialize(fromResult.getProperty("modifier"));
-    }
-    recordAttr = fromResult.getProperty("recordAttr");
-    type = DESC.equals(fromResult.getProperty("type")) ? DESC : ASC;
   }
 
   public void setModifier(final Modifier modifier) {

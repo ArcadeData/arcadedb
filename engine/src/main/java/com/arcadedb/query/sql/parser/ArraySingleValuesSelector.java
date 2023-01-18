@@ -219,26 +219,5 @@ public class ArraySingleValuesSelector extends SimpleNode {
       return 0;
     }
   }
-
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    if (items != null) {
-      result.setProperty("items", items.stream().map(x -> x.serialize()).collect(Collectors.toList()));
-    }
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-
-    if (fromResult.getProperty("items") != null) {
-      final List<Result> ser = fromResult.getProperty("items");
-      items = new ArrayList<>();
-      for (final Result r : ser) {
-        final ArraySelector exp = new ArraySelector(-1);
-        exp.deserialize(r);
-        items.add(exp);
-      }
-    }
-  }
 }
 /* JavaCC - OriginalChecksum=991998c77a4831184b6dca572513fd8d (do not edit this line) */

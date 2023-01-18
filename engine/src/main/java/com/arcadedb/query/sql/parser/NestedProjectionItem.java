@@ -21,8 +21,6 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.*;
 
@@ -138,41 +136,6 @@ public class NestedProjectionItem extends SimpleNode {
 
   public Object expand(final Expression expression, final String name, final Object value, final CommandContext ctx, final int recursion) {
     return expansion.apply(expression, value, ctx);
-  }
-
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    result.setProperty("exclude", exclude);
-    result.setProperty("star", star);
-    if (expression != null) {
-      result.setProperty("expression", expression.serialize());
-    }
-    result.setProperty("rightWildcard", rightWildcard);
-    if (expansion != null) {
-      result.setProperty("expansion", expansion.serialize());
-    }
-    if (alias != null) {
-      result.setProperty("alias", alias.serialize());
-    }
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    exclude = fromResult.getProperty("exclude");
-    star = fromResult.getProperty("star");
-    if (fromResult.getProperty("field") != null) {
-      expression = new Expression(-1);
-      expression.deserialize(fromResult.getProperty("expression"));
-    }
-    rightWildcard = fromResult.getProperty("rightWildcard");
-    if (fromResult.getProperty("expansion") != null) {
-      expansion = new NestedProjection(-1);
-      expansion.deserialize(fromResult.getProperty("expansion"));
-    }
-    if (fromResult.getProperty("alias") != null) {
-      alias = new Identifier(-1);
-      Identifier.deserialize(fromResult.getProperty("alias"));
-    }
   }
 }
 /* JavaCC - OriginalChecksum=606b3fe37ff952934e3e2e3daa9915f2 (do not edit this line) */

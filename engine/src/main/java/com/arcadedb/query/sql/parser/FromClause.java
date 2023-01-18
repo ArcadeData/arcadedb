@@ -20,9 +20,6 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
-
 import java.util.*;
 
 public class FromClause extends SimpleNode {
@@ -60,17 +57,6 @@ public class FromClause extends SimpleNode {
   @Override
   protected Object[] getIdentityElements() {
     return new Object[] { item };
-  }
-
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    result.setProperty("item", item.serialize());
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    item = new FromItem(-1);
-    item.deserialize(fromResult.getProperty("item"));
   }
 
   @Override

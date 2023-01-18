@@ -23,7 +23,6 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.lang.reflect.*;
 import java.util.*;
@@ -92,7 +91,6 @@ public class ArraySelector extends SimpleNode {
     }
     return result;
   }
-
 
   public ArraySelector copy() {
     final ArraySelector result = new ArraySelector(-1);
@@ -181,41 +179,6 @@ public class ArraySelector extends SimpleNode {
   private void setArrayValue(final Object target, final int idx, final Object value, final CommandContext ctx) {
     if (idx >= 0 && idx < Array.getLength(target)) {
       Array.set(target, idx, value);
-    }
-  }
-
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    if (rid != null) {
-      result.setProperty("rid", rid.serialize());
-    }
-    if (inputParam != null) {
-      result.setProperty("inputParam", inputParam.serialize());
-    }
-    if (expression != null) {
-      result.setProperty("expression", expression.serialize());
-    }
-    if (integer != null) {
-      result.setProperty("integer", integer.serialize());
-    }
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    if (fromResult.getProperty("rid") != null) {
-      rid = new Rid(-1);
-      rid.deserialize(fromResult.getProperty("rid"));
-    }
-    if (fromResult.getProperty("inputParam") != null) {
-      inputParam = InputParameter.deserializeFromOResult(fromResult.getProperty("inputParam"));
-    }
-    if (fromResult.getProperty("expression") != null) {
-      expression = new Expression(-1);
-      expression.deserialize(fromResult.getProperty("expression"));
-    }
-    if (fromResult.getProperty("integer") != null) {
-      integer = new PInteger(-1);
-      integer.deserialize(fromResult.getProperty("integer"));
     }
   }
 }

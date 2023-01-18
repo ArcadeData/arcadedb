@@ -20,11 +20,9 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.IndexSearchInfo;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.schema.DocumentType;
 
 import java.util.*;
@@ -186,26 +184,6 @@ public abstract class BooleanExpression extends SimpleNode {
   }
 
   public abstract List<String> getMatchPatternInvolvedAliases();
-
-  public static BooleanExpression deserializeFromOResult(final Result doc) {
-    try {
-      final BooleanExpression result = (BooleanExpression) Class.forName(doc.getProperty("__class")).getConstructor(Integer.class).newInstance(-1);
-      result.deserialize(doc);
-    } catch (final Exception e) {
-      throw new CommandExecutionException("", e);
-    }
-    return null;
-  }
-
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    result.setProperty("__class", getClass().getName());
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    throw new UnsupportedOperationException();
-  }
 
   public boolean createRangeWith(final BooleanExpression match) {
     return false;

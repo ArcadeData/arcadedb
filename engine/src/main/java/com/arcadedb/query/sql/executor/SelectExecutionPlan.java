@@ -18,8 +18,6 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.exception.CommandExecutionException;
-
 import java.util.*;
 import java.util.stream.*;
 
@@ -96,30 +94,6 @@ public class SelectExecutionPlan implements InternalExecutionPlan {
     result.setProperty("prettyPrint", prettyPrint(0, 2));
     result.setProperty("steps", steps == null ? null : steps.stream().map(x -> x.toResult()).collect(Collectors.toList()));
     return result;
-  }
-
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    result.setProperty("type", "QueryExecutionPlan");
-    result.setProperty(JAVA_TYPE, getClass().getName());
-    result.setProperty("cost", getCost());
-    result.setProperty("prettyPrint", prettyPrint(0, 2));
-    result.setProperty("steps", steps == null ? null : steps.stream().map(x -> x.serialize()).collect(Collectors.toList()));
-    return result;
-  }
-
-  public void deserialize(final Result serializedExecutionPlan) {
-    final List<Result> serializedSteps = serializedExecutionPlan.getProperty("steps");
-    for (final Result serializedStep : serializedSteps) {
-      try {
-        final String className = serializedStep.getProperty(JAVA_TYPE);
-        final ExecutionStepInternal step = (ExecutionStepInternal) Class.forName(className).getConstructor().newInstance();
-        step.deserialize(serializedStep);
-        chain(step);
-      } catch (final Exception e) {
-        throw new CommandExecutionException("Cannot deserialize execution step:" + serializedStep, e);
-      }
-    }
   }
 
   @Override

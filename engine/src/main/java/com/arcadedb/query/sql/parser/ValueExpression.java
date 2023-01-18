@@ -153,14 +153,6 @@ public class ValueExpression extends Expression {
     return false;
   }
 
-  public Result serialize() {
-    throw new UnsupportedOperationException("Cannot serialize value expression (not supported yet)");
-  }
-
-  public void deserialize(final Result fromResult) {
-    throw new UnsupportedOperationException("Cannot deserialize value expression (not supported yet)");
-  }
-
   public boolean isDefinedFor(final Result currentRecord) {
     return true;
   }

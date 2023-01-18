@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.index.RangeIndex;
 
 /**
@@ -44,23 +43,6 @@ public class FetchFromIndexValuesStep extends FetchFromIndexStep {
       return ExecutionStepInternal.getIndent(depth, indent) + "+ FETCH FROM INDEX VALUES ASC " + index.getName();
     } else {
       return ExecutionStepInternal.getIndent(depth, indent) + "+ FETCH FROM INDEX VALUES DESC " + index.getName();
-    }
-  }
-
-  @Override
-  public Result serialize() {
-    final ResultInternal result = (ResultInternal) super.serialize();
-    result.setProperty("asc", asc);
-    return result;
-  }
-
-  @Override
-  public void deserialize(final Result fromResult) {
-    try {
-      super.deserialize(fromResult);
-      this.asc = fromResult.getProperty("asc");
-    } catch (final Exception e) {
-      throw new CommandExecutionException(e);
     }
   }
 

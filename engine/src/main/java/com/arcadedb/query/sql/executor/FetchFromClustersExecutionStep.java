@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 
 import java.util.*;
@@ -187,22 +186,4 @@ public class FetchFromClustersExecutionStep extends AbstractExecutionStep {
     return subSteps.stream().map(x -> x.getCost()).reduce((a, b) -> a > 0 && b > 0 ? a + b : a > 0 ? a : b > 0 ? b : -1L).orElse(-1L);
   }
 
-  @Override
-  public Result serialize() {
-    final ResultInternal result = ExecutionStepInternal.basicSerialize(this);
-    result.setProperty("orderByRidAsc", orderByRidAsc);
-    result.setProperty("orderByRidDesc", orderByRidDesc);
-    return result;
-  }
-
-  @Override
-  public void deserialize(final Result fromResult) {
-    try {
-      ExecutionStepInternal.basicDeserialize(fromResult, this);
-      this.orderByRidAsc = fromResult.getProperty("orderByRidAsc");
-      this.orderByRidDesc = fromResult.getProperty("orderByRidDesc");
-    } catch (final Exception e) {
-      throw new CommandExecutionException(e);
-    }
-  }
 }

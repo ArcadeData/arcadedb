@@ -20,9 +20,6 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
-
 import java.util.*;
 
 public class FloatingPoint extends PNumber {
@@ -105,20 +102,6 @@ public class FloatingPoint extends PNumber {
   @Override
   protected Object[] getIdentityElements() {
     return new Object[] { sign, stringValue };
-  }
-
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    result.setProperty("sign", sign);
-    result.setProperty("stringValue", stringValue);
-    result.setProperty("finalValue", finalValue);
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    sign = fromResult.getProperty("sign");
-    stringValue = fromResult.getProperty("stringValue");
-    finalValue = fromResult.getProperty("finalValue");
   }
 }
 /* JavaCC - OriginalChecksum=46acfb589f666717595e28f1b19611ae (do not edit this line) */

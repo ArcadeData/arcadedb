@@ -20,9 +20,6 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
-
 import java.util.*;
 
 public class LetItem extends SimpleNode {
@@ -92,35 +89,6 @@ public class LetItem extends SimpleNode {
     //this is to transform LET expressions with subqueries in simple LET, plus LET with query only, so the direct query is ignored
     if (expression != null) {
       expression.extractSubQueries(varName, collector);
-    }
-  }
-
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    if (varName != null) {
-      result.setProperty("varName", varName.serialize());
-    }
-    if (expression != null) {
-      result.setProperty("expression", expression.serialize());
-    }
-    if (query != null) {
-      result.setProperty("query", query.serialize());
-    }
-
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    if (fromResult.getProperty("varName") != null) {
-      varName = new Identifier(-1);
-      Identifier.deserialize(fromResult.getProperty("varName"));
-    }
-    if (fromResult.getProperty("expression") != null) {
-      expression = new Expression(-1);
-      expression.deserialize(fromResult.getProperty("expression"));
-    }
-    if (fromResult.getProperty("query") != null) {
-      query = Statement.deserializeFromOResult(fromResult.getProperty("expression"));
     }
   }
 

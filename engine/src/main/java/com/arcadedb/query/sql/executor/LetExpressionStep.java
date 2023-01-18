@@ -72,32 +72,4 @@ public class LetExpressionStep extends AbstractExecutionStep {
     return spaces + "+ LET (for each record)\n" + spaces + "  " + varname + " = " + expression;
   }
 
-  @Override
-  public Result serialize() {
-    final ResultInternal result = ExecutionStepInternal.basicSerialize(this);
-    if (varname != null) {
-      result.setProperty("varname", varname.serialize());
-    }
-    if (expression != null) {
-      result.setProperty("expression", expression.serialize());
-    }
-    return result;
-  }
-
-  @Override
-  public void deserialize(final Result fromResult) {
-    try {
-      ExecutionStepInternal.basicDeserialize(fromResult, this);
-      if (fromResult.getProperty("varname") != null) {
-        varname = Identifier.deserialize(fromResult.getProperty("varname"));
-      }
-      if (fromResult.getProperty("expression") != null) {
-        expression = new Expression(-1);
-        expression.deserialize(fromResult.getProperty("expression"));
-      }
-      reset();
-    } catch (final Exception e) {
-      throw new CommandExecutionException(e);
-    }
-  }
 }

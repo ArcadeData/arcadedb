@@ -20,9 +20,6 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
-
 import java.util.*;
 
 public class NamedParameter extends InputParameter {
@@ -93,13 +90,13 @@ public class NamedParameter extends InputParameter {
   }
 
   @Override
-  public boolean equals( final Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
 
-    final  NamedParameter that = (NamedParameter) o;
+    final NamedParameter that = (NamedParameter) o;
 
     if (paramNumber != that.paramNumber)
       return false;
@@ -111,18 +108,6 @@ public class NamedParameter extends InputParameter {
     int result = paramNumber;
     result = 31 * result + (paramName != null ? paramName.hashCode() : 0);
     return result;
-  }
-
-  public Result serialize() {
-    final ResultInternal result = (ResultInternal) super.serialize();
-    result.setProperty("paramNumber", paramNumber);
-    result.setProperty("paramName", paramName);
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    paramNumber = fromResult.getProperty("paramNumber");
-    paramName = fromResult.getProperty("paramName");
   }
 }
 /* JavaCC - OriginalChecksum=8a00a9cf51a15dd75202f6372257fc1c (do not edit this line) */

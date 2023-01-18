@@ -26,7 +26,6 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.*;
 
@@ -175,37 +174,6 @@ public class Rid extends SimpleNode {
       }
     }
     return position;
-  }
-
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    if (bucket != null)
-      result.setProperty("bucket", bucket.serialize());
-
-    if (position != null)
-      result.setProperty("position", position.serialize());
-
-    if (expression != null)
-      result.setProperty("expression", expression.serialize());
-
-    result.setProperty("legacy", legacy);
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    if (fromResult.getProperty("bucket") != null) {
-      bucket = new PInteger(-1);
-      bucket.deserialize(fromResult.getProperty("bucket"));
-    }
-    if (fromResult.getProperty("position") != null) {
-      position = new PInteger(-1);
-      position.deserialize(fromResult.getProperty("position"));
-    }
-    if (fromResult.getProperty("expression") != null) {
-      expression = new Expression(-1);
-      expression.deserialize(fromResult.getProperty("expression"));
-    }
-    legacy = fromResult.getProperty("legacy");
   }
 }
 /* JavaCC - OriginalChecksum=c2c6d67d7722e29212e438574698d7cd (do not edit this line) */

@@ -22,8 +22,6 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.*;
 
@@ -74,26 +72,6 @@ public class Skip extends SimpleNode {
   @Override
   protected Object[] getIdentityElements() {
     return new Object[] { num, inputParam };
-  }
-
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    if (num != null)
-      result.setProperty("num", num.serialize());
-
-    if (inputParam != null)
-      result.setProperty("inputParam", inputParam.serialize());
-
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    if (fromResult.getProperty("num") != null) {
-      num = new PInteger(-1);
-      num.deserialize(fromResult.getProperty("num"));
-    }
-    if (fromResult.getProperty("inputParam") != null)
-      inputParam = InputParameter.deserializeFromOResult(fromResult.getProperty("inputParam"));
   }
 }
 /* JavaCC - OriginalChecksum=8e13ca184705a8fc1b5939ecefe56a60 (do not edit this line) */

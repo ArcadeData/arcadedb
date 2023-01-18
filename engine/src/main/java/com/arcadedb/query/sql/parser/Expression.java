@@ -498,51 +498,6 @@ public class Expression extends SimpleNode {
     this.arrayConcatExpression = arrayConcatExpression;
   }
 
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    result.setProperty("singleQuotes", singleQuotes);
-    result.setProperty("doubleQuotes", doubleQuotes);
-    result.setProperty("isNull", isNull);
-
-    if (rid != null) {
-      result.setProperty("rid", rid.serialize());
-    }
-    if (mathExpression != null) {
-      result.setProperty("mathExpression", mathExpression.serialize());
-    }
-    if (arrayConcatExpression != null) {
-      result.setProperty("arrayConcatExpression", arrayConcatExpression.serialize());
-    }
-    if (json != null) {
-      result.setProperty("json", json.serialize());
-    }
-    result.setProperty("booleanValue", booleanValue);
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    singleQuotes = fromResult.getProperty("singleQuotes");
-    doubleQuotes = fromResult.getProperty("doubleQuotes");
-    isNull = fromResult.getProperty("isNull");
-
-    if (fromResult.getProperty("rid") != null) {
-      rid = new Rid(-1);
-      rid.deserialize(fromResult.getProperty("rid"));
-    }
-    if (fromResult.getProperty("mathExpression") != null) {
-      mathExpression = MathExpression.deserializeFromResult(fromResult.getProperty("mathExpression"));
-    }
-    if (fromResult.getProperty("arrayConcatExpression") != null) {
-      arrayConcatExpression = new ArrayConcatExpression(-1);
-      arrayConcatExpression.deserialize(fromResult.getProperty("arrayConcatExpression"));
-    }
-    if (fromResult.getProperty("json") != null) {
-      json = new Json(-1);
-      json.deserialize(fromResult.getProperty("json"));
-    }
-    booleanValue = fromResult.getProperty("booleanValue");
-  }
-
   public boolean isDefinedFor(final Result currentRecord) {
     if (mathExpression != null) {
       return mathExpression.isDefinedFor(currentRecord);

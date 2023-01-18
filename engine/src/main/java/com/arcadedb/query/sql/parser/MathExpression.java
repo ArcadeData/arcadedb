@@ -991,51 +991,6 @@ public class MathExpression extends SimpleNode {
     childExpressions.get(0).applyRemove(result, ctx);
   }
 
-  public static MathExpression deserializeFromResult(final Result fromResult) {
-    final String className = fromResult.getProperty("__class");
-    try {
-      final MathExpression result = (MathExpression) Class.forName(className).getConstructor(Integer.class).newInstance(-1);
-      result.deserialize(fromResult);
-      return result;
-    } catch (final Exception e) {
-      throw new CommandExecutionException(e);
-    }
-
-  }
-
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    result.setProperty("__class", getClass().getName());
-    if (childExpressions != null) {
-      result.setProperty("childExpressions", childExpressions.stream().map(x -> x.serialize()).collect(Collectors.toList()));
-    }
-    if (operators != null) {
-      result.setProperty("operators", operators.stream().map(x -> serializeOperator(x)).collect(Collectors.toList()));
-    }
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    if (fromResult.getProperty("childExpressions") != null) {
-      final List<Result> ser = fromResult.getProperty("childExpressions");
-      childExpressions = ser.stream().map(x -> deserializeFromResult(x)).collect(Collectors.toList());
-
-    }
-    if (fromResult.getProperty("operators") != null) {
-      final List<String> ser = fromResult.getProperty("operators");
-      operators = ser.stream().map(x -> deserializeOperator(x)).collect(Collectors.toList());
-
-    }
-  }
-
-  private String serializeOperator(final Operator x) {
-    return x.toString();
-  }
-
-  private Operator deserializeOperator(final String x) {
-    return Operator.valueOf(x);
-  }
-
   private static Long toLong(final Object left) {
     if (left instanceof Number) {
       return ((Number) left).longValue();

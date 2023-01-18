@@ -20,9 +20,6 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
-
 import java.util.*;
 
 public class IndexIdentifier extends SimpleNode {
@@ -107,27 +104,6 @@ public class IndexIdentifier extends SimpleNode {
     result = 31 * result + (indexNameString != null ? indexNameString.hashCode() : 0);
     result = 31 * result + (indexName != null ? indexName.hashCode() : 0);
     return result;
-  }
-
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    result.setProperty("type", type.toString());
-    result.setProperty("indexNameString", indexNameString);
-
-    if (indexName != null)
-      result.setProperty("indexName", indexName.serialize());
-
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    type = Type.valueOf(fromResult.getProperty("type"));
-    indexNameString = fromResult.getProperty("indexNameString");
-
-    if (fromResult.getProperty("indexName") != null) {
-      indexName = new Identifier(-1);
-      Identifier.deserialize(fromResult.getProperty("indexName"));
-    }
   }
 
   public void setType(final Type type) {

@@ -25,7 +25,6 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.*;
 import java.util.stream.*;
@@ -161,26 +160,6 @@ public class Json extends SimpleNode {
   public void extractSubQueries(final SubQueryCollector collector) {
     for (final JsonItem item : items) {
       item.extractSubQueries(collector);
-    }
-  }
-
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    if (items != null) {
-      result.setProperty("items", items.stream().map(x -> x.serialize()).collect(Collectors.toList()));
-    }
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    if (fromResult.getProperty("items") != null) {
-      final List<Result> ser = fromResult.getProperty("items");
-      items = new ArrayList<>();
-      for (final Result r : ser) {
-        final JsonItem exp = new JsonItem();
-        exp.deserialize(r);
-        items.add(exp);
-      }
     }
   }
 

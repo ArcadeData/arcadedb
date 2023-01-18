@@ -245,27 +245,6 @@ public class FetchFromClassExecutionStep extends AbstractExecutionStep {
   }
 
   @Override
-  public Result serialize() {
-    final ResultInternal result = ExecutionStepInternal.basicSerialize(this);
-    result.setProperty("typeName", className);
-    result.setProperty("orderByRidAsc", orderByRidAsc);
-    result.setProperty("orderByRidDesc", orderByRidDesc);
-    return result;
-  }
-
-  @Override
-  public void deserialize(final Result fromResult) {
-    try {
-      ExecutionStepInternal.basicDeserialize(fromResult, this);
-      this.className = fromResult.getProperty("typeName");
-      this.orderByRidAsc = fromResult.getProperty("orderByRidAsc");
-      this.orderByRidDesc = fromResult.getProperty("orderByRidDesc");
-    } catch (final Exception e) {
-      throw new CommandExecutionException("", e);
-    }
-  }
-
-  @Override
   public List<ExecutionStep> getSubSteps() {
     return subSteps;
   }

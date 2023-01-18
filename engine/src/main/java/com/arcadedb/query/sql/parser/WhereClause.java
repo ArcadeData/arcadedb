@@ -26,7 +26,6 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -208,32 +207,6 @@ public class WhereClause extends SimpleNode {
 
   public BooleanExpression getBaseExpression() {
     return baseExpression;
-  }
-
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    if (baseExpression != null) {
-      result.setProperty("baseExpression", baseExpression.serialize());
-    }
-    if (flattened != null) {
-      result.setProperty("flattened", flattened.stream().map(x -> x.serialize()).collect(Collectors.toList()));
-    }
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    if (fromResult.getProperty("baseExpression") != null) {
-      baseExpression = BooleanExpression.deserializeFromOResult(fromResult.getProperty("baseExpression"));
-    }
-    if (fromResult.getProperty("flattened") != null) {
-      final List<Result> ser = fromResult.getProperty("flattened");
-      flattened = new ArrayList<>();
-      for (final Result r : ser) {
-        final AndBlock block = new AndBlock(-1);
-        block.deserialize(r);
-        flattened.add(block);
-      }
-    }
   }
 
   @Override

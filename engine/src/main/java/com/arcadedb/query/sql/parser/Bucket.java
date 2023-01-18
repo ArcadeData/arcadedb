@@ -20,9 +20,6 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
-
 import java.util.*;
 
 public class Bucket extends SimpleNode {
@@ -68,18 +65,6 @@ public class Bucket extends SimpleNode {
     result.bucketName = bucketName;
     result.bucketNumber = bucketNumber;
     return result;
-  }
-
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    result.setProperty("bucketName", bucketName);
-    result.setProperty("bucketNumber", bucketNumber);
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    bucketName = fromResult.getProperty("bucketName");
-    bucketNumber = fromResult.getProperty("bucketNumber");
   }
 
   @Override

@@ -353,30 +353,6 @@ public class SuffixIdentifier extends SimpleNode {
     }
   }
 
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    if (identifier != null)
-      result.setProperty("identifier", identifier.serialize());
-
-    if (recordAttribute != null)
-      result.setProperty("recordAttribute", recordAttribute.serialize());
-
-    result.setProperty("star", star);
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    if (fromResult.getProperty("identifier") != null) {
-      identifier = new Identifier(-1);
-      Identifier.deserialize(fromResult.getProperty("identifier"));
-    }
-    if (fromResult.getProperty("recordAttribute") != null) {
-      recordAttribute = new RecordAttribute(-1);
-      recordAttribute.deserialize(fromResult.getProperty("recordAttribute"));
-    }
-    star = fromResult.getProperty("star");
-  }
-
   public boolean isDefinedFor(final Result currentRecord) {
     if (identifier != null)
       return currentRecord.hasProperty(identifier.getStringValue());

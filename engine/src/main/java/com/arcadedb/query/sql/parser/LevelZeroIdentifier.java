@@ -25,7 +25,6 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.AggregationContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.*;
 
@@ -248,30 +247,6 @@ public class LevelZeroIdentifier extends SimpleNode {
 
   public PCollection getCollection() {
     return collection;
-  }
-
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    if (functionCall != null) {
-      result.setProperty("functionCall", functionCall.serialize());
-    }
-    result.setProperty("self", self);
-    if (collection != null) {
-      result.setProperty("collection", collection.serialize());
-    }
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    if (fromResult.getProperty("functionCall") != null) {
-      functionCall = new FunctionCall(parser, -1);
-      functionCall.deserialize(fromResult.getProperty("functionCall"));
-    }
-    self = fromResult.getProperty("self");
-    if (fromResult.getProperty("collection") != null) {
-      collection = new PCollection(-1);
-      collection.deserialize(fromResult.getProperty("collection"));
-    }
   }
 
   public void extractSubQueries(final Identifier letAlias, final SubQueryCollector collector) {

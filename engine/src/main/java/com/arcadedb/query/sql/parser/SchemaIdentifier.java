@@ -20,9 +20,6 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
-
 import java.util.*;
 
 public class SchemaIdentifier extends SimpleNode {
@@ -66,16 +63,6 @@ public class SchemaIdentifier extends SimpleNode {
   @Override
   public int hashCode() {
     return name != null ? name.hashCode() : 0;
-  }
-
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    result.setProperty("name", name);
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    name = fromResult.getProperty("name");
   }
 }
 /* JavaCC - OriginalChecksum=ef4081789ce8f5ab15ca3ac3fdcbe748 (do not edit this line) */

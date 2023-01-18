@@ -20,7 +20,6 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.TimeoutException;
 
-import java.lang.reflect.*;
 import java.util.*;
 
 /**
@@ -47,50 +46,6 @@ public interface ExecutionStepInternal extends ExecutionStep {
       }
     }
     return result.toString();
-  }
-
-  static ResultInternal basicSerialize(final ExecutionStepInternal step) {
-    final ResultInternal result = new ResultInternal();
-    result.setProperty(InternalExecutionPlan.JAVA_TYPE, step.getClass().getName());
-    if (step.getSubSteps() != null && step.getSubSteps().size() > 0) {
-      final List<Result> serializedSubsteps = new ArrayList<>();
-      for (final ExecutionStep substep : step.getSubSteps()) {
-        serializedSubsteps.add(((ExecutionStepInternal) substep).serialize());
-      }
-      result.setProperty("subSteps", serializedSubsteps);
-    }
-
-    if (step.getSubExecutionPlans() != null && step.getSubExecutionPlans().size() > 0) {
-      final List<Result> serializedSubPlans = new ArrayList<>();
-      for (final ExecutionPlan substep : step.getSubExecutionPlans()) {
-        serializedSubPlans.add(((InternalExecutionPlan) substep).serialize());
-      }
-      result.setProperty("subExecutionPlans", serializedSubPlans);
-    }
-    return result;
-  }
-
-  static void basicDeserialize(final Result serialized, final ExecutionStepInternal step)
-      throws ClassNotFoundException, IllegalAccessException, InstantiationException, NoSuchMethodException, InvocationTargetException {
-    final List<Result> serializedSubsteps = serialized.getProperty("subSteps");
-    if (serializedSubsteps != null) {
-      for (final Result serializedSub : serializedSubsteps) {
-        final String className = serializedSub.getProperty(InternalExecutionPlan.JAVA_TYPE);
-        final ExecutionStepInternal subStep = (ExecutionStepInternal) Class.forName(className).getConstructor().newInstance();
-        subStep.deserialize(serializedSub);
-        step.getSubSteps().add(subStep);
-      }
-    }
-
-    final List<Result> serializedPlans = serialized.getProperty("subExecutionPlans");
-    if (serializedSubsteps != null) {
-      for (final Result serializedSub : serializedPlans) {
-        final String className = serializedSub.getProperty(InternalExecutionPlan.JAVA_TYPE);
-        final InternalExecutionPlan subStep = (InternalExecutionPlan) Class.forName(className).getConstructor().newInstance();
-        subStep.deserialize(serializedSub);
-        step.getSubExecutionPlans().add(subStep);
-      }
-    }
   }
 
   ResultSet syncPull(CommandContext ctx, int nRecords) throws TimeoutException;
@@ -130,14 +85,6 @@ public interface ExecutionStepInternal extends ExecutionStep {
 
   default void reset() {
     //do nothing
-  }
-
-  default Result serialize() {
-    throw new UnsupportedOperationException();
-  }
-
-  default void deserialize(final Result fromResult) {
-    throw new UnsupportedOperationException();
   }
 
   default ExecutionStep copy(final CommandContext ctx) {

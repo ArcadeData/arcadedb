@@ -20,9 +20,6 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultInternal;
-
 import java.util.*;
 import java.util.stream.*;
 
@@ -33,7 +30,7 @@ public class Unwind extends SimpleNode {
     super(id);
   }
 
-  public Unwind(final SqlParser p,final  int id) {
+  public Unwind(final SqlParser p, final int id) {
     super(p, id);
   }
 
@@ -72,26 +69,6 @@ public class Unwind extends SimpleNode {
 
   public List<Identifier> getItems() {
     return items;
-  }
-
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    if (items != null)
-      result.setProperty("items", items.stream().map(x -> x.serialize()).collect(Collectors.toList()));
-
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    if (fromResult.getProperty("items") != null) {
-      final List<Result> ser = fromResult.getProperty("items");
-      items = new ArrayList<>();
-      for (final Result r : ser) {
-        final Identifier exp = new Identifier(-1);
-        Identifier.deserialize(r);
-        items.add(exp);
-      }
-    }
   }
 }
 /* JavaCC - OriginalChecksum=4739190aa6c1a3533a89b76a15bd6fdf (do not edit this line) */

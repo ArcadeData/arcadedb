@@ -236,26 +236,6 @@ public class BaseIdentifier extends SimpleNode {
       throw new CommandExecutionException("cannot apply REMOVE " + this);
   }
 
-  public Result serialize() {
-    final ResultInternal result = new ResultInternal();
-    if (levelZero != null)
-      result.setProperty("levelZero", levelZero.serialize());
-    if (suffix != null)
-      result.setProperty("suffix", suffix.serialize());
-    return result;
-  }
-
-  public void deserialize(final Result fromResult) {
-    if (fromResult.getProperty("levelZero") != null) {
-      levelZero = new LevelZeroIdentifier(-1);
-      levelZero.deserialize(fromResult.getProperty("levelZero"));
-    }
-    if (fromResult.getProperty("suffix") != null) {
-      suffix = new SuffixIdentifier(-1);
-      suffix.deserialize(fromResult.getProperty("suffix"));
-    }
-  }
-
   public boolean isDefinedFor(final Result currentRecord) {
     if (suffix != null)
       return suffix.isDefinedFor(currentRecord);
