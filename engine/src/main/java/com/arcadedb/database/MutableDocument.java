@@ -75,7 +75,8 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
       if (key.startsWith("@"))
         // SKIP METADATA
         continue;
-      this.map.put(key, convertValueToSchemaType(key, entry.getValue(), type));
+      final Object value = setTransformValue(entry.getValue(), key);
+      this.map.put(key, convertValueToSchemaType(key, value, type));
     }
 
     dirty = true;
@@ -385,8 +386,18 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
           javaImplementation = database.getSerializer().getDateImplementation();
         else if (propType == Type.DATETIME)
           javaImplementation = database.getSerializer().getDateTimeImplementation();
-        else
+        else {
           javaImplementation = propType.getDefaultJavaType();
+
+          if (javaImplementation.equals(Document.class)) {
+            // EMBEDDED DOCUMENT
+            if (value instanceof Map) {
+              final Map<String, Object> map = (Map<String, Object>) value;
+              final String embType = (String) map.get("@type");
+              return newEmbeddedDocument(embType, name);
+            }
+          }
+        }
 
         return Type.convert(database, value, javaImplementation, property);
       } catch (final Exception e) {
@@ -427,8 +438,8 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
         }
       }
     } else if (value instanceof Map) {
-      final Map<Object, Object> map = (Map<Object, Object>) value;
-      for (final Map.Entry<Object, Object> entry : map.entrySet()) {
+      final Map<String, Object> map = (Map<String, Object>) value;
+      for (final Map.Entry<String, Object> entry : map.entrySet()) {
         final Object v = entry.getValue();
         if (v instanceof Document && !((Document) v).getDatabase().getName().equals(database.getName())) {
           ((BaseDocument) v).buffer.rewind();
@@ -440,6 +451,13 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
           newRecord.set(((BaseDocument) v).toMap());
           map.put(entry.getKey(), newRecord);
         }
+      }
+
+      final String embType = (String) map.get("@type");
+      if (embType != null) {
+        final MutableEmbeddedDocument embedded = newEmbeddedDocument(embType, propertyName);
+        embedded.fromMap(map);
+        return embedded;
       }
     }
     return value;

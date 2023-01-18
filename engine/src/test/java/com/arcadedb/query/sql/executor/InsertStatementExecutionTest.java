@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import org.junit.jupiter.api.Assertions;
@@ -229,6 +230,25 @@ public class InsertStatementExecutionTest extends TestHelper {
     }
     Assertions.assertFalse(result.hasNext());
     result.close();
+  }
+
+  @Test
+  public void testContentEmbedded() {
+    final String className = "testContent";
+    database.getSchema().createDocumentType(className);
+
+    ResultSet result = database.command("sql",
+        "insert into " + className + " content { 'embedded': { '@type':'testContent', 'name':'name1', 'surname':'surname1'} }");
+
+    for (int i = 0; i < 1; i++) {
+      Assertions.assertTrue(result.hasNext());
+      final Result item = result.next();
+      Assertions.assertNotNull(item);
+      EmbeddedDocument embedded = item.getProperty("embedded");
+      Assertions.assertEquals("name1", embedded.getString("name"));
+      Assertions.assertEquals("surname1", embedded.getString("surname"));
+    }
+    Assertions.assertFalse(result.hasNext());
   }
 
   @Test

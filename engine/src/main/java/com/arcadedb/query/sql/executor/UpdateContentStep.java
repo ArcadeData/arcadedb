@@ -103,11 +103,10 @@ public class UpdateContentStep extends AbstractExecutionStep {
     result.append("+ UPDATE CONTENT\n");
     result.append(spaces);
     result.append("  ");
-    if (json != null) {
+    if (json != null)
       result.append(json);
-    } else {
+    else
       result.append(inputParameter);
-    }
     return result.toString();
   }
 }
