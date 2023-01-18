@@ -162,41 +162,7 @@ public class HAServer implements ServerPlugin {
         configuration.getValueAsString(GlobalConfiguration.HA_REPLICATION_INCOMING_HOST),
         configuration.getValueAsString(GlobalConfiguration.HA_REPLICATION_INCOMING_PORTS));
 
-    // GET THE HOST NAME FROM ENV VARIABLE
-    String hostNameEnvVariable = System.getenv("HOSTNAME");
-    if (hostNameEnvVariable != null && !hostNameEnvVariable.trim().isEmpty())
-      hostNameEnvVariable = hostNameEnvVariable.trim();
-    else
-      hostNameEnvVariable = null;
-
-    if (GlobalConfiguration.HA_K8S.getValueAsBoolean()) {
-      if (hostNameEnvVariable == null) {
-        LogManager.instance()
-            .log(this, Level.SEVERE, "Error: HOSTNAME environment variable not found but needed when running inside Kubernetes. The server will be halted");
-        server.stop();
-        System.exit(1);
-        return;
-      }
-
-      serverAddress = hostNameEnvVariable + GlobalConfiguration.HA_K8S_DNS_SUFFIX.getValueAsString();
-      LogManager.instance().log(this, Level.INFO, "Server is running inside Kubernetes. Hostname: %s", null, serverAddress);
-
-    } else if (hostNameEnvVariable != null) {
-      serverAddress = hostNameEnvVariable;
-    } else {
-      // READ HOST FROM NETWORK INTERFACE
-      serverAddress = listener.getHost();
-      if (serverAddress.equals("0.0.0.0")) {
-        try {
-          serverAddress = InetAddress.getLocalHost().getHostAddress();
-        } catch (UnknownHostException e) {
-          // IGNORE IT
-          serverAddress = "localhost";
-        }
-      }
-    }
-
-    serverAddress += ":" + listener.getPort();
+    serverAddress = server.getHostAddress() + ":" + listener.getPort();
 
     final String cfgServerList = configuration.getValueAsString(GlobalConfiguration.HA_SERVER_LIST).trim();
     if (!cfgServerList.isEmpty()) {
@@ -842,14 +808,6 @@ public class HAServer implements ServerPlugin {
 
   public int getConfiguredServers() {
     return configuredServers;
-  }
-
-  public List<String> getConfiguredServerNames() {
-    final List<String> list = new ArrayList<>(configuredServers);
-    list.add(getLeaderName());
-    for (final Leader2ReplicaNetworkExecutor r : replicaConnections.values())
-      list.add(r.getRemoteServerName());
-    return list;
   }
 
   public String getServerAddressList() {

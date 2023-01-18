@@ -45,6 +45,7 @@ import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.*;
 import java.lang.reflect.*;
+import java.net.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.logging.*;
@@ -58,6 +59,7 @@ public class ArcadeDBServer {
   public static final String                                  CONFIG_SERVER_CONFIGURATION_FILENAME = "config/server-configuration.json";
   private final       ContextConfiguration                    configuration;
   private final       String                                  serverName;
+  private             String                                  hostAddress;
   private final       boolean                                 testEnabled;
   private final       Map<String, ServerPlugin>               plugins                              = new LinkedHashMap<>();
   private             String                                  serverRootPath;
@@ -149,7 +151,7 @@ public class ArcadeDBServer {
         FileUtils.getSizeAsString(Runtime.getRuntime().maxMemory()));
 
     if (!"production".equals(mode))
-      LogManager.instance().log(this, Level.INFO, "Studio web tool available at http://localhost:%d ", httpServer.getPort());
+      LogManager.instance().log(this, Level.INFO, "Studio web tool available at http://%s:%d ", hostAddress, httpServer.getPort());
 
     try {
       lifecycleEvent(TestCallback.TYPE.SERVER_UP, null);
@@ -316,6 +318,10 @@ public class ArcadeDBServer {
 
   public String getServerName() {
     return serverName;
+  }
+
+  public String getHostAddress() {
+    return hostAddress;
   }
 
   public HAServer getHA() {
@@ -545,5 +551,46 @@ public class ArcadeDBServer {
     Runtime.getRuntime().addShutdownHook(new Thread(() -> {
       stop();
     }));
+
+    hostAddress = assignHostAddress();
+  }
+
+  private String assignHostAddress() {
+    String hostAddress;
+
+    // GET THE HOST NAME FROM ENV VARIABLE
+    String hostNameEnvVariable = System.getenv("HOSTNAME");
+    if (hostNameEnvVariable != null && !hostNameEnvVariable.trim().isEmpty())
+      hostNameEnvVariable = hostNameEnvVariable.trim();
+    else
+      hostNameEnvVariable = null;
+
+    if (configuration.getValueAsBoolean(GlobalConfiguration.HA_K8S)) {
+      if (hostNameEnvVariable == null) {
+        LogManager.instance()
+            .log(this, Level.SEVERE, "Error: HOSTNAME environment variable not found but needed when running inside Kubernetes. The server will be halted");
+        stop();
+        System.exit(1);
+        return null;
+      }
+
+      hostAddress = hostNameEnvVariable + configuration.getValueAsString(GlobalConfiguration.HA_K8S_DNS_SUFFIX);
+      LogManager.instance().log(this, Level.INFO, "Server is running inside Kubernetes. Hostname: %s", null, hostAddress);
+
+    } else if (hostNameEnvVariable != null) {
+      hostAddress = hostNameEnvVariable;
+    } else {
+      // READ HOST FROM NETWORK INTERFACE
+      hostAddress = configuration.getValueAsString(GlobalConfiguration.SERVER_HTTP_INCOMING_HOST);
+      if (hostAddress.equals("0.0.0.0")) {
+        try {
+          hostAddress = InetAddress.getLocalHost().getHostAddress();
+        } catch (UnknownHostException e) {
+          // IGNORE IT
+          hostAddress = "localhost";
+        }
+      }
+    }
+    return hostAddress;
   }
 }
