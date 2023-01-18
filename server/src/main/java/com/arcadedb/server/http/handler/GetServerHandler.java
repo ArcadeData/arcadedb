@@ -99,7 +99,6 @@ public class GetServerHandler extends AbstractHandler {
         }
 
         final JSONArray databases = new JSONArray();
-        haJSON.put("databases", databases);
 
         for (String dbName : httpServer.getServer().getDatabaseNames()) {
           final ServerDatabase db = (ServerDatabase) httpServer.getServer().getDatabase(dbName);
@@ -110,6 +109,8 @@ public class GetServerHandler extends AbstractHandler {
           databaseJSON.put("quorum", rdb.getQuorum());
           databases.put(databaseJSON);
         }
+
+        haJSON.put("databases", databases);
 
         final String leaderServer = ha.isLeader() ? ha.getServer().getHttpServer().getListeningAddress() : ha.getLeader().getRemoteHTTPAddress();
         final String replicaServers = ha.getReplicaServersHTTPAddressesList();

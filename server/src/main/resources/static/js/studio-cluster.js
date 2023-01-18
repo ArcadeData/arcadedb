@@ -48,13 +48,43 @@ function updateCluster( callback ){
             {title: "Left On"},
             {title: "Throughput"},
             {title: "Latency"},
-            {title: "Commands"},
+            {title: "Commands", width: "7%"},
           ],
           data: tableRecords,
         });
       } else {
         $("#clusterConnectButton").show();
         $("#clusterDisconnectButton").hide();
+      }
+
+      if ( $.fn.dataTable.isDataTable( '#replicatedDatabasesTable' ) )
+        try{ $('#replicatedDatabasesTable').DataTable().destroy(); $('#replicatedDatabasesTable').empty(); } catch(e){};
+
+      tableRecords = [];
+
+      if( data.ha.databases.length > 0 ) {
+        for( let i in data.ha.databases ){
+          let row = data.ha.databases[i];
+
+          let record = [];
+          record.push( escapeHtml( row.name ) );
+          record.push( escapeHtml( row.quorum ) );
+          record.push( "<button class='btn' onclick='alignDatabase(\""+ row.name + "\")'><i class='fas fa-sync' style='color: green;'></i></button>" );
+
+          tableRecords.push( record );
+        }
+
+        $("#replicatedDatabasesTable").DataTable({
+          searching: false,
+          paging: false,
+          ordering: false,
+          columns: [
+            {title: "Database Name"},
+            {title: "Quorum"},
+            {title: "Commands", width: "7%"},
+          ],
+          data: tableRecords,
+        });
       }
     }
 
@@ -91,6 +121,13 @@ function shutdownServer(serverName){
 function disconnectFromCluster(){
   globalConfirm( "Shutdown Server", "Are you sure to disconnect current server from the cluster?", "warning", function(){
     executeServerCommand("disconnect cluster", "Disconnection from the cluster request sent successfully");
+  });
+}
+
+function alignDatabase(dbName){
+  let message = "Are you sure to realign the database '"+dbName+"' from the leader to all the replicas?";
+  globalConfirm( "Align Database", message, "warning", function( result ){
+    executeServerCommand("align database " + dbName, "Align Database executed");
   });
 }
 

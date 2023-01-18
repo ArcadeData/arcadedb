@@ -85,6 +85,8 @@ public class PostServerCommandHandler extends AbstractHandler {
       setDatabaseSetting(command);
     else if (command.startsWith("set server setting "))
       setServerSetting(command);
+    else if (command.startsWith("align database "))
+      alignDatabase(command);
     else {
       httpServer.getServer().getServerMetrics().meter("http.server-command.invalid").mark();
       exchange.setStatusCode(400);
@@ -169,6 +171,18 @@ public class PostServerCommandHandler extends AbstractHandler {
 
     if (server.getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
       ((ReplicatedDatabase) db).createInReplicas();
+  }
+
+  private void alignDatabase(final String command) {
+    final String databaseName = command.substring("align database ".length()).trim();
+    if (databaseName.isEmpty())
+      throw new IllegalArgumentException("Database name empty");
+
+    final Database database = httpServer.getServer().getDatabase(databaseName);
+
+    httpServer.getServer().getServerMetrics().meter("http.align-database").mark();
+
+    database.command("sql", "align database");
   }
 
   private void dropDatabase(final String command) {
