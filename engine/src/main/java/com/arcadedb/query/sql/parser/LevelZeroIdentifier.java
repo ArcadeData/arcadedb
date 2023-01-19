@@ -37,10 +37,6 @@ public class LevelZeroIdentifier extends SimpleNode {
     super(id);
   }
 
-  public LevelZeroIdentifier(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (functionCall != null) {
       functionCall.toString(params, builder);

@@ -23,17 +23,12 @@ package com.arcadedb.query.sql.parser;
 import java.util.*;
 
 public class LetItem extends SimpleNode {
-
   Identifier varName;
   Expression expression;
   Statement  query;
 
   public LetItem(final int id) {
     super(id);
-  }
-
-  public LetItem(final SqlParser p, final int id) {
-    super(p, id);
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {

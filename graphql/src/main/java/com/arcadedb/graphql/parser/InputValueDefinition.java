@@ -21,7 +21,6 @@
 package com.arcadedb.graphql.parser;
 
 public class InputValueDefinition extends SimpleNode {
-
   protected Name         name;
   protected Type         type;
   protected DefaultValue defaultValue;
@@ -29,10 +28,6 @@ public class InputValueDefinition extends SimpleNode {
 
   public InputValueDefinition(final int id) {
     super(id);
-  }
-
-  public InputValueDefinition(final GraphQLParser p, final int id) {
-    super(p, id);
   }
 
   /**

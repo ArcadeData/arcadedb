@@ -28,7 +28,7 @@ import java.util.*;
  * Created by luigidellaquila on 01/03/17.
  */
 public class FilterByClassStep extends AbstractExecutionStep {
-  private Identifier identifier;
+  private final Identifier identifier;
 
   //runtime
 

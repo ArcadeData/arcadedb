@@ -37,10 +37,6 @@ public class NotBlock extends BooleanExpression {
     super(id);
   }
 
-  public NotBlock(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
     if (sub == null) {

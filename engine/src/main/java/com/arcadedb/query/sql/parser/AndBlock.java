@@ -35,10 +35,6 @@ public class AndBlock extends BooleanExpression {
     super(id);
   }
 
-  public AndBlock(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
     if (getSubBlocks() == null)

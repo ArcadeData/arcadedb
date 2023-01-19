@@ -25,10 +25,6 @@ public class Definition extends SimpleNode {
     super(id);
   }
 
-  public Definition(final GraphQLParser p, final int id) {
-    super(p, id);
-  }
-
   /**
    * Accept the visitor.
    **/

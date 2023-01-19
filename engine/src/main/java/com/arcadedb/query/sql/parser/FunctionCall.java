@@ -44,8 +44,9 @@ public class FunctionCall extends SimpleNode {
     super(id);
   }
 
-  public FunctionCall(final SqlParser p, final int id) {
-    super(p, id);
+  public FunctionCall(SqlParser parser, int i) {
+    super(i);
+    this.parser = parser;
   }
 
   public boolean isStar() {
@@ -92,17 +93,15 @@ public class FunctionCall extends SimpleNode {
   private Object execute(final Object targetObjects, final CommandContext ctx, final String name) {
     final List<Object> paramValues = new ArrayList<>();
 
-    Object record = null;
-
-    if (record == null) {
-      if (targetObjects instanceof Identifiable) {
-        record = targetObjects;
-      } else if (targetObjects instanceof Result) {
-        record = ((Result) targetObjects).toElement();
-      } else {
-        record = targetObjects;
-      }
+    Object record;
+    if (targetObjects instanceof Identifiable) {
+      record = targetObjects;
+    } else if (targetObjects instanceof Result) {
+      record = ((Result) targetObjects).toElement();
+    } else {
+      record = targetObjects;
     }
+
     if (record == null) {
       final Object current = ctx == null ? null : ctx.getVariable("current");
       if (current != null) {

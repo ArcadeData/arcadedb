@@ -51,10 +51,6 @@ public class CreateIndexStatement extends DDLStatement {
     super(id);
   }
 
-  public CreateIndexStatement(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public ResultSet executeDDL(final CommandContext ctx) {
     final Long totalIndexed = (Long) execute(ctx);

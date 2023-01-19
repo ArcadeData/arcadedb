@@ -38,10 +38,6 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
     super(id);
   }
 
-  public CheckDatabaseStatement(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public ResultSet executeSimple(final CommandContext ctx) {
     final ResultInternal result = new ResultInternal();

@@ -37,10 +37,6 @@ public class ContainsAnyCondition extends BooleanExpression {
     super(id);
   }
 
-  public ContainsAnyCondition(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public boolean execute(Object left, Object right) {
     if (left instanceof Collection) {
       if (right instanceof Iterable) {

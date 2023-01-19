@@ -28,10 +28,6 @@ public class Argument extends SimpleNode {
     super(id);
   }
 
-  public Argument(final GraphQLParser p, final int id) {
-    super(p, id);
-  }
-
   /**
    * Accept the visitor.
    **/

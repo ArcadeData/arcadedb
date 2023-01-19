@@ -325,21 +325,21 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   }
 
   protected Object[] convertKeys(final Object[] keys, final byte[] keyTypes) {
-    if (keys != null) {
-      final Object[] convertedKeys = new Object[keys.length];
-      for (int i = 0; i < keys.length; ++i) {
-        if (keys[i] == null)
-          continue;
+    if (keys == null)
+      return null;
 
-        convertedKeys[i] = Type.convert(database, keys[i], BinaryTypes.getClassFromType(keyTypes[i]));
+    final Object[] convertedKeys = new Object[keys.length];
+    for (int i = 0; i < keys.length; ++i) {
+      if (keys[i] == null)
+        continue;
 
-        if (convertedKeys[i] instanceof String)
-          // OPTIMIZATION: ALWAYS CONVERT STRINGS TO BYTE[]
-          convertedKeys[i] = ((String) convertedKeys[i]).getBytes(DatabaseFactory.getDefaultCharset());
-      }
-      return convertedKeys;
+      convertedKeys[i] = Type.convert(database, keys[i], BinaryTypes.getClassFromType(keyTypes[i]));
+
+      if (convertedKeys[i] instanceof String)
+        // OPTIMIZATION: ALWAYS CONVERT STRINGS TO BYTE[]
+        convertedKeys[i] = ((String) convertedKeys[i]).getBytes(DatabaseFactory.getDefaultCharset());
     }
-    return keys;
+    return convertedKeys;
   }
 
   protected Object[] getPageBound(final BasePage currentPage, final Binary currentPageBuffer) {

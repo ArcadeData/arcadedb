@@ -38,10 +38,6 @@ public class ArraySingleValuesSelector extends SimpleNode {
     super(id);
   }
 
-  public ArraySingleValuesSelector(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     boolean first = true;
     for (final ArraySelector item : items) {

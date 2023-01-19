@@ -44,10 +44,6 @@ public class AlterPropertyStatement extends DDLStatement {
     super(id);
   }
 
-  public AlterPropertyStatement(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public ResultSet executeDDL(final CommandContext ctx) {
     final Database db = ctx.getDatabase();

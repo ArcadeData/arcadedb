@@ -25,10 +25,6 @@ public class EnumValue extends AbstractValue {
     super(id);
   }
 
-  public EnumValue(final GraphQLParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public Object getValue() {
     return children.length > 0 ? ((Name) children[0]).value : null;

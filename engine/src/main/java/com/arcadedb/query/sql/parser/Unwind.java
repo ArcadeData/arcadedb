@@ -30,10 +30,6 @@ public class Unwind extends SimpleNode {
     super(id);
   }
 
-  public Unwind(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("UNWIND ");
     for (int i = 0; i < items.size(); i++) {

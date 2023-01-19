@@ -23,16 +23,11 @@ package com.arcadedb.query.sql.parser;
 import java.util.*;
 
 public class UpdateAddItem extends SimpleNode {
-
   protected Identifier left;
   protected Expression right;
 
   public UpdateAddItem(final int id) {
     super(id);
-  }
-
-  public UpdateAddItem(final SqlParser p, final int id) {
-    super(p, id);
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {

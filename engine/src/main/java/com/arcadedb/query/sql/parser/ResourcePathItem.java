@@ -31,10 +31,6 @@ public class ResourcePathItem extends SimpleNode {
     super(id);
   }
 
-  public ResourcePathItem(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (star) {

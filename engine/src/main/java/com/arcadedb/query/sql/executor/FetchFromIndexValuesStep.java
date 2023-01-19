@@ -25,7 +25,7 @@ import com.arcadedb.index.RangeIndex;
  */
 public class FetchFromIndexValuesStep extends FetchFromIndexStep {
 
-  private boolean asc;
+  private final boolean asc;
 
   public FetchFromIndexValuesStep(final RangeIndex index, final boolean asc, final CommandContext ctx, final boolean profilingEnabled) {
     super(index, null, null, ctx, profilingEnabled);

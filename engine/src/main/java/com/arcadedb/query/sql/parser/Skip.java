@@ -33,10 +33,6 @@ public class Skip extends SimpleNode {
     super(id);
   }
 
-  public Skip(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (num == null && inputParam == null)
       return;

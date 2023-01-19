@@ -43,10 +43,6 @@ public class IfStatement extends Statement {
     super(id);
   }
 
-  public IfStatement(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public boolean isIdempotent() {
     for (final Statement stm : statements) {

@@ -34,10 +34,6 @@ public class MatchPathItemFirst extends MatchPathItem {
     super(id);
   }
 
-  public MatchPathItemFirst(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public boolean isBidirectional() {
     return false;
   }
@@ -46,7 +42,6 @@ public class MatchPathItemFirst extends MatchPathItem {
     function.toString(params, builder);
     if (filter != null)
       filter.toString(params, builder);
-
   }
 
   protected Iterable<Identifiable> traversePatternEdge(final MatchStatement.MatchContext matchContext, final Identifiable startingPoint,

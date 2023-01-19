@@ -46,10 +46,6 @@ public class InsertStatement extends Statement {
     super(id);
   }
 
-  public InsertStatement(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("INSERT INTO ");
     if (targetType != null) {

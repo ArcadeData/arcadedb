@@ -60,8 +60,4 @@ public class SQLFunctionList extends SQLFunctionMultiValueAbstract<List<Object>>
   public String getSyntax() {
     return "list(<value>*)";
   }
-
-  public boolean aggregateResults(final Object[] configuredParameters) {
-    return false;
-  }
 }

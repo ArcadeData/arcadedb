@@ -29,10 +29,6 @@ public class InOperator extends SimpleNode implements BinaryCompareOperator {
     super(id);
   }
 
-  public InOperator(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public boolean execute(final DatabaseInternal database, Object left, Object right) {
     if (left == null) {
@@ -82,11 +78,6 @@ public class InOperator extends SimpleNode implements BinaryCompareOperator {
       return true;
     }
     return false;
-  }
-
-  @Override
-  public boolean supportsBasicCalculation() {
-    return true;
   }
 
   @Override

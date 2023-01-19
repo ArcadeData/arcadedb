@@ -31,10 +31,6 @@ public class BucketList extends SimpleNode {
     super(id);
   }
 
-  public BucketList(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("bucket:[");
     boolean first = true;

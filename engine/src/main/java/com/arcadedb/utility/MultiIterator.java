@@ -150,7 +150,7 @@ public class MultiIterator<T> implements ResettableIterator<T>, Iterable<T> {
 
   @Override
   public long getBrowsed() {
-    return  browsed;
+    return browsed;
   }
 
   @Override

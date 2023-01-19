@@ -416,12 +416,12 @@ public interface Database extends AutoCloseable {
   /**
    * Executes an operation in database read (shared) lock.
    */
-  <RET extends Object> RET executeInReadLock(Callable<RET> callable);
+  <RET> RET executeInReadLock(Callable<RET> callable);
 
   /**
    * Executes an operation in database write (exclusive) lock.
    */
-  <RET extends Object> RET executeInWriteLock(Callable<RET> callable);
+  <RET> RET executeInWriteLock(Callable<RET> callable);
 
   /**
    * If enabled, writes the writes to the database are immediately available in queries and lookups.

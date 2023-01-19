@@ -27,10 +27,6 @@ public class DirectiveLocation extends SimpleNode {
     super(id);
   }
 
-  public DirectiveLocation(final GraphQLParser p, final int id) {
-    super(p, id);
-  }
-
   /**
    * Accept the visitor.
    **/

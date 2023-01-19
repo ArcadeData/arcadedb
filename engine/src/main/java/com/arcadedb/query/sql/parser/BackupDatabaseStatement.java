@@ -37,10 +37,6 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
     super(id);
   }
 
-  public BackupDatabaseStatement(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public ResultSet executeSimple(final CommandContext ctx) {
     final String targetUrl = this.url != null ? this.url.getUrlString() : null;

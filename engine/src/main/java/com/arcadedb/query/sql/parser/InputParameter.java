@@ -35,10 +35,6 @@ public class InputParameter extends SimpleNode {
     super(id);
   }
 
-  public InputParameter(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public Object bindFromInputParams(final Map<String, Object> params) {
     return null;
   }

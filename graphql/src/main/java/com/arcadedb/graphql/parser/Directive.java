@@ -29,10 +29,6 @@ public class Directive extends SimpleNode {
     super(id);
   }
 
-  public Directive(final GraphQLParser p, final int id) {
-    super(p, id);
-  }
-
   /**
    * Accept the visitor.
    **/

@@ -30,10 +30,6 @@ public class GtOperator extends SimpleNode implements BinaryCompareOperator {
     super(id);
   }
 
-  public GtOperator(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public boolean execute(final DatabaseInternal database, Object left, Object right) {
     if (left == null || right == null)
@@ -60,11 +56,6 @@ public class GtOperator extends SimpleNode implements BinaryCompareOperator {
   @Override
   public String toString() {
     return ">";
-  }
-
-  @Override
-  public boolean supportsBasicCalculation() {
-    return true;
   }
 
   @Override

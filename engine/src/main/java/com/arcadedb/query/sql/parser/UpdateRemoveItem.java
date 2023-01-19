@@ -27,16 +27,11 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import java.util.*;
 
 public class UpdateRemoveItem extends SimpleNode {
-
   Expression left;
   Expression right;
 
   public UpdateRemoveItem(final int id) {
     super(id);
-  }
-
-  public UpdateRemoveItem(final SqlParser p, final int id) {
-    super(p, id);
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {

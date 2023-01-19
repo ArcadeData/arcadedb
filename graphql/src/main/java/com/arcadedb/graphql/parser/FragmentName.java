@@ -27,10 +27,6 @@ public class FragmentName extends SimpleNode {
     super(id);
   }
 
-  public FragmentName(final GraphQLParser p, final int id) {
-    super(p, id);
-  }
-
   public String getName() {
     return name != null ? name.value : null;
   }

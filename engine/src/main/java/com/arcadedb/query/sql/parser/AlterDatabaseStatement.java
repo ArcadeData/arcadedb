@@ -46,10 +46,6 @@ public class AlterDatabaseStatement extends DDLStatement {
     super(id);
   }
 
-  public AlterDatabaseStatement(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public ResultSet executeDDL(final CommandContext ctx) {
     final InternalResultSet result = new InternalResultSet();

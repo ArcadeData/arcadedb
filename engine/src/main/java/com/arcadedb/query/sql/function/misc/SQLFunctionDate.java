@@ -58,8 +58,7 @@ public class SQLFunctionDate extends SQLFunctionAbstract {
       return new Date(((Number) iParams[0]).longValue());
 
     if (format == null) {
-      final TimeZone tz =
-          iParams.length > 2 ? TimeZone.getTimeZone(iParams[2].toString()) : iContext.getDatabase().getSchema().getTimeZone();
+      final TimeZone tz = iParams.length > 2 ? TimeZone.getTimeZone(iParams[2].toString()) : iContext.getDatabase().getSchema().getTimeZone();
 
       if (iParams.length > 1)
         format = new SimpleDateFormat((String) iParams[1]);
@@ -74,10 +73,6 @@ public class SQLFunctionDate extends SQLFunctionAbstract {
     } catch (final ParseException e) {
       throw new QueryParsingException("Error on formatting date '" + iParams[0] + "' using the format: " + format.toPattern(), e);
     }
-  }
-
-  public boolean aggregateResults(final Object[] configuredParameters) {
-    return false;
   }
 
   public String getSyntax() {

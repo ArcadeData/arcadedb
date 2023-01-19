@@ -21,17 +21,12 @@
 package com.arcadedb.graphql.parser;
 
 public class DirectiveDefinition extends SimpleNode {
-
   protected Name                name;
   protected ArgumentsDefinition argumentsDefinition;
   protected DirectiveLocations  directiveLocations;
 
   public DirectiveDefinition(final int id) {
     super(id);
-  }
-
-  public DirectiveDefinition(final GraphQLParser p, final int id) {
-    super(p, id);
   }
 
   /**

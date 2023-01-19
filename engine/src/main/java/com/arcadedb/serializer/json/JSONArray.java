@@ -54,7 +54,7 @@ public class JSONArray implements Iterable<Object> {
     }
   }
 
-  public JSONArray(final Collection<? extends Object> input) {
+  public JSONArray(final Collection<?> input) {
     this.array = new JsonArray();
     for (Object o : input)
       this.array.add(JSONObject.objectToElement(o));

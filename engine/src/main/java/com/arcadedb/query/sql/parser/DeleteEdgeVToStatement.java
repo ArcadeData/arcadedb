@@ -24,9 +24,5 @@ public class DeleteEdgeVToStatement extends DeleteEdgeStatement {
   public DeleteEdgeVToStatement(final int id) {
     super(id);
   }
-
-  public DeleteEdgeVToStatement(final SqlParser p, final int id) {
-    super(p, id);
-  }
 }
 /* JavaCC - OriginalChecksum=c5435be513de4871657bae94ae2a126b (do not edit this line) */

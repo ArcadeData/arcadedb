@@ -29,10 +29,6 @@ public class ArgumentsDefinition extends SimpleNode {
     super(id);
   }
 
-  public ArgumentsDefinition(final GraphQLParser p, final int id) {
-    super(p, id);
-  }
-
   /**
    * Accept the visitor.
    **/

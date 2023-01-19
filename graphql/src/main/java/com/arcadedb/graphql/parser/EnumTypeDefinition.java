@@ -32,10 +32,6 @@ public class EnumTypeDefinition extends TypeDefinition {
     super(id);
   }
 
-  public EnumTypeDefinition(final GraphQLParser p, final int id) {
-    super(p, id);
-  }
-
   /**
    * Accept the visitor.
    **/

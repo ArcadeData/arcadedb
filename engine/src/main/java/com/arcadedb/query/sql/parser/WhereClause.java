@@ -36,15 +36,10 @@ import java.util.stream.*;
 
 public class WhereClause extends SimpleNode {
   protected BooleanExpression baseExpression;
-
-  protected List<AndBlock> flattened;
+  protected List<AndBlock>    flattened;
 
   public WhereClause(final int id) {
     super(id);
-  }
-
-  public WhereClause(final SqlParser p, final int id) {
-    super(p, id);
   }
 
   public boolean matchesFilters(final Identifiable currentRecord, final CommandContext ctx) {

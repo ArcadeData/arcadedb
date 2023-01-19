@@ -19,8 +19,6 @@
 package com.arcadedb.exception;
 
 public class ArcadeDBException extends RuntimeException {
-  public ArcadeDBException() {
-  }
 
   public ArcadeDBException(final String message) {
     super(message);

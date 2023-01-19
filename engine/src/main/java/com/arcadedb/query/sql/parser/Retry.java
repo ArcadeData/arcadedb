@@ -25,10 +25,6 @@ public class Retry extends SimpleNode {
     super(id);
   }
 
-  public Retry(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public boolean equals(final Object obj) {
     return obj != null && getClass().equals(obj.getClass());

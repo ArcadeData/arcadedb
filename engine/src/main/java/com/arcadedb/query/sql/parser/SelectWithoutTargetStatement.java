@@ -24,9 +24,5 @@ public class SelectWithoutTargetStatement extends SelectStatement {
   public SelectWithoutTargetStatement(final int id) {
     super(id);
   }
-
-  public SelectWithoutTargetStatement(final SqlParser p, final int id) {
-    super(p, id);
-  }
 }
 /* JavaCC - OriginalChecksum=2b0c73e32d84e559188b75251a4d262c (do not edit this line) */

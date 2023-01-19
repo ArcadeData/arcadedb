@@ -27,10 +27,6 @@ public abstract class AbstractField extends SimpleNode {
     super(id);
   }
 
-  public AbstractField(final GraphQLParser p, final int id) {
-    super(p, id);
-  }
-
   /**
    * Accept the visitor.
    **/

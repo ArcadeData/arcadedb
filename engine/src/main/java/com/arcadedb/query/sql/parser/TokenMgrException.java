@@ -102,7 +102,6 @@ public class TokenMgrException extends RuntimeException {
         } else {
           retval.append(ch);
         }
-        continue;
       }
     }
     return retval.toString();
@@ -120,7 +119,8 @@ public class TokenMgrException extends RuntimeException {
    * curchar     : the offending character
    * Note: You can customize the lexical error message by modifying this method.
    */
-  protected static String LexicalErr(final boolean EOFSeen, final int lexState, final int errorLine, final int errorColumn, final String errorAfter, final int curChar) {
+  protected static String LexicalErr(final boolean EOFSeen, final int lexState, final int errorLine, final int errorColumn, final String errorAfter,
+      final int curChar) {
     final char curChar1 = (char) curChar;
     return ("Lexical error at line " + errorLine + ", column " + errorColumn + ".  Encountered: " + (EOFSeen ?
         "<EOF> " :
@@ -162,7 +162,8 @@ public class TokenMgrException extends RuntimeException {
   /**
    * Full Constructor.
    */
-  public TokenMgrException(final boolean EOFSeen, final int lexState, final int errorLine, final int errorColumn, final String errorAfter, final int curChar, final int reason) {
+  public TokenMgrException(final boolean EOFSeen, final int lexState, final int errorLine, final int errorColumn, final String errorAfter, final int curChar,
+      final int reason) {
     this(LexicalErr(EOFSeen, lexState, errorLine, errorColumn, errorAfter, curChar), reason);
   }
 }

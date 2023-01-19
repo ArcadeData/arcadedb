@@ -34,10 +34,6 @@ public class IsNullCondition extends BooleanExpression {
     super(id);
   }
 
-  public IsNullCondition(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
     return expression.execute(currentRecord, ctx) == null;

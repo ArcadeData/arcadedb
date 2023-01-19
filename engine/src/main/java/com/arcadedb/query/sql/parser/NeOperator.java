@@ -28,10 +28,6 @@ public class NeOperator extends SimpleNode implements BinaryCompareOperator {
     super(id);
   }
 
-  public NeOperator(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public boolean execute(final DatabaseInternal database, final Object left, final Object right) {
     return !QueryOperatorEquals.equals(left, right);
@@ -43,17 +39,12 @@ public class NeOperator extends SimpleNode implements BinaryCompareOperator {
   }
 
   @Override
-  public boolean supportsBasicCalculation() {
-    return true;
-  }
-
-  @Override
   public NeOperator copy() {
     return this;
   }
 
   @Override
-  public boolean equals( final Object obj) {
+  public boolean equals(final Object obj) {
     return obj != null && obj.getClass().equals(this.getClass());
   }
 

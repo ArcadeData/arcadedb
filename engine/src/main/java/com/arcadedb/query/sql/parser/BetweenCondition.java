@@ -37,10 +37,6 @@ public class BetweenCondition extends BooleanExpression {
     super(id);
   }
 
-  public BetweenCondition(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
     final Object firstValue = first.execute(currentRecord, ctx);
@@ -98,24 +94,12 @@ public class BetweenCondition extends BooleanExpression {
     return first;
   }
 
-  public void setFirst(final Expression first) {
-    this.first = first;
-  }
-
   public Expression getSecond() {
     return second;
   }
 
-  public void setSecond(final Expression second) {
-    this.second = second;
-  }
-
   public Expression getThird() {
     return third;
-  }
-
-  public void setThird(final Expression third) {
-    this.third = third;
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {

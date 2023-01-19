@@ -27,10 +27,6 @@ public class BooleanValue extends AbstractValue {
     super(id);
   }
 
-  public BooleanValue(final GraphQLParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public Object getValue() {
     return null;

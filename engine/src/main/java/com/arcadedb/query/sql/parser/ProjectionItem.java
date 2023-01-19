@@ -51,10 +51,6 @@ public class ProjectionItem extends SimpleNode {
     super(id);
   }
 
-  public ProjectionItem(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public boolean isAll() {
     if (all) {
       return true;

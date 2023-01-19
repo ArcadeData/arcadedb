@@ -27,8 +27,8 @@ import com.arcadedb.query.sql.parser.Identifier;
  * Created by luigidellaquila on 03/08/16.
  */
 public class LetExpressionStep extends AbstractExecutionStep {
-  private Identifier varname;
-  private Expression expression;
+  private final Identifier varname;
+  private final Expression expression;
 
   public LetExpressionStep(final Identifier varName, final Expression expression, final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);

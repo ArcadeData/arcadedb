@@ -36,10 +36,6 @@ public class RightBinaryCondition extends SimpleNode {
     super(id);
   }
 
-  public RightBinaryCondition(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public RightBinaryCondition copy() {
     final RightBinaryCondition result = new RightBinaryCondition(-1);

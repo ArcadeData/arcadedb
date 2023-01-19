@@ -244,7 +244,7 @@ public class BinarySerializer {
 
       final Property property;
       if (type == BinaryTypes.TYPE_DATETIME && documentType != null)
-        property = documentType != null ? documentType.getPropertyIfExists(propertyName) : null;
+        property = documentType.getPropertyIfExists(propertyName);
       else
         property = null;
 

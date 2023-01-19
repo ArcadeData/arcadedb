@@ -32,10 +32,6 @@ public class RecordAttribute extends SimpleNode {
     super(id);
   }
 
-  public RecordAttribute(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append(name);
   }

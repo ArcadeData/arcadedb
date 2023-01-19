@@ -25,9 +25,5 @@ public class MultExpression extends MathExpression {
   public MultExpression(final int id) {
     super(id);
   }
-
-  public MultExpression(final SqlParser p, final int id) {
-    super(p, id);
-  }
 }
 /* JavaCC - OriginalChecksum=f75b8be48dca1e0cafae0cacadc608c8 (do not edit this line) */

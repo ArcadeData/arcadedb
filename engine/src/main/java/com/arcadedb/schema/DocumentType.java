@@ -44,10 +44,10 @@ public class DocumentType {
   protected final List<DocumentType>                subTypes                     = new ArrayList<>();
   protected final List<Bucket>                      buckets                      = new ArrayList<>();
   protected       BucketSelectionStrategy           bucketSelectionStrategy      = new RoundRobinBucketSelectionStrategy();
-  protected final Map<String, Property>             properties            = new HashMap<>();
-  protected final Map<Integer, List<IndexInternal>> bucketIndexesByBucket = new HashMap<>();
-  protected final Map<List<String>, TypeIndex>      indexesByProperties   = new HashMap<>();
-  protected final RecordEventsRegistry              events                = new RecordEventsRegistry();
+  protected final Map<String, Property>             properties                   = new HashMap<>();
+  protected final Map<Integer, List<IndexInternal>> bucketIndexesByBucket        = new HashMap<>();
+  protected final Map<List<String>, TypeIndex>      indexesByProperties          = new HashMap<>();
+  protected final RecordEventsRegistry              events                       = new RecordEventsRegistry();
   protected final Map<String, Object>               custom                       = new HashMap<>();
   protected       Set<String>                       propertiesWithDefaultDefined = Collections.emptySet();
 
@@ -87,7 +87,7 @@ public class DocumentType {
   }
 
   protected DocumentType addSuperType(final DocumentType superType, final boolean createIndexes) {
-    if (superTypes.indexOf(superType) > -1)
+    if (superTypes.contains(superType))
       // ALREADY PARENT
       return this;
 
@@ -614,8 +614,6 @@ public class DocumentType {
     if (subTypes.size() != that.subTypes.size())
       return false;
 
-    set.clear();
-
     for (final DocumentType t : subTypes)
       set.add(t.name);
 
@@ -628,8 +626,6 @@ public class DocumentType {
     if (buckets.size() != that.buckets.size())
       return false;
 
-    set.clear();
-
     for (final Bucket t : buckets)
       set.add(t.getName());
 
@@ -641,8 +637,6 @@ public class DocumentType {
 
     if (properties.size() != that.properties.size())
       return false;
-
-    set.clear();
 
     for (final Property p : properties.values())
       set.add(p.getName());

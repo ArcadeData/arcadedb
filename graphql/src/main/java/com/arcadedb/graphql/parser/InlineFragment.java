@@ -30,10 +30,6 @@ public class InlineFragment extends SimpleNode {
     super(id);
   }
 
-  public InlineFragment(final GraphQLParser p, final int id) {
-    super(p, id);
-  }
-
   /**
    * Accept the visitor.
    **/

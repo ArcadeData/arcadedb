@@ -266,7 +266,7 @@ public enum Type {
     if (iObject == null)
       return false;
 
-    final Class<? extends Object> iType = iObject.getClass();
+    final Class<?> iType = iObject.getClass();
 
     return iType.isPrimitive() || Number.class.isAssignableFrom(iType) || String.class.isAssignableFrom(iType) || Boolean.class.isAssignableFrom(iType)
         || Date.class.isAssignableFrom(iType) || (iType.isArray() && (iType.equals(byte[].class) || iType.equals(char[].class) || iType.equals(int[].class)
@@ -394,7 +394,7 @@ public enum Type {
         // we will add all of the items in the collection to a set.  Otherwise
         // we will create a singleton set with only the value in it.
         if (iValue instanceof Collection<?>) {
-          final Set<Object> set = new HashSet<Object>((Collection<? extends Object>) iValue);
+          final Set<Object> set = new HashSet<Object>((Collection<?>) iValue);
           return set;
         } else {
           return Collections.singleton(iValue);
@@ -405,7 +405,7 @@ public enum Type {
         // we will add all of the items in the collection to a List.  Otherwise
         // we will create a singleton List with only the value in it.
         if (iValue instanceof Collection<?>) {
-          final List<Object> list = new ArrayList<Object>((Collection<? extends Object>) iValue);
+          final List<Object> list = new ArrayList<Object>((Collection<?>) iValue);
           return list;
         } else {
           return Collections.singletonList(iValue);
@@ -416,7 +416,7 @@ public enum Type {
         // we will return a list if the value is a collection or
         // a singleton set if the value is not a collection.
         if (iValue instanceof Collection<?>) {
-          final List<Object> set = new ArrayList<Object>((Collection<? extends Object>) iValue);
+          final List<Object> set = new ArrayList<Object>((Collection<?>) iValue);
           return set;
         } else {
           return Collections.singleton(iValue);

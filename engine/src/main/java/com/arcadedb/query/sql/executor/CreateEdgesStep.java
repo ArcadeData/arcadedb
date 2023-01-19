@@ -60,8 +60,6 @@ public class CreateEdgesStep extends AbstractExecutionStep {
 
   private boolean inited = false;
 
-
-
   public CreateEdgesStep(final Identifier targetClass, final Identifier targetClusterName, final String uniqueIndex, final Identifier fromAlias,
       final Identifier toAlias, final boolean ifNotExists, final Number wait, final Number retry, final CommandContext ctx, final boolean profilingEnabled) {
     super(ctx, profilingEnabled);
@@ -196,7 +194,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
           finished = true;
           return;
         }
-        currentFrom = fromIter.hasNext() ? asVertex(fromIter.next()) : null;
+        currentFrom = asVertex(fromIter.next());
       }
       if (toIterator.hasNext() || (toList.size() > 0 && fromIter.hasNext())) {
         if (currentFrom == null) {
@@ -250,7 +248,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
 
     if (currentFrom instanceof Result) {
       final Object from = currentFrom;
-      currentFrom = ((Result) currentFrom).getVertex().orElseThrow(() -> new CommandExecutionException("Invalid vertex for edge creation: " + from.toString()));
+      currentFrom = ((Result) currentFrom).getVertex().orElseThrow(() -> new CommandExecutionException("Invalid vertex for edge creation: " + from));
     }
     if (currentFrom instanceof Vertex)
       return (Vertex) currentFrom;
@@ -275,8 +273,6 @@ public class CreateEdgesStep extends AbstractExecutionStep {
 
     return result;
   }
-
-
 
   @Override
   public boolean canBeCached() {

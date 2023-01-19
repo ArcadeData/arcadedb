@@ -36,17 +36,13 @@ import java.util.stream.*;
 //import com.orientechnologies.orient.core.sql.executor.LetExpressionStep;
 
 public class ForEachBlock extends Statement {
-  protected static final AtomicInteger FOREACH_VARIABLE_PROGR = new AtomicInteger();
-  protected              Identifier    loopVariable;
-  protected        Expression      loopValues;
-  protected        List<Statement> statements             = new ArrayList<>();
+  protected static final AtomicInteger   FOREACH_VARIABLE_PROGR = new AtomicInteger();
+  protected              Identifier      loopVariable;
+  protected              Expression      loopValues;
+  protected              List<Statement> statements             = new ArrayList<>();
 
   public ForEachBlock(final int id) {
     super(id);
-  }
-
-  public ForEachBlock(final SqlParser p, final int id) {
-    super(p, id);
   }
 
   @Override

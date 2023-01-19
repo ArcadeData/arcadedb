@@ -40,7 +40,8 @@ public class CreateSourceVertexAndEdgeAsyncTask extends CreateEdgeAsyncTask {
     this.sourceVertexAttributeValues = sourceVertexAttributeValues;
   }
 
-  public void execute(final DatabaseInternal database) {
+  @Override
+  public void execute(final DatabaseAsyncExecutorImpl.AsyncThread async, final DatabaseInternal database) {
     final MutableVertex sourceVertex = database.newVertex(sourceVertexType);
     for (int i = 0; i < sourceVertexAttributeNames.length; ++i)
       sourceVertex.set(sourceVertexAttributeNames[i], sourceVertexAttributeValues[i]);

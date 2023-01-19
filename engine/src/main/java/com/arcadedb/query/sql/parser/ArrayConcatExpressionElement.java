@@ -25,10 +25,6 @@ public class ArrayConcatExpressionElement extends Expression {
     super(id);
   }
 
-  public ArrayConcatExpressionElement(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public ArrayConcatExpressionElement copy() {
     final ArrayConcatExpressionElement result = new ArrayConcatExpressionElement(-1);

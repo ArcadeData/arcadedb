@@ -203,7 +203,7 @@ public class Bucket extends PaginatedComponent {
               } else if (recordSize[0] == FIRST_CHUNK) {
                 // LOAD THE ENTIRE RECORD IN CHUNKS
                 final Binary view = loadMultiPageRecord(rid, page, recordPositionInPage, recordSize);
-                if (view != null && !callback.onRecord(rid, view))
+                if (!callback.onRecord(rid, view))
                   return;
               }
 

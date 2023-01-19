@@ -20,35 +20,24 @@
 /* ParserGeneratorCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_CLASS_VISIBILITY_PUBLIC=true */
 package com.arcadedb.graphql.parser;
 
-public
-class Value extends SimpleNode {
-  protected IntValue intValue;
-
-  protected FloatValue floatValue;
-
-  protected StringValue stringValue;
-
+public class Value extends SimpleNode {
+  protected IntValue     intValue;
+  protected FloatValue   floatValue;
+  protected StringValue  stringValue;
   protected BooleanValue booleanValue;
-
-  protected EnumValue enumValue;
-
-  protected ListValue listValue;
-
-  protected ObjectValue objectValue;
+  protected EnumValue    enumValue;
+  protected ListValue    listValue;
+  protected ObjectValue  objectValue;
 
   public Value(final int id) {
     super(id);
   }
 
-  public Value(final GraphQLParser p, final int id) {
-    super(p, id);
-  }
-
-
-  /** Accept the visitor. **/
+  /**
+   * Accept the visitor.
+   **/
   public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
-    return
-    visitor.visit(this, data);
+    return visitor.visit(this, data);
   }
 }
 /* ParserGeneratorCC - OriginalChecksum=3b4e38a9efac4b8f5a5e4a77f5ffce49 (do not edit this line) */

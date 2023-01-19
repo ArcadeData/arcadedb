@@ -44,10 +44,6 @@ public class Modifier extends SimpleNode {
     super(id);
   }
 
-  public Modifier(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
 
     if (squareBrackets) {

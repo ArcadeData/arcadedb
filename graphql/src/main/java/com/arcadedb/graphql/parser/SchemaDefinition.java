@@ -31,10 +31,6 @@ public class SchemaDefinition extends SimpleNode {
     super(id);
   }
 
-  public SchemaDefinition(final GraphQLParser p, final int id) {
-    super(p, id);
-  }
-
   /**
    * Accept the visitor.
    **/

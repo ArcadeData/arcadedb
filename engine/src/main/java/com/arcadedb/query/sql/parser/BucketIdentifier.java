@@ -30,10 +30,6 @@ public class BucketIdentifier extends SimpleNode {
     super(id);
   }
 
-  public BucketIdentifier(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public Object getValue() {
     if (bucketId != null)
       return bucketId;

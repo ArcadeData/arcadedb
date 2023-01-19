@@ -39,10 +39,6 @@ public abstract class SimpleExecStatement extends Statement {
     super(id);
   }
 
-  public SimpleExecStatement(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public abstract ResultSet executeSimple(CommandContext ctx);
 
   public ResultSet execute(final Database db, final Object[] args, final CommandContext parentContext, final boolean usePlanCache) {

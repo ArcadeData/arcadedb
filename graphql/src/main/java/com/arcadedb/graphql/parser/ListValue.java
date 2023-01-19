@@ -22,23 +22,18 @@ package com.arcadedb.graphql.parser;
 
 import java.util.*;
 
-public
-class ListValue extends SimpleNode {
+public class ListValue extends SimpleNode {
   protected List<Value> values = new ArrayList<>();
 
   public ListValue(final int id) {
     super(id);
   }
 
-  public ListValue(final GraphQLParser p, final int id) {
-    super(p, id);
-  }
-
-
-  /** Accept the visitor. **/
+  /**
+   * Accept the visitor.
+   **/
   public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
-    return
-    visitor.visit(this, data);
+    return visitor.visit(this, data);
   }
 }
 /* ParserGeneratorCC - OriginalChecksum=bbc6d6e1e0f7b2e23f8cd435deccb5e0 (do not edit this line) */

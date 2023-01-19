@@ -37,10 +37,6 @@ public class ReturnStatement extends SimpleExecStatement {
     super(id);
   }
 
-  public ReturnStatement(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public ResultSet executeSimple(final CommandContext ctx) {
     final InternalResultSet rs = new InternalResultSet();

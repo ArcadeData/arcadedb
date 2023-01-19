@@ -34,10 +34,6 @@ public class Field extends AbstractField {
     super(id);
   }
 
-  public Field(final GraphQLParser p, final int id) {
-    super(p, id);
-  }
-
   /**
    * Accept the visitor.
    **/

@@ -39,10 +39,6 @@ public class NestedProjection extends SimpleNode {
     super(id);
   }
 
-  public NestedProjection(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   /**
    * @param expression
    * @param input

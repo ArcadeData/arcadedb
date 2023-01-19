@@ -33,8 +33,8 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
   public static final Object            ORDER_DESC = "DESC";
   private final       QueryPlanningInfo queryPlanning;
 
-  private int    bucketId;
-  private Object order;
+  private final int    bucketId;
+  private       Object order;
 
   private Iterator<Record> iterator;
 

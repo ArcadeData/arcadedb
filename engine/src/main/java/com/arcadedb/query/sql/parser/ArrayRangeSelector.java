@@ -43,10 +43,6 @@ public class ArrayRangeSelector extends SimpleNode {
     super(id);
   }
 
-  public ArrayRangeSelector(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (from != null) {
       builder.append(from);

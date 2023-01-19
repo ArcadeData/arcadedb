@@ -29,10 +29,6 @@ public class EnumValueDefinition extends SimpleNode {
     super(id);
   }
 
-  public EnumValueDefinition(final GraphQLParser p, final int id) {
-    super(p, id);
-  }
-
   /**
    * Accept the visitor.
    **/

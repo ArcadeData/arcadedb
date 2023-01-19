@@ -27,15 +27,10 @@ import com.arcadedb.query.sql.executor.Result;
 import java.util.*;
 
 public class IsNotDefinedCondition extends BooleanExpression {
-
   protected Expression expression;
 
   public IsNotDefinedCondition(final int id) {
     super(id);
-  }
-
-  public IsNotDefinedCondition(final SqlParser p, final int id) {
-    super(p, id);
   }
 
   @Override

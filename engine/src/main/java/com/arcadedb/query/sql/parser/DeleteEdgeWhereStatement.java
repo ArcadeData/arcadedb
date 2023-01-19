@@ -24,9 +24,5 @@ public class DeleteEdgeWhereStatement extends DeleteEdgeStatement {
   public DeleteEdgeWhereStatement(final int id) {
     super(id);
   }
-
-  public DeleteEdgeWhereStatement(final SqlParser p, final int id) {
-    super(p, id);
-  }
 }
 /* JavaCC - OriginalChecksum=1298a0baf9921378983d0722f8ebe68b (do not edit this line) */

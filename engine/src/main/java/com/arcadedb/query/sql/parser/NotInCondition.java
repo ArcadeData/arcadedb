@@ -43,10 +43,6 @@ public class NotInCondition extends BooleanExpression {
     super(id);
   }
 
-  public NotInCondition(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
     final Object leftVal = left.execute(currentRecord, ctx);

@@ -39,10 +39,6 @@ public class ParenthesisExpression extends MathExpression {
     super(id);
   }
 
-  public ParenthesisExpression(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public ParenthesisExpression(final Expression exp) {
     super(-1);
     this.expression = exp;

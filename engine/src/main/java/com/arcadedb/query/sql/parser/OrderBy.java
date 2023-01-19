@@ -37,10 +37,6 @@ public class OrderBy extends SimpleNode {
     super(id);
   }
 
-  public OrderBy(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public List<OrderByItem> getItems() {
     return items;
   }

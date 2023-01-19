@@ -29,10 +29,6 @@ public class LeOperator extends SimpleNode implements BinaryCompareOperator {
     super(id);
   }
 
-  public LeOperator(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public boolean execute(final DatabaseInternal database, Object iLeft, Object iRight) {
     if (iLeft == iRight)
@@ -57,11 +53,6 @@ public class LeOperator extends SimpleNode implements BinaryCompareOperator {
   @Override
   public String toString() {
     return "<=";
-  }
-
-  @Override
-  public boolean supportsBasicCalculation() {
-    return true;
   }
 
   @Override

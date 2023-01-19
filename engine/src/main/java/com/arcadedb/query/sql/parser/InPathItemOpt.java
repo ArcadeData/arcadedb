@@ -24,10 +24,5 @@ public class InPathItemOpt extends InPathItem {
   public InPathItemOpt(final int id) {
     super(id);
   }
-
-  public InPathItemOpt(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
 }
 /* JavaCC - OriginalChecksum=ef282589054869578c47f554474b5c3b (do not edit this line) */

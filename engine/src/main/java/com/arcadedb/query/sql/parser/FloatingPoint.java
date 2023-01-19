@@ -23,17 +23,12 @@ package com.arcadedb.query.sql.parser;
 import java.util.*;
 
 public class FloatingPoint extends PNumber {
-
   protected int    sign        = 1;
   protected String stringValue = null;
   Number finalValue = null;
 
   public FloatingPoint(final int id) {
     super(id);
-  }
-
-  public FloatingPoint(final SqlParser p, final int id) {
-    super(p, id);
   }
 
   @Override

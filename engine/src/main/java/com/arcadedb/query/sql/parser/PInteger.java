@@ -30,10 +30,6 @@ public class PInteger extends PNumber {
     super(id);
   }
 
-  public PInteger(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public Number getValue() {
     return value;
   }

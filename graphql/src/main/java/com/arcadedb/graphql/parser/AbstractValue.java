@@ -27,10 +27,6 @@ public abstract class AbstractValue extends SimpleNode {
     super(id);
   }
 
-  public AbstractValue(final GraphQLParser p, final int id) {
-    super(p, id);
-  }
-
   public abstract Object getValue();
 
   /**

@@ -31,10 +31,6 @@ public class NamedParameter extends InputParameter {
     super(id);
   }
 
-  public NamedParameter(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public String toString() {
     return ":" + paramName;

@@ -30,8 +30,6 @@ import java.util.*;
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
  */
 public class CreateRecordStep extends AbstractExecutionStep {
-
-  private       long   cost    = 0;
   private       int    created = 0;
   private final int    total;
   private final String typeName;
@@ -84,9 +82,6 @@ public class CreateRecordStep extends AbstractExecutionStep {
         }
       }
 
-
-
-
     };
   }
 
@@ -108,6 +103,5 @@ public class CreateRecordStep extends AbstractExecutionStep {
     }
     return result.toString();
   }
-
 
 }

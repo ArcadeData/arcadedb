@@ -31,10 +31,6 @@ public class OperationDefinition extends Definition {
     super(id);
   }
 
-  public OperationDefinition(final GraphQLParser p, final int id) {
-    super(p, id);
-  }
-
   /**
    * Accept the visitor.
    **/

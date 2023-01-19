@@ -24,9 +24,5 @@ public class StatementSemicolon extends SimpleNode {
   public StatementSemicolon(final int id) {
     super(id);
   }
-
-  public StatementSemicolon(final SqlParser p, final int id) {
-    super(p, id);
-  }
 }
 /* JavaCC - OriginalChecksum=dd666171278492fc7540b6aed7c08733 (do not edit this line) */

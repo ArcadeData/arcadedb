@@ -32,10 +32,6 @@ public class CreateVertexTypeStatement extends CreateTypeAbstractStatement {
     super(id);
   }
 
-  public CreateVertexTypeStatement(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   protected String commandType() {
     return "create vertex type";

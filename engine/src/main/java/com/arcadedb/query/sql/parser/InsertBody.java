@@ -35,10 +35,6 @@ public class InsertBody extends SimpleNode {
     super(id);
   }
 
-  public InsertBody(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (identifierList != null) {
       builder.append("(");

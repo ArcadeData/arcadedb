@@ -28,10 +28,6 @@ public class ObjectField extends SimpleNode {
     super(id);
   }
 
-  public ObjectField(final GraphQLParser p, final int id) {
-    super(p, id);
-  }
-
   public String getName() {
     return name != null ? name.value : null;
   }

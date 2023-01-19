@@ -45,10 +45,6 @@ public class Expression extends SimpleNode {
     super(id);
   }
 
-  public Expression(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public Expression(final Identifier identifier) {
     mathExpression = new BaseExpression(identifier);
   }

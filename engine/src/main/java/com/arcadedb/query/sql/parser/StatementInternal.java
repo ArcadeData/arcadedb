@@ -24,9 +24,5 @@ public class StatementInternal extends SimpleNode {
   public StatementInternal(final int id) {
     super(id);
   }
-
-  public StatementInternal(final SqlParser p, final int id) {
-    super(p, id);
-  }
 }
 /* JavaCC - OriginalChecksum=441892d4d3a90ef763379175fb756b22 (do not edit this line) */

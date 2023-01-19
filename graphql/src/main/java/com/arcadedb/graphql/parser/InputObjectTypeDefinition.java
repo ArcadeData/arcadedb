@@ -23,17 +23,12 @@ package com.arcadedb.graphql.parser;
 import java.util.*;
 
 public class InputObjectTypeDefinition extends TypeDefinition {
-
   protected Name                       name;
   protected Directives                 directives;
   protected List<InputValueDefinition> inputValueDefinitions = new ArrayList<>();
 
   public InputObjectTypeDefinition(final int id) {
     super(id);
-  }
-
-  public InputObjectTypeDefinition(final GraphQLParser p, final int id) {
-    super(p, id);
   }
 
   public String getName() {

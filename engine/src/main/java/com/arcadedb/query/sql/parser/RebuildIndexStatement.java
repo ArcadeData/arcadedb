@@ -45,10 +45,6 @@ public class RebuildIndexStatement extends DDLStatement {
     super(id);
   }
 
-  public RebuildIndexStatement(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public ResultSet executeDDL(final CommandContext ctx) {
     final ResultInternal result = new ResultInternal();

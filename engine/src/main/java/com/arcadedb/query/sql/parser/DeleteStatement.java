@@ -40,10 +40,6 @@ public class DeleteStatement extends Statement {
     super(id);
   }
 
-  public DeleteStatement(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("DELETE FROM ");
     fromClause.toString(params, builder);
@@ -72,6 +68,7 @@ public class DeleteStatement extends Statement {
     result.unsafe = unsafe;
     return result;
   }
+
   @Override
   protected Object[] getIdentityElements() {
     return new Object[] { fromClause, whereClause, returnBefore, limit, unsafe };

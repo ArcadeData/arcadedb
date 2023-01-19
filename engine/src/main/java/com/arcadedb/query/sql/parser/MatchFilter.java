@@ -33,10 +33,6 @@ public class MatchFilter extends SimpleNode {
     super(id);
   }
 
-  public MatchFilter(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public String getAlias() {
     for (final MatchFilterItem item : items) {
       if (item.alias != null) {

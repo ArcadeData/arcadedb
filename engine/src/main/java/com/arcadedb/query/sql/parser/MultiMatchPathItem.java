@@ -33,10 +33,6 @@ public class MultiMatchPathItem extends MatchPathItem {
     super(id);
   }
 
-  public MultiMatchPathItem(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public boolean isBidirectional() {
     return false;
   }
@@ -52,7 +48,8 @@ public class MultiMatchPathItem extends MatchPathItem {
     }
   }
 
-  protected Iterable<Identifiable> traversePatternEdge(final MatchStatement.MatchContext matchContext, final Identifiable startingPoint, final CommandContext iCommandContext) {
+  protected Iterable<Identifiable> traversePatternEdge(final MatchStatement.MatchContext matchContext, final Identifiable startingPoint,
+      final CommandContext iCommandContext) {
     Set<Identifiable> result = new HashSet<Identifiable>();
     result.add(startingPoint);
     for (final MatchPathItem subItem : items) {
@@ -80,7 +77,7 @@ public class MultiMatchPathItem extends MatchPathItem {
   }
 
   @Override
-  public boolean equals( final Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())

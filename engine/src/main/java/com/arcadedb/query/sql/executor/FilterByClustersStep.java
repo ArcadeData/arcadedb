@@ -28,8 +28,8 @@ import java.util.stream.*;
  * Created by luigidellaquila on 01/03/17.
  */
 public class FilterByClustersStep extends AbstractExecutionStep {
-  private Set<String>  clusters;
-  private Set<Integer> bucketIds;
+  private final Set<String>  clusters;
+  private       Set<Integer> bucketIds;
 
   ResultSet prevResult = null;
 

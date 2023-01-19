@@ -23,7 +23,6 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.schema.Type;
 import com.arcadedb.utility.DateUtils;
 
 import java.math.*;
@@ -169,10 +168,6 @@ public class BinaryTypes {
       // VARIABLE SIZE
       return -1;
     }
-  }
-
-  public static byte getType(final Type inputType) {
-    return inputType.getBinaryType();
   }
 
   public static Class<?> getClassFromType(final byte type) {

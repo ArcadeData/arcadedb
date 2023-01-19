@@ -30,10 +30,6 @@ public class ImplementsInterface extends SimpleNode {
     super(id);
   }
 
-  public ImplementsInterface(final GraphQLParser p, final int id) {
-    super(p, id);
-  }
-
   /**
    * Accept the visitor.
    **/

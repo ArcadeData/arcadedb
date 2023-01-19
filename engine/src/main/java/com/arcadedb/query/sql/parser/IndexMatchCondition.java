@@ -39,10 +39,6 @@ public class IndexMatchCondition extends BooleanExpression {
     super(id);
   }
 
-  public IndexMatchCondition(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
     throw new UnsupportedOperationException("TODO Implement IndexMatch!!!");//TODO

@@ -31,10 +31,6 @@ public class LetClause extends SimpleNode {
     super(id);
   }
 
-  public LetClause(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("LET ");
     boolean first = true;

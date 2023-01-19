@@ -31,10 +31,6 @@ public class UpdateEdgeStatement extends UpdateStatement {
     super(id);
   }
 
-  public UpdateEdgeStatement(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   protected String getStatementType() {
     return "UPDATE EDGE ";
   }

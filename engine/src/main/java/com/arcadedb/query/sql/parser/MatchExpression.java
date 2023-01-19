@@ -31,10 +31,6 @@ public class MatchExpression extends SimpleNode {
     super(id);
   }
 
-  public MatchExpression(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     origin.toString(params, builder);
     for (final MatchPathItem item : items) {

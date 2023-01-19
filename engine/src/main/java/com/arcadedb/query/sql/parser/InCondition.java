@@ -48,10 +48,6 @@ public class InCondition extends BooleanExpression {
     super(id);
   }
 
-  public InCondition(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
     final Object leftVal = evaluateLeft(currentRecord, ctx);

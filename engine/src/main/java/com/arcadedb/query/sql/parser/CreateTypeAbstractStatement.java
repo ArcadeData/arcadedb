@@ -58,10 +58,6 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
     super(id);
   }
 
-  public CreateTypeAbstractStatement(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   protected abstract String commandType();
 
   protected abstract DocumentType createType(Schema schema);
@@ -182,10 +178,6 @@ public abstract class CreateTypeAbstractStatement extends DDLStatement {
     result = 31 * result + (buckets != null ? buckets.hashCode() : 0);
     result = 31 * result + (totalBucketNo != null ? totalBucketNo.hashCode() : 0);
     return result;
-  }
-
-  public List<Identifier> getSupertypes() {
-    return supertypes;
   }
 }
 /* JavaCC - OriginalChecksum=4043013624f55fdf0ea8fee6d4f211b0 (do not edit this line) */

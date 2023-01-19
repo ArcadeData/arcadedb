@@ -38,10 +38,6 @@ public class BaseIdentifier extends SimpleNode {
     super(id);
   }
 
-  public BaseIdentifier(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public BaseIdentifier(final Identifier identifier) {
     this.suffix = new SuffixIdentifier(identifier);
   }

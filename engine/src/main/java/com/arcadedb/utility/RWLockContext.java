@@ -45,7 +45,7 @@ public class RWLockContext {
   /**
    * Executes a callback in an shared lock.
    */
-  public <RET extends Object> RET executeInReadLock(final Callable<RET> callable) {
+  public <RET> RET executeInReadLock(final Callable<RET> callable) {
     readLock();
     try {
 
@@ -65,7 +65,7 @@ public class RWLockContext {
   /**
    * Executes a callback in an exclusive lock.
    */
-  public <RET extends Object> RET executeInWriteLock(final Callable<RET> callable) {
+  public <RET> RET executeInWriteLock(final Callable<RET> callable) {
     writeLock();
     try {
 

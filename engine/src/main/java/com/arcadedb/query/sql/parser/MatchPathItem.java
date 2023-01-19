@@ -37,10 +37,6 @@ public class MatchPathItem extends SimpleNode {
     super(id);
   }
 
-  public MatchPathItem(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public boolean isBidirectional() {
     if (filter.getWhileCondition() != null) {
       return false;
@@ -61,8 +57,8 @@ public class MatchPathItem extends SimpleNode {
     }
   }
 
-  public Iterable<Identifiable> executeTraversal(final MatchStatement.MatchContext matchContext, final CommandContext iCommandContext, final Identifiable startingPoint,
-      final int depth) {
+  public Iterable<Identifiable> executeTraversal(final MatchStatement.MatchContext matchContext, final CommandContext iCommandContext,
+      final Identifiable startingPoint, final int depth) {
 
     WhereClause filter = null;
     WhereClause whileCondition = null;
@@ -137,7 +133,8 @@ public class MatchPathItem extends SimpleNode {
     return false;
   }
 
-  protected Iterable<Identifiable> traversePatternEdge(final MatchStatement.MatchContext matchContext, final Identifiable startingPoint, final CommandContext iCommandContext) {
+  protected Iterable<Identifiable> traversePatternEdge(final MatchStatement.MatchContext matchContext, final Identifiable startingPoint,
+      final CommandContext iCommandContext) {
 
     Iterable possibleResults = null;
     if (filter != null) {
@@ -156,7 +153,7 @@ public class MatchPathItem extends SimpleNode {
   }
 
   @Override
-  public boolean equals( final Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())

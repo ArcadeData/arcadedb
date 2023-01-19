@@ -30,10 +30,6 @@ public class ScAndOperator extends SimpleNode implements BinaryCompareOperator {
     super(id);
   }
 
-  public ScAndOperator(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public boolean execute(final DatabaseInternal database, final Object iLeft, final Object iRight) {
     if (lowLevelOperator == null) {
@@ -48,11 +44,6 @@ public class ScAndOperator extends SimpleNode implements BinaryCompareOperator {
   @Override
   public String toString() {
     return "&&";
-  }
-
-  @Override
-  public boolean supportsBasicCalculation() {
-    return true;
   }
 
   @Override

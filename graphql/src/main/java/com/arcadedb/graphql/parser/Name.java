@@ -27,10 +27,6 @@ public class Name extends SimpleNode {
     super(id);
   }
 
-  public Name(final GraphQLParser p, final int id) {
-    super(p, id);
-  }
-
   /**
    * Accept the visitor.
    **/

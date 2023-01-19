@@ -29,10 +29,6 @@ public class OperationType extends SimpleNode {
     super(id);
   }
 
-  public OperationType(final GraphQLParser p, final int id) {
-    super(p, id);
-  }
-
   /**
    * Accept the visitor.
    **/

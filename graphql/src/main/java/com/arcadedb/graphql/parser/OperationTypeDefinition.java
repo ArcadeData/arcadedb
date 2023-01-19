@@ -23,14 +23,10 @@ package com.arcadedb.graphql.parser;
 public class OperationTypeDefinition extends SimpleNode {
 
   protected OperationType operationType;
-  protected TypeName typeName;
+  protected TypeName      typeName;
 
   public OperationTypeDefinition(final int id) {
     super(id);
-  }
-
-  public OperationTypeDefinition(final GraphQLParser p, final int id) {
-    super(p, id);
   }
 
   /**

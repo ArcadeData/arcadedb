@@ -43,10 +43,6 @@ public class BaseExpression extends MathExpression {
     super(id);
   }
 
-  public BaseExpression(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public BaseExpression(final Identifier identifier) {
     super(-1);
     this.identifier = new BaseIdentifier(identifier);

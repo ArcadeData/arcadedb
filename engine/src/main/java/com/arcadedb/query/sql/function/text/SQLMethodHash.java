@@ -59,13 +59,11 @@ public class SQLMethodHash extends AbstractSQLMethod {
 
     } catch (final NoSuchAlgorithmException e) {
       throw new CommandExecutionException("hash(): algorithm '" + algorithm + "' is not supported", e);
-    } catch (final UnsupportedEncodingException e) {
-      throw new CommandExecutionException("hash(): encoding 'UTF-8' is not supported", e);
     }
   }
 
   public static String createHash(final String iInput, String algorithm)
-      throws NoSuchAlgorithmException, UnsupportedEncodingException {
+      throws NoSuchAlgorithmException {
     if (algorithm == null)
       algorithm = HASH_ALGORITHM;
 

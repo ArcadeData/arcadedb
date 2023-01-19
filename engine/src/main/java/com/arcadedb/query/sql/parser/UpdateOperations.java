@@ -43,10 +43,6 @@ public class UpdateOperations extends SimpleNode {
     super(id);
   }
 
-  public UpdateOperations(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     boolean first = true;
     switch (type) {

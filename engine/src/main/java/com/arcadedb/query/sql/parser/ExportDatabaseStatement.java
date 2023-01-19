@@ -41,10 +41,6 @@ public class ExportDatabaseStatement extends SimpleExecStatement {
     super(id);
   }
 
-  public ExportDatabaseStatement(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public ResultSet executeSimple(final CommandContext ctx) {
     final String targetUrl = this.url.getUrlString();

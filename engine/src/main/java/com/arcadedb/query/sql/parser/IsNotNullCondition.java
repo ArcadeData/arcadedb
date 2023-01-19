@@ -27,15 +27,10 @@ import com.arcadedb.query.sql.executor.Result;
 import java.util.*;
 
 public class IsNotNullCondition extends BooleanExpression {
-
   protected Expression expression;
 
   public IsNotNullCondition(final int id) {
     super(id);
-  }
-
-  public IsNotNullCondition(final SqlParser p, final int id) {
-    super(p, id);
   }
 
   @Override

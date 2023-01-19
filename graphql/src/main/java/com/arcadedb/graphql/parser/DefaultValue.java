@@ -27,10 +27,6 @@ public class DefaultValue extends SimpleNode {
     super(id);
   }
 
-  public DefaultValue(final GraphQLParser p, final int id) {
-    super(p, id);
-  }
-
   /**
    * Accept the visitor.
    **/

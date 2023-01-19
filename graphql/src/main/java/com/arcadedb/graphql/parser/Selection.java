@@ -21,7 +21,6 @@
 package com.arcadedb.graphql.parser;
 
 public class Selection extends SimpleNode {
-
   protected Name           name;
   protected FieldWithAlias fieldWithAlias;
   protected Field          field;
@@ -31,10 +30,6 @@ public class Selection extends SimpleNode {
 
   public Selection(final int id) {
     super(id);
-  }
-
-  public Selection(final GraphQLParser p, final int id) {
-    super(p, id);
   }
 
   /**

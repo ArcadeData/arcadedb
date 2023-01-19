@@ -36,10 +36,6 @@ public class NestedProjectionItem extends SimpleNode {
     super(id);
   }
 
-  public NestedProjectionItem(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public NestedProjectionItem copy() {
     final NestedProjectionItem result = new NestedProjectionItem(-1);

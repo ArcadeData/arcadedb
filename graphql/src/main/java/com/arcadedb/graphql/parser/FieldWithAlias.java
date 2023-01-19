@@ -21,7 +21,6 @@
 package com.arcadedb.graphql.parser;
 
 public class FieldWithAlias extends SimpleNode {
-
   Name alias;
   protected Name         name;
   protected Arguments    arguments;
@@ -35,10 +34,6 @@ public class FieldWithAlias extends SimpleNode {
 
   public FieldWithAlias(final int id) {
     super(id);
-  }
-
-  public FieldWithAlias(final GraphQLParser p, final int id) {
-    super(p, id);
   }
 
   public String getName() {

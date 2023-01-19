@@ -96,7 +96,7 @@ public class JavaBinarySerializer {
     }
   }
 
-  public static void readExternal(final Document document, final ObjectInput in) throws IOException, ClassNotFoundException {
+  public static void readExternal(final Document document, final ObjectInput in) throws IOException {
     if (!(document instanceof MutableDocument))
       throw new IllegalStateException("Error on deserialization: the current object is immutable");
 

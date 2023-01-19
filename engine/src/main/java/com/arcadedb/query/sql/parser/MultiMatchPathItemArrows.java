@@ -24,10 +24,5 @@ public class MultiMatchPathItemArrows extends MultiMatchPathItem {
   public MultiMatchPathItemArrows(final int id) {
     super(id);
   }
-
-  public MultiMatchPathItemArrows(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
 }
 /* JavaCC - OriginalChecksum=75506ca75aab9f66ab24c9f1b1cfe3ac (do not edit this line) */

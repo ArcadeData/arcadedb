@@ -27,15 +27,10 @@ import com.arcadedb.query.sql.executor.Result;
 import java.util.*;
 
 public class ParenthesisBlock extends BooleanExpression {
-
   BooleanExpression subElement;
 
   public ParenthesisBlock(final int id) {
     super(id);
-  }
-
-  public ParenthesisBlock(final SqlParser p, final int id) {
-    super(p, id);
   }
 
   @Override

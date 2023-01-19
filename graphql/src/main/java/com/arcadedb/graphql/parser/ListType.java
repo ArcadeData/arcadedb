@@ -28,10 +28,6 @@ public class ListType extends SimpleNode {
     super(id);
   }
 
-  public ListType(final GraphQLParser p, final int id) {
-    super(p, id);
-  }
-
   public Type getType() {
     return type;
   }

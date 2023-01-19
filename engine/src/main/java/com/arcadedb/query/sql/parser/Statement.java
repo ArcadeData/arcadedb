@@ -42,10 +42,6 @@ public class Statement extends SimpleNode {
     super(id);
   }
 
-  public Statement(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     throw new UnsupportedOperationException("missing implementation in " + getClass().getSimpleName());
   }

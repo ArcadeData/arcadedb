@@ -28,10 +28,6 @@ public class FieldDefinition extends AbstractField {
     super(id);
   }
 
-  public FieldDefinition(final GraphQLParser p, final int id) {
-    super(p, id);
-  }
-
   public Type getType() {
     return type;
   }

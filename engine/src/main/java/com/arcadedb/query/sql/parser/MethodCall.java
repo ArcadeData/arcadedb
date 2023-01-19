@@ -54,10 +54,6 @@ public class MethodCall extends SimpleNode {
     super(id);
   }
 
-  public MethodCall(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append(".");
     methodName.toString(params, builder);

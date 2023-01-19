@@ -52,10 +52,6 @@ public class Identifier extends SimpleNode {
     super(id);
   }
 
-  public Identifier(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   /**
    * returns the value as is, with back-ticks quoted with backslash
    *

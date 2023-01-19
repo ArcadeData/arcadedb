@@ -27,7 +27,7 @@ import java.util.*;
  * Created by luigidellaquila on 12/07/16.
  */
 public class FilterStep extends AbstractExecutionStep {
-  private WhereClause whereClause;
+  private final WhereClause whereClause;
 
   ResultSet prevResult = null;
 

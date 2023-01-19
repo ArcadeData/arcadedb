@@ -25,8 +25,5 @@ public class CompareOperator extends SimpleNode {
     super(id);
   }
 
-  public CompareOperator(final SqlParser p, final int id) {
-    super(p, id);
-  }
 }
 /* JavaCC - OriginalChecksum=aeef93fd1b053c63a8b92a979ac225df (do not edit this line) */

@@ -27,10 +27,6 @@ public class StringValue extends AbstractValue {
     super(id);
   }
 
-  public StringValue(final GraphQLParser p, final int id) {
-    super(p, id);
-  }
-
   /**
    * Accept the visitor.
    **/

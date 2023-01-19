@@ -43,10 +43,6 @@ public class CreateVertexStatement extends Statement {
     super(id);
   }
 
-  public CreateVertexStatement(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public ResultSet execute(final Database db, final Map params, final CommandContext parentCtx, final boolean usePlanCache) {
     final BasicCommandContext ctx = new BasicCommandContext();

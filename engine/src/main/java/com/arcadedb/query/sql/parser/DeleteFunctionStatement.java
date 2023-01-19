@@ -18,10 +18,6 @@ public class DeleteFunctionStatement extends SimpleExecStatement {
     super(id);
   }
 
-  public DeleteFunctionStatement(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public ResultSet executeSimple(final CommandContext ctx) {
     final Database database = ctx.getDatabase();

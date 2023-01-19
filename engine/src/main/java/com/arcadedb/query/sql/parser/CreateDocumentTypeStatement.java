@@ -32,10 +32,6 @@ public class CreateDocumentTypeStatement extends CreateTypeAbstractStatement {
     super(id);
   }
 
-  public CreateDocumentTypeStatement(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public String commandType() {
     return "create document type";

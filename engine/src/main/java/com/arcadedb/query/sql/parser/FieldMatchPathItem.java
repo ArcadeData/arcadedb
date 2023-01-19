@@ -28,17 +28,11 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import java.util.*;
 
 public class FieldMatchPathItem extends MatchPathItem {
-
-  protected Identifier field;
-
-  private SuffixIdentifier exp;
+  protected Identifier       field;
+  private   SuffixIdentifier exp;
 
   public FieldMatchPathItem(final int id) {
     super(id);
-  }
-
-  public FieldMatchPathItem(final SqlParser p, final int id) {
-    super(p, id);
   }
 
   /**
@@ -56,7 +50,8 @@ public class FieldMatchPathItem extends MatchPathItem {
     }
   }
 
-  protected Iterable<Identifiable> traversePatternEdge(final MatchStatement.MatchContext matchContext, final Identifiable startingPoint, final CommandContext iCommandContext) {
+  protected Iterable<Identifiable> traversePatternEdge(final MatchStatement.MatchContext matchContext, final Identifiable startingPoint,
+      final CommandContext iCommandContext) {
 
     //    Iterable possibleResults = null;
     //    if (filter != null) {
@@ -81,14 +76,14 @@ public class FieldMatchPathItem extends MatchPathItem {
   }
 
   @Override
-  public boolean equals( final Object o) {
+  public boolean equals(final Object o) {
     if (this == o)
       return true;
     if (o == null || getClass() != o.getClass())
       return false;
     if (!super.equals(o))
       return false;
-    final  FieldMatchPathItem that = (FieldMatchPathItem) o;
+    final FieldMatchPathItem that = (FieldMatchPathItem) o;
     return Objects.equals(field, that.field) && Objects.equals(exp, that.exp);
   }
 

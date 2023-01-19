@@ -27,10 +27,6 @@ public class PNumber extends SimpleNode {
     super(id);
   }
 
-  public PNumber(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public Number getValue() {
     return null;
   }

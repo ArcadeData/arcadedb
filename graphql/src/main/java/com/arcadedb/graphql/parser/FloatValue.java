@@ -27,10 +27,6 @@ public class FloatValue extends AbstractValue {
     super(id);
   }
 
-  public FloatValue(final GraphQLParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public Object getValue() {
     return stringValue;

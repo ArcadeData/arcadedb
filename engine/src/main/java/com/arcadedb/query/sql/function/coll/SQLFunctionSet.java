@@ -63,9 +63,4 @@ public class SQLFunctionSet extends SQLFunctionMultiValueAbstract<Set<Object>> {
   public String getSyntax() {
     return "set(<value>*)";
   }
-
-  public boolean aggregateResults(final Object[] configuredParameters) {
-    return configuredParameters.length == 1;
-  }
-
 }

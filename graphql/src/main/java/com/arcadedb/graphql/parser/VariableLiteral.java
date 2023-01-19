@@ -25,10 +25,6 @@ public class VariableLiteral extends AbstractValue {
     super(id);
   }
 
-  public VariableLiteral(final GraphQLParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public Object getValue() {
     return value;

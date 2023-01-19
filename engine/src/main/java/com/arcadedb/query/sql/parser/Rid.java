@@ -39,10 +39,6 @@ public class Rid extends SimpleNode {
     super(id);
   }
 
-  public Rid(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public String toString(final String prefix) {
     return "#" + bucket.getValue() + ":" + position.getValue();

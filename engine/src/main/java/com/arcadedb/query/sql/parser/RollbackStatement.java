@@ -32,10 +32,6 @@ public class RollbackStatement extends SimpleExecStatement {
     super(id);
   }
 
-  public RollbackStatement(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public ResultSet executeSimple(final CommandContext ctx) {
     ctx.getDatabase().rollback();

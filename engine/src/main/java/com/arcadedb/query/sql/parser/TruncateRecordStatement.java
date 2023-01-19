@@ -34,10 +34,6 @@ public class TruncateRecordStatement extends SimpleExecStatement {
     super(id);
   }
 
-  public TruncateRecordStatement(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public ResultSet executeSimple(final CommandContext ctx) {
 //    List<ORid> recs = new ArrayList<>();

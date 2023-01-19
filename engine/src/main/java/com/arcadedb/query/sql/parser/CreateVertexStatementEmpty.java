@@ -25,8 +25,5 @@ public class CreateVertexStatementEmpty extends CreateVertexStatement {
     super(id);
   }
 
-  public CreateVertexStatementEmpty(final SqlParser p, final int id) {
-    super(p, id);
-  }
 }
 /* JavaCC - OriginalChecksum=016e27188dd8fae2a4e129ad660c5c23 (do not edit this line) */

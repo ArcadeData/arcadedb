@@ -35,10 +35,6 @@ public class CreatePropertyAttributeStatement extends SimpleNode {
     super(id);
   }
 
-  public CreatePropertyAttributeStatement(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     settingName.toString(params, builder);

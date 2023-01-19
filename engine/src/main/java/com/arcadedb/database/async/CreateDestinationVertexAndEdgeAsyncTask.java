@@ -40,7 +40,8 @@ public class CreateDestinationVertexAndEdgeAsyncTask extends CreateEdgeAsyncTask
     this.destinationVertexAttributeValues = destinationVertexAttributeValues;
   }
 
-  public void execute(final DatabaseInternal database) {
+  @Override
+  public void execute(DatabaseAsyncExecutorImpl.AsyncThread async, DatabaseInternal database) {
     final MutableVertex destinationVertex = database.newVertex(destinationVertexType);
     for (int i = 0; i < destinationVertexAttributeNames.length; ++i)
       destinationVertex.set(destinationVertexAttributeNames[i], destinationVertexAttributeValues[i]);

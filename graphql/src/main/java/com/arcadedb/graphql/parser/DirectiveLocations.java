@@ -22,8 +22,7 @@ package com.arcadedb.graphql.parser;
 
 import java.util.*;
 
-public
-class DirectiveLocations extends SimpleNode {
+public class DirectiveLocations extends SimpleNode {
 
   protected List<DirectiveLocation> directiveLocations = new ArrayList<>();
 
@@ -31,15 +30,11 @@ class DirectiveLocations extends SimpleNode {
     super(id);
   }
 
-  public DirectiveLocations(final GraphQLParser p, final int id) {
-    super(p, id);
-  }
-
-
-  /** Accept the visitor. **/
+  /**
+   * Accept the visitor.
+   **/
   public Object jjtAccept(final GraphQLParserVisitor visitor, final Object data) {
-    return
-    visitor.visit(this, data);
+    return visitor.visit(this, data);
   }
 }
 /* ParserGeneratorCC - OriginalChecksum=f3ec1634dd11be6c17584efdd94bfbeb (do not edit this line) */

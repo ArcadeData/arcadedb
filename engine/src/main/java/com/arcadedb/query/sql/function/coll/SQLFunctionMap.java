@@ -79,10 +79,6 @@ public class SQLFunctionMap extends SQLFunctionMultiValueAbstract<Map<String, Ob
     return "map(<map>|[<key>,<value>]*)";
   }
 
-  public boolean aggregateResults(final Object[] configuredParameters) {
-    return configuredParameters.length <= 2;
-  }
-
   @Override
   public Map<String, Object> getResult() {
     final Map<String, Object> res = context;

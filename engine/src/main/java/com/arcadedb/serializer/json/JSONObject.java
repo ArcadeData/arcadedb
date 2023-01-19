@@ -61,9 +61,9 @@ public class JSONObject {
     }
   }
 
-  public JSONObject(final Map<String, ? extends Object> map) {
+  public JSONObject(final Map<String, ?> map) {
     object = new JsonObject();
-    for (Map.Entry<String, ? extends Object> entry : map.entrySet())
+    for (Map.Entry<String, ?> entry : map.entrySet())
       put(entry.getKey(), entry.getValue());
   }
 
@@ -332,7 +332,7 @@ public class JSONObject {
       throw new JSONException("Null key");
 
     final JsonElement value = object.get(name);
-    if (object == null)
+    if (value == null)
       throw new JSONException("JSONObject[" + name + "] not found");
 
     return value;

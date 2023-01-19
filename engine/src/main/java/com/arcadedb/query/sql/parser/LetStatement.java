@@ -29,16 +29,11 @@ import java.util.*;
 
 public class LetStatement extends SimpleExecStatement {
   protected Identifier name;
-
   protected Statement  statement;
   protected Expression expression;
 
   public LetStatement(final int id) {
     super(id);
-  }
-
-  public LetStatement(final SqlParser p, final int id) {
-    super(p, id);
   }
 
   @Override

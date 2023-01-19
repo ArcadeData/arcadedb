@@ -23,15 +23,10 @@ package com.arcadedb.query.sql.parser;
 import java.util.*;
 
 public class FromClause extends SimpleNode {
-
   FromItem item;
 
   public FromClause(final int id) {
     super(id);
-  }
-
-  public FromClause(final SqlParser p, final int id) {
-    super(p, id);
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {

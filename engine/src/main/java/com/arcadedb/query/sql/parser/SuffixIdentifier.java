@@ -36,17 +36,12 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import java.util.*;
 
 public class SuffixIdentifier extends SimpleNode {
-
   protected Identifier      identifier;
   protected RecordAttribute recordAttribute;
   protected boolean         star = false;
 
   public SuffixIdentifier(final int id) {
     super(id);
-  }
-
-  public SuffixIdentifier(final SqlParser p, final int id) {
-    super(p, id);
   }
 
   public SuffixIdentifier(final Identifier identifier) {

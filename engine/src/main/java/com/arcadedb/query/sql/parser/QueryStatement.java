@@ -24,9 +24,5 @@ public class QueryStatement extends SimpleNode {
   public QueryStatement(final int id) {
     super(id);
   }
-
-  public QueryStatement(final SqlParser p, final int id) {
-    super(p, id);
-  }
 }
 /* JavaCC - OriginalChecksum=f78d23e607a64459efb18502e47359c1 (do not edit this line) */

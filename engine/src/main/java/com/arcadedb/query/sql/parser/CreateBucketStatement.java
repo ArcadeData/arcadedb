@@ -39,10 +39,6 @@ public class CreateBucketStatement extends DDLStatement {
     super(id);
   }
 
-  public CreateBucketStatement(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public ResultSet executeDDL(final CommandContext ctx) {
     final Database db = ctx.getDatabase();

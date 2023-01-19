@@ -44,11 +44,7 @@ public class UpdateStatement extends Statement {
     super(id);
   }
 
-  public UpdateStatement(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
-  public void toString(final Map<String, Object> params,final  StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append(getStatementType());
     if (target != null) {
       target.toString(params, builder);

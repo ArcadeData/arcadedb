@@ -26,8 +26,6 @@ import com.arcadedb.database.DatabaseInternal;
 public interface BinaryCompareOperator {
   boolean execute(DatabaseInternal database, Object left, Object right);
 
-  boolean supportsBasicCalculation();
-
   BinaryCompareOperator copy();
 
   default boolean isRangeOperator() {

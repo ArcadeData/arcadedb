@@ -30,18 +30,9 @@ public class EqualsCompareOperator extends SimpleNode implements BinaryCompareOp
     super(id);
   }
 
-  public EqualsCompareOperator(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public boolean execute(final DatabaseInternal database, final Object iLeft, final Object iRight) {
     return QueryOperatorEquals.equals(iLeft, iRight);
-  }
-
-  @Override
-  public boolean supportsBasicCalculation() {
-    return true;
   }
 
   @Override

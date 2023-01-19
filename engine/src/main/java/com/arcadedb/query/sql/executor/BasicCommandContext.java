@@ -210,15 +210,6 @@ public class BasicCommandContext implements CommandContext {
     return getVariables().toString();
   }
 
-  public boolean isRecordingMetrics() {
-    return recordMetrics;
-  }
-
-  public CommandContext setRecordingMetrics(final boolean recordMetrics) {
-    this.recordMetrics = recordMetrics;
-    return this;
-  }
-
   @Override
   public CommandContext copy() {
     final BasicCommandContext copy = new BasicCommandContext();
@@ -259,13 +250,6 @@ public class BasicCommandContext implements CommandContext {
     }
   }
 
-  /**
-   * Returns the number of results processed. This is intended to be used with LIMIT in SQL statements
-   */
-  public AtomicLong getResultsProcessed() {
-    return resultsProcessed;
-  }
-
   public DatabaseInternal getDatabase() {
     if (database != null) {
       return database;
@@ -279,44 +263,6 @@ public class BasicCommandContext implements CommandContext {
   public CommandContext setDatabase(final Database database) {
     this.database = (DatabaseInternal) database;
     return this;
-  }
-
-  /**
-   * TODO OPTIMIZE THIS
-   */
-  public static int getLowerIndexOf(final String iText, final int iBeginOffset, final String... iToSearch) {
-    int lowest = -1;
-    for (final String toSearch : iToSearch) {
-      boolean singleQuote = false;
-      boolean doubleQuote = false;
-      boolean backslash = false;
-      for (int i = iBeginOffset; i < iText.length(); i++) {
-        if (lowest == -1 || i < lowest) {
-          if (backslash && (iText.charAt(i) == '\'' || iText.charAt(i) == '"')) {
-            backslash = false;
-            continue;
-          }
-          if (iText.charAt(i) == '\\') {
-            backslash = true;
-            continue;
-          }
-          if (iText.charAt(i) == '\'' && !doubleQuote) {
-            singleQuote = !singleQuote;
-            continue;
-          }
-          if (iText.charAt(i) == '"' && !singleQuote) {
-            doubleQuote = !doubleQuote;
-            continue;
-          }
-
-          if (!singleQuote && !doubleQuote && iText.startsWith(toSearch, i)) {
-            lowest = i;
-          }
-        }
-      }
-    }
-
-    return lowest;
   }
 
   @Override

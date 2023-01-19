@@ -40,10 +40,6 @@ public class DropIndexStatement extends DDLStatement {
     super(id);
   }
 
-  public DropIndexStatement(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public ResultSet executeDDL(final CommandContext ctx) {
     final InternalResultSet rs = new InternalResultSet();

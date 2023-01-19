@@ -35,10 +35,6 @@ public class PCollection extends SimpleNode {
     super(id);
   }
 
-  public PCollection(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("[");
     boolean first = true;

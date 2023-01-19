@@ -53,10 +53,10 @@ import java.util.*;
 public class FetchFromIndexStep extends AbstractExecutionStep {
   protected     RangeIndex        index;
   protected     BooleanExpression condition;
-  private       BinaryCondition   additionalRangeCondition;
-  private       boolean           orderAsc;
-  protected     String            indexName;
-  private       long              cost        = 0;
+  private         BinaryCondition additionalRangeCondition;
+  private final   boolean         orderAsc;
+  protected final String          indexName;
+  private         long            cost        = 0;
   private       long              count       = 0;
   private       boolean           inited      = false;
   private       IndexCursor       cursor;
@@ -221,8 +221,6 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
         //TODO process containsAny
         throw new CommandExecutionException("search for index for " + condition + " is not supported yet");
       }
-    } catch (final IOException e) {
-      throw new CommandExecutionException(e);
     } finally {
       if (profilingEnabled) {
         cost += (System.nanoTime() - begin);
@@ -230,7 +228,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     }
   }
 
-  private void processInCondition() throws IOException {
+  private void processInCondition() {
     final InCondition inCondition = (InCondition) condition;
 
     final Expression left = inCondition.getLeft();
@@ -287,7 +285,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   /**
    * it's not key = [...] but a real condition on field names, already ordered (field names will be ignored)
    */
-  private void processAndBlock() throws IOException {
+  private void processAndBlock() {
     final PCollection fromKey = indexKeyFrom((AndBlock) condition, additionalRangeCondition);
     final PCollection toKey = indexKeyTo((AndBlock) condition, additionalRangeCondition);
     final boolean fromKeyIncluded = indexKeyFromIncluded((AndBlock) condition, additionalRangeCondition);
@@ -295,7 +293,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     init(fromKey, fromKeyIncluded, toKey, toKeyIncluded);
   }
 
-  private void processFlatIteration() throws IOException {
+  private void processFlatIteration() {
     cursor = index.iterator(isOrderAsc());
 
     fetchNullKeys();

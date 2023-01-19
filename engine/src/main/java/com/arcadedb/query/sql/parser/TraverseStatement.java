@@ -32,7 +32,6 @@ import java.util.*;
 import java.util.stream.*;
 
 public class TraverseStatement extends Statement {
-
   public enum Strategy {
     DEPTH_FIRST, BREADTH_FIRST
   }
@@ -46,10 +45,6 @@ public class TraverseStatement extends Statement {
 
   public TraverseStatement(final int id) {
     super(id);
-  }
-
-  public TraverseStatement(final SqlParser p, final int id) {
-    super(p, id);
   }
 
   public void validate() throws CommandSQLParsingException {

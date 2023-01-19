@@ -29,10 +29,6 @@ public class OutPathItem extends MatchPathItem {
     super(id);
   }
 
-  public OutPathItem(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("-");

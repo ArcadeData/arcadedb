@@ -38,10 +38,6 @@ public class BinaryCondition extends BooleanExpression {
     super(id);
   }
 
-  public BinaryCondition(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
     return operator.execute(ctx.getDatabase(), left.execute(currentRecord, ctx), right.execute(currentRecord, ctx));

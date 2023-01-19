@@ -33,10 +33,6 @@ public class AlignDatabaseStatement extends SimpleExecStatement {
     super(id);
   }
 
-  public AlignDatabaseStatement(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public ResultSet executeSimple(final CommandContext ctx) {
     final ResultInternal result = new ResultInternal();

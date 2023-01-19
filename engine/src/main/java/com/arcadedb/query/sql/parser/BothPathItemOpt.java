@@ -24,10 +24,5 @@ public class BothPathItemOpt extends BothPathItem {
   public BothPathItemOpt(final int id) {
     super(id);
   }
-
-  public BothPathItemOpt(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
 }
 /* JavaCC - OriginalChecksum=96af673f114382e530f23ae7937cb201 (do not edit this line) */

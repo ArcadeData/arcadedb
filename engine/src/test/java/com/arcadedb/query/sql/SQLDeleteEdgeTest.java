@@ -56,12 +56,12 @@ public class SQLDeleteEdgeTest extends TestHelper {
       database.command("sql", "CREATE EDGE testFromTwoE from " + result.get(1).getIdentity() + " to " + result.get(0).getIdentity());
 
       List<Document> resultTwo = CollectionUtils.resultsetToListOfDocuments(database.query("sql", "select expand(outE()) from " + result.get(1).getIdentity()));
-      Assertions.assertEquals(resultTwo.size(), 2);
+      Assertions.assertEquals(2, resultTwo.size());
 
       database.command("sql", "DELETE EDGE testFromTwoE from " + result.get(1).getIdentity());
 
       resultTwo = CollectionUtils.resultsetToListOfDocuments(database.query("sql", "select expand(outE()) from " + result.get(1).getIdentity()));
-      Assertions.assertEquals(resultTwo.size(), 1);
+      Assertions.assertEquals(1, resultTwo.size());
 
       database.command("sql", "DELETE FROM testFromOneE unsafe");
       database.command("sql", "DELETE FROM testFromTwoE unsafe");

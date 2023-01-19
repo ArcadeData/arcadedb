@@ -175,7 +175,11 @@ public class InsertGraphIndexTest extends TestHelper {
     final VertexType vertex = database.getSchema().createVertexType(VERTEX_TYPE_NAME, PARALLEL);
     vertex.createProperty("id", Integer.class);
     database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, VERTEX_TYPE_NAME, "id");
+
+    Assertions.assertEquals("round-robin", vertex.getBucketSelectionStrategy().getName());
+
     vertex.setBucketSelectionStrategy(new PartitionedBucketSelectionStrategy(new String[] { "id" }));
+    Assertions.assertEquals("partitioned", vertex.getBucketSelectionStrategy().getName());
 
     database.getSchema().createEdgeType(EDGE_TYPE_NAME, PARALLEL);
   }

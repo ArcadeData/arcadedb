@@ -40,10 +40,6 @@ public class ContainsCondition extends BooleanExpression {
     super(id);
   }
 
-  public ContainsCondition(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public boolean execute(final Object left, Object right) {
     if (left instanceof Collection) {
       if (right instanceof Collection) {
@@ -255,10 +251,6 @@ public class ContainsCondition extends BooleanExpression {
       }
     }
     return false;
-  }
-
-  public Expression getRight() {
-    return right;
   }
 }
 /* JavaCC - OriginalChecksum=bad1118296ea74860e88d66bfe9fa222 (do not edit this line) */

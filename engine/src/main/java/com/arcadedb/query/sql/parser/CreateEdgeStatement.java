@@ -43,10 +43,6 @@ public class CreateEdgeStatement extends Statement {
     super(id);
   }
 
-  public CreateEdgeStatement(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public ResultSet execute(final Database db, final Object[] args, final CommandContext parentCtx, final boolean usePlanCache) {
     final BasicCommandContext ctx = new BasicCommandContext();

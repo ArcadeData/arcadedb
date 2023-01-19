@@ -25,10 +25,6 @@ public class PString extends SimpleNode {
     super(id);
   }
 
-  public PString(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public PString copy() {
     final PString result = new PString(-1);
     result.value = value;

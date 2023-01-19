@@ -24,9 +24,5 @@ public class DeleteEdgeByRidStatement extends DeleteEdgeStatement {
   public DeleteEdgeByRidStatement(final int id) {
     super(id);
   }
-
-  public DeleteEdgeByRidStatement(final SqlParser p, final int id) {
-    super(p, id);
-  }
 }
 /* JavaCC - OriginalChecksum=98dcdb9b472b04699d1a2bd35f9e54a6 (do not edit this line) */

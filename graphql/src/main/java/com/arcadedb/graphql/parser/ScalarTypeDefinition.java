@@ -29,10 +29,6 @@ public class ScalarTypeDefinition extends TypeDefinition {
     super(id);
   }
 
-  public ScalarTypeDefinition(final GraphQLParser p, final int id) {
-    super(p, id);
-  }
-
   public String getName() {
     return name != null ? name.value : null;
   }

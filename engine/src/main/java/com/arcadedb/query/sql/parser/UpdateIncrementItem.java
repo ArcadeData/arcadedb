@@ -31,10 +31,6 @@ public class UpdateIncrementItem extends SimpleNode {
     super(id);
   }
 
-  public UpdateIncrementItem(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     left.toString(params, builder);
     if (leftModifier != null) {

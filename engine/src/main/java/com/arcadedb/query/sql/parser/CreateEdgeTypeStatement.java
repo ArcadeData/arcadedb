@@ -32,10 +32,6 @@ public class CreateEdgeTypeStatement extends CreateTypeAbstractStatement {
     super(id);
   }
 
-  public CreateEdgeTypeStatement(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public String commandType() {
     return "create edge type";

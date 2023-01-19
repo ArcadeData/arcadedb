@@ -37,10 +37,6 @@ public class ArrayConcatExpression extends SimpleNode {
     super(id);
   }
 
-  public ArrayConcatExpression(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public List<ArrayConcatExpressionElement> getChildExpressions() {
     return childExpressions;
   }

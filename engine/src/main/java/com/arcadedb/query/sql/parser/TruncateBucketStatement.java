@@ -35,10 +35,6 @@ public class TruncateBucketStatement extends DDLStatement {
     super(id);
   }
 
-  public TruncateBucketStatement(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public ResultSet executeDDL(final CommandContext ctx) {
 //    ODatabaseDocumentAbstract database = (ODatabaseDocumentAbstract) ctx.getDatabase();

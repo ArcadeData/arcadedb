@@ -25,10 +25,6 @@ public class FirstLevelExpression extends MathExpression {
     super(id);
   }
 
-  public FirstLevelExpression(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   //never used, this class is never returned by the parser!
   public boolean isBaseIdentifier() {
     return value instanceof Identifier;

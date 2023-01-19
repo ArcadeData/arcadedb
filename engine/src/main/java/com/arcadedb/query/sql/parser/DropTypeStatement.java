@@ -43,10 +43,6 @@ public class DropTypeStatement extends DDLStatement {
     super(id);
   }
 
-  public DropTypeStatement(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public ResultSet executeDDL(final CommandContext ctx) {
     final Schema schema = ctx.getDatabase().getSchema();

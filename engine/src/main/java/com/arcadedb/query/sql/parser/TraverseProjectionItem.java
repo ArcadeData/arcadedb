@@ -28,16 +28,11 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import java.util.*;
 
 public class TraverseProjectionItem extends SimpleNode {
-
   protected BaseIdentifier base;
   protected Modifier       modifier;
 
   public TraverseProjectionItem(final int id) {
     super(id);
-  }
-
-  public TraverseProjectionItem(final SqlParser p, final int id) {
-    super(p, id);
   }
 
   public Object execute(final Result iCurrentRecord, final CommandContext ctx) {

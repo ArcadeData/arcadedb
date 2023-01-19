@@ -32,17 +32,13 @@ import java.util.*;
 
 public class ImportDatabaseStatement extends SimpleExecStatement {
 
-  protected Url                         url;
-  protected Expression                  key;
+  protected       Url                         url;
+  protected       Expression                  key;
   protected       Expression                  value;
   protected final Map<Expression, Expression> settings = new HashMap<>();
 
   public ImportDatabaseStatement(final int id) {
     super(id);
-  }
-
-  public ImportDatabaseStatement(final SqlParser p, final int id) {
-    super(p, id);
   }
 
   @Override

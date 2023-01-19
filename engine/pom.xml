@@ -29,7 +29,6 @@
         <relativePath>../pom.xml</relativePath>
     </parent>
 
-    <groupId>com.arcadedb</groupId>
     <artifactId>arcadedb-engine</artifactId>
     <packaging>jar</packaging>
 

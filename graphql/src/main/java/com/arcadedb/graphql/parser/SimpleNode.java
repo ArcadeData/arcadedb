@@ -26,21 +26,15 @@ import java.util.*;
 import java.util.stream.*;
 
 public class SimpleNode implements Node {
-  protected Node          parent;
-  protected Node[]        children;
-  protected int           id;
-  protected Object        value;
-  protected GraphQLParser parser;
-  protected Token         firstToken;
-  protected Token         lastToken;
+  protected Node   parent;
+  protected Node[] children;
+  protected int    id;
+  protected Object value;
+  protected Token  firstToken;
+  protected Token  lastToken;
 
   public SimpleNode(final int i) {
     id = i;
-  }
-
-  public SimpleNode(final GraphQLParser p, final int i) {
-    this(i);
-    parser = p;
   }
 
   public void jjtOpen() {

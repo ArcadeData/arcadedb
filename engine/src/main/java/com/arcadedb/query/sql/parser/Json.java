@@ -37,10 +37,6 @@ public class Json extends SimpleNode {
     super(id);
   }
 
-  public Json(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("{");
     boolean first = true;

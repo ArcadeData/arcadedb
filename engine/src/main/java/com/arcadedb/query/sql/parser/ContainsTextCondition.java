@@ -28,16 +28,11 @@ import java.util.*;
 
 @SuppressWarnings("ALL")
 public class ContainsTextCondition extends BooleanExpression {
-
   protected Expression left;
   protected Expression right;
 
   public ContainsTextCondition(final int id) {
     super(id);
-  }
-
-  public ContainsTextCondition(final SqlParser p, int id) {
-    super(p, id);
   }
 
   @Override

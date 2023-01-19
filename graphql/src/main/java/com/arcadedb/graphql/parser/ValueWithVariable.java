@@ -35,10 +35,6 @@ public class ValueWithVariable extends SimpleNode {
     super(id);
   }
 
-  public ValueWithVariable(final GraphQLParser p, final int id) {
-    super(p, id);
-  }
-
   /**
    * Accept the visitor.
    **/

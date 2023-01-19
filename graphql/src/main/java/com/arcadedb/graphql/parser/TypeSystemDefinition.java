@@ -31,10 +31,6 @@ public class TypeSystemDefinition extends Definition {
     super(id);
   }
 
-  public TypeSystemDefinition(final GraphQLParser p, final int id) {
-    super(p, id);
-  }
-
   /**
    * Accept the visitor.
    **/

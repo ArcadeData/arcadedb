@@ -30,10 +30,6 @@ public class GroupBy extends SimpleNode {
     super(id);
   }
 
-  public GroupBy(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append("GROUP BY ");
     for (int i = 0; i < items.size(); i++) {

@@ -36,10 +36,6 @@ public class MatchesCondition extends BooleanExpression {
     super(id);
   }
 
-  public MatchesCondition(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public boolean evaluate(final Identifiable currentRecord, final CommandContext ctx) {
     String regex = right;

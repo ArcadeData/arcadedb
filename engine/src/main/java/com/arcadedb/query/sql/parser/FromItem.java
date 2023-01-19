@@ -24,7 +24,6 @@ import java.util.*;
 import java.util.stream.*;
 
 public class FromItem extends SimpleNode {
-
   protected List<Rid>            rids;
   protected List<InputParameter> inputParams;
   protected Bucket               bucket;
@@ -39,10 +38,6 @@ public class FromItem extends SimpleNode {
 
   public FromItem(final int id) {
     super(id);
-  }
-
-  public FromItem(final SqlParser p, final int id) {
-    super(p, id);
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {

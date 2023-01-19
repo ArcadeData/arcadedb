@@ -24,9 +24,5 @@ public class Parse extends SimpleNode {
   public Parse(final int id) {
     super(id);
   }
-
-  public Parse(final SqlParser p, final int id) {
-    super(p, id);
-  }
 }
 /* JavaCC - OriginalChecksum=d5bdbb7024b5ee7edd4f794c6b8860d0 (do not edit this line) */

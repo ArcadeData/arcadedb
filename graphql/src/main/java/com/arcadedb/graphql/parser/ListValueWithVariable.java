@@ -29,10 +29,6 @@ public class ListValueWithVariable extends AbstractValue {
     super(id);
   }
 
-  public ListValueWithVariable(final GraphQLParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public Object getValue() {
     return values;

@@ -36,10 +36,6 @@ public abstract class DDLStatement extends Statement {
     super(id);
   }
 
-  public DDLStatement(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public abstract ResultSet executeDDL(CommandContext ctx);
 
   public ResultSet execute(final Database db, final Object[] args, final CommandContext parentCtx, final boolean usePlanCache) {

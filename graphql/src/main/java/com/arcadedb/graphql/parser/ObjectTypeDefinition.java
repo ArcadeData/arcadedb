@@ -23,7 +23,6 @@ package com.arcadedb.graphql.parser;
 import java.util.*;
 
 public class ObjectTypeDefinition extends TypeDefinition {
-
   protected Name                  name;
   protected ImplementsInterface   implementsInterface;
   protected Directives            directives;
@@ -31,10 +30,6 @@ public class ObjectTypeDefinition extends TypeDefinition {
 
   public ObjectTypeDefinition(final int id) {
     super(id);
-  }
-
-  public ObjectTypeDefinition(final GraphQLParser p, final int id) {
-    super(p, id);
   }
 
   public String getName() {

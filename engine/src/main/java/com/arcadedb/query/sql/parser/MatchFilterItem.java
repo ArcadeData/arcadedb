@@ -41,10 +41,6 @@ public class MatchFilterItem extends SimpleNode {
     super(id);
   }
 
-  public MatchFilterItem(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (typeName != null) {
       builder.append("type: ");

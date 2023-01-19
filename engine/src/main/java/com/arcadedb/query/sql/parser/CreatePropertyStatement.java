@@ -44,10 +44,6 @@ public class CreatePropertyStatement extends DDLStatement {
     super(id);
   }
 
-  public CreatePropertyStatement(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public ResultSet executeDDL(final CommandContext ctx) {
     final ResultInternal result = new ResultInternal();
@@ -72,10 +68,8 @@ public class CreatePropertyStatement extends DDLStatement {
       }
       throw new CommandExecutionException("Property " + typeName.getStringValue() + "." + propertyName.getStringValue() + " already exists");
     }
+
     final Type type = Type.valueOf(propertyType.getStringValue().toUpperCase(Locale.ENGLISH));
-    if (type == null) {
-      throw new CommandExecutionException("Invalid property type: " + propertyType.getStringValue());
-    }
 
     // CREATE IT LOCALLY
     final Property internalProp = typez.createProperty(propertyName.getStringValue(), type);

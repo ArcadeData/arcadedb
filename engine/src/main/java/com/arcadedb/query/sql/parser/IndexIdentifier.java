@@ -36,10 +36,6 @@ public class IndexIdentifier extends SimpleNode {
     super(id);
   }
 
-  public IndexIdentifier(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     switch (type) {
     case INDEX:

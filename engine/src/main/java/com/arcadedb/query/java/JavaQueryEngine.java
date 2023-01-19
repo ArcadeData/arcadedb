@@ -167,8 +167,7 @@ public class JavaQueryEngine implements QueryEngine {
         if (method.getParameterCount() == parameters.length) {
 
           // RESET PARAMETER ARRAY
-          for (int i = 0; i < parameterArray.length; i++)
-            parameterArray[i] = null;
+          Arrays.fill(parameterArray, null);
 
           boolean allParamsMatch = true;
           final Parameter[] methodParameters = method.getParameters();
@@ -269,10 +268,8 @@ public class JavaQueryEngine implements QueryEngine {
   }
 
   private ResultSet executeUserCode(final Callable task, final long executionTimeoutMs) throws Exception {
-// IF NOT INITIALIZED, EXECUTE AS SOON AS THE SERVICE STARTS
+    // IF NOT INITIALIZED, EXECUTE AS SOON AS THE SERVICE STARTS
     final Future future = userCodeExecutor.submit(task);
-    if (future == null)
-      return null;
 
     try {
       final Object result = executionTimeoutMs > 0 ? future.get(executionTimeoutMs, TimeUnit.MILLISECONDS) : future.get();

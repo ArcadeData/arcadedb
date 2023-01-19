@@ -55,7 +55,7 @@ public class JVMUtils {
             break;
           }
 
-          if (found && filterExclude != null && stackTraceElement.toString().contains(filterExclude)) {
+          if (found && stackTraceElement.toString().contains(filterExclude)) {
             found = false;
             break;
           }

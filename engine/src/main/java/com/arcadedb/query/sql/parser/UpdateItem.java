@@ -49,10 +49,6 @@ public class UpdateItem extends SimpleNode {
     super(id);
   }
 
-  public UpdateItem(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     left.toString(params, builder);
     if (leftModifier != null) {
@@ -151,7 +147,7 @@ public class UpdateItem extends SimpleNode {
   private Object convertToPropertyType(final ResultInternal res, final Identifier attrName, Object newValue) {
     final Document doc = res.toElement();
     final Optional<DocumentType> optSchema = Optional.ofNullable(doc.getType());
-    if (!optSchema.isPresent()) {
+    if (optSchema.isEmpty()) {
       return newValue;
     }
 

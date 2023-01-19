@@ -53,10 +53,6 @@ public class SelectStatement extends Statement {
     super(id);
   }
 
-  public SelectStatement(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public Projection getProjection() {
     return projection;
   }

@@ -29,10 +29,6 @@ public class FragmentSpread extends SimpleNode {
     super(id);
   }
 
-  public FragmentSpread(final GraphQLParser p, final int id) {
-    super(p, id);
-  }
-
   /**
    * Accept the visitor.
    **/

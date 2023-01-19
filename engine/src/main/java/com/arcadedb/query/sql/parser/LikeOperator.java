@@ -29,10 +29,6 @@ public class LikeOperator extends SimpleNode implements BinaryCompareOperator {
     super(id);
   }
 
-  public LikeOperator(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public boolean execute(final DatabaseInternal database, final Object iLeft, final Object iRight) {
     if (MultiValue.isMultiValue(iLeft) || MultiValue.isMultiValue(iRight))
@@ -47,11 +43,6 @@ public class LikeOperator extends SimpleNode implements BinaryCompareOperator {
   @Override
   public String toString() {
     return "LIKE";
-  }
-
-  @Override
-  public boolean supportsBasicCalculation() {
-    return true;
   }
 
   @Override

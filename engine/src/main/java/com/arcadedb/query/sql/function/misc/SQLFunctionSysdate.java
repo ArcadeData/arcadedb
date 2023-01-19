@@ -59,10 +59,6 @@ public class SQLFunctionSysdate extends SQLFunctionAbstract {
     return format.format(now);
   }
 
-  public boolean aggregateResults(final Object[] configuredParameters) {
-    return false;
-  }
-
   public String getSyntax() {
     return "sysdate([<format>] [,<timezone>])";
   }

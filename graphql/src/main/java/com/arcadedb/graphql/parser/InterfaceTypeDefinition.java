@@ -32,10 +32,6 @@ public class InterfaceTypeDefinition extends TypeDefinition {
     super(id);
   }
 
-  public InterfaceTypeDefinition(final GraphQLParser p, final int id) {
-    super(p, id);
-  }
-
   public String getName() {
     return name != null ? name.value : null;
   }

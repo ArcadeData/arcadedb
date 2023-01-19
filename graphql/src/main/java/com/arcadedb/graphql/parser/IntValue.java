@@ -21,15 +21,10 @@
 package com.arcadedb.graphql.parser;
 
 public class IntValue extends AbstractValue {
-
   protected int val;
 
   public IntValue(final int id) {
     super(id);
-  }
-
-  public IntValue(final GraphQLParser p, final int id) {
-    super(p, id);
   }
 
   @Override

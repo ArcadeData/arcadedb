@@ -21,7 +21,6 @@
 package com.arcadedb.graphql.parser;
 
 public class FragmentDefinition extends Definition {
-
   protected FragmentName  name;
   protected TypeCondition type;
   protected Directives    directives;
@@ -29,10 +28,6 @@ public class FragmentDefinition extends Definition {
 
   public FragmentDefinition(final int id) {
     super(id);
-  }
-
-  public FragmentDefinition(final GraphQLParser p, final int id) {
-    super(p, id);
   }
 
   /**

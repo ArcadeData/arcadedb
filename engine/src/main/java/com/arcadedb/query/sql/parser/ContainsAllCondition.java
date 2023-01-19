@@ -36,10 +36,6 @@ public class ContainsAllCondition extends BooleanExpression {
     super(id);
   }
 
-  public ContainsAllCondition(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public boolean execute(Object left, Object right) {
     if (left instanceof Collection) {
       if (right instanceof Collection) {
@@ -158,22 +154,6 @@ public class ContainsAllCondition extends BooleanExpression {
       rightBlock.toString(params, builder);
       builder.append(")");
     }
-  }
-
-  public Expression getLeft() {
-    return left;
-  }
-
-  public void setLeft(final Expression left) {
-    this.left = left;
-  }
-
-  public Expression getRight() {
-    return right;
-  }
-
-  public void setRight(final Expression right) {
-    this.right = right;
   }
 
   @Override

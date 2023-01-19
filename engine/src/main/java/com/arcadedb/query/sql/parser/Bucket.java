@@ -35,10 +35,6 @@ public class Bucket extends SimpleNode {
     super(id);
   }
 
-  public Bucket(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public String toString(final String prefix) {
     return super.toString(prefix);

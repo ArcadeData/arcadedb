@@ -100,7 +100,7 @@ public class MatchStatement extends Statement {
   }
 
   public static class EdgeTraversal {
-    boolean     out = true;
+    boolean out = true;
     final PatternEdge edge;
 
     public EdgeTraversal(final PatternEdge edge, final boolean out) {
@@ -121,10 +121,6 @@ public class MatchStatement extends Statement {
 
   public MatchStatement(final int id) {
     super(id);
-  }
-
-  public MatchStatement(final SqlParser p, final int id) {
-    super(p, id);
   }
 
   @Override
@@ -264,8 +260,8 @@ public class MatchStatement extends Statement {
     return false;
   }
 
-  private void addAliases(final Database database, final MatchExpression expr, final Map<String, WhereClause> aliasFilters, final Map<String, String> aliasUserTypes,
-      final CommandContext context) {
+  private void addAliases(final Database database, final MatchExpression expr, final Map<String, WhereClause> aliasFilters,
+      final Map<String, String> aliasUserTypes, final CommandContext context) {
     addAliases(database, expr.origin, aliasFilters, aliasUserTypes, context);
     for (final MatchPathItem item : expr.items) {
       if (item.filter != null) {
@@ -274,8 +270,8 @@ public class MatchStatement extends Statement {
     }
   }
 
-  private void addAliases(final Database database, final MatchFilter matchFilter, final Map<String, WhereClause> aliasFilters, final Map<String, String> aliasUserTypes,
-      final CommandContext context) {
+  private void addAliases(final Database database, final MatchFilter matchFilter, final Map<String, WhereClause> aliasFilters,
+      final Map<String, String> aliasUserTypes, final CommandContext context) {
     final String alias = matchFilter.getAlias();
     final WhereClause filter = matchFilter.getFilter();
     if (alias != null) {

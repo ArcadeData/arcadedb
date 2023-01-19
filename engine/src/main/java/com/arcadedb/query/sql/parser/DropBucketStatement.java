@@ -37,10 +37,6 @@ public class DropBucketStatement extends DDLStatement {
     super(id);
   }
 
-  public DropBucketStatement(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public ResultSet executeDDL(final CommandContext ctx) {
     final Database database = ctx.getDatabase();

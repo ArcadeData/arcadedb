@@ -25,8 +25,5 @@ public class CreateVertexStatementNoTarget extends CreateVertexStatement {
     super(id);
   }
 
-  public CreateVertexStatementNoTarget(final SqlParser p, final int id) {
-    super(p, id);
-  }
 }
 /* JavaCC - OriginalChecksum=5213b77f14f5f89255590034bdc0ea54 (do not edit this line) */

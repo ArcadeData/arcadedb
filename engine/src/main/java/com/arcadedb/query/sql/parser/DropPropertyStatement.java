@@ -43,10 +43,6 @@ public class DropPropertyStatement extends DDLStatement {
     super(id);
   }
 
-  public DropPropertyStatement(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   @Override
   public ResultSet executeDDL(final CommandContext ctx) {
     final InternalResultSet rs = new InternalResultSet();

@@ -27,59 +27,51 @@ import com.arcadedb.graph.VertexInternal;
  * Asynchronous Task that creates the edge that connects 2 vertices.
  */
 public class CreateEdgeAsyncTask implements DatabaseAsyncTask {
-    protected final Identifiable sourceVertex;
-    protected final Identifiable destinationVertex;
+  protected final Identifiable sourceVertex;
+  protected final Identifiable destinationVertex;
 
-    protected final String edgeType;
-    protected final Object[] edgeAttributes;
+  protected final String   edgeType;
+  protected final Object[] edgeAttributes;
 
-    protected final boolean bidirectional;
-    protected final boolean light;
-    protected final NewEdgeCallback callback;
+  protected final boolean         bidirectional;
+  protected final boolean         light;
+  protected final NewEdgeCallback callback;
 
-    public CreateEdgeAsyncTask(final Identifiable sourceVertex,
-                               final Identifiable destinationVertex,
-                               final String edgeType,
-                               final Object[] edgeAttributes,
-                               final boolean bidirectional,
-                               final boolean light,
-                               final NewEdgeCallback callback) {
-        this.sourceVertex = sourceVertex;
-        this.destinationVertex = destinationVertex;
+  public CreateEdgeAsyncTask(final Identifiable sourceVertex, final Identifiable destinationVertex, final String edgeType, final Object[] edgeAttributes,
+      final boolean bidirectional, final boolean light, final NewEdgeCallback callback) {
+    this.sourceVertex = sourceVertex;
+    this.destinationVertex = destinationVertex;
 
-        this.edgeType = edgeType;
-        this.edgeAttributes = edgeAttributes;
+    this.edgeType = edgeType;
+    this.edgeAttributes = edgeAttributes;
 
-        this.bidirectional = bidirectional;
-        this.light = light;
-        this.callback = callback;
-    }
+    this.bidirectional = bidirectional;
+    this.light = light;
+    this.callback = callback;
+  }
 
-    @Override
-    public void execute(final DatabaseAsyncExecutorImpl.AsyncThread async, final DatabaseInternal database) {
-        createEdge(database, sourceVertex, destinationVertex, false, false);
-    }
+  @Override
+  public void execute(final DatabaseAsyncExecutorImpl.AsyncThread async, final DatabaseInternal database) {
+    createEdge(database, sourceVertex, destinationVertex, false, false);
+  }
 
-    protected void createEdge(final DatabaseInternal database,
-                              final Identifiable sourceVertex,
-                              final Identifiable destinationVertex,
-                              final boolean createdSourceVertex,
-                              final boolean createdDestinationVertex) {
+  protected void createEdge(final DatabaseInternal database, final Identifiable sourceVertex, final Identifiable destinationVertex,
+      final boolean createdSourceVertex, final boolean createdDestinationVertex) {
 
-        final Edge edge;
+    final Edge edge;
 
-        if (light)
-            edge = database.getGraphEngine().newLightEdge((VertexInternal) sourceVertex.getRecord(), edgeType, destinationVertex.getIdentity(), bidirectional);
-        else
-            edge = database.getGraphEngine()
-                    .newEdge((VertexInternal) sourceVertex.getRecord(), edgeType, destinationVertex.getIdentity(), bidirectional, edgeAttributes);
+    if (light)
+      edge = database.getGraphEngine().newLightEdge((VertexInternal) sourceVertex.getRecord(), edgeType, destinationVertex.getIdentity(), bidirectional);
+    else
+      edge = database.getGraphEngine()
+          .newEdge((VertexInternal) sourceVertex.getRecord(), edgeType, destinationVertex.getIdentity(), bidirectional, edgeAttributes);
 
-        if (callback != null)
-            callback.call(edge, createdSourceVertex, createdDestinationVertex);
-    }
+    if (callback != null)
+      callback.call(edge, createdSourceVertex, createdDestinationVertex);
+  }
 
-    @Override
-    public String toString() {
-        return "CreateEdgeAsyncTask(" + sourceVertex + "->" + destinationVertex + ")";
-    }
+  @Override
+  public String toString() {
+    return "CreateEdgeAsyncTask(" + sourceVertex + "->" + destinationVertex + ")";
+  }
 }

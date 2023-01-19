@@ -33,10 +33,6 @@ public class Timeout extends SimpleNode {
     super(id);
   }
 
-  public Timeout(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     builder.append(" TIMEOUT " + val);
     if (failureStrategy != null) {

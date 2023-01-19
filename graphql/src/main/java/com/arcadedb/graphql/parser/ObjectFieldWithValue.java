@@ -21,16 +21,11 @@
 package com.arcadedb.graphql.parser;
 
 public class ObjectFieldWithValue extends SimpleNode {
-
   protected Name              name;
   protected ValueWithVariable value;
 
   public ObjectFieldWithValue(final int id) {
     super(id);
-  }
-
-  public ObjectFieldWithValue(final GraphQLParser p, final int id) {
-    super(p, id);
   }
 
   public String getName() {

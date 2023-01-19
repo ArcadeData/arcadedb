@@ -29,10 +29,6 @@ public class Directives extends SimpleNode {
     super(id);
   }
 
-  public Directives(final GraphQLParser p, final int id) {
-    super(p, id);
-  }
-
   public List<Directive> getDirectives() {
     return directives;
   }

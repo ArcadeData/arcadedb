@@ -175,7 +175,7 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
     init(fromKey, fromKeyIncluded, toKey, toKeyIncluded);
   }
 
-  private void processFlatIteration() throws IOException {
+  private void processFlatIteration() {
     cursor = index.iterator(isOrderAsc());
   }
 

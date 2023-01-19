@@ -24,10 +24,5 @@ public class OutPathItemOpt extends OutPathItem {
   public OutPathItemOpt(final int id) {
     super(id);
   }
-
-  public OutPathItemOpt(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
 }
 /* JavaCC - OriginalChecksum=03ffaa23b3d039235588ad2fb032c273 (do not edit this line) */

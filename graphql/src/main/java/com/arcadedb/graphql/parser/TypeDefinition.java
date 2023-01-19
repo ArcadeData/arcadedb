@@ -25,10 +25,6 @@ public class TypeDefinition extends SimpleNode {
     super(id);
   }
 
-  public TypeDefinition(final GraphQLParser p, final int id) {
-    super(p, id);
-  }
-
   /**
    * Accept the visitor.
    **/

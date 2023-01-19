@@ -48,10 +48,6 @@ public class Projection extends SimpleNode {
     super(id);
   }
 
-  public Projection(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public List<ProjectionItem> getItems() {
     return items;
   }

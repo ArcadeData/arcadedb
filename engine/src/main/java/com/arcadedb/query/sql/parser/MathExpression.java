@@ -37,7 +37,7 @@ public class MathExpression extends SimpleNode {
 
   private static final Object               NULL_VALUE       = new Object();
   protected            List<MathExpression> childExpressions = new ArrayList<MathExpression>();
-  protected            List<Operator>       operators        = new ArrayList<>();
+  protected final      List<Operator>       operators        = new ArrayList<>();
 
   public Expression getExpandContent() {
     throw new CommandExecutionException("Invalid expand expression");
@@ -593,10 +593,6 @@ public class MathExpression extends SimpleNode {
 
   public MathExpression(final int id) {
     super(id);
-  }
-
-  public MathExpression(final SqlParser p, final int id) {
-    super(p, id);
   }
 
   @Override

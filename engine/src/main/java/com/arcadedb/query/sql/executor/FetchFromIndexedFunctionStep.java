@@ -30,8 +30,8 @@ import java.util.*;
  * Created by luigidellaquila on 06/08/16.
  */
 public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
-  private BinaryCondition functionCondition;
-  private FromClause      queryTarget;
+  private final BinaryCondition functionCondition;
+  private final FromClause      queryTarget;
 
 
   //runtime0

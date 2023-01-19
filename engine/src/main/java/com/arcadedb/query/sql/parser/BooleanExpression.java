@@ -138,10 +138,6 @@ public abstract class BooleanExpression extends SimpleNode {
     super(id);
   }
 
-  public BooleanExpression(final SqlParser p, final int id) {
-    super(p, id);
-  }
-
   public abstract boolean evaluate(final Identifiable currentRecord, final CommandContext ctx);
 
   public abstract boolean evaluate(final Result currentRecord, final CommandContext ctx);
