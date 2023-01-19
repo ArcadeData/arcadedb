@@ -116,6 +116,7 @@ function renderTable(){
       aaData: tableRecords,
       deferRender: true,
       dom: '<Blf>rt<ip>',
+      order: [],
       lengthMenu: [
         [ 10, 20, 50, 100, -1 ],
         [ '10', '20', '50', '100', 'all' ]
