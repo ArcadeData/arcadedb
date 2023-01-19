@@ -43,6 +43,7 @@ import com.arcadedb.server.ha.message.HACommand;
 import com.arcadedb.server.ha.message.HAMessageFactory;
 import com.arcadedb.server.ha.message.UpdateClusterConfiguration;
 import com.arcadedb.server.ha.network.DefaultServerSocketFactory;
+import com.arcadedb.utility.Callable;
 import com.arcadedb.utility.Pair;
 import com.arcadedb.utility.RecordTableFormatter;
 import com.arcadedb.utility.TableFormatter;
@@ -178,7 +179,7 @@ public class HAServer implements ServerPlugin {
       serverAddressList.addAll(Arrays.asList(serverEntries));
 
       for (final String serverEntry : serverEntries) {
-        if (!isCurrentServer(serverEntry) && connectToLeader(serverEntry)) {
+        if (!isCurrentServer(serverEntry) && connectToLeader(serverEntry, null)) {
           break;
         }
       }
@@ -354,7 +355,7 @@ public class HAServer implements ServerPlugin {
             LogManager.instance()
                 .log(this, Level.INFO, "Trying to connect to the existing leader '%s' (turn=%d totalVotes=%d majority=%d)", entry.getKey(), electionTurn,
                     entry.getValue(), majorityOfVotes);
-            if (!isCurrentServer(entry.getKey()) && connectToLeader(entry.getKey()))
+            if (!isCurrentServer(entry.getKey()) && connectToLeader(entry.getKey(), null))
               break;
           }
         }
@@ -965,7 +966,7 @@ public class HAServer implements ServerPlugin {
         .log(this, Level.INFO, "Recovering completed. Sent %d message(s) to replica '%s' (%d-%d)", totalSentMessages.get(), replicaName, min, max);
   }
 
-  public boolean connectToLeader(final String serverEntry) {
+  public boolean connectToLeader(final String serverEntry, final Callable<Void, Exception> errorCallback) {
     String[] serverParts = serverEntry.split(":");
     if (serverParts.length == 1)
       serverParts = new String[] { serverParts[0], DEFAULT_PORT };
@@ -991,6 +992,9 @@ public class HAServer implements ServerPlugin {
     } catch (final Exception e) {
       LogManager.instance()
           .log(this, Level.INFO, "Error connecting to the remote Leader server %s:%d (error=%s)", serverParts[0], Integer.parseInt(serverParts[1]), e);
+
+      if (errorCallback != null)
+        errorCallback.call(e);
     }
     return false;
   }

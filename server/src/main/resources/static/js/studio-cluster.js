@@ -132,7 +132,9 @@ function alignDatabase(dbName){
 }
 
 function connectToCluster(){
-  let html = "<label for='clusterServerAddress'>Enter the server name/ip-address and the optional port with the format &lt;ip&gt;[:&lt;port&gt;].<br>The default port for replication is 2424.&nbsp;&nbsp;</label><input onkeydown='if (event.which === 13) Swal.clickConfirm()' id='clusterServerAddress'>";
+  let lastClusterServerAddress = globalStorageLoad("lastClusterServerAddress", "" );
+
+  let html = "<label for='clusterServerAddress'>Enter the server name/ip-address and the optional port with the format &lt;ip&gt;[:&lt;port&gt;].<br>The default port for replication is 2424.&nbsp;&nbsp;</label><input onkeydown='if (event.which === 13) Swal.clickConfirm()' id='clusterServerAddress' value='"+lastClusterServerAddress+"'>";
 
   Swal.fire({
     title: 'Connect to a cluster',
@@ -152,6 +154,8 @@ function connectToCluster(){
         return;
       }
 
+      globalStorageSave("lastClusterServerAddress", serverAddress );
+
       jQuery.ajax({
         type: "POST",
         url: "/api/v1/server",
@@ -161,6 +165,7 @@ function connectToCluster(){
         }
       })
       .done(function(data){
+        globalNotify( "Connection to the cluster", "The command was correctly sent to the server", "success");
         updateCluster();
       })
       .fail(function( jqXHR, textStatus, errorThrown ){

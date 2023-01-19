@@ -77,9 +77,10 @@ public class PostServerCommandHandler extends AbstractHandler {
       createUser(command);
     else if (command.startsWith("drop user "))
       dropUser(command);
-    else if (command.startsWith("connect cluster "))
-      connectCluster(command);
-    else if (command.equals("disconnect cluster"))
+    else if (command.startsWith("connect cluster ")) {
+      if (!connectCluster(command, exchange))
+        return;
+    } else if (command.equals("disconnect cluster"))
       disconnectCluster();
     else if (command.startsWith("set database setting "))
       setDatabaseSetting(command);
@@ -148,13 +149,18 @@ public class PostServerCommandHandler extends AbstractHandler {
       ha.disconnectAllReplicas();
   }
 
-  private void connectCluster(final String command) {
+  private boolean connectCluster(final String command, final HttpServerExchange exchange) {
     final HAServer ha = getHA();
 
     httpServer.getServer().getServerMetrics().meter("http.connect-cluster").mark();
 
     final String serverAddress = command.substring("connect cluster ".length());
-    ha.connectToLeader(serverAddress);
+    return ha.connectToLeader(serverAddress, exception -> {
+      exchange.setStatusCode(500);
+      exchange.getResponseSender().send("{ \"error\" : \"" + exception.getMessage() + "\"}");
+
+      return null;
+    });
   }
 
   private void createDatabase(final String command) {

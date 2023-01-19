@@ -201,7 +201,7 @@ public class LeaderNetworkListener extends Thread {
 
     LogManager.instance().log(this, Level.INFO, "Received new leadership from server '%s' (turn=%d)", remoteServerName, voteTurn);
 
-    if (ha.connectToLeader(remoteServerAddress))
+    if (ha.connectToLeader(remoteServerAddress, null))
       // ELECTION FINISHED, THE SERVER IS A REPLICA
       ha.setElectionStatus(HAServer.ELECTION_STATUS.DONE);
     else
