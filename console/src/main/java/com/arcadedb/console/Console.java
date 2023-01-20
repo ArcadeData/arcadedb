@@ -55,6 +55,7 @@ import java.util.*;
 public class Console {
   private static final String               PROMPT               = "%n%s> ";
   private static final String               REMOTE_PREFIX        = "remote:";
+  private static final String               LOCAL_PREFIX         = "local:";
   private static final String               SQL_LANGUAGE         = "SQL";
   private final        boolean              system               = System.console() != null;
   private final        Terminal             terminal;
@@ -745,7 +746,11 @@ public class Console {
   }
 
   private String parseLocalUrl(final String url) {
-    return databaseDirectory + url.replaceFirst("file://", "");
+    if(url.startsWith(LOCAL_PREFIX + "//")) {
+      return url.replaceFirst(LOCAL_PREFIX + "//", "/");
+    } else {
+      return databaseDirectory + url.replaceFirst("file://", "");
+    }
   }
 
   private void connectToRemoteServer(final String url, final Boolean needsDatabase) {
