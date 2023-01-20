@@ -20,6 +20,7 @@ package com.arcadedb;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.DateUtils;
@@ -226,6 +227,35 @@ public class DateTest extends TestHelper {
 
     } finally {
       ((DatabaseInternal) database).getSerializer().setDateTimeImplementation(Date.class);
+    }
+  }
+
+  @Test
+  public void testSQL() throws ClassNotFoundException {
+    final LocalDateTime localDateTime = LocalDateTime.now();
+
+    database.command("sql", "alter database dateTimeImplementation `java.time.LocalDateTime`");
+    try {
+      database.begin();
+      ResultSet result = database.command("sql", "insert into ConversionTest set datetime_second = ?", localDateTime);
+      Assertions.assertTrue(result.hasNext());
+      Assertions.assertEquals(localDateTime.truncatedTo(ChronoUnit.SECONDS), result.next().toElement().get("datetime_second"));
+
+      result = database.command("sql", "insert into ConversionTest set datetime_millis = ?", localDateTime);
+      Assertions.assertTrue(result.hasNext());
+      Assertions.assertEquals(localDateTime.truncatedTo(ChronoUnit.MILLIS), result.next().toElement().get("datetime_millis"));
+
+      result = database.command("sql", "insert into ConversionTest set datetime_micros = ?", localDateTime);
+      Assertions.assertTrue(result.hasNext());
+      Assertions.assertEquals(localDateTime.truncatedTo(ChronoUnit.MICROS), result.next().toElement().get("datetime_micros"));
+
+      result = database.command("sql", "insert into ConversionTest set datetime_nanos = ?", localDateTime);
+      Assertions.assertTrue(result.hasNext());
+      Assertions.assertEquals(localDateTime.truncatedTo(ChronoUnit.NANOS), result.next().toElement().get("datetime_nanos"));
+
+      database.commit();
+    } finally {
+      database.command("sql", "alter database dateTimeImplementation `java.util.Date`");
     }
   }
 

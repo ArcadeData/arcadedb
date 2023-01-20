@@ -65,29 +65,40 @@ public class AlterDatabaseStatement extends DDLStatement {
     final Object oldValue = db.getConfiguration().getValue(cfg);
     Object finalValue = settingValue.execute((Identifiable) null, context);
 
-    if ("arcadedb.dateFormat".equals(settingNameAsString)) {
+    boolean saveInDatabaseConfiguration = false;
+
+    switch (cfg) {
+    case DATE_FORMAT:
       db.getSchema().setDateFormat(finalValue.toString());
       ((EmbeddedSchema) db.getSchema()).saveConfiguration();
-    } else if ("arcadedb.dateTimeFormat".equals(settingNameAsString)) {
+      break;
+    case DATE_TIME_FORMAT:
       db.getSchema().setDateTimeFormat(finalValue.toString());
       ((EmbeddedSchema) db.getSchema()).saveConfiguration();
-    } else {
-      if ("arcadedb.dateTimeImplementation".equals(settingNameAsString)) {
-        try {
-          finalValue = FileUtils.getStringContent(settingValue);
-          context.getDatabase().getSerializer().setDateTimeImplementation(Class.forName(finalValue.toString()));
-        } catch (ClassNotFoundException e) {
-          throw new DatabaseOperationException("Invalid datetime implementation '" + finalValue + "'", e);
-        }
-      } else if ("arcadedb.dateImplementation".equals(settingNameAsString)) {
-        try {
-          finalValue = FileUtils.getStringContent(settingValue);
-          context.getDatabase().getSerializer().setDateImplementation(Class.forName(finalValue.toString()));
-        } catch (ClassNotFoundException e) {
-          throw new DatabaseOperationException("Invalid datetime implementation '" + finalValue + "'", e);
-        }
+      break;
+    case DATE_IMPLEMENTATION:
+      try {
+        finalValue = FileUtils.getStringContent(settingValue);
+        context.getDatabase().getSerializer().setDateImplementation(Class.forName(finalValue.toString()));
+        saveInDatabaseConfiguration = true;
+      } catch (ClassNotFoundException e) {
+        throw new DatabaseOperationException("Invalid datetime implementation '" + finalValue + "'", e);
       }
+      break;
+    case DATE_TIME_IMPLEMENTATION:
+      try {
+        finalValue = FileUtils.getStringContent(settingValue);
+        context.getDatabase().getSerializer().setDateTimeImplementation(Class.forName(finalValue.toString()));
+        saveInDatabaseConfiguration = true;
+      } catch (ClassNotFoundException e) {
+        throw new DatabaseOperationException("Invalid datetime implementation '" + finalValue + "'", e);
+      }
+      break;
+    default:
+      saveInDatabaseConfiguration = true;
+    }
 
+    if (saveInDatabaseConfiguration) {
       db.getConfiguration().setValue(cfg, finalValue);
       try {
         db.saveConfiguration();
