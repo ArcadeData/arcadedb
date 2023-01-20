@@ -1,8 +1,11 @@
 package com.arcadedb.function.polyglot;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.function.FunctionExecutionException;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+
+import java.lang.reflect.*;
 
 public class PolyglotFunctionTest extends TestHelper {
   @Test
@@ -42,6 +45,31 @@ public class PolyglotFunctionTest extends TestHelper {
 
     result = (Integer) database.getSchema().getFunction("math", "sum").execute(50, 100);
     Assertions.assertEquals(-50, result);
+  }
+
+  @Test
+  public void testNotFound() throws ClassNotFoundException, InvocationTargetException, NoSuchMethodException, InstantiationException, IllegalAccessException {
+    registerFunctions();
+    try {
+      database.getSchema().getFunction("math", "NOT_found").execute(3, 5);
+      Assertions.fail();
+    } catch (IllegalArgumentException e) {
+      // EXPECTED
+    }
+  }
+
+  @Test
+  public void testExecutionError() {
+    try {
+      database.getSchema().registerFunctionLibrary(//
+          new JavascriptFunctionLibraryDefinition(database, "math")//
+              .registerFunction(new JavascriptFunctionDefinition("sum", "return a ++++ b;", "a", "b")));
+
+      database.getSchema().getFunction("math", "sum").execute("invalid", 5);
+      Assertions.fail();
+    } catch (FunctionExecutionException e) {
+      // EXPECTED
+    }
   }
 
   private void registerFunctions() {

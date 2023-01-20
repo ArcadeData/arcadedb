@@ -1,6 +1,7 @@
 package com.arcadedb.function.java;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.function.FunctionExecutionException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Assertions;
@@ -116,6 +117,29 @@ public class JavaFunctionTest extends TestHelper {
       Assertions.assertFalse(record.getIdentity().isPresent());
       Assertions.assertEquals(27, ((Number) record.getProperty("sum")).intValue());
     });
+  }
+
+  @Test
+  public void testNotFound() throws ClassNotFoundException, InvocationTargetException, NoSuchMethodException, InstantiationException, IllegalAccessException {
+    registerClass();
+    try {
+      database.getSchema().getFunction("math", "NOT_found").execute(3, 5);
+      Assertions.fail();
+    } catch (IllegalArgumentException e) {
+      // EXPECTED
+    }
+  }
+
+  @Test
+  public void testExecutionError()
+      throws ClassNotFoundException, InvocationTargetException, NoSuchMethodException, InstantiationException, IllegalAccessException {
+    registerClass();
+    try {
+      database.getSchema().getFunction("math", "SUM").execute("invalid", 5);
+      Assertions.fail();
+    } catch (FunctionExecutionException e) {
+      // EXPECTED
+    }
   }
 
   private void registerClass() throws ClassNotFoundException, InvocationTargetException, NoSuchMethodException, InstantiationException, IllegalAccessException {

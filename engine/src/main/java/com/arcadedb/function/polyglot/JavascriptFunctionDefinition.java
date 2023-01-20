@@ -60,7 +60,7 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
         declaration += " }";
 
         return polyglotEngine.eval(declaration);
-      } catch (final IOException e) {
+      } catch (final Exception e) {
         throw new FunctionExecutionException("Error on definition of function '" + functionName + "'");
       }
     });
